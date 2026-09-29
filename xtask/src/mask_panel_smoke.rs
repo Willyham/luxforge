@@ -19,7 +19,7 @@
 //! step, as the `workspace` scenario checks its panels. Field texts are not asserted: the panel's
 //! number formatting is its own business, so values are compared as numbers.
 use crate::{
-    scenario::{Checked, Frame, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_core::{BASIC_EFFECT, PRESENCE_EFFECT};
@@ -86,23 +86,35 @@ fn rotation(degrees: f64) -> Vec<[f64; 2]> {
     ]
 }
 
-/// A step that commits nothing.
+/// A step that commits nothing, in Mask mode.
 fn quiet(name: &str, step: impl Into<script::Step>) -> Step {
-    Step::new(name, step).commits(0)
+    Step::new(name, step).commits(0).mode(MASK_MODE)
 }
 
-/// One committed entry, labelled as the history row reads it.
+/// One committed entry, labelled as the history row reads it, in Mask mode.
 fn entry(name: &str, step: impl Into<script::Step>, label: impl Into<String>) -> Step {
-    Step::new(name, step).commits(1).label(label)
+    Step::new(name, step)
+        .commits(1)
+        .label(label)
+        .mode(MASK_MODE)
 }
 
 /// A new mask of one drawn kind, swept, released, committed and renamed: five frames, two entries.
+/// Once renamed it is listed after `before`, open, and holds its one drawn component.
 ///
 /// The host names a new mask with the first `Mask N` no mask holds, so once the one before it has
 /// been renamed every new mask here is `Mask 1`. The first mask's entry says what it adds; every
 /// later one names the mask it creates, as a history row does once there are masks to tell apart.
-fn drawn(prefix: &str, kind: &str, sweep: [[f64; 2]; 2], added: &str, name: &str) -> [Step; 5] {
+fn drawn(
+    prefix: &str,
+    kind: &str,
+    sweep: [[f64; 2]; 2],
+    added: &str,
+    listed: &[&str],
+    component: &str,
+) -> [Step; 5] {
     let [from, to] = sweep;
+    let name = listed[listed.len() - 1];
     [
         quiet(&format!("{prefix}-new"), MaskStep::New(kind.into())),
         quiet(&format!("{prefix}-swept"), MaskStep::Sweep { from, to }),
@@ -115,7 +127,11 @@ fn drawn(prefix: &str, kind: &str, sweep: [[f64; 2]; 2], added: &str, name: &str
                 json!({"mask": {"name": NEW_MASK}, "name": name}),
             ),
             format!("Rename {NEW_MASK} to {name}"),
-        ),
+        )
+        .mask_names(listed)
+        .open_mask(Some(name))
+        .component_names(&[component])
+        .components(&[&format!("add {kind}")]),
     ]
 }
 
@@ -129,10 +145,33 @@ fn through_face(name: &str, method: &str, fields: Value, label: &str) -> Step {
     entry(name, script::Step::call(method, params), label)
 }
 
-/// Every frame, in order: the open, then one per step.
+const THREE: &[&str] = &[SKY, FACE, FOREGROUND];
+/// Face's rows once its three components are drawn: their names, and each one's mode and kind.
+const FACE_NAMES: &[&str] = &[RADIAL_1, BRUSH_1, LUMINANCE_1];
+const FACE_ROWS: &[&str] = &["add radial", "subtract brush", "intersect luminance-range"];
+
+/// Face open with its three rows, among the three masks.
+fn face(step: Step) -> Step {
+    step.mask_names(THREE)
+        .open_mask(Some(FACE))
+        .component_names(FACE_NAMES)
+        .components(FACE_ROWS)
+}
+
+/// Face open with Radial 1 selected and the overlay in `setting` and `colour`.
+fn overlay(step: Step, setting: &str, colour: &str) -> Step {
+    face(step)
+        .selected_component(Some(RADIAL_1))
+        .mask_overlay(setting, colour)
+}
+
+/// Every frame, in order: the open, then one per step, each with what the panel must show.
 pub fn plan(_: &[PathBuf]) -> Plan {
     let mut steps = vec![
-        Step::opened("opened").no_layer(BASIC_EFFECT).no_draft(),
+        Step::opened("opened")
+            .no_layer(BASIC_EFFECT)
+            .no_draft()
+            .masks(0),
         // 1: Mask mode, through the same `workspace.set` the mode strip sends.
         quiet("mask-mode", WorkspaceStep::default().mode(MASK_MODE)),
     ];
@@ -142,22 +181,31 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         LINEAR,
         [[0.5, 0.0], [0.5, 0.32]],
         "Add linear",
-        SKY,
+        &[SKY],
+        "Linear 1",
     ));
-    // 7-11: Face, a radial at the board's centre and radii.
-    steps.extend(drawn(
+    // 7-11: Face, a radial at the board's centre and radii, with no Brush section yet.
+    let [new, swept, released, applied, renamed] = drawn(
         "face",
         RADIAL,
         [RADIAL_AT, radial_to()],
         "Mask 1 · Add radial",
-        FACE,
-    ));
+        &[SKY, FACE],
+        RADIAL_1,
+    );
+    steps.extend([new, swept, released, applied, renamed.brush_section(false)]);
+    let face_open = |step: Step| step.open_mask(Some(FACE));
     steps.extend([
         // 12-14: a subtracting brush on Face. Arming it shows the Brush section, and putting it down
-        // before it has painted anything takes the section away again.
+        // before it has painted anything takes the section away again, with nothing selected.
         quiet("subtract-mode", MaskStep::Mode("subtract".into())),
-        quiet("brush-armed", MaskStep::Paint(PaintStep::NewBrush)),
-        quiet("brush-put-down", MaskStep::Cancel).no_draft(),
+        face_open(quiet("brush-armed", MaskStep::Paint(PaintStep::NewBrush))).brush_section(true),
+        face_open(quiet("brush-put-down", MaskStep::Cancel))
+            .no_draft()
+            .component_names(&[RADIAL_1])
+            .components(&["add radial"])
+            .selected_component(None)
+            .brush_section(false),
         // 15-17: armed again, and two strokes, one entry each, taken out of the radial's lower part.
         quiet("brush-rearmed", MaskStep::Paint(PaintStep::NewBrush)),
         entry(
@@ -165,18 +213,27 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             MaskStep::stroke([[0.44, 0.47], [0.60, 0.49]], true),
             "Face · Add subtract brush",
         ),
-        entry(
+        face_open(entry(
             "stroke-2",
             MaskStep::stroke([[0.40, 0.42], [0.52, 0.44]], true),
             "Face · Update Brush 1",
-        ),
+        ))
+        .component_names(&FACE_NAMES[..2])
+        .components(&FACE_ROWS[..2])
+        .selected_component(Some(BRUSH_1))
+        .brush_section(true),
         // 18: a third stroke held down: the draft bar for a stroke.
         quiet(
             "stroke-held",
             MaskStep::stroke([[0.55, 0.20], [0.62, 0.22]], false),
         ),
-        // 19: the brush put down, the held stroke with it: the Brush section goes.
-        quiet("brush-down", MaskStep::Cancel).no_draft(),
+        // 19: the brush put down, the held stroke with it. Put down after painting, the brush leaves
+        // its section to the painted component the strokes selected, as the panel shows a brush
+        // component's settings while it is selected.
+        face_open(quiet("brush-down", MaskStep::Cancel))
+            .no_draft()
+            .selected_component(Some(BRUSH_1))
+            .brush_section(true),
         // 20-21: an intersecting luminance range, typed rather than drawn, so it commits at once.
         quiet("intersect-mode", MaskStep::Mode("intersect".into())),
         entry(
@@ -185,12 +242,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "Face · Add intersect luminance range",
         ),
         // 22: the name the board gives it, through the rename field's own request.
-        through_face(
+        face(through_face(
             "luminance-renamed",
             "mask.rename-component",
             json!({"component": {"name": NEW_LUMINANCE}, "name": LUMINANCE_1}),
             &format!("Face · Rename {NEW_LUMINANCE} to {LUMINANCE_1}"),
-        ),
+        ))
+        .mask_names(&[SKY, FACE]),
         // 23: back to add, which a new mask's first component must be.
         quiet("add-mode", MaskStep::Mode("add".into())),
     ]);
@@ -200,7 +258,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         LINEAR,
         [[0.5, 1.0], [0.5, 0.72]],
         "Mask 1 · Add linear",
-        FOREGROUND,
+        THREE,
+        "Linear 1",
     ));
     steps.extend([
         // 29: Foreground's overlay hidden with its eye.
@@ -209,7 +268,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             MaskStep::Eye(Reference::name(FOREGROUND)),
         ),
         // 30: Face open again, as clicking its row does.
-        quiet("face-open", MaskStep::Select(Reference::name(FACE))),
+        face(quiet("face-open", MaskStep::Select(Reference::name(FACE)))),
         // 31-33: Face's amount, then Exposure and Clarity through it, each the request the panel's
         // own controls send with the open mask as their target.
         through_face(
@@ -224,12 +283,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             json!({ "exposure": EXPOSURE }),
             "Face · Exposure +0.60 EV",
         ),
-        through_face(
+        face(through_face(
             "clarity",
             "edit.set-presence",
             json!({ "clarity": CLARITY }),
             "Face · Clarity +18",
-        ),
+        ))
+        .mask_overlay("off", "green"),
         // 34-35: Basic collapsed and Presence expanded, as the board lays the sections out.
         quiet(
             "basic-collapsed",
@@ -243,109 +303,106 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .expanded(PRESENCE_MODULE)
         .collapsed(BASIC_MODULE),
         // 36-37: the New mask menu, and Escape putting it away.
-        quiet("new-mask-menu", MaskStep::Menu(KindMenuStep::NewMask)),
-        quiet(
+        face(quiet(
+            "new-mask-menu",
+            MaskStep::Menu(KindMenuStep::NewMask),
+        ))
+        .mask_menu(Some("new_mask")),
+        face(quiet(
             "menu-closed",
             script::Step::Key {
                 key: script::KEY_ESCAPE.into(),
             },
-        ),
-        // 38: Radial 1 selected: its fields open beneath its row.
-        quiet(
+        ))
+        .mask_menu(None),
+        // 38: Radial 1 selected: its fields open beneath its row, and no Brush section.
+        face(quiet(
             "radial-selected",
             MaskStep::SelectComponent(Some(Reference::name(RADIAL_1))),
-        ),
+        ))
+        .selected_component(Some(RADIAL_1))
+        .brush_section(false),
         // 39-43: the overlay in each mode and both tints.
-        quiet(
-            "overlay-green",
-            WorkspaceStep::default()
-                .mask_overlay("tint")
-                .mask_overlay_colour("green"),
+        overlay(
+            quiet(
+                "overlay-green",
+                WorkspaceStep::default()
+                    .mask_overlay("tint")
+                    .mask_overlay_colour("green"),
+            ),
+            "tint",
+            "green",
         ),
-        quiet(
-            "overlay-white",
-            WorkspaceStep::default().mask_overlay_colour("white"),
+        overlay(
+            quiet(
+                "overlay-white",
+                WorkspaceStep::default().mask_overlay_colour("white"),
+            ),
+            "tint",
+            "white",
         ),
-        quiet(
-            "overlay-mask-on-black",
-            WorkspaceStep::default().mask_overlay("mask-on-black"),
+        overlay(
+            quiet(
+                "overlay-mask-on-black",
+                WorkspaceStep::default().mask_overlay("mask-on-black"),
+            ),
+            "mask-on-black",
+            "white",
         ),
-        quiet(
-            "overlay-image-on-black",
-            WorkspaceStep::default().mask_overlay("image-on-black"),
+        overlay(
+            quiet(
+                "overlay-image-on-black",
+                WorkspaceStep::default().mask_overlay("image-on-black"),
+            ),
+            "image-on-black",
+            "white",
         ),
-        quiet("overlay-off", WorkspaceStep::default().mask_overlay("off")),
+        overlay(
+            quiet("overlay-off", WorkspaceStep::default().mask_overlay("off")),
+            "off",
+            "white",
+        ),
         // 44: the board's own tint.
-        quiet(
-            "overlay-tint",
-            WorkspaceStep::default()
-                .mask_overlay("tint")
-                .mask_overlay_colour("green"),
+        overlay(
+            quiet(
+                "overlay-tint",
+                WorkspaceStep::default()
+                    .mask_overlay("tint")
+                    .mask_overlay_colour("green"),
+            ),
+            "tint",
+            "green",
         ),
         // 45-46: the pointer on Brush 1's row, which shows its own contribution, and off again.
-        quiet(
-            "hover-brush",
-            MaskStep::Hover(Some(Reference::name(BRUSH_1))),
+        overlay(
+            quiet(
+                "hover-brush",
+                MaskStep::Hover(Some(Reference::name(BRUSH_1))),
+            ),
+            "tint",
+            "green",
         ),
-        quiet("hover-off", MaskStep::Hover(None)),
+        overlay(quiet("hover-off", MaskStep::Hover(None)), "tint", "green"),
         // 47-48: Radial 1's shape reopened and its rotation grip swung to the board's angle: the
         // draft bar for a radial, and the board's own state.
-        quiet("shape-open", MaskStep::EditShape(Reference::name(RADIAL_1))),
-        quiet(
-            "radial-dragged",
-            MaskStep::Drag {
-                handle: DragHandle::Rotation,
-                points: rotation(ANGLE),
-            },
+        overlay(
+            quiet("shape-open", MaskStep::EditShape(Reference::name(RADIAL_1))),
+            "tint",
+            "green",
+        ),
+        overlay(
+            quiet(
+                "radial-dragged",
+                MaskStep::Drag {
+                    handle: DragHandle::Rotation,
+                    points: rotation(ANGLE),
+                },
+            ),
+            "tint",
+            "green",
         ),
     ]);
     Plan::new(steps)
-}
-
-/// The listed masks' names, in list order.
-fn mask_names(frame: &Frame) -> Result<Vec<String>> {
-    Ok(frame
-        .masks()?
-        .iter()
-        .map(|mask| mask["name"].as_str().unwrap_or_default().to_owned())
-        .collect())
-}
-
-/// The open mask's name, or `None` when no mask is open.
-fn open_mask(frame: &Frame) -> Result<Option<String>> {
-    let selected = &frame.state()["masks"]["selected"];
-    if selected.is_null() {
-        return Ok(None);
-    }
-    Ok(frame
-        .masks()?
-        .iter()
-        .find(|mask| &mask["id"] == selected)
-        .map(|mask| mask["name"].as_str().unwrap_or_default().to_owned()))
-}
-
-/// The open mask's components as `name mode`, in list order.
-fn components(frame: &Frame) -> Result<Vec<String>> {
-    Ok(frame
-        .components()?
-        .iter()
-        .map(|component| {
-            format!(
-                "{} {}",
-                component["name"].as_str().unwrap_or_default(),
-                component["mode"].as_str().unwrap_or_default()
-            )
-        })
-        .collect())
-}
-
-/// The component whose row is selected, by name.
-fn selected_component(frame: &Frame) -> Result<Option<String>> {
-    Ok(frame
-        .components()?
-        .iter()
-        .find(|component| component["selected"] == json!(true))
-        .map(|component| component["name"].as_str().unwrap_or_default().to_owned()))
 }
 
 /// The draft bar a frame drew, checked to lead with Face in the accent and to name `subject` — the
@@ -371,285 +428,24 @@ fn mask_row<'a>(frame: &'a Frame, name: &str) -> Result<&'a Value> {
         .ok_or_else(|| format!("No mask named {name} is listed").into())
 }
 
-/// What one frame's panel placed where: the session's open mask, selected component, overlay and
-/// mode beside the listed rows. Every frame records it, and the checks below compare it with what
-/// the plan put there.
-struct Placement {
-    masks: Vec<String>,
-    open: Option<String>,
-    components: Vec<String>,
-    selected: Option<String>,
-    overlay: String,
-    colour: String,
-    effective: String,
-    forced: bool,
-    mode: String,
-    menu: Value,
-    brush_visible: bool,
-}
-
-impl Placement {
-    fn of(frame: &Frame) -> Result<Self> {
-        let state = frame.state();
-        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
-        Ok(Self {
-            masks: mask_names(frame)?,
-            open: open_mask(frame)?,
-            components: components(frame)?,
-            selected: selected_component(frame)?,
-            overlay: text(&state["mask_overlay"]["setting"]),
-            colour: text(&state["masks"]["overlay_colour"]),
-            effective: text(&state["mask_overlay"]["effective"]),
-            forced: state["mask_overlay"]["forced"] == json!(true),
-            mode: text(&state["workspace"]["mode"]),
-            menu: state["masks"]["menu"].clone(),
-            brush_visible: state["masks"]["brush_visible"] == json!(true),
-        })
-    }
-
-    fn record(&self) -> Value {
-        json!({"masks":self.masks,"open":self.open,"components":self.components,
-               "selected":self.selected,"overlay":self.overlay,"colour":self.colour,
-               "effective":self.effective,"forced":self.forced,"mode":self.mode,
-               "menu":self.menu,"brush_visible":self.brush_visible})
-    }
-}
-
-/// What one frame must show of the panel: the masks in order, the open one, its components, the
-/// selected row and the overlay. `None` leaves that part unchecked.
-#[derive(Default)]
-struct Want {
-    masks: Option<&'static [&'static str]>,
-    open: Option<Option<&'static str>>,
-    components: Option<&'static [&'static str]>,
-    selected: Option<Option<&'static str>>,
-    overlay: Option<(&'static str, &'static str)>,
-    menu: Option<Value>,
-    brush_visible: Option<bool>,
-}
-
-impl Want {
-    fn check(&self, step: &str, at: &Placement) -> Result {
-        let fail = |what: &str, shown: &dyn std::fmt::Debug, want: &dyn std::fmt::Debug| {
-            format!("Step {step}: {what} is {shown:?}, expected {want:?}")
-        };
-        if let Some(masks) = self.masks {
-            ensure(at.masks == masks, fail("the mask list", &at.masks, &masks))?;
-        }
-        if let Some(open) = self.open {
-            ensure(
-                at.open.as_deref() == open,
-                fail("the open mask", &at.open, &open),
-            )?;
-        }
-        if let Some(components) = self.components {
-            ensure(
-                at.components == components,
-                fail("the component list", &at.components, &components),
-            )?;
-        }
-        if let Some(selected) = self.selected {
-            ensure(
-                at.selected.as_deref() == selected,
-                fail("the selected component", &at.selected, &selected),
-            )?;
-        }
-        if let Some((overlay, colour)) = self.overlay {
-            ensure(
-                at.overlay == overlay && at.colour == colour,
-                fail(
-                    "the overlay",
-                    &(&at.overlay, &at.colour),
-                    &(overlay, colour),
-                ),
-            )?;
-        }
-        if let Some(menu) = &self.menu {
-            ensure(&at.menu == menu, fail("the open menu", &at.menu, menu))?;
-        }
-        if let Some(visible) = self.brush_visible {
-            ensure(
-                at.brush_visible == visible,
-                fail("the Brush section", &at.brush_visible, &visible),
-            )?;
-        }
-        ensure(
-            at.mode == MASK_MODE || step == "opened",
-            fail("the canvas mode", &at.mode, &MASK_MODE),
-        )
-    }
-}
-
-const THREE: &[&str] = &[SKY, FACE, FOREGROUND];
-const FACE_ROWS: &[&str] = &["Radial 1 add", "Brush 1 subtract", "Luminance 1 intersect"];
-
-/// Each step's placement, as the plan put it there.
-fn wants() -> Vec<(&'static str, Want)> {
-    let face = || Want {
-        masks: Some(THREE),
-        open: Some(Some(FACE)),
-        components: Some(FACE_ROWS),
-        ..Want::default()
-    };
-    let overlay = |mode, colour| Want {
-        selected: Some(Some(RADIAL_1)),
-        overlay: Some((mode, colour)),
-        ..face()
-    };
-    vec![
-        (
-            "sky-renamed",
-            Want {
-                masks: Some(&[SKY]),
-                open: Some(Some(SKY)),
-                components: Some(&["Linear 1 add"]),
-                ..Want::default()
-            },
-        ),
-        (
-            "face-renamed",
-            Want {
-                masks: Some(&[SKY, FACE]),
-                open: Some(Some(FACE)),
-                components: Some(&["Radial 1 add"]),
-                brush_visible: Some(false),
-                ..Want::default()
-            },
-        ),
-        (
-            "brush-armed",
-            Want {
-                open: Some(Some(FACE)),
-                brush_visible: Some(true),
-                ..Want::default()
-            },
-        ),
-        (
-            "brush-put-down",
-            Want {
-                open: Some(Some(FACE)),
-                components: Some(&["Radial 1 add"]),
-                selected: Some(None),
-                brush_visible: Some(false),
-                ..Want::default()
-            },
-        ),
-        (
-            "stroke-2",
-            Want {
-                open: Some(Some(FACE)),
-                components: Some(&["Radial 1 add", "Brush 1 subtract"]),
-                selected: Some(Some(BRUSH_1)),
-                brush_visible: Some(true),
-                ..Want::default()
-            },
-        ),
-        // Put down after painting, the brush leaves its section to the painted component the
-        // strokes selected, as the panel shows a brush component's settings while it is selected.
-        (
-            "brush-down",
-            Want {
-                open: Some(Some(FACE)),
-                selected: Some(Some(BRUSH_1)),
-                brush_visible: Some(true),
-                ..Want::default()
-            },
-        ),
-        (
-            "luminance-renamed",
-            Want {
-                masks: Some(&[SKY, FACE]),
-                ..face()
-            },
-        ),
-        (
-            "foreground-renamed",
-            Want {
-                masks: Some(THREE),
-                open: Some(Some(FOREGROUND)),
-                components: Some(&["Linear 1 add"]),
-                ..Want::default()
-            },
-        ),
-        ("face-open", face()),
-        (
-            "clarity",
-            Want {
-                overlay: Some(("off", "green")),
-                ..face()
-            },
-        ),
-        (
-            "new-mask-menu",
-            Want {
-                menu: Some(json!("new_mask")),
-                ..face()
-            },
-        ),
-        (
-            "menu-closed",
-            Want {
-                menu: Some(Value::Null),
-                ..face()
-            },
-        ),
-        (
-            "radial-selected",
-            Want {
-                selected: Some(Some(RADIAL_1)),
-                brush_visible: Some(false),
-                ..face()
-            },
-        ),
-        ("overlay-green", overlay("tint", "green")),
-        ("overlay-white", overlay("tint", "white")),
-        ("overlay-mask-on-black", overlay("mask-on-black", "white")),
-        ("overlay-image-on-black", overlay("image-on-black", "white")),
-        ("overlay-off", overlay("off", "white")),
-        ("overlay-tint", overlay("tint", "green")),
-        ("hover-brush", overlay("tint", "green")),
-        ("hover-off", overlay("tint", "green")),
-        ("shape-open", overlay("tint", "green")),
-        ("radial-dragged", overlay("tint", "green")),
-    ]
-}
-
-/// The one launch, once it has held its plan: every frame's placement, then what each named frame
-/// is evidence of.
-pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
-    let checks = checks(only(launches)?)?;
-    run.record("checks", checks.clone());
-    write_json(&run.out().join("mask-panel-checks.json"), &checks)?;
-    Ok(())
-}
-
-fn checks(launch: &Checked) -> Result<Value> {
-    let mut frames = Vec::new();
-    let mut shows = Vec::new();
-    let mut record = |frame: &Frame, what: &str, detail: Value| {
-        shows.push(json!({"frame":frame["file"],"shows":what,"detail":detail}));
-    };
-
-    // Every frame's placement, recorded, and checked where the plan put something.
-    let wants = wants();
-    for name in launch.names() {
-        let frame = launch.at(name)?;
-        let at = Placement::of(frame)?;
-        if let Some((_, want)) = wants.iter().find(|(step, _)| step == name) {
-            want.check(name, &at)?;
-        }
-        frames.push(
-            json!({"step":name,"frame":frame["file"],"placement":at.record(),
-            "canvas_rect":frame["canvas_rect"],"surface_columns":frame["surface_columns"]}),
-        );
-    }
-
-    // The opened photograph, with no mask in the recipe.
-    let opened = launch.at("opened")?;
+/// The status line names Face and `component`.
+fn names_face(frame: &Frame, component: &str) -> Result<Value> {
+    let status = frame.state()["status_bar"]["message"].clone();
     ensure(
-        opened.masks()?.is_empty(),
-        "The photograph opened with a mask",
+        status
+            .as_str()
+            .is_some_and(|line| line.contains(FACE) && line.contains(component)),
+        format!("The status line does not name {FACE} and {component}: {status}"),
     )?;
+    Ok(status)
+}
+
+/// The one launch, once it has held its plan — which holds every frame's placement: the masks in
+/// order, the open one, its components, the selected row, the overlay, the menu, the Brush section
+/// and the canvas mode — then what each named frame is evidence of.
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let mut checks = Checks::new();
 
     // The Brush section appears when a brush is armed on Face and goes when it is put down.
     let armed = launch.at("brush-armed")?;
@@ -657,26 +453,17 @@ fn checks(launch: &Checked) -> Result<Value> {
         armed.state()["masks"]["brush"]["armed"] == json!(true),
         "Arming the brush left it unarmed",
     )?;
-    record(
-        armed,
-        "the Brush section, shown because a brush is armed on Face",
-        armed.state()["masks"]["brush"].clone(),
-    );
     let put_down = launch.at("brush-put-down")?;
     ensure(
         put_down.state()["masks"]["brush"]["armed"] == json!(false)
             && put_down.state()["draft_bar"].is_null(),
         "Putting the brush down left it armed, or its draft bar drawn",
     )?;
-    record(
-        put_down,
-        "the brush put down before it painted: the Brush section is gone",
-        json!({"brush_visible": false}),
-    );
     let down = launch.at("brush-down")?;
     ensure(
-        down.state()["masks"]["brush"]["armed"] == json!(false),
-        "Putting the brush down after the held stroke left it armed",
+        down.state()["masks"]["brush"]["armed"] == json!(false)
+            && down.state()["draft_bar"].is_null(),
+        "Putting the brush down after the held stroke left it armed, or its draft bar drawn",
     )?;
 
     // The draft bar for a stroke: the stroke is down on Face's brush, and the bar ends with Done.
@@ -691,42 +478,27 @@ fn checks(launch: &Checked) -> Result<Value> {
         stroke["stroke"]["painting"] == json!(true),
         format!("The held stroke is not painting: {stroke}"),
     )?;
-    let stroke_status = held.state()["status_bar"]["message"].clone();
-    ensure(
-        stroke_status
-            .as_str()
-            .is_some_and(|line| line.contains(FACE) && line.contains(BRUSH_1)),
-        format!("The held stroke's status line does not name Face and Brush 1: {stroke_status}"),
-    )?;
-    record(
+    let status = names_face(held, BRUSH_1)?;
+    checks.note(
         held,
         "the draft bar for a stroke held down on Face's brush",
-        json!({"bar":stroke_bar,"status":stroke_status}),
+        json!({"bar": stroke_bar, "status": status}),
     );
-    ensure(
-        down.state()["draft_bar"].is_null(),
-        "The brush put down left its draft bar",
-    )?;
 
-    // Foreground's eye: its overlay hidden, the mask still applied.
+    // Foreground's eye: its overlay hidden, the mask still applied, and every eye as it was left at
+    // the end.
     let hidden = launch.at("foreground-hidden")?;
-    let row = mask_row(hidden, FOREGROUND)?;
     ensure(
-        row["visible"] == json!(false),
+        mask_row(hidden, FOREGROUND)?["visible"] == json!(false),
         "Foreground's eye left its overlay visible",
     )?;
+    let last = launch.at("radial-dragged")?;
     for (name, visible) in [(SKY, true), (FACE, true), (FOREGROUND, false)] {
-        let last = launch.at("radial-dragged")?;
         ensure(
             mask_row(last, name)?["visible"] == json!(visible),
             format!("{name}'s eye changed after the press"),
         )?;
     }
-    record(
-        hidden,
-        "Foreground's overlay hidden with its eye",
-        row.clone(),
-    );
 
     // Face's amount, dot and bound layers; the sections bound to it carry its chip.
     let clarity = launch.at("clarity")?;
@@ -760,22 +532,9 @@ fn checks(launch: &Checked) -> Result<Value> {
             format!("{module}'s band carries no Face chip: {scopes}"),
         )?;
     }
-    record(
-        clarity,
-        "Exposure and Clarity through Face: the dot on its row and Face's chip on the bound sections",
-        json!({"face":face,"scopes":scopes}),
-    );
-
-    // The New mask menu, open and then put away.
-    record(
-        launch.at("new-mask-menu")?,
-        "the New mask menu open",
-        launch.at("new-mask-menu")?.state()["masks"]["kinds"].clone(),
-    );
 
     // Radial 1 selected: its fields open beneath the row, at the geometry it was swept to.
-    let selected = launch.at("radial-selected")?;
-    let fields = &selected.component(0)?["fields"];
+    let fields = &launch.at("radial-selected")?.component(0)?["fields"];
     for (field, want) in [
         ("x", RADIAL_AT[0]),
         ("y", RADIAL_AT[1]),
@@ -788,11 +547,6 @@ fn checks(launch: &Checked) -> Result<Value> {
             format!("Radial 1's {field} field reads {value}, expected about {want}"),
         )?;
     }
-    record(
-        selected,
-        "Radial 1 selected: its fields beneath its row",
-        fields.clone(),
-    );
 
     // The overlay control in each mode and both tints, drawn as the setting asks.
     for step in [
@@ -803,41 +557,29 @@ fn checks(launch: &Checked) -> Result<Value> {
         "overlay-off",
         "overlay-tint",
     ] {
-        let frame = launch.at(step)?;
-        let overlay = &frame.state()["mask_overlay"];
+        let overlay = &launch.at(step)?.state()["mask_overlay"];
         ensure(
             overlay["effective"] == overlay["setting"] && overlay["forced"] == json!(false),
             format!("Step {step}: the canvas draws {overlay}"),
         )?;
-        record(
-            frame,
-            "the overlay control in one of its modes",
-            json!({"overlay":overlay,"colour":frame.state()["masks"]["overlay_colour"]}),
-        );
     }
 
-    // A hover on Brush 1's row: only that row is hovered.
-    let hover = launch.at("hover-brush")?;
-    let hovered: Vec<&str> = hover
-        .components()?
-        .iter()
-        .filter(|component| component["hovered"] == json!(true))
-        .map(|component| component["name"].as_str().unwrap_or_default())
-        .collect();
-    ensure(
-        hovered == [BRUSH_1],
-        format!("The hovered rows are {hovered:?}"),
-    )?;
-    record(
-        hover,
-        "the pointer on Brush 1's row: the overlay shows its own contribution",
-        json!({"hovered":hovered}),
-    );
-    let off = launch.at("hover-off")?;
-    ensure(
-        off.components()?
+    // A hover on Brush 1's row: only that row is hovered, and none once the pointer is off.
+    let hovered = |step: &str| -> Result<Vec<String>> {
+        Ok(launch
+            .at(step)?
+            .components()?
             .iter()
-            .all(|component| component["hovered"] == json!(false)),
+            .filter(|component| component["hovered"] == json!(true))
+            .map(|component| component["name"].as_str().unwrap_or_default().to_owned())
+            .collect())
+    };
+    ensure(
+        hovered("hover-brush")? == [BRUSH_1],
+        format!("The hovered rows are {:?}", hovered("hover-brush")?),
+    )?;
+    ensure(
+        hovered("hover-off")?.is_empty(),
         "A row is still hovered with the pointer off the list",
     )?;
 
@@ -845,13 +587,12 @@ fn checks(launch: &Checked) -> Result<Value> {
     // angle with nothing else about it moved.
     let opened_shape = launch.at("shape-open")?;
     draft_bar(opened_shape, "Radial 1 · Add", RADIAL)?;
-    let dragged = launch.at("radial-dragged")?;
-    let bar = draft_bar(dragged, "Radial 1 · Add", RADIAL)?;
+    let bar = draft_bar(last, "Radial 1 · Add", RADIAL)?;
     ensure(
         bar["done"] == json!(false) && bar["can_apply"] == json!(true),
         format!("The radial's draft bar cannot apply: {bar}"),
     )?;
-    let shape = &dragged.state()["mask_draft"]["shape"];
+    let shape = &last.state()["mask_draft"]["shape"];
     let before = &opened_shape.state()["mask_draft"]["shape"];
     let angle = shape["angle"].as_f64().unwrap_or(f64::NAN);
     ensure(
@@ -867,29 +608,21 @@ fn checks(launch: &Checked) -> Result<Value> {
             ),
         )?;
     }
-    let status = dragged.state()["status_bar"]["message"].clone();
-    ensure(
-        status
-            .as_str()
-            .is_some_and(|line| line.contains(FACE) && line.contains(RADIAL_1)),
-        format!("The radial's status line does not name Face and Radial 1: {status}"),
-    )?;
-    ensure(
-        components(dragged)? == FACE_ROWS,
-        "Reopening the radial changed Face's rows",
-    )?;
-    record(
-        dragged,
+    let status = names_face(last, RADIAL_1)?;
+    checks.note(
+        last,
         "the draft bar for Face's Radial 1 with its handle dragged: the mask-mode board's state",
-        json!({"bar":bar,"shape":shape,"status":status}),
+        json!({"bar": bar, "shape": shape, "status": status}),
     );
 
-    Ok(json!({
-        "frames": frames,
-        "shows": shows,
-        "board": {"compare": "radial-dragged", "with": "docs/design/develop-workspace/mask-mode.png"},
-        "density": "not checked: no frame records the tools panel's content height",
-    }))
+    checks.write(
+        run.out(),
+        SCENARIO,
+        json!({
+            "board": {"compare": "radial-dragged", "with": "docs/design/develop-workspace/mask-mode.png"},
+            "density": "not checked: no frame records the tools panel's content height",
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -897,57 +630,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_plan_builds_the_board_and_names_every_placement_it_checks() {
+    fn the_plan_builds_the_board() {
         let plan = plan(&[]);
         plan.validate().unwrap();
         let names: Vec<&str> = plan.steps().iter().map(|step| step.name()).collect();
-        for (step, _) in wants() {
-            assert!(names.contains(&step), "{step} is checked but not planned");
-        }
         assert_eq!(names.last(), Some(&"radial-dragged"));
         // The radial is swept to the board's radii.
         let to = radial_to();
         assert!(((to[0] - RADIAL_AT[0]) * ASPECT - RADIUS[0]).abs() < 1e-12);
         assert!(((to[1] - RADIAL_AT[1]) - RADIUS[1]).abs() < 1e-12);
-    }
-
-    #[test]
-    fn a_placement_the_plan_did_not_put_there_fails_naming_its_step() {
-        let frame = Frame::state_only(&json!({"state":{
-            "masks":{"masks":[{"id":"a","name":"Sky"},{"id":"b","name":"Face"}],
-                     "selected":"b","components":[{"name":"Radial 1","mode":"add","selected":true}],
-                     "overlay_colour":"green","menu":null,"brush_visible":false},
-            "mask_overlay":{"setting":"tint","effective":"tint","forced":false},
-            "workspace":{"mode":"mask"}
-        }}));
-        let at = Placement::of(&frame).unwrap();
-        assert_eq!(at.open.as_deref(), Some("Face"));
-        assert_eq!(at.selected.as_deref(), Some("Radial 1"));
-        let want = Want {
-            masks: Some(&[SKY, FACE]),
-            open: Some(Some(FACE)),
-            components: Some(&["Radial 1 add"]),
-            selected: Some(Some(RADIAL_1)),
-            overlay: Some(("tint", "green")),
-            menu: Some(Value::Null),
-            brush_visible: Some(false),
-        };
-        want.check("s", &at).unwrap();
-        let error = Want {
-            masks: Some(THREE),
-            ..Want::default()
-        }
-        .check("s", &at)
-        .unwrap_err()
-        .to_string();
-        assert!(error.starts_with("Step s: the mask list"), "{error}");
-        let error = Want {
-            overlay: Some(("tint", "white")),
-            ..Want::default()
-        }
-        .check("s", &at)
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("the overlay"), "{error}");
     }
 }

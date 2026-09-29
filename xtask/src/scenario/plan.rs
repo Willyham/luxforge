@@ -50,6 +50,163 @@ impl Text {
     }
 }
 
+/// What the Masks panel must show. A field left at `None` is not checked.
+#[derive(Clone, Debug, Default)]
+pub struct Masks {
+    /// How many masks the panel lists.
+    pub count: Option<usize>,
+    /// The listed masks' names, in list order.
+    pub names: Option<Vec<String>>,
+    /// The open mask's name, or no open mask.
+    pub open: Option<Option<String>>,
+    /// The open mask's components, each as its mode and kind (`add linear`), in list order.
+    pub components: Option<Vec<String>>,
+    /// The open mask's components' names, in list order.
+    pub component_names: Option<Vec<String>>,
+    /// The selected component's name, or none selected.
+    pub selected: Option<Option<String>>,
+    /// The overlay's setting and tint, as the panel's control shows them.
+    pub overlay: Option<(String, String)>,
+    /// The panel's open menu, or `null` for none.
+    pub menu: Option<Value>,
+    /// Whether the panel shows the Brush section.
+    pub brush_section: Option<bool>,
+}
+
+impl Masks {
+    fn is_empty(&self) -> bool {
+        self.count.is_none()
+            && self.names.is_none()
+            && self.open.is_none()
+            && self.components.is_none()
+            && self.component_names.is_none()
+            && self.selected.is_none()
+            && self.overlay.is_none()
+            && self.menu.is_none()
+            && self.brush_section.is_none()
+    }
+
+    fn record(&self) -> Value {
+        let mut record = serde_json::Map::new();
+        let mut put = |key: &str, value: Option<Value>| {
+            if let Some(value) = value {
+                record.insert(key.into(), value);
+            }
+        };
+        put("count", self.count.map(|count| json!(count)));
+        put("names", self.names.as_ref().map(|names| json!(names)));
+        put("open", self.open.as_ref().map(|open| json!(open)));
+        put("components", self.components.as_ref().map(|c| json!(c)));
+        put(
+            "component_names",
+            self.component_names.as_ref().map(|c| json!(c)),
+        );
+        put(
+            "selected",
+            self.selected.as_ref().map(|selected| json!(selected)),
+        );
+        put(
+            "overlay",
+            self.overlay
+                .as_ref()
+                .map(|(setting, colour)| json!({"setting": setting, "colour": colour})),
+        );
+        put("menu", self.menu.clone());
+        put(
+            "brush_section",
+            self.brush_section.map(|shown| json!(shown)),
+        );
+        Value::Object(record)
+    }
+
+    fn check(&self, frame: &Frame) -> Result {
+        let state = frame.state();
+        let name = |value: &Value| value["name"].as_str().unwrap_or_default().to_owned();
+        if let Some(n) = self.count {
+            let masks = frame.masks()?;
+            ensure(
+                masks.len() == n,
+                format!(
+                    "the Masks panel lists {}, expected {n} mask(s)",
+                    json!(masks)
+                ),
+            )?;
+        }
+        if let Some(names) = &self.names {
+            let listed: Vec<String> = frame.masks()?.iter().map(name).collect();
+            ensure(
+                &listed == names,
+                format!("the Masks panel lists {listed:?}, expected {names:?}"),
+            )?;
+        }
+        if let Some(open) = &self.open {
+            let selected = &state["masks"]["selected"];
+            let shown = match selected {
+                Value::Null => None,
+                _ => frame
+                    .masks()?
+                    .iter()
+                    .find(|mask| &mask["id"] == selected)
+                    .map(name),
+            };
+            ensure(
+                &shown == open,
+                format!("the open mask is {shown:?}, expected {open:?}"),
+            )?;
+        }
+        if let Some(components) = &self.components {
+            let kinds = frame.kinds()?;
+            ensure(
+                &kinds == components,
+                format!("the open mask holds {kinds:?}, expected {components:?}"),
+            )?;
+        }
+        if let Some(names) = &self.component_names {
+            let listed: Vec<String> = frame.components()?.iter().map(name).collect();
+            ensure(
+                &listed == names,
+                format!("the open mask's components are {listed:?}, expected {names:?}"),
+            )?;
+        }
+        if let Some(selected) = &self.selected {
+            let shown = frame
+                .components()?
+                .iter()
+                .find(|component| component["selected"] == json!(true))
+                .map(name);
+            ensure(
+                &shown == selected,
+                format!("the selected component is {shown:?}, expected {selected:?}"),
+            )?;
+        }
+        if let Some((setting, colour)) = &self.overlay {
+            let shown = (
+                &state["mask_overlay"]["setting"],
+                &state["masks"]["overlay_colour"],
+            );
+            ensure(
+                shown == (&json!(setting), &json!(colour)),
+                format!("the overlay is {shown:?}, expected {setting} in {colour}"),
+            )?;
+        }
+        if let Some(menu) = &self.menu {
+            let shown = &state["masks"]["menu"];
+            ensure(
+                shown == menu,
+                format!("the panel's open menu is {shown}, expected {menu}"),
+            )?;
+        }
+        if let Some(shown) = self.brush_section {
+            let recorded = &state["masks"]["brush_visible"];
+            ensure(
+                recorded == &json!(shown),
+                format!("the Brush section's visibility is {recorded}, expected {shown}"),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// What one step's frame must show, beyond the invariants every frame keeps. A field left at its
 /// default is not checked.
 #[derive(Clone, Debug, Default)]
@@ -72,10 +229,8 @@ pub struct Expect {
     /// The refusal the step ends in: a scripted step recorded `failed` with a reason that leads with
     /// this, or an open whose outcome is this error code.
     pub refused: Option<String>,
-    /// How many masks the Masks panel lists.
-    pub masks: Option<usize>,
-    /// The open mask's components, each as its mode and kind (`add linear`), in list order.
-    pub components: Option<Vec<String>>,
+    /// What the Masks panel shows.
+    pub masks: Masks,
     /// Notices the canvas shows, by title; others may be shown beside them.
     pub notices: Vec<String>,
     /// The canvas shows no notice at all.
@@ -163,11 +318,8 @@ impl Expect {
         if let Some(reason) = &self.refused {
             record.insert("refused".into(), json!(reason));
         }
-        if let Some(masks) = self.masks {
-            record.insert("masks".into(), json!(masks));
-        }
-        if let Some(components) = &self.components {
-            record.insert("components".into(), json!(components));
+        if !self.masks.is_empty() {
+            record.insert("masks".into(), self.masks.record());
         }
         if !self.notices.is_empty() {
             record.insert("notices".into(), json!(self.notices));
@@ -327,13 +479,55 @@ impl Step {
 
     /// The Masks panel lists exactly `n` masks.
     pub fn masks(mut self, n: usize) -> Self {
-        self.expect.masks = Some(n);
+        self.expect.masks.count = Some(n);
+        self
+    }
+
+    /// The Masks panel lists exactly these masks, by name, in this order.
+    pub fn mask_names(mut self, names: &[&str]) -> Self {
+        self.expect.masks.names = Some(owned(names));
+        self
+    }
+
+    /// The mask open in the panel, by name, or none.
+    pub fn open_mask(mut self, name: Option<&str>) -> Self {
+        self.expect.masks.open = Some(name.map(str::to_owned));
         self
     }
 
     /// The open mask holds exactly these components, each named by its mode and kind.
     pub fn components(mut self, components: &[&str]) -> Self {
-        self.expect.components = Some(components.iter().map(|c| (*c).to_owned()).collect());
+        self.expect.masks.components = Some(owned(components));
+        self
+    }
+
+    /// The open mask's components carry exactly these names, in list order.
+    pub fn component_names(mut self, names: &[&str]) -> Self {
+        self.expect.masks.component_names = Some(owned(names));
+        self
+    }
+
+    /// The component whose row is selected, by name, or none.
+    pub fn selected_component(mut self, name: Option<&str>) -> Self {
+        self.expect.masks.selected = Some(name.map(str::to_owned));
+        self
+    }
+
+    /// The panel's overlay control shows `setting` in the tint `colour`.
+    pub fn mask_overlay(mut self, setting: &str, colour: &str) -> Self {
+        self.expect.masks.overlay = Some((setting.into(), colour.into()));
+        self
+    }
+
+    /// The panel's open menu, or none.
+    pub fn mask_menu(mut self, menu: Option<&str>) -> Self {
+        self.expect.masks.menu = Some(json!(menu));
+        self
+    }
+
+    /// Whether the panel shows the Brush section.
+    pub fn brush_section(mut self, shown: bool) -> Self {
+        self.expect.masks.brush_section = Some(shown);
         self
     }
 
@@ -765,23 +959,7 @@ impl Plan {
                 ),
             )?;
         }
-        if let Some(n) = expect.masks {
-            let masks = frame.masks()?;
-            ensure(
-                masks.len() == n,
-                format!(
-                    "the Masks panel lists {}, expected {n} mask(s)",
-                    json!(masks)
-                ),
-            )?;
-        }
-        if let Some(components) = &expect.components {
-            let kinds = frame.kinds()?;
-            ensure(
-                &kinds == components,
-                format!("the open mask holds {kinds:?}, expected {components:?}"),
-            )?;
-        }
+        expect.masks.check(frame)?;
         let notices = frame.notices();
         for title in &expect.notices {
             ensure(
@@ -821,6 +999,10 @@ impl Plan {
         }
         Ok(())
     }
+}
+
+fn owned(items: &[&str]) -> Vec<String> {
+    items.iter().map(|item| (*item).to_owned()).collect()
 }
 
 /// Whether the editor's record of a request is the scripted request as its parser reads it back.
@@ -1068,7 +1250,10 @@ mod tests {
     #[test]
     fn the_richer_expectations_read_the_frame() {
         let frame = Frame::state_only(&json!({"state":{
-            "masks":{"masks":[{"id":"m1"}],"components":[{"mode":"add","kind":"linear"}]},
+            "masks":{"masks":[{"id":"m1","name":"Sky"}],"selected":"m1",
+                     "components":[{"name":"Linear 1","mode":"add","kind":"linear","selected":true}],
+                     "overlay_colour":"green","menu":null,"brush_visible":false},
+            "mask_overlay":{"setting":"tint"},
             "notices":["Changed elsewhere"],
             "status":"Previewing entry 1 of 3",
             "workspace":{"mode":"mask","mask_overlay":"tint"},
@@ -1081,7 +1266,14 @@ mod tests {
         };
         let holding = Step::opened("a")
             .masks(1)
+            .mask_names(&["Sky"])
+            .open_mask(Some("Sky"))
             .components(&["add linear"])
+            .component_names(&["Linear 1"])
+            .selected_component(Some("Linear 1"))
+            .mask_overlay("tint", "green")
+            .mask_menu(None)
+            .brush_section(false)
             .notice("Changed elsewhere")
             .status_starts("Previewing entry 1")
             .mode("mask")
@@ -1091,6 +1283,19 @@ mod tests {
         for (step, names) in [
             (Step::opened("a").masks(0), "lists"),
             (Step::opened("a").components(&["add radial"]), "add linear"),
+            (Step::opened("a").mask_names(&["Sky", "Face"]), "[\"Sky\"]"),
+            (Step::opened("a").open_mask(None), "Some(\"Sky\")"),
+            (Step::opened("a").component_names(&["Radial 1"]), "Linear 1"),
+            (
+                Step::opened("a").selected_component(None),
+                "the selected component",
+            ),
+            (
+                Step::opened("a").mask_overlay("tint", "white"),
+                "the overlay",
+            ),
+            (Step::opened("a").mask_menu(Some("new_mask")), "open menu"),
+            (Step::opened("a").brush_section(true), "Brush section"),
             (
                 Step::opened("a").notice("Preview is stale"),
                 "Preview is stale",
