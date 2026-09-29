@@ -199,7 +199,7 @@ impl Kind {
                             IdentityKind::Component => {
                                 mask.shape.component.as_ref().map(|id| id.as_str())
                             }
-                            IdentityKind::Stroke => None,
+                            _ => None,
                         }
                         .map(str::to_owned)
                     })

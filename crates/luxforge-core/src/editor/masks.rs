@@ -389,7 +389,7 @@ mod tests {
         let declared = crate::declared_target(&stroke.action, |kind| match kind {
             crate::IdentityKind::Mask => Some(mask.as_str().to_owned()),
             crate::IdentityKind::Component => Some(component.as_str().to_owned()),
-            crate::IdentityKind::Stroke => Some("never asked".to_owned()),
+            _ => Some("never asked".to_owned()),
         });
         assert_eq!(
             declared,
