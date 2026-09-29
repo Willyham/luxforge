@@ -978,8 +978,8 @@
         },
         {
           "kind": "file",
-          "label": "Mask command contracts",
-          "target": "crates/luxforge-core/src/mask/command_contracts.rs",
+          "label": "Mask command plan tests",
+          "target": "crates/luxforge-core/src/mask/commands/plan_tests.rs",
           "relevance": "The core-layer refusals the mask chapter's refusal section duplicates."
         }
       ],
