@@ -1,5 +1,13 @@
 //! The photo-sized cancellation case: how promptly a superseded full-resolution render stops, and
-//! what it leaves behind.
+//! what it leaves behind. The stop is a timing, so both cases are ignored and assert their 25 ms
+//! bound only where it means something, in release on the owner's Mac:
+//!
+//! ```sh
+//! cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture
+//! ```
+//!
+//! What a cancel leaves behind at any size (the cancelled kind, no frame, every reservation
+//! released) is proven without timing by the core's `render::cancellation_tests`.
 //!
 //! Each test renders through a context of its own, so the scratch budget it reads holds its own
 //! render's reservations and nothing else's.
@@ -92,32 +100,35 @@ fn start_render(
     })
 }
 
-/// What a cancelled render must always be: the cancelled kind, and no frame at all.
+/// A timing means something only with optimizations on; a dev-profile run is refused rather than
+/// failed on its bound.
+fn release_only() {
+    assert!(
+        !cfg!(debug_assertions),
+        "a timing: run it in release (`cargo test --release --locked -p luxforge-core --test \
+         cancellation -- --ignored --nocapture`)"
+    );
+}
+
+/// What a cancelled render must always be: the cancelled kind, and no frame at all, stopped within
+/// the bound.
 fn cancelled(outcome: Result<luxforge_core::Raster, Error>, elapsed: Duration, what: &str) {
     let error = outcome.expect_err("a cancelled render yields no frame, partial or otherwise");
     assert_eq!(error.kind, ErrorKind::Cancelled);
     assert_eq!(error.kind.code(), "cancelled");
-    println!(
-        "measured cancellation latency on 6000x4000, {what}: {elapsed:?} (bound 25 ms, {} profile)",
-        if cfg!(debug_assertions) {
-            "debug, not asserted"
-        } else {
-            "release"
-        }
-    );
+    println!("measured cancellation latency on 6000x4000, {what}: {elapsed:?} (bound 25 ms)");
     // The design target is about a millisecond; the bound is 25 ms so a loaded host does not turn
-    // a prompt stop into a failure. Timing is only asserted with optimizations on, where the figure
-    // means something.
-    if !cfg!(debug_assertions) {
-        assert!(
-            elapsed < Duration::from_millis(25),
-            "{what}: the render stopped {elapsed:?} after the cancel, over the 25 ms bound"
-        );
-    }
+    // a prompt stop into a failure.
+    assert!(
+        elapsed < Duration::from_millis(25),
+        "{what}: the render stopped {elapsed:?} after the cancel, over the 25 ms bound"
+    );
 }
 
 #[test]
+#[ignore = "timing: run in release; asserts the 25 ms stop bound"]
 fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
+    release_only();
     let context = RenderContext::new();
     let cancel = Cancel::new();
     let worker = start_render(&cancel, &context);
@@ -144,7 +155,9 @@ fn a_cancelled_render_returns_promptly_and_yields_no_frame() {
 }
 
 #[test]
+#[ignore = "timing: run in release; asserts the 25 ms stop bound"]
 fn a_colour_pass_cancelled_mid_chunk_releases_every_reservation() {
+    release_only();
     let context = RenderContext::new();
     let budget = context.scratch();
     let cancel = Cancel::new();
