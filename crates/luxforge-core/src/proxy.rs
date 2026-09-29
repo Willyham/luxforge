@@ -2084,8 +2084,8 @@ mod tests {
     /// The band size never changes a proxy: bands of one output row, which split every straddled
     /// source row between two bands, and bands of a few rows build the same bytes as one band over
     /// the whole window, which is one intermediate of every source row the window reads. For both
-    /// source kinds, at fractional scales, whole and windowed, and on the parallel path with a
-    /// source above the one-megapixel threshold.
+    /// source kinds, at fractional scales, whole and windowed, serially and forced onto the
+    /// parallel path.
     #[test]
     fn a_proxy_is_the_same_bytes_at_any_band_size() {
         let pixels = |width: u32, height: u32| -> Vec<[u8; 3]> {
@@ -2104,7 +2104,6 @@ mod tests {
             .iter()
             .map(|code| code.map(|value| f32::from(value) / 97.0 - 0.3))
             .collect();
-        let (large_width, large_height) = (1100u32, 1000u32);
         let sources = [
             jpeg_source(width, height, &pixels(width, height)),
             PreviewSource::Raw {
@@ -2113,11 +2112,6 @@ mod tests {
                     .expect("a view"),
                 settings: LinearSettings::default(),
             },
-            jpeg_source(
-                large_width,
-                large_height,
-                &pixels(large_width, large_height),
-            ),
         ];
         let bits = |source: &PreviewSource| -> Vec<u32> {
             match source {
@@ -2127,7 +2121,11 @@ mod tests {
                 }
             }
         };
-        for source in &sources {
+        for (pooled, source) in [false, true]
+            .into_iter()
+            .flat_map(|pooled| sources.iter().map(move |source| (pooled, source)))
+        {
+            crate::render::parallel::force(Some(pooled));
             let (source_width, source_height) = source.dimensions();
             let whole = plan(source_width * 3 / 7, source_height * 5 / 9, (1, 1));
             let windows = [
@@ -2159,27 +2157,19 @@ mod tests {
                         downscale.bands() > 1,
                         "{band_bytes} bytes splits the window"
                     );
+                    assert_eq!(downscale.parallel, pooled);
                     let banded = source
                         .proxy_in_bands(plan, &Cancel::never(), band_bytes)
                         .expect("a banded proxy");
                     assert_eq!(banded.dimensions(), one_band.dimensions());
                     assert!(
                         bits(&banded) == bits(&one_band),
-                        "{source_width}x{source_height} to {plan:?} in bands of {band_bytes} bytes"
+                        "{source_width}x{source_height} to {plan:?} in bands of {band_bytes} \
+                         bytes, pooled {pooled}"
                     );
                 }
             }
         }
-        // The large source is read on the parallel path, the small ones serially.
-        assert!(
-            BoxDownscale::new(
-                large_width,
-                large_height,
-                plan(471, 555, (1, 1)),
-                BAND_BYTES
-            )
-            .expect("a downscale")
-            .parallel
-        );
+        crate::render::parallel::force(None);
     }
 }

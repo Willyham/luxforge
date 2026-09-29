@@ -557,10 +557,10 @@ mod tests {
 
     #[test]
     fn serial_and_parallel_reductions_agree_exactly() {
-        // 2000x600 is comfortably over the one-megapixel threshold and a round multiple of common
-        // chunk sizes; 1013x977 is just under a megapixel and not a multiple of any convenient
-        // chunk size, exercising remainder handling in a parallel split.
-        for (width, height) in [(2000u32, 600u32), (1013u32, 977u32)] {
+        // The threshold hook forces either path at any size. 512x384 is exactly three worker
+        // chunks; 509x389 is three and a remainder, exercising remainder handling in a parallel
+        // split.
+        for (width, height) in [(512u32, 384u32), (509u32, 389u32)] {
             let rgba = synthetic_buffer(width, height);
             let serial = reduce_with_threshold(&rgba, width, height, u64::MAX, &Cancel::never())
                 .expect("serial reduction of the synthetic buffer");
@@ -663,13 +663,21 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_cancelled_token_stops_the_reducer_on_a_large_raster() {
-        let raster = cancellation_raster(2000, 600);
+    fn a_pre_cancelled_token_stops_the_reducer_on_either_path() {
+        let raster = cancellation_raster(512, 384);
         let cancel = Cancel::new();
         cancel.cancel();
-        let error = reduce(&raster.rgba, raster.width, raster.height, &cancel)
+        for threshold in [u64::MAX, 0] {
+            let error = reduce_with_threshold(
+                &raster.rgba,
+                raster.width,
+                raster.height,
+                threshold,
+                &cancel,
+            )
             .expect_err("a cancelled token refuses the reduction");
-        assert_eq!(error.kind, ErrorKind::Cancelled);
-        assert_eq!(error.kind.code(), "cancelled");
+            assert_eq!(error.kind, ErrorKind::Cancelled);
+            assert_eq!(error.kind.code(), "cancelled");
+        }
     }
 }

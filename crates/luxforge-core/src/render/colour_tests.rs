@@ -3,7 +3,7 @@
 
 use super::byte::source_pixel;
 use super::colour_runs::{COLOR_CHUNK_ROWS, COLOR_CHUNK_SCRATCH_BYTES, NON_FINITE_COLOR};
-use super::testing::{frame_in, render, sample, sample_in};
+use super::testing::{frame_in, linear, render, sample, sample_in};
 use super::tests::*;
 use super::*;
 use crate::{
@@ -107,7 +107,9 @@ fn indexed_quantizer_preserves_complete_serial_and_parallel_colour_buffers() {
     let evs = [0.7_f64, -0.2];
     let gains = evs.map(|ev| ev.exp2() as f32);
     let recipe = colour_recipe(vec![exposure_layer(&evs)]);
-    for (width, height) in [(257, 129), (1024, 1024)] {
+    let (width, height) = (257, 129);
+    for pooled in [false, true] {
+        parallel::force(Some(pooled));
         let source = source(width, height);
         let mut expected = Vec::with_capacity(source.rgba.len());
         for pixel in source.rgba.chunks_exact(4) {
@@ -122,8 +124,9 @@ fn indexed_quantizer_preserves_complete_serial_and_parallel_colour_buffers() {
             expected.push(255);
         }
         let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-        assert_eq!(raster.rgba.as_slice(), expected, "{width}x{height}");
+        assert_eq!(raster.rgba.as_slice(), expected, "pooled {pooled}");
     }
+    parallel::force(None);
 }
 
 /// An independent stepwise f64 evaluation of the colour contract: decode the byte, multiply by
@@ -326,15 +329,16 @@ fn zero_exposure_round_trips_every_grey_and_a_neutral_layer_shares_the_source() 
 }
 
 /// Every frame a pass writes is allocated as the raster's own `Arc<Vec<u8>>`, so whatever pass
-/// wrote last is what the render returns, with no copy after it, on each kind of stack: a
-/// colour pass over a copy of the source, an exact transform, a resample and a spatial
-/// boundary. The bytes are the ones a point sample reads, and a stack that writes nothing
-/// still returns the source allocation itself.
+/// wrote last is what the render returns, with no copy after it, on each kind of stack and on
+/// both pixel domains: a colour pass (the one frame it writes), an exact transform, a resample and
+/// a spatial boundary. The bytes are the ones a point sample reads. A byte stack that writes
+/// nothing still returns the source allocation itself; a linear one writes its one terminal frame.
 #[test]
 fn a_render_returns_the_frame_its_last_pass_wrote() {
     let registry = registry();
     let (width, height) = (48, 36);
     let source = gradient(width, height);
+    let planes = varied(width, height);
     let layer = |effect: &str, payload: Value| Layer {
         id: LayerId::new(),
         effect_id: effect.into(),
@@ -353,58 +357,83 @@ fn a_render_returns_the_frame_its_last_pass_wrote() {
     });
     let crop = Layer::crop(fitted_crop(width, height, 6.0, [0.1, 0.1, 0.8, 0.8]));
     let presence = layer(crate::PRESENCE_EFFECT, json!({"clarity": 40.0}));
-    for (case, layers) in [
-        (
-            "a colour pass over a copy of the source",
-            vec![colour.clone()],
-        ),
-        ("an exact transform", vec![turn.clone(), colour.clone()]),
-        (
-            "a resample",
-            vec![colour.clone(), crop, Layer::pixel(3, 4, [250, 1, 2])],
-        ),
-        ("a spatial boundary", vec![presence, turn]),
-    ] {
-        let recipe = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers,
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let (raster, written) = frame_writes::record(|| {
-            render(&registry, &source, SnapshotId::new(), &recipe).unwrap()
-        });
-        assert_eq!(
-            written.last(),
-            Some(&(raster.rgba.as_ptr() as usize)),
-            "{case}: the raster is the frame written last, not a copy of it"
-        );
-        let grid = super::render(
-            &registry,
-            &source,
-            &recipe,
-            RenderOptions::default(),
-            &RenderContext::new(),
-        )
-        .unwrap()
-        .grid(6, &|| Ok(()))
-        .unwrap();
-        for ((x, y), sampled) in
-            super::entry::grid_centres(6, raster.width, raster.height).zip(grid)
-        {
-            assert_eq!(raster.pixel(x, y), Some(sampled), "{case} at ({x}, {y})");
-        }
-    }
-    let identity = Recipe {
+    let recipe = |layers: Vec<Layer>| Recipe {
         format: crate::RECIPE_FORMAT,
-        layers: Vec::new(),
+        layers,
         masks: Vec::new(),
         ..Recipe::default()
     };
-    let (raster, written) =
-        frame_writes::record(|| render(&registry, &source, SnapshotId::new(), &identity).unwrap());
-    assert!(written.is_empty(), "an identity stack writes no frame");
+    let frame = |input: RenderSource<'_>, recipe: &Recipe| {
+        frame_writes::record(|| {
+            frame_in(
+                &RenderContext::new(),
+                &registry,
+                input,
+                SnapshotId::new(),
+                recipe,
+                RenderOptions::default(),
+            )
+            .unwrap()
+        })
+    };
+    for (domain, input) in [
+        ("byte", RenderSource::Byte(&source)),
+        ("linear", linear(&planes, LinearSettings::default())),
+    ] {
+        for (case, layers) in [
+            ("a colour pass", vec![colour.clone()]),
+            ("an exact transform", vec![turn.clone(), colour.clone()]),
+            (
+                "a resample",
+                vec![
+                    colour.clone(),
+                    crop.clone(),
+                    Layer::pixel(3, 4, [250, 1, 2]),
+                ],
+            ),
+            ("a spatial boundary", vec![presence.clone(), turn.clone()]),
+        ] {
+            let recipe = recipe(layers);
+            let (raster, written) = frame(input, &recipe);
+            assert_eq!(
+                written.last(),
+                Some(&(raster.rgba.as_ptr() as usize)),
+                "{domain}, {case}: the raster is the frame written last, not a copy of it"
+            );
+            if case == "a colour pass" {
+                assert_eq!(written.len(), 1, "{domain}: one pass writes one frame");
+            }
+            let grid = super::render(
+                &registry,
+                input,
+                &recipe,
+                RenderOptions::default(),
+                &RenderContext::new(),
+            )
+            .unwrap()
+            .grid(6, &|| Ok(()))
+            .unwrap();
+            for ((x, y), sampled) in
+                super::entry::grid_centres(6, raster.width, raster.height).zip(grid)
+            {
+                assert_eq!(
+                    raster.pixel(x, y),
+                    Some(sampled),
+                    "{domain}, {case} at ({x}, {y})"
+                );
+            }
+        }
+    }
+    let identity = recipe(Vec::new());
+    let (raster, written) = frame(RenderSource::Byte(&source), &identity);
+    assert!(written.is_empty(), "an identity byte stack writes no frame");
     assert!(Arc::ptr_eq(&raster.rgba, &source.rgba));
+    let (raster, written) = frame(linear(&planes, LinearSettings::default()), &identity);
+    assert_eq!(
+        written,
+        [raster.rgba.as_ptr() as usize],
+        "an identity linear stack writes its one terminal frame"
+    );
 }
 
 /// A pass over the shared source loads the source's rows into its own frame inside the pass,
@@ -492,14 +521,12 @@ fn exposure_matches_an_independent_f64_reference_within_one_code() {
     }
 }
 
+/// Forced onto the pool, so the row chunks run in parallel over a frame several chunks tall.
 #[test]
-fn a_colour_pass_over_a_megapixel_frame_matches_the_reference_on_the_parallel_path() {
+fn a_colour_pass_on_the_parallel_path_matches_the_reference() {
     let registry = colour_registry();
-    let source = gradient(1200, 900);
-    assert!(
-        u64::from(source.width) * u64::from(source.height) >= luxforge_raw::PARALLEL_COLOUR_PIXELS,
-        "the case must reach the parallel row-chunk path"
-    );
+    let source = gradient(120, 90);
+    parallel::force(Some(true));
     let raster = render(
         &registry,
         &source,
@@ -523,6 +550,7 @@ fn a_colour_pass_over_a_megapixel_frame_matches_the_reference_on_the_parallel_pa
             assert_eq!(actual[3], input[3]);
         }
     }
+    parallel::force(None);
 }
 
 #[test]
@@ -688,119 +716,6 @@ fn a_colour_operation_before_a_rotated_crop_quantizes_then_resamples() {
                     "({i}, {j}) channel {channel}: {actual:?} against {expected:?}"
                 );
             }
-        }
-    }
-}
-
-#[test]
-fn samples_match_rendered_pixels_for_a_mixed_colour_stack() {
-    let registry = colour_registry();
-    let source = gradient(32, 20);
-    let recipe = colour_recipe(vec![
-        Layer::pixel(3, 4, [250, 1, 2]),
-        exposure_layer(&[0.75]),
-        turn(Transform::MirrorHorizontal),
-        Layer::pixel(1, 2, [3, 251, 4]),
-        crop_layer(fitted_crop(32, 20, 12.0, [0.2, 0.2, 0.6, 0.6])),
-    ]);
-    let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-    assert!(raster.width > 1 && raster.height > 1);
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            let sampled = sample(&registry, &source, &recipe, x, y).unwrap();
-            assert_eq!(
-                (sampled.width, sampled.height),
-                (raster.width, raster.height)
-            );
-            assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
-        }
-    }
-    // A colour operation after the resample is sampled through the same phases.
-    let after = colour_recipe(vec![
-        crop_layer(fitted_crop(32, 20, 12.0, [0.2, 0.2, 0.6, 0.6])),
-        exposure_layer(&[-1.0]),
-        Layer::pixel(0, 0, [9, 8, 7]),
-    ]);
-    let raster = render(&registry, &source, SnapshotId::new(), &after).unwrap();
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            assert_eq!(
-                sample(&registry, &source, &after, x, y).unwrap().rgba,
-                raster.pixel(x, y),
-                "({x}, {y}) after the resample"
-            );
-        }
-    }
-}
-
-/// A unit that depends on its pixel position is handed the coordinates of the stage its
-/// segment produces, by the rasterizing pass and by every point query alike: a rendered raster
-/// and a sample of the same pixel agree everywhere, under an exact rotation in the same
-/// segment and after a crop resample, where the coordinates are the output stage's.
-#[test]
-fn a_positional_colour_unit_samples_exactly_what_it_renders() {
-    let registry = colour_registry();
-    let source = gradient(11, 7);
-    for (case, layers) in [
-        ("a positional unit alone", vec![positional_layer()]),
-        (
-            "after an exact rotation in the same segment",
-            vec![turn(Transform::RotateLeft), positional_layer()],
-        ),
-        (
-            "after a crop resample, in output coordinates",
-            vec![
-                crop_layer(fitted_crop(11, 7, 9.0, [0.15, 0.2, 0.6, 0.55])),
-                positional_layer(),
-            ],
-        ),
-        (
-            "over the whole tail",
-            vec![
-                exposure_layer(&[0.5]),
-                turn(Transform::MirrorHorizontal),
-                crop_layer(fitted_crop(11, 7, 0.0, [0.1, 0.1, 0.7, 0.7])),
-                positional_layer(),
-            ],
-        ),
-    ] {
-        let recipe = colour_recipe(layers);
-        let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-        assert!(raster.width > 1 && raster.height > 1, "{case}");
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                assert_eq!(
-                    sample(&registry, &source, &recipe, x, y).unwrap().rgba,
-                    raster.pixel(x, y),
-                    "{case}: ({x}, {y})"
-                );
-            }
-        }
-        // The unit really does depend on the position, so the agreement above is not the
-        // accident of a constant result.
-        assert_ne!(
-            raster.pixel(0, 0),
-            raster.pixel(raster.width - 1, raster.height - 1),
-            "{case}: the unit varies across the frame"
-        );
-    }
-}
-
-/// The rasterizing pass hands a unit one row at a time whatever chunking it chose, so a frame
-/// taller than one chunk is processed at the same coordinates as a frame that fits in one.
-#[test]
-fn a_positional_unit_sees_its_own_row_in_every_chunk() {
-    let registry = colour_registry();
-    let recipe = colour_recipe(vec![positional_layer()]);
-    let tall = gradient(3, COLOR_CHUNK_ROWS as u32 * 2 + 5);
-    let raster = render(&registry, &tall, SnapshotId::new(), &recipe).unwrap();
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            assert_eq!(
-                sample(&registry, &tall, &recipe, x, y).unwrap().rgba,
-                raster.pixel(x, y),
-                "({x}, {y}) across chunk boundaries"
-            );
         }
     }
 }

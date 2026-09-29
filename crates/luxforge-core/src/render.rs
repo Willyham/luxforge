@@ -39,6 +39,8 @@ mod locate_tests;
 #[cfg(test)]
 mod mask_tests;
 #[cfg(test)]
+mod sample_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use byte::{Byte, check_source, rasterize};

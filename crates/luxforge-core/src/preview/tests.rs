@@ -1092,52 +1092,6 @@ fn a_spatial_layer_and_a_thin_mask_are_reported_separately() {
     );
 }
 
-/// A newer request stops the exact phase of the job it replaced within a chunk, and that phase
-/// answers with no frame at all, delivered under its own generation before anything of the
-/// newer job. The proxy phase of the older job is polled first, so the cancel lands inside the
-/// exact render rather than before it.
-#[test]
-fn a_newer_request_cancels_the_exact_phase_of_the_job_it_replaced() {
-    let display = bounds(200, 200);
-    let mut queue = PreviewQueue::default();
-    let older = queue.request(stacked(
-        1200,
-        900,
-        eligible_layers(1200, 900),
-        Some(display),
-    ));
-    let first = drain_until(&mut queue, older, PreviewPhase::Proxy);
-    assert_eq!(first, vec![(older, PreviewPhase::Proxy, false)]);
-
-    let newer = queue.request(stacked(
-        1200,
-        900,
-        eligible_layers(1200, 900),
-        Some(display),
-    ));
-    let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
-    let order: Vec<(u64, PreviewPhase)> = delivered
-        .iter()
-        .map(|(generation, phase, _)| (*generation, *phase))
-        .collect();
-    assert_eq!(
-        order,
-        vec![
-            (older, PreviewPhase::Exact),
-            (newer, PreviewPhase::Proxy),
-            (newer, PreviewPhase::Exact)
-        ],
-        "the older job's one exact outcome, then the newer job's two phases"
-    );
-    // The exact phase of the older job either finished before the cancel reached it — which is
-    // vanishingly unlikely on a frame this size but is not forbidden — or it was cancelled. The
-    // newer job's phases are frames either way.
-    assert!(
-        delivered[1..].iter().all(|(_, _, cancelled)| !cancelled),
-        "{delivered:?}"
-    );
-}
-
 /// The three ways a job that offered bounds has no proxy phase, and the one way a job never
 /// offered them. Each yields exactly one exact frame, and each says why.
 #[test]

@@ -291,6 +291,18 @@ pub(crate) fn crop_layer(crop: CropPayload) -> Layer {
     }
 }
 
+/// A resample by `scale` on both axes about the stage's origin.
+pub(crate) fn scale_layer(scale: f64) -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: TEST_SCALE_EFFECT.into(),
+        effect_format: EFFECT_FORMAT,
+        payload: json!({"scale": scale}),
+        mask: None,
+        artifacts: Vec::new(),
+    }
+}
+
 pub(crate) fn geometry_registry() -> ModuleRegistry {
     let mut registry = ModuleRegistry::developer();
     registry.register(GeometryTestModule::shared()).unwrap();
@@ -318,6 +330,32 @@ pub(crate) fn gradient(width: u32, height: u32) -> SourceImage {
         orientation: 1,
         capture: Default::default(),
     }
+}
+
+/// A linear image of `rgb`, row-major, in planar storage.
+pub(crate) fn image(width: u32, height: u32, rgb: &[[f32; 3]]) -> crate::LinearImage {
+    assert_eq!(rgb.len(), (width * height) as usize);
+    let plane_len = (width * height) as usize;
+    let mut planes = Vec::with_capacity(plane_len * 3);
+    for channel in 0..3 {
+        planes.extend(rgb.iter().map(|pixel| pixel[channel]));
+    }
+    crate::LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
+}
+
+/// A varied linear source with negative and above-one values in every channel.
+pub(crate) fn varied(width: u32, height: u32) -> crate::LinearImage {
+    let pixels: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            let value = index as f32;
+            [
+                (value * 0.037) % 1.3 - 0.1,
+                (value * 0.051) % 1.1,
+                (value * 0.023) % 1.6 - 0.2,
+            ]
+        })
+        .collect();
+    image(width, height, &pixels)
 }
 
 /// An independent f64 evaluation of the crop contract: the rotated box, the rounded output

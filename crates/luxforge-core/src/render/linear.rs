@@ -766,12 +766,13 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 mod tests {
     use super::*;
     use crate::render::{
-        SpatialMode,
+        SpatialMode, parallel,
         spatial::Tiling,
         testing::{
-            frame_in, linear, linear_evaluation, render_linear, render_linear_cancellable,
-            sample_in, sample_linear,
+            frame_in, linear, linear_evaluation, point_evaluated, render_linear,
+            render_linear_cancellable, sample_in, sample_linear,
         },
+        tests::{image, varied},
     };
     use crate::{
         Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
@@ -780,71 +781,32 @@ mod tests {
     use luxforge_raw::SPATIAL_TILE;
     use luxforge_reference::srgb as srgb_ref;
     use luxforge_testbase::Distribution;
-    use rayon::prelude::*;
 
-    fn image(width: u32, height: u32, rgb: &[[f32; 3]]) -> LinearImage {
-        assert_eq!(rgb.len(), (width * height) as usize);
-        let plane_len = (width * height) as usize;
-        let mut planes = Vec::with_capacity(plane_len * 3);
-        for channel in 0..3 {
-            planes.extend(rgb.iter().map(|pixel| pixel[channel]));
-        }
-        LinearImage::with_fingerprint(width, height, planes, "sha256:linear-test").unwrap()
-    }
-
-    /// The point evaluator is the reference for the rendered rows: it resolves the segment, the
-    /// replacement that wins and the view for every pixel, applies the colour runs to that pixel
-    /// alone, never calls the source row reader, and keeps the production row scheduling
-    /// threshold.
-    fn generic_linear_reference(
+    /// The frame `render_linear` writes, checked against the point evaluator's byte at every pixel
+    /// ([`point_evaluated`]).
+    fn rendered_as_the_point_evaluator(
         registry: &ModuleRegistry,
         source: &LinearImage,
-        snapshot_id: SnapshotId,
         recipe: &Recipe,
         settings: LinearSettings,
+        what: &str,
     ) -> Raster {
-        let context = RenderContext::new();
-        let evaluation = linear_evaluation(
-            &context,
+        let rendered =
+            render_linear(registry, source, SnapshotId::new(), recipe, settings).unwrap();
+        let (width, height, expected) = point_evaluated(
+            &RenderContext::new(),
             registry,
-            source,
+            linear(source, settings),
             recipe,
-            settings,
-            Tiling::Halo,
             SpatialMode::Frames,
         )
         .unwrap();
-        let crate::modules::Stage { width, height } = evaluation.stage();
-        let mut frame = super::super::zeroed_frame(output_len(width, height).unwrap());
-        let rgba = super::super::frame_mut(&mut frame);
-        let row_bytes = width as usize * 4;
-        let render_row = |row_index: usize, row: &mut [u8]| -> Result<(), Error> {
-            for (x, pixel_bytes) in row.chunks_exact_mut(4).enumerate() {
-                let pixel = evaluation
-                    .pixel(x as u32, row_index as u32)?
-                    .ok_or_else(|| Error::render("reference pixel outside stage"))?;
-                pixel_bytes.copy_from_slice(&terminal_pixel(pixel)?);
-            }
-            Ok(())
-        };
-        if u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS {
-            rgba.par_chunks_exact_mut(row_bytes)
-                .enumerate()
-                .try_for_each(|(row, pixels)| render_row(row, pixels))
-                .unwrap();
-        } else {
-            rgba.chunks_exact_mut(row_bytes)
-                .enumerate()
-                .try_for_each(|(row, pixels)| render_row(row, pixels))
-                .unwrap();
-        }
-        Raster {
-            width,
-            height,
-            rgba: frame,
-            source_fingerprint: source.fingerprint().to_owned(),
-            snapshot_id,
-        }
+        assert_eq!((rendered.width, rendered.height), (width, height), "{what}");
+        assert!(
+            rendered.rgba.as_slice() == expected.as_slice(),
+            "{what}: the rows differ from the point evaluator"
+        );
+        rendered
     }
 
     fn colour_layer(effect_id: &str, payload: serde_json::Value) -> Layer {
@@ -911,20 +873,15 @@ mod tests {
                         );
                     }
                 }
-                {
-                    for white_balance in [None, Some(balance)] {
-                        let settings = LinearSettings { white_balance };
-                        let snapshot = SnapshotId::new();
-                        let actual =
-                            render_linear(&registry, &view, snapshot.clone(), &recipe, settings)
-                                .unwrap();
-                        let expected =
-                            generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
-                        assert_eq!(
-                            actual, expected,
-                            "orientation {orientation}, crop {crop:?}, settings {settings:?}"
-                        );
-                    }
+                for white_balance in [None, Some(balance)] {
+                    let settings = LinearSettings { white_balance };
+                    rendered_as_the_point_evaluator(
+                        &registry,
+                        &view,
+                        &recipe,
+                        settings,
+                        &format!("orientation {orientation}, crop {crop:?}, settings {settings:?}"),
+                    );
                 }
             }
         }
@@ -938,22 +895,27 @@ mod tests {
         );
     }
 
+    /// Forced onto the pool, every row of a view is read whole through each stride an orientation
+    /// gives it, over a stage several row chunks tall.
     #[test]
     fn source_rows_preserve_complete_parallel_buffers_for_each_stride() {
-        let source = varied(1027, 1025);
+        let source = varied(131, 129);
         let registry = ModuleRegistry::builtin();
         let recipe = Recipe::default();
         let settings = LinearSettings {
             white_balance: None,
         };
+        parallel::force(Some(true));
         for orientation in [1, 2, 5, 7] {
-            let view = source.with_view([1, 1, 1024, 1024], orientation).unwrap();
-            let snapshot = SnapshotId::new();
-            let actual =
-                render_linear(&registry, &view, snapshot.clone(), &recipe, settings).unwrap();
-            let expected = generic_linear_reference(&registry, &view, snapshot, &recipe, settings);
-            assert_eq!(actual, expected, "orientation {orientation}");
-            for (x, y) in [(0, 0), (512, 511), (1023, 1023)] {
+            let view = source.with_view([1, 1, 128, 128], orientation).unwrap();
+            let actual = rendered_as_the_point_evaluator(
+                &registry,
+                &view,
+                &recipe,
+                settings,
+                &format!("orientation {orientation}"),
+            );
+            for (x, y) in [(0, 0), (64, 63), (127, 127)] {
                 assert_eq!(
                     sample_linear(&registry, &view, &recipe, settings, x, y)
                         .unwrap()
@@ -962,244 +924,7 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn unmasked_basic_and_mixer_rows_match_the_generic_evaluator() {
-        let source = varied(37, 29).with_view([2, 3, 30, 16], 5).unwrap();
-        let registry = ModuleRegistry::builtin();
-        let basic = colour_layer(
-            crate::BASIC_EFFECT,
-            serde_json::json!({
-                "exposure": 0.5,
-                "contrast": 20.0,
-                "highlights": -30.0,
-                "shadows": 25.0,
-                "whites": 40.0,
-                "blacks": -10.0,
-                "vibrance": 30.0,
-                "saturation": 15.0
-            }),
-        );
-        let mixer = colour_layer(
-            crate::MIXER_EFFECT,
-            serde_json::json!({"red-hue": 20.0, "aqua-saturation": -35.0, "blue-luminance": 15.0}),
-        );
-        let recipes = [
-            colour_recipe(vec![basic.clone()]),
-            colour_recipe(vec![mixer.clone()]),
-            colour_recipe(vec![basic, mixer]),
-        ];
-        let settings = LinearSettings {
-            white_balance: Some(
-                WhiteBalanceApproximation::from_matrix([
-                    [1.21, -0.11, -0.02],
-                    [-0.06, 1.08, -0.02],
-                    [0.01, -0.13, 1.12],
-                ])
-                .unwrap(),
-            ),
-        };
-
-        for recipe in recipes {
-            let snapshot = SnapshotId::new();
-            let actual =
-                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
-            let expected =
-                generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
-            assert_eq!(actual, expected);
-        }
-    }
-
-    #[test]
-    fn parallel_source_colour_rows_match_reference_in_final_partial_chunk() {
-        // Just above the production parallel threshold and not divisible by the eight-row chunk.
-        let source = varied(1003, 1001);
-        let registry = ModuleRegistry::builtin();
-        let recipe = colour_recipe(vec![colour_layer(
-            crate::BASIC_EFFECT,
-            serde_json::json!({
-                "exposure": 0.5,
-                "contrast": 20.0,
-                "highlights": -30.0,
-                "shadows": 25.0,
-                "whites": 40.0,
-                "blacks": -10.0,
-                "vibrance": 30.0,
-                "saturation": 15.0
-            }),
-        )]);
-        let settings = LinearSettings {
-            white_balance: None,
-        };
-        let snapshot = SnapshotId::new();
-        let actual =
-            render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap();
-        let expected = generic_linear_reference(&registry, &source, snapshot, &recipe, settings);
-        assert_eq!(actual, expected);
-    }
-
-    /// Every shape of stack the rows cover — replacements on either side of a colour run, colour
-    /// after a straightened crop's resample, colour after a spatial operation's frame, a masked
-    /// spatial operation behind geometry, taps read in blocks through a masked colour segment and
-    /// pixel by pixel through one with a replacement — renders the bytes the point evaluator
-    /// answers at every pixel, and a point sample the rendered byte, under exact, exposed and
-    /// approximately white-balanced settings, on a stage narrower than one tap block and on one
-    /// several blocks wide and several row chunks tall.
-    #[test]
-    fn every_stack_shape_renders_rows_equal_to_the_point_evaluator() {
-        let sources = [
-            varied(41, 29).with_view([1, 2, 38, 26], 6).unwrap(),
-            varied(157, 101).with_view([2, 1, 150, 97], 3).unwrap(),
-        ];
-        let registry = ModuleRegistry::developer();
-        let basic = colour_layer(
-            crate::BASIC_EFFECT,
-            serde_json::json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 15.0}),
-        );
-        let vignette = colour_layer(
-            crate::VIGNETTE_EFFECT,
-            serde_json::json!({"amount": -40.0, "midpoint": 30.0}),
-        );
-        let presence = colour_layer(
-            crate::PRESENCE_EFFECT,
-            serde_json::json!({"clarity": 40.0, "texture": 25.0}),
-        );
-        let crop = Layer::crop(CropPayload {
-            angle: 4.0,
-            x: 0.15,
-            y: 0.1,
-            width: 0.7,
-            height: 0.75,
-        });
-        let steep = Layer::crop(CropPayload {
-            angle: -30.0,
-            x: 0.3,
-            y: 0.3,
-            width: 0.4,
-            height: 0.4,
-        });
-        let turn = Layer::orientation(crate::Orientation {
-            mirror: true,
-            turns: 1,
-        });
-        let mut mask = crate::Mask::new("Mask 1");
-        mask.components.push(crate::Component::new(
-            "Linear 1",
-            crate::ComponentMode::Add,
-            "linear",
-            serde_json::json!({"x0": 0.2, "y0": 0.1, "x1": 0.8, "y1": 0.9}),
-        ));
-        let masked = |layer: &Layer| Layer {
-            mask: Some(mask.id.clone()),
-            ..layer.clone()
-        };
-        let recipes = [
-            colour_recipe(vec![
-                Layer::pixel(3, 4, [250, 10, 20]),
-                basic.clone(),
-                Layer::pixel(5, 6, [1, 200, 30]),
-                Layer::pixel(3, 4, [9, 9, 240]),
-            ]),
-            colour_recipe(vec![Layer::pixel(2, 2, [40, 50, 60]), turn.clone()]),
-            colour_recipe(vec![basic.clone(), crop.clone(), vignette.clone()]),
-            colour_recipe(vec![
-                basic.clone(),
-                turn.clone(),
-                crop.clone(),
-                Layer::pixel(7, 3, [255, 0, 128]),
-            ]),
-            colour_recipe(vec![presence.clone(), basic.clone(), vignette.clone()]),
-            Recipe {
-                layers: vec![basic.clone(), masked(&presence), turn.clone(), crop.clone()],
-                masks: vec![mask.clone()],
-                ..Recipe::default()
-            },
-            Recipe {
-                layers: vec![masked(&basic), steep.clone(), vignette.clone()],
-                masks: vec![mask.clone()],
-                ..Recipe::default()
-            },
-            colour_recipe(vec![
-                basic.clone(),
-                Layer::pixel(9, 8, [200, 100, 50]),
-                steep.clone(),
-            ]),
-        ];
-        let balance = WhiteBalanceApproximation::from_matrix([
-            [1.21, -0.11, -0.02],
-            [-0.06, 1.08, -0.02],
-            [0.01, -0.13, 1.12],
-        ])
-        .unwrap();
-        for settings in [
-            LinearSettings::default(),
-            LinearSettings {
-                white_balance: Some(balance),
-            },
-        ] {
-            for source in &sources {
-                for (case, recipe) in recipes.iter().enumerate() {
-                    let snapshot = SnapshotId::new();
-                    let rendered =
-                        render_linear(&registry, source, snapshot.clone(), recipe, settings)
-                            .unwrap();
-                    assert_eq!(
-                        rendered,
-                        generic_linear_reference(&registry, source, snapshot, recipe, settings),
-                        "case {case}, {settings:?}"
-                    );
-                    let (width, height) = (rendered.width, rendered.height);
-                    for (x, y) in [(0, 0), (width / 2, height / 3), (width - 1, height - 1)] {
-                        assert_eq!(
-                            sample_linear(&registry, source, recipe, settings, x, y)
-                                .unwrap()
-                                .rgba,
-                            rendered.pixel(x, y),
-                            "case {case}, {settings:?} at ({x}, {y})"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn masked_and_geometric_colour_rows_match_the_point_evaluator() {
-        let source = varied(19, 13);
-        let registry = ModuleRegistry::builtin();
-        let settings = LinearSettings::default();
-        let basic = colour_layer(crate::BASIC_EFFECT, serde_json::json!({"exposure": 0.5}));
-        let mut mask = crate::Mask::new("Mask 1");
-        mask.components.push(crate::Component::new(
-            "Linear 1",
-            crate::ComponentMode::Add,
-            "linear",
-            serde_json::json!({"x0": 0.0, "y0": 0.0, "x1": 1.0, "y1": 1.0}),
-        ));
-        let masked_recipe = Recipe {
-            layers: vec![Layer {
-                mask: Some(mask.id.clone()),
-                ..basic.clone()
-            }],
-            masks: vec![mask],
-            ..Recipe::default()
-        };
-        let geometric_recipe = colour_recipe(vec![
-            basic,
-            Layer::orientation(crate::Orientation {
-                mirror: false,
-                turns: 1,
-            }),
-        ]);
-
-        for recipe in [&masked_recipe, &geometric_recipe] {
-            let snapshot = SnapshotId::new();
-            assert_eq!(
-                render_linear(&registry, &source, snapshot.clone(), recipe, settings).unwrap(),
-                generic_linear_reference(&registry, &source, snapshot, recipe, settings)
-            );
-        }
+        parallel::force(None);
     }
 
     #[test]
@@ -1231,11 +956,7 @@ mod tests {
             },
             cancellation_recipe(),
         ] {
-            let snapshot = SnapshotId::new();
-            assert_eq!(
-                render_linear(&registry, &source, snapshot.clone(), &recipe, settings).unwrap(),
-                generic_linear_reference(&registry, &source, snapshot, &recipe, settings)
-            );
+            rendered_as_the_point_evaluator(&registry, &source, &recipe, settings, "fallback");
         }
         let mut unavailable = cancellation_recipe();
         unavailable.layers[0].effect_id = "unavailable.effect".into();
@@ -1679,141 +1400,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sample_matches_full_render_and_crop_has_no_float_intermediate() {
-        let source = image(
-            4,
-            4,
-            &(0..16)
-                .map(|value| [value as f32 / 8.0, 0.25, -value as f32 / 16.0])
-                .collect::<Vec<_>>(),
-        );
-        let recipe = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers: vec![Layer::crop(CropPayload {
-                angle: 12.0,
-                x: 0.25,
-                y: 0.25,
-                width: 0.5,
-                height: 0.5,
-            })],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let registry = ModuleRegistry::builtin();
-        let raster = render_linear(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &recipe,
-            LinearSettings::default(),
-        )
-        .unwrap();
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                assert_eq!(
-                    sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
-                        .unwrap()
-                        .rgba,
-                    raster.pixel(x, y)
-                );
-            }
-        }
-        assert!(raster.width > 0 && raster.height > 0);
-    }
-
-    /// The linear path hands a positional unit the same coordinates the 8-bit path does, so
-    /// `sample_linear` equals `render_linear` pixel for pixel through an exact rotation in one
-    /// segment and after a crop resample, where the coordinates are the output stage's.
-    #[test]
-    fn a_positional_colour_unit_agrees_between_linear_render_and_sample() {
-        use crate::render::tests::{colour_registry, positional_layer};
-        let source = image(
-            5,
-            4,
-            &(0..20)
-                .map(|value| [value as f32 / 24.0, 0.25, 0.5 - value as f32 / 40.0])
-                .collect::<Vec<_>>(),
-        );
-        let registry = colour_registry();
-        for (case, layers) in [
-            ("a positional unit alone", vec![positional_layer()]),
-            (
-                "after an exact rotation in the same segment",
-                vec![
-                    Layer::orientation(crate::Orientation {
-                        mirror: false,
-                        turns: 1,
-                    }),
-                    positional_layer(),
-                ],
-            ),
-            (
-                "after a crop resample, in output coordinates",
-                vec![
-                    Layer::crop(CropPayload {
-                        angle: 0.0,
-                        x: 0.2,
-                        y: 0.2,
-                        width: 0.6,
-                        height: 0.6,
-                    }),
-                    positional_layer(),
-                ],
-            ),
-        ] {
-            let recipe = Recipe {
-                format: crate::RECIPE_FORMAT,
-                layers,
-                masks: Vec::new(),
-                ..Recipe::default()
-            };
-            let raster = render_linear(
-                &registry,
-                &source,
-                SnapshotId::new(),
-                &recipe,
-                LinearSettings::default(),
-            )
-            .unwrap();
-            assert!(raster.width > 1 && raster.height > 1, "{case}");
-            for y in 0..raster.height {
-                for x in 0..raster.width {
-                    assert_eq!(
-                        sample_linear(&registry, &source, &recipe, LinearSettings::default(), x, y)
-                            .unwrap()
-                            .rgba,
-                        raster.pixel(x, y),
-                        "{case}: ({x}, {y})"
-                    );
-                }
-            }
-            assert_ne!(
-                raster.pixel(0, 0),
-                raster.pixel(raster.width - 1, raster.height - 1),
-                "{case}: the unit varies across the frame"
-            );
-        }
-    }
-
     // -----------------------------------------------------------------------------------------
     // The white-balance approximation.
     // -----------------------------------------------------------------------------------------
-
-    /// A varied source with negative and above-one values in every channel.
-    fn varied(width: u32, height: u32) -> LinearImage {
-        let pixels: Vec<[f32; 3]> = (0..width * height)
-            .map(|index| {
-                let value = index as f32;
-                [
-                    (value * 0.037) % 1.3 - 0.1,
-                    (value * 0.051) % 1.1,
-                    (value * 0.023) % 1.6 - 0.2,
-                ]
-            })
-            .collect();
-        image(width, height, &pixels)
-    }
 
     /// A plausible camera-to-sRGB matrix: rows sum to one, strong off-diagonal terms, invertible.
     const CAMERA: [[f64; 3]; 3] = [
@@ -2016,40 +1605,6 @@ mod tests {
             masks: Vec::new(),
             ..Recipe::default()
         }
-    }
-
-    /// The terminal bytes are written in the allocation the raster holds and returned with no
-    /// copy after the pass, and they are the bytes a point sample reads.
-    #[test]
-    fn a_linear_render_returns_the_frame_it_wrote() {
-        let registry = ModuleRegistry::builtin();
-        let source = cancellation_image(40, 30);
-        let recipe = cancellation_recipe();
-        let settings = LinearSettings::default();
-        let (raster, written) = crate::render::frame_writes::record(|| {
-            render_linear(&registry, &source, SnapshotId::new(), &recipe, settings).unwrap()
-        });
-        assert_eq!(written, [raster.rgba.as_ptr() as usize]);
-        for (x, y) in [(0, 0), (17, 11), (39, 29)] {
-            let sampled = sample_linear(&registry, &source, &recipe, settings, x, y).unwrap();
-            assert_eq!(sampled.rgba, raster.pixel(x, y), "({x}, {y})");
-        }
-    }
-
-    #[test]
-    fn a_pre_cancelled_token_stops_a_linear_render_before_it_allocates_a_frame() {
-        let cancel = Cancel::new();
-        cancel.cancel();
-        let error = render_linear_cancellable(
-            &ModuleRegistry::builtin(),
-            &cancellation_image(160, 120),
-            SnapshotId::new(),
-            &cancellation_recipe(),
-            LinearSettings::default(),
-            &cancel,
-        )
-        .expect_err("a cancelled token refuses the linear render");
-        assert_eq!(error.kind, crate::ErrorKind::Cancelled);
     }
 
     fn presence_stack(payload: serde_json::Value) -> Recipe {

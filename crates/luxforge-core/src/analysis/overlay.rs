@@ -56,6 +56,27 @@ pub fn overlay(
     cells_w: u32,
     cells_h: u32,
 ) -> Result<Vec<u8>, Error> {
+    overlay_with_threshold(
+        rgba,
+        width,
+        height,
+        cells_w,
+        cells_h,
+        luxforge_raw::PARALLEL_PIXELS,
+    )
+}
+
+/// [`overlay`] with an explicit parallel threshold: the hook the tests use to take either path on
+/// a small frame. Production code always goes through [`overlay`], which fixes the threshold at
+/// [`luxforge_raw::PARALLEL_PIXELS`].
+fn overlay_with_threshold(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    cells_w: u32,
+    cells_h: u32,
+    threshold: u64,
+) -> Result<Vec<u8>, Error> {
     if width == 0 || height == 0 || cells_w == 0 || cells_h == 0 {
         return Err(Error::validation(
             "an overlay needs a non-empty image and a non-empty cell grid",
@@ -78,7 +99,7 @@ pub fn overlay(
     let cells = (cells_w as usize) * (cells_h as usize);
     let row_bytes = (width as usize) * 4;
     let mut grid = vec![OVERLAY_NONE; cells];
-    if pixels >= luxforge_raw::PARALLEL_PIXELS {
+    if pixels >= threshold {
         let partials = partial_grid_count(cells, cells_h, height, rayon::current_num_threads());
         if partials > 0 {
             fold_partial_grids(&mut grid, rgba, width, height, cells_w, cells_h, partials);
@@ -346,19 +367,18 @@ mod tests {
     }
 
     #[test]
-    fn the_parallel_path_agrees_with_the_serial_one_on_a_megapixel_frame() {
-        // One megapixel is the parallel threshold, so this frame takes the Rayon path; the same
-        // pixels reduced by the serial path below must give the identical grid.
-        let (width, height) = (1024u32, 1024u32);
+    fn the_parallel_path_agrees_with_the_serial_one() {
+        // A threshold of zero takes the Rayon path on a small frame; the same pixels reduced by
+        // the serial path below must give the identical grid.
+        let (width, height) = (256u32, 256u32);
         let mut rgba = vec![64u8; (width as usize) * (height as usize) * 4];
         for pixel in rgba.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
         let clipped = |x: u32, y: u32| ((y as usize) * (width as usize) + x as usize) * 4;
         rgba[clipped(5, 7)] = 0;
-        rgba[clipped(1000, 1000) + 1] = 255;
-        assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS);
-        let parallel = overlay(&rgba, width, height, 8, 8).unwrap();
+        rgba[clipped(250, 250) + 1] = 255;
+        let parallel = overlay_with_threshold(&rgba, width, height, 8, 8, 0).unwrap();
         let serial = serial_oracle(&rgba, width, height, 8, 8);
         assert_eq!(parallel, serial);
         assert_eq!(parallel[0], OVERLAY_SHADOW, "the one dark sample");
@@ -374,9 +394,9 @@ mod tests {
 
     #[test]
     fn disjoint_rows_match_the_oracle_for_partial_empty_and_capped_cell_rows() {
-        // The large frame enters the parallel path with nondivisible dimensions. The small one
-        // also checks the serial path; enlarged grids have output rows with no source pixels.
-        for (width, height) in [(13u32, 7u32), (1031, 1019)] {
+        // Both frames take both paths, with nondivisible dimensions; enlarged grids have output
+        // rows with no source pixels.
+        for (width, height) in [(13u32, 7u32), (131, 127)] {
             let mut rgba = vec![0; width as usize * height as usize * 4];
             for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
                 let x = index as u32 % width;
@@ -396,18 +416,21 @@ mod tests {
                 (width, height),
                 (MAX_OVERLAY_CELLS, MAX_OVERLAY_CELLS),
             ] {
-                assert_eq!(
-                    overlay(&rgba, width, height, cells_w, cells_h).unwrap(),
-                    serial_oracle(&rgba, width, height, cells_w, cells_h),
-                    "{width}x{height} into {cells_w}x{cells_h}"
-                );
+                for threshold in [u64::MAX, 0] {
+                    assert_eq!(
+                        overlay_with_threshold(&rgba, width, height, cells_w, cells_h, threshold)
+                            .unwrap(),
+                        serial_oracle(&rgba, width, height, cells_w, cells_h),
+                        "{width}x{height} into {cells_w}x{cells_h}, threshold {threshold}"
+                    );
+                }
             }
         }
     }
 
     #[test]
     fn isolated_clips_at_nondivisible_row_boundaries_reach_only_their_own_cells() {
-        let (width, height, cells_w, cells_h) = (1031u32, 1019u32, 37u32, 29u32);
+        let (width, height, cells_w, cells_h) = (131u32, 127u32, 37u32, 29u32);
         let mut rgba = vec![64; width as usize * height as usize * 4];
         let set = |rgba: &mut [u8], x: u32, y: u32, pixel: [u8; 4]| {
             let index = (y as usize * width as usize + x as usize) * 4;
@@ -423,7 +446,8 @@ mod tests {
         }
         set(&mut rgba, 0, 0, [0, 255, 64, 255]);
         set(&mut rgba, width - 1, height - 1, [0, 255, 64, 255]);
-        let actual = overlay(&rgba, width, height, cells_w, cells_h).unwrap();
+        // On the parallel path's disjoint cell rows.
+        let actual = overlay_with_threshold(&rgba, width, height, cells_w, cells_h, 0).unwrap();
         assert_eq!(
             actual,
             serial_oracle(&rgba, width, height, cells_w, cells_h)
@@ -436,10 +460,10 @@ mod tests {
         let mut rgba = vec![64; width as usize * height as usize * 4];
         for (index, pixel) in rgba.chunks_exact_mut(4).enumerate() {
             pixel[3] = if index % 2 == 0 { 0 } else { 255 };
-            if index % 131_071 == 0 {
+            if index % 1_021 == 0 {
                 pixel[0] = 0;
             }
-            if index % 65_537 == 3 {
+            if index % 509 == 3 {
                 pixel[1] = 255;
             }
         }
@@ -450,12 +474,12 @@ mod tests {
 
     #[test]
     fn tiny_grids_match_the_oracle_for_nondivisible_tall_and_single_row_inputs() {
-        for (width, height) in [(1021, 1025), (17, 65_537), (1_000_003, 1)] {
+        // On the parallel path.
+        for (width, height) in [(131, 127), (17, 4_099), (16_411, 1)] {
             let rgba = sparse_clipping_frame(width, height);
-            assert!(u64::from(width) * u64::from(height) >= luxforge_raw::PARALLEL_PIXELS);
             for (cells_w, cells_h) in [(1, 1), (8, 8), (MAX_OVERLAY_CELLS, 1), (127, 3)] {
                 assert_eq!(
-                    overlay(&rgba, width, height, cells_w, cells_h).unwrap(),
+                    overlay_with_threshold(&rgba, width, height, cells_w, cells_h, 0).unwrap(),
                     serial_oracle(&rgba, width, height, cells_w, cells_h),
                     "{width}x{height} into {cells_w}x{cells_h}"
                 );
@@ -478,7 +502,7 @@ mod tests {
         );
         assert_eq!(MAX_PARTIAL_GRID_BYTES * MAX_PARTIAL_GRIDS, 4 * 1024 * 1024);
 
-        let (width, height) = (1031, 1019);
+        let (width, height) = (131, 127);
         let rgba = sparse_clipping_frame(width, height);
         // Force partition counts, not a private pool, to exercise the 4 MiB maximum on hosts
         // with fewer than 64 workers. Rows remain disjoint on the existing process pool.
@@ -497,7 +521,7 @@ mod tests {
                 fold_partial_grids(&mut grid, &rgba, width, height, cells_w, cells_h, count);
                 grid
             } else {
-                overlay(&rgba, width, height, cells_w, cells_h).unwrap()
+                overlay_with_threshold(&rgba, width, height, cells_w, cells_h, 0).unwrap()
             };
             assert_eq!(
                 actual,

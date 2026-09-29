@@ -801,7 +801,7 @@ mod tests {
     fn rotated_resample_entry_keeps_only_the_viewport_on_both_domains() {
         let registry = ModuleRegistry::builtin();
         let stack = recipe(vec![crop(5.0, 0.15, 0.15, 0.7, 0.6)], Vec::new());
-        for (domain, source) in [("byte", jpeg(1000, 800)), ("raw", raw(1000, 800))] {
+        for (domain, source) in [("byte", jpeg(400, 320)), ("raw", raw(400, 320))] {
             let context = crate::RenderContext::new();
             let render = render(
                 &registry,
@@ -1424,10 +1424,10 @@ mod tests {
             ),
         ];
         let bounds = ProxyBounds {
-            width: 150,
-            height: 110,
+            width: 60,
+            height: 44,
         };
-        for (domain, source) in [("jpeg", jpeg(1500, 1000)), ("raw", raw(1500, 1000))] {
+        for (domain, source) in [("jpeg", jpeg(600, 400)), ("raw", raw(600, 400))] {
             for (name, stack) in &stacks {
                 let exact = exact(&context, &registry, &source, stack);
                 let (plan, frame) =
@@ -1505,7 +1505,7 @@ mod tests {
     fn windowed_proxy_transform_places_rotated_entry_origin_once() {
         let registry = ModuleRegistry::builtin();
         let context = RenderContext::new();
-        let source = jpeg(1500, 1000);
+        let source = jpeg(600, 400);
         let stack = recipe(vec![crop(7.0, 0.42, 0.47, 0.14, 0.12)], Vec::new());
         let exact = exact(&context, &registry, &source, &stack);
         let stage = exact.proxy_window(
@@ -1513,8 +1513,8 @@ mod tests {
             &stack,
             exact
                 .proxy_plan(ProxyBounds {
-                    width: 150,
-                    height: 110,
+                    width: 60,
+                    height: 44,
                 })
                 .unwrap(),
         );
@@ -1569,10 +1569,10 @@ mod tests {
     fn a_tight_crops_proxy_source_is_bounded_by_the_display_not_the_crop() {
         let context = RenderContext::new();
         let registry = ModuleRegistry::builtin();
-        let source = jpeg(1500, 1000);
+        let source = jpeg(600, 400);
         let bounds = ProxyBounds {
-            width: 120,
-            height: 90,
+            width: 48,
+            height: 36,
         };
         for tightness in [0.5, 0.25, 0.12, 0.09] {
             for angle in [0.0, 6.0] {
@@ -1654,11 +1654,13 @@ mod tests {
                 vec![mask.clone()],
             ),
         ];
+        // The proxy stage must be wider than one 512 px spatial tile for a window of its tiles to
+        // be smaller than the stage.
         let bounds = ProxyBounds {
-            width: 240,
-            height: 160,
+            width: 120,
+            height: 80,
         };
-        for (domain, source) in [("jpeg", jpeg(2400, 1600)), ("raw", raw(2400, 1600))] {
+        for (domain, source) in [("jpeg", jpeg(1200, 800)), ("raw", raw(1200, 800))] {
             for (index, stack) in stacks.iter().enumerate() {
                 let exact = exact(&context, &registry, &source, stack);
                 let (plan, frame) =
