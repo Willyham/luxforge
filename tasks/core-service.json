@@ -691,9 +691,10 @@
         },
         {
           "kind": "file",
-          "label": "Command contracts",
-          "target": "crates/luxforge-core/src/command_contracts.rs",
-          "relevance": "The test-only module this task deletes, and its one assertion worth keeping."
+          "label": "Malformed-request equality",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "locator": "a_malformed_request_is_the_same_error_through_the_service_and_the_api",
+          "relevance": "Where the deleted command_contracts.rs's one assertion worth keeping now lives."
         },
         {
           "kind": "file",
