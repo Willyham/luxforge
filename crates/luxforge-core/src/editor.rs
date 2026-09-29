@@ -45,6 +45,7 @@ pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
 pub(crate) use catalog::{decode, encode, now_ms, write};
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
+pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
 pub use masks::MASK_FIELD;
 pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;

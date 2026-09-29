@@ -18,8 +18,8 @@ use super::{
 use crate::ErrorKind;
 use crate::{
     ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, DraftId, EditorService,
-    EntryId, Error, HistorySelection, MaskId, ModuleRegistry, Mutation, MutationOutcome,
-    MutationResult, ParameterDescriptor, PixelSample, PresetId, Zoom,
+    EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId, ModuleRegistry,
+    Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample, PresetId, Zoom,
     capabilities::{
         grants,
         host::{
@@ -29,10 +29,11 @@ use crate::{
         },
         resources, settings,
     },
-    editor::PointPlan,
+    editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
     jobs::{JOB_CANCEL, JOB_READ},
     mask::commands::MaskTarget,
     path,
+    presets::MAX_PRESET_GROUP,
 };
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -335,7 +336,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |service, _, p| value(service.history(
             &p.asset_id,
             p.before_sequence,
-            p.limit.unwrap_or(50)
+            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE)
         )?),
         "chronological entry rows newest first, including abandoned branches: identity, sequence, action, label, actor, time, undo parent and restore target, without the stack; history.inspect reads one whole entry"
     ),
@@ -351,7 +352,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |service, _, p| value(service.lineage(
             &p.asset_id,
             p.entry_id.as_ref(),
-            p.limit.unwrap_or(50)
+            p.limit.unwrap_or(DEFAULT_HISTORY_PAGE)
         )?),
         "undo-parent chain newest first; next_entry_id continues a longer chain"
     ),
@@ -966,8 +967,9 @@ pub(crate) fn host_envelope(name: &str) -> Envelope {
 /// One method's entry in `schema.list`: the one shape every method is listed in, whether the host,
 /// a module's action, query or task, or a mask command declares it. Whether it mutates and the
 /// envelope it names are [`Method::envelope`], the envelope dispatch requires. `required` and
-/// `optional` are the method's own top-level fields; a generated method also lists its `declared`
-/// parameters and, when it is an action or a mask command, whether it is a `patch`.
+/// `optional` are the fields the method has beside its `declared` parameters, such as its envelope;
+/// every method lists its declared parameters, typed with the one parameter vocabulary, and an
+/// action or a mask command also lists whether it is a `patch`.
 ///
 /// A declared parameter is required exactly when the descriptor declares it required, it carries no
 /// default and the method is not a patch or the parameter is an identity: a patch carries whichever
@@ -1044,28 +1046,24 @@ fn mark_superseded(schema: &mut Value, action: &str, superseded: &[crate::Supers
 }
 
 pub fn schemas(registry: &ModuleRegistry) -> Value {
-    // The host's own methods, from the parameters each one declares.
+    // The host's own methods, from the parameters each one declares, listed as a generated
+    // method's are: the envelope's `mutation` field is required and described once, below.
     let mut methods: Map<String, Value> = METHODS
         .iter()
         .map(|spec| {
             let required = spec
                 .params
-                .required
-                .iter()
-                .map(|name| json!(name))
-                .collect();
-            let optional = spec
-                .params
-                .optional
-                .iter()
-                .map(|(name, meaning)| ((*name).to_owned(), json!(meaning)))
+                .envelope
+                .name()
+                .map(|_| json!("mutation"))
+                .into_iter()
                 .collect();
             let schema = method_schema(
                 &Method::Host(spec),
                 required,
-                optional,
+                Map::new(),
                 spec.notes,
-                None,
+                Some((spec.params.parameters)()),
                 None,
             );
             (spec.name.to_owned(), schema)
@@ -1214,233 +1212,236 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
     })
 }
 
+/// The history page `history.list` and `history.lineage` answer when the request names no `limit`.
+const DEFAULT_HISTORY_PAGE: usize = 50;
+
 host_params! {
     pub(super) struct AssetParams {
-        asset_id: AssetId,
+        asset_id: AssetId = asset(),
     }
 }
 
 host_params! {
     pub(super) struct EntryParams {
-        asset_id: AssetId,
-        entry_id: EntryId,
+        asset_id: AssetId = asset(),
+        entry_id: EntryId = entry(),
     }
 }
 
 host_params! {
     pub(super) struct PreviewSelect {
-        asset_id: AssetId,
-        entry_id: EntryId,
-        keep_geometry: Option<bool> = "bool; show the entry with the geometry layers (orientation, straighten, crop) of the entry the session displays now, so only the adjustments differ; default false, the entry's own geometry",
+        asset_id: AssetId = asset(),
+        entry_id: EntryId = entry(),
+        keep_geometry: Option<bool> = boolean().default(false).notes("show the entry with the geometry layers (orientation, straighten, crop) of the entry the session displays now, so only the adjustments differ; false shows the entry's own geometry"),
     }
 }
 
 host_params! {
     pub(super) struct SourceInspect {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "historical entry; default current",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("historical entry; default current"),
     }
 }
 
 host_params! {
     pub(super) struct HistoryList {
-        asset_id: AssetId,
-        before_sequence: Option<u64> = "u64",
-        limit: Option<usize> = "1..100",
+        asset_id: AssetId = asset(),
+        before_sequence: Option<u64> = sequence().notes("list the entries before this sequence; default the newest"),
+        limit: Option<usize> = integer(1, MAX_HISTORY_PAGE as i64).default(DEFAULT_HISTORY_PAGE),
     }
 }
 
 host_params! {
     pub(super) struct HistoryLineage {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "start entry; default current",
-        limit: Option<usize> = "1..100",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("start entry; default current"),
+        limit: Option<usize> = integer(1, MAX_HISTORY_PAGE as i64).default(DEFAULT_HISTORY_PAGE),
     }
 }
 
 host_params! {
     pub(super) struct RecipeDescribe {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "entry to describe; default current",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("entry to describe; default current"),
     }
 }
 
 host_params! {
     pub(super) struct ModuleList {
-        asset_id: Option<AssetId> = "keep only the modules that apply to this asset's source kind; default every module",
+        asset_id: Option<AssetId> = asset().notes("keep only the modules that apply to this asset's source kind; default every module"),
     }
 }
 
 host_params! {
     pub(super) struct Navigate {
-        asset_id: AssetId,
+        asset_id: AssetId = asset(),
         mutation: Mutation,
     }
 }
 
 host_params! {
     pub(super) struct Restore {
-        asset_id: AssetId,
+        asset_id: AssetId = asset(),
         mutation: Mutation,
-        entry_id: EntryId,
+        entry_id: EntryId = entry(),
     }
 }
 
 host_params! {
     pub(super) struct VersionCreate {
-        asset_id: AssetId,
-        name: String,
+        asset_id: AssetId = asset(),
+        name: String = string(MAX_VERSION_NAME).notes("non-empty after trimming"),
         mutation: MutationRequest,
-        entry_id: Option<EntryId> = "entry to name; default current",
+        entry_id: Option<EntryId> = entry().notes("entry to name; default current"),
     }
 }
 
 host_params! {
     pub(super) struct VersionDelete {
-        asset_id: AssetId,
-        name: String,
+        asset_id: AssetId = asset(),
+        name: String = string(MAX_VERSION_NAME),
         mutation: MutationRequest,
     }
 }
 
 host_params! {
     pub(super) struct PresetParams {
-        preset_id: PresetId,
+        preset_id: PresetId = preset(),
     }
 }
 
 host_params! {
     pub(super) struct PresetCreate {
-        name: String,
-        settings: Map<String, Value>,
+        name: String = string(MAX_PRESET_NAME).notes("non-empty after trimming"),
+        settings: Map<String, Value> = settings(),
         mutation: MutationRequest,
-        group: Option<String> = "1..64 printable characters; default User presets",
+        group: Option<String> = string(MAX_PRESET_GROUP).notes("non-empty after trimming; default User presets"),
     }
 }
 
 host_params! {
     pub(super) struct PresetCapture {
-        asset_id: AssetId,
-        fields: Map<String, Value>,
-        entry_id: Option<EntryId> = "entry to read; default the session's selection",
+        asset_id: AssetId = asset(),
+        fields: Map<String, Value> = json("{action: [field, ...] or true}: the fields of each field-patch action to read, true for all of them"),
+        entry_id: Option<EntryId> = entry().notes("entry to read; default the session's selection"),
     }
 }
 
 host_params! {
     pub(super) struct PresetUpdate {
-        preset_id: PresetId,
+        preset_id: PresetId = preset(),
         mutation: MutationRequest,
-        name: Option<String> = "1..128 printable characters",
-        group: Option<String> = "1..64 printable characters",
-        settings: Option<Map<String, Value>> = "a settings set checked against the registry",
+        name: Option<String> = string(MAX_PRESET_NAME).notes("non-empty after trimming"),
+        group: Option<String> = string(MAX_PRESET_GROUP).notes("non-empty after trimming"),
+        settings: Option<Map<String, Value>> = settings().notes("checked against the registry"),
     }
 }
 
 host_params! {
     pub(super) struct PresetDelete {
-        preset_id: PresetId,
+        preset_id: PresetId = preset(),
         mutation: MutationRequest,
     }
 }
 
 host_params! {
     pub(super) struct PresetInspect {
-        content: String,
-        file_name: Option<String> = "the file's name, for the fallback preset name and the origin",
+        content: String = text(MAX_PRESET_BYTES).notes("the preset file's text"),
+        file_name: Option<String> = name().notes("the file's name, for the fallback preset name and the origin"),
     }
 }
 
 host_params! {
     pub(super) struct PresetImport {
-        content: String,
+        content: String = text(MAX_PRESET_BYTES).notes("the preset file's text"),
         mutation: MutationRequest,
-        file_name: Option<String> = "the file's name, for the fallback preset name and the origin",
-        name: Option<String> = "overrides the file's name",
-        group: Option<String> = "overrides the file's group; default Imported",
+        file_name: Option<String> = name().notes("the file's name, for the fallback preset name and the origin"),
+        name: Option<String> = string(MAX_PRESET_NAME).notes("overrides the file's name"),
+        group: Option<String> = string(MAX_PRESET_GROUP).notes("overrides the file's group; default Imported"),
     }
 }
 
 host_params! {
     pub(super) struct ViewSet {
-        zoom: Option<Zoom> = "{mode:fit} or {mode:percent,value:10..1600}",
-        pan_x: Option<f32> = "finite",
-        pan_y: Option<f32> = "finite",
+        zoom: Option<Zoom> = json("{mode: fit} or {mode: percent, value: 10..1600}"),
+        pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
+        pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
     }
 }
 
 host_params! {
     pub(super) struct WorkspaceSet {
-        state_panel: Option<bool> = "bool",
-        tools_panel: Option<bool> = "bool",
-        mode: Option<String> = "pointer or an available module id that declares a canvas interaction",
-        thirds: Option<bool> = "bool",
-        clip_shadows: Option<bool> = "bool; show the shadow clipping overlay",
-        clip_highlights: Option<bool> = "bool; show the highlight clipping overlay",
-        // Taken as strings so an unknown one is refused with the vocabulary spelled out, as `mode`
-        // is, rather than with serde's report of an unmatched variant.
-        mask_overlay: Option<String> = "off, tint, mask-on-black or image-on-black; what the canvas draws of the selected mask",
-        mask_overlay_colour: Option<String> = "green or white; the tint the mask overlay is drawn in",
+        state_panel: Option<bool> = boolean(),
+        tools_panel: Option<bool> = boolean(),
+        mode: Option<String> = name().notes("pointer or an available module id that declares a canvas interaction"),
+        thirds: Option<bool> = boolean(),
+        clip_shadows: Option<bool> = boolean().notes("show the shadow clipping overlay"),
+        clip_highlights: Option<bool> = boolean().notes("show the highlight clipping overlay"),
+        // Each spelling is declared as an option, so a client reads the vocabulary from the schema
+        // and an unknown one is refused with the vocabulary spelled out.
+        mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
+        mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
     }
 }
 
 host_params! {
     pub(super) struct DraftBegin {
-        asset_id: AssetId,
-        action: String,
+        asset_id: AssetId = asset(),
+        action: String = name().notes("the action the draft edits: a module action or a mask.* gesture"),
         /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
-        mask: Option<MaskId> = "the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through",
-        component: Option<ComponentId> = "the component inside that mask, for a mask.* gesture only",
+        mask: Option<MaskId> = mask().notes("the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through"),
+        component: Option<ComponentId> = component().notes("the component inside that mask, for a mask.* gesture only"),
     }
 }
 
 host_params! {
     pub(super) struct DraftSet {
-        draft_id: DraftId,
-        fields: Map<String, Value>,
+        draft_id: DraftId = draft(),
+        fields: Map<String, Value> = json("{field: value}: the action's fields to set, each checked against its declaration"),
     }
 }
 
 host_params! {
     pub(super) struct DraftParams {
-        draft_id: DraftId,
+        draft_id: DraftId = draft(),
     }
 }
 
 host_params! {
     pub(super) struct DraftCommit {
-        draft_id: DraftId,
+        draft_id: DraftId = draft(),
         mutation: Mutation,
     }
 }
 
 host_params! {
     pub(super) struct RenderSample {
-        asset_id: AssetId,
-        x: u32,
-        y: u32,
-        draft_id: Option<DraftId> = "this client's draft to sample instead of the stored stack",
+        asset_id: AssetId = asset(),
+        x: u32 = pixel_coordinate(),
+        y: u32 = pixel_coordinate(),
+        draft_id: Option<DraftId> = draft().notes("this client's draft to sample instead of the stored stack"),
     }
 }
 
 host_params! {
     pub(super) struct RenderLocate {
-        asset_id: AssetId,
-        x: u32,
-        y: u32,
-        entry_id: Option<EntryId> = "entry to locate in; default the session's selection",
+        asset_id: AssetId = asset(),
+        x: u32 = pixel_coordinate(),
+        y: u32 = pixel_coordinate(),
+        entry_id: Option<EntryId> = entry().notes("entry to locate in; default the session's selection"),
     }
 }
 
 host_params! {
     pub(super) struct RenderTransform {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "entry to answer for; default the session's selection",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("entry to answer for; default the session's selection"),
     }
 }
 
 host_params! {
     pub(super) struct ArtifactInspect {
-        artifact_id: ArtifactId,
+        artifact_id: ArtifactId = artifact(),
     }
 }
 
@@ -2281,24 +2282,51 @@ mod tests {
         }
         assert!(find(&service, "edit.missing").is_none());
         // Each host method's schema is generated from the struct its handler parses, so the lists
-        // are the parser's own; the owner's generated test sends every method its declared fields.
+        // are the parser's own; the owner's generated test sends every method its declared fields
+        // and a value of each declared kind in and out of range. Every field is typed with the
+        // module vocabulary, as a sound declaration, and listed required or optional exactly as it
+        // is declared.
         for spec in METHODS {
             let schema = &listed[spec.name];
+            let parameters = (spec.params.parameters)();
             assert_eq!(
-                schema["required"],
-                json!(spec.params.required),
-                "{}",
+                schema["parameters"],
+                json!(parameters),
+                "{} lists its typed parameters",
                 spec.name
             );
-            assert_eq!(
-                schema["optional"]
-                    .as_object()
-                    .expect("the optional fields")
-                    .len(),
-                spec.params.optional.len(),
-                "{}",
-                spec.name
-            );
+            let mut names = HashSet::new();
+            for parameter in parameters {
+                crate::modules::check_declaration(parameter)
+                    .unwrap_or_else(|error| panic!("{}: {error:?}", spec.name));
+                assert!(names.insert(parameter.name.as_str()), "{}", spec.name);
+            }
+            let envelope = spec.params.envelope.name().map(|_| "mutation");
+            let required: Vec<&str> = envelope
+                .into_iter()
+                .chain(
+                    parameters
+                        .iter()
+                        .filter(|parameter| parameter.required)
+                        .map(|parameter| parameter.name.as_str()),
+                )
+                .collect();
+            assert_eq!(schema["required"], json!(required), "{}", spec.name);
+            let optional: Vec<&str> = parameters
+                .iter()
+                .filter(|parameter| !parameter.required)
+                .map(|parameter| parameter.name.as_str())
+                .collect();
+            let mut listed_optional: Vec<&str> = schema["optional"]
+                .as_object()
+                .expect("the optional fields")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            listed_optional.sort_unstable();
+            let mut optional = optional;
+            optional.sort_unstable();
+            assert_eq!(listed_optional, optional, "{}", spec.name);
             assert_eq!(
                 schema.get("mutation").cloned(),
                 spec.params.envelope.name().map(|name| json!(name)),
@@ -2306,7 +2334,7 @@ mod tests {
                 spec.name
             );
             assert_eq!(
-                spec.params.required.contains(&"mutation"),
+                envelope.is_some(),
                 Method::Host(spec).mutates(),
                 "{} carries its envelope as the required mutation field",
                 spec.name
@@ -3468,7 +3496,11 @@ mod tests {
                 "mode must be one of",
             ),
             ("an unknown field", json!({"panel": true}), "unknown field"),
-            ("the wrong type", json!({"thirds": "yes"}), "invalid type"),
+            (
+                "the wrong type",
+                json!({"thirds": "yes"}),
+                "parameter thirds must be a boolean",
+            ),
         ] {
             let error = call(&mut service, &mut session, "workspace.set", params)
                 .error

@@ -690,7 +690,7 @@ fn source_worker(
 host_params! {
     /// `catalog.import`.
     pub(super) struct Import {
-        path: PathBuf,
+        path: PathBuf = path().notes("the photo to import"),
         mutation: MutationRequest,
     }
 }
@@ -698,30 +698,30 @@ host_params! {
 host_params! {
     /// `job.read`, `job.cancel` and `job.adopt`.
     pub(super) struct JobParams {
-        job_id: JobId,
+        job_id: JobId = job(),
     }
 }
 
 host_params! {
     /// `source.prepare`.
     pub(super) struct SourcePrepare {
-        asset_id: AssetId,
-        entry_id: Option<EntryId> = "historical entry; default current",
+        asset_id: AssetId = asset(),
+        entry_id: Option<EntryId> = entry().notes("historical entry; default current"),
     }
 }
 
 host_params! {
     /// `events.since`.
     pub(super) struct EventsSince {
-        after: u64,
+        after: u64 = sequence().notes("the last event sequence the client has read; 0 for every retained event"),
     }
 }
 
 host_params! {
     /// `analysis.request`.
     pub(super) struct AnalysisRequest {
-        asset_id: AssetId,
-        target: AnalysisTarget,
+        asset_id: AssetId = asset(),
+        target: AnalysisTarget = json("{kind: current}, {kind: entry, entry_id} or {kind: draft, draft_id}: the evaluated stack to analyse"),
     }
 }
 
@@ -5078,12 +5078,58 @@ mod tests {
         std::fs::remove_file(photo).unwrap();
     }
 
+    /// A value a declared kind accepts, at the edge of its range where it has one, and one it
+    /// refuses, just outside it; `None` for a kind whose values the field's own type checks: `json`,
+    /// whose every value is in range, and a secret, which is never a plain value to the generic
+    /// check.
+    fn kind_samples(parameter: &crate::ParameterDescriptor) -> Option<(Value, Value)> {
+        use crate::{IdentityKind, ParameterKind};
+        Some(match &parameter.kind {
+            ParameterKind::Integer { min, max } => {
+                (json!(max), json!(max.checked_add(1).unwrap_or(min - 1)))
+            }
+            ParameterKind::Number { min: _, max } => (json!(max), json!(max + max.abs().max(1.0))),
+            ParameterKind::Enum { options } => (json!(options[0]), json!("not-an-option")),
+            ParameterKind::Boolean => (json!(true), json!("true")),
+            ParameterKind::String { max_length } => (
+                json!("x".repeat(*max_length)),
+                json!("x".repeat(max_length + 1)),
+            ),
+            // Text may hold a line break, which a string may not.
+            ParameterKind::Text { max_bytes } => {
+                (json!("a line\n"), json!("x".repeat(max_bytes + 1)))
+            }
+            ParameterKind::Identity { of } => {
+                let valid = match of {
+                    IdentityKind::Asset => crate::AssetId::new().to_string(),
+                    IdentityKind::Entry => crate::EntryId::new().to_string(),
+                    IdentityKind::Draft => crate::DraftId::new().to_string(),
+                    IdentityKind::Job => crate::JobId::new().to_string(),
+                    IdentityKind::Preset => crate::PresetId::new().to_string(),
+                    IdentityKind::Mask => crate::MaskId::new().to_string(),
+                    IdentityKind::Component => crate::ComponentId::new().to_string(),
+                    IdentityKind::Stroke => "0".repeat(32),
+                };
+                (json!(valid), json!("x"))
+            }
+            ParameterKind::Artifact => (json!(format!("artifact-{}", "0".repeat(64))), json!("x")),
+            ParameterKind::Settings => (json!({"set-basic": {"exposure": 0.5}}), json!({})),
+            ParameterKind::Json | ParameterKind::Secret { .. } => return None,
+            other => panic!("no host method declares a {} parameter", other.name()),
+        })
+    }
+
     /// Every method `schema.list` lists is answered through the one table, and its schema is its
     /// parser: each declared field is accepted by name, all of them together raise no
     /// unknown-field error, and one field nothing declares is a validation error — naming it, for a
     /// host method, whose parameters are declared once as the struct it parses. The owner answers,
     /// so the service and owner handlers are covered alike, and the proof module's task is listed
     /// too. Values are `null`: the point is which names each parser knows, not what it accepts.
+    ///
+    /// Then what it accepts: each host method's typed field is sent, alone, a value its declared
+    /// kind accepts at the edge of its range, which neither the kind check nor the field's type
+    /// refuses, and a value just outside it, which is refused where the request is parsed in the
+    /// generic check's words, naming the field. Every kind a host method declares is exercised.
     #[test]
     fn every_listed_method_accepts_its_declared_fields_and_refuses_an_unknown_one() {
         let catalog = temp("declared.sqlite");
@@ -5161,6 +5207,52 @@ mod tests {
                 );
             }
         }
+        // Each typed field of each host method, in and just out of its declared range.
+        let mut exercised = std::collections::BTreeSet::new();
+        for spec in methods::METHODS {
+            let name = spec.name;
+            for parameter in (spec.params.parameters)() {
+                let field = parameter.name.as_str();
+                let Some((valid, outside)) = kind_samples(parameter) else {
+                    continue;
+                };
+                exercised.insert(parameter.kind.name());
+                let refused_here = format!("parameter {field} ");
+                let response = send(&owner, client, name, name, json!({field: valid}));
+                if let Some(error) = &response.error {
+                    let message = &error.message;
+                    assert!(
+                        !message.starts_with(&refused_here)
+                            && !message.contains("invalid type")
+                            && !message.contains("invalid value")
+                            && !message.contains("invalid length")
+                            && !message.starts_with("invalid "),
+                        "{name} refuses {field} = {valid}, which its kind accepts: {message}"
+                    );
+                }
+                let error = send(&owner, client, name, name, json!({field: outside}))
+                    .error
+                    .unwrap_or_else(|| panic!("{name} accepted {field} = {outside}"));
+                assert_eq!(
+                    error.code, "validation",
+                    "{name} {field}: {}",
+                    error.message
+                );
+                assert!(
+                    error.message.starts_with(&refused_here),
+                    "{name} refuses {field} = {outside} by its declared kind: {}",
+                    error.message
+                );
+            }
+        }
+        assert_eq!(
+            exercised.into_iter().collect::<Vec<_>>(),
+            [
+                "artifact", "boolean", "enum", "identity", "integer", "number", "settings",
+                "string", "text"
+            ],
+            "every kind a host method declares, but json and secret, is exercised"
+        );
         // Methods that take nothing say so too.
         for name in [
             "schema.list",

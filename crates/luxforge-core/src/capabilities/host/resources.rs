@@ -21,18 +21,18 @@ use std::sync::Arc;
 host_params! {
     /// `module.resource.remove`.
     pub(crate) struct ResourceParams {
-        module_id: String,
-        resource_id: String,
+        module_id: String = name(),
+        resource_id: String = name(),
         mutation: MutationRequest,
     }
 }
 
 host_params! {
     pub(crate) struct InstallParams {
-        module_id: String,
-        resource_id: String,
+        module_id: String = name(),
+        resource_id: String = name(),
         mutation: MutationRequest,
-        source: Option<InstallSource> = "{kind: download}, the default and only source: the declared URL, under the download-artifact grant",
+        source: Option<InstallSource> = json("{kind: download}, the default and only source: the declared URL, under the download-artifact grant"),
     }
 }
 
