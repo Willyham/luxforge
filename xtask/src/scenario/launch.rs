@@ -452,9 +452,8 @@ pub struct Run {
 /// What a run's checks write rather than what its launches recorded: a replay leaves these out of
 /// its copy, so every one in the replay's output is the replay's own.
 fn written_by_checks(name: &std::ffi::OsStr) -> bool {
-    name.to_str().is_some_and(|name| {
-        name.ends_with("-checks.json") || matches!(name, "render-times.json" | "replay.json")
-    })
+    name.to_str()
+        .is_some_and(|name| name.ends_with("-checks.json") || name == "replay.json")
 }
 
 fn copy_evidence(from: &Path, to: &Path) -> Result {
