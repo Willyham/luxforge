@@ -381,7 +381,7 @@ Why this shape and not another:
 
 It does **not** make storage linear, and the design does not claim that. An entry still holds one reference per stroke, so the growth stays quadratic; what changes is the constant, from 968 bytes per stroke per entry to 35, a factor of about 28.
 
-The curve that constant produces is measured, over a session run to the largest one a recipe can hold, on the 24 MP and 60 MP fixtures (`measure_mask_growth_across_a_painting_session`, recorded in the [performance plan](../specs/performance.md#brush-heavy-recipes-across-history)). Stored is every entry's JSON plus the stroke store; embedded is the same session with each stroke's positions written into its payload. The two fixtures produce the **same** stored bytes to the byte, because a stroke is stored in normalized coordinates and a mask table does not know the pixel dimensions of what it is drawn on.
+The curve that constant produces was measured once, over a session run to the largest one a recipe can hold, on the 24 MP and 60 MP fixtures, and is recorded with its scope in the [performance plan](../specs/performance.md#brush-heavy-recipes-across-history); `editor/catalog.rs` gates its shape and square term at 400 strokes (`a_painting_session_grows_with_the_square_of_its_stroke_count`) and its ceiling (`a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling`). Stored is every entry's JSON plus the stroke store; embedded is the same session with each stroke's positions written into its payload. The two fixtures produce the **same** stored bytes to the byte, because a stroke is stored in normalized coordinates and a mask table does not know the pixel dimensions of what it is drawn on.
 
 | Strokes | Stored | Embedded | Factor |
 | --- | --- | --- | --- |

@@ -1765,12 +1765,7 @@ Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15,
 
 ## Brush-heavy recipes across history
 
-Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, warm filesystem cache, catalog on the internal APFS SSD. One process per fixture:
-
-```text
-LUXFORGE_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg /usr/bin/time -l \
-  cargo test --release --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture
-```
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, warm filesystem cache, catalog on the internal APFS SSD, one process per fixture with its peak memory from `/usr/bin/time -l`. These are recorded measurements of a painting session run once to the per-recipe ceiling, sampled every fifty strokes; the suite gates the curve's shape and square term at 400 strokes (`a_painting_session_grows_with_the_square_of_its_stroke_count`) and the ceiling itself (`a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling`), both in `editor/catalog.rs` on the same session harness.
 
 Scope: `luxforge-core`'s own catalog, one stroke per history entry written through the production write path, each stroke captured at 100 positions and decimating to 67–78 stored ones, packed into the densest mask table the declared limits admit. The session is built at the recipe and entry level rather than through `mask.add-stroke`, to isolate the storage write path from command dispatch; the bytes it writes are the bytes the API path will write, because it is the same `insert_entry`. The [stroke-storage table](../design/masking.md#stroke-storage) measures 200 strokes packed 64 to a mask rather than 81, which is the same curve one arrangement less dense: 1.11 MB there against 1.10 MB here.
 
@@ -1802,7 +1797,7 @@ Peak memory is the whole test process, which imports and decodes the fixture. Bo
 
 Before this change, `store_strokes` re-wrote every stroke the whole mask table referenced on every commit, an `O(references)` SQL cost per commit and `O(n²)` CPU over a session, almost all of it a no-op `INSERT OR IGNORE` for a stroke an earlier commit already wrote. After, it writes only the references a recipe's stroke table does not already know are durable — known because a fresh hydration marked them, or because an earlier commit built on the same table already wrote them — so a long session's later commits pay only for the strokes each one actually captured.
 
-A binary built before this task carries no commit-time instrumentation to compare against, so the figure below is a controlled A/B within this one binary instead: the same 1809-stroke ceiling session (`painting_session`, beside `measure_mask_growth_across_a_painting_session`), with `mark_fresh_as_stored` toggled off — this build's own record of the write pattern before this task, since every reference is then treated as needing a write on every commit — and on, the fresh-only write this task lands. Run in reversed order (after, before, before, after) so a difference has to survive the reversal, on a host shared with other sessions.
+A binary built before this task carries no commit-time instrumentation to compare against, so the figure below is a controlled A/B within this one binary instead: the same 1809-stroke ceiling session, with the harness's marking of each commit's fresh stroke as stored turned off — this build's own record of the write pattern before this task, since every reference is then treated as needing a write on every commit — and on, the fresh-only write this task lands. Run in reversed order (after, before, before, after) so a difference has to survive the reversal, on a host shared with other sessions.
 
 Scope: the mean write-transaction time (`insert_entry` plus the asset-state update) of the last 50 of the 1809 commits, native Apple M4 Pro, release `--locked`, `luxforge-core`'s own catalog, on the generated 24 MP and 60 MP fixtures. Catalog bytes are unchanged — the table above — because `INSERT OR IGNORE` still guards every write; this changes only how much SQL a commit issues.
 
@@ -1812,11 +1807,6 @@ Scope: the mean write-transaction time (`insert_entry` plus the asset-state upda
 | 60 MP | 0.816, 0.993 | 3.022, 3.307 | 7.16 → 6.83 |
 
 The difference survives the reversal on both fixtures: about 3.7–4.4× faster near the ceiling, from roughly 3.0–3.6 ms down to 0.8–1.0 ms of write-transaction time per commit. The saving is expected to widen over a longer session, since the earlier cost was one write per reference the whole mask table carries — which grows with the session — while the fresh-only cost is one write per stroke the commit itself captured, which does not.
-
-```text
-LUXFORGE_MASK_GROWTH_SOURCE=fixtures/generated/24mp.jpg \
-  cargo test --release --locked --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture
-```
 
 ### Point samples through a spatial layer
 
