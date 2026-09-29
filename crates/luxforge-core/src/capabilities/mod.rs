@@ -5,7 +5,7 @@
 //! (`luxforge-net`'s, in the desktop and `luxforge-json`) through [`host::HostConfig`]. See
 //! `docs/design/module-capabilities.md`.
 pub mod consent;
-pub mod context;
+pub(crate) mod context;
 pub mod data;
 pub mod descriptor;
 pub(crate) mod document;

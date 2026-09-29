@@ -31,20 +31,20 @@ use std::{
 };
 
 /// The only `installed.json` format this build reads or writes.
-pub const INSTALLED_FORMAT: u32 = 1;
-pub const INSTALLED_FILE: &str = "installed.json";
+pub(crate) const INSTALLED_FORMAT: u32 = 1;
+pub(crate) const INSTALLED_FILE: &str = "installed.json";
 /// Where transfers are staged, under the resource root. Its name starts with a dot, which no module
 /// identity does, so it never collides with a module's directory.
-pub const STAGING_DIR: &str = ".staging";
+pub(crate) const STAGING_DIR: &str = ".staging";
 /// The storage all modules' installed resources may take together, unless configured otherwise.
-pub const DEFAULT_RESOURCE_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub(crate) const DEFAULT_RESOURCE_QUOTA_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// The largest `installed.json` read.
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
 /// The staged file's write buffer.
 const STAGE_BUFFER: usize = 64 * 1024;
 
 /// The resource methods.
-pub const RESOURCE_LIST: &str = "module.resource.list";
+pub(crate) const RESOURCE_LIST: &str = "module.resource.list";
 pub const INSTALL: &str = "module.resource.install";
 pub const REMOVE: &str = "module.resource.remove";
 
@@ -59,7 +59,7 @@ const DOWNLOAD_MIN_RATE: u64 = 64 * 1024;
 /// its own `format: 1` marker.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InstalledMarker {
+pub(crate) struct InstalledMarker {
     pub module_id: String,
     pub resource_id: String,
     pub version: String,
@@ -101,7 +101,7 @@ impl InstalledMarker {
 /// the one source. No client names a path the host reads.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum InstallSource {
+pub(crate) enum InstallSource {
     /// A struct variant, so any other field, a path included, is refused rather than ignored.
     Download {},
 }
@@ -117,7 +117,7 @@ pub enum ResourceState {
 }
 
 impl ResourceState {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::NotInstalled => "not-installed",
             Self::Installing => "installing",
@@ -152,21 +152,21 @@ pub struct ResourceRow {
 /// The resource root and the paths under it. Holds no state: every question is answered from the
 /// disk.
 #[derive(Clone, Debug)]
-pub struct ResourceStore {
+pub(crate) struct ResourceStore {
     root: PathBuf,
 }
 
 impl ResourceStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.root
     }
 
     /// `<root>/<module_id>/<resource_id>/<version>`.
-    pub fn version_dir(&self, module_id: &str, resource: &ResourceDescriptor) -> PathBuf {
+    pub(crate) fn version_dir(&self, module_id: &str, resource: &ResourceDescriptor) -> PathBuf {
         self.root
             .join(module_id)
             .join(&resource.id)
@@ -174,7 +174,7 @@ impl ResourceStore {
     }
 
     /// The installed file: named after the resource identity inside its version directory.
-    pub fn file_path(&self, module_id: &str, resource: &ResourceDescriptor) -> PathBuf {
+    pub(crate) fn file_path(&self, module_id: &str, resource: &ResourceDescriptor) -> PathBuf {
         self.version_dir(module_id, resource).join(&resource.id)
     }
 
@@ -184,7 +184,7 @@ impl ResourceStore {
 
     /// The marker of an installed resource, when the version directory holds one that matches the
     /// declaration and a file of the declared length. One small read and two stats; no hashing.
-    pub fn installed(
+    pub(crate) fn installed(
         &self,
         module_id: &str,
         resource: &ResourceDescriptor,
@@ -199,7 +199,7 @@ impl ResourceStore {
 
     /// The bytes every installed resource under the root takes, by their markers: a walk of three
     /// directory levels and one small read per installed version. Staging is not counted.
-    pub fn used_bytes(&self) -> u64 {
+    pub(crate) fn used_bytes(&self) -> u64 {
         let entries = |dir: &Path| {
             fs::read_dir(dir)
                 .into_iter()

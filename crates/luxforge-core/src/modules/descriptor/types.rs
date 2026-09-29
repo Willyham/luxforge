@@ -29,7 +29,7 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 /// content stage and join the stack before everything that follows; a spatial effect reads a
 /// bounded neighbourhood of the content stage, so it follows the pointwise work; a geometry effect
 /// changes the stage and extends the geometry tail; and a finish effect is evaluated last, in the
-/// output coordinates the tail produced. [`crate::ModuleRegistry::insertion_index`] states the
+/// output coordinates the tail produced. `crate::ModuleRegistry::insertion_index` states the
 /// placement rule each stage gets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -48,7 +48,7 @@ pub enum EffectStage {
 impl EffectStage {
     /// The declared name, spelled as the descriptor serializes it, for an error that has to say
     /// which stage refused something.
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Source => "source",
             Self::Geometry => "geometry",
@@ -116,7 +116,7 @@ impl EffectDescriptor {
     /// An effect of `stage` at the current payload format ([`crate::EFFECT_FORMAT`]) and order
     /// `0`, on every source kind, neither maskable nor single and with no artifacts: a base for
     /// struct update, which names each field the effect declares otherwise.
-    pub fn new(id: impl Into<String>, stage: EffectStage) -> Self {
+    pub(crate) fn new(id: impl Into<String>, stage: EffectStage) -> Self {
         Self {
             id: id.into(),
             format: crate::EFFECT_FORMAT,
@@ -130,7 +130,7 @@ impl EffectDescriptor {
     }
 
     /// Whether a layer of this effect may exist on a photo of `kind`: `O(sources)`, no allocation.
-    pub fn applies_to(&self, kind: SourceTag) -> bool {
+    pub(crate) fn applies_to(&self, kind: SourceTag) -> bool {
         self.sources.is_empty() || self.sources.contains(&kind)
     }
 }
@@ -190,7 +190,7 @@ pub enum ParameterKind {
     /// non-empty objects of that action's fields. The generic check validates only this shape; the
     /// host checks every action and field against its own descriptor when the set is applied.
     Settings,
-    /// A network destination: a URL of at most [`MAX_ENDPOINT_BYTES`] that the capability
+    /// A network destination: a URL of at most `MAX_ENDPOINT_BYTES` that the capability
     /// transport's policy accepts as one of `classes`. Only a module setting declares one, and only
     /// a provider profile's, because only the host contacts anything and a destination is the
     /// person's choice: an action, query or task that declared one would let a request name where
@@ -198,7 +198,7 @@ pub enum ParameterKind {
     Endpoint {
         classes: Vec<EndpointClass>,
     },
-    /// A credential of 1..=`max_length` characters (at most [`MAX_SECRET_LENGTH`]), held only by the
+    /// A credential of 1..=`max_length` characters (at most `MAX_SECRET_LENGTH`), held only by the
     /// OS secret store and reported only as present or absent. Only a module setting declares one,
     /// so the one request that carries a secret is `module.settings.set-secret`, which is what
     /// makes redaction structural: no recipe, history entry, draft or job parameter can hold one.
@@ -230,7 +230,7 @@ pub enum IdentityKind {
 
 impl IdentityKind {
     /// The object, as a refusal names it.
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Mask => "mask",
             Self::Component => "component",
@@ -240,7 +240,7 @@ impl IdentityKind {
 
     /// Whether `text` is an identity of this kind, by the parser the identity type owns, so the
     /// generic check and the command that resolves the identity cannot disagree about its shape.
-    pub fn accepts(self, text: &str) -> bool {
+    pub(crate) fn accepts(self, text: &str) -> bool {
         match self {
             Self::Mask => crate::MaskId::parse(text).is_ok(),
             Self::Component => crate::ComponentId::parse(text).is_ok(),
@@ -250,9 +250,9 @@ impl IdentityKind {
 }
 
 /// The longest endpoint URL a value may be before it is parsed, in bytes.
-pub const MAX_ENDPOINT_BYTES: usize = 4096;
+pub(super) const MAX_ENDPOINT_BYTES: usize = 4096;
 /// The longest secret a module may declare, in characters.
-pub const MAX_SECRET_LENGTH: usize = 4096;
+pub(super) const MAX_SECRET_LENGTH: usize = 4096;
 
 impl ParameterKind {
     /// The kind's tag as it is serialized, for messages.
@@ -276,13 +276,13 @@ impl ParameterKind {
 
     /// Whether only a module setting may declare this kind: see [`Self::Endpoint`] and
     /// [`Self::Secret`].
-    pub fn setting_only(&self) -> bool {
+    pub(crate) fn setting_only(&self) -> bool {
         matches!(self, Self::Endpoint { .. } | Self::Secret { .. })
     }
 
     /// Whether only the host declares this kind, for its own objects' commands: see
     /// [`Self::Identity`]. A module's action, query or task, and a module setting, refuse it.
-    pub fn host_only(&self) -> bool {
+    pub(crate) fn host_only(&self) -> bool {
         self.is_identity()
     }
 
@@ -324,7 +324,7 @@ pub struct ParameterDescriptor {
 
 /// The largest pixel coordinate a parameter can address: the decoder accepts at most 16384 pixels
 /// per side, so no stage has a larger one.
-pub const MAX_COORDINATE: i64 = 16383;
+pub(super) const MAX_COORDINATE: i64 = 16383;
 
 /// A descriptor is built from one kind constructor — [`Self::number`], [`Self::integer`] and the
 /// rest, each starting optional with every hint unset and empty notes — and chained hints:
@@ -376,7 +376,7 @@ impl ParameterDescriptor {
         Self::new(name, ParameterKind::Boolean)
     }
 
-    pub fn points(name: impl Into<String>, points_min: usize, points_max: usize) -> Self {
+    pub(crate) fn points(name: impl Into<String>, points_min: usize, points_max: usize) -> Self {
         Self::new(
             name,
             ParameterKind::Points {
@@ -386,12 +386,12 @@ impl ParameterDescriptor {
         )
     }
 
-    pub fn artifact(name: impl Into<String>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn artifact(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Artifact)
     }
 
-    /// A non-monotone curve with no fixed `x`s; chain [`Self::monotone`] and/or
-    /// [`Self::fixed_x`] to declare either.
+    /// A non-monotone curve with no fixed `x`s; chain [`Self::monotone`] to make it monotone.
     pub fn curve(name: impl Into<String>, points_min: usize, points_max: usize) -> Self {
         Self::new(
             name,
@@ -404,15 +404,15 @@ impl ParameterDescriptor {
         )
     }
 
-    pub fn string(name: impl Into<String>, max_length: usize) -> Self {
+    pub(crate) fn string(name: impl Into<String>, max_length: usize) -> Self {
         Self::new(name, ParameterKind::String { max_length })
     }
 
-    pub fn settings(name: impl Into<String>) -> Self {
+    pub(crate) fn settings(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Settings)
     }
 
-    pub fn endpoint(
+    pub(crate) fn endpoint(
         name: impl Into<String>,
         classes: impl IntoIterator<Item = EndpointClass>,
     ) -> Self {
@@ -424,18 +424,18 @@ impl ParameterDescriptor {
         )
     }
 
-    pub fn secret(name: impl Into<String>, max_length: usize) -> Self {
+    pub(crate) fn secret(name: impl Into<String>, max_length: usize) -> Self {
         Self::new(name, ParameterKind::Secret { max_length })
     }
 
     /// The identity of one host object of kind `of`.
-    pub fn identity(name: impl Into<String>, of: IdentityKind) -> Self {
+    pub(crate) fn identity(name: impl Into<String>, of: IdentityKind) -> Self {
         Self::new(name, ParameterKind::Identity { of })
     }
 
     /// A pixel coordinate of a stage, `0..=MAX_COORDINATE` px, required: a descriptor cannot know
     /// the stage a particular asset produces, so a point outside it is refused when it is asked.
-    pub fn pixel_coordinate(name: impl Into<String>) -> Self {
+    pub(crate) fn pixel_coordinate(name: impl Into<String>) -> Self {
         Self::integer(name, 0, MAX_COORDINATE)
             .required(true)
             .unit("px")
@@ -495,14 +495,6 @@ impl ParameterDescriptor {
     pub fn monotone(mut self) -> Self {
         if let ParameterKind::Curve { monotone, .. } = &mut self.kind {
             *monotone = true;
-        }
-        self
-    }
-
-    /// Only meaningful on a [`ParameterKind::Curve`]; a no-op on any other kind.
-    pub fn fixed_x(mut self, xs: Vec<f64>) -> Self {
-        if let ParameterKind::Curve { fixed_x, .. } = &mut self.kind {
-            *fixed_x = Some(xs);
         }
         self
     }
@@ -605,7 +597,7 @@ pub struct ControlVariant {
 
 impl ControlVariant {
     /// A control `module` provides in a control's place on a photo of `source`.
-    pub fn control(
+    pub(crate) fn control(
         source: SourceTag,
         module: impl Into<String>,
         control: impl Into<Control>,
@@ -619,7 +611,7 @@ impl ControlVariant {
     }
 
     /// A reset `module` provides in a group's place on a photo of `source`.
-    pub fn reset(source: SourceTag, module: impl Into<String>, reset: ResetAction) -> Self {
+    pub(crate) fn reset(source: SourceTag, module: impl Into<String>, reset: ResetAction) -> Self {
         Self {
             source,
             module: module.into(),
@@ -805,19 +797,19 @@ pub struct GroupControl {
 
 impl GroupControl {
     /// The action the group header's reset runs.
-    pub fn reset(self, reset: ResetAction) -> Self {
+    pub(crate) fn reset(self, reset: ResetAction) -> Self {
         Self {
             reset: Some(reset),
             ..self
         }
     }
 
-    pub fn collapsed(self, collapsed: bool) -> Self {
+    pub(crate) fn collapsed(self, collapsed: bool) -> Self {
         Self { collapsed, ..self }
     }
 
     /// A replacement reset for one source kind ([`ControlVariant::reset`]).
-    pub fn variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);
         self
     }
@@ -841,7 +833,7 @@ pub struct NumberControl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset: Option<ResetAction>,
     /// The control another module provides in this place on a photo of one source kind
-    /// ([`ControlVariant`]). Listed only when declared.
+    /// (`ControlVariant`). Listed only when declared.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ControlVariant>,
 }
@@ -859,7 +851,7 @@ impl NumberControl {
     }
 
     /// What resetting this one field runs in place of its declared default.
-    pub fn field_reset(self, reset: ResetAction) -> Self {
+    pub(crate) fn field_reset(self, reset: ResetAction) -> Self {
         Self {
             reset: Some(reset),
             ..self
@@ -867,7 +859,7 @@ impl NumberControl {
     }
 
     /// A replacement number control for one source kind ([`ControlVariant::control`]).
-    pub fn variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);
         self
     }
@@ -961,7 +953,11 @@ pub struct RangeControl {
 
 impl RangeControl {
     /// The two shoulder parameters.
-    pub fn feathers(self, low_feather: impl Into<String>, high_feather: impl Into<String>) -> Self {
+    pub(crate) fn feathers(
+        self,
+        low_feather: impl Into<String>,
+        high_feather: impl Into<String>,
+    ) -> Self {
         Self {
             low_feather: Some(low_feather.into()),
             high_feather: Some(high_feather.into()),
@@ -969,7 +965,7 @@ impl RangeControl {
         }
     }
 
-    pub fn rail(self, rail: RailDecoration) -> Self {
+    pub(crate) fn rail(self, rail: RailDecoration) -> Self {
         Self {
             rail: Some(rail),
             ..self
@@ -990,7 +986,7 @@ pub struct ActionControl {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// The control another module provides in this place on a photo of one source kind
-    /// ([`ControlVariant`]). Listed only when declared.
+    /// (`ControlVariant`). Listed only when declared.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ControlVariant>,
 }
@@ -1013,7 +1009,7 @@ impl ActionControl {
     }
 
     /// A replacement action control for one source kind ([`ControlVariant::control`]).
-    pub fn variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);
         self
     }
@@ -1030,14 +1026,14 @@ impl ActionControl {
 pub struct PickerControl {
     pub label: String,
     /// The picker another module provides in this place on a photo of one source kind, which
-    /// enters that module's own pick canvas ([`ControlVariant`]). Listed only when declared.
+    /// enters that module's own pick canvas (`ControlVariant`). Listed only when declared.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<ControlVariant>,
 }
 
 impl PickerControl {
     /// A replacement picker for one source kind ([`ControlVariant::control`]).
-    pub fn variant(mut self, variant: ControlVariant) -> Self {
+    pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);
         self
     }
@@ -1092,7 +1088,7 @@ control_kinds!(
 impl Control {
     /// A `number` control styled as a slider, the style every field-patch module's fields use.
     /// Chain [`NumberControl::number_style`] for `field`/`stepper`, [`NumberControl::rail`] and
-    /// [`NumberControl::field_reset`].
+    /// `NumberControl::field_reset`.
     pub fn number(
         action: impl Into<String>,
         parameter: impl Into<String>,
@@ -1112,7 +1108,7 @@ impl Control {
     /// A `range` control over the band edges `low` and `high` of `action`, without shoulders.
     /// Chain [`RangeControl::feathers`] for the shoulder grips and [`RangeControl::rail`] for the
     /// rail.
-    pub fn range(
+    pub(crate) fn range(
         action: impl Into<String>,
         low: impl Into<String>,
         high: impl Into<String>,
@@ -1210,14 +1206,15 @@ impl Control {
         }
     }
 
-    pub fn task(task: impl Into<String>, label: impl Into<String>) -> TaskControl {
+    #[cfg(test)]
+    pub(crate) fn task(task: impl Into<String>, label: impl Into<String>) -> TaskControl {
         TaskControl {
             task: task.into(),
             label: label.into(),
         }
     }
 
-    pub fn presets(action: impl Into<String>) -> PresetsControl {
+    pub(crate) fn presets(action: impl Into<String>) -> PresetsControl {
         PresetsControl {
             action: action.into(),
         }
@@ -1450,21 +1447,17 @@ impl ModuleDescriptor {
     /// The read-only query this module declares under that identity. Queries have their own
     /// namespace: `query.<id>` and `edit.<id>` are different methods, so a module may name a query
     /// after the action its result feeds without either shadowing the other.
-    pub fn query(&self, id: &str) -> Option<&ActionDescriptor> {
+    pub(crate) fn query(&self, id: &str) -> Option<&ActionDescriptor> {
         self.queries.iter().find(|query| query.id == id)
     }
 
-    pub fn effect(&self, id: &str) -> Option<&EffectDescriptor> {
-        self.effects.iter().find(|effect| effect.id == id)
-    }
-
-    pub fn capability(&self, id: &str) -> Option<&CapabilityDescriptor> {
+    pub(crate) fn capability(&self, id: &str) -> Option<&CapabilityDescriptor> {
         self.capabilities
             .iter()
             .find(|capability| capability.id == id)
     }
 
-    pub fn resource(&self, id: &str) -> Option<&ResourceDescriptor> {
+    pub(crate) fn resource(&self, id: &str) -> Option<&ResourceDescriptor> {
         self.resources.iter().find(|resource| resource.id == id)
     }
 
@@ -1477,7 +1470,7 @@ impl ModuleDescriptor {
     }
 
     /// Whether this module applies to a photo of `kind`: when any of its effects may exist on that
-    /// kind ([`EffectDescriptor::applies_to`]), or when it declares no effect at all, since a module
+    /// kind (`EffectDescriptor::applies_to`), or when it declares no effect at all, since a module
     /// that writes no layer has nothing a kind could refuse. The one answer to "does this module
     /// apply to this photo" — the host's action refusal, `module.list` and every client surface read
     /// it. `O(effects × sources)`, no allocation.
@@ -1488,7 +1481,7 @@ impl ModuleDescriptor {
     /// [`Self::is_available`] as a refusal: `incompatible: unavailable module <id>`. A provider
     /// registered unavailable keeps its descriptor so its stored layers stay readable, but the host
     /// never plans, queries or commits through it, and no preset may name its actions.
-    pub fn check_available(&self) -> Result<(), Error> {
+    pub(crate) fn check_available(&self) -> Result<(), Error> {
         if self.is_available() {
             return Ok(());
         }
@@ -1500,7 +1493,7 @@ impl ModuleDescriptor {
 
     /// [`Self::applies_to`] as a refusal: `validation: RAW does not apply to a JPEG photo`, worded
     /// from this module's title and the kind.
-    pub fn check_applies_to(&self, kind: SourceTag) -> Result<(), Error> {
+    pub(crate) fn check_applies_to(&self, kind: SourceTag) -> Result<(), Error> {
         if self.applies_to(kind) {
             return Ok(());
         }

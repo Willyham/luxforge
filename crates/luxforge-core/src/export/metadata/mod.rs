@@ -28,7 +28,7 @@ const MAX_ASCII: u32 = 1024;
 
 /// The largest TIFF payload one APP1 segment carries: the segment's 16-bit length counts its own
 /// two bytes, and the 6-byte `Exif\0\0` header precedes the payload.
-pub const MAX_PAYLOAD: usize = 65_535 - 2 - 6;
+pub(crate) const MAX_PAYLOAD: usize = 65_535 - 2 - 6;
 
 // TIFF field types.
 const BYTE: u16 = 1;
@@ -154,7 +154,7 @@ pub struct CaptureMetadata {
 /// The EXIF orientation of a JPEG file's first `Exif` APP1 segment before its scan, read with the
 /// same bounded reader as the kept fields: IFD0's first Orientation entry that is one SHORT from 1
 /// to 8, else 1.
-pub fn jpeg_orientation(bytes: &[u8]) -> u8 {
+pub(crate) fn jpeg_orientation(bytes: &[u8]) -> u8 {
     read::jpeg_exif(bytes)
         .and_then(read::orientation)
         .unwrap_or(1)
@@ -162,7 +162,7 @@ pub fn jpeg_orientation(bytes: &[u8]) -> u8 {
 
 impl CaptureMetadata {
     /// The EXIF of a JPEG file's first `Exif` APP1 segment before its scan.
-    pub fn from_jpeg(bytes: &[u8]) -> Self {
+    pub(crate) fn from_jpeg(bytes: &[u8]) -> Self {
         read::jpeg_exif(bytes)
             .map(Self::from_tiff)
             .unwrap_or_default()
@@ -170,7 +170,7 @@ impl CaptureMetadata {
 
     /// The EXIF of a RAW original: the file's own TIFF structure (NEF, DNG), or the EXIF of the
     /// JPEG a RAF embeds. Any other container is empty metadata.
-    pub fn from_raw(bytes: &[u8]) -> Self {
+    pub(crate) fn from_raw(bytes: &[u8]) -> Self {
         if read::is_tiff(bytes) {
             Self::from_tiff(bytes)
         } else if let Some(jpeg) = read::raf_jpeg(bytes) {
@@ -210,12 +210,13 @@ impl CaptureMetadata {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 
     /// The kept fields' EXIF names: IFD0, then Exif, then GPS, each by tag.
-    pub fn field_names(&self) -> Vec<&'static str> {
+    pub(crate) fn field_names(&self) -> Vec<&'static str> {
         self.fields
             .iter()
             .map(|(index, _)| FIELDS[*index].name)
@@ -225,7 +226,7 @@ impl CaptureMetadata {
     /// The export's EXIF: a little-endian TIFF with IFD0, the Exif IFD and, when any GPS field is
     /// kept, the GPS IFD, and no IFD1, so no thumbnail. `width` and `height` are the exported
     /// frame's. At most [`MAX_PAYLOAD`] bytes.
-    pub fn exif_payload(&self, width: u32, height: u32) -> Vec<u8> {
+    pub(crate) fn exif_payload(&self, width: u32, height: u32) -> Vec<u8> {
         write::payload(&self.fields, width, height)
     }
 }

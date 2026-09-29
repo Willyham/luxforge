@@ -15,7 +15,7 @@
 //! - **Capability** jobs run on this table's `transfer` and `module` lanes and **export** on its
 //!   `export` lane. Each lane is one thread, spawned on its first job, that blocks on its channel
 //!   while idle, runs one job at a time and posts the result into the catalog owner's own channel;
-//!   nothing polls. The table keeps each lane's waiting jobs, at most [`LANE_QUEUE`] of them, so a
+//!   nothing polls. The table keeps each lane's waiting jobs, at most `LANE_QUEUE` of them, so a
 //!   queued job can be cancelled without touching the thread. A lane job belongs to no client: any
 //!   client may read or cancel it, a cancel stops it for everyone, and a client's disconnect never
 //!   touches it.
@@ -45,34 +45,34 @@ use std::{
 };
 
 /// Jobs that may wait on one lane behind the running one.
-pub const LANE_QUEUE: usize = 4;
+pub(crate) const LANE_QUEUE: usize = 4;
 /// Finished capability, export and analysis records the table keeps of each of those families; the
 /// oldest of a family is forgotten first.
-pub const FINISHED_RECORDS: usize = 32;
+pub(crate) const FINISHED_RECORDS: usize = 32;
 /// Finished source records the table keeps.
-pub const FINISHED_SOURCE_RECORDS: usize = 64;
+pub(crate) const FINISHED_SOURCE_RECORDS: usize = 64;
 /// Ready analysis reports the table keeps; the oldest is forgotten first. A report is about 6 KiB.
-pub const MAX_READY_REPORTS: usize = 8;
+pub(crate) const MAX_READY_REPORTS: usize = 8;
 
 /// The job methods, which serve every kind.
 pub const JOB_READ: &str = "job.read";
 pub const JOB_CANCEL: &str = "job.cancel";
 
 /// The reason a job is cancelled when a grant it depends on is revoked.
-pub const PERMISSION_REVOKED: &str = "permission revoked";
+pub(crate) const PERMISSION_REVOKED: &str = "permission revoked";
 /// The reason `job.cancel` gives, and the reason a shared job ends when its last client leaves it.
-pub const CANCELLED: &str = "the job was cancelled";
+pub(crate) const CANCELLED: &str = "the job was cancelled";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum Lane {
+pub(crate) enum Lane {
     Transfer,
     Module,
     Export,
 }
 
 impl Lane {
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Transfer => "transfer",
             Self::Module => "module",
@@ -144,7 +144,7 @@ impl JobKind {
     }
 
     /// The lane that runs a job of this kind, for the kinds this table schedules itself.
-    pub fn lane(self) -> Option<Lane> {
+    pub(crate) fn lane(self) -> Option<Lane> {
         match self {
             Self::Install | Self::Remove => Some(Lane::Transfer),
             Self::Task => Some(Lane::Module),
@@ -164,7 +164,7 @@ pub use crate::model::JobStatus;
 /// How far a job has come. The one progress model every activity publisher shares
 /// (`crate::activity::ActivityProgress`): a lane job reports through the activity its lane begins
 /// rather than keeping its own copy, and `job.read` answers with what the board carries.
-pub use crate::activity::ActivityProgress as JobProgress;
+pub(crate) use crate::activity::ActivityProgress as JobProgress;
 
 /// A failed or cancelled job's error, as a client reads it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -217,7 +217,7 @@ pub struct JobRecord {
 
 impl JobRecord {
     /// The module a capability job belongs to; empty for any other kind.
-    pub fn module(&self) -> &str {
+    pub(crate) fn module(&self) -> &str {
         self.module_id.as_deref().unwrap_or_default()
     }
 }
@@ -288,7 +288,7 @@ impl JobControl {
     }
 
     /// The render cancellation token this job's cancel also sets, for a job that renders.
-    pub fn render_cancel(&self) -> &Cancel {
+    pub(crate) fn render_cancel(&self) -> &Cancel {
         &self.render
     }
 
@@ -320,7 +320,7 @@ impl JobControl {
 
     /// Report progress: forwarded straight to the job's activity, the one progress model every
     /// publisher on the board shares. Called from the job's own worker thread.
-    pub fn set_progress(&self, fraction: Option<f64>, message: &str) {
+    pub(crate) fn set_progress(&self, fraction: Option<f64>, message: &str) {
         if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
             activity.progress(fraction, message);
         }
@@ -328,7 +328,7 @@ impl JobControl {
 
     /// Report the phase the job has reached, on its activity. Called from the job's own worker
     /// thread.
-    pub fn set_phase(&self, phase: &'static str) {
+    pub(crate) fn set_phase(&self, phase: &'static str) {
         if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
             activity.phase(phase);
         }

@@ -26,7 +26,7 @@ pub const MODES: [ComponentMode; 3] = [
 pub const FIRST_COMPONENT_IS_ADD: &str = "the first component of a mask is always add";
 
 /// A declared mode token as the mode it names.
-pub fn mode(token: &str) -> Result<ComponentMode, Error> {
+pub(crate) fn mode(token: &str) -> Result<ComponentMode, Error> {
     MODES
         .into_iter()
         .find(|mode| mode.as_str() == token)
@@ -75,7 +75,7 @@ pub fn may_lead(mode: ComponentMode) -> bool {
 /// refused as it stands, with the mode named. Every command that can change which component leads —
 /// a mode change, a reorder, a delete, an add to an empty mask — reaches this through the mask's own
 /// structural check.
-pub fn leading(mask: &str, mode: ComponentMode) -> Result<(), Error> {
+pub(crate) fn leading(mask: &str, mode: ComponentMode) -> Result<(), Error> {
     if !may_lead(mode) {
         return Err(Error::validation(format!(
             "mask {mask} begins with a {} component; {FIRST_COMPONENT_IS_ADD}",

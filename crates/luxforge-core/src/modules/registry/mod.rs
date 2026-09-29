@@ -22,9 +22,9 @@ mod variants_tests;
 
 #[cfg(test)]
 pub(crate) use compile::stack_compiles;
-pub use lookups::{ActionRef, QueryRef};
+pub(crate) use lookups::{ActionRef, QueryRef};
 pub use placement::insertion_index_among;
-pub use variants::Superseded;
+pub(crate) use variants::Superseded;
 
 use super::{
     BasicModule, CanvasInteraction, CapabilitiesProofModule, ControlsModule, CropModule,
@@ -125,7 +125,7 @@ impl Entry {
 /// A registered module as the registry serves it: the module, whose methods it dereferences to,
 /// and the descriptor the registry publishes for it, whose availability is the registry's. A module
 /// registered unavailable reports that here whatever its own descriptor declares, so a caller that
-/// checks [`Provider::descriptor`]'s availability before calling the module reads the registry's
+/// checks `Provider::descriptor`'s availability before calling the module reads the registry's
 /// answer.
 #[derive(Clone, Copy)]
 pub struct Provider<'r> {
@@ -136,12 +136,12 @@ pub struct Provider<'r> {
 impl<'r> Provider<'r> {
     /// The descriptor the registry publishes for this module, with the availability it was
     /// registered with.
-    pub fn descriptor(&self) -> &'r ModuleDescriptor {
+    pub(crate) fn descriptor(&self) -> &'r ModuleDescriptor {
         self.descriptor
     }
 
     /// The module itself, for a caller that keeps it past this handle.
-    pub fn module(&self) -> &'r dyn ToolModule {
+    pub(crate) fn module(&self) -> &'r dyn ToolModule {
         self.module
     }
 }
@@ -251,7 +251,7 @@ impl ModuleRegistry {
     /// `unavailable {reason}`. A stack holding one of its effects stays readable and is reported
     /// rather than rendered without it, and its actions, queries and tasks are refused by name, as
     /// for any unavailable provider. [`RegistryOptions::disabled`] registers through it.
-    pub fn register_unavailable(
+    pub(crate) fn register_unavailable(
         &mut self,
         module: Arc<dyn ToolModule>,
         reason: impl Into<String>,

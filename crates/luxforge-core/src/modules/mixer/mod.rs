@@ -174,10 +174,10 @@ fn mixer_field(name: &'static str) -> Field {
 
 /// The colour mixer's table and compilation.
 #[derive(Debug, Default)]
-pub struct Mixer;
+pub(crate) struct Mixer;
 
 /// The colour mixer module: `Mixer` as a field-patch module.
-pub type MixerModule = FieldPatchModule<Mixer>;
+pub(crate) type MixerModule = FieldPatchModule<Mixer>;
 
 impl FieldPatch for Mixer {
     fn spec() -> Spec {

@@ -62,8 +62,8 @@ pub const COORDINATE_STEPS_PER_UNIT: f64 = 16384.0;
 /// The legal range of a stored path coordinate: the frame, with one frame of overshoot on each
 /// side, because a stroke that begins or ends off the canvas is an ordinary gesture. It is the same
 /// range a drawn position takes anywhere else in the recipe.
-pub const COORDINATE_MIN: f64 = -1.0;
-pub const COORDINATE_MAX: f64 = 2.0;
+pub(crate) const COORDINATE_MIN: f64 = -1.0;
+pub(crate) const COORDINATE_MAX: f64 = 2.0;
 
 const GRID_MIN: i32 = (COORDINATE_MIN * COORDINATE_STEPS_PER_UNIT) as i32;
 const GRID_MAX: i32 = (COORDINATE_MAX * COORDINATE_STEPS_PER_UNIT) as i32;
@@ -81,16 +81,16 @@ const GRID_MAX: i32 = (COORDINATE_MAX * COORDINATE_STEPS_PER_UNIT) as i32;
 /// four is the round share that keeps every measured workload at the default and smaller sizes under
 /// the cap with a margin. The stored path then stays within a twenty-fifth of the radius of the
 /// drawn one.
-pub const DECIMATION_TOLERANCE_OF_RADIUS: f64 = 0.04;
+pub(crate) const DECIMATION_TOLERANCE_OF_RADIUS: f64 = 0.04;
 
 /// The least decimation tolerance, in grid steps, whatever the radius: two steps, within 2 px of the
 /// captured path on a 16384 px stage and half a pixel on a 4096 px one, below what a person can see.
 /// A radius under fifty steps takes this floor rather than a smaller share of itself, so a small
 /// brush never stores more positions than two steps keep.
-pub const DECIMATION_TOLERANCE_MIN_STEPS: f64 = 2.0;
+pub(crate) const DECIMATION_TOLERANCE_MIN_STEPS: f64 = 2.0;
 
 /// The least decimation tolerance in normalized units, which is what a client posting a path reads.
-pub const DECIMATION_TOLERANCE_MIN: f64 =
+pub(crate) const DECIMATION_TOLERANCE_MIN: f64 =
     DECIMATION_TOLERANCE_MIN_STEPS / COORDINATE_STEPS_PER_UNIT;
 
 /// The half diagonal of one stored grid cell, in normalized units: how far snapping moves a position
@@ -100,7 +100,7 @@ pub const DECIMATION_TOLERANCE_MIN: f64 =
 /// independently: a position in the far corner of its cell moves by the cell's half diagonal, not by
 /// half a step. The measured worst case over randomized captured paths sits just under the tolerance
 /// plus this, which is what caught the half-step spelling.
-pub const GRID_ROUNDING: f64 = std::f64::consts::FRAC_1_SQRT_2 / COORDINATE_STEPS_PER_UNIT;
+pub(crate) const GRID_ROUNDING: f64 = std::f64::consts::FRAC_1_SQRT_2 / COORDINATE_STEPS_PER_UNIT;
 
 /// The decimation tolerance of a stroke whose radius is `size_steps` grid steps as stored: the
 /// relative share of that radius, never less than the floor. Reading the stored radius rather than
@@ -111,14 +111,16 @@ fn tolerance_steps(size_steps: i32) -> f64 {
 }
 
 /// The decimation tolerance of a stroke of radius `size`, in normalized units.
-pub fn decimation_tolerance(size: f64) -> f64 {
+#[cfg(test)]
+pub(crate) fn decimation_tolerance(size: f64) -> f64 {
     tolerance_steps(quantize(size)) / COORDINATE_STEPS_PER_UNIT
 }
 
 /// The whole deviation a captured position may end up at from the stored path of a stroke of radius
 /// `size`, in normalized units, and the bound a stored path is checked against: the decimation
 /// tolerance plus [`GRID_ROUNDING`].
-pub fn stored_deviation(size: f64) -> f64 {
+#[cfg(test)]
+pub(crate) fn stored_deviation(size: f64) -> f64 {
     decimation_tolerance(size) + GRID_ROUNDING
 }
 
@@ -137,7 +139,7 @@ pub const POINTS_PER_STROKE: usize = 1024;
 /// bound is a minute of continuous pointer at 240 Hz, which no gesture reaches, and it still keeps
 /// one request under the transport's one-megabyte line at any coordinate spelling and one
 /// decimation pass bounded.
-pub const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
+pub(crate) const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
 
 /// The legal stroke radius, in normalized units where one unit is the content stage's height: the
 /// **one** range every reader of a radius holds — the declared `size` a painting command takes,
@@ -148,16 +150,16 @@ pub const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
 /// ([`crate::mask::DISTANCE_MIN`]), so no radius a stroke can hold ever makes a divisor smaller than
 /// the study allows; stored on the grid it is two steps. The ceiling covers the whole stage from any
 /// point on it, well inside the study's largest distance.
-pub const SIZE_MIN: f64 = crate::mask::DISTANCE_MIN;
-pub const SIZE_MAX: f64 = 2.0;
+pub(crate) const SIZE_MIN: f64 = crate::mask::DISTANCE_MIN;
+pub(crate) const SIZE_MAX: f64 = 2.0;
 
 /// Whether `size` is a legal stroke radius: finite and inside [`SIZE_MIN`]`..=`[`SIZE_MAX`].
-pub fn size_is_legal(size: f64) -> bool {
+pub(crate) fn size_is_legal(size: f64) -> bool {
     size.is_finite() && (SIZE_MIN..=SIZE_MAX).contains(&size)
 }
 
 /// The legal stroke radius as every refusal of one spells it.
-pub fn size_range() -> String {
+pub(crate) fn size_range() -> String {
     format!("{SIZE_MIN}..={SIZE_MAX}")
 }
 
@@ -186,7 +188,7 @@ pub struct StrokeId(String);
 
 impl StrokeId {
     /// The address of these canonical bytes.
-    pub fn of(canonical: &[u8]) -> Self {
+    pub(crate) fn of(canonical: &[u8]) -> Self {
         #[cfg(test)]
         crate::editor::read_counts::hashed();
         let digest = Sha256::digest(canonical);
@@ -272,7 +274,7 @@ pub struct Stroke {
 /// The colour a limited stroke was seeded on, and how tight the similarity around it is.
 ///
 /// The seed is the pixel the operation the mask modulates receives where the stroke began, **as the
-/// host samples it**: the three sRGB codes [`crate::modules::StageContext::sample_before`] answers,
+/// host samples it**: the three sRGB codes `crate::modules::StageContext::sample_before` answers,
 /// decoded to linear light by the delivered decode when the stroke is compiled. It is **stored**, not
 /// re-read, so the stroke reproduces its own limit from its bytes after any later edit and nothing is
 /// sampled again when the picture is drawn. `refine` is the colour range's own slider and means what
@@ -288,7 +290,7 @@ pub struct Stroke {
 /// declared control moves in.
 ///
 /// The similarity itself is frozen in `docs/design/mask-study.md#the-colour-constraint` and is the
-/// [colour range](crate::mask::ColourRange)'s own falloff at one sample.
+/// colour range's own falloff at one sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ColourLimit {
@@ -331,7 +333,7 @@ impl ColourLimit {
     }
 
     /// The sampled codes as stored, for a client that wants to show the swatch it holds.
-    pub fn codes(&self) -> [u8; 3] {
+    pub(crate) fn codes(&self) -> [u8; 3] {
         self.seed
     }
 
@@ -467,7 +469,7 @@ impl Stroke {
 
     /// Parse stored bytes and verify they are the bytes `id` addresses.
     ///
-    /// A mismatch is [`ErrorKind::Incompatible`] and names the reference, because it is the store
+    /// A mismatch is [`crate::ErrorKind::Incompatible`] and names the reference, because it is the store
     /// disagreeing with itself and not a request that could be corrected.
     pub fn from_stored(id: &StrokeId, stored: &[u8]) -> Result<Self, Error> {
         if &StrokeId::of(stored) != id {
@@ -532,11 +534,11 @@ fn quantize(value: f64) -> i32 {
 ///
 /// This is the whole decimation contract, and it is deterministic: snap every position to the grid,
 /// drop the ones that repeat, then run Ramer–Douglas–Peucker on the grid at the stroke's own
-/// tolerance, [`DECIMATION_TOLERANCE_OF_RADIUS`] of its radius as stored and never less than
-/// [`DECIMATION_TOLERANCE_MIN_STEPS`]. Running on the grid rather than before it is what makes the
+/// tolerance, `DECIMATION_TOLERANCE_OF_RADIUS` of its radius as stored and never less than
+/// `DECIMATION_TOLERANCE_MIN_STEPS`. Running on the grid rather than before it is what makes the
 /// result stable — two captures that round to the same grid path decimate identically whatever
 /// their last bits were — and it is why the bound a stored path keeps to the captured one is
-/// [`stored_deviation`] rather than the tolerance alone.
+/// `stored_deviation` rather than the tolerance alone.
 ///
 /// The desktop decimates with its brush's size before it posts a stroke, through [`PathCapture`],
 /// which is this function taken one position at a time, so the host receives a path that is already
@@ -598,11 +600,13 @@ impl PathCapture {
     }
 
     /// How many positions were pushed.
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.pushed
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.pushed == 0
     }
 
@@ -712,7 +716,7 @@ fn reduce(points: &[[i32; 2]], tolerance: f64) -> Vec<[i32; 2]> {
 /// Why a stroke reference could not be resolved. Both are incompatible data the host retains, never
 /// a stroke to skip.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StrokeFault {
+pub(crate) enum StrokeFault {
     /// The store holds nothing at this address.
     Missing,
     /// The store holds bytes at this address that are not the bytes it names, or that are not a
@@ -746,7 +750,7 @@ impl StrokeFault {
 ///
 /// **Shared, never copied.** A table does not change once its recipe has been read, so cloning a
 /// recipe — which every plan, draft, preview and cached history entry does — shares the one table
-/// instead of copying up to [`crate::MASKS_PER_RECIPE`] masks of [`crate::POINTS_PER_MASK`]
+/// instead of copying up to [`crate::MASKS_PER_RECIPE`] masks of `crate::POINTS_PER_MASK`
 /// positions. The one writer, a stroke command adding the stroke it captured to the recipe it is
 /// building, copies on write: the map of pointers once, and never a stroke's positions.
 #[derive(Clone, Debug, Default)]
@@ -777,14 +781,8 @@ impl StrokeTable {
         })))
     }
 
-    pub fn origin(&self) -> &str {
+    pub(crate) fn origin(&self) -> &str {
         self.0.as_ref().map_or("", |held| held.origin.as_str())
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0
-            .as_ref()
-            .is_none_or(|held| held.strokes.is_empty() && held.faults.is_empty())
     }
 
     /// The table to write into: this one when no other recipe shares it, and otherwise a copy of
@@ -803,7 +801,7 @@ impl StrokeTable {
     /// Record a resolved stroke under its own address, **not** yet known to be in the catalog's
     /// store: a stroke a paint command just captured, or anything else that produced one fresh. The
     /// address is recomputed rather than trusted, so a table cannot hold a stroke under a name that
-    /// is not its content's. A commit writes every such id until it is [`Self::mark_stored`] or the
+    /// is not its content's. A commit writes every such id until it is `Self::mark_stored` or the
     /// recipe is read back out of the catalog.
     pub fn insert(&mut self, stroke: Stroke) -> StrokeId {
         let id = stroke.id();
@@ -843,7 +841,7 @@ impl StrokeTable {
 
     /// Record that a reference could not be resolved. The reason is kept so the refusal can say
     /// which of the two it was.
-    pub fn fault(&mut self, id: StrokeId, fault: StrokeFault) {
+    pub(crate) fn fault(&mut self, id: StrokeId, fault: StrokeFault) {
         self.held().faults.insert(id, fault);
     }
 
@@ -885,7 +883,7 @@ impl StrokeTable {
     /// judged by: it names the stroke and the thing that referenced it, it is `Incompatible` like
     /// every other payload the host retains and cannot evaluate, and there is no branch anywhere
     /// that returns an empty stroke instead.
-    pub fn resolve(&self, id: &StrokeId) -> Result<&Stroke, Error> {
+    pub(crate) fn resolve(&self, id: &StrokeId) -> Result<&Stroke, Error> {
         if let Some(stroke) = self.get(id) {
             return Ok(stroke);
         }

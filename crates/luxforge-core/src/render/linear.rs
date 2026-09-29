@@ -59,7 +59,7 @@ pub struct LinearSettings {
     /// preview of an open draft carries one, when the drafted temperature or tint asks for sensor
     /// gains the developed planes were not developed at. Every committed render, export, point
     /// sample and analysis is `None`, which is bit for bit the developed planes. See
-    /// [`WhiteBalanceApproximation`].
+    /// `WhiteBalanceApproximation`.
     pub white_balance: Option<WhiteBalanceApproximation>,
 }
 
@@ -86,7 +86,7 @@ impl WhiteBalanceApproximation {
     /// `R⁻¹` computed in f64. A non-finite or non-positive gain, a non-finite `R`, an `R` that is
     /// singular (or so close to it that its inverse is meaningless) and a non-finite `W` are each
     /// refused: there is no approximation, never a wrong one.
-    pub fn between(
+    pub(crate) fn between(
         camera_to_srgb: [[f64; 3]; 3],
         developed: [f32; 3],
         target: [f32; 3],
@@ -113,7 +113,7 @@ impl WhiteBalanceApproximation {
     }
 
     /// An explicit linear-sRGB matrix, refused unless every entry is finite.
-    pub fn from_matrix(matrix: [[f64; 3]; 3]) -> Result<Self, Error> {
+    pub(crate) fn from_matrix(matrix: [[f64; 3]; 3]) -> Result<Self, Error> {
         if matrix.iter().flatten().all(|value| value.is_finite()) {
             Ok(Self { matrix })
         } else {
@@ -124,7 +124,8 @@ impl WhiteBalanceApproximation {
     }
 
     /// The matrix applied to each linear-sRGB pixel, row by row.
-    pub fn matrix(&self) -> [[f64; 3]; 3] {
+    #[cfg(test)]
+    pub(crate) fn matrix(&self) -> [[f64; 3]; 3] {
         self.matrix
     }
 

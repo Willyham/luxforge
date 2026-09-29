@@ -408,7 +408,7 @@ impl EditorService {
     }
 
     /// Persisted source interpretation and current in-memory readiness, with no decode or frame work.
-    pub fn inspect_source(
+    pub(crate) fn inspect_source(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
@@ -636,7 +636,7 @@ impl EditorService {
     /// planning ([`Self::preparation`]), its source job's own work ([`SourceWork::run`]) and its own
     /// completion ([`Self::complete_preparation`]), in turn, so a reopened RAW develops at its
     /// entry's own gains exactly as it does on the owner. `needs` is what a
-    /// `preparation-required` refusal names ([`Error::needs`]) or what [`Self::entry_needs`]
+    /// `preparation-required` refusal names (`Error::needs`) or what [`Self::entry_needs`]
     /// answers. For tests and the harness; the catalog owner queues the work on its source worker
     /// instead.
     pub fn prepare(&mut self, needs: &PreparationNeeds) -> Result<EditorState, Error> {
@@ -1615,7 +1615,10 @@ mod tests {
 
         // The drafted value's numbers are strict.
         assert!(is_required(
-            service.sample_draft(&asset, &draft, 10, 10).unwrap_err()
+            service
+                .point_draft(&asset, &draft, 10, 10)
+                .and_then(|plan| plan.evaluate())
+                .unwrap_err()
         ));
         assert!(is_required(
             service

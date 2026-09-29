@@ -597,7 +597,7 @@
     {
       "id": "TASK-009",
       "description": "Replace luxforge-core's glob re-exports with an explicit public surface and make everything else pub(crate), deleting what the compiler then reports unused.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-004",
         "TASK-005",

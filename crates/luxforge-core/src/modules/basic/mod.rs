@@ -99,10 +99,10 @@ fn white_balance(name: &'static str, label: &str, notes: &str) -> Field {
 
 /// The Basic module's table, compilation and neutral picker.
 #[derive(Debug, Default)]
-pub struct Basic;
+pub(crate) struct Basic;
 
 /// The Basic module: `Basic` as a field-patch module.
-pub type BasicModule = FieldPatchModule<Basic>;
+pub(crate) type BasicModule = FieldPatchModule<Basic>;
 
 impl FieldPatch for Basic {
     fn spec() -> Spec {

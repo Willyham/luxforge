@@ -190,7 +190,7 @@ impl LinearImage {
     ///
     /// `crop` is `[x, y, width, height]` in the base source-plane coordinates. EXIF orientation
     /// values 1 through 8 use the standard mappings and are applied exactly once to that crop.
-    pub fn with_view(&self, crop: [u32; 4], orientation: u8) -> Result<Self, Error> {
+    pub(crate) fn with_view(&self, crop: [u32; 4], orientation: u8) -> Result<Self, Error> {
         let [x, y, width, height] = crop;
         if !(1..=8).contains(&orientation) {
             return Err(Error::validation(
@@ -256,19 +256,19 @@ impl LinearImage {
         self.with_view([x0, y0, x1 - x0 + 1, y1 - y0 + 1], self.view.orientation)
     }
 
-    pub fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
         self.view.output_dimensions().0
     }
 
-    pub fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> u32 {
         self.view.output_dimensions().1
     }
 
-    pub fn fingerprint(&self) -> &str {
+    pub(crate) fn fingerprint(&self) -> &str {
         &self.fingerprint
     }
 
-    pub fn view(&self) -> ([u32; 4], u8) {
+    pub(crate) fn view(&self) -> ([u32; 4], u8) {
         (
             [self.view.x, self.view.y, self.view.width, self.view.height],
             self.view.orientation,
@@ -277,7 +277,7 @@ impl LinearImage {
 
     /// The development these planes belong to: equal for every view over the same adopted planes,
     /// different for every redevelopment, and never reused within the process.
-    pub fn development(&self) -> u64 {
+    pub(crate) fn development(&self) -> u64 {
         self.development
     }
 
@@ -317,14 +317,16 @@ impl LinearImage {
         }
     }
 
-    pub fn planes(&self) -> &[f32] {
+    #[cfg(test)]
+    pub(crate) fn planes(&self) -> &[f32] {
         self.planes.as_slice()
     }
 
     /// Read one view pixel without allocating. This is also useful to a source-stage picker. A
     /// caller that reads many pixels takes [`Self::reader`] once instead.
+    #[cfg(test)]
     #[inline]
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         self.reader().pixel(x, y)
     }
 }

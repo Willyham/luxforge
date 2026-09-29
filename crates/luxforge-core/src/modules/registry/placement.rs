@@ -58,7 +58,7 @@ impl ModuleRegistry {
     ///
     /// Cost is `O(layers)` descriptor lookups plus `O(layers · masks)` target ranks; it reads no
     /// pixels and allocates nothing.
-    pub fn insertion_index_for_target(
+    pub(crate) fn insertion_index_for_target(
         &self,
         layers: &[Layer],
         effect_id: &str,
@@ -105,7 +105,7 @@ impl ModuleRegistry {
     /// layers is returned untouched. The sort is stable, so two layers of one effect with the same
     /// target — a stack the compile below refuses as ambiguous — keep their relative order rather
     /// than being reshuffled. `O(layers · masks)`; reads no pixels.
-    pub fn sort_masked_layers(&self, layers: &mut [Layer], masks: &[Mask]) {
+    pub(crate) fn sort_masked_layers(&self, layers: &mut [Layer], masks: &[Mask]) {
         let effects: Vec<String> = layers
             .iter()
             .filter(|layer| layer.mask.is_some())
@@ -135,7 +135,7 @@ impl ModuleRegistry {
     /// only when it carries that same target, and every other layer always. `None` is the global
     /// target. Planning filters a maskable module's stack by it, and [`Self::own_layer`] finds a
     /// module's layer by it, so a capture, a plan and a query all read the layer of one target.
-    pub fn in_target(&self, layer: &Layer, mask: Option<&MaskId>) -> bool {
+    pub(crate) fn in_target(&self, layer: &Layer, mask: Option<&MaskId>) -> bool {
         layer.mask.as_ref() == mask || !self.effect_maskable(&layer.effect_id)
     }
 
@@ -145,7 +145,7 @@ impl ModuleRegistry {
     /// such layers is refused with `ambiguous <module title> layers`, the refusal the whole-stack
     /// compile makes for a `single` effect, rather than resolved by guessing; nothing is rewritten.
     /// `O(layers)`; reads no pixels.
-    pub fn own_layer<'l>(
+    pub(crate) fn own_layer<'l>(
         &self,
         layers: &'l [Layer],
         effect_id: &str,
@@ -193,7 +193,12 @@ impl ModuleRegistry {
     /// stack stored in another order stays exactly as it is and renders in its stored order.
     ///
     /// Cost is `O(layers)` in descriptor lookups; it reads no pixels and allocates nothing.
-    pub fn insertion_index(&self, layers: &[Layer], stage: EffectStage, order: u16) -> usize {
+    pub(crate) fn insertion_index(
+        &self,
+        layers: &[Layer],
+        stage: EffectStage,
+        order: u16,
+    ) -> usize {
         placement_index(layers, stage, order, |effect_id| {
             self.effect_placement(effect_id)
         })

@@ -34,7 +34,7 @@ impl ModuleRegistry {
     /// Cost is `O(layers)` and reads no pixels. The error names the first ineligible layer's effect
     /// identity and its index, so the caller reports the reason rather than silently taking the
     /// exact path.
-    pub fn proxy_eligible(&self, recipe: &Recipe) -> Result<(), Error> {
+    pub(crate) fn proxy_eligible(&self, recipe: &Recipe) -> Result<(), Error> {
         for (index, layer) in recipe.layers.iter().enumerate() {
             match self.effect_stage(&layer.effect_id) {
                 Some(
@@ -79,7 +79,7 @@ impl ModuleRegistry {
     /// mask table ([`Recipe::validate_mask_table`]), masks only on stages that can carry one, and
     /// every layer's effect available, its artifacts declared and its payload accepted by its
     /// provider. `O(layers + components + strokes)`; it reads no pixels.
-    pub fn validate_recipe(&self, recipe: &Recipe) -> Result<(), Error> {
+    pub(crate) fn validate_recipe(&self, recipe: &Recipe) -> Result<(), Error> {
         #[cfg(test)]
         crate::editor::validations::validated();
         recipe.validate()?;
@@ -463,7 +463,12 @@ impl ModuleRegistry {
     /// `layers.len() + 1` stages only when every layer's output is known. `O(layers)` payload
     /// compiles, as a write's admission compiles them; it compiles no mask, plans no spatial tile
     /// and reads no pixel.
-    pub fn stages(&self, source_width: u32, source_height: u32, recipe: &Recipe) -> Vec<Stage> {
+    pub(crate) fn stages(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        recipe: &Recipe,
+    ) -> Vec<Stage> {
         let mut stages = Vec::with_capacity(recipe.layers.len() + 1);
         let mut stage = Stage {
             width: source_width,

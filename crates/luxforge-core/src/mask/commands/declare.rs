@@ -30,14 +30,14 @@ pub fn find(method: &str) -> Option<&'static MaskCommand> {
 }
 
 /// The identity of the host descriptor the mask family is published as.
-pub const HOST_MODULE: &str = "luxforge.masks";
+pub(crate) const HOST_MODULE: &str = "luxforge.masks";
 
 /// The mask family as one host descriptor, in the shape a module's descriptor takes: its actions are
 /// the commands, its queries the two reads and its controls the panel's widgets. `module.list` lists
 /// it under `host`, so an agent discovers a mask command as it discovers a module action. The host
 /// owns everything else about it: it declares no effect, is always available and is never
 /// registered as a module.
-pub fn descriptor() -> &'static ModuleDescriptor {
+pub(crate) fn descriptor() -> &'static ModuleDescriptor {
     &DESCRIPTOR
 }
 

@@ -100,12 +100,12 @@ pub trait SecretStore: Send + Sync {
 /// A store that refuses every call with `not-ready: <reason>`: an unsupported platform, or a host
 /// configured without a secure store.
 #[derive(Clone, Debug)]
-pub struct UnavailableSecretStore {
+pub(crate) struct UnavailableSecretStore {
     reason: String,
 }
 
 impl UnavailableSecretStore {
-    pub fn new(reason: impl Into<String>) -> Self {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
         }
@@ -135,16 +135,18 @@ impl SecretStore for UnavailableSecretStore {
 }
 
 /// How many times each operation of a [`MemorySecretStore`] was called, including failed calls.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SecretCalls {
+pub(crate) struct SecretCalls {
     pub set: usize,
     pub clear: usize,
     pub present: usize,
     pub read: usize,
 }
 
+#[cfg(test)]
 impl SecretCalls {
-    pub fn total(&self) -> usize {
+    pub(crate) fn total(&self) -> usize {
         self.set + self.clear + self.present + self.read
     }
 }
@@ -168,11 +170,13 @@ impl MemorySecretStore {
     }
 
     /// Fail every later call with this error until it is cleared with `None`.
-    pub fn fail_with(&self, fault: Option<Error>) {
+    #[cfg(test)]
+    pub(crate) fn fail_with(&self, fault: Option<Error>) {
         *self.fault.lock().expect("secret store fault") = fault;
     }
 
-    pub fn calls(&self) -> SecretCalls {
+    #[cfg(test)]
+    pub(crate) fn calls(&self) -> SecretCalls {
         SecretCalls {
             set: self.set.load(Ordering::Relaxed),
             clear: self.clear.load(Ordering::Relaxed),
@@ -182,11 +186,13 @@ impl MemorySecretStore {
     }
 
     /// How many secrets the store holds.
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.values.lock().expect("secret store").len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 

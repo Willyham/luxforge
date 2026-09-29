@@ -15,7 +15,7 @@ pub const MIN_ANGLE: f64 = -45.0;
 /// The most clockwise straightening angle a crop payload may carry, in degrees.
 pub const MAX_ANGLE: f64 = 45.0;
 /// How far outside the input stage a rounded output corner may map, in source pixels.
-pub const COVERAGE_TOLERANCE: f64 = 0.001;
+pub(crate) const COVERAGE_TOLERANCE: f64 = 0.001;
 
 /// Slack for normalized payload bounds and for whole-pixel snapping, in normalized or box units.
 const EPSILON: f64 = 1e-9;
@@ -60,7 +60,7 @@ impl CropPayload {
     /// Structural validation independent of any stage: finite numbers, an in-range angle, positive
     /// extents and a rectangle inside the normalized box. Bounds carry a 1e-9 tolerance so a
     /// rectangle normalized from whole box pixels is never rejected by rounding alone.
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         for (name, value) in [
             ("angle", self.angle),
             ("x", self.x),
@@ -105,7 +105,7 @@ impl CropPayload {
     /// with extents of at least one pixel.
     ///
     /// The payload is valid only when all four corners of the rounded rectangle map back into the
-    /// input stage within [`COVERAGE_TOLERANCE`]; because the rotated source is convex that proves
+    /// input stage within `COVERAGE_TOLERANCE`; because the rotated source is convex that proves
     /// every output pixel samples real content, so an empty corner can never reach a render. The
     /// error names the offending corner, where it maps and how far outside it lands.
     pub fn output_rect(&self, stage: &CropStage) -> Result<OutputRect, Error> {
@@ -149,7 +149,7 @@ impl CropPayload {
     /// [`Self::output_rect`] unchanged, so a payload the desktop or the fitting functions produced
     /// never changes here; a payload that is genuinely outside by a pixel or more still fails with
     /// the same error, so an empty corner can never reach a render.
-    pub fn output_rect_covered(&self, stage: &CropStage) -> Result<OutputRect, Error> {
+    pub(crate) fn output_rect_covered(&self, stage: &CropStage) -> Result<OutputRect, Error> {
         self.validate()?;
         let (box_width, box_height) = stage.bounding_box();
         let mut x = (self.x * box_width).round();
@@ -283,7 +283,7 @@ impl BoxRect {
 
     /// Top-left, top-right, bottom-left, bottom-right; the far edges are the outer boundary of the
     /// last pixel, which is what coverage validates.
-    pub fn corners(&self) -> [(f64, f64); 4] {
+    pub(crate) fn corners(&self) -> [(f64, f64); 4] {
         [
             (self.x, self.y),
             (self.x + self.width, self.y),
@@ -292,7 +292,8 @@ impl BoxRect {
         ]
     }
 
-    pub fn scaled_about_center(&self, scale: f64) -> Self {
+    #[cfg(test)]
+    pub(crate) fn scaled_about_center(&self, scale: f64) -> Self {
         Self::from_center(self.center(), self.width * scale, self.height * scale)
     }
 
@@ -307,7 +308,7 @@ impl BoxRect {
     /// The largest whole-pixel rectangle inside this one: the origin rounds up, the far edge rounds
     /// down and each extent is at least one pixel. Snapping only ever shrinks a rectangle, except
     /// for that one-pixel floor.
-    pub fn snapped_inward(&self) -> Self {
+    pub(crate) fn snapped_inward(&self) -> Self {
         let x = (self.x - EPSILON).ceil();
         let y = (self.y - EPSILON).ceil();
         let far_x = (self.x + self.width + EPSILON).floor();
@@ -399,13 +400,13 @@ impl CropStage {
     /// `[m0, m1, m2, m3, m4, m5]` of `u = m0·x' + m1·y' + m2`, `v = m3·x' + m4·y' + m5`, where
     /// `(x', y')` is a continuous coordinate relative to `origin` in box space. This is what the
     /// crop module hands the host's resample primitive.
-    pub fn inverse_map(&self, origin: (f64, f64)) -> [f64; 6] {
+    pub(crate) fn inverse_map(&self, origin: (f64, f64)) -> [f64; 6] {
         let (cos, sin) = self.trigonometry();
         let (u, v) = self.to_input(origin.0, origin.1);
         [cos, sin, u, -sin, cos, v]
     }
 
-    /// Whether a box-space point lies on the rotated source, within [`COVERAGE_TOLERANCE`]. The
+    /// Whether a box-space point lies on the rotated source, within `COVERAGE_TOLERANCE`. The
     /// rotation is rigid, so the tolerance means the same distance in both spaces.
     pub fn contains(&self, x: f64, y: f64) -> bool {
         let (u, v) = self.to_input(x, y);
@@ -416,7 +417,7 @@ impl CropStage {
     }
 
     /// The nearest box-space point on the rotated source.
-    pub fn project_inside(&self, x: f64, y: f64) -> (f64, f64) {
+    pub(crate) fn project_inside(&self, x: f64, y: f64) -> (f64, f64) {
         let (u, v) = self.to_input(x, y);
         self.to_box(
             u.clamp(0.0, f64::from(self.width)),

@@ -11,11 +11,11 @@
 //! The job that freezes a target, renders it off the catalog owner and drives these three steps
 //! lives with the owner's other jobs.
 
-pub mod encode;
-pub mod metadata;
-pub mod publish;
+pub(crate) mod encode;
+pub(crate) mod metadata;
+pub(crate) mod publish;
 
-pub use metadata::CaptureMetadata;
+pub(crate) use metadata::CaptureMetadata;
 
 /// The accepted export quality (`docs/decisions.md`, export).
-pub const QUALITY: u8 = 90;
+pub(crate) const QUALITY: u8 = 90;

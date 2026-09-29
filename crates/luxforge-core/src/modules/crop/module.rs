@@ -131,7 +131,7 @@ fn center_parameter(name: &str) -> ParameterDescriptor {
 }
 
 #[derive(Debug)]
-pub struct CropModule {
+pub(crate) struct CropModule {
     descriptor: ModuleDescriptor,
 }
 
@@ -142,7 +142,7 @@ impl Default for CropModule {
 }
 
 impl CropModule {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             descriptor: ModuleDescriptor {
                 id: "luxforge.crop".into(),

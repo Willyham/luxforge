@@ -28,17 +28,17 @@ use crate::{
 use serde_json::{Map, Value, json};
 use std::{io::Read, path::Path, sync::Arc};
 
-pub const PROOF_MODULE: &str = "luxforge.capabilities";
-pub const PROOF_EFFECT: &str = "luxforge.capabilities.tint";
-pub const PROOF_TASK: &str = "generate-proof-tint";
-pub const APPLY_PROOF_TINT: &str = "apply-proof-tint";
-pub const RESET_PROOF_TINT: &str = "reset-proof-tint";
-pub const PROOF_ADAPTER: &str = "proof-echo";
-pub const PROOF_RESOURCE: &str = "proof-palette";
+pub(super) const PROOF_MODULE: &str = "luxforge.capabilities";
+pub(super) const PROOF_EFFECT: &str = "luxforge.capabilities.tint";
+pub(crate) const PROOF_TASK: &str = "generate-proof-tint";
+pub(super) const APPLY_PROOF_TINT: &str = "apply-proof-tint";
+pub(super) const RESET_PROOF_TINT: &str = "reset-proof-tint";
+pub(super) const PROOF_ADAPTER: &str = "proof-echo";
+pub(super) const PROOF_RESOURCE: &str = "proof-palette";
 /// The version the resource is pinned at, which names its install directory.
-pub const PROOF_RESOURCE_VERSION: &str = "1";
+pub(super) const PROOF_RESOURCE_VERSION: &str = "1";
 /// The kind of the artifact the task publishes.
-pub const PROOF_TINT_KIND: &str = "luxforge.capabilities.tint";
+pub(super) const PROOF_TINT_KIND: &str = "luxforge.capabilities.tint";
 /// Where the proof endpoint serves the palette and answers the sample grid, under its base URL.
 pub const PROOF_PALETTE_PATH: &str = "/proof-palette.bin";
 pub const PROOF_GENERATE_PATH: &str = "/generate";
@@ -46,11 +46,11 @@ pub const PROOF_GENERATE_PATH: &str = "/generate";
 /// The palette's magic.
 const PALETTE_MAGIC: [u8; 8] = *b"LFPAL001";
 /// The three linear gains the palette holds.
-pub const PROOF_PALETTE_GAINS: [f32; 3] = [1.04, 1.0, 0.94];
+pub(crate) const PROOF_PALETTE_GAINS: [f32; 3] = [1.04, 1.0, 0.94];
 /// The palette: its magic, then the three gains as little-endian `f32`.
 pub const PROOF_PALETTE: [u8; 20] = palette_bytes(PROOF_PALETTE_GAINS);
 /// The SHA-256 the resource is pinned at; a test recomputes it from [`PROOF_PALETTE`].
-pub const PROOF_PALETTE_SHA256: &str =
+pub(super) const PROOF_PALETTE_SHA256: &str =
     "9cc2d6364362ef3da329ae7dd0ab00dda23f482d7200b375f9814952857f7e35";
 /// A tint artifact: three little-endian `f32` linear gains.
 const TINT_BYTES: usize = 12;
@@ -205,7 +205,7 @@ fn proof_settings() -> SettingsDescriptor {
 }
 
 /// The developer capability proof. Its task reads the installed palette's gains each time it runs.
-pub struct CapabilitiesProofModule {
+pub(crate) struct CapabilitiesProofModule {
     descriptor: ModuleDescriptor,
 }
 
@@ -213,7 +213,7 @@ impl CapabilitiesProofModule {
     /// The proof module whose resource is pinned at `<endpoint_base>/proof-palette.bin`, the proof
     /// endpoint's palette. Nothing is contacted: registration validates the URL, which must be
     /// HTTPS or HTTP to loopback.
-    pub fn new(endpoint_base: &str) -> Self {
+    pub(crate) fn new(endpoint_base: &str) -> Self {
         let url = format!(
             "{}{PROOF_PALETTE_PATH}",
             endpoint_base.trim().trim_end_matches('/')

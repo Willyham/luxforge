@@ -13,11 +13,11 @@ use std::{borrow::Cow, sync::Arc};
 
 /// The largest summed halo, in input pixels, one operation may declare at a stage. An operation
 /// that needs more is refused at compile time; a halo is never silently reduced.
-pub const MAX_SPATIAL_HALO: u32 = 512;
+pub(crate) const MAX_SPATIAL_HALO: u32 = 512;
 
 /// The largest number of units one compiled spatial operation may hold. A module compiles its whole
 /// payload into one operation, so this bounds the chain one layer can ask the host to run.
-pub const MAX_SPATIAL_UNITS: usize = 4;
+pub(super) const MAX_SPATIAL_UNITS: usize = 4;
 
 /// The largest number of **masked** spatial layers one recipe may hold
 /// (`docs/design/masking.md`, "Limits").
@@ -29,32 +29,32 @@ pub const MAX_SPATIAL_UNITS: usize = 4;
 /// ones because local adjustments are the gesture that invites many of them, and four sequential
 /// full frames is what the measurement in `docs/specs/performance.md` was taken against. Exceeding
 /// it is a `resource-limit` error naming the limit, not a silently dropped layer.
-pub const MAX_MASKED_SPATIAL_LAYERS: usize = 4;
+pub(crate) const MAX_MASKED_SPATIAL_LAYERS: usize = 4;
 
 /// The default target for one render context's spatial working sets: 256 MiB, separate from the
 /// 64 MiB float scratch target the colour run streams through, because one tile of a 60 MP stage
 /// with all three frozen presence units needs about 101 MiB on its own. It sets how many tiles run
 /// at once; it never refuses a render or a sample, so one tile always runs even when that takes the
 /// process past it.
-pub const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const SPATIAL_BUDGET_BYTES: u64 = 256 * 1024 * 1024;
 
 /// The per-side factor of the reduction a global estimate is prepared from. The reduced frame is at
 /// most [`MAX_REDUCTION_PIXELS`] pixels, because the host accepts at most 64 megapixels.
-pub const ESTIMATE_REDUCTION: u32 = 16;
+pub(crate) const ESTIMATE_REDUCTION: u32 = 16;
 
 /// The largest reduced frame [`Reduction`] will build: 2^18 pixels, which is the 0.25 megapixel
 /// bound the design states. A 64 MP stage reduced by 16 per side rounds up to at most 250,880
 /// pixels, so this bound is never the binding constraint on a stage the host accepts.
-pub const MAX_REDUCTION_PIXELS: u64 = 262_144;
+pub(crate) const MAX_REDUCTION_PIXELS: u64 = 262_144;
 
 /// The largest global estimate a unit may return, in bytes.
-pub const MAX_GLOBAL_BYTES: usize = 4096;
+pub(super) const MAX_GLOBAL_BYTES: usize = 4096;
 
 /// The largest number of `f64` values that fits [`MAX_GLOBAL_BYTES`].
-pub const MAX_GLOBAL_VALUES: usize = MAX_GLOBAL_BYTES / std::mem::size_of::<f64>();
+pub(super) const MAX_GLOBAL_VALUES: usize = MAX_GLOBAL_BYTES / std::mem::size_of::<f64>();
 
 /// How many prepared global estimates the host keeps, evicted oldest first.
-pub const ESTIMATE_STORE_ENTRIES: usize = 8;
+pub(crate) const ESTIMATE_STORE_ENTRIES: usize = 8;
 
 /// A rectangle of one stage, in that stage's pixel coordinates. Half-open: it holds the columns
 /// `x0..x0 + width` and the rows `y0..y0 + height`.
@@ -68,7 +68,7 @@ pub struct Region {
 
 impl Region {
     /// The region that holds no pixel.
-    pub const EMPTY: Self = Self {
+    pub(crate) const EMPTY: Self = Self {
         x0: 0,
         y0: 0,
         width: 0,
@@ -76,7 +76,7 @@ impl Region {
     };
 
     /// Every pixel of `stage`.
-    pub fn whole(stage: Stage) -> Self {
+    pub(crate) fn whole(stage: Stage) -> Self {
         Self {
             x0: 0,
             y0: 0,
@@ -105,7 +105,7 @@ impl Region {
     }
 
     /// The bytes three `f32` planes of this region occupy.
-    pub fn plane_bytes(self) -> u64 {
+    pub(crate) fn plane_bytes(self) -> u64 {
         self.pixels() * 3 * std::mem::size_of::<f32>() as u64
     }
 
@@ -114,7 +114,7 @@ impl Region {
     }
 
     /// This region grown by `halo` pixels on every side and clamped to the stage.
-    pub fn grown(self, halo: u32, stage: Stage) -> Self {
+    pub(crate) fn grown(self, halo: u32, stage: Stage) -> Self {
         let x0 = self.x0.saturating_sub(halo);
         let y0 = self.y0.saturating_sub(halo);
         let x1 = self.x1().saturating_add(halo).min(stage.width);
@@ -134,7 +134,7 @@ impl Region {
     /// This is the one rule that decides what a unit must write, and the host builds its output
     /// planes from exactly this function, so a unit that computes the rectangle the same way can
     /// never disagree with the buffer it is handed.
-    pub fn shrunk(self, halo: u32, stage: Stage) -> Self {
+    pub(crate) fn shrunk(self, halo: u32, stage: Stage) -> Self {
         let x0 = if self.x0 == 0 {
             0
         } else {
@@ -173,7 +173,7 @@ impl Region {
 /// anchored at the stage origin, which is what makes a reduced pixel the same value whatever tile
 /// or sample asked for it.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Reduction {
+pub(crate) struct Reduction {
     stage: Stage,
     factor: u32,
     width: u32,
@@ -212,32 +212,16 @@ impl Reduction {
         })
     }
 
-    /// The stage this reduction was built from.
-    pub fn stage(&self) -> Stage {
-        self.stage
-    }
-
-    /// The per-side reduction factor.
-    pub fn factor(&self) -> u32 {
-        self.factor
-    }
-
-    pub fn width(&self) -> u32 {
+    pub(crate) fn width(&self) -> u32 {
         self.width
     }
 
-    pub fn height(&self) -> u32 {
+    pub(crate) fn height(&self) -> u32 {
         self.height
     }
 
-    /// One reduced plane: `0` is red, `1` green, `2` blue, in row-major order.
-    pub fn plane(&self, channel: usize) -> &[f32] {
-        let len = (u64::from(self.width) * u64::from(self.height)) as usize;
-        &self.values[channel * len..(channel + 1) * len]
-    }
-
     /// One reduced pixel, or `None` outside the reduced frame.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         if x >= self.width || y >= self.height {
             return None;
         }
@@ -256,14 +240,14 @@ impl Reduction {
 /// It is bounded to [`MAX_GLOBAL_BYTES`], so a global estimate can never grow with the image: an
 /// atmospheric light is three numbers, not a map.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Global {
+pub(crate) struct Global {
     values: Arc<[f64]>,
 }
 
 impl Global {
     /// A global estimate of these values, or `ResourceLimit` when there are too many of them or one
     /// of them is not finite.
-    pub fn new(values: impl Into<Arc<[f64]>>) -> Result<Self, Error> {
+    pub(crate) fn new(values: impl Into<Arc<[f64]>>) -> Result<Self, Error> {
         let values = values.into();
         if values.len() > MAX_GLOBAL_VALUES {
             return Err(Error::resource_limit(format!(
@@ -279,7 +263,7 @@ impl Global {
         Ok(Self { values })
     }
 
-    pub fn values(&self) -> &[f64] {
+    pub(crate) fn values(&self) -> &[f64] {
         &self.values
     }
 }
@@ -289,7 +273,7 @@ impl Global {
 /// The three planes are contiguous: one complete R plane of `region.width × region.height` values
 /// in row-major order, then G, then B.
 #[derive(Clone, Copy, Debug)]
-pub struct Planes<'a> {
+pub(crate) struct Planes<'a> {
     stage: Stage,
     region: Region,
     values: &'a [f32],
@@ -298,7 +282,7 @@ pub struct Planes<'a> {
 impl<'a> Planes<'a> {
     /// Borrow planar values as the rectangle `region` of `stage`. The length must be exactly three
     /// planes of that rectangle.
-    pub fn new(stage: Stage, region: Region, values: &'a [f32]) -> Result<Self, Error> {
+    pub(crate) fn new(stage: Stage, region: Region, values: &'a [f32]) -> Result<Self, Error> {
         check_planes(stage, region, values.len())?;
         Ok(Self {
             stage,
@@ -308,24 +292,12 @@ impl<'a> Planes<'a> {
     }
 
     /// The stage these values belong to. Reads outside the rectangle are clamped to it.
-    pub fn stage(&self) -> Stage {
+    pub(crate) fn stage(&self) -> Stage {
         self.stage
     }
 
-    /// The rectangle of the stage these values cover.
-    pub fn region(&self) -> Region {
-        self.region
-    }
-
-    /// The rectangle a unit of this halo must fill when it is given these planes as its input.
-    /// It is [`Region::shrunk`] of [`Self::region`], and it is exactly the rectangle of the
-    /// [`PlanesMut`] the host hands the unit alongside these.
-    pub fn output_region(&self, halo: u32) -> Region {
-        self.region.shrunk(halo, self.stage)
-    }
-
     /// One pixel of these planes, or `None` outside the rectangle they cover.
-    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         if !self.region.contains(x, y) {
             return None;
         }
@@ -344,7 +316,7 @@ impl<'a> Planes<'a> {
     /// rectangle wide enough that a read within the unit's declared halo of its output rectangle,
     /// clamped to the stage this way, lies inside the rectangle; a read further than that panics
     /// rather than quietly returning a neighbour.
-    pub fn sample(&self, x: i64, y: i64) -> [f32; 3] {
+    pub(crate) fn sample(&self, x: i64, y: i64) -> [f32; 3] {
         let x = x.clamp(0, i64::from(self.stage.width.saturating_sub(1))) as u32;
         let y = y.clamp(0, i64::from(self.stage.height.saturating_sub(1))) as u32;
         self.pixel(x, y).unwrap_or_else(|| {
@@ -354,48 +326,34 @@ impl<'a> Planes<'a> {
             )
         })
     }
-
-    /// One plane of these values: `0` is red, `1` green, `2` blue.
-    pub fn plane(&self, channel: usize) -> &'a [f32] {
-        let len = self.region.pixels() as usize;
-        &self.values[channel * len..(channel + 1) * len]
-    }
 }
 
 /// The rectangle of planar `f32` linear-sRGB RGB a unit writes, with its position in the stage.
 /// Its layout is [`Planes`]'s.
 #[derive(Debug)]
-pub struct PlanesMut<'a> {
-    stage: Stage,
+pub(crate) struct PlanesMut<'a> {
     region: Region,
     values: &'a mut [f32],
 }
 
 impl<'a> PlanesMut<'a> {
     /// Borrow planar values as the rectangle `region` of `stage`.
-    pub fn new(stage: Stage, region: Region, values: &'a mut [f32]) -> Result<Self, Error> {
+    pub(crate) fn new(stage: Stage, region: Region, values: &'a mut [f32]) -> Result<Self, Error> {
         check_planes(stage, region, values.len())?;
-        Ok(Self {
-            stage,
-            region,
-            values,
-        })
-    }
-
-    pub fn stage(&self) -> Stage {
-        self.stage
+        Ok(Self { region, values })
     }
 
     /// The rectangle this unit must fill completely: every pixel of it is read afterwards, either
     /// by the next unit or by the host's output boundary.
-    pub fn region(&self) -> Region {
+    pub(crate) fn region(&self) -> Region {
         self.region
     }
 
     /// Write one pixel. A coordinate outside the rectangle panics: the host sized the rectangle
     /// from the unit's own declared halo, so a write outside it is a unit that disagrees with what
     /// it declared.
-    pub fn set(&mut self, x: u32, y: u32, rgb: [f32; 3]) {
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, x: u32, y: u32, rgb: [f32; 3]) {
         assert!(
             self.region.contains(x, y),
             "a spatial unit wrote ({x}, {y}), outside the {:?} it must fill",
@@ -410,7 +368,8 @@ impl<'a> PlanesMut<'a> {
     }
 
     /// One plane to write in bulk: `0` is red, `1` green, `2` blue, row-major over the rectangle.
-    pub fn plane_mut(&mut self, channel: usize) -> &mut [f32] {
+    #[cfg(test)]
+    pub(crate) fn plane_mut(&mut self, channel: usize) -> &mut [f32] {
         let len = self.region.pixels() as usize;
         &mut self.values[channel * len..(channel + 1) * len]
     }
@@ -419,7 +378,7 @@ impl<'a> PlanesMut<'a> {
     /// and blue planes, each starting at the rectangle's `x0`. Rows run on the shared pool under
     /// [`Parallelism::Pool`] and in order on the calling thread otherwise, so `body` must compute
     /// each row from nothing but its inputs.
-    pub fn for_rows(
+    pub(crate) fn for_rows(
         &mut self,
         parallelism: Parallelism,
         body: impl Fn(u32, &mut [f32], &mut [f32], &mut [f32]) + Sync + Send,
@@ -454,7 +413,7 @@ impl<'a> PlanesMut<'a> {
 /// for its loops; it decides when a value is computed and never what the value is, so a unit
 /// computes every value with the same arithmetic in the same order under both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Parallelism {
+pub(crate) enum Parallelism {
     /// Every loop on the calling thread: a point sample, a stage below the host's parallel
     /// threshold, or a batch that already gives every worker of the pool a tile of its own.
     Serial,
@@ -521,7 +480,7 @@ fn check_planes(stage: Stage, region: Region, len: usize) -> Result<(), Error> {
 /// and quantizes once, after the last unit, at the output boundary. Alpha is the host's and is
 /// never passed in. A non-finite value after any unit fails the render or the sample with
 /// `resource-limit`.
-pub trait SpatialUnit: Send + Sync {
+pub(crate) trait SpatialUnit: Send + Sync {
     /// How many input pixels beyond its output rectangle this unit reads at this stage. The host
     /// sums the halos of an operation's units and refuses the operation when the sum exceeds
     /// [`MAX_SPATIAL_HALO`], before any pixel is read.
@@ -603,7 +562,7 @@ impl SpatialOperation {
     /// than [`MAX_SPATIAL_UNITS`] of them or one of them declares non-finite coefficients. The
     /// stage-dependent bounds — the summed halo and the per-tile working set — are the host's, and
     /// it checks them when it compiles the recipe against a stage.
-    pub fn new(units: Vec<Arc<dyn SpatialUnit>>) -> Result<Self, Error> {
+    pub(crate) fn new(units: Vec<Arc<dyn SpatialUnit>>) -> Result<Self, Error> {
         let operation = Self { units, mask: None };
         operation.validate()?;
         Ok(operation)
@@ -625,13 +584,13 @@ impl SpatialOperation {
     /// The operation a neutral payload compiles to: no units, which the host drops entirely, so a
     /// neutral layer opens no stage boundary, keeps the identity byte path and shares the source
     /// buffer.
-    pub fn neutral() -> Self {
+    pub(crate) fn neutral() -> Self {
         Self::default()
     }
 
     /// The checks [`Self::new`] makes, so the host can make them again on an operation it was
     /// handed rather than trusting the constructor a module used.
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.units.len() > MAX_SPATIAL_UNITS {
             return Err(Error::resource_limit(format!(
                 "a spatial operation declares {} units, more than the {MAX_SPATIAL_UNITS} the host evaluates",
@@ -646,7 +605,7 @@ impl SpatialOperation {
         Ok(())
     }
 
-    pub fn units(&self) -> &[Arc<dyn SpatialUnit>] {
+    pub(crate) fn units(&self) -> &[Arc<dyn SpatialUnit>] {
         &self.units
     }
 
@@ -654,36 +613,27 @@ impl SpatialOperation {
         self.units.len()
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.units.is_empty()
     }
 
     /// Whether every unit reports finite coefficients.
-    pub fn is_finite(&self) -> bool {
+    pub(crate) fn is_finite(&self) -> bool {
         self.units.iter().all(|unit| unit.is_finite())
     }
 
     /// The halos of this operation's units at this stage, in evaluation order.
-    pub fn halos(&self, stage: Stage) -> Vec<u32> {
+    pub(crate) fn halos(&self, stage: Stage) -> Vec<u32> {
         self.units.iter().map(|unit| unit.halo(stage)).collect()
     }
 
     /// How far beyond an output tile the host must read at this stage: the units are sequential, so
     /// their halos add. Saturating, so a unit that declares an absurd halo is refused rather than
     /// wrapping to a small one.
-    pub fn summed_halo(&self, stage: Stage) -> u32 {
+    pub(crate) fn summed_halo(&self, stage: Stage) -> u32 {
         self.units
             .iter()
             .fold(0_u32, |total, unit| total.saturating_add(unit.halo(stage)))
-    }
-
-    /// A short, stable description of the whole chain.
-    pub fn describe(&self) -> String {
-        self.units
-            .iter()
-            .map(|unit| unit.describe())
-            .collect::<Vec<_>>()
-            .join(", ")
     }
 }
 

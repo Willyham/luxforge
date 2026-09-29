@@ -59,10 +59,10 @@ fn presence_field(name: &'static str, label: &str, notes: &str) -> Field {
 
 /// The Presence module's table and compilation.
 #[derive(Debug, Default)]
-pub struct Presence;
+pub(crate) struct Presence;
 
 /// The Presence module: `Presence` as a field-patch module.
-pub type PresenceModule = FieldPatchModule<Presence>;
+pub(crate) type PresenceModule = FieldPatchModule<Presence>;
 
 impl FieldPatch for Presence {
     fn spec() -> Spec {

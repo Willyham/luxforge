@@ -82,7 +82,7 @@ const GRID_SIDE_MAX: usize = 64;
 /// a payload carrying anything else a named refusal rather than a silently half-read edit.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BrushStrokes {
+pub(super) struct BrushStrokes {
     pub strokes: Vec<StrokeId>,
 }
 

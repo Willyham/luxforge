@@ -29,7 +29,7 @@ use crate::{
 };
 use std::borrow::Cow;
 
-pub use super::context::RenderContext;
+pub(super) use super::context::RenderContext;
 
 /// The pixels one render reads: a JPEG's decoded bytes, or a developed RAW's linear planes with the
 /// settings its recipe asks of them. Borrowed, so entering a render copies nothing.
@@ -44,18 +44,10 @@ pub enum RenderSource<'a> {
 
 impl RenderSource<'_> {
     /// The content-stage dimensions a recipe is compiled against.
-    pub fn dimensions(&self) -> (u32, u32) {
+    pub(crate) fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Byte(image) => (image.width, image.height),
             Self::Linear { image, .. } => (image.width(), image.height()),
-        }
-    }
-
-    /// The fingerprint every frame is stamped with.
-    pub fn fingerprint(&self) -> &str {
-        match self {
-            Self::Byte(image) => &image.fingerprint,
-            Self::Linear { image, .. } => image.fingerprint(),
         }
     }
 }
@@ -121,7 +113,7 @@ impl RenderOptions {
     }
 
     /// The proxy phase under `cancel`.
-    pub fn proxy(cancel: &Cancel) -> Self {
+    pub(crate) fn proxy(cancel: &Cancel) -> Self {
         Self {
             phase: RenderPhase::Proxy,
             cancel: cancel.clone(),
@@ -186,7 +178,7 @@ pub struct RegionFrame {
     pub approximation: ProxyApproximation,
 }
 
-pub enum RegionRenderOutcome {
+pub(crate) enum RegionRenderOutcome {
     Rendered(RegionFrame),
     Declined(RegionFallback),
 }
@@ -194,7 +186,7 @@ pub enum RegionRenderOutcome {
 /// A half-detail viewport proxy source and the part of its whole scaled output stage to produce.
 /// The `proxy` plan, including its source window, is the existing one-entry cache's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ProxyRegionPlan {
+pub(crate) struct ProxyRegionPlan {
     pub proxy: ProxyPlan,
     pub output: Region,
     pub stage: StageSize,
@@ -335,7 +327,7 @@ impl<'a> Render<'a> {
     }
 
     /// The output stage's dimensions.
-    pub fn stage(&self) -> (u32, u32) {
+    pub(crate) fn stage(&self) -> (u32, u32) {
         let stage = self.compiled.stage();
         (stage.width, stage.height)
     }
@@ -365,7 +357,7 @@ impl<'a> Render<'a> {
     /// Render exactly the requested, clipped full-output-stage rectangle. Its global spatial
     /// estimates are the same whole-stage estimates as `frame()`; only pixel production is cut.
     /// Unsupported stacks answer a named fallback, never an apparently exact partial image.
-    pub fn region(
+    pub(crate) fn region(
         &self,
         snapshot_id: SnapshotId,
         requested: Region,
@@ -420,7 +412,7 @@ impl<'a> Render<'a> {
 
     /// Plan the first moving viewport phase against a source stage roughly half the exact size on
     /// each side. The returned source window participates in the existing one-entry proxy key.
-    pub fn plan_proxy_region(
+    pub(crate) fn plan_proxy_region(
         &self,
         registry: &ModuleRegistry,
         recipe: &Recipe,
@@ -493,7 +485,7 @@ impl<'a> Render<'a> {
 
     /// Render a planned half-detail viewport from the worker's cached/built source proxy. The
     /// whole exact `Render` supplies pan-independent exact global estimates when needed.
-    pub fn render_proxy_region(
+    pub(crate) fn render_proxy_region(
         &self,
         registry: &ModuleRegistry,
         source: RenderSource<'_>,
@@ -608,7 +600,7 @@ impl<'a> Render<'a> {
 
     /// The whole geometry tail as one affine map between the content stage and the output stage,
     /// from this compilation: `O(layers)`, no pixel read.
-    pub fn transform(&self) -> Result<StageTransform, Error> {
+    pub(crate) fn transform(&self) -> Result<StageTransform, Error> {
         let (width, height) = self.source.dimensions();
         transform_of(&self.compiled, width, height)
     }
@@ -617,7 +609,7 @@ impl<'a> Render<'a> {
     /// compilation the frame itself uses, so what is reported and what is drawn cannot disagree:
     /// a spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
     /// supersampled. `O(layers + components)`, no pixel read.
-    pub fn approximation(&self) -> ProxyApproximation {
+    pub(crate) fn approximation(&self) -> ProxyApproximation {
         self.compiled.approximation()
     }
 

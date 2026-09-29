@@ -28,7 +28,7 @@ impl PreviewSource {
     }
 
     /// The source fingerprint every frame and every report is stamped with.
-    pub fn fingerprint(&self) -> &str {
+    pub(crate) fn fingerprint(&self) -> &str {
         match self {
             Self::Jpeg(image) => &image.fingerprint,
             Self::Raw { image, .. } => image.fingerprint(),
@@ -39,7 +39,7 @@ impl PreviewSource {
     /// a [`crate::WhiteBalanceApproximation`]. Only the preview of an open draft is planned that
     /// way. Every frame rendered from such a source is approximate, at the proxy scale and at full
     /// size alike, and none is ever reduced into a report.
-    pub fn approximate_white_balance(&self) -> bool {
+    pub(crate) fn approximate_white_balance(&self) -> bool {
         matches!(self, Self::Raw { settings, .. } if settings.white_balance.is_some())
     }
 
@@ -52,7 +52,7 @@ impl PreviewSource {
     }
 
     /// The pixels a render of this source reads, borrowed.
-    pub fn input(&self) -> RenderSource<'_> {
+    pub(crate) fn input(&self) -> RenderSource<'_> {
         self.into()
     }
 }
@@ -151,7 +151,7 @@ pub struct PreviewJob {
     /// target needs no second render. Refused together with [`PreviewJob::layer_count`].
     ///
     /// Ignored when the source approximates its white balance
-    /// ([`PreviewSource::approximate_white_balance`]): an approximate frame is never reduced into a
+    /// (`PreviewSource::approximate_white_balance`): an approximate frame is never reduced into a
     /// report, whatever the job asked, so every histogram and clipping count comes from an exact
     /// render.
     pub analyse: bool,

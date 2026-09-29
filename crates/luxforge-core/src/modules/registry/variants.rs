@@ -7,11 +7,8 @@
 //! Everything here walks descriptors — `O(controls)` — and reads no stack; nothing runs per frame.
 use super::ModuleRegistry;
 use crate::{
-    Error, ErrorKind, MaskId, SourceTag,
-    modules::{
-        Control, GroupControl, ModuleDescriptor, NumberControl, ResolvedControl, ResolvedReset,
-        resolve_control,
-    },
+    Error, ErrorKind, SourceTag,
+    modules::{Control, GroupControl, ModuleDescriptor, NumberControl},
 };
 
 /// A field one control variant supersedes: parameter `parameter` of action `action`, whose number
@@ -19,7 +16,7 @@ use crate::{
 /// of module `module`. On the global target of a photo of `source` the field is refused and its
 /// variant is the one path ([`ModuleRegistry::superseded`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Superseded<'r> {
+pub(crate) struct Superseded<'r> {
     pub source: SourceTag,
     pub action: &'r str,
     pub parameter: &'r str,
@@ -33,7 +30,7 @@ pub struct Superseded<'r> {
 
 impl Superseded<'_> {
     /// `set-raw.temperature`: the variant's field as `schema.list` names it.
-    pub fn by(&self) -> String {
+    pub(crate) fn by(&self) -> String {
         format!("{}.{}", self.by_action, self.by_parameter)
     }
 }
@@ -59,7 +56,7 @@ impl ModuleRegistry {
     ///
     /// [`ModuleRegistry::builtin`] and every editor service ([`crate::EditorService::open_with`])
     /// run it, so a registry a client serves has passed it. `O(controls)`.
-    pub fn check_complete(&self) -> Result<(), Error> {
+    pub(crate) fn check_complete(&self) -> Result<(), Error> {
         let descriptors = self.descriptors();
         let mut reached: Vec<&str> = Vec::new();
         for owner in &descriptors {
@@ -127,35 +124,11 @@ impl ModuleRegistry {
         })
     }
 
-    /// [`resolve_control`] for a control `owner` declares: the one rule every client resolves a
-    /// control through, here for a caller that holds the registry. A client that holds only the
-    /// descriptors `module.list` returned calls [`resolve_control`] itself with the same answer.
-    pub fn resolve_control<'d>(
-        &self,
-        owner: &'d ModuleDescriptor,
-        control: &'d Control,
-        kind: Option<SourceTag>,
-        mask: Option<&MaskId>,
-    ) -> ResolvedControl<'d> {
-        resolve_control(&owner.id, control, kind, mask)
-    }
-
-    /// [`crate::modules::resolve_group_reset`] for a group `owner` declares.
-    pub fn resolve_group_reset<'d>(
-        &self,
-        owner: &'d ModuleDescriptor,
-        group: &'d Control,
-        kind: Option<SourceTag>,
-        mask: Option<&MaskId>,
-    ) -> Option<ResolvedReset<'d>> {
-        crate::modules::resolve_group_reset(&owner.id, group, kind, mask)
-    }
-
     /// Every field a control variant supersedes, derived from the variants and never listed by
     /// name: when a number control of action `A` and parameter `P` has a variant for kind `K`, `P`
     /// of `A` is superseded on the global target of a `K` photo, and the variant's own field is its
     /// one path there. The host's refusal, admission and `schema.list` all read this. `O(controls)`.
-    pub fn superseded(&self) -> Vec<Superseded<'_>> {
+    pub(crate) fn superseded(&self) -> Vec<Superseded<'_>> {
         let mut found = Vec::new();
         for owner in self.descriptors() {
             walk(&owner.controls, &mut |control| {
@@ -193,7 +166,7 @@ impl ModuleRegistry {
     }
 
     /// The supersession of parameter `parameter` of action `action` on a photo of `kind`, if any.
-    pub fn superseded_field(
+    pub(crate) fn superseded_field(
         &self,
         action: &str,
         parameter: &str,
@@ -208,7 +181,7 @@ impl ModuleRegistry {
     /// Temperature is the source development's: set-raw temperature (K)` — the kind, the base
     /// control's label, the variant module's hint (its title without one), and the variant's action,
     /// parameter and declared unit.
-    pub fn superseded_refusal(&self, field: &Superseded<'_>) -> String {
+    pub(crate) fn superseded_refusal(&self, field: &Superseded<'_>) -> String {
         let module = self.module(field.module).map(|module| module.descriptor());
         let owner = module
             .map(|module| module.hint.as_deref().unwrap_or(&module.title))

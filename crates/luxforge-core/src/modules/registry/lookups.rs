@@ -24,7 +24,7 @@ pub enum ActionRef<'r> {
 
 impl<'r> ActionRef<'r> {
     /// The action's declaration: its identity, parameters and whether it is a patch.
-    pub fn descriptor(&self) -> &'r ActionDescriptor {
+    pub(crate) fn descriptor(&self) -> &'r ActionDescriptor {
         match self {
             Self::Module(_, action) => action,
             Self::Host(command) => &command.action,
@@ -51,7 +51,7 @@ pub enum QueryRef<'r> {
 
 impl<'r> QueryRef<'r> {
     /// The query's declaration.
-    pub fn descriptor(&self) -> &'r ActionDescriptor {
+    pub(crate) fn descriptor(&self) -> &'r ActionDescriptor {
         match self {
             Self::Module(_, query) => query,
             Self::Host(query) => query,
@@ -102,7 +102,10 @@ impl ModuleRegistry {
     /// unavailable `incompatible: unavailable module <module>` — the one refusal of the three a
     /// composite plan defers until it knows the step applies to the photo. A hash probe; it
     /// allocates only the refusal.
-    pub fn patch_action(&self, id: &str) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
+    pub(crate) fn patch_action(
+        &self,
+        id: &str,
+    ) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
         let (module, action) = self
             .action(id)
             .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
@@ -117,7 +120,7 @@ impl ModuleRegistry {
 
     /// The one action lookup every caller resolves an action through: a registered module's
     /// action, or one of the host's own `mask.*` commands, which the host descriptor declares
-    /// ([`crate::mask::commands::descriptor`]). The two namespaces cannot collide — a host action
+    /// (`crate::mask::commands::descriptor`). The two namespaces cannot collide — a host action
     /// identity carries a dot, which a module action's may not, and [`Self::register`] refuses a
     /// module that declares one anyway — so an identity names at most one of them.
     pub fn resolve_action(&self, id: &str) -> Option<ActionRef<'_>> {
@@ -129,7 +132,7 @@ impl ModuleRegistry {
 
     /// The action an API method calls, the inverse of [`ActionRef::method`]: `edit.<id>` names a
     /// module's action and a host action is named by its own identity.
-    pub fn action_for_method(&self, method: &str) -> Option<ActionRef<'_>> {
+    pub(crate) fn action_for_method(&self, method: &str) -> Option<ActionRef<'_>> {
         match method.strip_prefix("edit.") {
             Some(id) => self
                 .action(id)
@@ -139,7 +142,7 @@ impl ModuleRegistry {
     }
 
     /// The query an API method calls, the inverse of [`QueryRef::method`].
-    pub fn query_for_method(&self, method: &str) -> Option<QueryRef<'_>> {
+    pub(crate) fn query_for_method(&self, method: &str) -> Option<QueryRef<'_>> {
         match method.strip_prefix("query.") {
             Some(id) => self
                 .query(id)
@@ -167,14 +170,14 @@ impl ModuleRegistry {
     /// The module that answers this read-only query, and the query's declared parameters. An
     /// unavailable provider keeps its identity here exactly as it does for actions and effects; the
     /// caller reports that rather than silently answering nothing.
-    pub fn query(&self, id: &str) -> Option<(Provider<'_>, &ActionDescriptor)> {
+    pub(crate) fn query(&self, id: &str) -> Option<(Provider<'_>, &ActionDescriptor)> {
         let (module, position) = self.queries.get(id)?;
         let provider = self.provider_at(*module);
         Some((provider, &provider.descriptor().queries[*position]))
     }
 
     /// The module that offers this worker task, and the task's declaration.
-    pub fn task(&self, id: &str) -> Option<(Provider<'_>, &TaskDescriptor)> {
+    pub(crate) fn task(&self, id: &str) -> Option<(Provider<'_>, &TaskDescriptor)> {
         let (module, position) = self.tasks.get(id)?;
         let provider = self.provider_at(*module);
         Some((provider, &provider.descriptor().tasks[*position]))
@@ -193,7 +196,7 @@ impl ModuleRegistry {
     /// host calls to check its resources and run its tasks. Registration refused every
     /// module whose declarations need them and that provides none, so `None` means the module is
     /// not registered or declares nothing that needs them.
-    pub fn capabilities(&self, id: &str) -> Option<&dyn CapabilityModule> {
+    pub(crate) fn capabilities(&self, id: &str) -> Option<&dyn CapabilityModule> {
         self.module(id)?.module().capabilities()
     }
 
@@ -204,19 +207,19 @@ impl ModuleRegistry {
     }
 
     /// The stage an effect's payload addresses, or `None` when no provider declares it.
-    pub fn effect_stage(&self, effect_id: &str) -> Option<EffectStage> {
+    pub(crate) fn effect_stage(&self, effect_id: &str) -> Option<EffectStage> {
         self.effect(effect_id).map(|(_, effect)| effect.stage)
     }
 
     /// Whether a layer of this effect may carry a mask, as the effect's own descriptor declares.
-    pub fn effect_maskable(&self, effect_id: &str) -> bool {
+    pub(crate) fn effect_maskable(&self, effect_id: &str) -> bool {
         self.effect(effect_id)
             .is_some_and(|(_, effect)| effect.maskable)
     }
 
     /// Whether a stack holds at most one layer of this effect per target, as the effect's own
     /// descriptor declares.
-    pub fn effect_single(&self, effect_id: &str) -> bool {
+    pub(crate) fn effect_single(&self, effect_id: &str) -> bool {
         self.effect(effect_id)
             .is_some_and(|(_, effect)| effect.single)
     }
@@ -229,7 +232,7 @@ impl ModuleRegistry {
     /// declares exactly one effect, so there is no case where this is wider than the design's
     /// sentence; a later module that declared both a maskable and a non-maskable effect would need
     /// an action-to-effect link that no descriptor carries today.
-    pub fn action_accepts_mask(&self, action_id: &str) -> bool {
+    pub(crate) fn action_accepts_mask(&self, action_id: &str) -> bool {
         let Some((module, _)) = self.actions.get(action_id) else {
             return false;
         };
@@ -243,7 +246,7 @@ impl ModuleRegistry {
     /// Whether this query carries the host's optional `mask` target field: the queries of a module
     /// that declares a maskable effect do, by the rule [`Self::action_accepts_mask`] states for its
     /// actions.
-    pub fn query_accepts_mask(&self, query_id: &str) -> bool {
+    pub(crate) fn query_accepts_mask(&self, query_id: &str) -> bool {
         let Some((module, _)) = self.queries.get(query_id) else {
             return false;
         };

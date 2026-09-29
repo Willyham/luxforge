@@ -49,7 +49,7 @@ pub struct Resample {
 
 /// The largest number of pointwise units one compiled colour operation may hold. A module compiles
 /// its whole payload into one operation, so this bounds the per-pixel work one layer can ask for.
-pub const MAX_COLOR_UNITS: usize = 8;
+pub(crate) const MAX_COLOR_UNITS: usize = 8;
 
 /// One pointwise colour step, owned by the module that compiled it. The host decodes the frame into
 /// linear sRGB (D65) f32 rows, hands each row to every unit in declared order and only then clamps,
@@ -116,7 +116,7 @@ impl ColorOperation {
 
     /// The operation a neutral payload compiles to: no units, which the host drops entirely, so a
     /// neutral layer keeps the identity byte path and the shared source buffer.
-    pub fn neutral() -> Self {
+    pub(crate) fn neutral() -> Self {
         Self::default()
     }
 
@@ -133,7 +133,7 @@ impl ColorOperation {
     }
 
     /// Whether every unit reports finite coefficients.
-    pub fn is_finite(&self) -> bool {
+    pub(crate) fn is_finite(&self) -> bool {
         self.units.iter().all(|unit| unit.is_finite())
     }
 }

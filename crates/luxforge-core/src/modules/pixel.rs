@@ -27,7 +27,7 @@ fn pixel_payload(x: u32, y: u32, rgb: [u8; 3]) -> Value {
 pub(super) const SET_PIXEL: &str = "set-pixel";
 
 #[derive(Debug)]
-pub struct PixelModule {
+pub(crate) struct PixelModule {
     descriptor: ModuleDescriptor,
 }
 
@@ -38,7 +38,7 @@ impl Default for PixelModule {
 }
 
 impl PixelModule {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             descriptor: ModuleDescriptor {
                 id: "luxforge.pixel".into(),

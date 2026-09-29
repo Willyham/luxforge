@@ -22,7 +22,7 @@ use crate::{
     colour::srgb::{decode_u8, quantize_pixel},
     jobs::{JOB_CANCEL, JOB_READ},
     modules::{ActionInput, ActionPlan},
-    redact_request,
+    redact_params,
 };
 use luxforge_testbase::wait_for;
 use luxforge_testkit::ProofEndpoint;
@@ -767,7 +767,7 @@ fn the_capability_path_runs_from_install_to_an_applied_tint_that_renders_after_r
         params: key_request,
         token: None,
     };
-    let redacted = serde_json::to_string(&redact_request(&request)).unwrap();
+    let redacted = serde_json::to_string(&redact_params(&request.method, &request.params)).unwrap();
     assert!(!redacted.contains(&fixture.key), "{redacted}");
     assert!(redacted.contains("<redacted>"));
 }

@@ -7,10 +7,9 @@
 //! root and the binding step live with the editor service.
 mod store;
 
-pub use store::ArtifactWriter;
 pub(crate) use store::{
-    ArtifactRead, Collected, Collection, MANIFEST, RootState, VerifiedArtifact, collect_files,
-    object_path, read_verified, root_state,
+    ArtifactRead, ArtifactWriter, Collected, Collection, MANIFEST, RootState, VerifiedArtifact,
+    collect_files, object_path, read_verified, root_state,
 };
 #[cfg(test)]
 pub(crate) mod testing;
@@ -25,13 +24,13 @@ use std::{
 const PREFIX: &str = "artifact-";
 
 /// The largest artifact the host publishes, reads or verifies: 256 MiB.
-pub const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 /// The most artifacts one layer may reference.
-pub const MAX_LAYER_ARTIFACTS: usize = 16;
+pub(crate) const MAX_LAYER_ARTIFACTS: usize = 16;
 /// The verified bytes the catalog owner keeps ready for evaluation, in total: 256 MiB.
-pub const PREPARED_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const PREPARED_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 /// The most artifacts the catalog owner keeps ready at once, however small they are.
-pub const PREPARED_ARTIFACT_ENTRIES: usize = 4096;
+pub(crate) const PREPARED_ARTIFACT_ENTRIES: usize = 4096;
 /// The longest kind or colour description an artifact may declare.
 const MAX_META_TEXT: usize = 64;
 
@@ -43,7 +42,7 @@ pub struct ArtifactId(String);
 
 impl ArtifactId {
     /// The identity of the bytes whose lowercase hexadecimal SHA-256 is `sha256`.
-    pub fn for_hash(sha256: &str) -> Result<Self, Error> {
+    pub(crate) fn for_hash(sha256: &str) -> Result<Self, Error> {
         Self::parse(format!("{PREFIX}{sha256}"))
     }
 
@@ -67,7 +66,7 @@ impl ArtifactId {
     }
 
     /// The lowercase hexadecimal SHA-256 of the artifact's bytes.
-    pub fn sha256(&self) -> &str {
+    pub(crate) fn sha256(&self) -> &str {
         &self.0[PREFIX.len()..]
     }
 }
@@ -95,7 +94,7 @@ impl<'de> Deserialize<'de> for ArtifactId {
 /// hands it back beside the bytes; it never interprets the bytes itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ArtifactMeta {
+pub(crate) struct ArtifactMeta {
     /// Lowercase ASCII letters, digits, `-` and `.`, at most 64 characters, e.g. `tint` or `mask`.
     pub kind: String,
     #[serde(default)]
@@ -139,7 +138,7 @@ impl ArtifactMeta {
 /// about the artifact; the owner records it with [`crate::EditorService::register_artifact`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ArtifactRecord {
+pub(crate) struct ArtifactRecord {
     pub id: ArtifactId,
     pub sha256: String,
     pub bytes: u64,
@@ -235,20 +234,23 @@ pub struct ArtifactTable(Option<Arc<BTreeMap<ArtifactId, Arc<PreparedArtifact>>>
 
 impl ArtifactTable {
     /// The verified bytes bound under this identity, if the recipe was bound with them.
-    pub fn get(&self, id: &ArtifactId) -> Option<&Arc<PreparedArtifact>> {
+    pub(crate) fn get(&self, id: &ArtifactId) -> Option<&Arc<PreparedArtifact>> {
         self.0.as_ref().and_then(|held| held.get(id))
     }
 
-    pub fn is_empty(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
         self.0.as_ref().is_none_or(|held| held.is_empty())
     }
 
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.0.as_ref().map_or(0, |held| held.len())
     }
 
     /// Every bound artifact, in identity order.
-    pub fn iter(&self) -> impl Iterator<Item = &Arc<PreparedArtifact>> {
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<PreparedArtifact>> {
         self.0.iter().flat_map(|held| held.values())
     }
 

@@ -71,10 +71,10 @@ fn vignette_field(
 
 /// The Vignette module's table, neutrality rule and compilation.
 #[derive(Debug, Default)]
-pub struct Vignette;
+pub(crate) struct Vignette;
 
 /// The Vignette module: `Vignette` as a field-patch module.
-pub type VignetteModule = FieldPatchModule<Vignette>;
+pub(crate) type VignetteModule = FieldPatchModule<Vignette>;
 
 impl FieldPatch for Vignette {
     fn spec() -> Spec {

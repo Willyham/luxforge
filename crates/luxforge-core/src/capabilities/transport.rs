@@ -128,12 +128,12 @@ pub trait Transport: Send + Sync + fmt::Debug {
 /// A transport that refuses every request with `not-ready: <reason>`: a host configured without a
 /// network path.
 #[derive(Clone, Debug)]
-pub struct UnavailableTransport {
+pub(crate) struct UnavailableTransport {
     reason: String,
 }
 
 impl UnavailableTransport {
-    pub fn new(reason: impl Into<String>) -> Self {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
         }

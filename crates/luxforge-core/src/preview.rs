@@ -81,7 +81,8 @@ impl ViewState {
         self.pan_y = y;
         Ok(())
     }
-    pub fn source_detail_required(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn source_detail_required(&self) -> bool {
         matches!(self.zoom, Zoom::Percent { value } if value >= 100.0)
     }
 }
@@ -116,7 +117,7 @@ impl PreviewSession {
     }
     /// Select `selection` framed by the geometry of `geometry_from`. A current selection is the
     /// live state with its own geometry, so it never carries one.
-    pub fn select_framed(
+    pub(crate) fn select_framed(
         &mut self,
         selection: HistorySelection,
         geometry_from: Option<EntryId>,
@@ -133,7 +134,7 @@ impl PreviewSession {
         self.selection == HistorySelection::Current
     }
     /// The entry whose geometry frames `entry_id` when it is this session's selection.
-    pub fn framing_of(&self, entry_id: &EntryId) -> Option<&EntryId> {
+    pub(crate) fn framing_of(&self, entry_id: &EntryId) -> Option<&EntryId> {
         match &self.selection {
             HistorySelection::Entry(selected) if selected == entry_id => {
                 self.geometry_from.as_ref()

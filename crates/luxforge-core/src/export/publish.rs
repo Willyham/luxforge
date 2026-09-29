@@ -23,12 +23,12 @@ use std::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Destination {
+pub(crate) struct Destination {
     path: PathBuf,
 }
 
 impl Destination {
-    pub fn check(path: &Path) -> Result<Self, Error> {
+    pub(crate) fn check(path: &Path) -> Result<Self, Error> {
         if !path.is_absolute() {
             return Err(Error::validation(
                 "export destination must be an absolute path",
@@ -72,11 +72,11 @@ impl Destination {
         }
     }
 
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn stage(&self) -> Result<Staged, Error> {
+    pub(crate) fn stage(&self) -> Result<Staged, Error> {
         let parent = self
             .path
             .parent()
@@ -107,7 +107,7 @@ impl Destination {
 
 /// A temporary file exclusive to this export, beside its final destination. Dropping it without
 /// calling [`Staged::publish`] removes the temporary file.
-pub struct Staged {
+pub(crate) struct Staged {
     file: BufWriter<File>,
     temp_path: PathBuf,
     final_path: PathBuf,
@@ -120,7 +120,7 @@ impl Staged {
     /// an exFAT volume), an exclusive create of the final name and a copy of the temporary file's
     /// bytes into it. Either way the temporary file is then removed and the destination directory
     /// synced. Consumes `self` so an already-published `Staged` is never dropped as unpublished.
-    pub fn publish(mut self) -> Result<u64, Error> {
+    pub(crate) fn publish(mut self) -> Result<u64, Error> {
         self.file
             .flush()
             .map_err(|error| file_error(self.temp_path.display(), error.kind()))?;
@@ -197,7 +197,7 @@ impl Drop for Staged {
 /// `<stem>-edited.jpg` in `directory`, else `-edited-2.jpg`, `-edited-3.jpg` and so on, probing at
 /// most 64 names; `None` once all 64 are taken. `stem` is used as-is: it comes from an existing
 /// file name, so nothing further needs sanitizing.
-pub fn suggest(directory: &Path, stem: &str) -> Option<PathBuf> {
+pub(crate) fn suggest(directory: &Path, stem: &str) -> Option<PathBuf> {
     const MAX_PROBES: u32 = 64;
     for n in 1..=MAX_PROBES {
         let candidate = if n == 1 {

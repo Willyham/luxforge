@@ -2,7 +2,7 @@
 use crate::Error;
 use moxcms::{ColorProfile, DataColorSpace, ParsingOptions, ProfileClass};
 
-pub fn check(bytes: &[u8], components: u8) -> Result<(), Error> {
+pub(crate) fn check(bytes: &[u8], components: u8) -> Result<(), Error> {
     let unsupported = || Error::unsupported_profile("expected standard RGB matrix/TRC sRGB");
     if components != 3 {
         return Err(unsupported());

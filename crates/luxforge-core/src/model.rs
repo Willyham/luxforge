@@ -6,7 +6,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
 /// Format 2 adds the mask table a recipe carries and the optional mask reference a layer carries;
-/// a recipe written before it has no `masks` field and is refused by [`Recipe::validate`] and by
+/// a recipe written before it has no `masks` field and is refused by `Recipe::validate` and by
 /// deserialization rather than defaulted, because a stack whose masks are unknown is not the stack
 /// that was stored.
 pub const RECIPE_FORMAT: u32 = 2;
@@ -120,16 +120,16 @@ impl JobStatus {
 /// long session's snapshots bounded rather than growing with every stroke.
 pub const MASKS_PER_RECIPE: usize = 16;
 pub const COMPONENTS_PER_MASK: usize = 32;
-pub const MASK_BYTES_PER_RECIPE: usize = 256 * 1024;
+pub(crate) const MASK_BYTES_PER_RECIPE: usize = 256 * 1024;
 /// Stored path positions one mask's components may hold between them, summed over every stroke they
 /// reference. The per-stroke bound is [`crate::path::POINTS_PER_STROKE`] and belongs to the host's
 /// path primitives; this one is the mask's own and is refused with a `ResourceLimit` error naming
 /// it. It is checked with the rest of the mask table when a recipe enters the service
 /// ([`Recipe::validate_mask_table`]).
-pub const POINTS_PER_MASK: usize = 8192;
+pub(crate) const POINTS_PER_MASK: usize = 8192;
 /// Mask and component display names are a person's text, not an identity: printable, trimmed and
 /// bounded, exactly as a version name is.
-pub const MAX_MASK_NAME: usize = 64;
+pub(crate) const MAX_MASK_NAME: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Layer {
@@ -168,7 +168,7 @@ impl Layer {
     }
     /// Structural only: effect availability, payload shape and whether the effect may reference
     /// artifacts at all belong to the providing module, reached through [`crate::ModuleRegistry`].
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.effect_id.is_empty() {
             return Err(Error::validation("layer has no effect identity"));
         }
@@ -192,7 +192,7 @@ impl Layer {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PixelReplace {
+pub(crate) struct PixelReplace {
     pub x: u32,
     pub y: u32,
     pub rgb: [u8; 3],
@@ -210,7 +210,7 @@ pub enum Transform {
 }
 
 impl Transform {
-    pub fn action_id(self) -> &'static str {
+    pub(crate) fn action_id(self) -> &'static str {
         match self {
             Self::RotateLeft => "rotate-left",
             Self::RotateRight => "rotate-right",
@@ -307,7 +307,7 @@ impl Component {
 
     /// Structural only: the identity is checked by its own type, the kind is a well-formed token
     /// and the payload is the kind provider's business, unread here.
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         valid_display_name("component", &self.name)?;
         if !valid_name(&self.kind) {
             return Err(Error::validation(format!(
@@ -464,11 +464,11 @@ pub struct Recipe {
     #[serde(skip)]
     pub strokes: crate::path::StrokeTable,
     /// The verified bytes of the derived artifacts this recipe's layers list, which compilation
-    /// hands each layer's module ([`crate::artifacts`]).
+    /// hands each layer's module (`crate::artifacts`).
     ///
     /// **Never serialized.** A stored recipe holds artifact identities in its layers and never
     /// their bytes. It is filled by the catalog owner's binding step,
-    /// [`crate::EditorService::bind_artifacts`], where a recipe enters evaluation or admission, and
+    /// `crate::EditorService::bind_artifacts`, where a recipe enters evaluation or admission, and
     /// it is empty on a recipe that lists no artifact and on every recipe read out of a catalog.
     /// Compiling a layer whose artifact is not in it is refused by name.
     #[serde(skip)]
@@ -511,7 +511,7 @@ impl Recipe {
     ///
     /// The mask table is [`Self::validate_mask_table`]'s, checked once when a recipe enters the
     /// service.
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.format != RECIPE_FORMAT {
             return Err(Error::incompatible(format!(
                 "unsupported recipe format {}",
@@ -548,7 +548,7 @@ impl Recipe {
     /// each component payload and parses nothing else, because a payload belongs to the component
     /// kind that provides it. Cost is `O(components)` and no store is touched: this answers what a
     /// recipe references, not what it resolves to.
-    pub fn stroke_references(&self) -> Result<Vec<(String, crate::path::StrokeId)>, Error> {
+    pub(crate) fn stroke_references(&self) -> Result<Vec<(String, crate::path::StrokeId)>, Error> {
         let mut found = Vec::new();
         for mask in &self.masks {
             for component in &mask.components {
@@ -576,7 +576,7 @@ impl Recipe {
     ///
     /// Cost is `O(components + strokes)` plus one serialization of the mask table, and nothing at
     /// all for a recipe without masks — every recipe without a local adjustment.
-    pub fn validate_mask_table(&self) -> Result<(), Error> {
+    pub(crate) fn validate_mask_table(&self) -> Result<(), Error> {
         self.validate_masks()?;
         self.validate_strokes()?;
         for mask in &self.masks {
@@ -654,14 +654,11 @@ impl Recipe {
         }
         Ok(())
     }
-    pub fn appended(&self, layer: Layer) -> Result<Self, Error> {
-        self.with_layer_inserted(self.layers.len(), layer)
-    }
     /// Insert a layer at `index`, keeping every other layer and its order; `layers.len()` appends.
     /// The host chooses the index from the effect's declared stage, so a pixel-stage layer joins
     /// the stack before the geometry tail that must carry it. An index past the end is a
     /// validation error.
-    pub fn with_layer_inserted(&self, index: usize, layer: Layer) -> Result<Self, Error> {
+    pub(crate) fn with_layer_inserted(&self, index: usize, layer: Layer) -> Result<Self, Error> {
         layer.validate()?;
         if index > self.layers.len() {
             return Err(Error::validation(format!(
@@ -676,7 +673,7 @@ impl Recipe {
     }
     /// Replace the layer with the same identity in place, keeping every other layer and every
     /// position. An identity that is not in this recipe is a validation error.
-    pub fn with_layer_replaced(&self, layer: Layer) -> Result<Self, Error> {
+    pub(crate) fn with_layer_replaced(&self, layer: Layer) -> Result<Self, Error> {
         layer.validate()?;
         let position = self
             .layers
@@ -718,19 +715,11 @@ impl Snapshot {
             recipe: self.recipe.with_layer_inserted(index, layer)?,
         })
     }
-    /// A new snapshot whose stack differs only in the layer with this identity. Earlier snapshots
-    /// keep their own recipe, so history stays immutable.
-    pub fn with_layer_replaced(&self, layer: Layer) -> Result<Self, Error> {
-        Ok(Self {
-            id: SnapshotId::new(),
-            asset_id: self.asset_id.clone(),
-            recipe: self.recipe.with_layer_replaced(layer)?,
-        })
-    }
     /// A new snapshot of the same asset holding this stack, which the host resolved from this one:
     /// the result of one plan or of every step of a composite. Earlier snapshots keep their own
     /// recipe, so history stays immutable.
-    pub fn with_recipe(&self, recipe: Recipe) -> Result<Self, Error> {
+    #[cfg(test)]
+    pub(crate) fn with_recipe(&self, recipe: Recipe) -> Result<Self, Error> {
         recipe.validate()?;
         Ok(Self {
             id: SnapshotId::new(),
@@ -802,7 +791,7 @@ pub struct Mutation {
 }
 
 impl Mutation {
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         validate_request(&self.request_id, &self.actor)
     }
 }
@@ -819,7 +808,7 @@ pub struct MutationRequest {
 }
 
 impl MutationRequest {
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         validate_request(&self.request_id, &self.actor)
     }
 }
@@ -1261,13 +1250,6 @@ mod tests {
             assert_eq!(kept, recipe.layers.iter().collect::<Vec<_>>(), "order kept");
             assert_eq!(recipe.layers.len(), 2, "the original recipe is untouched");
         }
-        assert_eq!(
-            recipe.appended(joined.clone()).unwrap(),
-            recipe
-                .with_layer_inserted(recipe.layers.len(), joined.clone())
-                .unwrap(),
-            "appending is inserting at the end"
-        );
         let error = recipe.with_layer_inserted(3, joined).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);
         assert_eq!(

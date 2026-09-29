@@ -22,7 +22,7 @@ pub(super) const MAX_CLIENTS: usize = 8;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LocalSessionInfo {
+pub(crate) struct LocalSessionInfo {
     pub protocol: String,
     pub address: SocketAddr,
     pub token: String,
@@ -82,7 +82,8 @@ impl LocalServer {
             join: Some(join),
         })
     }
-    pub fn info(&self) -> &LocalSessionInfo {
+    #[cfg(test)]
+    pub(crate) fn info(&self) -> &LocalSessionInfo {
         &self.info
     }
     /// Live connections served by this listener, counted as they are accepted and released.

@@ -42,7 +42,7 @@ impl ExactGeometry {
 
     /// A pure translation that copies one rectangle of its input stage: what a crop with no
     /// straightening declares. Exact, and composable with neighbouring transforms into one pass.
-    pub fn crop(x: i64, y: i64, width: u32, height: u32) -> Self {
+    pub(crate) fn crop(x: i64, y: i64, width: u32, height: u32) -> Self {
         Self {
             a: 1,
             b: 0,

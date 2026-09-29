@@ -239,7 +239,7 @@ pub const MASK_FIELD: &str = "mask";
 /// The host's `mask` field as the identity parameter it is: validated by the one generic check, and
 /// published by `schema.list` as the `target` of every action that accepts it. It is declared by the
 /// host rather than by the module, because no module parses, plans or compiles a mask.
-pub fn mask_target_parameter() -> crate::ParameterDescriptor {
+pub(crate) fn mask_target_parameter() -> crate::ParameterDescriptor {
     crate::ParameterDescriptor::identity(MASK_FIELD, crate::IdentityKind::Mask).notes(
         "the mask this edit applies through; omit it to edit the layer that applies everywhere. \
          The global layer and each mask are distinct targets, so this action commits or updates \

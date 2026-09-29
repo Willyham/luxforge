@@ -4,8 +4,8 @@
 //! The module declares no controls, so it draws no section: Basic's White balance group carries a
 //! RAW variant of each of its controls and of its reset, which reach this module's `set-raw` and
 //! its sensor pick on the global target of a RAW photo ([`white_balance_variants`]).
-pub mod lightroom_white_balance;
-pub mod white_balance;
+pub(super) mod lightroom_white_balance;
+pub(super) mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     ControlVariant, EffectDescriptor, EffectStage, ExactGeometry, LayerReport, LayerUpdate,
@@ -18,12 +18,12 @@ use serde_json::{Map, Value};
 
 /// The RAW module's one source-stage effect: the development of the RAW original, always the
 /// first layer of a RAW asset's stack.
-pub const RAW_EFFECT: &str = "luxforge.raw";
+pub(super) const RAW_EFFECT: &str = "luxforge.raw";
 
 /// The RAW development's own payload format. Every other effect stays at the shared
 /// [`crate::EFFECT_FORMAT`]; a RAW layer of any other format is refused as `incompatible` and never
 /// rewritten.
-pub const RAW_EFFECT_FORMAT: u32 = 2;
+pub(super) const RAW_EFFECT_FORMAT: u32 = 2;
 
 /// The RAW module's identity, which Basic's control variants name.
 pub(crate) const RAW_MODULE: &str = "luxforge.raw";
@@ -44,7 +44,7 @@ const TINT_LABEL: &str = "Tint";
 const GROUP_LABEL: &str = "White balance";
 const PICKER_LABEL: &str = "Neutral picker";
 const AS_SHOT_LABEL: &str = "As shot";
-pub const MAX_RAW_GAIN: f64 = 32.0;
+pub(super) const MAX_RAW_GAIN: f64 = 32.0;
 /// The declared defaults of the two white-balance fields: what they show, and what a custom
 /// change keeps for the field it does not name, when the gains in force have no temperature and
 /// tint in range.
@@ -126,7 +126,7 @@ impl RawPayload {
         Ok(payload)
     }
 
-    pub fn validate(&self) -> Result<(), Error> {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
         if self.gains[1] != 1.0
             || self.as_shot_gains[1] != 1.0
             || self
@@ -180,13 +180,13 @@ impl RawPayload {
     }
 
     /// The development a stored layer holds.
-    pub fn from_layer(layer: &Layer) -> Result<Self, Error> {
+    pub(crate) fn from_layer(layer: &Layer) -> Result<Self, Error> {
         Self::from_value(&layer.effect_id, layer.effect_format, &layer.payload)
     }
 
     /// The development a payload stored under this effect and format holds, parsed straight from
     /// the stored value and validated.
-    pub fn from_value(effect_id: &str, format: u32, payload: &Value) -> Result<Self, Error> {
+    pub(crate) fn from_value(effect_id: &str, format: u32, payload: &Value) -> Result<Self, Error> {
         raw_effect(effect_id, format)?;
         let payload = Self::deserialize(payload)
             .map_err(|e| Error::validation(format!("invalid RAW payload: {e}")))?;
@@ -195,7 +195,7 @@ impl RawPayload {
     }
 
     /// This development as a stored payload.
-    pub fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> Value {
         serde_json::to_value(self).expect("validated RAW payload serializes")
     }
 
@@ -211,16 +211,10 @@ impl RawPayload {
         }
     }
 
-    /// The sensor gains this development develops at: the camera's under As shot, which the
-    /// canonical payload also stores as its gains.
-    pub fn development_gains(&self) -> [f32; 3] {
-        self.gains
-    }
-
     /// Whether this development is the Original's: As shot, which is canonical, so it equals
     /// [`RawPayload::for_as_shot`] of its own as-shot gains and calibration. Anything else is an
     /// edit.
-    pub fn is_neutral(&self) -> bool {
+    pub(crate) fn is_neutral(&self) -> bool {
         self.wb_mode == WhiteBalanceMode::AsShot
     }
 
@@ -237,7 +231,7 @@ impl RawPayload {
 
     /// The temperature and tint of the white balance in force: what the controls show, and where
     /// a custom temperature or tint change starts from for the field it does not name
-    /// ([`Self::equivalent`]). Gains no temperature in 2000..12000 K and tint within ±100 reproduce
+    /// (`Self::equivalent`). Gains no temperature in 2000..12000 K and tint within ±100 reproduce
     /// are the declared 6504 K and 0.
     pub fn white_balance_controls(&self) -> [f64; 2] {
         self.equivalent()
@@ -571,7 +565,7 @@ impl ToolModule for RawModule {
     /// and `tint` the controls show — under As shot and after a pick, their equivalent
     /// ([`RawPayload::white_balance_controls`]); the explicit gains have no control and are not
     /// reported. It is neutral at the Original's development, As shot
-    /// ([`RawPayload::is_neutral`]), which every RAW recipe holds from its Original on.
+    /// (`RawPayload::is_neutral`), which every RAW recipe holds from its Original on.
     fn describe(&self, effect_id: &str, format: u32, value: &Value) -> Result<LayerReport, Error> {
         let payload = RawPayload::from_value(effect_id, format, value)?;
         let neutral = payload.is_neutral();

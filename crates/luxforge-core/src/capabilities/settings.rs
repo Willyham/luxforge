@@ -16,29 +16,26 @@ use crate::ErrorKind;
 use crate::{Error, ModuleDescriptor, Mutation, ParameterKind, check_value};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::PathBuf};
 
 /// The only settings file format this build reads or writes.
-pub const SETTINGS_FORMAT: u32 = 1;
+pub(crate) const SETTINGS_FORMAT: u32 = 1;
 /// The largest settings file, read or written.
-pub const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 /// The longest profile label, in characters.
-pub const MAX_PROFILE_LABEL: usize = 128;
+pub(crate) const MAX_PROFILE_LABEL: usize = 128;
 
-pub const SETTINGS_FILE: &str = "settings.json";
+pub(crate) const SETTINGS_FILE: &str = "settings.json";
 
 /// The one settings method that only reads.
 pub const READ: &str = "module.settings.read";
 /// The API methods that write settings.
 pub const SET: &str = "module.settings.set";
-pub const SET_SECRET: &str = "module.settings.set-secret";
-pub const CLEAR_SECRET: &str = "module.settings.clear-secret";
-pub const RESET: &str = "module.settings.reset";
-pub const CREATE_PROFILE: &str = "module.profile.create";
-pub const REMOVE_PROFILE: &str = "module.profile.remove";
+pub(crate) const SET_SECRET: &str = "module.settings.set-secret";
+pub(crate) const CLEAR_SECRET: &str = "module.settings.clear-secret";
+pub(crate) const RESET: &str = "module.settings.reset";
+pub(crate) const CREATE_PROFILE: &str = "module.profile.create";
+pub(crate) const REMOVE_PROFILE: &str = "module.profile.remove";
 
 /// `{format: 1, modules: {<module_id>: <entry>}}`. Entries stay raw JSON until a module is
 /// operated on, so an entry of a module that is not registered is written back exactly as read.
@@ -75,7 +72,7 @@ impl ModuleEntry {
 /// its non-secret values.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StoredProfile {
+pub(crate) struct StoredProfile {
     pub id: String,
     pub adapter: String,
     pub label: String,
@@ -85,7 +82,7 @@ pub struct StoredProfile {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum WriteOutcome {
+pub(crate) enum WriteOutcome {
     Committed,
     NoOp,
 }
@@ -93,7 +90,7 @@ pub enum WriteOutcome {
 /// A profile's identity, adapter and label, without its values.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProfileSummary {
+pub(crate) struct ProfileSummary {
     pub id: String,
     pub adapter: String,
     pub label: String,
@@ -102,7 +99,7 @@ pub struct ProfileSummary {
 /// What one settings write did. It holds no value of any field.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WriteResult {
+pub(crate) struct WriteResult {
     pub module_id: String,
     pub outcome: WriteOutcome,
     /// The module's settings revision after the write; a no-op keeps it.
@@ -121,7 +118,7 @@ pub struct WriteResult {
 /// A write as the host sees it: the result a client receives, and the removed profiles whose
 /// grants the host revokes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SettingsWrite {
+pub(crate) struct SettingsWrite {
     pub result: WriteResult,
     /// Profiles the write removed, with the values they held.
     pub removed: Vec<StoredProfile>,
@@ -169,7 +166,7 @@ pub enum FieldRead {
 }
 
 impl FieldRead {
-    pub fn valid(&self) -> bool {
+    pub(crate) fn valid(&self) -> bool {
         match self {
             Self::Secret { valid, .. } | Self::Value { valid, .. } => *valid,
         }
@@ -191,7 +188,7 @@ pub enum ProfileStatus {
 
 impl ProfileStatus {
     /// The status as it is serialized.
-    pub fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Ready => "ready",
             Self::Incomplete => "incomplete",
@@ -231,7 +228,7 @@ pub struct SettingsRead {
 }
 
 impl SettingsRead {
-    pub fn profile(&self, id: &str) -> Option<&ProfileRead> {
+    pub(crate) fn profile(&self, id: &str) -> Option<&ProfileRead> {
         self.profiles.iter().find(|profile| profile.id == id)
     }
 }
@@ -593,24 +590,25 @@ fn stored_profile<'a>(
 /// The settings file of one user, in one directory. Holds no state of its own: every call reads
 /// the file again.
 #[derive(Clone, Debug)]
-pub struct SettingsStore {
+pub(crate) struct SettingsStore {
     document: JsonDocument<Document>,
 }
 
 impl SettingsStore {
     /// A store over `<dir>/settings.json`. Nothing is created until the first write.
-    pub fn new(dir: impl Into<PathBuf>) -> Self {
+    pub(crate) fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             document: JsonDocument::new(dir, SETTINGS_FILE, MAX_SETTINGS_BYTES, SETTINGS_FORMAT),
         }
     }
 
-    pub fn dir(&self) -> &Path {
+    #[cfg(test)]
+    pub(crate) fn dir(&self) -> &std::path::Path {
         self.document.dir()
     }
 
     /// One module's settings.
-    pub fn read(
+    pub(crate) fn read(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,
@@ -623,7 +621,7 @@ impl SettingsStore {
 
     /// `module.settings.set`: validate every named non-secret field of one scope and commit them
     /// together; `null` returns a field to its default.
-    pub fn set(
+    pub(crate) fn set(
         &self,
         descriptor: &ModuleDescriptor,
         profile_id: Option<&str>,
@@ -667,7 +665,7 @@ impl SettingsStore {
 
     /// `module.settings.set-secret`: store one secret field's value in the secret store. The value
     /// is never written here; writing a secret is idempotent.
-    pub fn set_secret(
+    pub(crate) fn set_secret(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,
@@ -706,7 +704,7 @@ impl SettingsStore {
 
     /// `module.settings.clear-secret`: remove only that secret. Clearing an absent secret is a
     /// no-op.
-    pub fn clear_secret(
+    pub(crate) fn clear_secret(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,
@@ -742,7 +740,7 @@ impl SettingsStore {
     /// `module.settings.reset`: delete the module's stored values and profiles and clear their
     /// secrets. It is the explicit way out of an incompatible entry, so it is the one write an
     /// incompatible entry accepts. The entry keeps its revision, so the revision keeps counting.
-    pub fn reset(
+    pub(crate) fn reset(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,
@@ -792,7 +790,7 @@ impl SettingsStore {
 
     /// `module.profile.create`: a new, empty profile of a declared adapter, with a host-generated
     /// identity.
-    pub fn create_profile(
+    pub(crate) fn create_profile(
         &self,
         descriptor: &ModuleDescriptor,
         adapter: &str,
@@ -841,7 +839,7 @@ impl SettingsStore {
     /// `module.profile.remove`: clear the profile's secrets, then remove it and its values. The
     /// removed profile travels back to the host with its values, so grants scoped to it can be
     /// revoked.
-    pub fn remove_profile(
+    pub(crate) fn remove_profile(
         &self,
         descriptor: &ModuleDescriptor,
         secrets: &dyn SecretStore,

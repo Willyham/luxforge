@@ -19,49 +19,54 @@ mod spatial;
 mod transform;
 mod vignette;
 
-pub use basic::{BASIC_EFFECT, BasicModule};
+pub use basic::BASIC_EFFECT;
+pub(crate) use basic::BasicModule;
+pub(crate) use capabilities_proof::CapabilitiesProofModule;
 pub use capabilities_proof::{
-    CapabilitiesProofModule, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
 #[cfg(test)]
 pub(crate) use capabilities_proof::{PROOF_PALETTE_GAINS, PROOF_TASK};
-pub use capability::CapabilityModule;
+pub(crate) use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, ControlsModule};
+pub(crate) use crop::CropModule;
 pub use crop::geometry::{
     BoxRect, CropPayload, CropStage, Edge, MAX_ANGLE, MIN_ANGLE, OutputRect, guide_angle,
     largest_with_ratio_inside,
 };
-pub use crop::{CROP_EFFECT, CropAspect, CropModule};
+pub use crop::{CROP_EFFECT, CropAspect};
 pub use descriptor::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
-    ColorStyle, Control, ControlVariant, CurveBackground, CurveChannel, CurveControl,
-    EffectDescriptor, EffectStage, GroupControl, IdentityKind, MAX_SETTINGS_ACTIONS,
-    MAX_SETTINGS_FIELDS, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
+    ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
+    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
     ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
-    ResolvedControl, ResolvedReset, check_parameters, check_value, resolve_control,
-    resolve_group_reset, valid_identity, valid_name,
+    check_parameters, check_value, resolve_control, resolve_group_reset,
 };
 #[cfg(test)]
 pub(crate) use descriptor::{ChoiceControl, RangeControl, ToggleControl};
 pub(crate) use descriptor::{
-    PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
-    check_settings, check_target, decode_parameters,
+    ControlVariant, IdentityKind, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity,
+    valid_name,
 };
-pub(crate) use descriptor::{label_value, not_applicable, title_case};
-pub use mixer::{MIXER_EFFECT, MixerModule};
-pub use pixel::{PIXEL_EFFECT, PixelModule};
-pub use presence::{PRESENCE_EFFECT, PresenceModule};
+pub(crate) use descriptor::{
+    PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
+    check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
+};
+pub use mixer::MIXER_EFFECT;
+pub(crate) use mixer::MixerModule;
+pub use pixel::PIXEL_EFFECT;
+pub(crate) use pixel::PixelModule;
+pub use presence::PRESENCE_EFFECT;
+pub(crate) use presence::PresenceModule;
 #[cfg(test)]
 pub(crate) use presets::APPLY_PRESET;
-pub use presets::{MAX_PRESET_NAME, PresetsModule};
-pub use processing::{
-    ColorOperation, ExactGeometry, MAX_COLOR_UNITS, PointwiseColor, Processing, Resample, Stage,
-};
-pub(crate) use raw::is_raw_development;
-pub use raw::lightroom_white_balance::lightroom_to_luxforge;
+pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};
+pub use processing::{ColorOperation, PointwiseColor, Processing, Stage};
+pub(crate) use processing::{ExactGeometry, MAX_COLOR_UNITS, Resample};
+pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
-pub(crate) use raw::white_balance_variants;
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
+pub(crate) use raw::{is_raw_development, white_balance_variants};
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]
@@ -71,18 +76,18 @@ pub(crate) use registry::tests::{
     HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
     STAGE_EFFECT, StageModule, TestModule,
 };
-pub use registry::{
-    ActionRef, ModuleRegistry, Provider, QueryRef, RegistryOptions, Superseded,
-    insertion_index_among,
-};
-pub use spatial::{
+pub(crate) use registry::{ActionRef, QueryRef, Superseded};
+pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
+pub use spatial::Region;
+pub(crate) use spatial::{
     ESTIMATE_REDUCTION, ESTIMATE_STORE_ENTRIES, Global, MAX_MASKED_SPATIAL_LAYERS,
-    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction, Region,
+    MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes, PlanesMut, Reduction,
     SPATIAL_BUDGET_BYTES, SpatialOperation, SpatialUnit,
 };
-pub(crate) use transform::stored_orientation;
-pub use transform::{ORIENTATION_EFFECT, TransformModule};
-pub use vignette::{VIGNETTE_EFFECT, VignetteModule};
+pub use transform::ORIENTATION_EFFECT;
+pub(crate) use transform::{TransformModule, stored_orientation};
+pub use vignette::VIGNETTE_EFFECT;
+pub(crate) use vignette::VignetteModule;
 
 use crate::{ArtifactId, Error, Layer, LayerId, MaskId, SourceTag};
 use serde_json::{Map, Value};
@@ -108,7 +113,7 @@ pub struct NewLayer {
 }
 
 impl NewLayer {
-    pub fn new(effect_id: impl Into<String>, payload: Value) -> Self {
+    pub(crate) fn new(effect_id: impl Into<String>, payload: Value) -> Self {
         Self {
             effect_id: effect_id.into(),
             payload,
@@ -116,7 +121,7 @@ impl NewLayer {
         }
     }
 
-    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+    pub(crate) fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
     }
 }
@@ -134,7 +139,7 @@ pub struct LayerUpdate {
 }
 
 impl LayerUpdate {
-    pub fn new(id: LayerId, payload: Value) -> Self {
+    pub(crate) fn new(id: LayerId, payload: Value) -> Self {
         Self {
             id,
             payload,
@@ -142,7 +147,7 @@ impl LayerUpdate {
         }
     }
 
-    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+    pub(crate) fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
     }
 }
@@ -155,7 +160,7 @@ pub enum ActionPlan {
     /// effect's declared stage and order: a pixel-stage or colour-stage layer joins the stack
     /// before the geometry tail, a spatial layer after the pointwise work, a geometry layer before
     /// any finish layer and a finish layer at the end.
-    /// [`StageContext::insertion_index_for`] answers where. The host also gives it its identity,
+    /// `StageContext::insertion_index_for` answers where. The host also gives it its identity,
     /// its effect's format and the request's mask target.
     Commit(NewLayer),
     /// Replace the payload of the layer with this identity in place, keeping its position, effect
@@ -169,7 +174,7 @@ pub enum ActionPlan {
     /// Apply these field-patch actions, in order, as this one action: a preset is one. The host runs
     /// each step through the registry against the stack the steps before it produced, exactly as it
     /// would run that action alone, and commits the final stack once as one entry that stores this
-    /// action's identity, label and parameters. At most [`MAX_COMPOSE_STEPS`] steps; a step's own
+    /// action's identity, label and parameters. At most `MAX_COMPOSE_STEPS` steps; a step's own
     /// plan may not be a composite.
     Compose(Vec<ActionInput>),
 }
@@ -184,7 +189,7 @@ pub enum LayerEdit {
 
 /// The most steps one [`ActionPlan::Compose`] may hold, which is the most actions a settings set
 /// names.
-pub const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
+pub(crate) const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
 
 /// The questions about a stack that compile a prefix of it or read its pixels, which the host
 /// answers for a [`StageContext`]. The host answers each one only when a module asks it, so a plan
@@ -218,8 +223,8 @@ pub struct StageContext<'a> {
     /// The current recipe's layers in evaluation order, so a module can find its own layer to
     /// update. Planning never mutates them.
     pub layers: &'a [Layer],
-    /// The providers, which answer [`StageContext::own_layer`] and
-    /// [`StageContext::insertion_index_for`].
+    /// The providers, which answer `StageContext::own_layer` and
+    /// `StageContext::insertion_index_for`.
     pub registry: &'a ModuleRegistry,
     /// The target this plan or query addresses: `None` for the global layer, or the mask the
     /// request named.
@@ -228,7 +233,7 @@ pub struct StageContext<'a> {
     /// inspecting the stack to learn which kind of photo it edits.
     pub kind: SourceTag,
     /// The recipe's masks in list order, which place a masked layer among the layers of its own
-    /// effect ([`StageContext::insertion_index_for`]).
+    /// effect (`StageContext::insertion_index_for`).
     pub masks: &'a [crate::Mask],
     /// The answers that compile a prefix or read pixels.
     pub questions: &'a dyn StageQuestions,
@@ -241,7 +246,7 @@ impl<'a> StageContext<'a> {
     /// maskable effect belongs only to its own mask's target and a stack that holds two layers of
     /// the effect for the target is refused, as the whole-stack compile refuses it for a declared
     /// `single` effect. `O(layers)`; reads no pixels.
-    pub fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
+    pub(crate) fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
         self.registry.own_layer(self.layers, effect_id, self.target)
     }
 
@@ -251,7 +256,7 @@ impl<'a> StageContext<'a> {
     /// A module plans against that position instead of choosing one, so
     /// [`StageContext::stage_before`] of this index is the stage its coordinates address.
     /// `O(layers · masks)`; reads no pixels.
-    pub fn insertion_index_for(&self, effect_id: &str) -> usize {
+    pub(crate) fn insertion_index_for(&self, effect_id: &str) -> usize {
         self.registry
             .insertion_index_for_target(self.layers, effect_id, self.target, self.masks)
     }
@@ -259,26 +264,31 @@ impl<'a> StageContext<'a> {
     /// The output stage of the whole stack: [`StageContext::stage_before`] of `layers.len()`. The
     /// host compiles the stack to answer it, `O(layers)`, only when a module asks, so a plan that
     /// never needs the stage, such as a Basic patch, costs no compile.
-    pub fn stage(&self) -> Result<Stage, Error> {
+    pub(crate) fn stage(&self) -> Result<Stage, Error> {
         self.stage_before(self.layers.len())
     }
 
     /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
     /// `layers.len()` is [`StageContext::stage`]. A module updating a layer in place plans against
     /// that layer's own input stage, not the final one.
-    pub fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+    pub(crate) fn stage_before(&self, index: usize) -> Result<Stage, Error> {
         self.questions.stage_before(index)
     }
 
     /// One pixel of the stage the first `index` layers produce
     /// ([`StageQuestions::sample_before`]).
-    pub fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+    pub(crate) fn sample_before(
+        &self,
+        index: usize,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[u8; 4]>, Error> {
         self.questions.sample_before(index, x, y)
     }
 
     /// A RAW original's sensor patch at upright content coordinates
     /// ([`StageQuestions::sensor_neutral`]).
-    pub fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+    pub(crate) fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         self.questions.sensor_neutral(x, y)
     }
 }
@@ -445,7 +455,7 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<Processing, Error>;
     /// The module's capability hooks, when it declares worker tasks, managed resources or an
     /// effect evaluated with derived artifacts: such a module implements
-    /// [`CapabilityModule`] and returns itself here, and [`ModuleRegistry::register`] refuses one
+    /// `CapabilityModule` and returns itself here, and [`ModuleRegistry::register`] refuses one
     /// whose descriptor needs the hooks when this is `None`. Every other module keeps the default.
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
         None

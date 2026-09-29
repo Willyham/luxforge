@@ -94,7 +94,7 @@ impl<S> Evaluation<S> {
     }
 
     /// The output stage of the compiled stack, or `None` when the host cannot evaluate it.
-    pub fn stage(&self) -> Option<(u32, u32)> {
+    pub(crate) fn stage(&self) -> Option<(u32, u32)> {
         self.bound.compiled.as_ref().ok().map(|compiled| {
             let stage = compiled.stage();
             (stage.width, stage.height)
@@ -438,7 +438,7 @@ impl EditorService {
     /// ([`AnalysisSelection::Framed`]): what Compare shows. Like any preview job its identity is
     /// its evaluation's, which hashes the composed stack, so its frame and histogram are never
     /// confused with the entry's own.
-    pub fn framed_preview_job(
+    pub(crate) fn framed_preview_job(
         &self,
         asset_id: &AssetId,
         entry_id: &EntryId,
@@ -478,7 +478,7 @@ impl EditorService {
     /// result and the evaluation to render, or why the stack has no output stage. Costs a state
     /// read, a cached source verification and an `O(layers)` plan and compile; no frame is
     /// allocated here and nothing is persisted.
-    pub fn analysis_plan(
+    pub(crate) fn analysis_plan(
         &self,
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,
@@ -607,19 +607,6 @@ impl EditorService {
         Ok(SamplePlan { evaluation })
     }
 
-    /// One output pixel of an open draft's effective recipe, evaluated the same way: the draft's
-    /// action is planned against the current stack and the resulting recipe answers the point. No
-    /// frame is rasterized and nothing is persisted.
-    pub fn sample_draft(
-        &self,
-        asset_id: &AssetId,
-        draft: &Draft,
-        x: u32,
-        y: u32,
-    ) -> Result<PixelSample, Error> {
-        self.point_draft(asset_id, draft, x, y)?.evaluate()
-    }
-
     /// Plan one output pixel of an open draft's effective recipe, as [`Self::point_entry`] plans a
     /// saved entry's: the draft's action is planned against the current stack at the revision the
     /// draft holds now, and the plan names the current entry and that revision.
@@ -652,7 +639,7 @@ impl EditorService {
     }
 
     /// [`Self::locate_entry`] for any saved selection, a framed one included.
-    pub fn locate_selected(
+    pub(crate) fn locate_selected(
         &self,
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,
@@ -682,7 +669,7 @@ impl EditorService {
     }
 
     /// [`Self::transform_entry`] for any saved selection, a framed one included.
-    pub fn transform_selected(
+    pub(crate) fn transform_selected(
         &self,
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,

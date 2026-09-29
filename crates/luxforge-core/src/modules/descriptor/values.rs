@@ -8,10 +8,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 /// The most field-patch actions one `settings` value names.
-pub const MAX_SETTINGS_ACTIONS: usize = 16;
+pub(crate) const MAX_SETTINGS_ACTIONS: usize = 16;
 
 /// The most fields one action of a `settings` value sets.
-pub const MAX_SETTINGS_FIELDS: usize = 64;
+pub(crate) const MAX_SETTINGS_FIELDS: usize = 64;
 
 /// One value against one declared parameter: the check every caller of an action gets, exposed so
 /// a draft can validate a single field without assembling a whole request.

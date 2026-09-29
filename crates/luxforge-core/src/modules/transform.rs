@@ -172,7 +172,7 @@ fn control(transform: Transform, label: &str) -> Control {
 }
 
 #[derive(Debug)]
-pub struct TransformModule {
+pub(crate) struct TransformModule {
     descriptor: ModuleDescriptor,
 }
 
@@ -183,7 +183,7 @@ impl Default for TransformModule {
 }
 
 impl TransformModule {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             descriptor: ModuleDescriptor {
                 id: "luxforge.transform".into(),

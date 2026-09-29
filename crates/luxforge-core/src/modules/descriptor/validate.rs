@@ -32,12 +32,12 @@ fn valid_segments(value: &str, separator: char, alphabetic_segments: bool) -> bo
 }
 
 /// Module and effect identity: lowercase words separated by dots, e.g. `luxforge.pixel.replace`.
-pub fn valid_identity(value: &str) -> bool {
+pub(crate) fn valid_identity(value: &str) -> bool {
     valid_segments(value, '.', true)
 }
 
 /// Action and parameter identity: lowercase words separated by hyphens, e.g. `set-pixel`.
-pub fn valid_name(value: &str) -> bool {
+pub(crate) fn valid_name(value: &str) -> bool {
     valid_segments(value, '-', false)
 }
 
@@ -63,7 +63,7 @@ impl ModuleDescriptor {
     /// It adds one rule a module does not have: **a host control declares no variants**. A variant
     /// applies only on the global target, and a host control always addresses one of the host's
     /// objects — a mask control is always masked — so a variant on one could never apply.
-    pub fn validate_host(&self) -> Result<(), Error> {
+    pub(crate) fn validate_host(&self) -> Result<(), Error> {
         self.validate_as(Declarer::Host)
     }
 

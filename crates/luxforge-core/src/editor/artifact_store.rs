@@ -148,7 +148,7 @@ enum Binding {
 impl EditorService {
     /// A writer that publishes into this catalog's artifact root from any thread. No I/O: the root
     /// is created by its first publish.
-    pub fn artifact_writer(&self) -> Result<ArtifactWriter, Error> {
+    pub(crate) fn artifact_writer(&self) -> Result<ArtifactWriter, Error> {
         Ok(ArtifactWriter::new(
             self.artifact_root.clone(),
             self.catalog_id.clone(),
@@ -161,7 +161,7 @@ impl EditorService {
     /// while this service is open, so no collection removes it before the catalog is reopened; this
     /// service's writers already mark their own publishes live. The object file must be present
     /// with the recorded length; nothing is read or hashed here.
-    pub fn register_artifact(
+    pub(crate) fn register_artifact(
         &mut self,
         record: ArtifactRecord,
         prepared: Arc<PreparedArtifact>,
@@ -217,7 +217,7 @@ impl EditorService {
     /// ([`super::SourceWork`]).
     /// The table is replaced by exactly what the stack lists, and only when all of it is bound; a
     /// stack without artifacts costs one walk of its layers and allocates nothing.
-    pub fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
+    pub(crate) fn bind_artifacts(&self, recipe: &mut Recipe) -> Result<(), Error> {
         let ids = referenced(recipe);
         if ids.is_empty() {
             recipe.artifacts = ArtifactTable::default();

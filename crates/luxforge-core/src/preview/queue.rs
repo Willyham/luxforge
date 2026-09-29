@@ -151,15 +151,10 @@ impl PreviewQueue {
         self.worker.pending_generation()
     }
 
-    /// The active job's generation, for desktop admission that may supersede its settling phase
-    /// while preserving a gesture-owned pending slot.
-    pub fn active_generation(&self) -> Option<u64> {
-        self.worker.active_generation()
-    }
-
     /// The generation of the last result [`Self::poll`] delivered, so a caller can correlate its
     /// frames and outcomes with the request that produced them. `0` before anything is delivered.
-    pub fn last_delivered(&self) -> u64 {
+    #[cfg(test)]
+    pub(crate) fn last_delivered(&self) -> u64 {
         self.worker.last_delivered()
     }
 

@@ -110,8 +110,6 @@ pub(crate) use activity::ActivityBoard;
 #[cfg(test)]
 pub(crate) use api::ApiFailure;
 #[cfg(test)]
-pub(crate) use capabilities::redact::redact_request;
-#[cfg(test)]
 pub(crate) use model::MASK_BYTES_PER_RECIPE;
 #[cfg(test)]
 pub(crate) use modules::{

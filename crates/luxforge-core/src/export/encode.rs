@@ -23,7 +23,7 @@ use std::{io::Write, sync::OnceLock};
 
 const EXIF_HEADER: &[u8] = b"Exif\0\0";
 
-pub fn encode_jpeg<W: Write>(
+pub(crate) fn encode_jpeg<W: Write>(
     out: W,
     frame: &Raster,
     exif: Option<&[u8]>,
@@ -64,7 +64,7 @@ pub fn encode_jpeg<W: Write>(
 
 /// The one embedded sRGB ICC profile, built once from `moxcms`'s own sRGB definition (which
 /// carries its `ProfileDescription` tag) and encoded through its writer.
-pub fn srgb_profile() -> &'static [u8] {
+pub(crate) fn srgb_profile() -> &'static [u8] {
     static PROFILE: OnceLock<Vec<u8>> = OnceLock::new();
     PROFILE
         .get_or_init(|| {

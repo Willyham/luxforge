@@ -51,14 +51,14 @@ mod plan_tests;
 #[cfg(test)]
 mod tests;
 
-pub use declare::{
-    HOST_MODULE, all, canvas, canvas_pick, controls, descriptor, find, find_query, geometry, sample,
-};
-pub(crate) use list::listing;
+#[cfg(test)]
+pub(crate) use declare::HOST_MODULE;
+pub(crate) use declare::descriptor;
+pub use declare::{all, canvas, canvas_pick, controls, find, find_query, geometry, sample};
 pub use list::{
-    ComponentReport, MaskListing, MaskReport, MaskedLayer, RemovedLayer, StrokeColour,
-    StrokeReport, StrokeSettings,
+    ComponentReport, MaskListing, MaskReport, StrokeColour, StrokeReport, StrokeSettings,
 };
+pub(crate) use list::{RemovedLayer, listing};
 pub(crate) use plan::{MaskOutcome, colour_limit_request, input_layer_index, plan};
 
 use crate::{ActionDescriptor, ComponentId, Error, MaskId, path::StrokeId};
@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 /// The read-only methods of the family.
-pub const LIST: &str = "mask.list";
+pub(crate) const LIST: &str = "mask.list";
 
 /// `mask.sample-input`: the **pixel the operation a mask modulates receives**, at one content
 /// position, in linear sRGB.
@@ -211,7 +211,7 @@ fn spoken(kind: &str) -> String {
 /// the stroke by its content address, and the display name a rename sets.
 ///
 /// Each is a declared parameter of the commands that take it — the three identities of the
-/// [`crate::IdentityKind`] kind and the name of the string kind — so the generic check validates
+/// `crate::IdentityKind` kind and the name of the string kind — so the generic check validates
 /// them and the request identity hashes them like any other parameter. This is those fields as a
 /// client holds them when it builds a request, and as a draft holds the objects its gesture edits
 /// ([`crate::Draft::target`]): the handle drag edits *that* component, whichever fields it drafts.
@@ -230,7 +230,7 @@ pub struct MaskTarget {
 }
 
 /// The parameter names a [`MaskTarget`] fills, in the order a command declares them.
-pub const TARGET_FIELDS: [&str; 4] = [MASK, COMPONENT, STROKE, NAME];
+pub(crate) const TARGET_FIELDS: [&str; 4] = [MASK, COMPONENT, STROKE, NAME];
 const MASK: &str = "mask";
 const COMPONENT: &str = "component";
 const STROKE: &str = "stroke";
@@ -290,7 +290,7 @@ impl MaskTarget {
 #[derive(Debug)]
 pub struct MaskCommand {
     /// The method name, which is also the durable action identity a history entry stores. It carries
-    /// a dot, which [`crate::valid_name`] forbids inside an action identity, so a module action and a
+    /// a dot, which `crate::valid_name` forbids inside an action identity, so a module action and a
     /// mask command cannot collide however either grows; [`crate::ModuleRegistry::register`] checks
     /// that rather than assuming it.
     pub method: &'static str,
