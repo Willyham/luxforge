@@ -1,33 +1,32 @@
 //! Permissions, capability jobs, task requirements and resources driven through the catalog owner
 //! exactly as a client drives them, against an in-memory transport that counts every request,
-//! isolated directories and an in-memory secret store. Nothing here opens a socket.
+//! isolated directories and an in-memory secret store. Nothing here opens a socket. These are the
+//! one owner-level test of each capability behaviour; `proof_tests.rs` keeps the journey the proof
+//! module adds to them.
 use super::{
     descriptor::CapabilityKind,
     grants::{DENY, GRANT, GRANTS_FILE, LIST, REVOKE},
     host::{HostConfig, STATUS, TASK_PREFIX},
     resources::{INSTALL, INSTALLED_FILE, REMOVE, RESOURCE_LIST, STAGING_DIR, faults},
     secrets::MemorySecretStore,
-    settings::{CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
+    settings::{CLEAR_SECRET, CREATE_PROFILE, READ, REMOVE_PROFILE, RESET, SET, SET_SECRET},
     testing::{
-        LifecycleModule, MODULE, MemoryTransport, PALETTE, Probe, SWATCH, TASK, enveloped,
+        LifecycleModule, MODULE, MemoryTransport, Owner, PALETTE, Probe, SWATCH, TASK,
         lifecycle_descriptor, sha256_hex, temp,
     },
 };
 use crate::{
-    ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, EditorService, Error,
-    LocalServer, ModuleDescriptor, ModuleRegistry, OwnerHandle,
+    ApiResponse, ClientId, EditorService, Error, LocalServer, ModuleDescriptor, ModuleRegistry,
     jobs::{JOB_CANCEL, JOB_READ},
 };
-use luxforge_testbase::{Gate, wait_for};
+use luxforge_testbase::Gate;
 use serde_json::{Value, json};
 use std::{
-    cell::{Cell, RefCell},
     fs,
     io::{self, BufRead, BufReader, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, atomic::Ordering},
-    thread::JoinHandle,
 };
 
 /// A catalog, a settings directory and a resource directory under one temporary root, and the
@@ -98,18 +97,7 @@ impl Fixture {
     }
 
     fn start(&self) -> Owner {
-        let (handle, join) =
-            OwnerHandle::start_with_host(&self.catalog(), self.registry(), self.host()).unwrap();
-        let edit = handle.register();
-        let admin = handle.register_with(ClientAuthority::Permissions);
-        Owner {
-            handle,
-            join: Some(join),
-            edit,
-            admin,
-            next: Cell::new(0),
-            observed: RefCell::new(Vec::new()),
-        }
+        Owner::start(&self.catalog(), self.registry(), self.host())
     }
 
     /// Import the fixture photo before any owner runs, so a remote grant can name an asset.
@@ -142,110 +130,25 @@ impl Drop for Fixture {
     }
 }
 
-/// A running owner with an edit client and a permission client, recording every response.
-struct Owner {
-    handle: OwnerHandle,
-    join: Option<JoinHandle<()>>,
-    edit: ClientId,
-    admin: ClientId,
-    next: Cell<u64>,
-    observed: RefCell<Vec<String>>,
+/// What the lifecycle tests ask of the owner besides the shared harness.
+trait Lifecycle {
+    /// Commit module-level settings at the current revision.
+    fn set(&self, values: Value) -> Value;
+    /// Grant a download of one resource as the permission client.
+    fn grant_download(&self, fixture: &Fixture, capability: &str, resource: &str) -> Value;
+    /// Grant the download of one resource, install it from its pinned URL on the fixture's
+    /// transport, and wait.
+    fn install_downloaded(&self, fixture: &Fixture, resource: &str) -> Value;
 }
 
-impl Owner {
-    fn call(&self, client: ClientId, method: &str, params: Value) -> ApiResponse {
-        let id = format!("request-{}", self.next.get());
-        self.next.set(self.next.get() + 1);
-        let params = enveloped(method, params, &id);
-        let response = self
-            .handle
-            .call(
-                client,
-                ApiRequest {
-                    id,
-                    method: method.into(),
-                    params,
-                    token: None,
-                },
-            )
-            .expect("the owner answered");
-        self.observed
-            .borrow_mut()
-            .push(serde_json::to_string(&response).unwrap());
-        response
-    }
-
-    fn ok_as(&self, client: ClientId, method: &str, params: Value) -> Value {
-        let response = self.call(client, method, params);
-        assert!(response.error.is_none(), "{method}: {:?}", response.error);
-        response.result.expect("a result")
-    }
-
-    fn ok(&self, method: &str, params: Value) -> Value {
-        self.ok_as(self.edit, method, params)
-    }
-
-    fn fail_as(&self, client: ClientId, method: &str, params: Value) -> ApiFailure {
-        self.call(client, method, params)
-            .error
-            .unwrap_or_else(|| panic!("{method} was expected to fail"))
-    }
-
-    fn fail(&self, method: &str, params: Value) -> ApiFailure {
-        self.fail_as(self.edit, method, params)
-    }
-
-    fn revision(&self) -> u64 {
-        self.ok(READ, json!({"module_id": MODULE}))["revision"]
-            .as_u64()
-            .unwrap()
-    }
-
-    /// Commit module-level settings at the current revision.
+impl Lifecycle for Owner {
     fn set(&self, values: Value) -> Value {
-        let revision = self.revision();
         self.ok(
             SET,
-            json!({"module_id": MODULE, "values": values, "mutation": mutation(revision)}),
+            json!({"module_id": MODULE, "values": values, "mutation": self.mutation(MODULE)}),
         )
     }
 
-    fn job(&self, job_id: &Value) -> Value {
-        self.ok(JOB_READ, json!({"job_id": job_id}))
-    }
-
-    /// Wait for a capability job to finish and return its record.
-    fn finished(&self, job_id: &Value) -> Value {
-        self.until(job_id, |job| {
-            !matches!(job["status"].as_str(), Some("queued" | "running"))
-        })
-    }
-
-    fn until(&self, job_id: &Value, done: impl Fn(&Value) -> bool) -> Value {
-        wait_for(&format!("job {job_id} getting there"), || {
-            Some(self.job(job_id)).filter(|job| done(job))
-        })
-    }
-
-    fn status(&self, module_id: &str) -> Value {
-        self.ok(STATUS, json!({"module_id": module_id}))
-    }
-
-    fn events(&self) -> Vec<(String, String)> {
-        self.ok("events.since", json!({"after": 0}))["events"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|event| {
-                (
-                    event["method"].as_str().unwrap().to_owned(),
-                    event["request_id"].as_str().unwrap().to_owned(),
-                )
-            })
-            .collect()
-    }
-
-    /// Grant a download of one resource as the permission client.
     fn grant_download(&self, fixture: &Fixture, capability: &str, resource: &str) -> Value {
         self.ok_as(
             self.admin,
@@ -258,8 +161,6 @@ impl Owner {
         )
     }
 
-    /// Grant the download of one resource, install it from its pinned URL on the fixture's
-    /// transport, and wait.
     fn install_downloaded(&self, fixture: &Fixture, resource: &str) -> Value {
         let capability = fixture
             .descriptor
@@ -278,30 +179,6 @@ impl Owner {
         );
         self.finished(&queued["job_id"])
     }
-
-    fn stop(mut self) {
-        self.handle.stop();
-        if let Some(join) = self.join.take() {
-            join.join().unwrap();
-        }
-    }
-}
-
-impl Drop for Owner {
-    fn drop(&mut self) {
-        if let Some(join) = self.join.take() {
-            self.handle.stop();
-            let _ = join.join();
-        }
-    }
-}
-
-fn mutation(revision: u64) -> Value {
-    json!({
-        "expected_revision": revision,
-        "request_id": format!("settings-{}", uuid::Uuid::new_v4().simple()),
-        "actor": "test",
-    })
 }
 
 fn download_scope(fixture: &Fixture, resource: &str) -> Value {
@@ -346,26 +223,6 @@ fn stalling() -> (Arc<MemoryTransport>, Arc<Gate>) {
         _ => answer.whole(200, SWATCH),
     });
     (transport, gate)
-}
-
-/// Every file under `root`, read whole.
-fn files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
-    let mut found = Vec::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if let Ok(bytes) = fs::read(&path) {
-                found.push((path, bytes));
-            }
-        }
-    }
-    found
 }
 
 #[test]
@@ -455,13 +312,8 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
         Err(error) if error.detail.contains("Operation not permitted") => {}
         Err(error) => panic!("cannot start the live session: {error}"),
     }
-    let methods: Vec<String> = owner
-        .events()
-        .into_iter()
-        .map(|(method, _)| method)
-        .collect();
     assert_eq!(
-        methods,
+        owner.methods(),
         [GRANT, DENY, REVOKE],
         "each change is announced once"
     );
@@ -497,12 +349,12 @@ fn a_grant_scope_must_be_one_the_module_can_use_now_and_a_retry_returns_the_same
     // class and an asset of this catalog.
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": owner.mutation(MODULE)}),
     );
     let profile = created["profile"]["id"].as_str().unwrap().to_owned();
     owner.ok(
         SET,
-        json!({"module_id": MODULE, "profile_id": profile, "values": {"endpoint": "http://127.0.0.1:9/echo"}, "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "profile_id": profile, "values": {"endpoint": "http://127.0.0.1:9/echo"}, "mutation": owner.mutation(MODULE)}),
     );
     let remote = |profile: &str, origin: &str, asset: &str| json!({"profile_id": profile, "adapter": "echo-adapter", "origin": origin, "data": "sample-grid-8", "asset_id": asset});
     let granted = grant(
@@ -637,7 +489,7 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
             .as_f64()
             .is_some_and(|fraction| fraction > 0.0)
     });
-    let revision = owner.revision();
+    let revision = owner.revision(MODULE);
     // Revoking the queued job's grant cancels it at once.
     let revoked = owner.ok(REVOKE, json!({"grant_id": swatch["grant"]["grant_id"]}));
     assert_eq!(revoked["cancelled_jobs"], json!([queued["job_id"]]));
@@ -657,7 +509,7 @@ fn revoking_a_grant_cancels_its_queued_and_running_jobs_and_nothing_else() {
     fixture.assert_clean("palette", "revoked while running");
     fixture.assert_clean("swatch", "revoked while queued");
     // Everything else is as it was: the settings, and no grant besides these two.
-    assert_eq!(owner.revision(), revision);
+    assert_eq!(owner.revision(MODULE), revision);
     let listed = owner.ok(LIST, json!({"module_id": MODULE}));
     let live: Vec<&Value> = listed["grants"]
         .as_array()
@@ -689,7 +541,7 @@ fn changing_what_a_grant_names_revokes_it() {
         owner.ok_as(
             owner.admin,
             GRANT,
-            json!({"module_id": MODULE, "capability": capability, "scope": scope, "mutation": {"request_id": uuid::Uuid::new_v4().to_string(), "actor": "test"}}),
+            json!({"module_id": MODULE, "capability": capability, "scope": scope}),
         )["grant"]["grant_id"]
             .clone()
     };
@@ -712,13 +564,13 @@ fn changing_what_a_grant_names_revokes_it() {
     );
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": owner.mutation(MODULE)}),
     );
     let profile = created["profile"]["id"].as_str().unwrap().to_owned();
     let endpoint = |url: &str| {
         owner.ok(
             SET,
-            json!({"module_id": MODULE, "profile_id": profile, "values": {"endpoint": url}, "mutation": mutation(owner.revision())}),
+            json!({"module_id": MODULE, "profile_id": profile, "values": {"endpoint": url}, "mutation": owner.mutation(MODULE)}),
         )
     };
     endpoint("http://127.0.0.1:9/echo");
@@ -732,18 +584,18 @@ fn changing_what_a_grant_names_revokes_it() {
     let second = grant("echo", remote_scope("http://127.0.0.1:10"));
     let removed = owner.ok(
         REMOVE_PROFILE,
-        json!({"module_id": MODULE, "profile_id": profile, "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "profile_id": profile, "mutation": owner.mutation(MODULE)}),
     );
     assert_eq!(removed["revoked"], json!([second]));
     assert_eq!(reason(&second), json!("profile removed"));
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo 2", "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo 2", "mutation": owner.mutation(MODULE)}),
     );
     let profile2 = created["profile"]["id"].as_str().unwrap().to_owned();
     owner.ok(
         SET,
-        json!({"module_id": MODULE, "profile_id": profile2, "values": {"endpoint": "http://127.0.0.1:9/echo"}, "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "profile_id": profile2, "values": {"endpoint": "http://127.0.0.1:9/echo"}, "mutation": owner.mutation(MODULE)}),
     );
     let other = grant(
         "echo",
@@ -751,7 +603,7 @@ fn changing_what_a_grant_names_revokes_it() {
     );
     let reset = owner.ok(
         RESET,
-        json!({"module_id": MODULE, "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "mutation": owner.mutation(MODULE)}),
     );
     assert_eq!(reset["revoked"], json!([other]));
     assert_eq!(reason(&other), json!("settings reset"));
@@ -809,7 +661,7 @@ fn a_task_lists_every_missing_requirement_before_anything_is_queued() {
     let owner = fixture.start();
     let created = owner.ok(
         CREATE_PROFILE,
-        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": mutation(owner.revision())}),
+        json!({"module_id": MODULE, "adapter": "echo-adapter", "label": "Echo", "mutation": owner.mutation(MODULE)}),
     );
     let profile = created["profile"]["id"].as_str().unwrap().to_owned();
     let refused = owner.fail(
@@ -879,9 +731,8 @@ fn status_reports_settings_resources_permissions_and_jobs() {
     assert_eq!(jobs, ["install"]);
     // Each change a job made is announced under the request that started it.
     let methods: Vec<String> = owner
-        .events()
+        .methods()
         .into_iter()
-        .map(|(method, _)| method)
         .filter(|method| !method.starts_with("module.settings") && method != GRANT)
         .collect();
     assert_eq!(methods, [INSTALL]);
@@ -1042,12 +893,7 @@ fn every_failed_install_leaves_nothing_installed_and_nothing_staged() {
         assert_eq!(row["error"]["code"], json!(code), "{case}");
     }
     // The failures announced nothing; only the grant was.
-    let methods: Vec<String> = owner
-        .events()
-        .into_iter()
-        .map(|(method, _)| method)
-        .collect();
-    assert_eq!(methods, [GRANT]);
+    assert_eq!(owner.methods(), [GRANT]);
     // The same resource installs once the transport sends the pinned bytes.
     *mode.lock().unwrap() = "good";
     fixture.probe.refuse.store(false, Ordering::SeqCst);
@@ -1241,9 +1087,8 @@ fn removing_a_resource_deletes_only_the_resource() {
         "the catalog is untouched"
     );
     let methods: Vec<String> = owner
-        .events()
+        .methods()
         .into_iter()
-        .map(|(method, _)| method)
         .filter(|method| method != GRANT)
         .collect();
     // Each removal is announced once, when the resource is gone.
@@ -1251,16 +1096,42 @@ fn removing_a_resource_deletes_only_the_resource() {
     owner.stop();
 }
 
+/// The one test of inert discovery: starting or reopening an owner, listing and describing the
+/// module, and reading its status, lists and jobs start no lane, send nothing, ask the secret store
+/// nothing until a status reads a secret's presence, and create no directory.
 #[test]
 fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing() {
     let transport = serving();
     let fixture = Fixture::new("inert", &transport);
+    let declared = serde_json::to_value(&fixture.descriptor).unwrap();
+    let find = |modules: &Value| {
+        modules
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["id"] == json!(MODULE))
+            .expect("the module is listed")
+            .clone()
+    };
     for round in 0..2 {
-        let owner = fixture.start();
         let asked = fixture.secrets.calls().total();
-        owner.ok("module.list", json!({}));
+        let owner = fixture.start();
+        let listed = owner.ok("module.list", json!({}));
+        assert_eq!(
+            find(&listed["modules"]),
+            declared,
+            "exactly the declarations"
+        );
         let schema = owner.ok("schema.list", json!({}));
+        assert_eq!(find(&schema["modules"]), declared);
         for method in [
+            READ,
+            SET,
+            SET_SECRET,
+            CLEAR_SECRET,
+            RESET,
+            CREATE_PROFILE,
+            REMOVE_PROFILE,
             GRANT,
             DENY,
             REVOKE,
@@ -1277,10 +1148,24 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
                 "{method} is discoverable"
             );
         }
+        let task = &schema["methods"][&format!("{TASK_PREFIX}{TASK}")];
+        assert_eq!(task["mutates"], json!(true), "the request queues a job");
+        assert_eq!(task["mutation"], json!("request"));
+        assert_eq!(
+            task["required"],
+            json!(["mutation", "asset_id", "profile_id"])
+        );
+        assert_eq!(task["optional"], json!({"gain": "test"}));
+        assert!(
+            task["notes"]
+                .as_str()
+                .unwrap()
+                .contains("{job_id, status, deduplicated}")
+        );
         assert_eq!(
             fixture.secrets.calls().total(),
             asked,
-            "round {round}: discovery never asks the secret store"
+            "round {round}: opening and discovery never ask the secret store"
         );
         let status = owner.status(MODULE);
         assert_eq!(status["settings"]["state"], json!("incomplete"));
@@ -1303,50 +1188,6 @@ fn discovery_status_and_reopen_start_no_lane_reach_no_network_and_create_nothing
         "no settings directory"
     );
     assert!(!fixture.root.join("data").exists(), "no resource directory");
-}
-
-#[test]
-fn a_sentinel_secret_reaches_no_observable_surface() {
-    let transport = serving();
-    let fixture = Fixture::new("sentinel", &transport);
-    let sentinel = format!("SENTINEL-{}", uuid::Uuid::new_v4().simple());
-    let owner = fixture.start();
-    owner.set(json!({"label": "tint"}));
-    owner.ok(
-        SET_SECRET,
-        json!({"module_id": MODULE, "setting": "token", "value": sentinel, "mutation": mutation(owner.revision())}),
-    );
-    let consent = owner.fail(
-        INSTALL,
-        json!({"module_id": MODULE, "resource_id": "palette"}),
-    );
-    assert_eq!(consent.code, "consent-required");
-    owner.grant_download(&fixture, "palette", "palette");
-    let installed = owner.ok(
-        INSTALL,
-        json!({"module_id": MODULE, "resource_id": "palette"}),
-    );
-    owner.finished(&installed["job_id"]);
-    owner.status(MODULE);
-    owner.ok(LIST, json!({}));
-    owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}));
-    owner.events();
-    let observed = owner.observed.borrow().clone();
-    owner.stop();
-    assert!(observed.len() > 10);
-    for text in &observed {
-        assert!(
-            !text.contains(&sentinel),
-            "a response carries the secret: {text}"
-        );
-    }
-    for (path, bytes) in files(&fixture.root) {
-        assert!(
-            !String::from_utf8_lossy(&bytes).contains(&sentinel),
-            "{} holds the secret",
-            path.display()
-        );
-    }
 }
 
 /// Every capability family that carries the `{request_id, actor}` envelope — permissions,
