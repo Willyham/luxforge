@@ -169,6 +169,75 @@ impl MaskThumbnails {
     }
 }
 
+/// The Masks panel's own state: this desktop's selection, hover, hidden overlays, mode, brush,
+/// typing and drag, the thumbnails the worker delivered, and the mask command it sent last. All of
+/// it is per-client view state: none of it changes a recipe or is sent on its own.
+#[derive(Clone, Debug)]
+pub(crate) struct MaskPanel {
+    /// The mask the panel has open. Per-client selection: it changes no recipe and is never sent.
+    pub(crate) selected_mask: Option<MaskId>,
+    /// The module pick mode on screen was entered from the panel with a mask open, so the pick
+    /// stays bound to that mask and leaving it returns to Mask. Set by the mode change that entered
+    /// the pick.
+    pub(crate) pick_on_mask: bool,
+    /// The component selected inside the open mask.
+    pub(crate) selected_component: Option<ComponentId>,
+    /// The component row the pointer is over, which the overlay shows on its own while it lasts.
+    pub(crate) hovered_component: Option<ComponentId>,
+    /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture, because
+    /// hiding an edit and hiding its indicator are different things.
+    pub(crate) hidden: std::collections::HashSet<MaskId>,
+    /// The mode the next Add-component gesture will use.
+    pub(crate) mode: ComponentMode,
+    /// The brush the next stroke will be drawn with: never sent on its own. It is copied into a
+    /// painted draft when the gesture opens, because the brush a stroke was begun with is the brush
+    /// it was drawn with for the whole of its life.
+    pub(crate) brush: crate::mask_draft::Brush,
+    /// The erase modifier is held down. It is read when a stroke starts and then frozen, so letting
+    /// the key go mid-stroke does not turn an erase into an add halfway along the path.
+    pub(crate) erase_held: bool,
+    /// The panel's one text field while it is open: a row renamed in place, a field of the open
+    /// gesture or a brush number being typed. Nothing is sent until Enter.
+    pub(crate) typing: Option<MaskTyping>,
+    /// The Masks band is collapsed, hiding everything down to the adjustments.
+    pub(crate) collapsed: bool,
+    /// A reorder by drag in progress: the row picked up by its handle and the row under the
+    /// pointer. The release sends one reorder.
+    pub(crate) drag: Option<MaskDrag>,
+    /// Every mask's thumbnail as the thumbnail worker last delivered them.
+    pub(crate) thumbnails: MaskThumbnails,
+    /// The method and parameters of the last `mask.*` command this desktop sent. Correlated
+    /// evidence: a captured frame and a driven run can both say which request produced the stack on
+    /// screen, without reconstructing it from the panel afterwards.
+    pub(crate) last_request: Option<(String, serde_json::Value)>,
+    /// A `mask.*` command this desktop sent is still in flight, so its answer is the one that
+    /// settles a waiting script step. A mask command changes no pixel when the host refuses it, so
+    /// without this the refusal arrives with no frame behind it and a driven run waits out its
+    /// deadline on a step that has already been answered.
+    pub(crate) command_in_flight: bool,
+}
+
+impl Default for MaskPanel {
+    fn default() -> Self {
+        Self {
+            selected_mask: None,
+            pick_on_mask: false,
+            selected_component: None,
+            hovered_component: None,
+            hidden: Default::default(),
+            mode: ComponentMode::Add,
+            brush: crate::mask_draft::NEUTRAL_BRUSH,
+            erase_held: false,
+            typing: None,
+            collapsed: false,
+            drag: None,
+            thumbnails: MaskThumbnails::default(),
+            last_request: None,
+            command_in_flight: false,
+        }
+    }
+}
+
 /// One component's row inside the open mask.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ComponentRow {
@@ -699,7 +768,8 @@ fn overlay_model(inputs: &Inputs<'_>) -> OverlayModel {
             .position(|colour| *colour == workspace.mask_overlay_colour)
             .unwrap_or(0),
         tinting: workspace.mask_overlay == MaskOverlayMode::Tint,
-        on: workspace.mask_overlay != MaskOverlayMode::Off && inputs.selected_mask.is_some(),
+        on: workspace.mask_overlay != MaskOverlayMode::Off
+            && inputs.mask_panel.selected_mask.is_some(),
     }
 }
 
@@ -716,7 +786,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
     // A selection that the stack no longer holds — undone away, deleted by another client — is
     // dropped rather than left pointing at nothing.
     let selected = inputs
+        .mask_panel
         .selected_mask
+        .as_ref()
         .filter(|id| reports.iter().any(|report| &&report.id == id))
         .cloned();
     let masks: Vec<MaskRow> = reports
@@ -732,7 +804,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             // the way down: the dot says "this is doing something", not "this exists".
             non_neutral: !report.layers.is_empty() && report.amount > 0.0,
             inverted: report.invert,
-            visible: !inputs.hidden_masks.contains(&report.id),
+            visible: !inputs.mask_panel.hidden.contains(&report.id),
             selected: selected.as_ref() == Some(&report.id),
             layers: report
                 .layers
@@ -742,7 +814,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             unavailable: unavailable(&report.components),
             up_reason: mask_move_reason(report, reports.len(), -1, disabled_reason.as_deref()),
             down_reason: mask_move_reason(report, reports.len(), 1, disabled_reason.as_deref()),
-            thumbnail: inputs.thumbnails.get(&report.id).cloned(),
+            thumbnail: inputs.mask_panel.thumbnails.get(&report.id).cloned(),
             renaming: renaming(
                 inputs,
                 &TypingTarget::RenameMask(report.id.as_str().to_owned()),
@@ -768,7 +840,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         || components
             .iter()
             .any(|component| component.selected && component.painted);
-    let name = match inputs.mask_typing {
+    let name = match inputs.mask_panel.typing.as_ref() {
         Some(MaskTyping {
             target: TypingTarget::RenameMask(mask),
             text,
@@ -778,7 +850,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
     MasksModel {
         caption: caption(inputs, listing.is_some(), reports.is_empty()),
         create_reason: reason(rules::room_for_mask(reports.len()))
-            .or_else(|| create_mode_reason(inputs.mask_mode)),
+            .or_else(|| create_mode_reason(inputs.mask_panel.mode)),
         add_reason: open.and_then(|report| {
             reason(rules::room_for_component(
                 &report.name,
@@ -794,17 +866,17 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
             .iter()
             .map(|mode| mode.as_str().to_owned())
             .collect(),
-        add_mode: mode_index(inputs.mask_mode),
+        add_mode: mode_index(inputs.mask_panel.mode),
         disabled_reason,
         enabled,
         draft: draft_model(inputs, enabled),
         brush,
         name,
         overlay: overlay_model(inputs),
-        collapsed: inputs.masks_collapsed,
+        collapsed: inputs.mask_panel.collapsed,
         menu: inputs.menu.filter(|menu| panel_menu(menu)).cloned(),
-        typing: inputs.mask_typing.cloned(),
-        drag: inputs.mask_drag.cloned(),
+        typing: inputs.mask_panel.typing.clone(),
+        drag: inputs.mask_panel.drag.clone(),
         count: format!("{} of {}", reports.len(), luxforge_core::MASKS_PER_RECIPE),
         brush_visible,
     }
@@ -813,7 +885,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
 /// The text a row shows in place of its name while it is renamed, when `target` is the rename.
 fn renaming(inputs: &Inputs<'_>, target: &TypingTarget) -> Option<String> {
     inputs
-        .mask_typing
+        .mask_panel
+        .typing
+        .as_ref()
         .filter(|typing| &typing.target == target)
         .map(|typing| typing.text.clone())
 }
@@ -936,7 +1010,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
         .iter()
         .map(|component| {
             let first = component.index == 0;
-            let selected = inputs.selected_component == Some(&component.id);
+            let selected = inputs.mask_panel.selected_component.as_ref() == Some(&component.id);
             // A mask's first component is always `add`: nothing precedes it to subtract from or
             // intersect with, so the mode control is not offered rather than offered and refused,
             // and the rule is stated in the host's words.
@@ -974,7 +1048,7 @@ fn component_rows(report: &MaskReport, inputs: &Inputs<'_>, enabled: bool) -> Ve
                 inverted: component.invert,
                 available: component.available,
                 selected,
-                hovered: inputs.hovered_component == Some(&component.id),
+                hovered: inputs.mask_panel.hovered_component.as_ref() == Some(&component.id),
                 mode_reason,
                 delete_reason,
                 can_edit_shape: enabled
@@ -1217,7 +1291,7 @@ pub(crate) struct BrushModel {
 
 /// The brush settings and what they can be put down on.
 fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) -> BrushModel {
-    let brush = inputs.brush;
+    let brush = inputs.mask_panel.brush;
     let painting = inputs
         .mask_draft
         .and_then(MaskDraft::brush)
@@ -1260,7 +1334,7 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
         limit_label: luxforge_core::mask::kind_title("limit_to_colour"),
         refine: format!("refine {:.0}", brush.colour_refine),
         limit_reason,
-        erase_held: inputs.brush_erase_held,
+        erase_held: inputs.mask_panel.erase_held,
         locked: painting,
         armed: inputs
             .mask_draft

@@ -108,14 +108,14 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
             layers: Vec::new(),
         }],
     });
-    editor.selected_mask = Some(mask.clone());
+    editor.mask_panel.selected_mask = Some(mask.clone());
     editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
     assert_eq!(editor.section_target(), Some(&mask));
     let _ = editor.update(Message::View(super::message::view::ViewMessage::SetMode(
         mode.clone(),
     )));
     assert!(
-        editor.pick_on_mask,
+        editor.mask_panel.pick_on_mask,
         "entered with the sections bound to a mask"
     );
     // The session follows the mode the desktop asked for.
@@ -166,7 +166,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
         mode.clone(),
     )));
     editor.session.workspace.mode = mode.clone();
-    assert!(!editor.pick_on_mask);
+    assert!(!editor.mask_panel.pick_on_mask);
     assert_eq!(editor.section_target(), None);
     assert_eq!(editor.key_context().leave_to, None);
     let (_, request) = editor.request(&action, &fields).expect("a request");
@@ -193,13 +193,13 @@ fn a_committed_module_pick_puts_itself_away() {
             layers: Vec::new(),
         }],
     });
-    editor.selected_mask = Some(mask);
+    editor.mask_panel.selected_mask = Some(mask);
     editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
     let _ = editor.update(Message::View(super::message::view::ViewMessage::SetMode(
         mode.clone(),
     )));
     editor.session.workspace.mode = mode;
-    assert!(editor.pick_on_mask);
+    assert!(editor.mask_panel.pick_on_mask);
     assert_eq!(editor.leave_to().as_deref(), Some(luxforge_core::MASK_MODE));
 
     let declared = tools::declared_action(&editor.modules, &action)
@@ -218,7 +218,7 @@ fn a_committed_module_pick_puts_itself_away() {
         editor.status
     );
     assert!(
-        !editor.pick_on_mask,
+        !editor.mask_panel.pick_on_mask,
         "the pick is still armed after committing its answer"
     );
     finish(editor, catalog);

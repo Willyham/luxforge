@@ -276,7 +276,7 @@ impl Editor {
                             return Task::none();
                         };
                         let asset = state.asset.id.clone();
-                        let Some(mask) = self.selected_mask.clone() else {
+                        let Some(mask) = self.mask_panel.selected_mask.clone() else {
                             self.status = "Open a mask to pick a colour into it".into();
                             self.settle_step(Settle::Pick);
                             return Task::none();
@@ -373,12 +373,12 @@ impl Editor {
                 // panel has open, and a pick with nothing open is refused with its reason rather
                 // than sent.
                 if host.is_some() {
-                    if self.selected_mask.is_none() {
+                    if self.mask_panel.selected_mask.is_none() {
                         self.status = "Open a mask to pick a colour into it".into();
                         self.settle_step(Settle::Pick);
                         return Task::none();
                     }
-                    if self.selected_component.is_none() {
+                    if self.mask_panel.selected_component.is_none() {
                         self.status = "Select the component this pick fills before picking".into();
                         self.settle_step(Settle::Pick);
                         return Task::none();

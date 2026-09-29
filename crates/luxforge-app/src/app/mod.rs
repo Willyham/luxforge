@@ -314,52 +314,11 @@ pub(crate) struct Editor {
     /// The masks of the displayed entry, as `mask.list` last answered them. Read back with the
     /// recipe after every change, so the panel never shows a mask the stack no longer holds.
     pub(crate) masks: Option<luxforge_core::mask::commands::MaskListing>,
-    /// The mask the Masks panel has open, and the component selected inside it. Per-client
-    /// selection: it changes no recipe and is never sent.
-    pub(crate) selected_mask: Option<luxforge_core::MaskId>,
-    /// The module pick mode on screen was entered from the Masks panel with a mask open, so the
-    /// pick stays bound to that mask ([`Editor::section_target`]) and leaving it returns to Mask.
-    /// Per-client view state, set by the mode change that entered the pick.
-    pub(crate) pick_on_mask: bool,
-    pub(crate) selected_component: Option<luxforge_core::ComponentId>,
-    /// The component row the pointer is over, which the overlay shows on its own while it lasts.
-    /// View state of the same kind as the selection, and never sent.
-    pub(crate) hovered_component: Option<luxforge_core::ComponentId>,
-    /// Masks whose overlay the eye has hidden. A hidden mask still applies to the picture.
-    pub(crate) hidden_masks: std::collections::HashSet<luxforge_core::MaskId>,
-    /// The mode the next Add-component gesture will use.
-    pub(crate) mask_mode: luxforge_core::ComponentMode,
-    /// The brush the next stroke will be drawn with: per-client gesture state, never sent on its
-    /// own. It is copied into a painted draft when the gesture opens, because the brush a stroke was
-    /// begun with is the brush it was drawn with for the whole of its life.
-    pub(crate) brush: crate::mask_draft::Brush,
-    /// The erase modifier is held down. It is read when a stroke starts and then frozen, so letting
-    /// the key go mid-stroke does not turn an erase into an add halfway along the path.
-    pub(crate) brush_erase_held: bool,
-    /// The Masks panel's one text field while it is open: a row renamed in place, a field of the
-    /// open gesture or a brush number being typed. View state; nothing is sent until Enter.
-    pub(crate) mask_typing: Option<crate::state::masks::MaskTyping>,
-    /// The Masks band is collapsed, hiding everything down to the adjustments. View state.
-    pub(crate) masks_collapsed: bool,
-    /// A reorder by drag in progress in the Masks panel: the row picked up by its handle and the
-    /// row under the pointer. View state; the release sends one reorder.
-    pub(crate) mask_drag: Option<crate::state::masks::MaskDrag>,
-    /// The method and parameters of the last `mask.*` command this desktop sent. Correlated
-    /// evidence: a captured frame and a driven run can both say which request produced the stack on
-    /// screen, without reconstructing it from the panel afterwards.
-    pub(crate) last_mask_request: Option<(String, Value)>,
-    /// A `mask.*` command this desktop sent is still in flight, so its answer is the one that
-    /// settles a waiting script step. A mask command changes no pixel when the host refuses it, so
-    /// without this the refusal arrives with no frame behind it and a driven run waits out its
-    /// deadline on a step that has already been answered.
-    pub(crate) mask_command_in_flight: bool,
-    /// One active and one replaceable pending job filling every mask's coverage thumbnail, off the
-    /// UI thread and the owner thread.
-    pub(crate) thumbnail_queue: thumbnails::ThumbnailQueue,
-    /// The settled stack the thumbnails describe, and whether it has been asked for.
-    pub(crate) thumbnail_source: thumbnails::ThumbnailSource,
-    /// Every mask's thumbnail as the worker last delivered them.
-    pub(crate) thumbnails: state::masks::MaskThumbnails,
+    /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
+    pub(crate) mask_panel: state::masks::MaskPanel,
+    /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
+    /// settled stack it describes.
+    pub(crate) thumbnailer: thumbnails::Thumbnailer,
     /// What the desktop knows about every capability-declaring module: its last settings and
     /// status reads, the jobs it follows, task runs and the open consent notice. The owner holds
     /// the authoritative state; this is what was last read back.
@@ -529,22 +488,8 @@ impl Editor {
             crop_space: false,
             mode_sync: None,
             masks: Default::default(),
-            selected_mask: None,
-            pick_on_mask: false,
-            selected_component: None,
-            hovered_component: None,
-            hidden_masks: Default::default(),
-            mask_mode: luxforge_core::ComponentMode::Add,
-            brush: crate::mask_draft::NEUTRAL_BRUSH,
-            brush_erase_held: false,
-            mask_typing: None,
-            masks_collapsed: false,
-            mask_drag: None,
-            last_mask_request: None,
-            mask_command_in_flight: false,
-            thumbnail_queue: thumbnails::ThumbnailQueue::default(),
-            thumbnail_source: thumbnails::ThumbnailSource::default(),
-            thumbnails: state::masks::MaskThumbnails::default(),
+            mask_panel: Default::default(),
+            thumbnailer: Default::default(),
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
@@ -559,7 +504,7 @@ impl Editor {
         // its signals comes and goes with the queues' business.
         editor.presentation.queue.set_waker(waker::waker());
         editor.overlay_queue.set_waker(waker::waker());
-        editor.thumbnail_queue.set_waker(waker::waker());
+        editor.thumbnailer.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
@@ -640,7 +585,7 @@ impl Editor {
         let previous_view_epoch = self.view_plan_epoch;
         let busy = self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
-            || self.thumbnail_queue.is_busy();
+            || self.thumbnailer.queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
         if (self.session.preview.view.zoom != zoom
@@ -705,7 +650,7 @@ impl Editor {
         let woken = if !busy
             && (self.presentation.queue.is_busy()
                 || self.overlay_queue.is_busy()
-                || self.thumbnail_queue.is_busy())
+                || self.thumbnailer.queue.is_busy())
         {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
@@ -753,18 +698,8 @@ impl Editor {
             edit_refusal: state::edit_refusal(self.state.as_ref(), &self.session, self.busy),
             draft: self.crop(),
             masks: self.masks.as_ref(),
-            selected_mask: self.selected_mask.as_ref(),
-            selected_component: self.selected_component.as_ref(),
-            hovered_component: self.hovered_component.as_ref(),
-            hidden_masks: &self.hidden_masks,
-            thumbnails: &self.thumbnails,
+            mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
-            mask_mode: self.mask_mode,
-            brush: self.brush,
-            brush_erase_held: self.brush_erase_held,
-            mask_typing: self.mask_typing.as_ref(),
-            masks_collapsed: self.masks_collapsed,
-            mask_drag: self.mask_drag.as_ref(),
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
@@ -915,7 +850,7 @@ impl Editor {
                 self.state.as_ref(),
                 self.section_target(),
             ),
-            mask_typing: self.mask_typing.is_some(),
+            mask_typing: self.mask_panel.typing.is_some(),
             mask_menu_open: self.mask_menu_open(),
             kind_menu: self.kind_menu_open().map(|menu| {
                 let letters = self
@@ -941,7 +876,7 @@ impl Editor {
         self.state.is_some()
             || self.presentation.queue.is_busy()
             || self.overlay_queue.is_busy()
-            || self.thumbnail_queue.is_busy()
+            || self.thumbnailer.queue.is_busy()
             || luxforge_ui::surface_retirement_pending()
     }
 
@@ -949,7 +884,7 @@ impl Editor {
         let mut subscriptions = vec![iced::event::listen_with(keymap::raw_event)];
         // A reorder by drag ends wherever the button comes up, inside the panel or not, so its
         // release is heard window-wide — and only while a row is being dragged.
-        if self.mask_drag.is_some() {
+        if self.mask_panel.drag.is_some() {
             subscriptions.push(iced::event::listen_with(keymap::drag_release));
         }
         // A blocked channel stream costs no idle work. It remains installed while a photograph is

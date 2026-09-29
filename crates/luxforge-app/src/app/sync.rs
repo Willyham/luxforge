@@ -93,7 +93,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.busy = false;
-                let mask_command = std::mem::take(&mut self.mask_command_in_flight);
+                let mask_command = std::mem::take(&mut self.mask_panel.command_in_flight);
                 match result {
                     Ok(refresh) => {
                         if self.activity.pending {
@@ -109,10 +109,11 @@ impl Editor {
                         // A drafted create already does this on its own commit; this is the same rule
                         // for a **typed** kind, which is created by its button rather than by a
                         // gesture and so never reaches that path.
-                        let created_a_mask = mask_command
-                            && self.last_mask_request.as_ref().is_some_and(|(_, request)| {
-                                request.get(luxforge_core::MASK_FIELD).is_none()
-                            });
+                        let created_a_mask =
+                            mask_command
+                                && self.mask_panel.last_request.as_ref().is_some_and(
+                                    |(_, request)| request.get(luxforge_core::MASK_FIELD).is_none(),
+                                );
                         let before = self.listed_masks();
                         self.accept(*refresh);
                         if created_a_mask {

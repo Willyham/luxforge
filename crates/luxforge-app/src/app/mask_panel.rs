@@ -72,28 +72,28 @@ impl Editor {
                 })
             })
         };
-        let stale_typing = match self.mask_typing.as_ref().map(|typing| &typing.target) {
+        let stale_typing = match self.mask_panel.typing.as_ref().map(|typing| &typing.target) {
             Some(TypingTarget::RenameMask(id)) => !has_mask(id),
             Some(TypingTarget::RenameComponent(id)) => !has_component(id),
             Some(TypingTarget::DraftField(_)) => self.mask_shape().is_none(),
             Some(TypingTarget::Brush(_)) | None => false,
         };
-        let stale_drag = match self.mask_drag.as_ref().map(|drag| &drag.item) {
+        let stale_drag = match self.mask_panel.drag.as_ref().map(|drag| &drag.item) {
             Some(DragItem::Mask(id)) => !has_mask(id),
             Some(DragItem::Component(id)) => !has_component(id),
             None => false,
         };
         if stale_typing {
-            self.mask_typing = None;
+            self.mask_panel.typing = None;
         }
         if stale_drag {
-            self.mask_drag = None;
+            self.mask_panel.drag = None;
         }
     }
 
     /// The open mask's report, when one is open and listed.
     fn panel_open_mask(&self) -> Option<&MaskReport> {
-        let id = self.selected_mask.as_ref()?;
+        let id = self.mask_panel.selected_mask.as_ref()?;
         self.masks
             .as_ref()?
             .masks
@@ -133,17 +133,17 @@ impl Editor {
                     TypingTarget::DraftField(name) => iced::widget::Id::from(draft_field_id(name)),
                     TypingTarget::Brush(name) => iced::widget::Id::from(brush_field_id(name)),
                 };
-                self.mask_typing = Some(MaskTyping { target, text });
+                self.mask_panel.typing = Some(MaskTyping { target, text });
                 iced::widget::operation::focus(focus)
             }
             TypingEdit::Text(text) => {
-                if let Some(typing) = &mut self.mask_typing {
+                if let Some(typing) = &mut self.mask_panel.typing {
                     typing.text = text;
                 }
                 Task::none()
             }
             TypingEdit::Cancel => {
-                self.mask_typing = None;
+                self.mask_panel.typing = None;
                 Task::none()
             }
             TypingEdit::Submit => self.submit_typing(),
@@ -182,7 +182,7 @@ impl Editor {
 
     /// Enter in the panel's text field: send what it describes, or say why not and keep it open.
     fn submit_typing(&mut self) -> Task<Message> {
-        let Some(MaskTyping { target, text }) = self.mask_typing.clone() else {
+        let Some(MaskTyping { target, text }) = self.mask_panel.typing.clone() else {
             return Task::none();
         };
         match target {
@@ -192,7 +192,7 @@ impl Editor {
                     self.status = "A mask's name needs at least one printable character".into();
                     return Task::none();
                 }
-                self.mask_typing = None;
+                self.mask_panel.typing = None;
                 let unchanged = self
                     .masks
                     .as_ref()
@@ -210,7 +210,7 @@ impl Editor {
                         "A component's name needs at least one printable character".into();
                     return Task::none();
                 }
-                self.mask_typing = None;
+                self.mask_panel.typing = None;
                 let unchanged = self.panel_open_mask().is_some_and(|report| {
                     report
                         .components
@@ -235,7 +235,7 @@ impl Editor {
                     .and_then(|field| field.invalid.clone());
                 match (parse_number(&text), invalid) {
                     (Some(value), None) => {
-                        self.mask_typing = None;
+                        self.mask_panel.typing = None;
                         self.mask_message(MaskMessage::Field { name, value })
                     }
                     (_, reason) => {
@@ -255,7 +255,7 @@ impl Editor {
                     .and_then(|field| field.invalid.clone());
                 match (parse_number(&text), invalid) {
                     (Some(value), None) => {
-                        self.mask_typing = None;
+                        self.mask_panel.typing = None;
                         self.mask_message(MaskMessage::Brush(BrushEdit::Set { name, value }))
                     }
                     (_, reason) => {
@@ -274,17 +274,17 @@ impl Editor {
         match edit {
             DragEdit::Start(item) => {
                 self.close_mask_menu();
-                self.mask_drag = Some(MaskDrag { item, over: None });
+                self.mask_panel.drag = Some(MaskDrag { item, over: None });
                 Task::none()
             }
             DragEdit::Over(over) => {
-                if let Some(drag) = &mut self.mask_drag {
+                if let Some(drag) = &mut self.mask_panel.drag {
                     drag.over = over;
                 }
                 Task::none()
             }
             DragEdit::End => {
-                let Some(MaskDrag { item, over }) = self.mask_drag.take() else {
+                let Some(MaskDrag { item, over }) = self.mask_panel.drag.take() else {
                     return Task::none();
                 };
                 let Some(to) = over else {
@@ -359,7 +359,7 @@ impl Editor {
             }
             return Task::none();
         };
-        let selected = self.selected_component.as_ref().and_then(|id| {
+        let selected = self.mask_panel.selected_component.as_ref().and_then(|id| {
             report
                 .components
                 .iter()

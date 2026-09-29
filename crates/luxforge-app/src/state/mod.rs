@@ -168,32 +168,11 @@ pub(crate) struct Inputs<'a> {
     pub(crate) draft: Option<&'a CropDraft>,
     /// The masks of the displayed entry as `mask.list` last answered them.
     pub(crate) masks: Option<&'a MaskListing>,
-    /// The mask the Masks panel has open, and the component selected inside it. Per-client
-    /// selection: it commits nothing and appears in no recipe.
-    pub(crate) selected_mask: Option<&'a MaskId>,
-    pub(crate) selected_component: Option<&'a ComponentId>,
-    /// The component row the pointer is over. While it lasts the overlay shows that component's own
-    /// contribution instead of the composed mask, which is what makes a subtract legible.
-    pub(crate) hovered_component: Option<&'a ComponentId>,
-    /// Masks whose overlay the eye has hidden. View state: a hidden mask still applies to the
-    /// picture, because hiding an edit and hiding its indicator are different things.
-    pub(crate) hidden_masks: &'a HashSet<MaskId>,
-    /// Every mask's coverage thumbnail, as the thumbnail worker last delivered them.
-    pub(crate) thumbnails: &'a masks::MaskThumbnails,
+    /// The Masks panel's own state: the open mask and component, the hovered row, the hidden
+    /// overlays, the next mode and brush, typing, drag and the delivered thumbnails.
+    pub(crate) mask_panel: &'a masks::MaskPanel,
     /// The open mask shape gesture.
     pub(crate) mask_draft: Option<&'a MaskDraft>,
-    /// The mode the next Add-component gesture will use.
-    pub(crate) mask_mode: ComponentMode,
-    /// The brush the next stroke will be drawn with, and whether the erase modifier is held.
-    pub(crate) brush: crate::mask_draft::Brush,
-    pub(crate) brush_erase_held: bool,
-    /// The Masks panel's one text field while it is open: a rename in place, a gesture field or a
-    /// brush number being typed.
-    pub(crate) mask_typing: Option<&'a masks::MaskTyping>,
-    /// The Masks band is collapsed.
-    pub(crate) masks_collapsed: bool,
-    /// A reorder by drag in progress in the Masks panel.
-    pub(crate) mask_drag: Option<&'a masks::MaskDrag>,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -451,11 +430,7 @@ mod tests {
         /// What the app's release refusal answers for the open gesture.
         apply_refusal: Option<String>,
         masks: Option<MaskListing>,
-        selected_mask: Option<MaskId>,
-        selected_component: Option<ComponentId>,
-        hovered_component: Option<ComponentId>,
-        hidden_masks: HashSet<MaskId>,
-        thumbnails: masks::MaskThumbnails,
+        mask_panel: masks::MaskPanel,
         mask_draft: Option<MaskDraft>,
         session: ClientSession,
         status: String,
@@ -501,11 +476,7 @@ mod tests {
                 crop_conflicted: false,
                 apply_refusal: None,
                 masks: None,
-                selected_mask: None,
-                selected_component: None,
-                hovered_component: None,
-                hidden_masks: HashSet::new(),
-                thumbnails: masks::MaskThumbnails::default(),
+                mask_panel: masks::MaskPanel::default(),
                 mask_draft: None,
                 session: ClientSession::default(),
                 status: "ready".into(),
@@ -601,19 +572,10 @@ mod tests {
                 edit_refusal: edit_refusal(self.state.as_ref(), &self.session, self.busy),
                 draft: self.draft.as_ref(),
                 masks: self.masks.as_ref(),
-                selected_mask: self.selected_mask.as_ref(),
-                selected_component: self.selected_component.as_ref(),
-                hovered_component: self.hovered_component.as_ref(),
-                hidden_masks: &self.hidden_masks,
-                thumbnails: &self.thumbnails,
+                mask_panel: &self.mask_panel,
                 mask_draft: self.mask_draft.as_ref(),
-                mask_mode: ComponentMode::Add,
-                brush: crate::mask_draft::NEUTRAL_BRUSH,
-                brush_erase_held: false,
-                mask_typing: None,
-                masks_collapsed: false,
-                mask_drag: None,
                 target: self
+                    .mask_panel
                     .selected_mask
                     .as_ref()
                     .filter(|_| crate::state::canvas::mask_workspace(&self.session.workspace.mode)),
@@ -1659,7 +1621,7 @@ mod tests {
             }
             if let Some(mask) = target {
                 scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
-                scene.selected_mask = Some(mask.clone());
+                scene.mask_panel.selected_mask = Some(mask.clone());
             }
             let workspace = scene.derive();
             let shortcuts =
@@ -2078,7 +2040,7 @@ mod tests {
         let mut scene = Scene::new(Vec::new()).opened(Vec::new());
         scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
         scene.masks = Some(listing);
-        scene.selected_mask = Some(mask.clone());
+        scene.mask_panel.selected_mask = Some(mask.clone());
 
         // Adding a radial to Face: the component has no name until the commit spends its
         // ordinal, so it is named by its kind.
@@ -3213,7 +3175,7 @@ mod tests {
     fn the_scope_chip_names_the_open_mask_on_maskable_bands_in_mask_mode_only() {
         let face = MaskId::new();
         let mut scene = masked_scene(&[(&face, "Face")]);
-        scene.selected_mask = Some(face.clone());
+        scene.mask_panel.selected_mask = Some(face.clone());
         let workspace = scene.derive();
         assert!(
             workspace.tools.all().all(|section| section.scope.is_none()),
@@ -3254,7 +3216,7 @@ mod tests {
         );
 
         // No mask open: nothing is bound, so nothing is scoped.
-        scene.selected_mask = None;
+        scene.mask_panel.selected_mask = None;
         let workspace = scene.derive();
         assert!(workspace.tools.all().all(|section| section.scope.is_none()));
     }
@@ -3272,7 +3234,7 @@ mod tests {
             width: 28,
             height: 19,
         };
-        scene.thumbnails = masks::MaskThumbnails {
+        scene.mask_panel.thumbnails = masks::MaskThumbnails {
             masks: vec![(sky.clone(), Some(thumbnail.clone())), (face.clone(), None)],
         };
         let workspace = scene.derive();

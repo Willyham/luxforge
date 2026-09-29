@@ -208,6 +208,15 @@ pub(crate) struct ThumbnailSource {
     pub(crate) planning: Option<AnalysisIdentity>,
 }
 
+/// The thumbnail worker's side of the Masks panel: its one active and one replaceable pending job,
+/// off the UI thread and the owner thread, and the settled stack they describe. What it delivers
+/// is the panel's ([`crate::state::masks::MaskPanel::thumbnails`]).
+#[derive(Default)]
+pub(crate) struct Thumbnailer {
+    pub(crate) queue: ThumbnailQueue,
+    pub(crate) source: ThumbnailSource,
+}
+
 impl Editor {
     /// Take note of `job`'s stack when it is a settled full-stack frame, and hand it to the
     /// worker at once while Mask mode shows the thumbnails. A crop's truncated input and the
@@ -219,19 +228,19 @@ impl Editor {
         }
         // A stack without masks has no thumbnail to describe.
         if job.evaluation.recipe().masks.is_empty() {
-            self.thumbnail_source = ThumbnailSource::default();
-            self.thumbnail_queue.cancel();
+            self.thumbnailer.source = ThumbnailSource::default();
+            self.thumbnailer.queue.cancel();
             self.adopt_thumbnails(Vec::new());
             return;
         }
-        if self.thumbnail_source.latest.as_ref() == Some(&job.identity) {
+        if self.thumbnailer.source.latest.as_ref() == Some(&job.identity) {
             return;
         }
-        self.thumbnail_source.latest = Some(job.identity.clone());
+        self.thumbnailer.source.latest = Some(job.identity.clone());
         if self.mask_mode_active() {
-            self.thumbnail_source.requested = Some(job.identity.clone());
+            self.thumbnailer.source.requested = Some(job.identity.clone());
             // The worker's clone lives as long as its job, as the preview worker's does.
-            self.thumbnail_queue.request(job.evaluation.clone());
+            self.thumbnailer.queue.request(job.evaluation.clone());
         }
     }
 
@@ -242,20 +251,21 @@ impl Editor {
     pub(super) fn refresh_thumbnails(&mut self) -> Task<Message> {
         let open = self.state.as_ref().map(|state| &state.asset.id);
         if self
-            .thumbnail_source
+            .thumbnailer
+            .source
             .latest
             .as_ref()
             .is_some_and(|identity| Some(&identity.asset_id) != open)
         {
             // Another photograph, or none: nothing noted for the last one describes this one.
-            self.thumbnail_source = ThumbnailSource::default();
-            self.thumbnail_queue.cancel();
+            self.thumbnailer.source = ThumbnailSource::default();
+            self.thumbnailer.queue.cancel();
             self.adopt_thumbnails(Vec::new());
         }
         if !self.mask_mode_active() {
             return Task::none();
         }
-        let source = &self.thumbnail_source;
+        let source = &self.thumbnailer.source;
         let Some(identity) = source.latest.clone() else {
             return Task::none();
         };
@@ -264,7 +274,7 @@ impl Editor {
         {
             return Task::none();
         }
-        self.thumbnail_source.planning = Some(identity.clone());
+        self.thumbnailer.source.planning = Some(identity.clone());
         tasks::thumbnail_source_task(
             self.owner.clone(),
             self.client,
@@ -277,16 +287,16 @@ impl Editor {
     /// still shows the thumbnails and it is still the stack on screen, and dropped otherwise. It is
     /// never kept.
     pub(super) fn thumbnail_source_planned(&mut self, planned: Result<Box<PreviewJob>, String>) {
-        let Some(identity) = self.thumbnail_source.planning.take() else {
+        let Some(identity) = self.thumbnailer.source.planning.take() else {
             return;
         };
-        if !self.mask_mode_active() || self.thumbnail_source.latest.as_ref() != Some(&identity) {
+        if !self.mask_mode_active() || self.thumbnailer.source.latest.as_ref() != Some(&identity) {
             return;
         }
         // Asked for either way, so a failed plan is not planned again until the stack changes.
-        self.thumbnail_source.requested = Some(identity.clone());
+        self.thumbnailer.source.requested = Some(identity.clone());
         match planned {
-            Ok(job) if job.identity == identity => self.thumbnail_queue.request(job.evaluation),
+            Ok(job) if job.identity == identity => self.thumbnailer.queue.request(job.evaluation),
             Ok(job) => self.event(
                 "mask_thumbnails_unavailable",
                 json!({"reason": "the stack planned again is not the settled one", "entry": job.evaluation.entry().id}),
@@ -314,7 +324,7 @@ impl Editor {
 
     /// Hold `masks` as the panel's thumbnails.
     fn adopt_thumbnails(&mut self, masks: Vec<(MaskId, Option<Thumbnail>)>) {
-        self.thumbnails = MaskThumbnails { masks };
+        self.mask_panel.thumbnails = MaskThumbnails { masks };
     }
 }
 
@@ -650,7 +660,7 @@ mod tests {
         let idle = |editor: &mut Editor| {
             luxforge_testbase::wait_until("the preview and thumbnail workers", || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                !editor.presentation.queue.is_busy() && !editor.thumbnail_queue.is_busy()
+                !editor.presentation.queue.is_busy() && !editor.thumbnailer.queue.is_busy()
             });
         };
         let identity = PreviewJob::new(stack.clone()).expect("a job").identity;
@@ -659,12 +669,12 @@ mod tests {
         let (settled, pixels) = fresh_stack(&stack);
         editor.request_preview(PreviewJob::new(settled).expect("a job"));
         assert!(
-            !editor.thumbnail_queue.is_busy(),
+            !editor.thumbnailer.queue.is_busy(),
             "outside Mask mode no thumbnail is filled"
         );
         idle(&mut editor);
-        assert_eq!(editor.thumbnail_source.latest.as_ref(), Some(&identity));
-        assert!(editor.thumbnail_source.requested.is_none());
+        assert_eq!(editor.thumbnailer.source.latest.as_ref(), Some(&identity));
+        assert!(editor.thumbnailer.source.requested.is_none());
         assert_eq!(
             pixels.strong_count(),
             0,
@@ -674,24 +684,27 @@ mod tests {
         // Entering Mask mode plans the stack on screen again, once.
         editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-        assert_eq!(editor.thumbnail_source.planning.as_ref(), Some(&identity));
+        assert_eq!(editor.thumbnailer.source.planning.as_ref(), Some(&identity));
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
         assert_eq!(
-            editor.thumbnail_source.planning.as_ref(),
+            editor.thumbnailer.source.planning.as_ref(),
             Some(&identity),
             "planned once"
         );
-        assert!(!editor.thumbnail_queue.is_busy());
+        assert!(!editor.thumbnailer.queue.is_busy());
         // The owner task's answer: the same stack, planned again.
         let (planned, pixels) = fresh_stack(&stack);
         let _ = editor.update(Message::Preview(PreviewMessage::ThumbnailSource(Ok(
             Box::new(PreviewJob::new(planned).expect("a job")),
         ))));
-        assert_eq!(editor.thumbnail_source.requested.as_ref(), Some(&identity));
-        assert!(editor.thumbnail_source.planning.is_none());
+        assert_eq!(
+            editor.thumbnailer.source.requested.as_ref(),
+            Some(&identity)
+        );
+        assert!(editor.thumbnailer.source.planning.is_none());
         luxforge_testbase::wait_until("every listed mask's thumbnail", || {
             let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-            !editor.thumbnails.masks.is_empty()
+            !editor.mask_panel.thumbnails.masks.is_empty()
         });
         let rows = &editor.workspace.masks.masks;
         for (row, mask) in rows.iter().zip([&sky, &face]) {
@@ -704,14 +717,14 @@ mod tests {
             0,
             "the worker releases the stack with its job"
         );
-        let held = editor.thumbnails.masks.clone();
+        let held = editor.mask_panel.thumbnails.masks.clone();
 
         // The same settled stack again starts nothing.
         let (again, _) = fresh_stack(&stack);
         editor.request_preview(PreviewJob::new(again).expect("a job"));
-        assert!(!editor.thumbnail_queue.is_busy());
+        assert!(!editor.thumbnailer.queue.is_busy());
         idle(&mut editor);
-        assert_eq!(editor.thumbnails.masks, held);
+        assert_eq!(editor.mask_panel.thumbnails.masks, held);
 
         // In Mask mode a new settled stack goes to the worker as its frame is requested, and is
         // released with the job that reads it.
@@ -730,9 +743,12 @@ mod tests {
         let job = PreviewJob::new(brighter).expect("a job");
         let brighter = job.identity.clone();
         editor.request_preview(job);
-        assert_eq!(editor.thumbnail_source.requested.as_ref(), Some(&brighter));
+        assert_eq!(
+            editor.thumbnailer.source.requested.as_ref(),
+            Some(&brighter)
+        );
         assert!(
-            editor.thumbnail_source.planning.is_none(),
+            editor.thumbnailer.source.planning.is_none(),
             "nothing planned"
         );
         idle(&mut editor);
@@ -752,9 +768,9 @@ mod tests {
         );
         editor.request_preview(PreviewJob::new(bare).expect("a job"));
         let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-        assert!(editor.thumbnail_source.latest.is_none());
-        assert!(!editor.thumbnail_queue.is_busy());
-        assert!(editor.thumbnails.masks.is_empty());
+        assert!(editor.thumbnailer.source.latest.is_none());
+        assert!(!editor.thumbnailer.queue.is_busy());
+        assert!(editor.mask_panel.thumbnails.masks.is_empty());
         crate::app::testing::finish(editor, catalog);
     }
 
@@ -841,7 +857,7 @@ mod tests {
             let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
             luxforge_testbase::wait_until("the frame and its thumbnails", || {
                 let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-                !editor.presentation.queue.is_busy() && !editor.thumbnail_queue.is_busy()
+                !editor.presentation.queue.is_busy() && !editor.thumbnailer.queue.is_busy()
             });
         };
         let commit = |editor: &Editor, method: &str, params: Value| {
@@ -891,7 +907,8 @@ mod tests {
         assert!(editor.mask_mode_active());
         // Entering Mask mode planned the stack on screen again: the owner task's plain call.
         let planning = editor
-            .thumbnail_source
+            .thumbnailer
+            .source
             .planning
             .clone()
             .expect("the stack on screen is planned again");
@@ -901,7 +918,7 @@ mod tests {
         )));
         luxforge_testbase::wait_until("the mask's thumbnail", || {
             let _ = editor.update(Message::Preview(PreviewMessage::Poll));
-            editor.thumbnails.masks.len() == 1
+            editor.mask_panel.thumbnails.masks.len() == 1
         });
 
         let mut entries = Vec::new();
@@ -914,7 +931,11 @@ mod tests {
             );
             let refresh = read(&format!("{temperature} K"), scope);
             settle(&mut editor, refresh);
-            assert_eq!(editor.thumbnails.masks.len(), 1, "the thumbnail follows");
+            assert_eq!(
+                editor.mask_panel.thumbnails.masks.len(),
+                1,
+                "the thumbnail follows"
+            );
             entries.push(editor.state.as_ref().unwrap().current_entry.id.clone());
         }
         // History selections at other gains, as the history panel makes them: the Original at the
@@ -940,7 +961,11 @@ mod tests {
             tasks::call(&owner, client, method, params).expect("a selection");
             let refresh = read(what, Scope::Elsewhere);
             settle(&mut editor, refresh);
-            assert_eq!(editor.thumbnails.masks.len(), thumbnails, "{what}");
+            assert_eq!(
+                editor.mask_panel.thumbnails.masks.len(),
+                thumbnails,
+                "{what}"
+            );
         }
         // Another photograph: its original's preparation retains no development of this one.
         let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

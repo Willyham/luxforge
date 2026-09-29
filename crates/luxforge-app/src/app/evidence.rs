@@ -999,7 +999,12 @@ impl Editor {
             .ok_or("no mask listing has been read yet")?;
         let mask = mask
             .map(str::to_owned)
-            .or_else(|| self.selected_mask.as_ref().map(|id| id.as_str().to_owned()))
+            .or_else(|| {
+                self.mask_panel
+                    .selected_mask
+                    .as_ref()
+                    .map(|id| id.as_str().to_owned())
+            })
             .ok_or("a component named by name or position needs a mask, named or open")?;
         let report = listing
             .masks
@@ -1169,7 +1174,7 @@ impl Editor {
                 }
             }
             MaskStep::SelectComponent(None) => {
-                self.selected_component = None;
+                self.mask_panel.selected_component = None;
                 self.seed_mask_fields();
                 self.note_step(json!({"masks": self.workspace.masks.summary()}));
                 self.capture_next_frame();
@@ -1203,7 +1208,7 @@ impl Editor {
                 let target = match menu {
                     KindMenuStep::NewMask => MenuTarget::NewMask,
                     KindMenuStep::AddComponent => {
-                        if self.selected_mask.is_none() {
+                        if self.mask_panel.selected_mask.is_none() {
                             return self.fail_step("the Add component menu needs an open mask");
                         }
                         MenuTarget::AddComponent
@@ -1387,7 +1392,7 @@ impl Editor {
             // The host's own pick, entered and left the way the panel's button does: one
             // `workspace.set` and nothing committed, so the frame after it shows the mode.
             MaskStep::Pick => {
-                if self.selected_component.is_none() {
+                if self.mask_panel.selected_component.is_none() {
                     return self.fail_step("a pick step needs a selected component to fill");
                 }
                 // Entering or leaving a pick mode commits nothing and changes no pixel, so the
@@ -1458,7 +1463,7 @@ impl Editor {
         // A row edit the panel refuses sends nothing, so the step would wait for a frame nothing
         // arms. Whether one went out is read from the request the panel records as it sends it,
         // which is also what the refusal replaces.
-        self.last_mask_request = None;
+        self.mask_panel.last_request = None;
         // Apply and Cancel end the gesture, and the frame they wait for is the first one after it:
         // it carries the overlay the setting asks for, not the tint the gesture showed of its own
         // accord.
@@ -1494,7 +1499,7 @@ impl Editor {
             // Apply sent its commit, or Cancel ended the gesture: either way something answers.
             // A refused Apply leaves nothing in flight, with its reason in the status line.
             Expect::RoundTrip => self.mask_gesture().is_none() || self.mask_frame_pending(),
-            Expect::Request => self.last_mask_request.is_some(),
+            Expect::Request => self.mask_panel.last_request.is_some(),
         };
         self.note_step(json!({"masks": self.workspace.masks.summary()}));
         if armed {
@@ -2584,7 +2589,8 @@ impl Editor {
             != luxforge_core::MaskOverlayMode::Off.as_str();
         let entering_mask_mode =
             step.mode.as_deref().unwrap_or(workspace.mode.as_str()) == luxforge_core::MASK_MODE;
-        let grid_expected = leaving_on && entering_mask_mode && self.selected_mask.is_some();
+        let grid_expected =
+            leaving_on && entering_mask_mode && self.mask_panel.selected_mask.is_some();
         if diff.is_empty() {
             self.capture_next_frame();
             return Task::none();
