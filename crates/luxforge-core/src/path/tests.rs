@@ -902,3 +902,27 @@ fn one_stroke_radius_range_is_read_by_capture_the_stored_recheck_and_compile() {
         );
     }
 }
+
+/// Two known mask strokes' content addresses, pinned: one unlimited erase and one limited to a
+/// colour. The addresses are computed from the canonical bytes, so a change to the stroke's type,
+/// its field order or its serialization that would re-address every stored stroke fails here.
+#[test]
+fn a_known_mask_stroke_keeps_its_pinned_content_address() {
+    let unlimited = Stroke::capture(
+        &[[0.1, 0.2], [0.4, 0.45], [0.8, 0.2]],
+        0.05,
+        37.5,
+        80.0,
+        true,
+    )
+    .unwrap();
+    assert_eq!(unlimited.id().as_str(), "f90567c23419da29e9a57267732c52b1");
+    let limited = Stroke::capture(&[[0.25, 0.5], [0.75, 0.5]], 0.1, 50.0, 100.0, false)
+        .unwrap()
+        .with_colour_limit(ColourLimit::sampled([90, 130, 200], 42.25).unwrap());
+    assert_eq!(
+        String::from_utf8(limited.canonical()).unwrap(),
+        r#"{"points":[[4096,8192],[12288,8192]],"size":1638,"feather":50,"flow":100,"erase":false,"colour":{"seed":[90,130,200],"refine":423}}"#
+    );
+    assert_eq!(limited.id().as_str(), "bf5aad3ef37bd74f78fc5e9945a13c97");
+}
