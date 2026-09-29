@@ -23,7 +23,7 @@
 //! part of `rendered`, because no RAW photograph is checked in.
 use crate::{
     scenario::{
-        Checked, Plan, Run, Step,
+        Checked, Checks, Plan, Run, Step,
         launch::{self, Guard},
         plan::only,
     },
@@ -80,7 +80,7 @@ pub fn plan(_sources: &[PathBuf]) -> Plan {
     let heavy = Step::new("heavy", crate::scenario::recipe::full_presence())
         .commits(1)
         .label("Presence".to_owned());
-    Plan::new(vec![
+    let steps = vec![
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
         // The window fills; the section has sampled since the photograph opened.
@@ -100,7 +100,14 @@ pub fn plan(_sources: &[PathBuf]) -> Plan {
         Step::new("asleep", script::Step::wait(ASLEEP_WAIT_MS)).commits(0),
         // Opened again, captured on the first read of a fresh window.
         Step::new("reopened", script::Step::performance(true)).commits(0),
-    ])
+    ];
+    // The section lives in the state panel, which every frame shows.
+    Plan::new(
+        steps
+            .into_iter()
+            .map(|step| step.workspace("state_panel", json!(true)))
+            .collect(),
+    )
 }
 
 fn wall_ms() -> u64 {
@@ -658,13 +665,9 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let pid = watched["pid"]
         .as_u64()
         .ok_or("The runner recorded no pid")?;
-    let mut checks = Vec::new();
+    let mut checks = Checks::new();
 
     for (step, frame) in launch.names().iter().zip(&launch.frames) {
-        ensure(
-            frame["state"]["workspace"]["state_panel"] == json!(true),
-            format!("Step {step:?}: the state panel is hidden"),
-        )?;
         ensure(
             performance(frame)["pid"].as_u64() == Some(pid),
             format!("Step {step:?}: the frame's pid is not the process the runner watched"),
@@ -676,7 +679,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // compared from the next frame on.
     let opened = launch.at("opened")?;
     let compared = expect_expanded("opened", opened)?;
-    checks.push(json!({"frame":opened["file"],"shows":"the photograph opened with the Performance section open and sampling","compared":compared}));
+    checks.note(
+        opened,
+        "the photograph opened with the Performance section open and sampling",
+        compared,
+    );
 
     // Filled through finished, and reopened: each frame against its own answers, and, except the
     // reopened frame, against the runner's readings. The reopened frame is captured on its first
@@ -692,7 +699,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             if let Some(time) = performance(frame)["resources"]["gpu"]["time_ns"].as_u64() {
                 gpu_times.push(time);
             }
-            checks.push(json!({"frame":frame["file"],"compared":compared}));
+            checks.note(frame, "the section against its own answers", compared);
             continue;
         }
         let section = performance(frame);
@@ -728,7 +735,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         if let Some(time) = section["resources"]["gpu"]["time_ns"].as_u64() {
             gpu_times.push(time);
         }
-        checks.push(json!({"frame":frame["file"],"compared":compared}));
+        checks.note(
+            frame,
+            "the section against its own answers and the runner's readings",
+            compared,
+        );
     }
     let filled = count(launch.at("filled")?, "samples")?;
     ensure(
@@ -762,7 +773,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         performance(asleep)["in_flight"] == json!(false),
         "Step \"asleep\": a read is still in flight while collapsed",
     )?;
-    checks.push(json!({"frames":[collapsed["file"],asleep["file"]],"shows":"collapsed, then asleep","reads_requested":asked,"samples":held,"asleep_ms":ASLEEP_WAIT_MS}));
+    checks.note(
+        asleep,
+        "collapsed, then asleep: nothing more read or adopted",
+        json!({"reads_requested":asked,"samples":held,"asleep_ms":ASLEEP_WAIT_MS}),
+    );
 
     // Reopened: a fresh window, read at once. The frame is captured on that first read, so it holds
     // exactly one sample and one read more than the collapsed section had asked for.
@@ -775,7 +790,11 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             count(reopened, "reads_requested")?
         ),
     )?;
-    checks.push(json!({"frame":reopened["file"],"shows":"opened again: a fresh window, read at once","reads_requested":asked + 1,"samples":1}));
+    checks.note(
+        reopened,
+        "opened again: a fresh window, read at once",
+        json!({"reads_requested":asked + 1,"samples":1}),
+    );
 
     let ps_count = readings
         .iter()
@@ -785,10 +804,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         .iter()
         .filter(|reading| reading["tool"] == "footprint")
         .count();
-    write_json(
-        &evidence.join("performance-checks.json"),
-        &json!({
-            "checks": checks,
+    checks.write(
+        evidence,
+        "performance",
+        json!({
             "edits": [launch.at("straightened")?["step"]["request"], heavy["step"]["request"]],
             "heavy_work_listed": listed,
             "gpu_time_ns": gpu_times,
@@ -807,8 +826,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             },
             "scope": "Displayed text against the frame's own recorded resources.read and activity.list, re-derived without the editor's code; resident memory and footprint against ps and footprint run by the runner on the same pid. A consistency check of the section against the process, not a measurement of the sampler's cost.",
         }),
-    )?;
-    Ok(())
+    )
 }
 
 #[cfg(test)]
