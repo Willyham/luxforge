@@ -1,0 +1,500 @@
+{
+ "schema_version": "1.0",
+ "plan_id": "raw-cameras",
+ "title": "Popular camera support and RawSpeed unpacking",
+ "objective": "Open the RAW files most photographers make: admit the popular cameras' default and common recording modes, refuse Nikon High Efficiency explicitly, then unpack the exact-and-faster modes with RawSpeed behind LibRaw's metadata.",
+ "context_summary": "The popularity study found that the adapter refused 29 of 52 popular-camera samples, mostly catalog gaps such as Sony compressed ARW, the default on the A7 III, A7 IV, A7C II and A7R V. Nikon High Efficiency NEF (JPEG XS) decodes nowhere and LibRaw 0.22.2 silently misreads it on the Z50II and Z5II; the owner decided on 2026-09-30 to refuse it explicitly and wait for upstream. The owner also adopted RawSpeed for pixel decoding where exact: 2.5-3.7x faster on NEF, CR2, lossless RAF, ORF, PEF and DNG, about a third of popular-camera files. The adapter takes RawSpeed's uncorrected values and applies LibRaw's curve rule itself, because LibRaw's own RawSpeed hook dithers, differs on lossy NEF and silently falls back.",
+ "tasks": [
+  {
+   "id": "TASK-001",
+   "description": "Refuse Nikon High Efficiency NEF explicitly, before unpack, for every Nikon model.",
+   "status": "ready",
+   "dependencies": [],
+   "extra_context": [
+    "Owner decision 2026-09-30: no High Efficiency decoder until upstream LibRaw ships one; refuse explicitly, never silently.",
+    "Today a catalogued body's HE file fails inside LibRaw unpack as RawError::Native (API kind decode), and LibRaw 0.22.2 misroutes Z50II/Z5II HE files to nikon_load_raw and returns corrupt samples with success; those two bodies are only safe because they are not catalogued.",
+    "Detection: Nikon maker-note NEF compression 13 (HE) or 14 (HE*) through the existing nef_compression reader, or the JPEG XS SOC+CAP bytes FF10 FF50 at the raw strip offset; plus a native check refusing LibRaw's nikon_he_load_raw() decoder after open.",
+    "Add a distinct RawError variant (for example UnsupportedCompression) that the core maps to unsupported-input, with a message naming Nikon High Efficiency and the remedy (record Lossless compressed RAW).",
+    "HE samples: Z9 5147, Z8 6618, Zf 6886, Z6III 7815, Z50II 7763, Z5II 7743; lossless controls Z9 5146, Z6III 7819, Zf 6885."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "Popular camera support",
+     "target": "docs/design/popular-camera-support.md",
+     "relevance": "The behavior, mode table, High Efficiency refusal and acceptance this plan implements."
+    },
+    {
+     "kind": "file",
+     "label": "Popular cameras research",
+     "target": "docs/research/popular-cameras.md",
+     "relevance": "Which cameras and modes matter, and what the adapter refused on 2026-09-30."
+    },
+    {
+     "kind": "symbol",
+     "label": "Mode classification",
+     "target": "crates/luxforge-raw/src/format.rs",
+     "relevance": "`classify_mode` and the NEF maker-note and RAF header probes."
+    },
+    {
+     "kind": "file",
+     "label": "Native adapter",
+     "target": "crates/luxforge-raw/native/adapter.cpp",
+     "relevance": "LibRaw open/unpack, the pre-unpack catalog check and the LibRaw subclass."
+    },
+    {
+     "kind": "file",
+     "label": "Core RAW error mapping",
+     "target": "crates/luxforge-core/src/source.rs",
+     "relevance": "Maps RawError variants to API error kinds."
+    }
+   ],
+   "acceptance_criteria": [
+    "All six HE samples are refused with the High Efficiency error before any unpack, including the uncatalogued Z50II, Z5II and Z6III.",
+    "The catalogued bodies' lossless samples are still admitted with unchanged mosaic hashes.",
+    "The core maps the new error to unsupported-input and the desktop's failed Open keeps the previous photo.",
+    "Unit tests cover maker-note compression 13, 14, other values, absent and truncated maker notes, and the JPEG XS marker."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Synthetic NEF TIFF fixtures for the detector and the error mapping.",
+     "An ignored authentic test over the HE samples and their lossless controls."
+    ],
+    "commands": [
+     "cargo test -p luxforge-raw --locked",
+     "cargo test -p luxforge-core --locked source",
+     "LUXFORGE_RAW_PUBLIC_DIR=DIR cargo test --release -p luxforge-raw --locked --test real_files -- --ignored --nocapture"
+    ],
+    "expected_results": [
+     "Detector and mapping tests pass; every HE sample is refused with the specific error; controls pass."
+    ]
+   }
+  },
+  {
+   "id": "TASK-002",
+   "description": "Vendor RawSpeed and pugixml at pinned revisions and build them into luxforge-raw.",
+   "status": "ready",
+   "dependencies": [],
+   "extra_context": [
+    "RawSpeed commit c835b05aecfacb7343f7c424abd620aa12116c3f (develop tip on 2026-09-30); vendor only the library sources, data/cameras.xml and licences. pugixml at a pinned release.",
+    "C++20 in a separate cc build from LibRaw's C++17; generic CPU; no OpenMP, zlib or libjpeg; hand-written rawspeedconfig.h and version headers; no source patches.",
+    "Embed cameras.xml in the binary; parse it once per process behind a one-time initializer into an immutable CameraMetaData. No disk or environment lookup.",
+    "This task only makes RawSpeed build, link and decode through a crate-private native entry point with a smoke test; routing belongs to later tasks.",
+    "Record provenance, SHA-256 of the vendored trees, LGPL-2.0-or-later and CC-BY-SA 3.0 notices in THIRD_PARTY.md. Never claim a licence audit is complete.",
+    "The owner's local RawSpeed CMake builds used during evaluation live outside the repository and are not dependencies."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "RawSpeed unpacking",
+     "target": "docs/design/rawspeed-unpack.md",
+     "relevance": "The hybrid unpack contract: classify before unpack, the load_raw substitution, the replaceable-decoder table, build and evidence."
+    },
+    {
+     "kind": "file",
+     "label": "RawSpeed evaluation",
+     "target": "docs/research/rawspeed-evaluation.md",
+     "relevance": "Measured speedups, the exactness findings and why LibRaw's own RawSpeed hook is not used."
+    },
+    {
+     "kind": "file",
+     "label": "Adapter build",
+     "target": "crates/luxforge-raw/build.rs",
+     "relevance": "Builds pinned LibRaw and librtprocess with cc and generates the catalog tables."
+    },
+    {
+     "kind": "file",
+     "label": "Third-party notices",
+     "target": "crates/luxforge-raw/THIRD_PARTY.md",
+     "relevance": "Where provenance, flags and notices are recorded."
+    }
+   ],
+   "acceptance_criteria": [
+    "cargo build -p luxforge-raw --locked builds RawSpeed from the vendored sources with the recorded flags on macOS; existing portability checks still pass or report the exact blocking error.",
+    "A crate-private test decodes one authentic lossless NEF and one CR2 through RawSpeed with uncorrected values and matches the LibRaw mosaic after LibRaw's curve rule.",
+    "cameras.xml is embedded and parsed once; a test proves concurrent first use parses exactly once.",
+    "THIRD_PARTY.md records both pins, hashes, flags and licences."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Build from a clean target dir.",
+     "Run the crate-private RawSpeed smoke and one-time-initialization tests."
+    ],
+    "commands": [
+     "cargo build -p luxforge-raw --locked",
+     "cargo test -p luxforge-raw --locked rawspeed"
+    ],
+    "expected_results": [
+     "RawSpeed builds and the smoke decode matches LibRaw."
+    ]
+   }
+  },
+  {
+   "id": "TASK-003",
+   "description": "Admit the popular cameras' default and common recording modes in the camera catalog, with authentic evidence.",
+   "status": "pending",
+   "dependencies": [
+    "TASK-001"
+   ],
+   "extra_context": [
+    "The mode table in the design is the scope: Sony compressed and lossless compressed ARW, Fujifilm X-T5 uncompressed and lossy, X-M5, Nikon D850 and the Z6III, Z50II and Z5II lossless modes, Canon 5D Mark IV single-frame, 90D, 5D Mark III and C-RAW on the listed bodies.",
+    "Depends on the High Efficiency refusal so that admitting the Z50II, Z5II and Z6III cannot admit HE files misread by LibRaw.",
+    "Confirm each mode from the decoder, bits, size and container marker the adapter reads. Where a mode needs a new container probe value or capability, implement it generally with tests; no camera-name branches.",
+    "Grow fixtures/modern-camera-selection.json to hold more than one sample per model and record every new mode's evidence in fixtures/modern-camera-evidence.json, including its mosaic_sha256; those LibRaw hashes are the oracle for the RawSpeed routing later.",
+    "The R6 Mark II 6405 and R5 4697 samples: admit only if they are a full-sensor primary frame the existing capabilities handle; otherwise record the reason.",
+    "Crop-sensor and small RAW sizes, Sony A7 V and HE stay refused and are documented."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "Popular camera support",
+     "target": "docs/design/popular-camera-support.md",
+     "relevance": "The behavior, mode table, High Efficiency refusal and acceptance this plan implements."
+    },
+    {
+     "kind": "file",
+     "label": "Popular cameras research",
+     "target": "docs/research/popular-cameras.md",
+     "relevance": "Which cameras and modes matter, and what the adapter refused on 2026-09-30."
+    },
+    {
+     "kind": "file",
+     "label": "Camera profiles format",
+     "target": "docs/design/raw-camera-profiles.md",
+     "relevance": "Catalog fields, validation, and how a mode is added with evidence."
+    },
+    {
+     "kind": "file",
+     "label": "Modern camera support",
+     "target": "docs/design/modern-camera-support.md",
+     "relevance": "Current coverage, evidence manifests and the qualification procedure."
+    },
+    {
+     "kind": "file",
+     "label": "Camera catalog",
+     "target": "crates/luxforge-raw/data/cameras.json",
+     "relevance": "The one source of camera and mode policy."
+    },
+    {
+     "kind": "symbol",
+     "label": "Mode classification",
+     "target": "crates/luxforge-raw/src/format.rs",
+     "relevance": "`classify_mode` and the NEF maker-note and RAF header probes."
+    },
+    {
+     "kind": "file",
+     "label": "Development and verification",
+     "target": "docs/engineering/development.md",
+     "relevance": "Verification tiers, the raw-editor scenario and RAW manifests."
+    }
+   ],
+   "acceptance_criteria": [
+    "Every mode in the design's table passes qualify_profiles with evidence recorded, or is listed in modern camera support with its concrete refusal reason.",
+    "The catalog build and its static-data equality test pass; mode identifiers of existing modes are unchanged.",
+    "Background raw-editor verification passes for one new mode per brand (Sony compressed, Fujifilm uncompressed, Nikon lossless on a new body, Canon on a new body).",
+    "Feature status, the user guide and modern camera support state the new counts and the HE refusal."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Qualify each new mode's sample.",
+     "Run the four representative raw-editor journeys with a manifest listing them."
+    ],
+    "commands": [
+     "cargo test -p luxforge-raw --locked",
+     "cargo run --release --locked -p luxforge-raw --example qualify_profiles -- MANIFEST NEW_RESULTS",
+     "cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR"
+    ],
+    "expected_results": [
+     "All listed modes qualified or explicitly refused with reasons; four journeys pass."
+    ]
+   }
+  },
+  {
+   "id": "TASK-004",
+   "description": "Classify the recording mode before unpack by splitting the native open into identify and unpack calls.",
+   "status": "pending",
+   "dependencies": [
+    "TASK-001"
+   ],
+   "extra_context": [
+    "Today lf_raw_open identifies and unpacks in one call and Rust classifies afterwards. Split it: open returns identify-time metadata (make, model, decoder name, raw size, bits, CFA, frame count, DNG version); Rust runs classify_mode; unpack takes the mode's unpacker (LibRaw only in this task).",
+    "Keep the post-unpack checks that geometry, stride and decoder are unchanged; keep cancellation through LibRaw's progress callback; no C++ pointer escapes beyond the handle's lifetime.",
+    "Verify that every field classification uses is final at identify for every catalogued decoder; if one is not, re-validate it after unpack and document which.",
+    "Unsupported modes are then refused without unpack work. The HE refusal stays ahead of both calls."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "RawSpeed unpacking",
+     "target": "docs/design/rawspeed-unpack.md",
+     "relevance": "The hybrid unpack contract: classify before unpack, the load_raw substitution, the replaceable-decoder table, build and evidence."
+    },
+    {
+     "kind": "file",
+     "label": "Native adapter",
+     "target": "crates/luxforge-raw/native/adapter.cpp",
+     "relevance": "LibRaw open/unpack, the pre-unpack catalog check and the LibRaw subclass."
+    },
+    {
+     "kind": "symbol",
+     "label": "Mode classification",
+     "target": "crates/luxforge-raw/src/format.rs",
+     "relevance": "`classify_mode` and the NEF maker-note and RAF header probes."
+    },
+    {
+     "kind": "file",
+     "label": "RAW adapter entry points",
+     "target": "crates/luxforge-raw/src/lib.rs",
+     "relevance": "RawSource::decode and the FFI wrappers."
+    }
+   ],
+   "acceptance_criteria": [
+    "Every catalogued mode's authentic evidence (mosaic hash and metadata) is unchanged.",
+    "An unsupported mode is refused before unpack, shown by a test that observes no unpack call.",
+    "Cancellation, native failure and malformed-input tests still pass; no exception crosses the ABI."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Unit tests for the split and early refusal.",
+     "Re-run the authentic corpus against recorded hashes."
+    ],
+    "commands": [
+     "cargo test -p luxforge-raw --locked",
+     "LUXFORGE_RAW_OWNER_DIR=DIR LUXFORGE_RAW_PUBLIC_DIR=DIR cargo test --release -p luxforge-raw --locked --test real_files -- --ignored --nocapture"
+    ],
+    "expected_results": [
+     "All evidence hashes unchanged; early refusal proven."
+    ]
+   }
+  },
+  {
+   "id": "TASK-005",
+   "description": "Add the RawSpeed unpacker capability: the catalog field, the replaceable-decoder table and the load_raw substitution.",
+   "status": "pending",
+   "dependencies": [
+    "TASK-002",
+    "TASK-004"
+   ],
+   "extra_context": [
+    "Catalog: optional mode field unpacker = libraw | rawspeed; the build refuses rawspeed on decoders outside the code-owned table and unknown values.",
+    "Replaceable decoders and their curve rule live in one native table keyed by LibRaw decoder name: nikon_load_raw, lossless_jpeg_load_raw, fuji_compressed_load_raw, olympus_load_raw, pentax_load_raw, lossless_dng_load_raw, packed_dng_load_raw, panasonic_load_raw, panasonicC6_load_raw, panasonicC8_load_raw. Whether LibRaw applies its curve table is decided from each LibRaw decoder's source and proven by evidence.",
+    "The subclass sets LibRaw's protected load_raw to its RawSpeed decode after open; LibRaw's unpack then runs every post-decode step. The decode borrows the encoded bytes without copying, uses uncorrectedRawValues, no crop, no bad-pixel interpolation, no DNG stage-1 opcodes, failOnUnknown, and requires a one-component u16 image of exactly raw_width x raw_height.",
+    "A RawSpeed failure is an explicit error naming RawSpeed; never a LibRaw fallback. Cancellation is checked immediately before and after decodeRaw.",
+    "Do not route any catalog mode in this task except in tests."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "RawSpeed unpacking",
+     "target": "docs/design/rawspeed-unpack.md",
+     "relevance": "The hybrid unpack contract: classify before unpack, the load_raw substitution, the replaceable-decoder table, build and evidence."
+    },
+    {
+     "kind": "file",
+     "label": "RawSpeed evaluation",
+     "target": "docs/research/rawspeed-evaluation.md",
+     "relevance": "Measured speedups, the exactness findings and why LibRaw's own RawSpeed hook is not used."
+    },
+    {
+     "kind": "file",
+     "label": "Native adapter",
+     "target": "crates/luxforge-raw/native/adapter.cpp",
+     "relevance": "LibRaw open/unpack, the pre-unpack catalog check and the LibRaw subclass."
+    },
+    {
+     "kind": "file",
+     "label": "Camera profiles format",
+     "target": "docs/design/raw-camera-profiles.md",
+     "relevance": "Catalog fields, validation, and how a mode is added with evidence."
+    },
+    {
+     "kind": "file",
+     "label": "Adapter build",
+     "target": "crates/luxforge-raw/build.rs",
+     "relevance": "Builds pinned LibRaw and librtprocess with cc and generates the catalog tables."
+    },
+    {
+     "kind": "file",
+     "label": "Performance rules",
+     "target": "docs/engineering/performance-rules.md",
+     "relevance": "Checklist every change under crates/ answers."
+    }
+   ],
+   "acceptance_criteria": [
+    "Catalog validation tests cover the field, the table and unknown values.",
+    "A test routes the owner Z6 and one public NEF, CR2 and lossless RAF through RawSpeed and matches their recorded LibRaw mosaic hashes and metadata.",
+    "A forced RawSpeed failure on a routed mode is an explicit error with no fallback; cancellation before and after the decode publishes nothing.",
+    "The performance-rules checklist is answered in the design, including the transient second mosaic."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Unit tests for validation, failure and cancellation.",
+     "Ignored authentic tests routing representative modes."
+    ],
+    "commands": [
+     "cargo test -p luxforge-raw --locked",
+     "LUXFORGE_RAW_OWNER_DIR=DIR LUXFORGE_RAW_PUBLIC_DIR=DIR cargo test --release -p luxforge-raw --locked --test real_files -- --ignored --nocapture"
+    ],
+    "expected_results": [
+     "Routed decodes are byte-identical; failures are explicit."
+    ]
+   }
+  },
+  {
+   "id": "TASK-006",
+   "description": "Route the qualifying catalog modes to RawSpeed and prove each one exact.",
+   "status": "pending",
+   "dependencies": [
+    "TASK-003",
+    "TASK-005"
+   ],
+   "extra_context": [
+    "Candidates: every catalog mode, including those TASK-003 adds, whose LibRaw decoder is in the replaceable table.",
+    "A mode is routed only when its authentic sample's routed mosaic hash equals its LibRaw-only hash in the evidence manifest, its metadata is identical, and the adapter's own release unpack measurement is at least 1.3x faster. Others stay on LibRaw with the reason recorded in modern camera support.",
+    "Keep the oracle honest: the LibRaw-only hashes come from evidence recorded before routing; never regenerate them from a routed decode."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "RawSpeed unpacking",
+     "target": "docs/design/rawspeed-unpack.md",
+     "relevance": "The hybrid unpack contract: classify before unpack, the load_raw substitution, the replaceable-decoder table, build and evidence."
+    },
+    {
+     "kind": "file",
+     "label": "Modern camera support",
+     "target": "docs/design/modern-camera-support.md",
+     "relevance": "Current coverage, evidence manifests and the qualification procedure."
+    },
+    {
+     "kind": "file",
+     "label": "Camera catalog",
+     "target": "crates/luxforge-raw/data/cameras.json",
+     "relevance": "The one source of camera and mode policy."
+    },
+    {
+     "kind": "file",
+     "label": "Evidence manifest",
+     "target": "fixtures/modern-camera-evidence.json",
+     "relevance": "LibRaw-only mosaic hashes per mode, the exactness oracle."
+    }
+   ],
+   "acceptance_criteria": [
+    "Every routed mode has passing exactness evidence and a recorded unpack speedup; every candidate left on LibRaw has a recorded reason.",
+    "The owner originals and existing oracles (bayer_owner_mosaic_and_rgb_oracle, the DNG reference) pass.",
+    "Background raw-editor verification passes for the owner Z6 and one routed public mode per family."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Qualify every candidate routed and LibRaw-only.",
+     "Run representative editor journeys."
+    ],
+    "commands": [
+     "cargo run --release --locked -p luxforge-raw --example qualify_profiles -- MANIFEST NEW_RESULTS",
+     "LUXFORGE_RAW_OWNER_DIR=DIR LUXFORGE_RAW_PUBLIC_DIR=DIR cargo test --release -p luxforge-raw --locked --test real_files -- --ignored --nocapture",
+     "cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR"
+    ],
+    "expected_results": [
+     "Routed set exact and faster; journeys pass."
+    ]
+   }
+  },
+  {
+   "id": "TASK-007",
+   "description": "Measure routed opens in the editor and bring the RAW documentation current.",
+   "status": "pending",
+   "dependencies": [
+    "TASK-006"
+   ],
+   "extra_context": [
+    "Performance task: timing runs belong here. Measure adapter unpack per routed mode before and after, the owner Z6's cold saved-WB preparation p50/p95 against the 546 ms baseline, and peak process RSS for one open of the largest routed mode; alternate before/after runs on the shared host and record load.",
+    "Update the performance spec, feature status, user guide, modern camera support and the adapter README; record current behaviour only; delete this plan when complete."
+   ],
+   "context_links": [
+    {
+     "kind": "file",
+     "label": "RawSpeed unpacking",
+     "target": "docs/design/rawspeed-unpack.md",
+     "relevance": "The hybrid unpack contract: classify before unpack, the load_raw substitution, the replaceable-decoder table, build and evidence."
+    },
+    {
+     "kind": "file",
+     "label": "Performance rules",
+     "target": "docs/engineering/performance-rules.md",
+     "relevance": "Checklist every change under crates/ answers."
+    },
+    {
+     "kind": "file",
+     "label": "Development and verification",
+     "target": "docs/engineering/development.md",
+     "relevance": "Verification tiers, the raw-editor scenario and RAW manifests."
+    },
+    {
+     "kind": "file",
+     "label": "Performance spec",
+     "target": "docs/specs/performance.md",
+     "relevance": "Where RAW measurements and the saved-WB baseline live."
+    }
+   ],
+   "acceptance_criteria": [
+    "Recorded before/after unpack and cold-preparation distributions with scope and load, and the routed-open RSS peak.",
+    "quick, rendered and timing tiers pass on the integrated branch.",
+    "Docs describe the shipped behaviour and counts; the plan is deleted."
+   ],
+   "test_strategy": {
+    "approach": "mixed",
+    "steps": [
+     "Run the measurements back to back in alternating order.",
+     "Run the verification tiers once."
+    ],
+    "commands": [
+     "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
+     "cargo run --release --locked --package xtask -- verify --tier timing --output NEW_DIR"
+    ],
+    "expected_results": [
+     "Measured savings recorded with scope; tiers pass."
+    ]
+   }
+  }
+ ],
+ "execution_waves": [
+  {
+   "wave": 1,
+   "task_ids": [
+    "TASK-001",
+    "TASK-002"
+   ]
+  },
+  {
+   "wave": 2,
+   "task_ids": [
+    "TASK-003",
+    "TASK-004"
+   ]
+  },
+  {
+   "wave": 3,
+   "task_ids": [
+    "TASK-005"
+   ]
+  },
+  {
+   "wave": 4,
+   "task_ids": [
+    "TASK-006"
+   ]
+  },
+  {
+   "wave": 5,
+   "task_ids": [
+    "TASK-007"
+   ]
+  }
+ ]
+}

@@ -8,6 +8,7 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | --- | --- |
 | [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| [RAW cameras](raw-cameras.json) | Popular camera support, the explicit Nikon High Efficiency refusal, and RawSpeed unpacking for the exact-and-faster modes |
 
 The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
 
