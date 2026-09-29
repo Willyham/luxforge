@@ -103,11 +103,12 @@ fn start_render(
 /// A timing means something only with optimizations on; a dev-profile run is refused rather than
 /// failed on its bound.
 fn release_only() {
-    assert!(
-        !cfg!(debug_assertions),
-        "a timing: run it in release (`cargo test --release --locked -p luxforge-core --test \
-         cancellation -- --ignored --nocapture`)"
-    );
+    if cfg!(debug_assertions) {
+        panic!(
+            "a timing: run it in release (`cargo test --release --locked -p luxforge-core --test \
+             cancellation -- --ignored --nocapture`)"
+        );
+    }
 }
 
 /// What a cancelled render must always be: the cancelled kind, and no frame at all, stopped within
