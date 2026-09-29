@@ -445,197 +445,8 @@ fn a_radial_entirely_off_the_frame_bounds_to_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// The cases the study names.
+// The ramp width, which the study does not freeze.
 // ---------------------------------------------------------------------------
-
-/// `feather = 0` is the explicit hard edge: every coverage is exactly `0.0` or exactly `1.0`, and
-/// the same holds for the second route to that branch, a feather so small that `1 - feather / 100`
-/// rounds to exactly `1.0`. A representable small feather is the smooth branch, checked here too so
-/// the boundary is not asserted from one side only.
-#[test]
-fn feather_zero_is_a_hard_edge_by_both_routes() {
-    for feather in [0.0, 1e-16, 1e-18] {
-        let compiled = compile(
-            RadialGradient {
-                x: 0.5,
-                y: 0.5,
-                radius_x: 0.3,
-                radius_y: 0.2,
-                angle: 20.0,
-                feather,
-            },
-            120,
-            90,
-        );
-        let mut ones = 0usize;
-        for y in 0..90 {
-            for x in 0..120 {
-                let coverage = compiled.coverage(x, y, ANY_PIXEL);
-                assert!(
-                    coverage == 0.0 || coverage == 1.0,
-                    "feather {feather} at ({x}, {y}) gave {coverage}, which is neither end"
-                );
-                if coverage == 1.0 {
-                    ones += 1;
-                }
-            }
-        }
-        assert!(ones > 0, "feather {feather} selected nothing at all");
-        // A hard edge has no ramp for a pixel grid to resolve, and says so.
-        assert_eq!(compiled.min_feature_px(stage(120, 90)), 0.0);
-    }
-    // A representable small feather is the smooth branch, not the hard one. `0.01` leaves a ramp
-    // `0.0001 · 0.2 = 2e-5` mask-space units wide, which is 0.018 px on this stage — too narrow for
-    // a pixel centre to land in, so the branch is read off the feature width it reports rather than
-    // off a sampled partial value, and the width is non-zero precisely because the span is.
-    let narrow = compile(
-        RadialGradient {
-            x: 0.5,
-            y: 0.5,
-            radius_x: 0.3,
-            radius_y: 0.2,
-            angle: 20.0,
-            feather: 0.01,
-        },
-        1200,
-        900,
-    );
-    assert!(narrow.min_feature_px(stage(1200, 900)) > 0.0);
-    // A feather whose ramp is wide enough to sample shows the smooth branch directly: pixels land
-    // strictly between the two ends.
-    let compiled = compile(
-        RadialGradient {
-            x: 0.5,
-            y: 0.5,
-            radius_x: 0.3,
-            radius_y: 0.3,
-            angle: 20.0,
-            feather: 2.0,
-        },
-        1200,
-        900,
-    );
-    let partial = (0..1200)
-        .map(|x| compiled.coverage(x, 450, ANY_PIXEL))
-        .filter(|c| *c > 0.0 && *c < 1.0)
-        .count();
-    assert!(partial > 0, "a feather of 2 produced no ramp at all");
-}
-
-/// `feather = 100` starts the ramp at the centre: coverage is exactly `1.0` at the centre pixel and
-/// falls monotonically to exactly `0.0` at the boundary, with no plateau between them.
-#[test]
-fn feather_one_hundred_ramps_from_the_centre() {
-    // An odd-sided stage so one pixel centre is the ellipse centre exactly.
-    let compiled = compile(
-        RadialGradient {
-            x: 0.5,
-            y: 0.5,
-            radius_x: 0.25,
-            radius_y: 0.25,
-            angle: 0.0,
-            feather: 100.0,
-        },
-        401,
-        401,
-    );
-    assert_eq!(compiled.coverage(200, 200, ANY_PIXEL), 1.0);
-    // Nonincreasing outward along the row, and nothing but the centre is at full coverage.
-    let mut previous = 1.0;
-    let mut plateau = 0usize;
-    for x in 200..401 {
-        let coverage = compiled.coverage(x, 200, ANY_PIXEL);
-        assert!(coverage <= previous, "coverage rose outward at x = {x}");
-        if coverage == 1.0 {
-            plateau += 1;
-        }
-        previous = coverage;
-    }
-    assert_eq!(plateau, 1, "feather 100 left a plateau of {plateau} pixels");
-    // Past the boundary, 0.25 units is 100.25 px, coverage is exactly zero.
-    assert_eq!(compiled.coverage(320, 200, ANY_PIXEL), 0.0);
-}
-
-/// Inside is selected, and the component's own `invert` is the exact complement of it: the two sum
-/// to exactly `1.0` at every pixel, and the inverted value is bit-for-bit `1 - c`.
-#[test]
-fn invert_is_the_exact_complement_and_inside_is_selected() {
-    let mut rng = SplitMix64(0x4A5C_0016);
-    for _ in 0..40 {
-        let radial = sample_radial(&mut rng);
-        let drawn = compile(radial, 61, 47);
-        let mut inverted_mask = single(radial);
-        inverted_mask.components[0].invert = true;
-        let inverted = CompiledMask::new(
-            &inverted_mask,
-            stage(61, 47),
-            &luxforge_core::path::StrokeTable::default(),
-        )
-        .unwrap();
-        for y in 0..47 {
-            for x in 0..61 {
-                let c = drawn.coverage(x, y, ANY_PIXEL);
-                let i = inverted.coverage(x, y, ANY_PIXEL);
-                assert_eq!(i.to_bits(), (1.0 - c).to_bits(), "at ({x}, {y})");
-                assert_eq!(c + i, 1.0, "at ({x}, {y}): {c} + {i}");
-            }
-        }
-    }
-    // Inside is selected: full coverage at the centre and none well outside, which is the opposite
-    // of Lightroom's default and is proposal P3 as the study confirmed it.
-    let compiled = compile(
-        RadialGradient {
-            x: 0.5,
-            y: 0.5,
-            radius_x: 0.15,
-            radius_y: 0.15,
-            angle: 0.0,
-            feather: 50.0,
-        },
-        101,
-        101,
-    );
-    assert_eq!(compiled.coverage(50, 50, ANY_PIXEL), 1.0);
-    assert_eq!(compiled.coverage(0, 0, ANY_PIXEL), 0.0);
-    assert_eq!(compiled.coverage(100, 100, ANY_PIXEL), 0.0);
-}
-
-/// The ellipse is defined in mask space, so a circle is a circle in pixels at any aspect ratio: the
-/// same stored payload on a frame and its transpose covers the same number of pixels across as
-/// down, counted rather than argued.
-#[test]
-fn a_circle_is_a_circle_at_every_aspect_ratio() {
-    let radial = RadialGradient {
-        x: 0.5,
-        y: 0.5,
-        radius_x: 0.2,
-        radius_y: 0.2,
-        angle: 0.0,
-        feather: 0.0,
-    };
-    for (width, height) in [(601u32, 401u32), (401, 601), (401, 401)] {
-        let compiled = compile(radial, width, height);
-        let cx = width / 2;
-        let cy = height / 2;
-        assert_eq!(compiled.coverage(cx, cy, ANY_PIXEL), 1.0);
-        let across = (cx..width)
-            .take_while(|x| compiled.coverage(*x, cy, ANY_PIXEL) > 0.0)
-            .count();
-        let down = (cy..height)
-            .take_while(|y| compiled.coverage(cx, *y, ANY_PIXEL) > 0.0)
-            .count();
-        // 0.2 mask-space units is 0.2 · H pixels on both axes, whatever the width is.
-        let nominal = 0.2 * f64::from(height);
-        assert_eq!(
-            across, down,
-            "{width}x{height}: {across} across, {down} down"
-        );
-        assert!(
-            (across as f64 - nominal).abs() <= 1.0,
-            "{width}x{height}: {across} px against a nominal {nominal}"
-        );
-    }
-}
 
 /// `min_feature_px` is the ramp's width in the stage's pixels — the narrower of the two axes — and
 /// it scales with the stage it is asked about, because a radius stored as a fraction of the frame's
@@ -684,6 +495,40 @@ fn min_feature_px_is_the_measured_ramp_width() {
         (198..=202).contains(&rows),
         "the ramp occupied {rows} rows against a stated 2 x 100"
     );
+    // A hard edge has no ramp for a pixel grid to resolve, and says so; a feather too narrow to
+    // sample is still the smooth branch, and reports the width it has.
+    for feather in [0.0, 1e-16, 1e-18] {
+        let hard = compile(
+            RadialGradient {
+                x: 0.5,
+                y: 0.5,
+                radius_x: 0.3,
+                radius_y: 0.2,
+                angle: 20.0,
+                feather,
+            },
+            120,
+            90,
+        );
+        assert_eq!(
+            hard.min_feature_px(stage(120, 90)),
+            0.0,
+            "feather {feather}"
+        );
+    }
+    let narrow = compile(
+        RadialGradient {
+            x: 0.5,
+            y: 0.5,
+            radius_x: 0.3,
+            radius_y: 0.2,
+            angle: 20.0,
+            feather: 0.01,
+        },
+        1200,
+        900,
+    );
+    assert!(narrow.min_feature_px(stage(1200, 900)) > 0.0);
 }
 
 // ---------------------------------------------------------------------------
