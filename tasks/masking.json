@@ -694,7 +694,7 @@
     {
       "id": "TASK-009",
       "description": "Move the mask, brush and range studies into the reference crate's own studies binary, and delete the production tests that re-prove properties bit-identity already covers.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Wave 5, tests. A move plus a deletion, independent of the other masking work.",
@@ -726,7 +726,7 @@
         {
           "kind": "file",
           "label": "Mask study",
-          "target": "crates/luxforge-core/tests/mask/study.rs",
+          "target": "crates/luxforge-reference/tests/studies/mask.rs",
           "relevance": "One of the three studies this task moves."
         },
         {

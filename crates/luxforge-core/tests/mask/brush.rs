@@ -183,61 +183,6 @@ fn a_one_point_stroke_and_a_doubled_back_path_match_the_reference() {
 // The accumulation properties
 // ---------------------------------------------------------------------------
 
-/// Add strokes commute: permuting them leaves coverage where it was, to one ulp, and identical on
-/// the overwhelming majority of pixels. An erase stroke does not commute, and the difference is a
-/// whole edit.
-#[test]
-fn add_strokes_commute_and_an_erase_stroke_does_not() {
-    let mut rng = SplitMix64(0x0018_C01D);
-    let size = stage(64, 48);
-    let mut worst = 0.0f64;
-    for _ in 0..60 {
-        let count = 2 + rng.next_usize(4);
-        let strokes: Vec<Stroke> = (0..count).map(|_| random_stroke(&mut rng, false)).collect();
-        let (mask, table) = brush_mask(&strokes);
-        let ordered = CompiledMask::new(&mask, size, &table).unwrap();
-        for _ in 0..4 {
-            let mut shuffled = strokes.clone();
-            for index in (1..shuffled.len()).rev() {
-                shuffled.swap(index, rng.next_usize(index + 1));
-            }
-            let (permuted_mask, permuted_table) = brush_mask(&shuffled);
-            let permuted = CompiledMask::new(&permuted_mask, size, &permuted_table).unwrap();
-            for y in 0..size.height {
-                for x in 0..size.width {
-                    worst = worst.max(
-                        (ordered.coverage(x, y, ANY_PIXEL) - permuted.coverage(x, y, ANY_PIXEL))
-                            .abs(),
-                    );
-                }
-            }
-        }
-    }
-    assert!(
-        worst <= 1e-15,
-        "permuting add strokes moved coverage by {worst:e}"
-    );
-
-    // The erase stroke is where order lives.
-    let add = Stroke::capture(&[[0.3, 0.5], [0.7, 0.5]], 0.1, 50.0, 100.0, false).unwrap();
-    let erase = Stroke::capture(&[[0.5, 0.35], [0.5, 0.65]], 0.1, 50.0, 100.0, true).unwrap();
-    let (painted, painted_table) = brush_mask(&[add.clone(), erase.clone()]);
-    let (erased, erased_table) = brush_mask(&[erase, add]);
-    let painted = CompiledMask::new(&painted, size, &painted_table).unwrap();
-    let erased = CompiledMask::new(&erased, size, &erased_table).unwrap();
-    let mut divergence = 0.0f64;
-    for y in 0..size.height {
-        for x in 0..size.width {
-            divergence = divergence
-                .max((painted.coverage(x, y, ANY_PIXEL) - erased.coverage(x, y, ANY_PIXEL)).abs());
-        }
-    }
-    assert!(
-        divergence > 0.5,
-        "the erase order changed coverage by only {divergence}"
-    );
-}
-
 /// Deleting one stroke from the middle of a component is indistinguishable from one never made, bit
 /// for bit at every pixel, with an erase stroke after it so the property is not tested only where
 /// it is trivial.
