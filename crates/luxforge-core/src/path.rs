@@ -232,7 +232,7 @@ impl<'de> Deserialize<'de> for StrokeId {
 /// address from the one the recipe references.
 pub trait StrokeKind: std::fmt::Debug + Send + Sync + Sized + 'static {
     /// What a refusal calls a stroke of this type, e.g. `mask brush`.
-    const KIND: &'static str;
+    const NAME: &'static str;
 
     /// The bytes this stroke is addressed and stored by: one spelling per stroke, so a reparse of
     /// the stored bytes hashes back to the same address.
@@ -274,7 +274,7 @@ pub trait StoredStroke: Any + std::fmt::Debug + Send + Sync {
 
 impl<S: StrokeKind> StoredStroke for S {
     fn stroke_kind(&self) -> &'static str {
-        S::KIND
+        S::NAME
     }
 
     fn stored_bytes(&self) -> Vec<u8> {
@@ -304,7 +304,7 @@ impl StrokeType {
             S::from_stored(id, stored).map(|stroke| Arc::new(stroke) as Arc<dyn StoredStroke>)
         }
         Self {
-            kind: S::KIND,
+            kind: S::NAME,
             type_id: TypeId::of::<S>(),
             decode: decode::<S>,
         }
@@ -785,7 +785,7 @@ impl StrokeTable {
     /// branch anywhere that returns an empty stroke instead. A stroke the table holds as another
     /// consumer's type is refused by both names rather than read as this one.
     pub(crate) fn resolve<S: StrokeKind>(&self, id: &StrokeId) -> Result<&S, Error> {
-        self.check(id, TypeId::of::<S>(), S::KIND)?;
+        self.check(id, TypeId::of::<S>(), S::NAME)?;
         Ok(self.get(id).expect("the check found a stroke of this type"))
     }
 
