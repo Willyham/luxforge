@@ -272,7 +272,7 @@ impl Editor {
                 if shown {
                     self.event(
                         "clipping_overlay",
-                        json!({"generation":generation,"cells":[width,height],"approximate":approximate}),
+                        || json!({"generation":generation,"cells":[width,height],"approximate":approximate}),
                     );
                 } else {
                     self.status.text = "Could not show the clipping overlay".into();
@@ -285,7 +285,7 @@ impl Editor {
                 failure = Some(self.status.text.clone());
                 self.event(
                     "clipping_overlay_failed",
-                    json!({"generation":generation,"error_code":error.kind.code(),"approximate":approximate}),
+                    || json!({"generation":generation,"error_code":error.kind.code(),"approximate":approximate}),
                 );
             }
         }

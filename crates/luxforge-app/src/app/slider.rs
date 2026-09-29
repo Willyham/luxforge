@@ -95,7 +95,7 @@ impl Editor {
         let target = self.draft_target(&action);
         self.event(
             "slider_draft_begin",
-            json!({"action":action,"revision":base_revision,"target":target}),
+            || json!({"action":action,"revision":base_revision,"target":target}),
         );
         let kind = Kind::Slider(SliderGesture {
             action,
@@ -157,11 +157,10 @@ impl Editor {
             && let Some(state) = &self.document.state
         {
             let (asset, revision) = (state.asset.id.clone(), state.revision);
-            self.event(
-                "field_reset_queued",
+            self.event("field_reset_queued", || {
                 json!({"action":action,"parameter":parameter,"revision":revision,
-                    "gesture_open":gesture_open,"busy":self.busy}),
-            );
+                    "gesture_open":gesture_open,"busy":self.busy})
+            });
             self.controls.pending_reset = Some(PendingReset {
                 action,
                 parameter,
@@ -220,7 +219,7 @@ impl Editor {
             self.status.text = format!("{label} was not reset: {reason}");
             self.event(
                 "field_reset_dropped",
-                json!({"action":reset.action,"parameter":reset.parameter,"reason":reason}),
+                || json!({"action":reset.action,"parameter":reset.parameter,"reason":reason}),
             );
             return Task::none();
         }
@@ -236,11 +235,10 @@ impl Editor {
         preset: Map<String, Value>,
     ) -> Task<Message> {
         let revision = self.document.state.as_ref().map(|state| state.revision);
-        self.event(
-            "field_reset_sent",
+        self.event("field_reset_sent", || {
             json!({"action":action,"preset":preset,"revision":revision,
-                "field":{"action":field.0,"parameter":field.1}}),
-        );
+                "field":{"action":field.0,"parameter":field.1}})
+        });
         self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
     }
 }

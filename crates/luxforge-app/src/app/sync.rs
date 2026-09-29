@@ -160,7 +160,7 @@ impl Editor {
                         }
                         // Recorded, so a refused request is visible in the evidence log even when
                         // a later frame's status line has replaced it.
-                        self.event("command_failed", json!({ "error": error }));
+                        self.event("command_failed", || json!({ "error": error }));
                         if self.activity.pending {
                             let (code, message) =
                                 error.split_once(": ").unwrap_or(("internal", &error));
@@ -239,7 +239,7 @@ impl Editor {
                 match result {
                     Ok(modules) => {
                         self.controls.fields = Fields::seeded(&modules);
-                        self.event("modules_loaded", module_summary(&modules));
+                        self.event("modules_loaded", || module_summary(&modules));
                         self.modules = modules;
                         // A photograph that opened before discovery answered already has its
                         // recipe rows: seed the new fields from them.
@@ -247,7 +247,7 @@ impl Editor {
                     }
                     Err(error) => {
                         self.status.text = format!("Tool discovery failed: {error}");
-                        self.event("modules_failed", json!({ "message": self.status.text }));
+                        self.event("modules_failed", || json!({ "message": self.status.text }));
                     }
                 }
             }
@@ -290,7 +290,7 @@ impl Editor {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        self.event("open_requested", json!({"file":file}));
+        self.event("open_requested", || json!({"file":file}));
         let proxy = self.proxy_bounds();
         import_task(
             self.owner.clone(),
@@ -309,7 +309,7 @@ impl Editor {
         self.activity.error_code = Some(error_code.into());
         self.event(
             "open_failed",
-            json!({"error_code":error_code,"message":message}),
+            || json!({"error_code":error_code,"message":message}),
         );
         self.outcome_ready(true);
     }

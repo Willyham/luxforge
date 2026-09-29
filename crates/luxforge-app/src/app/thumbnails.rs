@@ -300,25 +300,24 @@ impl Editor {
             Ok(job) if job.identity == identity => self.thumbnailer.queue.request(job.evaluation),
             Ok(job) => self.event(
                 "mask_thumbnails_unavailable",
-                json!({"reason": "the stack planned again is not the settled one", "entry": job.evaluation.entry().id}),
+                || json!({"reason": "the stack planned again is not the settled one", "entry": job.evaluation.entry().id}),
             ),
-            Err(reason) => self.event("mask_thumbnails_unavailable", json!({ "reason": reason })),
+            Err(reason) => self.event("mask_thumbnails_unavailable", || json!({ "reason": reason })),
         }
     }
 
     /// Take up one delivered set of thumbnails.
     pub(super) fn thumbnails_ready(&mut self, done: ThumbnailResult) {
         if !done.computed.is_empty() || !done.absent.is_empty() {
-            self.event(
-                "mask_thumbnails",
+            self.event("mask_thumbnails", || {
                 json!({
                     "masks": done.masks.len(),
                     "computed": done.computed.iter().map(MaskId::as_str).collect::<Vec<_>>(),
                     "absent": done.absent.iter()
                         .map(|(mask, reason)| json!({"mask": mask.as_str(), "reason": reason}))
                         .collect::<Vec<_>>(),
-                }),
-            );
+                })
+            });
         }
         self.adopt_thumbnails(done.masks);
     }

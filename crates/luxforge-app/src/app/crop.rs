@@ -777,7 +777,7 @@ impl Editor {
             return false;
         }
         let bounded = self.crop_stage_bounds().is_some();
-        self.event("crop_stage_requested", json!({ "bounded": bounded }));
+        self.event("crop_stage_requested", || json!({ "bounded": bounded }));
         true
     }
 
@@ -1007,9 +1007,12 @@ impl Editor {
             return Task::none();
         };
         let fields = Value::Object(frame.params(&crop.frame.payload()).into_iter().collect());
-        let summary = crop.summary(&gesture.draft);
         self.show_crop_angle();
-        self.event(event, summary);
+        self.event(event, || {
+            self.core_gesture()
+                .and_then(|gesture| Some(gesture.crop()?.summary(&gesture.draft)))
+                .unwrap_or(Value::Null)
+        });
         self.drive(Event::Offer(fields))
     }
 
@@ -1048,7 +1051,7 @@ impl Editor {
     pub(crate) fn crop_discarded(&mut self, crop: &CropGesture, draft: &CoreDraft) {
         self.end_crop_view(crop.generation);
         if crop.stage != StageView::Abandoned {
-            self.event("crop_draft_discarded", crop.summary(draft));
+            self.event("crop_draft_discarded", || crop.summary(draft));
             self.status.text = "Crop draft discarded".into();
         }
     }
@@ -1067,11 +1070,10 @@ impl Editor {
         draft: &CoreDraft,
         outcome: Option<Refresh>,
     ) -> Task<Message> {
-        let summary = crop.summary(draft);
         self.end_crop_view(crop.generation);
         let Some(refresh) = outcome else {
             self.status.text = "Crop unchanged; nothing was committed".into();
-            self.event("crop_draft_noop", summary);
+            self.event("crop_draft_noop", || crop.summary(draft));
             return match self.reseed_committed() {
                 Some(task) => task,
                 None => {
@@ -1089,7 +1091,7 @@ impl Editor {
         self.accept(refresh);
         self.event(
             "crop_draft_applied",
-            json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":summary}),
+            || json!({"request_id":request_id,"entry_id":entry.as_str(),"revision":revision,"draft":crop.summary(draft)}),
         );
         self.status.text = format!("Crop applied \u{b7} entry {sequence}");
         Task::none()

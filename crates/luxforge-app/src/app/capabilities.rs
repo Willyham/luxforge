@@ -723,7 +723,7 @@ impl Editor {
         } = answer;
         self.event(
             "capability_answer",
-            json!({
+            || json!({
                 "module_id": module_id,
                 "operation": op.name(),
                 "consent": consent.as_ref().map(|(allow, consent)| json!({"allow": allow, "capability": consent.capability})),

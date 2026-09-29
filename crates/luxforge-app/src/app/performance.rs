@@ -178,7 +178,7 @@ impl Editor {
         }
         let adopted = result.and_then(|read| self.performance.adopt(*read));
         if let Err(error) = adopted {
-            self.event("performance_read_failed", json!({ "reason": error }));
+            self.event("performance_read_failed", || json!({ "reason": error }));
             self.performance.error = Some(error);
         }
         // The expanded frame is captured on the first answer, figures and all, rather than on the

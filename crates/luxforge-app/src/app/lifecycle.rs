@@ -127,7 +127,10 @@ impl Editor {
     /// The window closed: stop the live server and the owner, finish the log and exit once the
     /// owner thread has joined.
     pub(super) fn close(&mut self) -> Task<Message> {
-        self.event("shutdown", json!({"while_loading":self.activity.pending}));
+        self.event(
+            "shutdown",
+            || json!({"while_loading":self.activity.pending}),
+        );
         self.live_server.take();
         self.owner.disconnect(self.client);
         self.owner.stop();

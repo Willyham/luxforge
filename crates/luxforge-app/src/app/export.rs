@@ -161,7 +161,7 @@ impl Editor {
         });
         self.event(
             "export_started",
-            json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"dialog":destination.is_none()}),
+            || json!({"asset_id":asset,"entry_id":entry,"keep_metadata":keep_metadata,"dialog":destination.is_none()}),
         );
         plan_task(
             self.owner.clone(),
@@ -309,7 +309,7 @@ impl Editor {
         let run = self.export.run.take();
         self.event(
             "export_finished",
-            json!({"status":self.status.text,"record":record}),
+            || json!({"status":self.status.text,"record":record}),
         );
         if self
             .evidence

@@ -124,7 +124,7 @@ impl Editor {
                 if let Some(reason) = self.gesture_refusal(Starting::Pick) {
                     self.event(
                         "canvas_pick",
-                        json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
+                        || json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
                     );
                     self.status.text = reason;
                     self.settle_step(Settle::Pick);
@@ -170,7 +170,7 @@ impl Editor {
                         // Outside the content stage: say so and commit and fill nothing.
                         self.event(
                             "canvas_pick",
-                            json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
+                            || json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
                         );
                         self.status.text = error;
                         self.settle_step(Settle::Pick);
@@ -187,7 +187,7 @@ impl Editor {
                     } => {
                         self.event(
                             "canvas_pick",
-                            json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
+                            || json!({"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
                         // The module declares that the two coordinates are the whole request, so
                         // the pick submits it as one commit through the one request builder.
@@ -248,12 +248,16 @@ impl Editor {
                         // the action carry the same target, which `draft_target` reads.
                         let mask = self.draft_target(&action).mask;
                         let mut envelope = Map::new();
-                        let mut detail = json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y});
                         if let Some(mask) = &mask {
                             envelope.insert(luxforge_core::MASK_FIELD.into(), json!(mask.as_str()));
-                            detail[luxforge_core::MASK_FIELD] = json!(mask.as_str());
                         }
-                        self.event("canvas_pick", detail);
+                        self.event("canvas_pick", || {
+                            let mut detail = json!({"query":query,"action":action,"view_x":view_x,"view_y":view_y,"x":x,"y":y});
+                            if let Some(mask) = &mask {
+                                detail[luxforge_core::MASK_FIELD] = json!(mask.as_str());
+                            }
+                            detail
+                        });
                         self.status.text = format!("Sampling ({x}, {y})…");
                         return query_task(
                             self.owner.clone(),
@@ -290,7 +294,7 @@ impl Editor {
                         envelope.insert("mask".into(), json!(mask.as_str()));
                         self.event(
                             "canvas_pick",
-                            json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
+                            || json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
                         self.status.text = format!("Sampling ({x}, {y})…");
                         return query_task(
@@ -324,7 +328,7 @@ impl Editor {
                         // committed, nothing is clamped and nothing is guessed.
                         self.event(
                             "canvas_sample",
-                            json!({"action":action,"x":x,"y":y,"error":error}),
+                            || json!({"action":action,"x":x,"y":y,"error":error}),
                         );
                         self.status.text = error
                             .split_once(": ")
@@ -360,7 +364,7 @@ impl Editor {
                         format!("The sample answered no field {action} takes; nothing was applied");
                     self.event(
                         "canvas_sample",
-                        json!({"action":action,"x":x,"y":y,"fields":Value::Null}),
+                        || json!({"action":action,"x":x,"y":y,"fields":Value::Null}),
                     );
                     self.settle_step(Settle::Pick);
                     return Task::none();
@@ -400,7 +404,7 @@ impl Editor {
                 };
                 self.event(
                     "canvas_sample",
-                    json!({"action":action,"x":x,"y":y,"fields":fields}),
+                    || json!({"action":action,"x":x,"y":y,"fields":fields}),
                 );
                 // This pick commits, so its evidence is the render that follows rather than the
                 // status it leaves.
