@@ -714,6 +714,12 @@ mod tests {
                 service.render_current(&asset).unwrap().pixel(0, 0),
                 Some([4, 5, 6, 255])
             );
+            // A historical preview reads that entry's own stack and moves nothing that is committed.
+            assert_eq!(
+                service.render_entry(&asset, &a).unwrap().pixel(0, 0),
+                Some([1, 2, 3, 255])
+            );
+            assert_eq!(service.state(&asset).unwrap().current_entry.id, b);
             service.undo(&asset, mutation(2, "undo")).unwrap();
             assert_eq!(
                 service.render_current(&asset).unwrap().pixel(0, 0),

@@ -1,7 +1,7 @@
 //! The `mask.*` command family from an independent JSON client, through the owner loop with the
 //! shared client (`luxforge_testkit::client`): a gesture drafted over a component, a draft that
-//! another client commits under, discovery of the family as a host descriptor, and a mask deleted
-//! with the layers bound to it. What each command does to a stack and the label it commits are the
+//! another client commits under, discovery of the family as a host descriptor, a mask deleted with
+//! the layers bound to it, and a masked recipe whose original is missing or changed. What each command does to a stack and the label it commits are the
 //! command family's own tests (`mask::commands`), and a retry is the dispatcher's one envelope check.
 
 use super::*;
@@ -617,4 +617,54 @@ fn deleting_a_mask_carrying_layers_of_two_effects_says_what_it_removed() {
         .clone(),
         "each copy sits after the layer it was copied from, which is the ordering rule"
     );
+}
+
+/// A masked recipe outlives its original's trouble: the original moved away, and then replaced by a
+/// different file at the same path, each refuse the picture as `source-unavailable` — the second
+/// naming the changed fingerprint — and discard nothing: the mask, its component and the layer
+/// bound to it are listed exactly as they were.
+#[test]
+fn a_missing_or_changed_original_refuses_the_picture_and_discards_no_mask() {
+    let client = Session::open("original");
+    client
+        .owner
+        .prepare(client.client, &client.asset)
+        .expect("the source is prepared");
+    let mask = client.run(
+        "mask.create-linear",
+        &MaskTarget::default(),
+        linear(0.5, 0.2, 0.5, 0.8),
+        "create",
+    )["mask"]
+        .clone();
+    client.send(
+        "edit.set-basic",
+        json!({"asset_id": client.asset, "mutation": mutation(client.revision(), "masked"),
+               "mask": mask, "exposure": 1.0}),
+    );
+    let listed = client.list();
+    assert_eq!(listed["masks"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["masks"][0]["layers"].as_array().unwrap().len(), 1);
+    let sample = json!({"asset_id": client.asset, "x": 240, "y": 300});
+    let source = client.dir.join("orientation-1.jpg");
+    let moved = client.dir.join("moved.jpg");
+
+    std::fs::rename(&source, &moved).expect("the original moves away");
+    let (code, message) = client
+        .owner
+        .refused(client.client, "render.sample", sample.clone())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(code, "source-unavailable", "{message}");
+    assert_eq!(client.list(), listed, "a missing original discards nothing");
+
+    let mut bytes = std::fs::read(&moved).expect("the original is where it was moved");
+    bytes.extend_from_slice(b"a different file at the same path");
+    std::fs::write(&source, bytes).expect("a different file takes its place");
+    let (code, message) = client
+        .owner
+        .refused(client.client, "render.sample", sample)
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(code, "source-unavailable", "{message}");
+    assert!(message.contains("fingerprint changed"), "{message}");
+    assert_eq!(client.list(), listed, "a changed original discards nothing");
 }
