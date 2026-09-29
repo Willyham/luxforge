@@ -540,6 +540,14 @@ fn read_task(owner: OwnerHandle, client: ClientId, job_id: String) -> Task<Messa
     )
 }
 
+/// The running export is read on its own timer, which exists only while its job is queued or
+/// running ([`Editor::export_poll_subscription`]).
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    editor
+        .export_poll_subscription()
+        .unwrap_or_else(Subscription::none)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

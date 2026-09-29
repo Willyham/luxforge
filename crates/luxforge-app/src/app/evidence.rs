@@ -1,6 +1,7 @@
 //! Evidence mode: import queued files in order, capture a frame after each outcome, run any script
 //! steps with a frame each, then exit. Every step goes through the same messages and owner calls the
 //! controls use, so a script proves the real paths rather than a parallel implementation.
+use crate::app::Before;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -28,8 +29,8 @@ use crate::{
     },
     view,
 };
-use iced::Task;
 use iced::advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree};
+use iced::{Subscription, Task};
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
 use serde_json::{Map, Value, json};
 use std::{
@@ -99,6 +100,36 @@ pub(crate) struct Evidence {
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
     pub(crate) sync: CaptureSync,
+}
+
+impl Evidence {
+    /// An evidence run writing into `dir`: it opens `queue` in turn, then runs `script`.
+    pub(crate) fn new(dir: PathBuf, queue: VecDeque<PathBuf>, script: VecDeque<Step>) -> Self {
+        Self {
+            dir,
+            opens: queue.len() as u64,
+            queue,
+            script,
+            step: 0,
+            awaiting: None,
+            current: None,
+            steps: Vec::new(),
+            frames: Vec::new(),
+            capture_pending: false,
+            view_idle: None,
+            allow_unready_capture: false,
+            capture_overlay: false,
+            saving: false,
+            had_errors: false,
+            paced_slider: None,
+            paced_stroke: None,
+            second_click: None,
+            tools_scroll: None,
+            capability_wait: None,
+            wait_until: None,
+            sync: CaptureSync::default(),
+        }
+    }
 }
 
 pub(crate) struct ViewIdleObservation {
@@ -3305,6 +3336,61 @@ fn angle_messages(step: &DraftStep, action: &str, parameter: &str) -> Vec<Messag
         _ => Vec::new(),
     };
     messages.into_iter().map(Message::Control).collect()
+}
+
+/// The evidence run's own timers, which exist only in an evidence run: its tick or view-idle
+/// deadline, a capture waiting for a frame, and a paced step's or a double-click's timer while one
+/// is in flight.
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    let mut subscriptions = Vec::new();
+    if let Some(evidence) = &editor.evidence {
+        if let Some(idle) = &evidence.view_idle {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(idle.ms))
+                    .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
+            );
+        } else {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(250))
+                    .map(|_| Message::Evidence(EvidenceMessage::Tick)),
+            );
+        }
+        if evidence.capture_pending && evidence.view_idle.is_none() {
+            subscriptions
+                .push(iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)));
+        }
+        // A paced slider step's own timer, which belongs to the evidence run rather than to
+        // the editor: it is gated on the step still having values left to send, so a script
+        // with no paced step in flight runs no timer for it at all.
+        if let Some(paced) = &evidence.paced_slider {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(paced.interval_ms))
+                    .map(|_| Message::Evidence(EvidenceMessage::PacedSliderTick)),
+            );
+        }
+        // A paced stroke's own timer, gated the same way: a script with no paced stroke in
+        // flight runs none.
+        if let Some(paced) = &evidence.paced_stroke {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(paced.interval_ms))
+                    .map(|_| Message::Evidence(EvidenceMessage::PacedStrokeTick)),
+            );
+        }
+        // A scripted double-click's gap before its second press, which the first tick ends.
+        if let Some(second) = &evidence.second_click {
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(second.gap_ms.max(1)))
+                    .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
+            );
+        }
+    }
+    Subscription::batch(subscriptions)
+}
+
+/// After every message: a step waiting for quiet settles once this client has nothing in flight.
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.settle_when_quiet();
+    Task::none()
 }
 
 #[cfg(test)]

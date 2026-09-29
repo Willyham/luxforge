@@ -6,6 +6,7 @@
 //! that stage once its pixels have rendered. Every change goes through `crop_update`, so the
 //! API-equivalent path and the pointer path are the same code, and the end of each change is one
 //! synchronous `draft.set` of the payload's declared fields.
+use crate::app::Before;
 use crate::{
     app::{
         Editor,
@@ -1128,6 +1129,12 @@ impl Editor {
             Value::Object(request),
         )))
     }
+}
+
+/// After every message: a start whose stage will not arrive is discarded
+/// ([`Editor::close_abandoned_crop`]).
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.close_abandoned_crop()
 }
 
 #[cfg(test)]

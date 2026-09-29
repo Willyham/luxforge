@@ -31,6 +31,7 @@
 //! grid depends on, so an unchanged mask costs its key — `O(recipe)`, no cell — and hands back the
 //! very same cells, which is also what lets a row compare by identity.
 use super::{Editor, message::Message, tasks};
+use crate::app::Before;
 use crate::state::masks::{MaskThumbnails, Thumbnail};
 use iced::Task;
 use luxforge_core::{
@@ -326,6 +327,12 @@ impl Editor {
     fn adopt_thumbnails(&mut self, masks: Vec<(MaskId, Option<Thumbnail>)>) {
         self.mask_panel.thumbnails = MaskThumbnails { masks };
     }
+}
+
+/// After every message: Mask mode's thumbnails follow the settled stack
+/// ([`Editor::refresh_thumbnails`]).
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.refresh_thumbnails()
 }
 
 #[cfg(test)]

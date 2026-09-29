@@ -9,6 +9,7 @@
 //! external revision marks the draft conflicted until the Changed elsewhere notice is answered with
 //! Discard or Reapply. What is here is only what a slider adds: the field it moves, the label the
 //! status line names, and the double-click reset.
+use crate::app::Before;
 use crate::{
     app::{
         Editor,
@@ -242,4 +243,10 @@ impl Editor {
         );
         self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
     }
+}
+
+/// After every message: a reset that waited for this client's commit or request runs once nothing
+/// is in flight.
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    editor.run_pending_reset()
 }

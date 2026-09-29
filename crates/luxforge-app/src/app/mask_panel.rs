@@ -7,6 +7,7 @@
 //! the request a drag, a key or a menu sends is the request the row's Copy as JSON request shows,
 //! built once by [`Editor::row_command`]. A gesture the host would refuse is stated in the status
 //! line in the host's own words and sends nothing.
+use crate::app::Before;
 use crate::{
     app::{
         Editor,
@@ -20,7 +21,7 @@ use crate::{
         masks::{DragItem, MaskDrag, MaskTyping, TypingTarget, panel_menu, parse_number},
     },
 };
-use iced::Task;
+use iced::{Subscription, Task};
 use luxforge_core::mask::{commands::MaskReport, rules};
 
 /// The identity of the typed box of one of the open gesture's fields, so Begin can focus it.
@@ -469,4 +470,23 @@ fn move_refusal(name: &str, step: i8) -> String {
     } else {
         format!("{name} is already at the bottom of the list")
     }
+}
+
+/// After every message: the panel's selection follows the stack and the mode before anything is
+/// derived from it, so a section is never bound to a mask the recipe no longer holds, and the
+/// brush in hand follows the stack it paints on.
+pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    if editor.follow_mask_selection() {
+        editor.seed_values();
+    }
+    editor.follow_armed_brush()
+}
+
+/// A reorder by drag ends wherever the button comes up, inside the panel or not, so its release is
+/// heard window-wide — and only while a row is being dragged.
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    if editor.mask_panel.drag.is_none() {
+        return Subscription::none();
+    }
+    iced::event::listen_with(crate::app::keymap::drag_release)
 }

@@ -1,6 +1,7 @@
 //! The keyboard table, as one pure function. Key codes never reach the update function: an event
 //! becomes a semantic message here or nothing at all, so the whole mapping is testable without a
 //! window.
+use crate::app::Editor;
 use crate::app::message::{
     Message, crop::CropMessage, draft::DraftMessage, export::ExportMessage,
     history::HistoryMessage, mask::BrushEdit, mask::KindMenu, mask::MaskKey, mask::MaskMessage,
@@ -9,7 +10,7 @@ use crate::app::message::{
 };
 use crate::state::palette::Panel;
 use iced::{
-    Event,
+    Event, Subscription,
     event::Status,
     keyboard::{Event as Keys, Key, key::Named},
 };
@@ -365,6 +366,11 @@ pub(super) fn drag_release(
     .then_some(Message::Mask(MaskMessage::Drag(
         crate::app::message::mask::DragEdit::End,
     )))
+}
+
+/// Every raw window and keyboard event reaches the keyboard table, always.
+pub(super) fn subscription(_: &Editor) -> Subscription<Message> {
+    iced::event::listen_with(raw_event)
 }
 
 #[cfg(test)]
