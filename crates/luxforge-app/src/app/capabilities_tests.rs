@@ -7,7 +7,7 @@
 use super::{
     Boot, Editor,
     capabilities::{poll, run},
-    evidence::{Settle, Step, parse_script, record},
+    evidence::Settle,
     message::{Message, capability::CapabilityMessage, control::ControlMessage, sync::SyncMessage},
     tasks::{ACTOR, HostAnswer, REQUEST_NUMBER, Scope, call, refresh, request},
     testing::{attach_log, import_and_adopt, logged},
@@ -739,30 +739,6 @@ fn a_cancel_goes_through_the_job_method() {
         TaskPhase::Failed { code, .. } if code == "cancelled"
     ));
     proof.stop();
-}
-
-#[test]
-fn capability_steps_parse_and_an_api_step_that_stores_a_secret_is_recorded_redacted() {
-    let steps = parse_script(
-        &json!([
-            {"capability": {"module": MODULE, "task": {"task": TASK}}},
-            {"capability": {"module": MODULE, "consent": "allow", "wait": false}},
-            {"capability": {"module": MODULE, "apply": true}},
-            {"capability": {"module": MODULE, "settle": true}},
-            {"api": {"method": "module.settings.set-secret", "params": {"module_id": MODULE, "setting": "api-key", "value": "script-sentinel"}}}
-        ])
-        .to_string(),
-    )
-    .expect("a valid script");
-    assert_eq!(steps.len(), 5);
-    assert!(matches!(steps[0], Step::Capability(_)));
-    let recorded = record(&steps[4]);
-    assert_eq!(recorded["api"]["params"]["value"], "<redacted>");
-    assert!(!recorded.to_string().contains("script-sentinel"));
-    assert_eq!(
-        record(&steps[1]),
-        json!({"capability": {"module": MODULE, "consent": "allow", "wait": false}})
-    );
 }
 
 #[test]

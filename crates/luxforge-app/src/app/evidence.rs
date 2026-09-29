@@ -4026,6 +4026,14 @@ mod tests {
         for (step, written) in steps.iter().zip(script.as_array().unwrap()) {
             assert_eq!(&record(step), written);
         }
+        // The desktop records through the core's own redactor.
+        let secret = parse_script(
+            r#"[{"api":{"method":"module.settings.set-secret","params":{"module_id":"luxforge.capabilities","setting":"api-key","value":"script-sentinel"}}}]"#,
+        )
+        .expect("a valid script");
+        let recorded = record(&secret[0]);
+        assert_eq!(recorded["api"]["params"]["value"], "<redacted>");
+        assert!(!recorded.to_string().contains("script-sentinel"));
     }
 
     /// A group's position inside a module's controls is found by its declared label.
