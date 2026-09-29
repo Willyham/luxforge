@@ -1,8 +1,10 @@
-//! Masking end to end, one module per area: the compiled kinds against the independent references
-//! in `luxforge-reference` (`unit`, `radial`, `brush`, `constrained_brush`, `range`,
-//! `combination`); the coverage grid (`overlay`); geometry survival and reopen
-//! (`geometry_survival`); and masked edits on the colour and spatial paths and through the JSON
-//! method table (`masked_colour`, `masked_spatial`, `masked_edit_end_to_end`). The studies that
+//! Masking end to end, one module per area: the kind-conformance suite, one checklist every
+//! component kind passes against the independent references in `luxforge-reference` through one
+//! adapter per kind (`kinds`); what each kind has that the others do not (`radial`, `brush`,
+//! `constrained_brush`, `range`) and several kinds rendered together (`combination`); the coverage
+//! grid (`overlay`); geometry survival and reopen (`geometry_survival`); and masked edits on the
+//! colour and spatial paths and through the JSON method table (`masked_colour`, `masked_spatial`,
+//! `masked_edit_end_to_end`). The studies that
 //! prove those references' own properties are in `luxforge-reference`'s `studies` binary. The
 //! helpers below are the ones several of these modules share; the rest come from
 //! `luxforge-testkit`.
@@ -11,13 +13,13 @@ mod brush;
 mod combination;
 mod constrained_brush;
 mod geometry_survival;
+mod kinds;
 mod masked_colour;
 mod masked_edit_end_to_end;
 mod masked_spatial;
 mod overlay;
 mod radial;
 mod range;
-mod unit;
 
 use luxforge_core::{
     BASIC_EFFECT, Component, ComponentMode, Layer, LinearImage, Mask, Raster, Recipe, SourceImage,
@@ -110,6 +112,34 @@ fn decoded(source: &SourceImage) -> LinearImage {
         })
         .collect();
     fixtures::linear_source_of(source.width, source.height, &pixels)
+}
+
+/// One stored mask holding a single `add` component of `kind` over `payload`, at full amount.
+fn one_component(kind: &str, payload: Value) -> Mask {
+    let mut mask = Mask::new("Mask 1");
+    let name = mask.next_component_name(kind);
+    mask.components
+        .push(Component::new(name, ComponentMode::Add, kind, payload));
+    mask
+}
+
+/// The reference's view of a **stored** stroke, which is what production evaluates: the positions
+/// snapped to the path grid and decimated there, the radius quantized to the same grid, and the
+/// stored colour limit, so the two compare the same stroke.
+fn reference_stroke(stroke: &luxforge_core::path::Stroke) -> luxforge_reference::mask::BrushStroke {
+    luxforge_reference::mask::BrushStroke {
+        points: stroke.points().collect(),
+        size: stroke.size(),
+        feather: stroke.feather(),
+        flow: stroke.flow(),
+        erase: stroke.erase(),
+        colour: stroke
+            .colour_limit()
+            .map(|limit| luxforge_reference::mask::ColourLimit {
+                seed: limit.seed(),
+                refine: limit.refine(),
+            }),
+    }
 }
 
 /// A global Basic layer holding `payload`.

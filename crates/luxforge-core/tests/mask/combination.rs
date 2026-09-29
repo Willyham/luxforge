@@ -4,8 +4,8 @@
 //!
 //! 1. A mask holding components of *several kinds*, in every mode, with inversions at both levels,
 //!    a whole-mask amount and a whole-mask inversion, **renders** exactly as the independent `f64`
-//!    reference composes it. `mask/unit.rs` and `mask/radial.rs` compare the coverage *field*
-//!    against that reference; this compares the frame a person would see, over randomized component
+//!    reference composes it. The kind-conformance suite (`mask/kinds`) compares the coverage
+//!    *field* against that reference; this compares the frame a person would see, over randomized component
 //!    lists, through the same public render path a client reaches.
 //! 2. A **radial gradient** goes end to end: created, added to as a second kind, patched on a
 //!    radius, an angle and a feather, committed and rendered, through the generated `mask.*` methods
@@ -28,8 +28,8 @@ use luxforge_core::{
     path::Stroke,
 };
 use luxforge_reference::mask::{
-    Algebra, Brush, BrushStroke, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode,
-    Radial, Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
+    Algebra, Brush, Component as RefComponent, Kind, Linear, Mask as RefMask, Mode, Radial,
+    Stage as RefStage, axis_is_legal, blend, brush_coverage, combine, coverage,
 };
 use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::render;
@@ -698,19 +698,6 @@ fn a_components_mode_and_inversion_are_editable_after_it_exists() {
 // A brush over a gradient, rendered
 // ---------------------------------------------------------------------------------------------
 
-/// The reference's view of a **stored** stroke, which is what production evaluates: the positions
-/// snapped to the path grid and decimated there, and the radius quantized to that same grid.
-fn as_reference(stroke: &Stroke) -> BrushStroke {
-    BrushStroke {
-        points: stroke.points().collect(),
-        size: stroke.size(),
-        feather: stroke.feather(),
-        flow: stroke.flow(),
-        erase: stroke.erase(),
-        colour: None,
-    }
-}
-
 /// One random stroke, posted the way a client posts one — through the host's own capture — so every
 /// stroke below is one a gesture could have produced, on the grid a stored stroke is held on.
 fn sample_stroke(rng: &mut SplitMix64, erase: bool) -> Stroke {
@@ -805,7 +792,7 @@ fn a_brush_subtracting_from_a_gradient_renders_exactly_as_the_reference_composes
             .unwrap_or_else(|error| panic!("round {round}: {error}"));
 
         let brush = Brush {
-            strokes: held.iter().map(as_reference).collect(),
+            strokes: held.iter().map(reference_stroke).collect(),
         };
         erased_total += held.iter().filter(|stroke| stroke.erase()).count();
         for y in 0..HEIGHT {
