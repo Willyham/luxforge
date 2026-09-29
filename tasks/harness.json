@@ -1098,7 +1098,7 @@
     {
       "id": "TASK-015",
       "description": "Clear the harness's remaining small defects: dead fields, a Windows-incompatible test, redundant CI jobs, hard-coded scenario lists, copied desktop formatters, an uninjectable buffer-size constant, and run-log prose in the development guide.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-009"
       ],

@@ -292,11 +292,14 @@ impl LiveArtifacts {
     }
 }
 
-/// The verified bytes the catalog owner keeps ready, bounded to [`PREPARED_ARTIFACT_BYTES`] and
-/// [`PREPARED_ARTIFACT_ENTRIES`], least recently used first out. Each entry remembers the file
-/// signature its bytes were verified against, so a changed file is a miss and never a stale hit.
-#[derive(Debug, Default)]
+/// The verified bytes the catalog owner keeps ready, bounded to a byte limit (production passes
+/// [`PREPARED_ARTIFACT_BYTES`]) and to [`PREPARED_ARTIFACT_ENTRIES`], least recently used first out.
+/// Each entry remembers the file signature its bytes were verified against, so a changed file is a
+/// miss and never a stale hit.
+#[derive(Debug)]
 pub(crate) struct PreparedArtifacts {
+    /// The most bytes it holds; a test gives it kilobytes.
+    limit: u64,
     entries: HashMap<ArtifactId, Cached>,
     /// Use order: the smallest tick is the least recently used entry.
     order: BTreeMap<u64, ArtifactId>,
@@ -312,6 +315,16 @@ struct Cached {
 }
 
 impl PreparedArtifacts {
+    pub(crate) fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            entries: HashMap::new(),
+            order: BTreeMap::new(),
+            tick: 0,
+            bytes: 0,
+        }
+    }
+
     /// The cached bytes when they were verified against exactly this file signature. An entry
     /// verified against another signature is dropped: the file changed since.
     pub(crate) fn get(
@@ -338,8 +351,7 @@ impl PreparedArtifacts {
         self.remove(&id);
         let length = artifact.bytes.len() as u64;
         while !self.order.is_empty()
-            && (self.bytes + length > PREPARED_ARTIFACT_BYTES
-                || self.entries.len() >= PREPARED_ARTIFACT_ENTRIES)
+            && (self.bytes + length > self.limit || self.entries.len() >= PREPARED_ARTIFACT_ENTRIES)
         {
             let (_, oldest) = self.order.pop_first().expect("the order is not empty");
             let evicted = self.entries.remove(&oldest).expect("ordered entries exist");
@@ -450,18 +462,20 @@ mod tests {
         ));
         std::fs::write(&path, b"signature").unwrap();
         let signature = EditorService::request_signature(&path).unwrap().1;
-        let quarter = (PREPARED_ARTIFACT_BYTES / 4) as usize;
-        let mut cache = PreparedArtifacts::default();
+        // Four quarters fill the bound exactly; kilobytes are enough to show it.
+        const LIMIT: u64 = 16 * 1024;
+        let quarter = (LIMIT / 4) as usize;
+        let mut cache = PreparedArtifacts::new(LIMIT);
         let [a, b, c, d, e] = [0xb1, 0xb2, 0xb3, 0xb4, 0xb5].map(|tag| artifact(tag, quarter));
         for held in [&a, &b, &c, &d] {
             cache.insert(signature.clone(), held.clone());
         }
-        assert_eq!(cache.bytes(), PREPARED_ARTIFACT_BYTES);
+        assert_eq!(cache.bytes(), LIMIT);
         // Using `a` makes `b` the least recently used, so a fifth quarter evicts `b`.
         assert!(cache.get(&a.id, &signature).is_some());
         cache.insert(signature.clone(), e.clone());
         assert_eq!(cache.len(), 4);
-        assert_eq!(cache.bytes(), PREPARED_ARTIFACT_BYTES);
+        assert_eq!(cache.bytes(), LIMIT);
         assert!(cache.get(&b.id, &signature).is_none(), "evicted");
         for kept in [&a, &c, &d, &e] {
             assert!(cache.get(&kept.id, &signature).is_some());
