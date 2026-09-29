@@ -190,16 +190,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The fixture as launched, the module listed and available, the wheel at its opened colours.
     let opened = launch.at("opened")?;
-    let mixer = opened.state()["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|module| module["id"] == json!(MIXER_MODULE))
-        .ok_or("The Colour mixer module is not listed at all")?;
-    ensure(
-        mixer["available"] == json!(true),
-        "The Colour mixer module is not available",
-    )?;
+    opened.module_available(MIXER_MODULE)?;
     let (opened_red, opened_opposite) = patches(opened)?;
 
     // A red-hue edit moves the red patch and leaves the opposite one alone: mid-gesture at +90,
@@ -207,18 +198,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // the wheel can be inspected. The bounded rotation angle need not still be moving noticeably
     // between +90 and +100 this close to its own bound, so the +100 shift is checked against the
     // opened baseline again, not against the +90 frame.
-    let drag = launch.at("drag")?;
-    let drafted = drag.draft();
-    ensure(
-        drafted["draft_revision"]
-            .as_u64()
-            .is_some_and(|value| value >= 1)
-            && drag.state()["displayed_draft_revision"] == drafted["draft_revision"],
-        format!(
-            "The drag displays draft revision {} while the draft is {drafted}",
-            drag.state()["displayed_draft_revision"]
-        ),
-    )?;
+    launch.at("drag")?.displays_draft()?;
     for (step, what) in [
         ("drag", "+90 red hue drafted"),
         ("stronger", "+100 red hue"),

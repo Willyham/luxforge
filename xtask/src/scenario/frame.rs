@@ -201,6 +201,39 @@ impl Frame {
         &self.state()["draft"]
     }
 
+    /// The frame displays the draft its client holds: the photograph on screen was drawn from the
+    /// draft's own revision, one or later.
+    pub fn displays_draft(&self) -> Result {
+        let revision = &self.draft()["draft_revision"];
+        ensure(
+            revision.as_u64().is_some_and(|revision| revision >= 1)
+                && &self.state()["displayed_draft_revision"] == revision,
+            format!(
+                "The frame displays draft revision {} while the draft is {}",
+                self.state()["displayed_draft_revision"],
+                self.draft()
+            ),
+        )
+    }
+
+    /// The module registry's entry for `module`, as the frame lists it.
+    pub fn module(&self, module: &str) -> Result<&Value> {
+        self.state()["modules"]
+            .as_array()
+            .ok_or("The frame lists no modules")?
+            .iter()
+            .find(|listed| listed["id"] == json!(module))
+            .ok_or_else(|| format!("The {module} module is not listed at all").into())
+    }
+
+    /// The module is listed and available.
+    pub fn module_available(&self, module: &str) -> Result {
+        ensure(
+            self.module(module)?["available"] == json!(true),
+            format!("The {module} module is not available"),
+        )
+    }
+
     pub fn expect_no_draft(&self, what: &str) -> Result {
         ensure(
             self.draft() == &Value::Null,
@@ -328,6 +361,26 @@ mod tests {
         );
         assert!(empty.expect_no_draft("Frame 2").is_err());
         assert!(empty.masks().is_err() && empty.notices().is_empty());
+
+        // A drafted frame displays its own draft revision, and a module is listed and offered.
+        let drafted = frame(json!({"state":{
+            "draft":{"draft_revision":2},"displayed_draft_revision":2,
+            "modules":[{"id":"m","available":true},{"id":"n","available":false}]
+        }}));
+        assert!(drafted.displays_draft().is_ok());
+        assert!(drafted.module_available("m").is_ok());
+        assert!(drafted.module_available("n").is_err());
+        assert!(
+            drafted
+                .module("o")
+                .unwrap_err()
+                .to_string()
+                .contains("not listed")
+        );
+        let behind =
+            frame(json!({"state":{"draft":{"draft_revision":2},"displayed_draft_revision":1}}));
+        assert!(behind.displays_draft().is_err());
+        assert!(empty.displays_draft().is_err(), "no draft revision at all");
     }
 
     #[test]

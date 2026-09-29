@@ -977,15 +977,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // the draft revision the pixels were planned from and its counters equal an independent render
     // and reduction of the drafted stack, computed here from the layers the frame says it displays
     // and the drafted payload it records.
-    let drafted = &drag["state"]["draft"];
-    ensure(
-        drag["state"]["displayed_draft_revision"] == drafted["draft_revision"]
-            && drafted["draft_revision"].as_u64().is_some_and(|r| r >= 1),
-        format!(
-            "The drag displays draft revision {} while the draft is at {}",
-            drag["state"]["displayed_draft_revision"], drafted["draft_revision"]
-        ),
-    )?;
+    let drafted = drag.draft();
+    drag.displays_draft()?;
     let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
     let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
     ensure(

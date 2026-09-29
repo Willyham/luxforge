@@ -216,16 +216,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The fixture as launched: the Vignette module listed and available.
     let opened = launch.at("opened")?;
-    let vignette = opened.state()["modules"]
-        .as_array()
-        .ok_or("Missing modules")?
-        .iter()
-        .find(|module| module["id"] == json!(VIGNETTE_MODULE))
-        .ok_or("The Vignette module is not listed at all")?;
-    ensure(
-        vignette["available"] == json!(true),
-        "The Vignette module is not available",
-    )?;
+    opened.module_available(VIGNETTE_MODULE)?;
     let (opened_corners, opened_centre) = readings(opened)?;
     checks.note(
         opened,
@@ -234,15 +225,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     );
 
     // Mid-gesture at Amount -60: the frame on screen is the drafted one.
-    let drag = launch.at("drag")?;
-    ensure(
-        drag.state()["displayed_draft_revision"] == drag.draft()["draft_revision"],
-        format!(
-            "The drag displays draft revision {} while the draft is at {}",
-            drag.state()["displayed_draft_revision"],
-            drag.draft()["draft_revision"]
-        ),
-    )?;
+    launch.at("drag")?.displays_draft()?;
 
     // The release at Fit: every corner is darker than it was at the opened baseline, and the
     // near-centre patch is unaffected.
