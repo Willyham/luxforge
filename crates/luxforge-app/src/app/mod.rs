@@ -87,13 +87,7 @@ pub(crate) use lifecycle::{Boot, run};
 use crate::state::MenuTarget;
 use crate::{
     diagnostics::Diagnostics,
-    state::{
-        self, Workspace,
-        capabilities::CapabilityStore,
-        fields::Fields,
-        presets::{PresetForm, PresetLibrary},
-        tools,
-    },
+    state::{self, Workspace, capabilities::CapabilityStore},
     view,
 };
 use evidence::Evidence;
@@ -107,10 +101,8 @@ use message::{
     Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
     view::ViewMessage,
 };
-use overlay::{OverlayQueue, OverlayRequest};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
     sync::Arc,
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -141,6 +133,32 @@ pub(crate) struct Activity {
     pub(crate) render: Option<state::status::RenderTime>,
 }
 
+/// What the status bar says, and what it will say about the open photograph once the current
+/// entry's frame is on screen.
+pub(crate) struct StatusLine {
+    pub(crate) text: String,
+    /// What Copy in the status bar copies instead of the line itself, while the status still reads
+    /// that line: an import's whole report behind its one-line summary.
+    pub(crate) copy: Option<(String, String)>,
+    /// What last happened to the open photograph, which the status bar says once the current
+    /// entry's frame is on screen.
+    pub(crate) happened: Option<state::status::Happened>,
+    /// What the last composite action (a preset, Reset Basic) left out because it does not apply
+    /// to the photo, said beside what happened once its frame is on screen.
+    pub(crate) skipped: Option<String>,
+}
+
+/// Where this run's events go and what they are stamped with, and where the main thread's time
+/// goes; never read by the view.
+pub(crate) struct EventLog {
+    pub(crate) diagnostics: Option<Diagnostics>,
+    pub(crate) run_id: String,
+    /// Emit events to stderr when a log was requested but is unavailable.
+    pub(crate) verbose: bool,
+    pub(crate) started: Instant,
+    pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
+}
+
 /// Where the main thread's time went in its last update and view, so an evidence event can say
 /// whether a message waited on the desktop's own work or on the runtime.
 #[derive(Clone, Copy, Debug, Default)]
@@ -166,58 +184,42 @@ pub(crate) struct Editor {
     /// Cancels older source waits and rejects their late desktop results.
     pub(crate) open_generation: Arc<tasks::OpenGuard>,
     pub(crate) evidence: Option<Evidence>,
-    pub(crate) diagnostics: Option<Diagnostics>,
-    pub(crate) run_id: String,
-    /// Emit events to stderr when a log was requested but is unavailable.
-    pub(crate) verbose: bool,
-    pub(crate) started: Instant,
+    /// Where this run's events go, and where the main thread's time goes.
+    pub(crate) log: EventLog,
+    /// The clipping overlays' worker and the request on screen.
+    pub(crate) overlays: overlay::Overlays,
+    /// What the status bar says.
+    pub(crate) status: StatusLine,
+    /// The generated controls' local state; authoritative values stay in the recipe.
+    pub(crate) controls: controls::Controls,
+    /// The command palette.
+    pub(crate) palette: state::palette::Palette,
+    /// The version chip row's naming form.
+    pub(crate) version_form: state::VersionForm,
+    /// The Presets section: the library and its create form.
+    pub(crate) presets: presets::Presets,
     /// The open photograph as this desktop last read it: state, history, versions, lineage, the
     /// displayed entry's recipe rows and masks, and the Original.
     pub(crate) document: state::document::Document,
     /// What the photo surface shows and the bookkeeping that decides it.
     pub(crate) presentation: preview::Presentation,
-    /// One active and one replaceable pending overlay derivation, off the UI thread.
-    pub(crate) overlay_queue: OverlayQueue,
-    /// The overlay request the clipping overlay on the presenter was derived for, so an unchanged
-    /// view re-derives nothing and a stale overlay is never drawn over a newer photograph.
-    pub(crate) overlay_request: Option<OverlayRequest>,
     /// This desktop's own view state: window, zoom and pan, menu, gallery page and file dialog.
     pub(crate) view_state: state::ViewState,
     /// The pixel under the pointer and its one sample in flight.
     pub(crate) hover: state::Hover,
     /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
     pub(crate) view_plan: preview::ViewPlan,
-    /// Where the main thread's time goes, for the evidence events; never read by the view.
-    pub(crate) loop_timing: std::cell::Cell<LoopTiming>,
     pub(crate) busy: bool,
     /// The event sync: its one poll, its cursor, this desktop's own requests and a mode to tell.
     pub(crate) sync: sync::EventSync,
     /// The curve sample queries: one in flight, the newest waiting, and what each curve asked.
     pub(crate) curve_sampling: controls::CurveSampling,
-    pub(crate) status: String,
-    /// What Copy in the status bar copies instead of the line itself, while the status still reads
-    /// that line: an import's whole report behind its one-line summary.
-    pub(crate) status_copy: Option<(String, String)>,
-    /// What last happened to the open photograph, which the status bar says once the current
-    /// entry's frame is on screen.
-    pub(crate) happened: Option<state::status::Happened>,
-    /// What the last composite action (a preset, Reset Basic) left out because it does not apply
-    /// to the photo, said beside what happened once its frame is on screen.
-    pub(crate) skipped: Option<String>,
     /// Descriptors fetched once through `module.list`; the only source of tool controls.
     pub(crate) modules: Vec<ModuleDescriptor>,
     /// Set once discovery answered, successfully or not, so evidence never captures an empty panel.
     pub(crate) modules_ready: bool,
     /// Proof and diagnostic modules are listed only when the run asked for them.
     pub(crate) developer: bool,
-    /// The text typed into each generated field, by (action id, parameter name).
-    pub(crate) fields: Fields,
-    /// Local presentation state of generated controls; authoritative values stay in the recipe.
-    pub(crate) controls_ui: tools::ControlsUi,
-    /// The (action, parameter) whose value is being typed.
-    pub(crate) editing: Option<(String, String)>,
-    /// The (action, parameter) whose slider is being dragged.
-    pub(crate) dragging: Option<(String, String)>,
     /// This client's one draft: a slider, mask or crop gesture on the core lifecycle. One field, so
     /// two drafts cannot exist at once.
     pub(crate) gesture: Option<Box<CoreGesture>>,
@@ -229,16 +231,6 @@ pub(crate) struct Editor {
     /// A test's stand-in for the owner's draft requests, for a photograph the owner does not hold.
     #[cfg(test)]
     pub(crate) stand_in: Option<testing::StandIn>,
-    /// A field reset waiting for the gesture commit or request in flight to answer.
-    pub(crate) pending_reset: Option<slider::PendingReset>,
-    /// Sections the person collapsed or expanded; every other follows the default.
-    pub(crate) expanded: BTreeMap<String, bool>,
-    pub(crate) palette_open: bool,
-    pub(crate) palette_query: String,
-    pub(crate) palette_selected: usize,
-    pub(crate) version_name: String,
-    /// The "+" chip has revealed the version-naming field.
-    pub(crate) version_form_open: bool,
     /// The crop section's own options: the custom ratio's extents and the held modifiers.
     pub(crate) crop_section: state::CropSection,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
@@ -254,10 +246,6 @@ pub(crate) struct Editor {
     /// exactly those through the owner and hand the answers back.
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
-    /// The preset library as `preset.list` last answered it.
-    pub(crate) presets: PresetLibrary,
-    /// The Presets section's create form.
-    pub(crate) preset_form: PresetForm,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
@@ -311,7 +299,24 @@ impl Editor {
         });
         let initial = config.files.pop_front();
         let mut editor = Self {
-            loop_timing: std::cell::Cell::new(LoopTiming::default()),
+            log: EventLog {
+                diagnostics: config.diagnostics.clone(),
+                run_id: config.run_id.clone(),
+                verbose: config.wants_events(),
+                started: Instant::now(),
+                loop_timing: Default::default(),
+            },
+            overlays: Default::default(),
+            status: StatusLine {
+                text: "Open a photo to begin".into(),
+                copy: None,
+                happened: None,
+                skipped: None,
+            },
+            controls: Default::default(),
+            palette: Default::default(),
+            version_form: Default::default(),
+            presets: Default::default(),
             owner: owner.clone(),
             owner_join: Some(join),
             live_server,
@@ -332,51 +337,28 @@ impl Editor {
                 render: None,
             },
             evidence,
-            diagnostics: config.diagnostics.clone(),
-            run_id: config.run_id.clone(),
-            verbose: config.wants_events(),
-            started: Instant::now(),
             document: Default::default(),
             presentation: preview::Presentation::default(),
-            overlay_queue: OverlayQueue::default(),
-            overlay_request: None,
             view_state: state::ViewState::new(window),
             hover: Default::default(),
             view_plan: Default::default(),
             busy: false,
             sync: Default::default(),
             curve_sampling: Default::default(),
-            status: "Open a photo to begin".into(),
-            status_copy: None,
-            happened: None,
-            skipped: None,
             modules: Default::default(),
             modules_ready: false,
             developer: config.developer,
-            fields: Default::default(),
-            controls_ui: Default::default(),
-            editing: None,
-            dragging: None,
             gesture: None,
             gesture_serial: 0,
             armed: None,
             #[cfg(test)]
             stand_in: None,
-            pending_reset: None,
-            expanded: Default::default(),
-            palette_open: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            version_name: String::new(),
-            version_form_open: false,
             crop_section: Default::default(),
             mask_panel: Default::default(),
             thumbnailer: Default::default(),
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
-            presets: Default::default(),
-            preset_form: Default::default(),
             performance: performance::Sampler::open(),
             export: export::Exporting::default(),
             workspace: Workspace::default(),
@@ -385,7 +367,7 @@ impl Editor {
         // installed once and stays valid for the life of the process; the subscription that carries
         // its signals comes and goes with the queues' business.
         editor.presentation.queue.set_waker(waker::waker());
-        editor.overlay_queue.set_waker(waker::waker());
+        editor.overlays.queue.set_waker(waker::waker());
         editor.thumbnailer.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
@@ -399,7 +381,7 @@ impl Editor {
             .queue
             .set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
-            editor.status = "Editor ready; live API unavailable on this host".into();
+            editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
         editor.event(
             "startup",
@@ -434,10 +416,10 @@ impl Editor {
     }
 
     pub(crate) fn event(&self, name: &str, detail: Value) {
-        let value = json!({"event":name,"run_id":self.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail});
-        if let Some(log) = &self.diagnostics {
+        let value = json!({"event":name,"run_id":self.log.run_id,"build_version":env!("CARGO_PKG_VERSION"),"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"request_id":self.activity.requested,"generation":self.activity.requested,"detail":detail});
+        if let Some(log) = &self.log.diagnostics {
             log.event(value);
-        } else if self.verbose {
+        } else if self.log.verbose {
             eprintln!("{value}");
         }
     }
@@ -448,10 +430,10 @@ impl Editor {
         if let Some(evidence) = &mut self.evidence {
             evidence.sync.updates += 1;
         }
-        let mut timing = self.loop_timing.get();
+        let mut timing = self.log.loop_timing.get();
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
-        self.loop_timing.set(timing);
+        self.log.loop_timing.set(timing);
         task
     }
 
@@ -466,7 +448,7 @@ impl Editor {
         );
         let previous_view_epoch = self.view_plan.epoch;
         let busy = self.presentation.queue.is_busy()
-            || self.overlay_queue.is_busy()
+            || self.overlays.queue.is_busy()
             || self.thumbnailer.queue.is_busy();
         let before_entry = self.displayed_entry();
         let task = self.dispatch(message);
@@ -489,7 +471,7 @@ impl Editor {
         let task = Task::batch([task, self.run_pending_reset()]);
         self.settle_when_quiet();
         if self.displayed_entry() != before_entry {
-            self.controls_ui.clear_curve_samples();
+            self.controls.ui.clear_curve_samples();
             self.curve_sampling.requested_source.clear();
         }
         // Whatever route changed the zoom — the buttons, the field, a script or an API client's
@@ -523,15 +505,15 @@ impl Editor {
         }
         // A curve is sampled once it is on screen, which the derived tools panel says.
         let sample = self.request_visible_curve_samples();
-        let mut timing = self.loop_timing.get();
+        let mut timing = self.log.loop_timing.get();
         timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
-        self.loop_timing.set(timing);
+        self.log.loop_timing.set(timing);
         // A queue that went busy in this message may finish before the runtime has built the waker
         // subscription for it. The signal is buffered rather than lost, so this is the second
         // guarantee and it is free: `Poll` against an empty queue does nothing at all.
         let woken = if !busy
             && (self.presentation.queue.is_busy()
-                || self.overlay_queue.is_busy()
+                || self.overlays.queue.is_busy()
                 || self.thumbnailer.queue.is_busy())
         {
             Task::done(Message::Preview(PreviewMessage::Poll))
@@ -557,11 +539,11 @@ impl Editor {
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
-            fields: &self.fields,
-            control_ui: &self.controls_ui,
-            editing: self.editing.as_ref(),
-            dragging: self.dragging.as_ref(),
-            expanded: &self.expanded,
+            fields: &self.controls.fields,
+            control_ui: &self.controls.ui,
+            editing: self.controls.editing.as_ref(),
+            dragging: self.controls.dragging.as_ref(),
+            expanded: &self.controls.expanded,
             gesture_conflicted: self.gesture_conflicted(),
             gesture: self.core_gesture().map(|gesture| gesture.kind.noun()),
             apply_refusal: self.release_refusal(),
@@ -585,7 +567,7 @@ impl Editor {
             drafting: self.drafting(),
             crop_section: &self.crop_section,
             session: &self.session,
-            status: &self.status,
+            status: &self.status.text,
             busy: self.busy,
             can_open: !self.busy && self.evidence.is_none(),
             can_export: self.can_export(),
@@ -593,8 +575,8 @@ impl Editor {
             compare_held: self.document.compare_return.is_some(),
             view_state: &self.view_state,
             hover: &self.hover,
-            version_name: &self.version_name,
-            version_form_open: self.version_form_open,
+            palette: &self.palette,
+            version_form: &self.version_form,
             dimensions: self.presentation.dimensions,
             photo: self.presentation.has_picture(),
             clients: self.live_server.as_ref().map(LocalServer::connected),
@@ -603,12 +585,9 @@ impl Editor {
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
             analysis_updating: self.presentation.analysis_updating(),
-            palette_open: self.palette_open,
-            palette_query: &self.palette_query,
-            palette_selected: self.palette_selected,
             capabilities: &self.capabilities,
-            presets: &self.presets,
-            preset_form: &self.preset_form,
+            presets: &self.presets.library,
+            preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
         };
@@ -679,15 +658,15 @@ impl Editor {
                     mask_draft: self.mask_shape(),
                     mask_map: self.held_mask().and_then(|mask| mask.map),
                     draft: self.crop(),
-                    ..self.presentation.surfaces(self.overlay_request.as_ref())
+                    ..self.presentation.surfaces(self.overlays.request.as_ref())
                 },
             ),
         };
-        let mut timing = self.loop_timing.get();
+        let mut timing = self.log.loop_timing.get();
         timing.views += 1;
         timing.last_view_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_view_end = Some(Instant::now());
-        self.loop_timing.set(timing);
+        self.log.loop_timing.set(timing);
         match &self.evidence {
             // An evidence run marks which update each drawn frame was built after, so a capture
             // records the state of the frame it reads back.
@@ -711,7 +690,7 @@ impl Editor {
             crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
-            palette_open: self.palette_open,
+            palette_open: self.palette.open,
             export_menu_open: matches!(self.view_state.menu, Some(MenuTarget::Export)),
             mode_active: self.session.workspace.mode != POINTER_MODE,
             leave_to: self.leave_to(),
@@ -745,7 +724,7 @@ impl Editor {
     pub(crate) fn preview_wake_needed(&self) -> bool {
         self.document.state.is_some()
             || self.presentation.queue.is_busy()
-            || self.overlay_queue.is_busy()
+            || self.overlays.queue.is_busy()
             || self.thumbnailer.queue.is_busy()
             || luxforge_ui::surface_retirement_pending()
     }

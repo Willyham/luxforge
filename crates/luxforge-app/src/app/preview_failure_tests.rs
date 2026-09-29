@@ -173,7 +173,7 @@ impl Hold {
             assert!(
                 editor.presentation.queue.is_busy() && !editor.presentation.queue.ready(),
                 "{what} can never reach its gate: the job ended first: {}",
-                editor.status
+                editor.status.text
             );
             false
         });
@@ -208,7 +208,7 @@ fn deliver_until(
         assert!(
             queue.is_busy(),
             "{what} can never happen: the preview queue has nothing running, waiting or ready: {}",
-            editor.status
+            editor.status.text
         );
         let held = GATES.with(|gates| {
             gates
@@ -221,7 +221,7 @@ fn deliver_until(
             !held || queue.ready(),
             "{what} can never happen: the running preview job is held at a gate this test has not \
              opened: {}",
-            editor.status
+            editor.status.text
         );
         false
     });
@@ -372,9 +372,9 @@ fn a_commit_whose_render_fails_withdraws_the_earlier_picture_instead_of_presenti
             && editor.presentation.analysis.is_none()
     );
     assert!(
-        editor.status.starts_with("resource-limit: "),
+        editor.status.text.starts_with("resource-limit: "),
         "{}",
-        editor.status
+        editor.status.text
     );
     let canvas = &editor.workspace.canvas;
     match &canvas.photo {
@@ -576,9 +576,10 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     assert!(
         editor
             .status
+            .text
             .starts_with("The crop's input stage could not be rendered: resource-limit"),
         "{}",
-        editor.status
+        editor.status.text
     );
     assert!(
         editor.presentation.render_error.is_none(),
@@ -591,9 +592,10 @@ fn a_draft_whose_input_stage_fails_ends_explicitly_and_keeps_the_photograph() {
     assert!(
         editor
             .status
+            .text
             .starts_with("The crop's input stage could not be rendered: resource-limit"),
         "the discard keeps the reason: {}",
-        editor.status
+        editor.status.text
     );
 
     hold_crop(
@@ -732,7 +734,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     let draft = editor
         .draft_generation()
         .expect("the draft's job was requested");
-    assert_eq!(editor.status, "Rendering the crop's input stage…");
+    assert_eq!(editor.status.text, "Rendering the crop's input stage…");
     assert_eq!(
         editor.presentation.queue.pending_generation(),
         None,
@@ -760,7 +762,7 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
         "the session was not asked to leave the crop mode"
     );
     assert_eq!(
-        editor.status,
+        editor.status.text,
         "The crop's input stage was superseded by a newer preview: start the crop again"
     );
 
@@ -950,9 +952,9 @@ fn a_draft_whose_job_the_owner_finds_superseded_ends_explicitly() {
     assert!(editor.crop().is_none());
     assert_eq!(editor.sync.mode.as_deref(), Some(POINTER_MODE));
     assert!(
-        editor.status.ends_with("start the crop again"),
+        editor.status.text.ends_with("start the crop again"),
         "{}",
-        editor.status
+        editor.status.text
     );
     let records = logged(&mut editor, &log);
     let failed = events(&records, "crop_draft_failed");

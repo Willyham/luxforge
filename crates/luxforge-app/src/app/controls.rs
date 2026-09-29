@@ -8,7 +8,7 @@ use crate::app::{
 use crate::coalesce::Coalesce;
 use crate::state::{
     control_tree::{at_path, walk},
-    fields::{self, submit_preset},
+    fields::{self, Fields, submit_preset},
     number::{NumberSpec, number_text},
     tools,
 };
@@ -34,6 +34,25 @@ pub(crate) struct CurveSampleIdentity {
 pub(crate) struct CurveSampleRequest {
     identity: CurveSampleIdentity,
     query: String,
+}
+
+/// The generated controls' local state: the text typed into each field, the presentation state
+/// the recipe does not hold, which field is typed or dragged, which sections are expanded, and a
+/// reset waiting for a gesture's commit. Authoritative values stay in the recipe.
+#[derive(Default)]
+pub(crate) struct Controls {
+    /// The text typed into each generated field, by (action id, parameter name).
+    pub(crate) fields: Fields,
+    /// Local presentation state of generated controls.
+    pub(crate) ui: tools::ControlsUi,
+    /// The (action, parameter) whose value is being typed.
+    pub(crate) editing: Option<(String, String)>,
+    /// The (action, parameter) whose slider is being dragged.
+    pub(crate) dragging: Option<(String, String)>,
+    /// Sections the person collapsed or expanded; every other follows the default.
+    pub(crate) expanded: BTreeMap<String, bool>,
+    /// A field reset waiting for the gesture commit or request in flight to answer.
+    pub(crate) pending_reset: Option<super::slider::PendingReset>,
 }
 
 /// The curve sample queries: one in flight with only the newest waiting, and which request each
@@ -67,9 +86,9 @@ impl Editor {
                 parameter,
                 text,
             } => {
-                self.fields.set(&action, &parameter, text);
+                self.controls.fields.set(&action, &parameter, text);
                 // Typing is editing: the field shows what was typed until it is committed.
-                self.editing = Some((action, parameter));
+                self.controls.editing = Some((action, parameter));
             }
             ControlMessage::Fraction {
                 action,
@@ -114,7 +133,7 @@ impl Editor {
                 return self.control_field_nudge(action, parameter, direction, shift, option);
             }
             ControlMessage::TogglePicker { action, parameter } => {
-                let color = self.controls_ui.color_mut((action, parameter));
+                let color = self.controls.ui.color_mut((action, parameter));
                 color.open = !color.open;
             }
             ControlMessage::ToggleGroup { module_id, path } => {
@@ -135,14 +154,15 @@ impl Editor {
                 let initial =
                     initial_group_expanded(&self.modules, &module_id, &path).unwrap_or(true);
                 let entry = self
-                    .controls_ui
+                    .controls
+                    .ui
                     .group_expanded
                     .entry(key)
                     .or_insert(initial);
                 *entry = !*entry;
             }
             ControlMessage::SelectTab { module_id, index } => {
-                self.controls_ui.selected_tab.insert(module_id, index);
+                self.controls.ui.selected_tab.insert(module_id, index);
             }
             ControlMessage::Picker {
                 action,
@@ -163,29 +183,32 @@ impl Editor {
             }
             ControlMessage::EditValue { action, parameter } => {
                 let id = fields::field_id(&action, &parameter, None);
-                self.editing = Some((action, parameter));
+                self.controls.editing = Some((action, parameter));
                 return operation::focus(iced::widget::Id::from(id));
             }
             ControlMessage::Submit { action, parameter } => {
-                self.dragging = None;
+                self.controls.dragging = None;
                 // Refused before the field lets go, so the typed text stays with its reason.
                 if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
+                    self.status.text = reason;
                     return Task::none();
                 }
-                let preset =
-                    match submit_preset(&self.modules, &action, parameter.as_deref(), &self.fields)
-                    {
-                        Ok(preset) => preset,
-                        // The field only stops editing once the submit actually runs; a rejected
-                        // submit leaves the typed text on screen with its reason rather than
-                        // silently reverting to the last committed value.
-                        Err(message) => {
-                            self.status = message;
-                            return Task::none();
-                        }
-                    };
-                self.editing = None;
+                let preset = match submit_preset(
+                    &self.modules,
+                    &action,
+                    parameter.as_deref(),
+                    &self.controls.fields,
+                ) {
+                    Ok(preset) => preset,
+                    // The field only stops editing once the submit actually runs; a rejected
+                    // submit leaves the typed text on screen with its reason rather than
+                    // silently reverting to the last committed value.
+                    Err(message) => {
+                        self.status.text = message;
+                        return Task::none();
+                    }
+                };
+                self.controls.editing = None;
                 return self.dispatch(Message::Action(ActionMessage::Run { action, preset }));
             }
             ControlMessage::ResetField { action, parameter } => {
@@ -199,13 +222,13 @@ impl Editor {
                     .find(|section| section.module_id == module_id)
                     .map(|section| section.expanded)
                     .unwrap_or(true);
-                self.expanded.insert(module_id, !expanded);
+                self.controls.expanded.insert(module_id, !expanded);
             }
             ControlMessage::ResetModule(module_id) => {
                 let Some(reset) = tools::module_of(&self.modules, &module_id)
                     .and_then(|module| module.reset.clone())
                 else {
-                    self.status = format!("{module_id} declares no reset action");
+                    self.status.text = format!("{module_id} declares no reset action");
                     return Task::none();
                 };
                 return self.dispatch(Message::Action(ActionMessage::Run {
@@ -225,7 +248,7 @@ impl Editor {
                     .and_then(|section| section.group_reset(&path))
                     .cloned()
                 else {
-                    self.status = format!("{module_id} declares no reset for that group");
+                    self.status.text = format!("{module_id} declares no reset for that group");
                     return Task::none();
                 };
                 return self.dispatch(Message::Action(ActionMessage::Run {
@@ -265,7 +288,8 @@ impl Editor {
                 let value = self.control_field_value(&curve.action, parameter)?;
                 let key = (curve.action.clone(), parameter.clone());
                 let sampled = self
-                    .controls_ui
+                    .controls
+                    .ui
                     .curve(&curve.id)
                     .and_then(|local| local.samples.get(parameter))
                     .is_some_and(|samples| {
@@ -302,14 +326,14 @@ impl Editor {
     }
     pub(crate) fn control_field_value(&self, action: &str, parameter: &str) -> Option<Value> {
         let declared = tools::declared_action(&self.modules, action)?.parameter(parameter)?;
-        self.fields.get_value(action, declared).ok()
+        self.controls.fields.get_value(action, declared).ok()
     }
 
     pub(crate) fn set_control_field_value(&mut self, action: &str, parameter: &str, value: &Value) {
         if let Some(declared) =
             tools::declared_action(&self.modules, action).and_then(|a| a.parameter(parameter))
         {
-            let _ = self.fields.set_value(action, declared, value);
+            let _ = self.controls.fields.set_value(action, declared, value);
         }
     }
     pub(crate) fn control_fraction(
@@ -342,16 +366,16 @@ impl Editor {
         // A discrete value commits at once, and a continuous one that does not draft commits on
         // release: either is refused before the control shows a value that was never sent.
         if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         self.set_control_field_value(&action, &parameter, &value);
         if continuous {
-            self.dragging = Some((action, parameter));
+            self.controls.dragging = Some((action, parameter));
             return Task::none();
         }
-        self.dragging = None;
-        self.editing = None;
+        self.controls.dragging = None;
+        self.controls.editing = None;
         self.dispatch(Message::Action(ActionMessage::Run {
             action,
             preset: serde_json::Map::from_iter([(parameter, value)]),
@@ -367,7 +391,7 @@ impl Editor {
         let drafts = tools::drafts(&self.modules, &action, &parameter);
         // Refused as a whole, so a refused step never releases a gesture it did not open.
         if let Some(reason) = self.control_refusal(&action, &parameter, drafts) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let Some(spec) = self.number_spec(&action, &parameter) else {
@@ -421,7 +445,7 @@ impl Editor {
             .control_field_value(&action, &parameter)
             .and_then(|v| v.as_f64())
         else {
-            self.status = "Correct the field before stepping it".into();
+            self.status.text = "Correct the field before stepping it".into();
             return Task::none();
         };
         let next = spec.nudged(current, direction, shift, option);
@@ -430,9 +454,9 @@ impl Editor {
         } else {
             number_text(next)
         };
-        self.fields.set(&action, &parameter, text);
+        self.controls.fields.set(&action, &parameter, text);
         let id = crate::state::fields::field_id(&action, &parameter, None);
-        self.editing = Some((action, parameter));
+        self.controls.editing = Some((action, parameter));
         iced::widget::operation::focus(iced::widget::Id::from(id))
     }
 
@@ -463,7 +487,7 @@ impl Editor {
                 if self
                     .drafting_control()
                     .is_some_and(|(drafting, field)| drafting == action && field == parameter)
-                    || self.dragging.as_ref() == Some(&key)
+                    || self.controls.dragging.as_ref() == Some(&key)
                 {
                     self.control_release(action, parameter)
                 } else {
@@ -472,14 +496,14 @@ impl Editor {
             }
             ColorPickerEvent::Text { field, text } => {
                 if field == 3 {
-                    self.controls_ui.color_mut(key).hex = Some(text);
+                    self.controls.ui.color_mut(key).hex = Some(text);
                 } else if field < 3 {
-                    self.controls_ui.color_mut(key).channels[field] = Some(text);
+                    self.controls.ui.color_mut(key).channels[field] = Some(text);
                 }
                 Task::none()
             }
             ColorPickerEvent::Submit(field) => {
-                let local = self.controls_ui.color(&key);
+                let local = self.controls.ui.color(&key);
                 let next = if field == 3 {
                     local
                         .and_then(|local| local.hex.as_deref())
@@ -498,7 +522,7 @@ impl Editor {
                 };
                 match next {
                     Some(next) => {
-                        let local = self.controls_ui.color_mut(key);
+                        let local = self.controls.ui.color_mut(key);
                         if field == 3 {
                             local.hex = None;
                         } else {
@@ -507,7 +531,7 @@ impl Editor {
                         self.control_value(action, parameter, json!(next), false)
                     }
                     None => {
-                        self.status =
+                        self.status.text =
                             "RGB channels must be 0 to 255 or a six-digit hex colour".into();
                         Task::none()
                     }
@@ -523,7 +547,8 @@ impl Editor {
     }
 
     fn picker_hsv(&self, key: &(String, String), rgb: [u8; 3]) -> [f64; 3] {
-        self.controls_ui
+        self.controls
+            .ui
             .color(key)
             .and_then(|local| local.hsv)
             .filter(|picker| picker.rgb == rgb)
@@ -539,11 +564,12 @@ impl Editor {
         hsv: [f64; 3],
     ) -> Task<Message> {
         if let Some(reason) = self.control_refusal(&action, &parameter, true) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let next = hsv_to_rgb(hsv);
-        self.controls_ui
+        self.controls
+            .ui
             .color_mut((action.clone(), parameter.clone()))
             .hsv = Some(tools::PickerHsv { rgb: next, hsv });
         if next == rgb {
@@ -580,7 +606,8 @@ impl Editor {
         };
         let curve_key = curve_key(&self.modules, &action, &parameter);
         let channel = self
-            .controls_ui
+            .controls
+            .ui
             .curve(&curve_key)
             .map_or(0, |local| local.channel);
         match event {
@@ -644,7 +671,7 @@ impl Editor {
                 if index >= points.len() {
                     return Task::none();
                 }
-                self.controls_ui.curve_mut(curve_key).point = Some(index);
+                self.controls.ui.curve_mut(curve_key).point = Some(index);
                 Task::none()
             }
             CurveEditorEvent::Channel(index) => {
@@ -656,7 +683,7 @@ impl Editor {
                     return Task::none();
                 };
                 let next_parameter = next_parameter.clone();
-                let local = self.controls_ui.curve_mut(curve_key);
+                let local = self.controls.ui.curve_mut(curve_key);
                 local.channel = index;
                 local.point = None;
                 let Some(value) = self.control_field_value(&action, &next_parameter) else {
@@ -699,7 +726,8 @@ impl Editor {
                 )
             }
             CurveEditorEvent::Text { index, axis, text } => {
-                self.controls_ui
+                self.controls
+                    .ui
                     .curve_mut(curve_key)
                     .edits
                     .insert((parameter, index, axis), text);
@@ -707,28 +735,29 @@ impl Editor {
             }
             CurveEditorEvent::Submit { index, axis } => {
                 let Some(text) = self
-                    .controls_ui
+                    .controls
+                    .ui
                     .curve(&curve_key)
                     .and_then(|local| local.edits.get(&(parameter.clone(), index, axis)))
                 else {
                     return Task::none();
                 };
                 let Ok(value) = text.parse::<f64>() else {
-                    self.status = "Curve coordinate must be a number from 0 to 1".into();
+                    self.status.text = "Curve coordinate must be a number from 0 to 1".into();
                     return Task::none();
                 };
                 if !(0.0..=1.0).contains(&value) || index >= points.len() || axis > 1 {
-                    self.status = "Curve coordinate must be from 0 to 1".into();
+                    self.status.text = "Curve coordinate must be from 0 to 1".into();
                     return Task::none();
                 }
                 points[index][axis] = value;
                 if let Some(declared) = declared.as_ref()
                     && let Err(error) = check_value(declared, &json!(points))
                 {
-                    self.status = error.to_string();
+                    self.status.text = error.to_string();
                     return Task::none();
                 }
-                self.controls_ui.curve_mut(curve_key).edits.remove(&(
+                self.controls.ui.curve_mut(curve_key).edits.remove(&(
                     parameter.clone(),
                     index,
                     axis,
@@ -748,7 +777,7 @@ impl Editor {
     ) -> Task<Message> {
         let value = json!(points);
         if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let Some(declared) =
@@ -757,10 +786,11 @@ impl Editor {
             return Task::none();
         };
         if let Err(error) = check_value(declared, &value) {
-            self.status = error.to_string();
+            self.status.text = error.to_string();
             return Task::none();
         }
-        self.controls_ui
+        self.controls
+            .ui
             .forget_curve_samples(&curve_key(&self.modules, &action, &parameter), &parameter);
         let query = self.request_curve_samples(&action, &parameter, channel, value.clone());
         Task::batch([
@@ -865,7 +895,8 @@ impl Editor {
             && self.control_field_value(&identity.action, &identity.parameter)
                 == Some(identity.points.clone())
             && self
-                .controls_ui
+                .controls
+                .ui
                 .curve(&key)
                 .map_or(0, |local| local.channel)
                 == identity.channel;
@@ -873,7 +904,7 @@ impl Editor {
             match result {
                 Ok(value) => {
                     if let Some(points) = value.get("points").and_then(sampled_from_value) {
-                        self.controls_ui.curve_mut(key).samples.insert(
+                        self.controls.ui.curve_mut(key).samples.insert(
                             identity.parameter,
                             tools::CurveSamples {
                                 asset: identity.asset,
@@ -887,10 +918,11 @@ impl Editor {
                             },
                         );
                     } else {
-                        self.status = "Curve sample query returned an invalid point list".into();
+                        self.status.text =
+                            "Curve sample query returned an invalid point list".into();
                     }
                 }
-                Err(error) => self.status = error,
+                Err(error) => self.status.text = error,
             }
         }
         self.start_curve_sample()

@@ -25,7 +25,11 @@ fn copy_as_json_request_writes_what_the_control_would_send() {
         parameter: None,
         preset: None,
     }));
-    assert!(editor.status.contains("Copied"), "{}", editor.status);
+    assert!(
+        editor.status.text.contains("Copied"),
+        "{}",
+        editor.status.text
+    );
     finish(editor, catalog);
 }
 
@@ -45,11 +49,11 @@ fn copy_as_json_request_for_the_open_crop_draft_matches_its_own_apply() {
     assert!(request.get("angle").is_some() && request.get("width").is_some());
 
     let _ = editor.update(Message::Action(ActionMessage::CopyDraftRequest));
-    assert_eq!(editor.status, "Copied the edit.crop request");
+    assert_eq!(editor.status.text, "Copied the edit.crop request");
 
     // With no draft open there is nothing to copy, and the status says so plainly.
     editor.gesture = None;
     let _ = editor.update(Message::Action(ActionMessage::CopyDraftRequest));
-    assert_eq!(editor.status, "No crop draft to copy");
+    assert_eq!(editor.status.text, "No crop draft to copy");
     finish(editor, catalog);
 }

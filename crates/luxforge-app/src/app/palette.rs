@@ -16,29 +16,29 @@ impl Editor {
     pub(super) fn palette_update(&mut self, message: PaletteMessage) -> Task<Message> {
         match message {
             PaletteMessage::Open => {
-                self.palette_open = true;
-                self.palette_query.clear();
-                self.palette_selected = 0;
+                self.palette.open = true;
+                self.palette.query.clear();
+                self.palette.selected = 0;
                 return operation::focus(view::palette::QUERY_ID);
             }
-            PaletteMessage::Close => self.palette_open = false,
+            PaletteMessage::Close => self.palette.open = false,
             PaletteMessage::Query(query) => {
-                self.palette_query = query;
-                self.palette_selected = 0;
+                self.palette.query = query;
+                self.palette.selected = 0;
             }
             PaletteMessage::Move(delta) => {
                 let last = self.workspace.palette.entries.len().saturating_sub(1);
-                let moved = self.palette_selected as i64 + i64::from(delta);
-                self.palette_selected = moved.clamp(0, last as i64) as usize;
+                let moved = self.palette.selected as i64 + i64::from(delta);
+                self.palette.selected = moved.clamp(0, last as i64) as usize;
             }
             PaletteMessage::Run => {
                 let chosen = self
                     .workspace
                     .palette
                     .entries
-                    .get(self.palette_selected)
+                    .get(self.palette.selected)
                     .map(|entry| entry.action.clone());
-                self.palette_open = false;
+                self.palette.open = false;
                 return match chosen {
                     Some(PaletteAction::Run { action, preset }) => {
                         self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
@@ -78,7 +78,7 @@ impl Editor {
                 };
             }
             PaletteMessage::RunIndex(index) => {
-                self.palette_selected = index;
+                self.palette.selected = index;
                 return self.dispatch(Message::Palette(PaletteMessage::Run));
             }
         }

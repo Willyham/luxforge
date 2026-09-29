@@ -132,7 +132,7 @@ impl Editor {
         self.owner.disconnect(self.client);
         self.owner.stop();
         let join = self.owner_join.take();
-        let log = self.diagnostics.take();
+        let log = self.log.diagnostics.take();
         Task::perform(
             async move {
                 if let Some(log) = log {

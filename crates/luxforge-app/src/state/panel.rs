@@ -94,8 +94,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
                 selected: inputs.document.display_entry.as_ref() == Some(&version.entry_id),
             })
             .collect(),
-        version_name: inputs.version_name.to_owned(),
-        version_form_open: inputs.version_form_open,
+        version_name: inputs.version_form.name.clone(),
+        version_form_open: inputs.version_form.open,
         can_save: inputs.document.state.is_some()
             && inputs.document.display_entry.is_some()
             && !inputs.busy,

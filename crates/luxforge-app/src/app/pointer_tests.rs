@@ -8,7 +8,7 @@ use super::{
     },
     *,
 };
-use crate::state::histogram::Readout;
+use crate::state::{histogram::Readout, tools};
 use luxforge_core::{ContentPoint, EntryId};
 use serde_json::Map;
 
@@ -34,7 +34,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
             height: 320,
         }),
     }));
-    assert_eq!(editor.status, "Sampling (100, 42)…");
+    assert_eq!(editor.status.text, "Sampling (100, 42)…");
     assert!(!editor.busy, "the query committed before it answered");
     assert_eq!(
         pick_events(&logged(&mut editor, &log)),
@@ -65,12 +65,15 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
     assert!(
         editor.busy,
         "the answer was not submitted: {}",
-        editor.status
+        editor.status.text
     );
     assert!(
-        editor.status.starts_with(&format!("Running edit.{action}")),
+        editor
+            .status
+            .text
+            .starts_with(&format!("Running edit.{action}")),
         "{}",
-        editor.status
+        editor.status.text
     );
     let records = logged(&mut editor, &log);
     let sampled: Vec<&Value> = records
@@ -216,7 +219,7 @@ fn a_committed_module_pick_puts_itself_away() {
     assert!(
         editor.busy,
         "the answer was not submitted: {}",
-        editor.status
+        editor.status.text
     );
     assert!(
         !editor.mask_panel.pick_on_mask,
@@ -244,9 +247,9 @@ fn a_refused_sample_shows_its_reason_and_commits_nothing() {
         ),
     }));
     assert!(
-        editor.status.starts_with("clipped:"),
+        editor.status.text.starts_with("clipped:"),
         "the reason's own prefix is not what the status leads with: {}",
-        editor.status
+        editor.status.text
     );
     assert!(!editor.busy, "a refused sample committed something");
     assert_eq!(
@@ -274,9 +277,9 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
     let entry_id = editor.displayed_entry().expect("a displayed entry");
 
     // The pointer mode: a click reaches no module's pick at all.
-    let before = editor.status.clone();
+    let before = editor.status.text.clone();
     let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
-    assert_eq!(editor.status, before, "a pick ran in the pointer mode");
+    assert_eq!(editor.status.text, before, "a pick ran in the pointer mode");
 
     // The sample-apply mode: the located point is not written into the point-pick module's
     // coordinate fields, because that module's canvas is not the one on screen.
@@ -292,15 +295,19 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
             height: 320,
         }),
     }));
-    assert_eq!(editor.fields.get(&pick_action, &x), Some("0"));
-    assert_eq!(editor.fields.get(&pick_action, &y), Some("0"));
+    assert_eq!(editor.controls.fields.get(&pick_action, &x), Some("0"));
+    assert_eq!(editor.controls.fields.get(&pick_action, &y), Some("0"));
 
     // A pick while a slider gesture is open is refused, and the gesture is untouched.
     let (action, parameter) = patch_control(&editor);
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     assert!(editor.slider_gesture().is_some());
     let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
-    assert!(editor.status.contains("slider draft"), "{}", editor.status);
+    assert!(
+        editor.status.text.contains("slider draft"),
+        "{}",
+        editor.status.text
+    );
     assert!(
         editor.slider_gesture().is_some(),
         "the pick discarded a draft"
@@ -393,8 +400,8 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     assert_eq!(editor.hover.pointer, Some((7, 9)));
     // The click itself fills nothing: which content pixel it is is the core's answer.
     let _ = editor.update(Message::Pointer(PointerMessage::Picked { x: 7, y: 9 }));
-    assert_eq!(editor.fields.get(&action, &x), Some("0"));
-    assert_eq!(editor.fields.get(&action, &y), Some("0"));
+    assert_eq!(editor.controls.fields.get(&action, &x), Some("0"));
+    assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
         mode: pick_mode(&editor),
@@ -406,10 +413,10 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
             height: 300,
         }),
     }));
-    assert_eq!(editor.fields.get(&action, &x), Some("100"));
-    assert_eq!(editor.fields.get(&action, &y), Some("42"));
+    assert_eq!(editor.controls.fields.get(&action, &x), Some("100"));
+    assert_eq!(editor.controls.fields.get(&action, &y), Some("42"));
     assert_eq!(
-        editor.status,
+        editor.status.text,
         format!("Picked (100, 42) from view (7, 9) into {action}")
     );
     // The evidence carries both pixels, so a capture can be read against the view and the stack.
@@ -426,8 +433,8 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
         parameter: x.clone(),
         text: "11".into(),
     }));
-    assert_eq!(editor.fields.get(&action, &x), Some("11"));
-    assert_eq!(editor.editing, Some((action.clone(), x.clone())));
+    assert_eq!(editor.controls.fields.get(&action, &x), Some("11"));
+    assert_eq!(editor.controls.editing, Some((action.clone(), x.clone())));
     // The correlated state carries the module identities and what the controls hold.
     let snapshot = editor.snapshot();
     assert_eq!(snapshot["controls"][format!("{action}.{x}")], json!("11"));
@@ -446,7 +453,7 @@ fn a_located_point_for_another_entry_is_dropped() {
     let (mut editor, catalog, _) = picking();
     let (action, x, y) = pick_fields(&editor);
     let log = attach_log(&mut editor);
-    let before = editor.status.clone();
+    let before = editor.status.text.clone();
     // The canvas moved to another stack while the mapping was in flight.
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: EntryId::new(),
@@ -459,9 +466,9 @@ fn a_located_point_for_another_entry_is_dropped() {
             height: 300,
         }),
     }));
-    assert_eq!(editor.fields.get(&action, &x), Some("0"));
-    assert_eq!(editor.fields.get(&action, &y), Some("0"));
-    assert_eq!(editor.status, before);
+    assert_eq!(editor.controls.fields.get(&action, &x), Some("0"));
+    assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
+    assert_eq!(editor.status.text, before);
     assert!(pick_events(&logged(&mut editor, &log)).is_empty());
     finish(editor, catalog);
 }
@@ -484,12 +491,12 @@ fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
         result: Err(refusal.into()),
     }));
     assert_eq!(
-        editor.fields.get(&action, &x),
+        editor.controls.fields.get(&action, &x),
         Some("5"),
         "nothing is filled"
     );
-    assert_eq!(editor.fields.get(&action, &y), Some("0"));
-    assert_eq!(editor.status, refusal);
+    assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
+    assert_eq!(editor.status.text, refusal);
     assert_eq!(
         pick_events(&logged(&mut editor, &log)),
         vec![&json!({"mode":pick_mode(&editor),"view_x":7,"view_y":9,"error":refusal})]
@@ -541,8 +548,12 @@ fn a_point_pick_commits_only_when_its_module_declares_it() {
     assert_eq!(request["mutation"]["expected_revision"], json!(4));
 
     let _ = editor.update(located(entry_id.clone()));
-    assert!(editor.busy, "the pick was not committed: {}", editor.status);
-    assert_eq!(editor.status, format!("Running edit.{action}…"));
+    assert!(
+        editor.busy,
+        "the pick was not committed: {}",
+        editor.status.text
+    );
+    assert_eq!(editor.status.text, format!("Running edit.{action}…"));
     editor.busy = false;
 
     // Without the declaration the same pick fills the coordinates and commits nothing.
@@ -556,7 +567,7 @@ fn a_point_pick_commits_only_when_its_module_declares_it() {
     }
     let _ = editor.update(located(entry_id));
     assert!(!editor.busy, "a filling pick committed");
-    assert_eq!(editor.fields.get(&action, "x"), Some("100"));
-    assert_eq!(editor.fields.get(&action, "y"), Some("42"));
+    assert_eq!(editor.controls.fields.get(&action, "x"), Some("100"));
+    assert_eq!(editor.controls.fields.get(&action, "y"), Some("42"));
     finish(editor, catalog);
 }

@@ -470,7 +470,7 @@ impl Editor {
     /// A gesture that sends nothing: its reason goes on the block's status line and the status bar.
     fn capability_refused(&mut self, module_id: &str, reason: String) -> Task<Message> {
         self.capabilities.module_mut(module_id).message = Some(reason.clone());
-        self.status = reason;
+        self.status.text = reason;
         Task::none()
     }
 
@@ -569,7 +569,7 @@ impl Editor {
                         self.capability_op(&module_id, op)
                     }
                     Err(reason) => {
-                        self.status = reason;
+                        self.status.text = reason;
                         Task::none()
                     }
                 };
@@ -580,7 +580,7 @@ impl Editor {
                         self.dispatch(Message::Action(ActionMessage::Run { action, preset }))
                     }
                     Err(reason) => {
-                        self.status = reason;
+                        self.status.text = reason;
                         Task::none()
                     }
                 };
@@ -603,7 +603,7 @@ impl Editor {
                         params.insert("mutation".into(), json!(request()));
                         let method = format!("{TASK_PREFIX}{task}");
                         let params = redact_params(&method, &Value::Object(params));
-                        self.status = format!("Copied the {method} request");
+                        self.status.text = format!("Copied the {method} request");
                         iced::clipboard::write(
                             serde_json::to_string_pretty(
                                 &json!({"method": method, "params": params}),
@@ -613,7 +613,7 @@ impl Editor {
                     }
                     Ok(_) => Task::none(),
                     Err(reason) => {
-                        self.status = reason;
+                        self.status.text = reason;
                         Task::none()
                     }
                 };
@@ -778,7 +778,7 @@ impl Editor {
                     state.track(record.clone(), true);
                 }
                 if op == Operation::RevokeAll {
-                    self.status = format!(
+                    self.status.text = format!(
                         "Revoked {} permission(s) of {module_id}",
                         answer["revoked"].as_u64().unwrap_or(0)
                     );
@@ -801,7 +801,7 @@ impl Editor {
                 }
                 let line = format!("Changed elsewhere, so the settings were read again: {message}");
                 state.message = Some(line.clone());
-                self.status = line;
+                self.status.text = line;
             }
             Outcome::Failed(error) => {
                 if let Some(run) = run {
@@ -811,7 +811,7 @@ impl Editor {
                     };
                 }
                 state.message = Some(error.to_string());
-                self.status = error.to_string();
+                self.status.text = error.to_string();
             }
         }
         // A job that finished before it was first read is settled here, with the status that was
@@ -1030,7 +1030,7 @@ impl Editor {
             self.begin_request();
             let task = self.capability_update(message);
             if !self.busy {
-                return self.fail_step(format!("the result was not applied: {}", self.status));
+                return self.fail_step(format!("the result was not applied: {}", self.status.text));
             }
             return task;
         }
@@ -1041,7 +1041,7 @@ impl Editor {
             if let Some(evidence) = &mut self.evidence {
                 evidence.capability_wait = None;
             }
-            return self.fail_step(format!("the step sent nothing: {}", self.status));
+            return self.fail_step(format!("the step sent nothing: {}", self.status.text));
         }
         task
     }

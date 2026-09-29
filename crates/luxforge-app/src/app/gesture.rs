@@ -362,11 +362,11 @@ impl Editor {
         let opened = match self.begin_draft(asset.clone(), &action, kind.target()) {
             Ok(opened) => opened,
             Err(error) => {
-                self.dragging = None;
+                self.controls.dragging = None;
                 if matches!(kind, Kind::Crop(_)) {
                     self.crop_ended();
                 }
-                self.status = error;
+                self.status.text = error;
                 return Task::none();
             }
         };
@@ -475,10 +475,10 @@ impl Editor {
     pub(crate) fn release(&mut self) -> Task<Message> {
         // The pointer is up whether or not the commit may go.
         if self.slider_gesture().is_some() {
-            self.dragging = None;
+            self.controls.dragging = None;
         }
         if let Some(reason) = self.release_refusal() {
-            self.status = reason;
+            self.status.text = reason;
             // The refused gesture's frame is the evidence of the refusal.
             self.settle_step(Settle::SliderDraft);
             return Task::none();
@@ -569,13 +569,13 @@ impl Editor {
         }
         match &gesture.kind {
             Kind::Slider(slider) => {
-                self.dragging = None;
-                self.status = format!("{} draft discarded", slider.label);
+                self.controls.dragging = None;
+                self.status.text = format!("{} draft discarded", slider.label);
                 self.event("slider_draft_cancelled", json!({ "label": slider.label }));
                 self.seed_values();
             }
             Kind::Mask(mask) => {
-                self.status = format!("{} discarded", mask.shape.op.label());
+                self.status.text = format!("{} discarded", mask.shape.op.label());
                 self.event("mask_draft_cancelled", json!({"op": mask.shape.op.label()}));
             }
             Kind::Crop(crop) => self.crop_discarded(crop, &gesture.draft),
@@ -630,7 +630,7 @@ impl Editor {
     /// The open gesture's draft is conflicted: say so, and settle a step waiting for its frame,
     /// which is the evidence of the conflict.
     fn changed_elsewhere(&mut self, noun: &str) -> Task<Message> {
-        self.status = format!("Changed elsewhere: discard the {noun} or reapply it");
+        self.status.text = format!("Changed elsewhere: discard the {noun} or reapply it");
         self.settle_step(Settle::SliderDraft);
         Task::none()
     }
@@ -684,7 +684,7 @@ impl Editor {
                         self.note_view_motion();
                     }
                     let (generation, requested_at) =
-                        if self.diagnostics.is_some() && self.mask_gesture().is_some() {
+                        if self.log.diagnostics.is_some() && self.mask_gesture().is_some() {
                             self.request_mask_preview_timed(job)
                         } else {
                             (self.request_preview(job), None)
@@ -735,7 +735,7 @@ impl Editor {
                 let value = sent.and_then(|fields| fields.get(&slider.parameter).cloned());
                 let now = std::time::Instant::now();
                 let legs = round_trip.legs_ms(now);
-                let timing = self.loop_timing.get();
+                let timing = self.log.loop_timing.get();
                 let since = |at: Option<std::time::Instant>| {
                     at.map(|at| now.duration_since(at).as_secs_f64() * 1000.0)
                 };
@@ -746,7 +746,7 @@ impl Editor {
                     "since_view_end_ms": since(timing.last_view_end),
                     "since_update_end_ms": since(timing.last_update_end),
                 });
-                self.status = format!("Drafting {label}…");
+                self.status.text = format!("Drafting {label}…");
                 self.event(
                     "slider_draft_preview",
                     json!({"generation":generation,"draft_revision":draft_revision,"value":value,"round_trip_ms":{"executor_wait":legs[0],"draft_set":legs[1],"preview_job":legs[2],"return":legs[3]},"loop":loop_timing}),
@@ -795,7 +795,7 @@ impl Editor {
                 slider.unpreviewed = true;
                 let label = slider.label.clone();
                 let value = sent.and_then(|fields| fields.get(&slider.parameter).cloned());
-                self.status = if error.starts_with(ErrorKind::PreparationRequired.code()) {
+                self.status.text = if error.starts_with(ErrorKind::PreparationRequired.code()) {
                     format!(
                         "{label} cannot be previewed until the RAW development is ready; it shows on release"
                     )
@@ -807,7 +807,7 @@ impl Editor {
                     json!({"draft_revision":draft_revision,"value":value,"error":error}),
                 );
             }
-            _ => self.status = error.to_owned(),
+            _ => self.status.text = error.to_owned(),
         }
     }
 
@@ -876,7 +876,7 @@ impl Editor {
                 // A refusal belongs in the evidence log beside the commit it answers: a run that
                 // shows the request and not its outcome cannot be read afterwards.
                 self.event(&format!("{prefix}_refused"), json!({ "reason": error }));
-                self.status = error.clone();
+                self.status.text = error.clone();
                 self.settle_step(Settle::SliderDraft);
                 return self.drive(Event::Committed(Err(error)));
             }
@@ -887,14 +887,14 @@ impl Editor {
         self.session.draft = None;
         self.presentation.displayed_draft_id = None;
         self.presentation.displayed_draft_revision = None;
-        self.dragging = None;
+        self.controls.dragging = None;
         match (open.kind, outcome) {
             (Kind::Slider(_), Some(refresh)) => {
                 self.accept(refresh);
                 Task::none()
             }
             (Kind::Slider(slider), None) => {
-                self.status = format!("{} unchanged; nothing was committed", slider.label);
+                self.status.text = format!("{} unchanged; nothing was committed", slider.label);
                 self.event("slider_draft_noop", json!({ "label": slider.label }));
                 // The drafted pixels are still on screen and they are not the committed ones, so
                 // the step settles on the render that replaces them rather than on this message.
@@ -908,7 +908,7 @@ impl Editor {
             }
             (Kind::Mask(mask), Some(refresh)) => self.mask_committed(mask.shape, refresh),
             (Kind::Mask(_), None) => {
-                self.status = "The mask gesture changed nothing; nothing was committed".into();
+                self.status.text = "The mask gesture changed nothing; nothing was committed".into();
                 self.refresh_mask_overlay()
             }
             (Kind::Crop(crop), outcome) => self.crop_committed(&crop, &open.draft, outcome),
@@ -948,10 +948,10 @@ impl Editor {
                     open.kind.interrupt();
                 }
                 if let Some(slider) = self.slider_gesture() {
-                    self.status = format!("Drafting {}…", slider.label);
+                    self.status.text = format!("Drafting {}…", slider.label);
                 }
             }
-            Err(error) => self.status = error.clone(),
+            Err(error) => self.status.text = error.clone(),
         }
         let task = self.drive(Event::Reapplied(result));
         // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage

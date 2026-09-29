@@ -139,11 +139,11 @@ impl Editor {
     ) -> Task<Message> {
         self.close_export_menu();
         if let Some(refusal) = self.export_refusal() {
-            self.status = refusal;
+            self.status.text = refusal;
             return Task::none();
         }
         let Some(entry) = self.displayed_entry() else {
-            self.status = "No history entry is displayed".into();
+            self.status.text = "No history entry is displayed".into();
             return Task::none();
         };
         let state = self.document.state.as_ref().expect("checked above");
@@ -181,7 +181,7 @@ impl Editor {
         match result {
             Ok(Some(choice)) => {
                 let file_name = file_name(&choice.destination);
-                self.status = format!("Exporting {file_name}\u{2026}");
+                self.status.text = format!("Exporting {file_name}\u{2026}");
                 if let Some(run) = &mut self.export.run {
                     run.file_name = Some(file_name);
                     run.plan = Some(choice.plan.clone());
@@ -304,12 +304,12 @@ impl Editor {
     /// capture its frame with what the plan, the queue and the job answered. `failure` marks a
     /// step that was refused or failed.
     fn export_finished(&mut self, status: String, failure: Option<&str>, record: Option<Value>) {
-        self.status = status;
+        self.status.text = status;
         self.export.reading = false;
         let run = self.export.run.take();
         self.event(
             "export_finished",
-            json!({"status":self.status,"record":record}),
+            json!({"status":self.status.text,"record":record}),
         );
         if self
             .evidence
@@ -321,7 +321,7 @@ impl Editor {
                 "plan": plan.map(|plan| plan_record(&plan)),
                 "queued": run.as_ref().and_then(|run| run.queued.clone()),
                 "record": record,
-                "status": self.status,
+                "status": self.status.text,
             }}));
             if let Some(reason) = failure {
                 self.refuse_step(reason);

@@ -256,7 +256,9 @@ impl Editor {
         }
         for (action, parameter, value) in values {
             let key = (action.to_owned(), parameter);
-            if self.editing.as_ref() == Some(&key) || self.dragging.as_ref() == Some(&key) {
+            if self.controls.editing.as_ref() == Some(&key)
+                || self.controls.dragging.as_ref() == Some(&key)
+            {
                 continue;
             }
             let Some(declared) = luxforge_core::mask::commands::find(action)
@@ -265,7 +267,7 @@ impl Editor {
                 continue;
             };
             if let Ok(text) = crate::state::fields::value_text(declared, &value) {
-                self.fields.set(&key.0, &key.1, text);
+                self.controls.fields.set(&key.0, &key.1, text);
             }
         }
     }
@@ -294,7 +296,7 @@ impl Editor {
     /// the frame on screen is already the committed one.
     pub(crate) fn put_brush_down(&mut self) {
         if let Some(armed) = self.armed.take() {
-            self.status = "Brush put down".into();
+            self.status.text = "Brush put down".into();
             self.event(
                 "mask_brush_put_down",
                 json!({"summary": armed.mask.shape.summary()}),
@@ -402,7 +404,7 @@ impl Editor {
         fields: Map<String, Value>,
     ) -> Task<Message> {
         if let Some(reason) = self.gesture_refusal(Starting::MaskCommand) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let Some(request) = self.mask_request(&target, &fields) else {
@@ -498,7 +500,7 @@ impl Editor {
                 match mask {
                     Some(mask) => self.begin_shape(MaskDraftOp::Add(mode), kind, Some(mask)),
                     None => {
-                        self.status = "Select a mask before adding a component".into();
+                        self.status.text = "Select a mask before adding a component".into();
                         Task::none()
                     }
                 }
@@ -520,7 +522,7 @@ impl Editor {
                             Some(mask),
                         ),
                         None => {
-                            self.status = "Select a mask before painting on it".into();
+                            self.status.text = "Select a mask before painting on it".into();
                             Task::none()
                         }
                     }
@@ -550,7 +552,7 @@ impl Editor {
                 let Some(params) = self.mask_request(&target, &fields) else {
                     return Task::none();
                 };
-                self.status = format!("Copied the {method} request");
+                self.status.text = format!("Copied the {method} request");
                 iced::clipboard::write(
                     serde_json::to_string_pretty(&json!({"method": method, "params": params}))
                         .unwrap_or_default(),
@@ -571,11 +573,12 @@ impl Editor {
             // mode is per-client view state and nothing is committed by turning it on.
             MaskMessage::Pick => {
                 let Some(kind) = self.selected_component_kind() else {
-                    self.status = "Select the component this pick fills".into();
+                    self.status.text = "Select the component this pick fills".into();
                     return Task::none();
                 };
                 let Some(mode) = crate::state::masks::pick_mode(&kind) else {
-                    self.status = format!("This build has no canvas pick for a {kind} component");
+                    self.status.text =
+                        format!("This build has no canvas pick for a {kind} component");
                     return Task::none();
                 };
                 let target = if self.session.workspace.mode == mode {
@@ -744,7 +747,7 @@ impl Editor {
         if let Some(mask) = self.held_mask_mut()
             && mask.shape.set_brush(brush)
         {
-            self.status = format!(
+            self.status.text = format!(
                 "Brush {:.3} · feather {:.0} · flow {:.0}{}",
                 brush.size,
                 brush.feather,
@@ -951,7 +954,7 @@ impl Editor {
         mask: Option<MaskId>,
     ) -> Task<Message> {
         if let Some(reason) = self.gesture_refusal(Starting::Mask) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         // A new mask's first component is always an add. Creating one while the Add row says
@@ -960,7 +963,7 @@ impl Editor {
         if op == MaskDraftOp::Create
             && let Some(reason) = crate::state::masks::create_mode_reason(self.mask_panel.mode)
         {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         // A **typed** kind has nothing to drag: every field its geometry declares carries a
@@ -983,7 +986,7 @@ impl Editor {
         match draft {
             Some(draft) => self.open_shape(draft),
             None => {
-                self.status = format!("This build cannot draw a {kind} component");
+                self.status.text = format!("This build cannot draw a {kind} component");
                 Task::none()
             }
         }
@@ -1024,7 +1027,7 @@ impl Editor {
             _ => return Task::none(),
         };
         let Some(command) = luxforge_core::mask::commands::geometry(geometry_op, &kind) else {
-            self.status = format!("This build cannot create a {kind} component");
+            self.status.text = format!("This build cannot create a {kind} component");
             return Task::none();
         };
         self.mask_command(command.method, target, fields)
@@ -1033,7 +1036,7 @@ impl Editor {
     /// Open a gesture that patches one existing component's geometry.
     fn edit_shape(&mut self, component: String) -> Task<Message> {
         if let Some(reason) = self.gesture_refusal(Starting::Mask) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let Ok(component_id) = ComponentId::parse(component) else {
@@ -1051,7 +1054,7 @@ impl Editor {
             return Task::none();
         };
         if !found.available {
-            self.status = luxforge_core::mask::rules::unknown_kind(&found.kind).detail;
+            self.status.text = luxforge_core::mask::rules::unknown_kind(&found.kind).detail;
             return Task::none();
         }
         // The shape starts at exactly the stored payload, so reopening a gesture shows what was
@@ -1067,7 +1070,7 @@ impl Editor {
             &found.payload,
             brush,
         ) else {
-            self.status = format!("{} has no handles in this build", found.name);
+            self.status.text = format!("{} has no handles in this build", found.name);
             return Task::none();
         };
         self.mask_panel.selected_component = Some(component_id);
@@ -1079,7 +1082,7 @@ impl Editor {
     /// its press. Either way it is the one mask tool in hand, so a brush already held is replaced.
     fn open_shape(&mut self, shape: MaskDraft) -> Task<Message> {
         let Some(method) = shape.method() else {
-            self.status = format!("This build cannot draw a {} component", shape.kind());
+            self.status.text = format!("This build cannot draw a {} component", shape.kind());
             return Task::none();
         };
         let Some(asset) = self
@@ -1099,7 +1102,7 @@ impl Editor {
             },
             json!({"method":method,"summary":shape.summary()}),
         );
-        self.status = self.mask_gesture_line(&shape);
+        self.status.text = self.mask_gesture_line(&shape);
         // The mode follows the gesture however it was started, so the strip shows Mask selected.
         if !self.mask_mode_active() {
             self.sync.mode = Some(MASK_MODE.to_owned());
@@ -1163,7 +1166,7 @@ impl Editor {
             Err(error) => {
                 // A stack with no output stage has no mapping, so the handles cannot be drawn and
                 // the gesture says so rather than drawing them somewhere invented.
-                self.status = format!("Handles unavailable: {error}");
+                self.status.text = format!("Handles unavailable: {error}");
                 if let Some(mask) = self.held_mask_mut() {
                     mask.map = None;
                 }
@@ -1228,7 +1231,7 @@ impl Editor {
     /// position is not an edit and opens nothing.
     fn paint_press(&mut self, point: (f64, f64)) -> Task<Message> {
         if let Some(reason) = self.gesture_refusal(Starting::Mask) {
-            self.status = reason;
+            self.status.text = reason;
             return Task::none();
         }
         let brush = self.painting_brush();
@@ -1289,7 +1292,7 @@ impl Editor {
             self.mask_panel.selected_component = None;
             self.seed_values();
         }
-        self.status = "Mask committed".into();
+        self.status.text = "Mask committed".into();
         match painted {
             Some(target) => self.rearm_brush(target),
             None => Task::none(),
@@ -1473,7 +1476,7 @@ impl Editor {
                 .show_coverage(generation, rgba, (width, height)),
         };
         if !shown {
-            self.status = "Mask overlay unavailable: the grid could not be shown".into();
+            self.status.text = "Mask overlay unavailable: the grid could not be shown".into();
             self.event(
                 "mask_overlay_failed",
                 json!({"generation":generation,"cells":[width,height]}),

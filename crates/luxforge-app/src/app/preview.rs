@@ -999,7 +999,7 @@ impl Editor {
                         }));
                     }
                     Err(error) => {
-                        self.status = error;
+                        self.status.text = error;
                         self.view_plan.dirty = false;
                         self.view_plan.quiet_since = None;
                     }
@@ -1019,14 +1019,14 @@ impl Editor {
                         // controls. A field being edited in the previous entry must not pin its
                         // text while the selected entry is read-only; the entry's own values arrive
                         // with its recipe rows, below.
-                        self.editing = None;
-                        self.dragging = None;
+                        self.controls.editing = None;
+                        self.controls.dragging = None;
                         let entry = payload.job.evaluation.entry().id.clone();
                         self.presentation
                             .expect_entry(payload.job.evaluation.entry());
                         self.show_entry(entry.clone());
                         self.presentation.preview_generation = self.request_preview(payload.job);
-                        self.status = "Rendering selected history state…".into();
+                        self.status.text = "Rendering selected history state…".into();
                         // The recipe rows follow the displayed entry: one payload read, no render.
                         if let Some(state) = &self.document.state {
                             return recipe_task(
@@ -1037,7 +1037,7 @@ impl Editor {
                             );
                         }
                     }
-                    Err(error) => self.status = error,
+                    Err(error) => self.status.text = error,
                 }
             }
             PreviewMessage::Poll => {
@@ -1046,7 +1046,7 @@ impl Editor {
                 // them is busy. Each worker starts its next job by itself, so nothing here keeps
                 // the work moving: this only takes up what has finished. `Poll` is idempotent, so
                 // a signal that arrives late costs nothing.
-                while let Some(done) = self.overlay_queue.poll() {
+                while let Some(done) = self.overlays.queue.poll() {
                     self.overlay_ready(done);
                 }
                 while let Some(done) = self.thumbnailer.queue.poll() {
@@ -1320,7 +1320,7 @@ impl Editor {
     /// signal and coalesces, so the signal of a result behind the one just presented may already
     /// have been spent; a result that finishes after this check posts its own.
     pub(super) fn poll_again(&self) -> Task<Message> {
-        if self.overlay_queue.ready()
+        if self.overlays.queue.ready()
             || self.presentation.queue.ready()
             || self.thumbnailer.queue.ready()
         {
@@ -1668,7 +1668,7 @@ impl Editor {
             .presentation
             .show_region(&delivery, &frame, quality, content)
         {
-            self.status = "Could not show the visible photograph region".into();
+            self.status.text = "Could not show the visible photograph region".into();
             return (Task::none(), false);
         }
         let entry_id = delivery.entry_id;
@@ -1818,7 +1818,7 @@ impl Editor {
         error: &luxforge_core::Error,
     ) {
         self.presentation.refit_pending = false;
-        self.status = error.to_string();
+        self.status.text = error.to_string();
         // The canvas explains the failure from its kind, detail and data: the data names what an
         // unavailable effect is, so the cause is never parsed out of the message.
         self.presentation.render_error = Some(error.clone());
@@ -1890,7 +1890,7 @@ impl Editor {
         if self.crop_stage() == Some(crate::app::crop::StageView::Shown) {
             // The stage on screen stays under the frame; only its other phase failed, and says so.
             self.set_draft_generation(None);
-            self.status = format!("The crop's input stage could not be rendered: {error}");
+            self.status.text = format!("The crop's input stage could not be rendered: {error}");
             self.settle_step(Settle::Draft);
             return;
         }
@@ -1944,7 +1944,7 @@ impl Editor {
         generation: Option<u64>,
     ) {
         let reapply = self.crop_stage_lost();
-        self.status = status;
+        self.status.text = status;
         self.event(
             "crop_draft_failed",
             json!({"reapply": reapply, "error_code": error_code, "detail": detail, "generation": generation}),
@@ -2000,7 +2000,7 @@ impl Editor {
             Zoomed::Missing => {
                 // The exact phase of the frame on screen has not landed. It is already running, and
                 // the `Poll` handler presents it when it arrives because the zoom now needs it.
-                self.status = "Rendering at full resolution…".into();
+                self.status.text = "Rendering at full resolution…".into();
                 Task::none()
             }
             Zoomed::Hand(frame) => {
@@ -2040,7 +2040,7 @@ impl Editor {
         &mut self,
         job: luxforge_core::PreviewJob,
     ) -> (u64, Option<Instant>) {
-        debug_assert!(self.diagnostics.is_some());
+        debug_assert!(self.log.diagnostics.is_some());
         self.request_preview_inner(job, true)
     }
 
@@ -2344,7 +2344,7 @@ impl Editor {
                 self.outcome_ready(false);
             }
         }
-        self.status = self.displayed_status(&entry);
+        self.status.text = self.displayed_status(&entry);
     }
 
     /// Take up the report and the raster the preview worker produced for `generation`, now that its
@@ -2403,14 +2403,14 @@ impl Editor {
         if let Some(line) = self.mask_gesture_status() {
             return line;
         }
-        let sentence = match (&self.happened, &self.document.state) {
+        let sentence = match (&self.status.happened, &self.document.state) {
             (Some(happened), _) => happened.sentence(),
             (None, Some(state)) => {
                 state::status::showing(state.current_entry.sequence, &state.current_entry.label)
             }
             (None, None) => String::new(),
         };
-        match &self.skipped {
+        match &self.status.skipped {
             Some(skipped) => format!("{sentence} \u{b7} {skipped}"),
             None => sentence,
         }

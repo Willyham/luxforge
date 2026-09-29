@@ -78,8 +78,8 @@ fn typing_waits_for_enter_and_invalid_text_commits_nothing() {
         parameter: Some("count".into()),
     }));
     assert!(!editor.busy);
-    assert_eq!(editor.fields.get(ACTION, "count"), Some("bad"));
-    assert!(editor.editing.is_some());
+    assert_eq!(editor.controls.fields.get(ACTION, "count"), Some("bad"));
+    assert!(editor.controls.editing.is_some());
     let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
@@ -243,13 +243,13 @@ fn picker_keeps_black_saturation_until_value_becomes_visible() {
 #[test]
 fn curve_channel_selection_changes_no_request_value_or_recipe() {
     let (mut editor, catalog, _) = editor();
-    let fields = editor.fields.clone();
+    let fields = editor.controls.fields.clone();
     let _ = editor.update(Message::Control(ControlMessage::Curve {
         action: ACTION.into(),
         parameter: "master".into(),
         event: CurveEditorEvent::Channel(1),
     }));
-    assert_eq!(editor.fields, fields);
+    assert_eq!(editor.controls.fields, fields);
     assert!(editor.slider_gesture().is_none());
     assert!(!editor.busy);
     assert_eq!(editor.document.state.as_ref().unwrap().revision, 4);
@@ -276,7 +276,7 @@ fn escape_cancels_picker_and_curve_and_commits_nothing() {
         let (mut editor, catalog, _) = editor();
         let log = attach_log(&mut editor);
         let _ = editor.update(message);
-        assert!(editor.slider_gesture().is_some(), "{}", editor.status);
+        assert!(editor.slider_gesture().is_some(), "{}", editor.status.text);
         let _ = editor.update(Message::Draft(DraftMessage::Cancel));
         assert!(
             editor.gesture.is_none(),
@@ -327,7 +327,10 @@ fn field_arrow_nudge_stays_local_until_enter() {
     }));
     assert!(!editor.busy);
     assert!(editor.slider_gesture().is_none());
-    assert_eq!(editor.editing, Some((ACTION.into(), "coordinate".into())));
+    assert_eq!(
+        editor.controls.editing,
+        Some((ACTION.into(), "coordinate".into()))
+    );
     assert!((field_request(&mut editor, "coordinate").as_f64().unwrap() - 5.1).abs() < 1e-9);
     let _ = editor.update(Message::Control(ControlMessage::Submit {
         action: ACTION.into(),
@@ -365,7 +368,7 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
     let held = editor.gesture.clone().map(|gesture| format!("{gesture:?}"));
     let unchanged = |editor: &Editor, case: &str| {
         assert!(!editor.busy, "{case}: nothing was sent");
-        assert_eq!(editor.status, REASON, "{case}");
+        assert_eq!(editor.status.text, REASON, "{case}");
         assert_eq!(
             editor.gesture.clone().map(|gesture| format!("{gesture:?}")),
             held,
@@ -373,7 +376,11 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
         );
     };
 
-    let before = editor.fields.get(ACTION, "enabled").map(str::to_owned);
+    let before = editor
+        .controls
+        .fields
+        .get(ACTION, "enabled")
+        .map(str::to_owned);
     let _ = editor.update(Message::Control(ControlMessage::Discrete {
         action: ACTION.into(),
         parameter: "enabled".into(),
@@ -381,19 +388,23 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
     }));
     unchanged(&editor, "a toggle");
     assert_eq!(
-        editor.fields.get(ACTION, "enabled").map(str::to_owned),
+        editor
+            .controls
+            .fields
+            .get(ACTION, "enabled")
+            .map(str::to_owned),
         before,
         "the toggle shows the committed value"
     );
 
-    editor.status.clear();
+    editor.status.text.clear();
     let _ = editor.update(Message::Action(ActionMessage::Run {
         action: ACTION.into(),
         preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
     }));
     unchanged(&editor, "an action button");
 
-    editor.status.clear();
+    editor.status.text.clear();
     let _ = editor.update(Message::Control(ControlMessage::Field {
         action: ACTION.into(),
         parameter: "count".into(),
@@ -404,8 +415,11 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
         parameter: Some("count".into()),
     }));
     unchanged(&editor, "a field's Enter");
-    assert_eq!(editor.fields.get(ACTION, "count"), Some("7"));
-    assert!(editor.editing.is_some(), "the field keeps its typed text");
+    assert_eq!(editor.controls.fields.get(ACTION, "count"), Some("7"));
+    assert!(
+        editor.controls.editing.is_some(),
+        "the field keeps its typed text"
+    );
 
     // With the gesture gone, the same button runs.
     editor.gesture = None;
@@ -413,7 +427,7 @@ fn a_discrete_control_is_refused_while_a_gesture_is_open() {
         action: ACTION.into(),
         preset: serde_json::Map::from_iter([("amount".to_owned(), json!(0.0))]),
     }));
-    assert!(editor.busy, "{}", editor.status);
+    assert!(editor.busy, "{}", editor.status.text);
     finish(editor, catalog);
 }
 
@@ -492,17 +506,23 @@ fn every_refused_control_start_says_why() {
     ];
     let refused = |editor: &mut Editor, name: &str, message: Message, reason: &str| {
         editor.set_control_field_value(ACTION, "amount", &json!(3.0));
-        let fields = editor.fields.clone();
+        let fields = editor.controls.fields.clone();
         let (sequence, busy) = (editor.sync.sequence, editor.busy);
-        editor.status.clear();
+        editor.status.text.clear();
         let task = editor.update(message);
-        assert_eq!(editor.status, reason, "{name}");
+        assert_eq!(editor.status.text, reason, "{name}");
         assert_eq!(task.units(), 0, "{name}: nothing is sent");
         assert_eq!(editor.sync.sequence, sequence, "{name}: nothing is called");
         assert_eq!(editor.busy, busy, "{name}");
         assert!(editor.gesture.is_none(), "{name}: no draft opens");
-        assert_eq!(editor.fields, fields, "{name}: the field is as it was");
-        assert!(editor.pending_reset.is_none(), "{name}: nothing waits");
+        assert_eq!(
+            editor.controls.fields, fields,
+            "{name}: the field is as it was"
+        );
+        assert!(
+            editor.controls.pending_reset.is_none(),
+            "{name}: nothing waits"
+        );
     };
 
     // A previewed history entry refuses every one of them.
@@ -525,7 +545,7 @@ fn every_refused_control_start_says_why() {
         refused(&mut editor, name, message, crate::state::IN_FLIGHT);
     }
     let _ = editor.update(fraction("amount"));
-    assert!(editor.slider_gesture().is_some(), "{}", editor.status);
+    assert!(editor.slider_gesture().is_some(), "{}", editor.status.text);
     finish(editor, catalog);
 }
 
@@ -584,7 +604,7 @@ fn toggling_a_modules_only_group_records_nothing() {
         path: vec![0],
     }));
     assert!(
-        editor.controls_ui.group_expanded.is_empty(),
+        editor.controls.ui.group_expanded.is_empty(),
         "the only group has no disclosure"
     );
     let _ = editor.update(Message::Control(ControlMessage::ToggleGroup {
@@ -593,7 +613,8 @@ fn toggling_a_modules_only_group_records_nothing() {
     }));
     assert_eq!(
         editor
-            .controls_ui
+            .controls
+            .ui
             .group_expanded
             .get(&tools::group_key("luxforge.basic", &[1])),
         Some(&false)
@@ -610,7 +631,7 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
     let (action, parameter) = patch_control(&editor);
     let (pick, x, _) = tools::point_pick(&editor.modules).expect("a canvas pick");
     let (pick, x) = (pick.to_owned(), x.to_owned());
-    editor.fields.set(&pick, &x, "42".into());
+    editor.controls.fields.set(&pick, &x, "42".into());
     let asset = editor
         .document
         .state
@@ -658,29 +679,32 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
 
     seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("-25"),
         "the slider shows the authoritative value of the module's one layer"
     );
     assert_eq!(
-        editor.fields.get(&pick, &x),
+        editor.controls.fields.get(&pick, &x),
         Some("42"),
         "a module that reports no values keeps what was typed into it"
     );
 
     // A field being dragged is not overwritten by the refresh that arrives under it.
-    editor.dragging = Some((action.clone(), parameter.clone()));
-    editor.fields.set(&action, &parameter, "3".into());
+    editor.controls.dragging = Some((action.clone(), parameter.clone()));
+    editor.controls.fields.set(&action, &parameter, "3".into());
     seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
-    assert_eq!(editor.fields.get(&action, &parameter), Some("3"));
-    editor.dragging = None;
+    assert_eq!(editor.controls.fields.get(&action, &parameter), Some("3"));
+    editor.controls.dragging = None;
 
     // The same for a field being typed.
-    editor.editing = Some((action.clone(), parameter.clone()));
-    editor.fields.set(&action, &parameter, "2.5".into());
+    editor.controls.editing = Some((action.clone(), parameter.clone()));
+    editor
+        .controls
+        .fields
+        .set(&action, &parameter, "2.5".into());
     seeded(&mut editor, Some(json!({ parameter.clone(): -25.0 })));
-    assert_eq!(editor.fields.get(&action, &parameter), Some("2.5"));
-    editor.editing = None;
+    assert_eq!(editor.controls.fields.get(&action, &parameter), Some("2.5"));
+    editor.controls.editing = None;
 
     // The layer is gone: the fields it reported values for show their declared defaults.
     seeded(&mut editor, None);
@@ -689,10 +713,10 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
         .map(fields::seed_text)
         .expect("a declared default");
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some(default.as_str())
     );
-    assert_eq!(editor.fields.get(&pick, &x), Some("42"));
+    assert_eq!(editor.controls.fields.get(&pick, &x), Some("42"));
     finish(editor, catalog);
 }
 
@@ -732,16 +756,18 @@ fn invalid_text_shows_the_declared_range_and_commits_nothing() {
         assert!(
             editor
                 .status
+                .text
                 .contains(&crate::state::number::number_text(min))
                 && editor
                     .status
+                    .text
                     .contains(&crate::state::number::number_text(max)),
             "{} does not report its declared range: {}",
             parameter.name,
-            editor.status
+            editor.status.text
         );
         assert_eq!(
-            editor.fields.get(&action, &parameter.name),
+            editor.controls.fields.get(&action, &parameter.name),
             Some(outside.as_str()),
             "{} did not stay editable",
             parameter.name
@@ -823,7 +849,8 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
             // A patch action's reset control submits its preset and nothing else, so the
             // request carries this group's fields and leaves every other field alone.
             assert_eq!(
-                fields::action_params(&declared, &reset.preset, &editor.fields).expect("a request"),
+                fields::action_params(&declared, &reset.preset, &editor.controls.fields)
+                    .expect("a request"),
                 reset.preset,
                 "{label} sends more than its own preset"
             );
@@ -832,13 +859,14 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
                 module_id: module.id.clone(),
                 path: vec![index],
             }));
-            assert!(editor.busy, "{label}: {}", editor.status);
+            assert!(editor.busy, "{label}: {}", editor.status.text);
             assert!(
                 editor
                     .status
+                    .text
                     .starts_with(&format!("Running edit.{}", reset.action)),
                 "{label}: {}",
-                editor.status
+                editor.status.text
             );
         }
         let Some(reset) = &module.reset else {
@@ -848,14 +876,15 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
         let _ = editor.update(Message::Control(ControlMessage::ResetModule(
             module.id.clone(),
         )));
-        assert!(editor.busy, "{}: {}", module.id, editor.status);
+        assert!(editor.busy, "{}: {}", module.id, editor.status.text);
         assert!(
             editor
                 .status
+                .text
                 .starts_with(&format!("Running edit.{}", reset.action)),
             "{}: {}",
             module.id,
-            editor.status
+            editor.status.text
         );
     }
     assert!(groups >= 3, "the built-ins declare grouped resets");
@@ -863,7 +892,10 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
     // A double-click on one label is that one field, at its declared default, as one patch.
     let (action, parameter) = patch_control(&editor);
     editor.busy = false;
-    editor.fields.set(&action, &parameter, "1.5".into());
+    editor
+        .controls
+        .fields
+        .set(&action, &parameter, "1.5".into());
     let _ = editor.update(Message::Control(ControlMessage::ResetField {
         action: action.clone(),
         parameter: parameter.clone(),
@@ -873,13 +905,16 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
         .map(fields::seed_text)
         .expect("a declared default");
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some(default.as_str())
     );
     assert!(
-        editor.status.starts_with(&format!("Running edit.{action}")),
+        editor
+            .status
+            .text
+            .starts_with(&format!("Running edit.{action}")),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -1005,7 +1040,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
     // The current state.
     let current = described(&mut editor, 2.0);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(current))));
-    assert_eq!(editor.fields.get(&action, &parameter), Some("2"));
+    assert_eq!(editor.controls.fields.get(&action, &parameter), Some("2"));
 
     // A historical entry is selected: its own rows seed the same fields, and the section is
     // disabled with its values still visible.
@@ -1020,7 +1055,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
         },
     )))));
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("-1"),
         "the fields do not follow the previewed entry"
     );
@@ -1056,7 +1091,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
         },
     )))));
     assert_eq!(
-        editor.fields.get(&action, &parameter),
+        editor.controls.fields.get(&action, &parameter),
         Some("2"),
         "returning to current did not restore the current values"
     );
@@ -1081,7 +1116,7 @@ fn every_generated_action_control_matches_its_declared_schema() {
             .unwrap_or_else(|| panic!("{action} is not declared by any module"));
         let request = editor
             .request_for(&action, None)
-            .unwrap_or_else(|| panic!("{action}: {}", editor.status));
+            .unwrap_or_else(|| panic!("{action}: {}", editor.status.text));
         assert_eq!(request["method"], json!(format!("edit.{action}")));
         let params = request["params"].as_object().expect("an object");
         for parameter in &declared.parameters {
@@ -1116,9 +1151,12 @@ fn every_generated_action_control_matches_its_declared_schema() {
         }));
         assert!(editor.busy, "{action} did not run through RunAction");
         assert!(
-            editor.status.starts_with(&format!("Running edit.{action}")),
+            editor
+                .status
+                .text
+                .starts_with(&format!("Running edit.{action}")),
             "{action}: {}",
-            editor.status
+            editor.status.text
         );
         checked += 1;
     }
@@ -1142,10 +1180,11 @@ fn every_generated_action_control_matches_its_declared_schema() {
         assert!(
             editor
                 .status
+                .text
                 .starts_with(&format!("Running edit.{}", reset.action)),
             "{}: {}",
             module.id,
-            editor.status
+            editor.status.text
         );
         checked += 1;
     }
@@ -1177,11 +1216,11 @@ fn reset_group_dispatches_the_action_at_its_declared_position() {
         module_id: module.id.clone(),
         path: vec![0],
     }));
-    assert!(editor.busy, "{}", editor.status);
+    assert!(editor.busy, "{}", editor.status.text);
     assert!(
-        editor.status.starts_with("Running edit.crop-reset"),
+        editor.status.text.starts_with("Running edit.crop-reset"),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }
@@ -1242,7 +1281,7 @@ fn a_picker_control_enters_and_leaves_its_modules_mode_through_workspace_set() {
     let _ = editor.update(Message::Action(ActionMessage::CopyModeRequest(
         module_id.clone(),
     )));
-    assert_eq!(editor.status, "Copied the workspace.set request");
+    assert_eq!(editor.status.text, "Copied the workspace.set request");
 
     // Nothing about it is an edit: no history entry, no revision, no draft.
     assert_eq!(
@@ -1294,8 +1333,11 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         raw_refresh(&asset, &current),
     )))));
     let shown = |editor: &Editor| {
-        ["set-raw.temperature", "set-raw.tint"]
-            .map(|key| editor.fields.summary()[key].as_str().map(str::to_owned))
+        ["set-raw.temperature", "set-raw.tint"].map(|key| {
+            editor.controls.fields.summary()[key]
+                .as_str()
+                .map(str::to_owned)
+        })
     };
     assert_eq!(
         shown(&editor),
@@ -1322,11 +1364,11 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
     );
     assert_eq!(temperature.display, "3500");
     // The explicit gains have no control, so no field shows them.
-    assert_eq!(editor.fields.get("set-raw-red-gain", "gain"), None);
+    assert_eq!(editor.controls.fields.get("set-raw-red-gain", "gain"), None);
 
     // A historical As shot entry: the fields change when its rows arrive, not before, and the
     // field being edited is released by the selection.
-    editor.editing = Some(("set-raw".into(), "temperature".into()));
+    editor.controls.editing = Some(("set-raw".into(), "temperature".into()));
     let mut session = editor.session.clone();
     session
         .preview
@@ -1337,7 +1379,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         tasks::PreviewPayload { job, session },
     )))));
     assert_eq!(editor.document.display_entry, Some(historical.id.clone()));
-    assert!(editor.editing.is_none());
+    assert!(editor.controls.editing.is_none());
     assert!(
         !editor.recipe_rows_shown(),
         "an evidence frame waits for the displayed entry's own rows"
@@ -1400,7 +1442,7 @@ fn raw_fields_show_the_displayed_entrys_described_values() {
         "unavailable".into(),
     ))));
     assert!(editor.recipe_rows_shown());
-    assert_eq!(editor.status, "Recipe unavailable: unavailable");
+    assert_eq!(editor.status.text, "Recipe unavailable: unavailable");
     finish(editor, catalog);
 }
 
@@ -1594,9 +1636,10 @@ fn reset_group_runs_the_reset_the_panel_resolved() {
     assert!(
         editor
             .status
+            .text
             .starts_with(&format!("Running edit.{}", shown.action)),
         "{}",
-        editor.status
+        editor.status.text
     );
     finish(editor, catalog);
 }

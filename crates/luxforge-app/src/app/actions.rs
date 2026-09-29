@@ -30,7 +30,7 @@ impl Editor {
                 // A `mask.*` command is its own method, so the status names the method the copied
                 // request actually carries rather than prefixing `edit.` to all of them. It reads the
                 // request's own method, so the line can only ever name what was copied.
-                self.status = match request["method"].as_str() {
+                self.status.text = match request["method"].as_str() {
                     Some(method) => format!("Copied the {method} request"),
                     None => format!("Copied the {} request", tools::published_method(&action)),
                 };
@@ -47,7 +47,7 @@ impl Editor {
                 );
             }
             ActionMessage::CopyModeRequest(module_id) => {
-                self.status = "Copied the workspace.set request".into();
+                self.status.text = "Copied the workspace.set request".into();
                 // Mask is a host mode with no module behind it, so its request is the host's own.
                 let request = if module_id == luxforge_core::MASK_MODE {
                     self.mask_mode_request()
@@ -60,7 +60,7 @@ impl Editor {
             }
             ActionMessage::CopyDraftRequest => match self.crop_copy_request() {
                 Some(Ok((method, request))) => {
-                    self.status = format!("Copied the {method} request");
+                    self.status.text = format!("Copied the {method} request");
                     return iced::clipboard::write(
                         serde_json::to_string_pretty(&json!({
                             "method": method,
@@ -69,18 +69,18 @@ impl Editor {
                         .unwrap_or_default(),
                     );
                 }
-                Some(Err(message)) => self.status = message,
-                None => self.status = "No crop draft to copy".into(),
+                Some(Err(message)) => self.status.text = message,
+                None => self.status.text = "No crop draft to copy".into(),
             },
             ActionMessage::Run { action, preset } => {
                 if let Some(reason) = self.action_refusal(&action) {
-                    self.status = reason;
+                    self.status.text = reason;
                     return Task::none();
                 }
                 let (method, request) = match self.control_request(&action, &preset) {
                     Ok(request) => request,
                     Err(message) => {
-                        self.status = message;
+                        self.status.text = message;
                         return Task::none();
                     }
                 };
@@ -124,7 +124,7 @@ impl Editor {
     ) -> Result<(String, Value), String> {
         let declared = tools::declared_action(&self.modules, action)
             .ok_or_else(|| format!("No module declares the action {action}"))?;
-        let fields = action_params(declared, preset, &self.fields)?;
+        let fields = action_params(declared, preset, &self.controls.fields)?;
         self.request(action, &fields)
     }
 
@@ -171,13 +171,13 @@ impl Editor {
     ) -> Option<Value> {
         let built = match preset {
             Some(preset) => Ok(preset.clone()),
-            None => submit_preset(&self.modules, action, parameter, &self.fields),
+            None => submit_preset(&self.modules, action, parameter, &self.controls.fields),
         }
         .and_then(|preset| self.control_request(action, &preset));
         match built {
             Ok((method, params)) => Some(json!({"method":method,"params":params})),
             Err(message) => {
-                self.status = message;
+                self.status.text = message;
                 None
             }
         }

@@ -126,7 +126,7 @@ impl Editor {
                         "canvas_pick",
                         json!({"mode":mode,"view_x":x,"view_y":y,"error":reason}),
                     );
-                    self.status = reason;
+                    self.status.text = reason;
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
@@ -172,7 +172,7 @@ impl Editor {
                             "canvas_pick",
                             json!({"mode":mode,"view_x":view_x,"view_y":view_y,"error":error}),
                         );
-                        self.status = error;
+                        self.status.text = error;
                         self.settle_step(Settle::Pick);
                         return Task::none();
                     }
@@ -195,7 +195,7 @@ impl Editor {
                             // The state may have moved while the locate was out: the commit asks
                             // the pick's one refusal again.
                             if let Some(reason) = self.gesture_refusal(Starting::Pick) {
-                                self.status = reason;
+                                self.status.text = reason;
                                 self.settle_step(Settle::Pick);
                                 return Task::none();
                             }
@@ -212,15 +212,19 @@ impl Editor {
                                     self.leave_pick(command)
                                 }
                                 Err(message) => {
-                                    self.status = message;
+                                    self.status.text = message;
                                     self.settle_step(Settle::Pick);
                                     Task::none()
                                 }
                             };
                         }
-                        self.fields.set(&action, &x_parameter, x.to_string());
-                        self.fields.set(&action, &y_parameter, y.to_string());
-                        self.status = format!(
+                        self.controls
+                            .fields
+                            .set(&action, &x_parameter, x.to_string());
+                        self.controls
+                            .fields
+                            .set(&action, &y_parameter, y.to_string());
+                        self.status.text = format!(
                             "Picked ({x}, {y}) from view ({view_x}, {view_y}) into {action}"
                         );
                         // A point pick commits nothing, so the filled fields are its outcome.
@@ -250,7 +254,7 @@ impl Editor {
                             detail[luxforge_core::MASK_FIELD] = json!(mask.as_str());
                         }
                         self.event("canvas_pick", detail);
-                        self.status = format!("Sampling ({x}, {y})…");
+                        self.status.text = format!("Sampling ({x}, {y})…");
                         return query_task(
                             self.owner.clone(),
                             self.client,
@@ -278,7 +282,7 @@ impl Editor {
                         };
                         let asset = state.asset.id.clone();
                         let Some(mask) = self.mask_panel.selected_mask.clone() else {
-                            self.status = "Open a mask to pick a colour into it".into();
+                            self.status.text = "Open a mask to pick a colour into it".into();
                             self.settle_step(Settle::Pick);
                             return Task::none();
                         };
@@ -288,7 +292,7 @@ impl Editor {
                             "canvas_pick",
                             json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":view_x,"view_y":view_y,"x":x,"y":y}),
                         );
-                        self.status = format!("Sampling ({x}, {y})…");
+                        self.status.text = format!("Sampling ({x}, {y})…");
                         return query_task(
                             self.owner.clone(),
                             self.client,
@@ -322,7 +326,7 @@ impl Editor {
                             "canvas_sample",
                             json!({"action":action,"x":x,"y":y,"error":error}),
                         );
-                        self.status = error
+                        self.status.text = error
                             .split_once(": ")
                             .map_or(error.clone(), |(_, reason)| reason.to_owned());
                         self.settle_step(Settle::Pick);
@@ -352,7 +356,7 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 if fields.is_empty() {
-                    self.status =
+                    self.status.text =
                         format!("The sample answered no field {action} takes; nothing was applied");
                     self.event(
                         "canvas_sample",
@@ -365,7 +369,7 @@ impl Editor {
                     // Something else took the one request in flight, or the state moved, while the
                     // query was out. The answer is not committed behind it; the pick is refused
                     // with the pick's one refusal and said so.
-                    self.status = reason;
+                    self.status.text = reason;
                     self.settle_step(Settle::Pick);
                     return Task::none();
                 }
@@ -375,12 +379,13 @@ impl Editor {
                 // than sent.
                 if host.is_some() {
                     if self.mask_panel.selected_mask.is_none() {
-                        self.status = "Open a mask to pick a colour into it".into();
+                        self.status.text = "Open a mask to pick a colour into it".into();
                         self.settle_step(Settle::Pick);
                         return Task::none();
                     }
                     if self.mask_panel.selected_component.is_none() {
-                        self.status = "Select the component this pick fills before picking".into();
+                        self.status.text =
+                            "Select the component this pick fills before picking".into();
                         self.settle_step(Settle::Pick);
                         return Task::none();
                     }
@@ -388,7 +393,7 @@ impl Editor {
                 let (method, request) = match self.request(&action, &fields) {
                     Ok(request) => request,
                     Err(message) => {
-                        self.status = message;
+                        self.status.text = message;
                         self.settle_step(Settle::Pick);
                         return Task::none();
                     }
