@@ -1329,7 +1329,7 @@ were 69.49 / 75.26 and 166.91 / 176.39 ms. The 24 MP legs started at loads 2.15 
 the 60 MP leg started at 6.93 and ended at 10.51. The changes do not establish a core speedup.
 
 The older matched Fit comparisons are retained to show the with-and-without-deferral measurement
-required for TASK-010. They were one release launch per condition with 30 scripted inputs on a shared
+that qualified the drafted exact-phase deferral. They were one release launch per condition with 30 scripted inputs on a shared
 host and predate the current surface changes. Values are input-to-adoption p50 / p95 milliseconds:
 
 | Journey | Before deferral | After deferral |
