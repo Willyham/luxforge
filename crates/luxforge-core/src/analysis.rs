@@ -12,11 +12,12 @@ mod overlay;
 
 pub use jobs::{AnalysisDomain, AnalysisIdentity};
 pub(crate) use jobs::{AnalysisJob, AnalysisQueue};
+pub use mask_overlay::MaskInputPixel;
+pub(crate) use mask_overlay::coverage_grid_region;
 pub use mask_overlay::{
     MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MaskOverlay, MaskPixels, coverage_grid,
     quantize_coverage,
 };
-pub(crate) use mask_overlay::{MaskInputPixel, coverage_grid_region};
 pub(crate) use overlay::cell_pixel;
 pub use overlay::{
     MAX_OVERLAY_CELLS, OVERLAY_BOTH, OVERLAY_HIGHLIGHT, OVERLAY_NONE, OVERLAY_SHADOW, overlay,

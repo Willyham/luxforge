@@ -48,9 +48,9 @@ pub(crate) use evaluate::PointPlan;
 pub use masks::MASK_FIELD;
 pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;
+pub use source::RawInterpretation;
 pub(crate) use source::{
-    Prepared, Preparing, RawInterpretation, SourceWork, source_signature,
-    source_signature_for_handle,
+    Prepared, Preparing, SourceWork, source_signature, source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +225,7 @@ pub struct ActionResult {
     pub component: Option<crate::ComponentId>,
     /// The layers a `mask.delete` removed. A destructive command says what it removed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub removed_layers: Vec<crate::mask::commands::RemovedLayer>,
+    pub(crate) removed_layers: Vec<crate::mask::commands::RemovedLayer>,
     /// The settings a composite action — a preset — left out because they do not apply to the
     /// photo: a step whose module does not apply to its kind, and a field superseded on its global
     /// target. A skip is not a refusal; a composite that applies nothing is a no-op that still

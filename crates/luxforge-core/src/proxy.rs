@@ -138,7 +138,7 @@ pub struct ProxyPlan {
     /// the scale towards one, so without a window its proxy would approach the source's own size;
     /// with one, the proxy source is the display-sized part the crop reads plus a stated margin
     /// (instant previews, "Render what the display can show").
-    pub window: Option<ProxyWindow>,
+    pub(crate) window: Option<ProxyWindow>,
 }
 
 /// A rectangle of the whole proxy stage, in its pixels: the part a windowed proxy source holds.

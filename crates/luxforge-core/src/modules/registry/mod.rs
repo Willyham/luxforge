@@ -22,7 +22,7 @@ mod variants_tests;
 
 #[cfg(test)]
 pub(crate) use compile::stack_compiles;
-pub(crate) use lookups::{ActionRef, QueryRef};
+pub use lookups::{ActionRef, QueryRef};
 pub use placement::insertion_index_among;
 pub(crate) use variants::Superseded;
 

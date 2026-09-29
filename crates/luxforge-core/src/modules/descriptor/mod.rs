@@ -28,9 +28,10 @@ pub use types::{
     ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
     resolve_control, resolve_group_reset,
 };
-#[cfg(test)]
-pub(crate) use types::{ChoiceControl, ColorControl, RangeControl, ToggleControl};
-pub(crate) use types::{ControlVariant, IdentityKind};
+pub use types::{
+    ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
+    ResolvedReset, TaskControl, ToggleControl,
+};
 pub(crate) use types::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS};
 pub(crate) use validate::{
     check_declaration, check_parameter_declarations, valid_identity, valid_name,

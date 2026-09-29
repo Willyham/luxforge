@@ -579,7 +579,7 @@ pub struct ResetAction {
 /// `control` of its own shape over the named module's own actions or pick canvas; a group carries a
 /// `reset` of that module. A variant applies only on the global target of a photo of its kind: a
 /// mask target always uses the base control ([`resolve_control`]). Registration checks each one
-/// against the complete registry ([`crate::ModuleRegistry::check_complete`]).
+/// against the complete registry (`crate::ModuleRegistry::check_complete`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlVariant {

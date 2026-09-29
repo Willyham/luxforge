@@ -417,7 +417,7 @@ struct ActionText {
 /// Everything a field-patch module declares: its identity, its one effect, its two actions, the
 /// field table and how the fields are grouped and laid out. The descriptor is built from it once.
 ///
-/// A spec is made only by [`Spec::new`], which derives what every field-patch module shares and
+/// A spec is made only by `Spec::new`, which derives what every field-patch module shares and
 /// fixes what none may change: the effect's format is [`crate::EFFECT_FORMAT`], it declares no artifacts,
 /// it is `single` (the module owns one layer per target) and it applies to every source kind.
 pub struct Spec {
