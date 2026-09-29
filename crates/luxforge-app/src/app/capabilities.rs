@@ -736,10 +736,18 @@ impl Editor {
         if let Some(settings) = settings {
             state.settings = Some(settings);
         }
+        // The jobs this status reports ended. A run waiting on one takes its result here: once a
+        // read has tracked the job as ended the job poll stops, so a read made for any other
+        // reason — another client's change, or the owner's wake when this desktop's own task
+        // ended — is the last the desktop hears of it.
+        let mut ended = Vec::new();
         match status {
             Ok(status) => {
                 for record in &status.jobs {
                     state.track(record.clone(), false);
+                    if record.status.is_finished() {
+                        ended.push(record.clone());
+                    }
                 }
                 state.status = Some(status);
             }
@@ -812,6 +820,9 @@ impl Editor {
         // read after it; nothing needs to poll for it.
         if let Some(record) = job.filter(|record| record.status.is_finished()) {
             self.job_finished(&module_id, &record);
+        }
+        for record in &ended {
+            self.job_finished(&module_id, record);
         }
     }
 

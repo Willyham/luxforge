@@ -693,6 +693,43 @@ fn a_task_result_belongs_to_its_asset_and_a_wrong_key_fails_the_job() {
     proof.stop();
 }
 
+/// A task's job that ends before the job poll reads it is reported by the next status read made for
+/// any other reason — the owner's wake when this desktop's own task ended, which reads the module
+/// again — and that read tracks the job as ended, which stops the poll. So the run takes its
+/// result from that read, and Apply offers it.
+#[test]
+fn a_task_run_takes_its_result_from_a_status_read_that_sees_its_job_end() {
+    let mut proof = Proof::start();
+    proof.ready();
+    proof.send(CapabilityMessage::RunTask {
+        module_id: MODULE.into(),
+        task: TASK.into(),
+    });
+    proof.answer();
+    proof.send(CapabilityMessage::Consent(true));
+    proof.answer();
+    let job = proof.state().jobs.last().cloned().expect("the task's job");
+    wait_until("the task's job", || {
+        proof.api("job.read", json!({"job_id": job.job_id}))["status"] == "ready"
+    });
+    // The read the event sync asks for, in place of the job poll.
+    let _ = proof.editor.reload_capabilities();
+    proof.answer();
+    assert!(
+        !proof.editor.capabilities.live(),
+        "the job is tracked as ended, so nothing polls it"
+    );
+    assert!(
+        matches!(
+            proof.task_control().state,
+            TaskControlState::Succeeded { apply: Some(_), .. }
+        ),
+        "{:?}",
+        proof.task_control().state
+    );
+    proof.stop();
+}
+
 #[test]
 fn a_cancel_goes_through_the_job_method() {
     let mut proof = Proof::start();
