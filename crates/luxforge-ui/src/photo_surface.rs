@@ -61,24 +61,49 @@
 //!   limit — every display proxy, every overlay, and every exact render up to 8192 pixels a side,
 //!   about 45 MP at 3:2 — is one tile, which is the single texture it would otherwise be.
 //!
-//! Memory: one full photograph slot and two region sets per pipeline. They reserve bounded size
+//! Surfaces: Iced keeps one pipeline per primitive type, shared by every photo surface on screen, so
+//! the pipeline keys its textures by the [`SurfaceId`] each primitive carries. Every surface has
+//! its own slots, region sets and uniforms, so two surfaces drawn in one frame neither overwrite
+//! each other's textures nor re-upload an unchanged frame. A surface that a frame did not draw is
+//! no longer shown: Iced's end-of-frame `trim` releases its slots by id, and the same id drawn
+//! again later starts with empty slots.
+//!
+//! Memory: one full photograph slot and two region sets per surface. They reserve bounded size
 //! buckets so a refit, half-to-exact refinement or one-pixel pan change can reuse their textures;
-//! only the active rectangle is written and sampled. A full replacement may overlap one retiring
-//! full allocation, each capped at 512 MiB; each region set is capped at 32 MiB. The crop stage
-//! and overlays have separate textures. The crop stage's is reserved at exactly its frame's size:
-//! the display-size proxy a draft shows at Fit, and a full-size exact stage only at a percentage
-//! zoom that needs one, never kept for the proxy after it. The pixels are borrowed from desktop
-//! frames, and uploads read their rows directly from those buffers.
+//! only the active rectangle is written and sampled. A surface's full replacement may overlap one
+//! retiring full allocation of its own, each capped at 512 MiB; each region set is capped at
+//! 32 MiB. The ceiling behind those caps — 1 GiB of full allocations and 64 MiB of region sets,
+//! resident or retiring — is one budget shared by every surface: a second surface draws from it
+//! rather than doubling it, and an allocation that would pass it is deferred, leaving every
+//! surface's current picture in place, until a retirement or a released surface makes room. The
+//! crop stage and overlays have separate textures outside that budget. The crop stage's is
+//! reserved at exactly its frame's size: the display-size proxy a draft shows at Fit, and a
+//! full-size exact stage only at a percentage zoom that needs one, never kept for the proxy after
+//! it. The pixels are borrowed from desktop frames, and uploads read their rows directly from those
+//! buffers.
 
 use iced::{
     ContentFit, Element, Length, Point, Rectangle, Size, Vector,
     advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree},
     widget::shader::{self, Viewport},
 };
+use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU64, Ordering},
 };
+
+/// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
+/// surfaces on screen at once must carry different ids, and a surface keeps its textures — and an
+/// unchanged frame is not uploaded again — only while every frame draws it with the same id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SurfaceId(u64);
+
+impl SurfaceId {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 /// What one [`PhotoPipeline`] counts of its own texture work, shared with its retirement worker.
 #[derive(Default)]
@@ -113,8 +138,53 @@ type SurfaceWaker = Arc<dyn Fn() + Send + Sync>;
 
 static RETIREMENT_WAKER: OnceLock<Mutex<Option<SurfaceWaker>>> = OnceLock::new();
 
+/// One full-photo allocation's cap.
 const FULL_BUDGET: u64 = 512 * 1024 * 1024;
+/// One region set's cap.
 const REGION_SET_BUDGET: u64 = 32 * 1024 * 1024;
+/// Every surface's full allocations, resident and retiring: the owner's provisional one current
+/// and one retiring allocation, shared by all surfaces rather than granted to each.
+const FULL_CEILING: u64 = 2 * FULL_BUDGET;
+/// Every surface's region sets, resident and retiring, likewise shared.
+const REGION_CEILING: u64 = 2 * REGION_SET_BUDGET;
+
+/// What the shared budget says about a new allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Admission {
+    Admit,
+    /// Wait for a retirement or a released surface; the surface keeps drawing what it has.
+    Defer,
+    /// Larger than one allocation may ever be.
+    Reject,
+}
+
+/// Whether a surface may replace its full allocation with one of `bytes`. `own_current` is the
+/// allocation it would retire, `own_retiring` how many of its own are still retiring, and
+/// `elsewhere` every other surface's resident full bytes plus every retiring full allocation.
+/// With one surface this is the rule it always had: at most its current and one retiring
+/// allocation, each within 512 MiB.
+fn full_admission(bytes: u64, own_current: u64, own_retiring: u64, elsewhere: u64) -> Admission {
+    if bytes > FULL_BUDGET {
+        Admission::Reject
+    } else if own_retiring > 0 || elsewhere + own_current + bytes > FULL_CEILING {
+        Admission::Defer
+    } else {
+        Admission::Admit
+    }
+}
+
+/// Whether a surface may add a region set of `bytes` once its old set at that index is retiring:
+/// at most two of its own sets, resident or retiring, and `charged` — every surface's resident
+/// and retiring region bytes — plus `bytes` within the shared region ceiling.
+fn region_admission(bytes: u64, own_sets: u64, charged: u64) -> Admission {
+    if bytes > REGION_SET_BUDGET {
+        Admission::Reject
+    } else if own_sets >= 2 || charged + bytes > REGION_CEILING {
+        Admission::Defer
+    } else {
+        Admission::Admit
+    }
+}
 
 /// Register the desktop's existing buffered wake channel for deferred GPU texture admission.
 /// The callback may run on any thread; it should only enqueue a wake, never touch UI state.
@@ -132,7 +202,9 @@ pub fn surface_retirement_pending() -> bool {
 
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
-/// backend-owned upload staging are outside these photograph-slot byte counts.
+/// backend-owned upload staging are outside these photograph-slot byte counts. Counts and
+/// resident bytes cover every surface; the drawn identity describes the surface drawn last, which
+/// is the Develop canvas's while it is the only one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrawnRegion {
     pub version: u64,
@@ -474,6 +546,7 @@ enum Base {
 /// placed `Contain` and centred inside whatever the widget is given, and the exact displayed box at
 /// a percentage, where it is placed `Fill` and the widget may be far larger than the window.
 pub struct PhotoSurface {
+    id: SurfaceId,
     base: Base,
     /// The displayed frame first, then each overlay present, in draw order.
     layers: Vec<(Layer, Frame)>,
@@ -491,14 +564,16 @@ struct ViewportFrames {
     full_stage: (u32, u32),
 }
 
-/// The photograph, placed by `placement`.
+/// The photograph, placed by `placement`, on surface `id`.
 pub fn photo_surface(
+    id: SurfaceId,
     frame: &Frame,
     placement: Placement,
     width: Length,
     height: Length,
 ) -> PhotoSurface {
     PhotoSurface {
+        id,
         base: Base::Photo(placement),
         layers: vec![(Layer::Photo, frame.clone())],
         viewport: None,
@@ -510,7 +585,9 @@ pub fn photo_surface(
 
 /// A percentage-zoom photograph with independently retained full and viewport rasters. Matching
 /// content is preferred; a coherent previous picture stays visible while admission is deferred.
+#[allow(clippy::too_many_arguments)]
 pub fn viewport_surface(
+    id: SurfaceId,
     full: Option<(&Frame, u64)>,
     region: Option<&RegionFrame>,
     current_content: u64,
@@ -523,6 +600,7 @@ pub fn viewport_surface(
         .filter(|region| region.full_stage == full_stage)
         .cloned();
     PhotoSurface {
+        id,
         base: Base::Photo(placement),
         layers: Vec::new(),
         viewport: Some(ViewportFrames {
@@ -538,9 +616,17 @@ pub fn viewport_surface(
 }
 
 /// A crop draft's input stage, turned and dimmed as `turn` says. It has a texture of its own, so the
-/// photograph's stays written while the draft is open.
-pub fn stage_surface(frame: &Frame, turn: Turn, width: Length, height: Length) -> PhotoSurface {
+/// photograph's stays written while the draft is open, provided the draft draws on the photograph's
+/// surface `id`.
+pub fn stage_surface(
+    id: SurfaceId,
+    frame: &Frame,
+    turn: Turn,
+    width: Length,
+    height: Length,
+) -> PhotoSurface {
     PhotoSurface {
+        id,
         base: Base::Stage(turn),
         layers: vec![(Layer::Stage, frame.clone())],
         viewport: None,
@@ -727,6 +813,7 @@ where
         renderer.draw_primitive(
             visible.clip,
             PhotoPrimitive {
+                surface: self.id,
                 layers: self.layers.clone(),
                 viewport: self.viewport.clone(),
                 region_overlays: self.region_overlays.clone(),
@@ -759,6 +846,8 @@ where
 /// after applying whatever translation a scrollable put it under.
 #[derive(Debug)]
 pub struct PhotoPrimitive {
+    /// Whose textures `prepare` writes and `draw` samples.
+    surface: SurfaceId,
     layers: Vec<(Layer, Frame)>,
     viewport: Option<ViewportFrames>,
     region_overlays: [Option<RegionOverlay>; 2],
@@ -976,6 +1065,13 @@ impl shader::Primitive for PhotoPrimitive {
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
+        // Out of the map while it is written, so the budget reads every other surface's charge
+        // from the map and this one's from `surface`.
+        let mut surface = pipeline
+            .surfaces
+            .remove(&self.surface)
+            .unwrap_or_else(|| pipeline.new_surface());
+        surface.shown = true;
         for layer in [Layer::Stage, Layer::Clipping, Layer::Coverage] {
             let region_overlay = match layer {
                 Layer::Clipping => self.region_overlays[0].is_some(),
@@ -983,7 +1079,7 @@ impl shader::Primitive for PhotoPrimitive {
                 _ => false,
             };
             if !region_overlay && !self.layers.iter().any(|(drawn, _)| *drawn == layer) {
-                pipeline.slots[layer.index()] = None;
+                surface.slots[layer.index()] = None;
             }
         }
         for (layer, frame) in &self.layers {
@@ -996,23 +1092,31 @@ impl shader::Primitive for PhotoPrimitive {
                 .then_some(viewport.current_content)
             });
             if self.viewport.is_none() || *layer != Layer::Photo {
-                pipeline.write(device, queue, *layer, frame, content_id, None);
+                pipeline.write_slot(&mut surface, device, queue, *layer, frame, content_id, None);
             }
         }
         if let Some(view) = &self.viewport {
             if let Some((frame, content)) = &view.full
                 && *content == view.current_content
             {
-                pipeline.write(device, queue, Layer::Photo, frame, Some(*content), None);
+                pipeline.write_slot(
+                    &mut surface,
+                    device,
+                    queue,
+                    Layer::Photo,
+                    frame,
+                    Some(*content),
+                    None,
+                );
             }
-            let full_ready = pipeline.slots[Layer::Photo.index()]
+            let full_ready = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .is_some_and(|picture| picture.content_id == Some(view.current_content));
             if !full_ready
                 && let Some(region) = &view.region
                 && region.content_id == view.current_content
             {
-                pipeline.write_region(device, queue, region);
+                pipeline.write_region_slot(&mut surface, device, queue, region);
             }
             for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
                 if let Some(overlay) = &self.region_overlays[index]
@@ -1020,7 +1124,8 @@ impl shader::Primitive for PhotoPrimitive {
                     && key.content_id == view.current_content
                     && key.full_stage == view.full_stage
                 {
-                    pipeline.write(
+                    pipeline.write_slot(
+                        &mut surface,
                         device,
                         queue,
                         layer,
@@ -1039,7 +1144,7 @@ impl shader::Primitive for PhotoPrimitive {
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
         for (layer, _) in &self.layers {
-            if let Some(picture) = &pipeline.slots[layer.index()] {
+            if let Some(picture) = &surface.slots[layer.index()] {
                 write_uniforms(
                     queue,
                     picture,
@@ -1051,7 +1156,7 @@ impl shader::Primitive for PhotoPrimitive {
             }
         }
         if self.viewport.is_some() {
-            if let Some(picture) = &pipeline.slots[Layer::Photo.index()] {
+            if let Some(picture) = &surface.slots[Layer::Photo.index()] {
                 write_uniforms(
                     queue,
                     picture,
@@ -1061,7 +1166,7 @@ impl shader::Primitive for PhotoPrimitive {
                     turn,
                 );
             }
-            for picture in pipeline.regions.iter().flatten() {
+            for picture in surface.regions.iter().flatten() {
                 write_uniforms(
                     queue,
                     picture,
@@ -1073,10 +1178,10 @@ impl shader::Primitive for PhotoPrimitive {
             }
             for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
                 if let Some(overlay) = &self.region_overlays[index]
-                    && let Some(picture) = &pipeline.slots[layer.index()]
+                    && let Some(picture) = &surface.slots[layer.index()]
                 {
                     let matched =
-                        if pipeline.slots[Layer::Photo.index()]
+                        if surface.slots[Layer::Photo.index()]
                             .as_ref()
                             .is_some_and(|full| {
                                 full.content_id == Some(overlay.content_id)
@@ -1086,7 +1191,7 @@ impl shader::Primitive for PhotoPrimitive {
                         {
                             None
                         } else {
-                            pipeline
+                            surface
                                 .regions
                                 .iter()
                                 .flatten()
@@ -1109,6 +1214,7 @@ impl shader::Primitive for PhotoPrimitive {
                 }
             }
         }
+        pipeline.surfaces.insert(self.surface, surface);
         pipeline.publish_diagnostics();
     }
 
@@ -1116,7 +1222,11 @@ impl shader::Primitive for PhotoPrimitive {
         // The render pass's viewport is already the visible part of this widget and its scissor
         // that part clipped to the layer, so each tile's quad is positioned inside that frame by
         // its uniform alone and whatever of it falls outside is clipped. The layers are drawn in
-        // order, each blended over the one before.
+        // order, each blended over the one before. `prepare` put this surface in the map earlier
+        // in the same frame; a frame that skips a primitive's layer skips both calls.
+        let Some(surface) = pipeline.surfaces.get(&self.surface) else {
+            return true;
+        };
         render_pass.set_pipeline(&pipeline.pipeline);
         let mut drawn_clipping_version = None;
         let mut drawn_full_version = None;
@@ -1129,7 +1239,7 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drew_photo = false;
         let mut stale_photo = false;
         if let Some(view) = &self.viewport {
-            let matching_full = pipeline.slots[Layer::Photo.index()]
+            let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {
                     picture.content_id == Some(view.current_content)
@@ -1139,10 +1249,10 @@ impl shader::Primitive for PhotoPrimitive {
             let matching_regions = if matching_full.is_some() {
                 Vec::new()
             } else {
-                region_draw_order(&pipeline.regions, view.current_content, view.full_stage)
+                region_draw_order(&surface.regions, view.current_content, view.full_stage)
                     .into_iter()
                     .filter(|&index| {
-                        pipeline.regions[index]
+                        surface.regions[index]
                             .as_ref()
                             .and_then(|picture| picture.region_key)
                             .is_some_and(|key| {
@@ -1155,7 +1265,7 @@ impl shader::Primitive for PhotoPrimitive {
             // whole picture, then one previous region content; never composite different contents.
             let full = matching_full.or_else(|| {
                 matching_regions.is_empty().then(|| {
-                    pipeline.slots[Layer::Photo.index()]
+                    surface.slots[Layer::Photo.index()]
                         .as_ref()
                         .filter(|picture| picture.region_key.is_none())
                 })?
@@ -1165,7 +1275,7 @@ impl shader::Primitive for PhotoPrimitive {
             } else if !matching_regions.is_empty() {
                 matching_regions
             } else {
-                pipeline
+                surface
                     .regions
                     .iter()
                     .flatten()
@@ -1176,10 +1286,10 @@ impl shader::Primitive for PhotoPrimitive {
                     })
                     .max_by_key(|key| key.generation)
                     .map_or_else(Vec::new, |key| {
-                        region_draw_order(&pipeline.regions, key.content_id, view.full_stage)
+                        region_draw_order(&surface.regions, key.content_id, view.full_stage)
                             .into_iter()
                             .filter(|&index| {
-                                pipeline.regions[index]
+                                surface.regions[index]
                                     .as_ref()
                                     .and_then(|picture| picture.region_key)
                                     .is_some_and(|key| {
@@ -1195,7 +1305,7 @@ impl shader::Primitive for PhotoPrimitive {
                     })
             };
             let region_keys: [Option<RegionKey>; 2] = std::array::from_fn(|index| {
-                pipeline.regions[index]
+                surface.regions[index]
                     .as_ref()
                     .and_then(|picture| picture.region_key)
             });
@@ -1211,7 +1321,7 @@ impl shader::Primitive for PhotoPrimitive {
                 }
             } else {
                 for &index in &region_order {
-                    let picture = pipeline.regions[index].as_ref().expect("selected region");
+                    let picture = surface.regions[index].as_ref().expect("selected region");
                     draw_picture(render_pass, picture);
                     drew_photo = true;
                     if let Some(key) = picture.region_key {
@@ -1235,7 +1345,7 @@ impl shader::Primitive for PhotoPrimitive {
             }
             for (layer, _) in &self.layers {
                 if *layer != Layer::Photo
-                    && let Some(picture) = &pipeline.slots[layer.index()]
+                    && let Some(picture) = &surface.slots[layer.index()]
                     && matching_full.is_some()
                     && picture.content_id == Some(view.current_content)
                 {
@@ -1258,7 +1368,7 @@ impl shader::Primitive for PhotoPrimitive {
                     && key.content_id == view.current_content
                     && key.quality == RegionQuality::Exact;
                 if (matching_region || matching_full)
-                    && let Some(picture) = &pipeline.slots[layer.index()]
+                    && let Some(picture) = &surface.slots[layer.index()]
                     && picture.region_key == Some(key)
                 {
                     draw_picture(render_pass, picture);
@@ -1273,7 +1383,7 @@ impl shader::Primitive for PhotoPrimitive {
                 .iter()
                 .find(|(layer, _)| *layer == Layer::Photo)
                 .is_none_or(|(_, frame)| {
-                    pipeline.slots[Layer::Photo.index()]
+                    surface.slots[Layer::Photo.index()]
                         .as_ref()
                         .is_some_and(|picture| {
                             picture.matching_frame(frame, None, None)
@@ -1285,7 +1395,7 @@ impl shader::Primitive for PhotoPrimitive {
                 if matches!(*layer, Layer::Clipping | Layer::Coverage) && !photo_ready {
                     continue;
                 }
-                if let Some(picture) = &pipeline.slots[layer.index()] {
+                if let Some(picture) = &surface.slots[layer.index()] {
                     draw_picture(render_pass, picture);
                     if *layer == Layer::Photo {
                         drew_photo = true;
@@ -1309,8 +1419,10 @@ impl shader::Primitive for PhotoPrimitive {
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
-        let status_changed = diagnostic.drawn_photo_blank != blank_photo
-            || diagnostic.drawn_stale_photo != stale_photo;
+        // Each surface compares against its own last draw, so two surfaces in different states
+        // do not wake each other every frame.
+        let status = u8::from(blank_photo) | (u8::from(stale_photo) << 1);
+        let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
@@ -1485,6 +1597,76 @@ struct Picture {
 struct RetiredPicture {
     picture: Picture,
     full: bool,
+    /// The retiring charge of the surface that retired it, beside the pipeline's own.
+    surface: Arc<Retiring>,
+}
+
+/// Allocations charged while they retire: the pipeline's, which the shared budget counts, or one
+/// surface's, which its own at-most-one-retiring rules count.
+#[derive(Default)]
+struct Retiring {
+    full: AtomicU64,
+    full_bytes: AtomicU64,
+    regions: AtomicU64,
+    region_bytes: AtomicU64,
+}
+
+impl Retiring {
+    fn charge(&self, bytes: u64, full: bool) {
+        if full {
+            self.full.fetch_add(1, Ordering::AcqRel);
+            self.full_bytes.fetch_add(bytes, Ordering::AcqRel);
+        } else {
+            self.regions.fetch_add(1, Ordering::AcqRel);
+            self.region_bytes.fetch_add(bytes, Ordering::AcqRel);
+        }
+    }
+
+    fn discharge(&self, bytes: u64, full: bool) {
+        if full {
+            self.full.fetch_sub(1, Ordering::AcqRel);
+            self.full_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        } else {
+            self.regions.fetch_sub(1, Ordering::AcqRel);
+            self.region_bytes.fetch_sub(bytes, Ordering::AcqRel);
+        }
+    }
+
+    #[cfg(test)]
+    fn bytes(&self) -> u64 {
+        self.full_bytes.load(Ordering::Acquire) + self.region_bytes.load(Ordering::Acquire)
+    }
+}
+
+/// One surface's textures: its displayed frame, overlays and crop stage by layer, its two region
+/// sets, and what it is waiting for.
+struct SurfaceSlots {
+    slots: [Option<Picture>; 4],
+    regions: [Option<Picture>; 2],
+    region_front: usize,
+    deferred_photo: bool,
+    deferred_region: bool,
+    retiring: Arc<Retiring>,
+    /// Prepared since the last end-of-frame trim.
+    shown: bool,
+    /// The last draw's blank (bit 0) and stale (bit 1) status, so a change wakes the desktop once.
+    drawn_status: AtomicU8,
+}
+
+impl SurfaceSlots {
+    fn full_bytes(&self) -> u64 {
+        self.slots[Layer::Photo.index()]
+            .as_ref()
+            .map_or(0, |picture| picture.allocated_bytes)
+    }
+
+    fn region_bytes(&self) -> u64 {
+        self.regions
+            .iter()
+            .flatten()
+            .map(|picture| picture.allocated_bytes)
+            .sum()
+    }
 }
 
 impl Picture {
@@ -1576,40 +1758,48 @@ fn region_capacity(region: &RegionFrame, limit: u32) -> (u32, u32) {
     }
 }
 
-/// The render pipeline, the samplers and every layer's textures, shared by every instance of
-/// [`PhotoPrimitive`]. One photograph is on screen at a time, so this is one set of textures per
-/// layer for the application: one texture each unless a frame is larger than the device allows.
+/// The render pipeline, the samplers and every surface's textures, shared by every instance of
+/// [`PhotoPrimitive`]: Iced keeps one pipeline per primitive type, so the textures are keyed by the
+/// [`SurfaceId`] each primitive carries. Each surface has one set of textures per layer: one
+/// texture each unless a frame is larger than the device allows.
 pub struct PhotoPipeline {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     texture_format: wgpu::TextureFormat,
-    slots: [Option<Picture>; 4],
-    regions: [Option<Picture>; 2],
-    region_front: usize,
-    retiring_bytes: Arc<AtomicU64>,
-    retiring_full: Arc<AtomicU64>,
-    retiring_regions: Arc<AtomicU64>,
-    retiring_region_bytes: Arc<AtomicU64>,
+    surfaces: HashMap<SurfaceId, SurfaceSlots>,
+    /// Every surface's retiring allocations, which the shared budget counts.
+    retiring: Arc<Retiring>,
     retirement_sender: std::sync::mpsc::Sender<RetiredPicture>,
-    deferred_photo: bool,
-    deferred_region: bool,
     /// What this pipeline counts of its own texture work.
     figures: Arc<SurfaceFigures>,
 }
 
 impl PhotoPipeline {
-    fn retire(&self, picture: Picture, full: bool) {
-        let bytes = picture.allocated_bytes;
-        self.retiring_bytes.fetch_add(bytes, Ordering::AcqRel);
-        if full {
-            self.retiring_full.fetch_add(1, Ordering::AcqRel);
-        } else {
-            self.retiring_regions.fetch_add(1, Ordering::AcqRel);
-            self.retiring_region_bytes
-                .fetch_add(bytes, Ordering::AcqRel);
+    /// Empty slots for a surface drawn for the first time, or again after it was released. Its
+    /// last-drawn status starts as the pipeline's, so one surface shown alone wakes the desktop
+    /// on exactly the status changes it always did.
+    fn new_surface(&self) -> SurfaceSlots {
+        let diagnostic = self.figures.diagnostics();
+        let status =
+            u8::from(diagnostic.drawn_photo_blank) | (u8::from(diagnostic.drawn_stale_photo) << 1);
+        SurfaceSlots {
+            slots: [None, None, None, None],
+            regions: [None, None],
+            region_front: 0,
+            deferred_photo: false,
+            deferred_region: false,
+            retiring: Arc::default(),
+            shown: false,
+            drawn_status: AtomicU8::new(status),
         }
+    }
+
+    fn retire(&self, surface: &SurfaceSlots, picture: Picture, full: bool) {
+        let bytes = picture.allocated_bytes;
+        self.retiring.charge(bytes, full);
+        surface.retiring.charge(bytes, full);
         self.figures
             .retirement_pending
             .fetch_add(1, Ordering::AcqRel);
@@ -1617,60 +1807,122 @@ impl PhotoPipeline {
             let mut diagnostic = self.figures.diagnostics();
             diagnostic.retiring_bytes += bytes;
         }
-        // The worker receives each retirement once. At most the one full slot and two region
-        // sets can be charged at once, so this queue is bounded by admission rather than a timer.
-        if let Err(error) = self
-            .retirement_sender
-            .send(RetiredPicture { picture, full })
-        {
+        // The worker receives each retirement once. Admission bounds what can be charged at once
+        // — per surface its current full allocation, one retiring and two region sets, and for
+        // every surface together the shared ceilings — so this queue is bounded without a timer.
+        if let Err(error) = self.retirement_sender.send(RetiredPicture {
+            picture,
+            full,
+            surface: Arc::clone(&surface.retiring),
+        }) {
             // Device loss or pipeline teardown can end the worker. Its GPU allocations are then
             // invalid; release their charge and wake the desktop instead of waiting forever.
-            finish_retirement(
-                &self.figures,
-                error.0,
-                &self.retiring_bytes,
-                &self.retiring_full,
-                &self.retiring_regions,
-                &self.retiring_region_bytes,
-                true,
-            );
+            finish_retirement(&self.figures, error.0, &self.retiring, true);
         }
     }
 
+    /// Release a surface that is no longer shown: its charged photo and region allocations retire
+    /// against the shared budget, and its crop stage and overlays, which are not charged, go.
+    fn release(&self, mut surface: SurfaceSlots) {
+        if let Some(picture) = surface.slots[Layer::Photo.index()].take() {
+            self.retire(&surface, picture, true);
+        }
+        for index in 0..surface.regions.len() {
+            if let Some(picture) = surface.regions[index].take() {
+                self.retire(&surface, picture, false);
+            }
+        }
+    }
+
+    /// Every surface in the map. While `prepare` writes one it is out of the map, so these are
+    /// then the other surfaces' bytes.
+    fn resident_full_bytes(&self) -> u64 {
+        self.surfaces.values().map(SurfaceSlots::full_bytes).sum()
+    }
+
     fn resident_region_bytes(&self) -> u64 {
-        self.regions
-            .iter()
-            .flatten()
-            .map(|picture| picture.allocated_bytes)
-            .sum()
+        self.surfaces.values().map(SurfaceSlots::region_bytes).sum()
     }
 
     fn publish_diagnostics(&self) {
         let mut diagnostic = self.figures.diagnostics();
-        diagnostic.full_resident_bytes = self.slots[Layer::Photo.index()]
-            .as_ref()
-            .map_or(0, |picture| picture.allocated_bytes);
+        diagnostic.full_resident_bytes = self.resident_full_bytes();
         diagnostic.region_resident_bytes = self.resident_region_bytes();
-        diagnostic.stage_resident_bytes = self.slots[Layer::Stage.index()]
-            .as_ref()
-            .map_or(0, |picture| picture.allocated_bytes);
+        diagnostic.stage_resident_bytes = self
+            .surfaces
+            .values()
+            .filter_map(|surface| surface.slots[Layer::Stage.index()].as_ref())
+            .map(|picture| picture.allocated_bytes)
+            .sum();
         diagnostic.photo_writes = self.figures.writes.load(Ordering::Relaxed);
         diagnostic.upload_bytes = self.figures.upload_bytes.load(Ordering::Relaxed);
     }
 
-    fn defer(&mut self, region: bool) {
+    fn defer(&self, surface: &mut SurfaceSlots, region: bool) {
         self.figures.diagnostics().deferred_uploads += 1;
         if region {
-            self.deferred_region = true;
+            surface.deferred_region = true;
         } else {
-            self.deferred_photo = true;
+            surface.deferred_photo = true;
         }
     }
 
-    /// Make `layer`'s textures hold `frame`, creating them when the dimensions changed and writing
-    /// the pixels when the version did.
+    /// Take surface `id`'s slots out of the map for `write`, as `prepare` does, and publish the
+    /// figures after.
+    #[cfg(test)]
+    fn with_surface<T>(
+        &mut self,
+        id: SurfaceId,
+        write: impl FnOnce(&Self, &mut SurfaceSlots) -> T,
+    ) -> T {
+        let mut surface = self
+            .surfaces
+            .remove(&id)
+            .unwrap_or_else(|| self.new_surface());
+        let written = write(self, &mut surface);
+        self.surfaces.insert(id, surface);
+        self.publish_diagnostics();
+        written
+    }
+
+    /// [`Self::write_slot`] on surface `id`.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     fn write(
         &mut self,
+        id: SurfaceId,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: Layer,
+        frame: &Frame,
+        content_id: Option<u64>,
+        region_key: Option<RegionKey>,
+    ) -> bool {
+        self.with_surface(id, |pipeline, surface| {
+            pipeline.write_slot(surface, device, queue, layer, frame, content_id, region_key)
+        })
+    }
+
+    /// [`Self::write_region_slot`] on surface `id`.
+    #[cfg(test)]
+    fn write_region(
+        &mut self,
+        id: SurfaceId,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        region: &RegionFrame,
+    ) {
+        self.with_surface(id, |pipeline, surface| {
+            pipeline.write_region_slot(surface, device, queue, region)
+        });
+    }
+
+    /// Make `surface`'s textures for `layer` hold `frame`, creating them when the dimensions
+    /// changed and writing the pixels when the version did. `surface` is out of the map.
+    #[allow(clippy::too_many_arguments)]
+    fn write_slot(
+        &self,
+        surface: &mut SurfaceSlots,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layer: Layer,
@@ -1682,7 +1934,7 @@ impl PhotoPipeline {
         // The device's limit, not the GPU's: Iced asks wgpu for its default limits, so this is
         // 8192 on the owner's Mac although the GPU could hold larger textures.
         let limit = device.limits().max_texture_dimension_2d;
-        let reusable = self.slots[layer.index()]
+        let reusable = surface.slots[layer.index()]
             .as_ref()
             // A crop stage is reserved at exactly its frame's size, so the display-size proxy a
             // draft shows at Fit never keeps the full-size texture an exact stage at a percentage
@@ -1699,19 +1951,28 @@ impl PhotoPipeline {
             let layouts = tile_layout(capacity, limit);
             let bytes = allocated_bytes(&layouts);
             if layer == Layer::Photo {
-                if bytes > FULL_BUDGET {
-                    self.figures.diagnostics().rejected_full_uploads += 1;
-                    return false;
+                // At most this surface's current and one retiring full allocation may exist, and
+                // every surface's together stay within the shared ceiling. While an older
+                // retirement is in flight, or other surfaces hold the room, keep the current
+                // texture drawable.
+                match full_admission(
+                    bytes,
+                    surface.full_bytes(),
+                    surface.retiring.full.load(Ordering::Acquire),
+                    self.resident_full_bytes() + self.retiring.full_bytes.load(Ordering::Acquire),
+                ) {
+                    Admission::Reject => {
+                        self.figures.diagnostics().rejected_full_uploads += 1;
+                        return false;
+                    }
+                    Admission::Defer => {
+                        self.defer(surface, false);
+                        return false;
+                    }
+                    Admission::Admit => {}
                 }
-                // At most the current and one retiring full allocation may exist. If an older
-                // retirement is still in flight, keep the current texture drawable until it ends.
-                if self.retiring_full.load(Ordering::Acquire) > 0 {
-                    self.defer(false);
-                    self.publish_diagnostics();
-                    return false;
-                }
-                if let Some(old) = self.slots[layer.index()].take() {
-                    self.retire(old, true);
+                if let Some(old) = surface.slots[layer.index()].take() {
+                    self.retire(surface, old, true);
                 }
             }
             let grid = tile_grid(capacity, limit);
@@ -1719,7 +1980,7 @@ impl PhotoPipeline {
                 .into_iter()
                 .map(|tile| self.tile(device, layer, tile))
                 .collect();
-            self.slots[layer.index()] = Some(Picture {
+            surface.slots[layer.index()] = Some(Picture {
                 tiles,
                 width,
                 height,
@@ -1733,7 +1994,7 @@ impl PhotoPipeline {
                 allocated_bytes: bytes,
             });
         }
-        let Some(picture) = &mut self.slots[layer.index()] else {
+        let Some(picture) = &mut surface.slots[layer.index()] else {
             return false;
         };
         if let Some(layouts) = reusable {
@@ -1742,7 +2003,7 @@ impl PhotoPipeline {
             picture.set_layouts((width, height), layouts);
         }
         if picture.matching_frame(frame, content_id, region_key) {
-            if layer == Layer::Photo && std::mem::take(&mut self.deferred_photo) {
+            if layer == Layer::Photo && std::mem::take(&mut surface.deferred_photo) {
                 wake_surface();
             }
             return true;
@@ -1759,8 +2020,7 @@ impl PhotoPipeline {
         if layer == Layer::Photo {
             self.figures.writes.fetch_add(1, Ordering::Relaxed);
         }
-        self.publish_diagnostics();
-        if layer == Layer::Photo && std::mem::take(&mut self.deferred_photo) {
+        if layer == Layer::Photo && std::mem::take(&mut surface.deferred_photo) {
             // The prior retirement wake scheduled this prepare; one more app update observes the
             // newly drawn identity and removes the temporary updating label.
             wake_surface();
@@ -1768,23 +2028,29 @@ impl PhotoPipeline {
         true
     }
 
-    fn write_region(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, region: &RegionFrame) {
+    fn write_region_slot(
+        &self,
+        surface: &mut SurfaceSlots,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        region: &RegionFrame,
+    ) {
         let key = region.key();
-        if self
+        if surface
             .regions
             .iter()
             .flatten()
             .any(|picture| picture.matching_frame(&region.frame, Some(key.content_id), Some(key)))
         {
-            if std::mem::take(&mut self.deferred_region) {
+            if std::mem::take(&mut surface.deferred_region) {
                 wake_surface();
             }
             return;
         }
-        let index = 1 - self.region_front;
+        let index = 1 - surface.region_front;
         let (width, height) = region.frame.size();
         let limit = device.limits().max_texture_dimension_2d;
-        let reusable = self.regions[index]
+        let reusable = surface.regions[index]
             .as_ref()
             .and_then(|picture| picture.layouts_for((width, height), limit));
         let fresh = reusable.is_none();
@@ -1796,19 +2062,19 @@ impl PhotoPipeline {
                 self.figures.diagnostics().rejected_region_uploads += 1;
                 return;
             }
-            if let Some(old) = self.regions[index].take() {
-                self.retire(old, false);
+            if let Some(old) = surface.regions[index].take() {
+                self.retire(surface, old, false);
             }
-            // A retired region remains charged. The two sets together, including aprons, stay
-            // within 64 MiB and there are never more than two live or retiring allocations.
-            let region_count = self.regions.iter().flatten().count() as u64
-                + self.retiring_regions.load(Ordering::Acquire);
-            let total = self.resident_region_bytes()
-                + self.retiring_region_bytes.load(Ordering::Acquire)
-                + bytes;
-            if region_count >= 2 || total > 2 * REGION_SET_BUDGET {
-                self.defer(true);
-                self.publish_diagnostics();
+            // A retired region remains charged. A surface never has more than two live or
+            // retiring sets, and every surface's sets together, including aprons, stay within
+            // 64 MiB.
+            let own_sets = surface.regions.iter().flatten().count() as u64
+                + surface.retiring.regions.load(Ordering::Acquire);
+            let charged = self.resident_region_bytes()
+                + surface.region_bytes()
+                + self.retiring.region_bytes.load(Ordering::Acquire);
+            if region_admission(bytes, own_sets, charged) != Admission::Admit {
+                self.defer(surface, true);
                 return;
             }
             let grid = tile_grid(capacity, limit);
@@ -1816,7 +2082,7 @@ impl PhotoPipeline {
                 .into_iter()
                 .map(|tile| self.tile(device, Layer::Photo, tile))
                 .collect();
-            self.regions[index] = Some(Picture {
+            surface.regions[index] = Some(Picture {
                 tiles,
                 width,
                 height,
@@ -1829,7 +2095,7 @@ impl PhotoPipeline {
                 allocated_bytes: bytes,
             });
         }
-        let picture = self.regions[index].as_mut().expect("admitted region");
+        let picture = surface.regions[index].as_mut().expect("admitted region");
         if let Some(layouts) = reusable {
             picture.set_layouts((width, height), layouts);
         } else if let Some(layouts) = picture.layouts_for((width, height), limit) {
@@ -1844,10 +2110,9 @@ impl PhotoPipeline {
         picture.version = region.frame.version;
         picture.content_id = Some(key.content_id);
         picture.region_key = Some(key);
-        self.region_front = index;
+        surface.region_front = index;
         self.figures.writes.fetch_add(1, Ordering::Relaxed);
-        self.publish_diagnostics();
-        if std::mem::take(&mut self.deferred_region) {
+        if std::mem::take(&mut surface.deferred_region) {
             wake_surface();
         }
     }
@@ -1911,13 +2176,8 @@ impl PhotoPipeline {
 
 impl Drop for PhotoPipeline {
     fn drop(&mut self) {
-        if let Some(picture) = self.slots[Layer::Photo.index()].take() {
-            self.retire(picture, true);
-        }
-        for index in 0..self.regions.len() {
-            if let Some(picture) = self.regions[index].take() {
-                self.retire(picture, false);
-            }
+        for (_, surface) in std::mem::take(&mut self.surfaces) {
+            self.release(surface);
         }
         self.publish_diagnostics();
     }
@@ -2062,21 +2322,13 @@ fn upload_picture(
 fn finish_retirement(
     figures: &SurfaceFigures,
     retired: RetiredPicture,
-    retiring_bytes: &AtomicU64,
-    retiring_full: &AtomicU64,
-    retiring_regions: &AtomicU64,
-    retiring_region_bytes: &AtomicU64,
+    retiring: &Retiring,
     failed: bool,
 ) {
     let bytes = retired.picture.allocated_bytes;
     drop(retired.picture);
-    retiring_bytes.fetch_sub(bytes, Ordering::AcqRel);
-    if retired.full {
-        retiring_full.fetch_sub(1, Ordering::AcqRel);
-    } else {
-        retiring_regions.fetch_sub(1, Ordering::AcqRel);
-        retiring_region_bytes.fetch_sub(bytes, Ordering::AcqRel);
-    }
+    retiring.discharge(bytes, retired.full);
+    retired.surface.discharge(bytes, retired.full);
     figures.retirement_pending.fetch_sub(1, Ordering::AcqRel);
     {
         let mut diagnostic = figures.diagnostics();
@@ -2173,6 +2425,29 @@ impl shader::Pipeline for PhotoPipeline {
     /// The application's pipeline, which counts into the process-wide figures the desktop reads.
     fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self::with_figures(device, queue, format, Arc::clone(process_figures()))
+    }
+
+    /// Iced calls this at the end of every frame, after every primitive of the frame was prepared
+    /// and encoded and before the frame is submitted. A surface the frame did not prepare is no
+    /// longer on screen, so its slots are released here, by id, with no message and no timer: a
+    /// closed or scrolled-away surface's textures retire at the end of the first frame without
+    /// it. A surface every frame draws keeps its textures, and an unchanged frame on it is never
+    /// uploaded again.
+    fn trim(&mut self) {
+        let hidden: Vec<SurfaceId> = self
+            .surfaces
+            .iter_mut()
+            .filter_map(|(id, surface)| (!std::mem::take(&mut surface.shown)).then_some(*id))
+            .collect();
+        if hidden.is_empty() {
+            return;
+        }
+        for id in hidden {
+            if let Some(surface) = self.surfaces.remove(&id) {
+                self.release(surface);
+            }
+        }
+        self.publish_diagnostics();
     }
 }
 
@@ -2290,29 +2565,15 @@ impl PhotoPipeline {
             multiview: None,
             cache: None,
         });
-        let retiring_bytes = Arc::new(AtomicU64::new(0));
-        let retiring_full = Arc::new(AtomicU64::new(0));
-        let retiring_regions = Arc::new(AtomicU64::new(0));
-        let retiring_region_bytes = Arc::new(AtomicU64::new(0));
+        let retiring = Arc::new(Retiring::default());
         let (retirement_sender, retirement_receiver) = std::sync::mpsc::channel();
         let waiter_device = device.clone();
         let waiter_queue = queue.clone();
         let finish: FinishRetirement = {
             let figures = Arc::clone(&figures);
-            let bytes = retiring_bytes.clone();
-            let full = retiring_full.clone();
-            let regions = retiring_regions.clone();
-            let region_bytes = retiring_region_bytes.clone();
+            let retiring = Arc::clone(&retiring);
             Arc::new(move |retired, failed| {
-                finish_retirement(
-                    &figures,
-                    retired,
-                    &bytes,
-                    &full,
-                    &regions,
-                    &region_bytes,
-                    failed,
-                );
+                finish_retirement(&figures, retired, &retiring, failed);
             })
         };
         std::thread::spawn(move || {
@@ -2324,16 +2585,9 @@ impl PhotoPipeline {
             linear,
             nearest,
             texture_format,
-            slots: [None, None, None, None],
-            regions: [None, None],
-            region_front: 0,
-            retiring_bytes,
-            retiring_full,
-            retiring_regions,
-            retiring_region_bytes,
+            surfaces: HashMap::new(),
+            retiring,
             retirement_sender,
-            deferred_photo: false,
-            deferred_region: false,
             figures,
         }
     }
@@ -2431,6 +2685,48 @@ mod tests {
         assert!(region_texture_admissible((8198, 1023), 8192));
         assert!(!region_texture_admissible((8199, 1023), 8192));
         assert!(!region_texture_admissible((8192, 1025), 8192));
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// Alone, a surface keeps the rule the ceiling was accepted for: its current and one retiring
+    /// full allocation, each within 512 MiB.
+    #[test]
+    fn one_surface_keeps_its_current_and_one_retiring_full_allocation() {
+        assert_eq!(full_admission(512 * MIB, 512 * MIB, 0, 0), Admission::Admit);
+        // However small, not while its previous replacement still retires,
+        assert_eq!(full_admission(MIB, MIB, 1, MIB), Admission::Defer);
+        // and never past one allocation's cap.
+        assert_eq!(full_admission(512 * MIB + 1, 0, 0, 0), Admission::Reject);
+        // Its region sets likewise: a second set of 32 MiB, never a third.
+        assert_eq!(region_admission(32 * MIB, 1, 32 * MIB), Admission::Admit);
+        assert_eq!(region_admission(MIB, 2, 2 * MIB), Admission::Defer);
+        assert_eq!(region_admission(32 * MIB + 1, 0, 0), Admission::Reject);
+    }
+
+    /// A second surface draws from the one photo-texture budget rather than doubling it, and an
+    /// allocation that would pass it waits instead of taking another surface's room.
+    #[test]
+    fn a_second_surface_draws_from_the_shared_photo_budget_rather_than_doubling_it() {
+        // The first surface holds 512 MiB and retires another 512: the second has no room yet,
+        assert_eq!(full_admission(MIB, 0, 0, 1024 * MIB), Admission::Defer);
+        // and once that retirement ends it may take the other half.
+        assert_eq!(full_admission(512 * MIB, 0, 0, 512 * MIB), Admission::Admit);
+        // Then neither may replace a 512 MiB picture with another: the one that asks keeps
+        // drawing what it has.
+        assert_eq!(
+            full_admission(512 * MIB, 512 * MIB, 0, 512 * MIB),
+            Admission::Defer
+        );
+        // A display-sized second surface still fits beside a full-size first.
+        assert_eq!(
+            full_admission(32 * MIB, 16 * MIB, 0, 512 * MIB + 16 * MIB),
+            Admission::Admit
+        );
+        // Two sets elsewhere already hold the 64 MiB of region sets: a second surface's first
+        // set waits.
+        assert_eq!(region_admission(MIB, 0, 64 * MIB), Admission::Defer);
+        assert_eq!(region_admission(MIB, 0, 63 * MIB), Admission::Admit);
     }
 
     #[test]
@@ -3228,7 +3524,7 @@ mod tests {
 #[cfg(test)]
 mod gpu_surface_tests {
     use super::*;
-    use iced::widget::shader::Primitive as _;
+    use iced::widget::shader::{Pipeline as _, Primitive as _};
     use luxforge_testbase::{wait_for, wait_until};
     use std::time::{Duration, Instant};
 
@@ -3301,8 +3597,12 @@ mod gpu_surface_tests {
         Frame::new(Arc::new(pixels), width, height, version).expect("striped raster")
     }
 
+    /// The surface every single-surface test draws on.
+    const ID: SurfaceId = SurfaceId::new(0);
+
     fn full_primitive(frame: Frame) -> PhotoPrimitive {
         PhotoPrimitive {
+            surface: ID,
             layers: vec![(Layer::Photo, frame)],
             viewport: None,
             region_overlays: [None, None],
@@ -3322,6 +3622,7 @@ mod gpu_surface_tests {
         full_stage: (u32, u32),
     ) -> PhotoPrimitive {
         PhotoPrimitive {
+            surface: ID,
             layers: Vec::new(),
             viewport: Some(ViewportFrames {
                 full,
@@ -3347,6 +3648,21 @@ mod gpu_surface_tests {
         pipeline: &mut PhotoPipeline,
         primitive: &PhotoPrimitive,
     ) -> Vec<u8> {
+        paint_frame(device, queue, pipeline, &[primitive])
+            .pop()
+            .expect("one output")
+    }
+
+    /// One frame as Iced renders it: every primitive prepared, then every one drawn — each here
+    /// into a 64×64 BGRA target of its own — and one submit, so a uniform a later `prepare` writes
+    /// is in place before an earlier primitive's draw executes. It does not trim: a test that
+    /// ends the frame calls `trim` itself.
+    fn paint_frame(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pipeline: &mut PhotoPipeline,
+        primitives: &[&PhotoPrimitive],
+    ) -> Vec<Vec<u8>> {
         let bounds = Rectangle {
             x: 0.0,
             y: 0.0,
@@ -3354,83 +3670,101 @@ mod gpu_surface_tests {
             height: 64.0,
         };
         let viewport = Viewport::with_physical_size(Size::new(64, 64), 1.0);
-        primitive.prepare(pipeline, device, queue, &bounds, &viewport);
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("photo surface readback target"),
-            size: wgpu::Extent3d {
-                width: 64,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Bgra8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("photo surface readback"),
-            size: 64 * 64 * 4,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("photo surface readback pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 1.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            assert!(primitive.draw(pipeline, &mut pass));
+        for primitive in primitives {
+            primitive.prepare(pipeline, device, queue, &bounds, &viewport);
         }
-        encoder.copy_texture_to_buffer(
-            target.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(64 * 4),
-                    rows_per_image: Some(64),
-                },
-            },
-            wgpu::Extent3d {
-                width: 64,
-                height: 64,
-                depth_or_array_layers: 1,
-            },
-        );
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        let readbacks: Vec<wgpu::Buffer> = primitives
+            .iter()
+            .map(|primitive| {
+                let target = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("photo surface readback target"),
+                    size: wgpu::Extent3d {
+                        width: 64,
+                        height: 64,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Bgra8UnormSrgb,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                let readback = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("photo surface readback"),
+                    size: 64 * 64 * 4,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("photo surface readback pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color {
+                                    r: 0.0,
+                                    g: 0.0,
+                                    b: 1.0,
+                                    a: 1.0,
+                                }),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    assert!(primitive.draw(pipeline, &mut pass));
+                }
+                encoder.copy_texture_to_buffer(
+                    target.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &readback,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(64 * 4),
+                            rows_per_image: Some(64),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width: 64,
+                        height: 64,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                readback
+            })
+            .collect();
         let index = queue.submit([encoder.finish()]);
         let (sender, receiver) = std::sync::mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                sender.send(result).expect("readback receiver")
-            });
+        for readback in &readbacks {
+            let sender = sender.clone();
+            readback
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    sender.send(result).expect("readback receiver")
+                });
+        }
         wait(device, index);
-        receiver
-            .recv_timeout(Duration::from_secs(10))
-            .expect("readback callback")
-            .expect("readback mapping");
-        let bytes = readback.slice(..).get_mapped_range().to_vec();
-        readback.unmap();
-        bytes
+        for _ in &readbacks {
+            receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("readback callback")
+                .expect("readback mapping");
+        }
+        readbacks
+            .iter()
+            .map(|readback| {
+                let bytes = readback.slice(..).get_mapped_range().to_vec();
+                readback.unmap();
+                bytes
+            })
+            .collect()
     }
 
     fn assert_solid_bgra(bytes: &[u8], expected: [u8; 4]) {
@@ -3442,9 +3776,157 @@ mod gpu_surface_tests {
     /// Wait for `pipeline`'s retirements, which its worker finishes when the GPU is done with them.
     fn settle(pipeline: &PhotoPipeline) {
         wait_until("the pipeline's retirements", || {
-            pipeline.retiring_regions.load(Ordering::Acquire) == 0
-                && pipeline.retiring_full.load(Ordering::Acquire) == 0
+            pipeline.retiring.regions.load(Ordering::Acquire) == 0
+                && pipeline.retiring.full.load(Ordering::Acquire) == 0
         });
+    }
+
+    /// Surface `id`'s photograph, placed at `offset` with `size` in the 64×64 target.
+    fn placed(id: SurfaceId, frame: Frame, offset: Vector, size: Size) -> PhotoPrimitive {
+        let mut primitive = full_primitive(frame);
+        primitive.surface = id;
+        primitive.offset = offset;
+        primitive.size = size;
+        primitive
+    }
+
+    /// Surface `id` at a percentage, showing one solid exact 16×16 region of `content`.
+    fn region_on(id: SurfaceId, rgba: [u8; 4], content: u64) -> PhotoPrimitive {
+        let region = RegionFrame::new(
+            solid_raster(16, 16, content, rgba),
+            [0, 0, 16, 16],
+            (16, 16),
+            (16, 16),
+            1.0,
+            RegionQuality::Exact,
+            content,
+            content,
+        )
+        .expect("whole-region raster");
+        let mut primitive = viewport_primitive(None, Some(region), content, (16, 16));
+        primitive.surface = id;
+        primitive
+    }
+
+    /// The target's clear colour, as BGRA.
+    const CLEAR: [u8; 4] = [255, 0, 0, 255];
+
+    /// Assert the 64×64 output is `inside` over `[x0, y0, x1, y1]` and the clear colour elsewhere.
+    fn assert_placed_bgra(bytes: &[u8], [x0, y0, x1, y1]: [usize; 4], inside: [u8; 4]) {
+        for (index, pixel) in bytes.chunks_exact(4).enumerate() {
+            let (x, y) = (index % 64, index / 64);
+            let expected = if (x0..x1).contains(&x) && (y0..y1).contains(&y) {
+                inside
+            } else {
+                CLEAR
+            };
+            assert_eq!(pixel, expected, "output pixel ({x}, {y})");
+        }
+    }
+
+    fn writes(pipeline: &PhotoPipeline) -> u64 {
+        pipeline.figures.writes.load(Ordering::Relaxed)
+    }
+
+    /// Two photographs of different sizes, colours and placements in one frame, as a side-by-side
+    /// view would draw them. One set of slots and uniforms for both would draw whichever was
+    /// prepared last in both places and upload both every frame.
+    #[test]
+    fn two_surfaces_keep_their_own_textures_and_uniforms_and_closing_one_releases_only_its_slots() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (a, b) = (SurfaceId::new(1), SurfaceId::new(2));
+        let mut pipeline = own_pipeline(&device, &queue);
+        let first = placed(
+            a,
+            solid_raster(20, 12, 1, [0, 255, 0, 255]),
+            Vector::new(0.0, 0.0),
+            Size::new(64.0, 64.0),
+        );
+        let second = placed(
+            b,
+            solid_raster(12, 20, 1, [255, 0, 0, 255]),
+            Vector::new(16.0, 16.0),
+            Size::new(32.0, 32.0),
+        );
+        for _ in 0..2 {
+            let drawn = paint_frame(&device, &queue, &mut pipeline, &[&first, &second]);
+            pipeline.trim();
+            assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+            assert_placed_bgra(&drawn[1], [16, 16, 48, 48], [0, 0, 255, 255]);
+        }
+        // Two frames, one upload per surface: each upload is still gated on its own version.
+        assert_eq!(writes(&pipeline), 2);
+        let a_bytes = pipeline.surfaces[&a].full_bytes();
+        let b_bytes = pipeline.surfaces[&b].full_bytes();
+        assert!(a_bytes > 0 && b_bytes > 0);
+        assert_eq!(
+            diagnostics(&pipeline).full_resident_bytes,
+            a_bytes + b_bytes
+        );
+
+        // The second surface closes: a frame draws only the first, and its end releases the
+        // second's slots by id.
+        let drawn = paint_frame(&device, &queue, &mut pipeline, &[&first]);
+        pipeline.trim();
+        assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+        assert!(!pipeline.surfaces.contains_key(&b));
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, a_bytes);
+        // The first kept its texture and its placement: drawn again, it uploads nothing.
+        let drawn = paint_frame(&device, &queue, &mut pipeline, &[&first]);
+        pipeline.trim();
+        assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+        assert_eq!(writes(&pipeline), 2);
+        assert_eq!(pipeline.surfaces[&a].full_bytes(), a_bytes);
+
+        // Shown again, the second starts from empty slots, so its frame is written anew.
+        let drawn = paint_frame(&device, &queue, &mut pipeline, &[&first, &second]);
+        pipeline.trim();
+        assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+        assert_placed_bgra(&drawn[1], [16, 16, 48, 48], [0, 0, 255, 255]);
+        assert_eq!(writes(&pipeline), 3);
+    }
+
+    /// Two percentage views, each with its own region: each surface keeps its own region sets,
+    /// and closing one retires only its sets.
+    #[test]
+    fn two_surfaces_keep_their_own_region_sets_and_closing_one_releases_only_its_sets() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let (a, b) = (SurfaceId::new(1), SurfaceId::new(2));
+        let mut pipeline = own_pipeline(&device, &queue);
+        let first = region_on(a, [255, 0, 0, 255], 1);
+        let second = region_on(b, [0, 255, 0, 255], 7);
+        for _ in 0..2 {
+            let drawn = paint_frame(&device, &queue, &mut pipeline, &[&first, &second]);
+            pipeline.trim();
+            assert_solid_bgra(&drawn[0], [0, 0, 255, 255]);
+            assert_solid_bgra(&drawn[1], [0, 255, 0, 255]);
+        }
+        assert_eq!(writes(&pipeline), 2);
+        let b_bytes = pipeline.surfaces[&b].region_bytes();
+        assert_eq!(
+            diagnostics(&pipeline).region_resident_bytes,
+            pipeline.surfaces[&a].region_bytes() + b_bytes
+        );
+
+        let drawn = paint_frame(&device, &queue, &mut pipeline, &[&second]);
+        pipeline.trim();
+        assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+        assert!(!pipeline.surfaces.contains_key(&a));
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        assert_eq!(diagnostics(&pipeline).region_resident_bytes, b_bytes);
+        let drawn = paint_frame(&device, &queue, &mut pipeline, &[&second]);
+        pipeline.trim();
+        assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
+        assert_eq!(writes(&pipeline), 2);
     }
 
     #[test]
@@ -3470,7 +3952,7 @@ mod gpu_surface_tests {
             &paint(&device, &queue, &mut pipeline, &third),
             [0, 255, 255, 255],
         );
-        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 0);
+        assert_eq!(pipeline.retiring.full.load(Ordering::Acquire), 0);
         assert_eq!(diagnostics(&pipeline).blank_photo_draws, blanks_before);
     }
 
@@ -3491,7 +3973,7 @@ mod gpu_surface_tests {
         let new_frame = striped_raster(80, 40, 2, [[0, 0, 255, 255], [255, 255, 0, 255]]);
         let new = full_primitive(new_frame.clone());
         let actual = paint(&device, &queue, &mut reused, &new);
-        assert_eq!(reused.retiring_full.load(Ordering::Acquire), 0);
+        assert_eq!(reused.retiring.full.load(Ordering::Acquire), 0);
         let mut fresh = own_pipeline(&device, &queue);
         let reference = paint(&device, &queue, &mut fresh, &full_primitive(new_frame));
         assert_eq!(
@@ -3528,7 +4010,7 @@ mod gpu_surface_tests {
             let primitive = viewport_primitive(None, Some(region), version, (width, height));
             assert_solid_bgra(&paint(&device, &queue, &mut pipeline, &primitive), bgra);
         }
-        assert_eq!(pipeline.retiring_regions.load(Ordering::Acquire), 0);
+        assert_eq!(pipeline.retiring.regions.load(Ordering::Acquire), 0);
         assert_eq!(diagnostics(&pipeline).blank_photo_draws, blanks_before);
     }
 
@@ -3543,6 +4025,7 @@ mod gpu_surface_tests {
         };
         let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Stage,
@@ -3553,6 +4036,7 @@ mod gpu_surface_tests {
         pipeline.publish_diagnostics();
         assert_eq!(diagnostics(&pipeline).stage_resident_bytes, 120 * 80 * 4);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Stage,
@@ -3563,7 +4047,7 @@ mod gpu_surface_tests {
         pipeline.publish_diagnostics();
         assert_eq!(diagnostics(&pipeline).stage_resident_bytes, 30 * 20 * 4);
         assert_eq!(
-            pipeline.slots[Layer::Stage.index()]
+            pipeline.surfaces[&ID].slots[Layer::Stage.index()]
                 .as_ref()
                 .map(|picture| picture.capacity),
             Some((30, 20))
@@ -3578,6 +4062,7 @@ mod gpu_surface_tests {
         };
         let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3587,6 +4072,7 @@ mod gpu_surface_tests {
         ));
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3594,7 +4080,7 @@ mod gpu_surface_tests {
             Some(2),
             None,
         ));
-        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 1);
+        assert_eq!(pipeline.retiring.full.load(Ordering::Acquire), 1);
         let desired = viewport_primitive(
             Some((solid_raster(80, 40, 3, [255, 255, 0, 255]), 3)),
             None,
@@ -3612,10 +4098,10 @@ mod gpu_surface_tests {
         assert_eq!(diagnostic.drawn_content, None);
         assert_eq!(diagnostic.drawn_fallback_content, Some(2));
         assert!(diagnostic.full_resident_bytes + diagnostic.retiring_bytes <= 2 * FULL_BUDGET);
-        assert!(pipeline.retiring_full.load(Ordering::Acquire) <= 1);
+        assert!(pipeline.retiring.full.load(Ordering::Acquire) <= 1);
         wait(&device, busy);
         settle(&pipeline);
-        assert_eq!(pipeline.retiring_bytes.load(Ordering::Acquire), 0);
+        assert_eq!(pipeline.retiring.bytes(), 0);
         assert_solid_bgra(
             &paint(&device, &queue, &mut pipeline, &desired),
             [0, 255, 255, 255],
@@ -3633,6 +4119,7 @@ mod gpu_surface_tests {
         };
         let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3642,6 +4129,7 @@ mod gpu_surface_tests {
         ));
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3649,7 +4137,7 @@ mod gpu_surface_tests {
             None,
             None,
         ));
-        assert_eq!(pipeline.retiring_full.load(Ordering::Acquire), 1);
+        assert_eq!(pipeline.retiring.full.load(Ordering::Acquire), 1);
         let mut desired = full_primitive(solid_raster(80, 40, 3, [255, 255, 0, 255]));
         desired
             .layers
@@ -3691,7 +4179,11 @@ mod gpu_surface_tests {
         );
         let blank = viewport_primitive(None, None, 2, (16, 16));
         // Deliberately remove the previous photo: this test checks the blank diagnostic itself.
-        pipeline.slots[Layer::Photo.index()] = None;
+        pipeline
+            .surfaces
+            .get_mut(&ID)
+            .expect("the shown surface")
+            .slots[Layer::Photo.index()] = None;
         let before = diagnostics(&pipeline).blank_photo_draws;
         assert_solid_bgra(
             &paint(&device, &queue, &mut pipeline, &blank),
@@ -3784,32 +4276,41 @@ mod gpu_surface_tests {
             )
             .expect("exact region")
         };
-        pipeline.write_region(&device, &queue, &interactive(1, 1, 1));
-        pipeline.write_region(&device, &queue, &interactive(2, 2, 2));
-        assert_eq!(region_draw_order(&pipeline.regions, 2, full_stage).len(), 1);
-        // Quiet refinement of revision 2 (deferred once, then admitted after retirement).
-        pipeline.write_region(&device, &queue, &exact(2, 3, 3));
-        settle(&pipeline);
-        pipeline.write_region(&device, &queue, &exact(2, 3, 3));
-        assert!(pipeline.regions.iter().flatten().any(|picture| {
-            picture
-                .region_key
-                .is_some_and(|key| key.quality == RegionQuality::Exact)
-        }));
-        // The drag resumes: revision 3 reuses the half-detail set.
-        pipeline.write_region(&device, &queue, &interactive(3, 4, 4));
+        pipeline.write_region(ID, &device, &queue, &interactive(1, 1, 1));
+        pipeline.write_region(ID, &device, &queue, &interactive(2, 2, 2));
         assert_eq!(
-            region_draw_order(&pipeline.regions, 3, full_stage).len(),
+            region_draw_order(&pipeline.surfaces[&ID].regions, 2, full_stage).len(),
+            1
+        );
+        // Quiet refinement of revision 2 (deferred once, then admitted after retirement).
+        pipeline.write_region(ID, &device, &queue, &exact(2, 3, 3));
+        settle(&pipeline);
+        pipeline.write_region(ID, &device, &queue, &exact(2, 3, 3));
+        assert!(
+            pipeline.surfaces[&ID]
+                .regions
+                .iter()
+                .flatten()
+                .any(|picture| {
+                    picture
+                        .region_key
+                        .is_some_and(|key| key.quality == RegionQuality::Exact)
+                })
+        );
+        // The drag resumes: revision 3 reuses the half-detail set.
+        pipeline.write_region(ID, &device, &queue, &interactive(3, 4, 4));
+        assert_eq!(
+            region_draw_order(&pipeline.surfaces[&ID].regions, 3, full_stage).len(),
             1,
             "revision 3 is drawn"
         );
         // A frame is still executing on the GPU, as during every drag.
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         let deferred_before = diagnostics(&pipeline).deferred_uploads;
-        pipeline.write_region(&device, &queue, &interactive(4, 5, 5));
+        pipeline.write_region(ID, &device, &queue, &interactive(4, 5, 5));
         let deferred_after = diagnostics(&pipeline).deferred_uploads;
-        let drawable = region_draw_order(&pipeline.regions, 4, full_stage);
-        let slots: Vec<_> = pipeline
+        let drawable = region_draw_order(&pipeline.surfaces[&ID].regions, 4, full_stage);
+        let slots: Vec<_> = pipeline.surfaces[&ID]
             .regions
             .iter()
             .map(|slot| {
@@ -3850,8 +4351,8 @@ mod gpu_surface_tests {
             )
             .expect("half-detail region")
         };
-        pipeline.write_region(&device, &queue, &interactive(1, 1, 1));
-        pipeline.write_region(&device, &queue, &interactive(2, 2, 2));
+        pipeline.write_region(ID, &device, &queue, &interactive(1, 1, 1));
+        pipeline.write_region(ID, &device, &queue, &interactive(2, 2, 2));
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         // The committed recipe (content 3) arrives as its settle job's exact region.
         let committed = RegionFrame::new(
@@ -3865,9 +4366,9 @@ mod gpu_surface_tests {
             3,
         )
         .expect("exact region");
-        pipeline.write_region(&device, &queue, &committed);
-        let drawable = region_draw_order(&pipeline.regions, 3, full_stage);
-        let slots: Vec<_> = pipeline
+        pipeline.write_region(ID, &device, &queue, &committed);
+        let drawable = region_draw_order(&pipeline.surfaces[&ID].regions, 3, full_stage);
+        let slots: Vec<_> = pipeline.surfaces[&ID]
             .regions
             .iter()
             .map(|slot| {
@@ -3892,6 +4393,7 @@ mod gpu_surface_tests {
         };
         let mut pipeline = own_pipeline(&device, &queue);
         assert!(pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3901,6 +4403,7 @@ mod gpu_surface_tests {
         ));
         let busy = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
         let wrote = pipeline.write(
+            ID,
             &device,
             &queue,
             Layer::Photo,
@@ -3908,10 +4411,10 @@ mod gpu_surface_tests {
             None,
             None,
         );
-        let slot = pipeline.slots[Layer::Photo.index()]
+        let slot = pipeline.surfaces[&ID].slots[Layer::Photo.index()]
             .as_ref()
             .map(|picture| (picture.width, picture.height, picture.version));
-        let retiring = pipeline.retiring_bytes.load(Ordering::Acquire);
+        let retiring = pipeline.retiring.bytes();
         wait(&device, busy);
         settle(&pipeline);
         assert!(
@@ -3963,16 +4466,16 @@ mod gpu_surface_tests {
             for round in 0..5u64 {
                 let mut pipeline = own_pipeline(&device, &queue);
                 let base = 10 + round * 10 + u64::from(copies) * 1000;
-                pipeline.write_region(&device, &queue, &region(300, base, base));
-                pipeline.write_region(&device, &queue, &region(300, base + 1, base + 1));
+                pipeline.write_region(ID, &device, &queue, &region(300, base, base));
+                pipeline.write_region(ID, &device, &queue, &region(300, base + 1, base + 1));
                 settle(&pipeline);
                 let index = busy_gpu(&device, &queue, 16 * 1024 * 1024, copies);
                 let started = Instant::now();
                 wait(&device, index);
                 gpus.push(started.elapsed());
                 let index = busy_gpu(&device, &queue, 16 * 1024 * 1024, copies);
-                pipeline.write_region(&device, &queue, &region(600, base + 2, base + 2));
-                let retiring = pipeline.retiring_regions.load(Ordering::Acquire);
+                pipeline.write_region(ID, &device, &queue, &region(600, base + 2, base + 2));
+                let retiring = pipeline.retiring.regions.load(Ordering::Acquire);
                 assert!(
                     retiring > 0,
                     "diagnostic requires a real texture retirement"
@@ -4027,12 +4530,12 @@ mod gpu_surface_tests {
             )
             .expect("region")
         };
-        pipeline.write_region(&device, &queue, &region(300, 1, 1));
-        pipeline.write_region(&device, &queue, &region(300, 2, 2));
+        pipeline.write_region(ID, &device, &queue, &region(300, 1, 1));
+        pipeline.write_region(ID, &device, &queue, &region(300, 2, 2));
         settle(&pipeline);
         let index = busy_gpu(&device, &queue, BUSY_SIZE, BUSY_COPIES);
-        pipeline.write_region(&device, &queue, &region(600, 3, 3));
-        let retiring = pipeline.retiring_regions.load(Ordering::Acquire);
+        pipeline.write_region(ID, &device, &queue, &region(600, 3, 3));
+        let retiring = pipeline.retiring.regions.load(Ordering::Acquire);
         assert!(
             retiring > 0,
             "diagnostic requires a real texture retirement"
