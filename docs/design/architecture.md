@@ -135,13 +135,13 @@ A mask is a host object beside the layers — an ordered list of components with
 
 ## Persistence
 
-- Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-10)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
+- Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-11)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
 - Only the current catalog and payload shapes are supported: an unsupported format fails explicitly without rewriting data, and unknown payloads and missing providers are retained and reported, never dropped.
 - Entry records are the only stored copy of a stack. Each entry's history row (sequence, action, label, actor, timestamp, undo parent and restore target) has its own columns, so a history page decodes no entry.
 - Every entry is retained: undo and redo navigate without inverse rows, Restore copies a snapshot into a new action, and versions are named references to entries ([versions and lineage](versions-and-lineage.md)).
 - Beside the entries the catalog holds the preset library ([presets](presets.md#library)), a content-addressed store of painted paths ([masking](masking.md#stroke-storage)) and each entry's references to derived artifacts, immutable content-addressed files in a `<catalog stem>.artifacts` directory that moves with the catalog ([derived artifacts](module-capabilities.md#derived-artifacts)).
 - Module settings, grants, secrets and installed resources are user-level and never part of a catalog.
-- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
+- The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits: a history move, or a relocation that rewrites where an asset's original is (an internal write the Locate command will make; no method exposes it yet), announced as an event naming the asset. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
 - Backups need a consistent SQLite snapshot, not a copy of a live file.
 
 ## Rendering and limits
@@ -265,6 +265,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
 | History rows per page | 100 | `MAX_HISTORY_PAGE`, `crates/luxforge-core/src/editor/history.rs` |
+| Assets per `catalog.list` page | 500, 100 when the request names no `limit`; a page reads its rows' own columns and decodes no source interpretation | `MAX_ASSET_PAGE` and `DEFAULT_ASSET_PAGE`, `crates/luxforge-core/src/editor/catalog.rs` |
+| Assets one client previews the history of at once | 16 | `MAX_SELECTIONS`, `crates/luxforge-core/src/preview.rs` |
 | Hydrated entries the owner caches | 8 | `CACHED_ENTRIES`, `crates/luxforge-core/src/editor/entries.rs` |
 | Asset heads the owner caches | 16 | `CACHED_HEADS`, `crates/luxforge-core/src/editor/entries.rs` |
 | Live clients | 8 | `MAX_CLIENTS`, `crates/luxforge-core/src/api/transport.rs` |
@@ -319,7 +321,7 @@ The editor keeps at most two finished developments of the open RAW: its current 
 
 One typed service backs the desktop and external JSON sessions. While the GUI is open it owns the catalog and accepts authenticated same-user loopback clients; headless ownership is allowed when it is absent. MCP later adapts the same registry.
 
-- **Sessions.** The owner holds each registered client's session and reports a session revision with every session-returning response. Reconnect reads fresh state rather than replaying. One client's disconnect does not cancel another's jobs.
+- **Sessions.** The owner holds each registered client's session and reports a session revision with every session-returning response. Reconnect reads fresh state rather than replaying. One client's disconnect does not cancel another's jobs. A session's history selection is kept per asset, so previewing one photo's history neither pauses edits to another nor answers another's questions ([sessions](versions-and-lineage.md#sessions-live-with-the-owner)).
 - **Commands.** Commands carry schemas, units, ranges, defaults and structured errors. Every method in `schema.list`, the host's own and the generated `edit.*`, `query.*`, `mask.*` and `task.*` methods alike, lists typed `parameters` in the one parameter vocabulary module descriptors use: identity kinds for the host's own objects (asset, entry, draft, job, preset, mask, component), integer and number ranges, enumerations, bounded strings, `text` for a file's contents or a path, and one `json` kind for a structured field whose notes give its shape. A host method checks each field against its declared kind where the request is parsed, so a schema generated from the registry, such as an MCP tool's, needs no hand-written copy. Mutations require an expected revision and a request ID with a documented deduplication scope. `version.create`, `version.delete`, `version.list` and `history.lineage` expose named states and the undo-parent chain.
 - **Authority.** A client registers with edit authority, or with permission authority when it is the desktop's own client or `luxforge-json --permission-authority`. Only permission authority may grant module consent, so a live-session client can never grant itself access to files, networks or photos.
 - **Jobs and activity.** Every job, of every kind, is read and cancelled through one job API, `job.read` and `job.cancel`. Long-running work (preparing an original, developing a RAW, rendering a preview, measuring a histogram, exporting a JPEG, reading or collecting derived artifacts) is published to the owner's activity board, which `activity.list` reads, and `resources.read` reports the process's CPU, memory and GPU counters; neither is history or an event ([performance panel](performance-panel.md)). Diagnostics never go to protocol stdout.
