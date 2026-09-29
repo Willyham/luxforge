@@ -29,16 +29,18 @@ The owner's decisions for this work are in [decisions](../decisions.md#post-cons
 
 ## Plans
 
-| Group | Plan | Holds |
+| Group | Plan | What remains |
 | --- | --- | --- |
-| Core service and API | [core service](../../tasks/core-service.json) | Retry routing, panic containment, events that name their subject, one job table and API with the export lane among its kinds, declared method envelopes, one bound evaluation, one preparation path, error data, an explicit public surface, core test duplicates; MCP and library groundwork |
-| Module contract | [module contract](../../tasks/module-contract.json) | Declared source kinds, the shared Exposure and White balance controls, one presettable-action rule, field patches over the parameter vocabulary with a spec builder and a descriptor snapshot, `ToolModule` and descriptor trims, developer-only test modules, module test duplicates; the geometry carry hook |
-| Rendering | [rendering](../../tasks/rendering.json) | A render context per test, one limits module, a trimmed pixel-domain pipeline, the byte-identical render and proxy speedups, the drafted exact phase, viewport tiles, larger tiles for a large halo, opaque frames, `render.rs` split, rendering test duplicates; stage-boundary methods for Corrections |
-| RAW | [RAW](../../tasks/raw.json) | The development executor and normalization, the GainMap, the source cache policy, the develop boundary, container parsing and tooling, and the RAW qualification carried over from the initial RAW plan |
-| Masking | [masking](../../tasks/masking.json) | The occupancy cap at stroke time and a radius-relative decimation, path limits, the kind table, paint latency, stroke storage, typed mask commands, kind helpers, the studies' move and one kind-conformance suite; generic path primitives for Corrections |
-| Module capabilities | [capabilities](../../tasks/capabilities.json) | Resource installs from the pinned URL only, grant eviction, artifact collection, the transport on `ureq`'s agent and in its own crate, activation deferred, the desktop surface trimmed, capability test duplicates |
-| Desktop | [desktop](../../tasks/desktop.json) | The crop angle reset, a loud log cap, Undo refused during a draft, the widgets' own slider path, the crop on the one draft driver with a declared stepper, one refusal, view-model rules once, synchronous draft rounds, the armed brush, the crop proxy stage, the region keys, presentation and seam-owned state, evidence outcomes, layering, controls without a mirror, a widget-only board, shared widget forwarding, the headless binary's own crate, live-agent evidence, desktop test duplicates; surface ids for the library |
-| Harness | [harness](../../tasks/harness.json) | `verify`'s fixtures and honest summary, tests that cannot fail, documentation drift, the one-path repository check, test rules and one gate, one sRGB reference, the timing tools on the launch envelope, one distribution, `raw-editor` as a scenario, scenarios as plans plus pixel claims, `architecture.md`'s structure, `editor-acceptance`'s scope, test binaries, harness clean-ups |
+| Core service and API | [core service](../../tasks/core-service.json) | MCP and library groundwork: `events.wait`, typed host parameters, per-photo selection, a paged catalog and relocation |
+| Module contract | [module contract](../../tasks/module-contract.json) | The geometry carry hook |
+| Rendering | [rendering](../../tasks/rendering.json) | Stage-boundary methods for Corrections; the GPU resources outside the photo-texture ceiling, measured and bounded |
+| RAW | [RAW](../../tasks/raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| Masking | [masking](../../tasks/masking.json) | Generic path primitives for Corrections |
+| Module capabilities | Complete; its plan is deleted | Nothing |
+| Desktop | [desktop](../../tasks/desktop.json) | Surface ids for the library |
+| Harness | Complete; its plan is deleted | Nothing |
+
+Completed and cancelled tasks are removed from the plans; their outcomes live in the specs and [feature status](../features.md).
 
 The [Corrections](../../tasks/corrections.json), [dependency advisories](../../tasks/dependency-advisories.json) and [product decisions](../../tasks/product-decisions.json) plans are unchanged in purpose and sit beside these.
 

@@ -4,18 +4,18 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 
 ## Post-consolidation work
 
-Authorized on 2026-09-26 and designed in [after the consolidation](../docs/design/post-consolidation.md), which holds the constraints, the six programme waves and the order across groups. There is one plan per group. Each task names its programme wave first in its context: 1 fix, 2 finish the consolidation, 3 speed, 4 structure, 5 tests, and 6 roadmap groundwork, which stays blocked until its milestone starts.
+Authorized on 2026-09-26 and designed in [after the consolidation](../docs/design/post-consolidation.md), which holds the constraints, the six programme waves and the order across groups. There was one plan per group; completed tasks and plans are removed. Each task names its programme wave first in its context: 1 fix, 2 finish the consolidation, 3 speed, 4 structure, 5 tests, and 6 roadmap groundwork, which stays blocked until its milestone starts.
 
-| Plan | Group |
+| Plan | What remains |
 | --- | --- |
-| [Core service](core-service.json) | The editor service and its API: retries, panic containment, events, one job table, method envelopes, one bound evaluation, one preparation path, error data and the public surface; MCP, library and export groundwork |
-| [Module contract](module-contract.json) | Declared source kinds, the shared Exposure and White balance controls, field patches over the parameter vocabulary, the descriptor snapshot, `ToolModule` and descriptor trims, developer-only test modules; the geometry carry hook |
-| [Rendering](rendering.json) | Render contexts in tests, one limits module, the pixel-domain pipeline, byte-identical render and proxy speedups, the drafted exact phase, viewport tiles, larger tiles for a large halo, opaque frames and `render.rs`'s structure; stage-boundary methods for Corrections |
-| [RAW](raw.json) | The development executor and normalization, the GainMap, the source cache policy, the develop boundary, container parsing and tooling, and the RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging, whole-editor measurement and RAW export |
-| [Masking](masking.json) | The occupancy cap and decimation, path limits, the kind table, paint latency, stroke storage, typed mask commands and one kind-conformance suite; generic path primitives for Corrections |
-| [Capabilities](capabilities.json) | Pinned-URL resource installs, grant eviction, artifact collection, the transport on `ureq`'s agent and in its own crate, activation deferred, the trimmed desktop surface |
-| [Desktop](desktop.json) | The crop on the one draft driver, one start refusal, synchronous draft rounds, the crop's proxy stage, presentation and seam-owned state, evidence outcomes and live-agent evidence, layering, the widget-only board and the headless binary's crate; surface ids for the library |
-| [Harness](harness.json) | `verify`'s fixtures and honest summary, tests that cannot fail, documentation drift, the one-path repository check, load-independent tests, one sRGB reference, one launch path and distribution for timing tools, scenarios as plans plus pixel claims, `editor-acceptance`'s scope and test binaries |
+| [Core service](core-service.json) | MCP and library groundwork: `events.wait`, typed host parameters, per-photo selection, a paged catalog and relocation |
+| [Module contract](module-contract.json) | The geometry carry hook |
+| [Rendering](rendering.json) | Stage-boundary methods for Corrections; the GPU resources outside the photo-texture ceiling, measured and bounded |
+| [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| [Masking](masking.json) | Generic path primitives for Corrections |
+| [Desktop](desktop.json) | Surface ids for the library |
+
+Waves 1 to 5 are complete, and the capabilities and harness plans with them. What remains of the other group plans is wave 6, blocked until each milestone starts, and the RAW qualification milestone.
 
 ## Other plans
 
