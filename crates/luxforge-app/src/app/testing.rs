@@ -112,6 +112,29 @@ pub(crate) fn fresh_stack(stack: &Evaluation) -> (Evaluation, std::sync::Weak<Ve
     (evaluation, held)
 }
 
+/// Import the photograph at `fixture` as `client`, wait for its source job on the owner's own
+/// blocking wait (the one the desktop's import tasks use, never a poll of `job.read`) and adopt it.
+/// Answers the adopted asset.
+pub(crate) fn import_and_adopt(
+    owner: &luxforge_core::OwnerHandle,
+    client: luxforge_core::ClientId,
+    fixture: &std::path::Path,
+) -> AssetId {
+    use crate::app::tasks::{call, request, wait_source_job};
+    let (queued, _) = call(
+        owner,
+        client,
+        "catalog.import",
+        json!({"path": fixture, "mutation": request()}),
+    )
+    .expect("an import");
+    let job = queued["job_id"].as_str().expect("a source job");
+    wait_source_job(owner, client, job).expect("source preparation");
+    let (adopted, _) =
+        call(owner, client, "job.adopt", json!({"job_id": job})).expect("an adoption");
+    AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap()
+}
+
 /// [`real_photo`] of the photograph at `fixture`. A RAW original is decoded and developed on the
 /// owner's own source worker before the editor opens it.
 pub(crate) fn real_photo_at(
@@ -120,27 +143,7 @@ pub(crate) fn real_photo_at(
 ) -> (Editor, AssetId, luxforge_core::ClientId) {
     let (owner, join) = luxforge_core::OwnerHandle::start(catalog).unwrap();
     let agent = owner.register();
-    let call = |method: &str, params: Value| {
-        crate::app::tasks::call(&owner, agent, method, params)
-            .unwrap()
-            .0
-    };
-    let queued = call(
-        "catalog.import",
-        json!({"path": fixture, "mutation": crate::app::tasks::request()}),
-    );
-    let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-    luxforge_testbase::wait_until("source preparation", || {
-        let status = call("job.read", json!({"job_id": job_id}));
-        match status["status"].as_str() {
-            Some("ready") => true,
-            Some("queued" | "running") => false,
-            other => panic!("source preparation failed {other:?}: {status}"),
-        }
-    });
-    let adopted = call("job.adopt", json!({"job_id": job_id}));
-    let asset =
-        AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
+    let asset = import_and_adopt(&owner, agent, fixture);
     let (mut editor, _) = Editor::new(Boot {
         owner: owner.clone(),
         join,
@@ -452,15 +455,6 @@ pub(crate) fn logged(editor: &mut Editor, path: &PathBuf) -> Vec<Value> {
         .collect()
 }
 
-/// The `canvas_pick` details the diagnostics log holds, in order.
-pub(crate) fn pick_events(records: &[Value]) -> Vec<&Value> {
-    records
-        .iter()
-        .filter(|record| record["event"] == json!("canvas_pick"))
-        .map(|record| &record["detail"])
-        .collect()
-}
-
 pub(crate) fn evidence(editor: &Editor) -> &Evidence {
     editor.evidence.as_ref().expect("an evidence run")
 }
@@ -743,8 +737,8 @@ pub(crate) fn hold_crop(
     }));
 }
 
-/// Every `draft.*` request this run logged, by event name.
-pub(crate) fn draft_events<'a>(records: &'a [Value], event: &str) -> Vec<&'a Value> {
+/// The details of every record the diagnostics log holds under `event`, in order.
+pub(crate) fn events<'a>(records: &'a [Value], event: &str) -> Vec<&'a Value> {
     records
         .iter()
         .filter(|record| record["event"] == json!(event))

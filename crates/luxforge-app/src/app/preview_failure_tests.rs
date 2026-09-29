@@ -23,8 +23,8 @@ use super::{
     preview::ProxyFrame,
     tasks::SyncResult,
     testing::{
-        CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, finish, hold_crop,
-        logged, open_crop, opened, rebuild, refresh_for,
+        CROP_SOURCE, attach_log, core_draft, crop_layer, described_at, entry, events, finish,
+        hold_crop, logged, open_crop, opened, rebuild, refresh_for,
     },
 };
 use crate::state::{canvas::PhotoView, histogram::HistogramStatus};
@@ -307,14 +307,6 @@ fn opened_and_shown() -> (Editor, PathBuf, AssetId, HistoryEntry) {
         .current_entry
         .clone();
     (editor, catalog, asset, current)
-}
-
-fn events<'a>(records: &'a [Value], name: &str) -> Vec<&'a Value> {
-    records
-        .iter()
-        .filter(|record| record["event"] == json!(name))
-        .map(|record| &record["detail"])
-        .collect()
 }
 
 /// A crop that committed but whose render failed: the uncropped picture is withdrawn rather than

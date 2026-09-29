@@ -3,8 +3,8 @@
 use super::{
     message::{control::ControlMessage, pointer::PointerMessage},
     testing::{
-        attach_log, descriptors, finish, logged, opened, opened_with_modules, patch_control,
-        pick_events, pick_fields, pick_mode, picking, sample_mode,
+        attach_log, descriptors, events, finish, logged, opened, opened_with_modules,
+        patch_control, pick_fields, pick_mode, picking, sample_mode,
     },
     *,
 };
@@ -37,7 +37,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
     assert_eq!(editor.status.text, "Sampling (100, 42)…");
     assert!(!editor.busy, "the query committed before it answered");
     assert_eq!(
-        pick_events(&logged(&mut editor, &log)),
+        events(&logged(&mut editor, &log), "canvas_pick"),
         vec![&json!({"query":query,"action":action,"view_x":7,"view_y":9,"x":100,"y":42})]
     );
 
@@ -150,7 +150,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
         }),
     }));
     assert_eq!(
-        pick_events(&logged(&mut editor, &log)),
+        events(&logged(&mut editor, &log), "canvas_pick"),
         vec![
             &json!({"query":query,"action":action,"mask":mask.as_str(),"view_x":7,"view_y":9,"x":100,"y":42})
         ],
@@ -421,7 +421,7 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     );
     // The evidence carries both pixels, so a capture can be read against the view and the stack.
     assert_eq!(
-        pick_events(&logged(&mut editor, &log)),
+        events(&logged(&mut editor, &log), "canvas_pick"),
         vec![&json!({"action":action,"view_x":7,"view_y":9,"x":100,"y":42})]
     );
     // A pick commits nothing: the open stack and its revision are untouched.
@@ -469,7 +469,7 @@ fn a_located_point_for_another_entry_is_dropped() {
     assert_eq!(editor.controls.fields.get(&action, &x), Some("0"));
     assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
     assert_eq!(editor.status.text, before);
-    assert!(pick_events(&logged(&mut editor, &log)).is_empty());
+    assert!(events(&logged(&mut editor, &log), "canvas_pick").is_empty());
     finish(editor, catalog);
 }
 
@@ -498,7 +498,7 @@ fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
     assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
     assert_eq!(editor.status.text, refusal);
     assert_eq!(
-        pick_events(&logged(&mut editor, &log)),
+        events(&logged(&mut editor, &log), "canvas_pick"),
         vec![&json!({"mode":pick_mode(&editor),"view_x":7,"view_y":9,"error":refusal})]
     );
     finish(editor, catalog);

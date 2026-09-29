@@ -1151,7 +1151,7 @@ mod tests {
         tasks::SyncResult,
         testing::{
             CROP_ASPECTS, CROP_SOURCE, answer_commit, core_draft, crop_layer, described_at, entry,
-            finish, open_crop, opened, refresh_for,
+            events, finish, open_crop, opened, refresh_for,
         },
     };
     use crate::crop_draft::{Corner, Handle};
@@ -1663,11 +1663,11 @@ mod tests {
             Some(Round::Commit)
         );
         let records = crate::app::testing::logged(&mut editor, &log);
-        let commits = crate::app::testing::draft_events(&records, "crop_draft_commit");
+        let commits = events(&records, "crop_draft_commit");
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0]["expected_revision"], json!(6));
         assert_eq!(
-            crate::app::testing::draft_events(&records, "crop_draft_set").len(),
+            events(&records, "crop_draft_set").len(),
             2,
             "the opened frame and the drag"
         );
@@ -1726,7 +1726,7 @@ mod tests {
         assert_eq!(draft.base_revision, 9);
         let payload = editor.crop().expect("a frame").payload();
         let records = crate::app::testing::logged(&mut editor, &log);
-        let sets = crate::app::testing::draft_events(&records, "crop_draft_set");
+        let sets = events(&records, "crop_draft_set");
         assert_eq!(
             sets.len(),
             1,
@@ -2209,14 +2209,6 @@ mod tests {
             .iter()
             .position(|candidate| *candidate == option)
             .expect("a declared option")
-    }
-
-    fn events(records: &[Value], name: &str) -> Vec<Value> {
-        records
-            .iter()
-            .filter(|record| record["event"] == name)
-            .map(|record| record["detail"].clone())
-            .collect()
     }
 
     /// A chip pressed in the idle section opens the draft seeded from the committed crop, as Start

@@ -7,8 +7,8 @@ use super::{
     },
     tasks::mutation,
     testing::{
-        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, descriptors, draft_events, drafting, entry, finish,
-        logged, opened_with_modules, patch_control, raw_entry, raw_refresh, refresh_for,
+        Z6_AS_SHOT, Z6_CAM_XYZ, attach_log, descriptors, drafting, entry, events, finish, logged,
+        opened_with_modules, patch_control, raw_entry, raw_refresh, refresh_for,
     },
     *,
 };
@@ -48,11 +48,11 @@ fn a_drag_sends_one_draft_set_per_new_value_from_the_press_on() {
     let _ = testing::slide(&mut editor, &action, &parameter, 25.0);
     let records = logged(&mut editor, &log);
     assert_eq!(
-        draft_events(&records, "slider_draft_begin").len(),
+        events(&records, "slider_draft_begin").len(),
         1,
         "a gesture opens one draft"
     );
-    let sets = draft_events(&records, "slider_draft_set");
+    let sets = events(&records, "slider_draft_set");
     assert_eq!(
         sets.len(),
         1,
@@ -87,10 +87,10 @@ fn a_drag_sends_one_draft_set_per_new_value_from_the_press_on() {
 
     let records = logged(&mut editor, &log);
     assert!(
-        draft_events(&records, "slider_draft_begin").is_empty(),
+        events(&records, "slider_draft_begin").is_empty(),
         "the open gesture's moves open no second draft"
     );
-    let sets = draft_events(&records, "slider_draft_set");
+    let sets = events(&records, "slider_draft_set");
     let sent: Vec<&Value> = sets.iter().map(|set| &set["fields"]).collect();
     assert_eq!(
         sent,
@@ -167,11 +167,11 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
 
     let records = logged(&mut editor, &log);
     assert_eq!(
-        draft_events(&records, "slider_draft_begin").len(),
+        events(&records, "slider_draft_begin").len(),
         1,
         "one gesture opens one draft"
     );
-    let sets = draft_events(&records, "slider_draft_set");
+    let sets = events(&records, "slider_draft_set");
     let sent: Vec<&Value> = sets.iter().map(|set| &set["fields"]).collect();
     assert_eq!(
         sent,
@@ -183,12 +183,12 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         "one draft.set per value, each carrying it as the whole request"
     );
     assert_eq!(
-        draft_events(&records, "slider_draft_preview").len(),
+        events(&records, "slider_draft_preview").len(),
         3,
         "each accepted set queues the preview its value produces"
     );
     assert_eq!(
-        draft_events(&records, "slider_draft_commit").len(),
+        events(&records, "slider_draft_commit").len(),
         1,
         "release commits exactly once"
     );
@@ -226,7 +226,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
         "the field still follows the pointer"
     );
     assert!(
-        draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty(),
+        events(&logged(&mut editor, &log), "slider_draft_begin").is_empty(),
         "nothing was sent while dragging"
     );
 
@@ -319,11 +319,11 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
         let committed =
             double_click_before_the_commit_answers(&mut editor, &asset, action, parameter, value);
         let records = logged(&mut editor, &log);
-        let queued = draft_events(&records, "field_reset_queued");
+        let queued = events(&records, "field_reset_queued");
         assert_eq!(queued.len(), 1, "{action}: the reset waits: {records:?}");
         assert_eq!(queued[0]["revision"], json!(revision));
         assert!(
-            draft_events(&records, "field_reset_sent").is_empty(),
+            events(&records, "field_reset_sent").is_empty(),
             "{action}: nothing is sent against the revision the commit is replacing"
         );
         assert!(!editor.busy, "{action}: no request was started");
@@ -334,7 +334,7 @@ fn a_reset_during_a_gesture_commit_waits_and_names_the_revision_the_commit_produ
         let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
         testing::answer_commit(&mut editor, Ok(Some(refresh)));
         let records = logged(&mut editor, &log);
-        let sent = draft_events(&records, "field_reset_sent");
+        let sent = events(&records, "field_reset_sent");
         assert_eq!(sent.len(), 1, "{action}: sent once");
         assert_eq!(
             sent[0]["revision"],
@@ -445,7 +445,7 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
             parameter: parameter.into(),
         }));
         let records = logged(&mut editor, &log);
-        let sent = draft_events(&records, "field_reset_sent");
+        let sent = events(&records, "field_reset_sent");
         assert_eq!(sent.len(), 1, "{parameter}: {records:?}");
         assert_eq!(sent[0]["action"], as_shot["action"]);
         assert_eq!(sent[0]["preset"], as_shot["preset"]);
@@ -490,7 +490,7 @@ fn a_double_click_on_a_raw_white_balance_field_returns_to_as_shot() {
             parameter: parameter.into(),
         }));
         let records = logged(&mut editor, &log);
-        let sent = draft_events(&records, "field_reset_sent");
+        let sent = events(&records, "field_reset_sent");
         assert_eq!(sent.len(), 1, "{action}");
         assert_eq!(sent[0]["action"], json!(action));
         assert_eq!(sent[0]["preset"], preset);
@@ -523,7 +523,7 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
     let next = entry(&asset, current.sequence + 1, Some(&current.id));
     let refresh = refresh_for(&asset, &next, Vec::new(), &[&next], false);
     let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
-    let sent = draft_events(&logged(&mut editor, &log), "field_reset_sent")
+    let sent = events(&logged(&mut editor, &log), "field_reset_sent")
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
@@ -541,11 +541,11 @@ fn a_waiting_reset_runs_after_a_request_and_is_dropped_on_a_historical_entry() {
     editor.busy = false;
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     let records = logged(&mut editor, &log);
-    let dropped = draft_events(&records, "field_reset_dropped");
+    let dropped = events(&records, "field_reset_dropped");
     assert_eq!(dropped.len(), 1, "{records:?}");
     assert_eq!(dropped[0]["reason"], json!("a historical entry is shown"));
     assert!(editor.controls.pending_reset.is_none());
-    assert!(draft_events(&records, "field_reset_sent").is_empty());
+    assert!(events(&records, "field_reset_sent").is_empty());
     assert!(
         editor
             .status
@@ -594,7 +594,7 @@ fn a_draft_the_core_cannot_preview_says_so_and_stays_open() {
         "and no frame of its own is coming for the value it holds"
     );
     let records = logged(&mut editor, &log);
-    let unpreviewed = draft_events(&records, "slider_draft_unpreviewed");
+    let unpreviewed = events(&records, "slider_draft_unpreviewed");
     assert_eq!(
         unpreviewed.last().map(|detail| &detail["error"]),
         Some(&json!("preparation-required: source-job-7"))
@@ -622,7 +622,7 @@ fn releasing_a_drafting_slider_that_never_moved_sends_nothing() {
             "{action}: {}",
             editor.status.text
         );
-        assert!(draft_events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
+        assert!(events(&logged(&mut editor, &log), "slider_draft_begin").is_empty());
         finish(editor, catalog);
     }
 }
@@ -695,7 +695,7 @@ fn a_slider_released_while_another_request_is_in_flight_commits() {
     );
     assert!(editor.controls.dragging.is_none(), "release ends the drag");
     let records = logged(&mut editor, &log);
-    assert_eq!(draft_events(&records, "slider_draft_commit").len(), 1);
+    assert_eq!(events(&records, "slider_draft_commit").len(), 1);
     testing::answer_commit(&mut editor, Ok(None));
     assert!(
         editor.slider_gesture().is_none(),
@@ -715,7 +715,7 @@ fn release_commits_once_and_a_return_to_start_commits_nothing() {
     let _ = testing::let_go(&mut editor, &action, &parameter);
     let _ = testing::let_go(&mut editor, &action, &parameter);
     let records = logged(&mut editor, &log);
-    let commits = draft_events(&records, "slider_draft_commit");
+    let commits = events(&records, "slider_draft_commit");
     assert_eq!(commits.len(), 1, "one gesture is one commit: {commits:?}");
     assert_eq!(
         commits[0]["expected_revision"],
@@ -780,9 +780,9 @@ fn escape_cancels_the_gesture_and_commits_nothing() {
     let _ = editor.update(escape.expect("the mapped message"));
 
     let records = logged(&mut editor, &log);
-    assert_eq!(draft_events(&records, "slider_draft_cancelled").len(), 1);
+    assert_eq!(events(&records, "slider_draft_cancelled").len(), 1);
     assert!(
-        draft_events(&records, "slider_draft_commit").is_empty(),
+        events(&records, "slider_draft_commit").is_empty(),
         "a cancelled gesture commits nothing"
     );
     assert!(editor.slider_gesture().is_none());
@@ -824,14 +824,14 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     // Commit is refused while it is conflicted; nothing is sent.
     let conflicts = logged(&mut editor, &log);
     assert_eq!(
-        draft_events(&conflicts, "slider_draft_conflicted").len(),
+        events(&conflicts, "slider_draft_conflicted").len(),
         1,
         "the conflict is recorded once, with the revision that caused it"
     );
     let log2 = attach_log(&mut editor);
     let _ = editor.update(Message::Draft(message::draft::DraftMessage::Commit));
     assert!(
-        draft_events(&logged(&mut editor, &log2), "slider_draft_commit").is_empty(),
+        events(&logged(&mut editor, &log2), "slider_draft_commit").is_empty(),
         "a conflicted gesture refuses to commit"
     );
     assert!(editor.core_gesture().expect("kept").draft.conflicted);
@@ -844,7 +844,7 @@ fn an_external_commit_during_a_gesture_conflicts_it_and_reapply_clears_it() {
     assert!(!draft.conflicted);
     assert_eq!(draft.base_revision, 9);
     let records = logged(&mut editor, &log3);
-    let sets = draft_events(&records, "slider_draft_set");
+    let sets = events(&records, "slider_draft_set");
     assert_eq!(
         sets.len(),
         1,
@@ -864,7 +864,7 @@ fn a_gesture_and_a_json_client_send_the_same_one_field_patch() {
     let _ = testing::slide(&mut editor, &action, &parameter, 1.0);
     let sets = {
         let records = logged(&mut editor, &log);
-        draft_events(&records, "slider_draft_set")
+        events(&records, "slider_draft_set")
             .first()
             .cloned()
             .cloned()
@@ -960,7 +960,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             editor.status.text
         );
         let records = logged(&mut editor, &log);
-        let sets = draft_events(&records, "slider_draft_set");
+        let sets = events(&records, "slider_draft_set");
         assert_eq!(sets.len(), 1, "{parameter}: {sets:?}");
         assert_eq!(
             sets[0]["fields"],
@@ -982,7 +982,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         let _ = testing::let_go(&mut editor, &action, parameter);
         let records = logged(&mut editor, &log);
         assert_eq!(
-            draft_events(&records, "slider_draft_commit").len(),
+            events(&records, "slider_draft_commit").len(),
             1,
             "{parameter} committed once"
         );
@@ -999,11 +999,11 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
         let _ = editor.update(Message::Draft(message::draft::DraftMessage::Cancel));
         let records = logged(&mut editor, &log);
         assert!(
-            draft_events(&records, "slider_draft_commit").is_empty(),
+            events(&records, "slider_draft_commit").is_empty(),
             "{parameter} committed on Escape"
         );
         assert!(
-            !draft_events(&records, "slider_draft_cancelled").is_empty(),
+            !events(&records, "slider_draft_cancelled").is_empty(),
             "{parameter} did not cancel"
         );
         assert!(
@@ -1043,7 +1043,7 @@ fn every_patch_field_drafts_commits_cancels_and_reapplies_through_one_path() {
             "{parameter} did not re-send the value this client set"
         );
         assert_eq!(
-            draft_events(&logged(&mut editor, &log), "slider_draft_set").len(),
+            events(&logged(&mut editor, &log), "slider_draft_set").len(),
             1,
             "{parameter}: the reapply re-sent it once"
         );

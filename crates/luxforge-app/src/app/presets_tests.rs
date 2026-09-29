@@ -14,10 +14,11 @@ use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
     Config,
-    app::testing::descriptors,
+    app::testing::{descriptors, import_and_adopt},
     state::presets::{PresetRow, PresetsModel},
 };
 use luxforge_core::{AssetId, ClientId, MAX_PRESET_BYTES, OwnerHandle};
+use luxforge_testkit::fixtures::temp_catalog;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
@@ -51,28 +52,10 @@ struct Library {
 
 impl Library {
     fn opened() -> Self {
-        let catalog = scratch("catalog.sqlite");
+        let catalog = temp_catalog("desktop-presets");
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let agent = owner.register();
-        let (queued, _) = call(
-            &owner,
-            agent,
-            "catalog.import",
-            json!({"path": fixture("fixtures/s0/orientation-1.jpg"), "mutation": crate::app::tasks::request()}),
-        )
-        .unwrap();
-        let job_id = queued["job_id"].as_str().expect("a source job").to_owned();
-        luxforge_testbase::wait_until("source preparation", || {
-            let (status, _) = call(&owner, agent, "job.read", json!({"job_id": job_id})).unwrap();
-            match status["status"].as_str() {
-                Some("ready") => true,
-                Some("queued" | "running") => false,
-                other => panic!("source preparation failed {other:?}: {status}"),
-            }
-        });
-        let (adopted, _) = call(&owner, agent, "job.adopt", json!({"job_id": job_id})).unwrap();
-        let asset =
-            AssetId::parse(adopted["asset"]["asset"]["id"].as_str().expect("an asset")).unwrap();
+        let asset = import_and_adopt(&owner, agent, &fixture("fixtures/s0/orientation-1.jpg"));
         let (mut editor, _) = Editor::new(Boot {
             owner: owner.clone(),
             join,
