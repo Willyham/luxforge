@@ -496,8 +496,6 @@ mod tests {
         mask::commands::{self, MaskTarget},
     };
     use serde_json::{Value, json};
-    use std::sync::Arc;
-    use std::time::Instant;
 
     #[test]
     fn competing_catalog_owners_are_rejected() {
@@ -538,74 +536,17 @@ mod tests {
                     )
                 );
             }
-            assert_eq!(std::fs::read(&catalog).unwrap(), before);
+            assert_eq!(
+                std::fs::read(&catalog).unwrap(),
+                before,
+                "the refused catalog keeps every byte"
+            );
+            assert!(
+                !default_artifact_root(&catalog).exists(),
+                "a refused catalog gets no artifact directory"
+            );
             std::fs::remove_file(catalog).unwrap();
         }
-    }
-
-    #[test]
-    fn a_format_2_catalog_is_refused_by_name_without_rewriting_it() {
-        let catalog = temp("format-2.sqlite");
-        let mut service = EditorService::open(&catalog).unwrap();
-        service.import(&fixture()).unwrap();
-        drop(service);
-        // Entries before format 3 carry no label, so the marker refuses them rather than guessing.
-        let connection = Connection::open(&catalog).unwrap();
-        connection.pragma_update(None, "user_version", 2).unwrap();
-        drop(connection);
-        let before = std::fs::read(&catalog).unwrap();
-        let error = EditorService::open(&catalog).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(
-            error.detail,
-            "catalog format 2 is not supported; expected 10; choose a new catalog path"
-        );
-        assert_eq!(
-            std::fs::read(&catalog).unwrap(),
-            before,
-            "a refused catalog is left byte for byte as it was"
-        );
-        std::fs::remove_file(catalog).unwrap();
-    }
-
-    /// A format 7 catalog's entries hold their label, actor, timestamp and restore target only in
-    /// the entry JSON, so a history page could not read its rows from columns: it is refused by name
-    /// and left as it is rather than read by decoding every entry.
-    #[test]
-    fn a_format_7_catalog_without_row_columns_is_refused_by_name_without_rewriting_it() {
-        let catalog = temp("format-7.sqlite");
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
-        let asset = service.import(&fixture()).unwrap().asset.id;
-        service
-            .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
-            .unwrap();
-        drop(service);
-        let connection = Connection::open(&catalog).unwrap();
-        connection
-            .execute_batch(
-                "ALTER TABLE entries DROP COLUMN label;
-                 ALTER TABLE entries DROP COLUMN actor;
-                 ALTER TABLE entries DROP COLUMN timestamp_ms;
-                 ALTER TABLE entries DROP COLUMN restore_target_id;
-                 PRAGMA user_version=7;",
-            )
-            .unwrap();
-        drop(connection);
-        let before = std::fs::read(&catalog).unwrap();
-        let error =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(
-            error.detail,
-            "catalog format 7 is not supported; expected 10; choose a new catalog path"
-        );
-        assert_eq!(
-            std::fs::read(&catalog).unwrap(),
-            before,
-            "a refused catalog is left byte for byte as it was"
-        );
-        std::fs::remove_file(catalog).unwrap();
     }
 
     fn stored_strokes(catalog: &Path) -> i64 {
@@ -1211,8 +1152,7 @@ mod tests {
     /// stroke was committed.
     ///
     /// Everything here is a byte count taken from the catalog itself, so nothing in it depends on
-    /// what else the host is doing; the one timed figure a session produces, reopen, is measured
-    /// separately and quoted with its load average.
+    /// what else the host is doing.
     #[derive(Clone, Copy)]
     struct Growth {
         strokes: usize,
@@ -1220,15 +1160,9 @@ mod tests {
         entries: usize,
         /// The bytes of the content-addressed store: each distinct stroke once.
         store: usize,
-        /// The catalog file on disk, which also carries the asset, the page overhead and the index.
-        catalog: u64,
         /// What the same entries would have cost with each stroke's positions written into its
         /// payload instead of its address: the shape the store exists to avoid.
         embedded: usize,
-        /// The mean owner-thread time of one commit's write transaction — `insert_entry` plus the
-        /// head update — over the strokes since the previous sample, in milliseconds. Not a byte
-        /// count, so it is the one field here a shared host's load bears on.
-        commit_ms: f64,
     }
 
     impl Growth {
@@ -1237,22 +1171,6 @@ mod tests {
         fn stored(self) -> usize {
             self.entries + self.store
         }
-    }
-
-    /// The host's one-minute load average, so every timed figure below can be quoted with the state
-    /// of the machine that produced it. Byte counts do not need it and are not quoted with it.
-    fn load_average() -> f64 {
-        std::process::Command::new("/usr/sbin/sysctl")
-            .args(["-n", "vm.loadavg"])
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .and_then(|text| {
-                text.split_whitespace()
-                    .nth(1)
-                    .and_then(|first| first.parse().ok())
-            })
-            .unwrap_or(f64::NAN)
     }
 
     /// Pack a session's strokes into the densest mask table the declared limits admit, or `None`
@@ -1303,30 +1221,24 @@ mod tests {
     }
 
     /// Paint `count` strokes into `catalog` over `source`, one stroke per history entry written
-    /// through the production write path, sampling the stored cost and the mean commit time every
-    /// `every` strokes.
+    /// through the production write path, sampling the stored cost every `every` strokes.
     ///
     /// The strokes are packed by [`packed`], so the session is the densest one the declared limits
     /// admit and its cost is the worst case rather than an arrangement chosen to be cheap.
     ///
-    /// When `mark_fresh_as_stored`, `table` is marked [`crate::path::StrokeTable::mark_stored`] for
-    /// the one stroke each commit captured, right after that commit lands, which is what a fresh
-    /// hydration of the entry this harness just wrote would mark on its own: this session builds its
-    /// recipes directly rather than through `mask.add-stroke` and a re-read, so it has to say so
-    /// itself, once, for the same reason `insert_entry` is still the real one — the point is to time
-    /// the production write path, not a harness that happens to look like it. Passing `false`
-    /// leaves every stroke this session ever captured unmarked, so `store_strokes` treats the whole
-    /// mask table's references as fresh on every commit, exactly as it did before this task: the
-    /// controlled counterfactual `docs/specs/performance.md`'s commit-time figure is measured
-    /// against, isolating the one thing that changed without needing a second binary.
+    /// `table` is marked [`crate::path::StrokeTable::mark_stored`] for the one stroke each commit
+    /// captured, right after that commit lands, which is what a fresh hydration of the entry this
+    /// harness just wrote would mark on its own: this session builds its recipes directly rather
+    /// than through `mask.add-stroke` and a re-read, so it has to say so itself, for the same reason
+    /// `insert_entry` is still the real one — the point is the production write path, not a harness
+    /// that happens to look like it.
     ///
-    /// The returned asset is the painted one, so a caller can time reopening the catalog it left.
+    /// The returned asset is the painted one, so a caller can reopen the catalog it left.
     fn painting_session(
         catalog: &Path,
         source: &Path,
         count: usize,
         every: usize,
-        mark_fresh_as_stored: bool,
     ) -> (Vec<Growth>, AssetId) {
         let mut service = EditorService::open(catalog).unwrap();
         let asset = service.import(source).unwrap().asset.id;
@@ -1351,7 +1263,6 @@ mod tests {
         let mut embedded = 0_usize;
         let mut lengths: Vec<usize> = Vec::with_capacity(count);
         let mut curve = Vec::new();
-        let mut commit_window: Vec<f64> = Vec::with_capacity(every);
         for index in 0..count {
             let one = stroke(index);
             drawn += one.canonical().len() + 1;
@@ -1381,7 +1292,6 @@ mod tests {
             };
             revision += 1;
             registry.validate_recipe(&entry.snapshot.recipe).unwrap();
-            let started = Instant::now();
             let tx = connection.transaction().unwrap();
             insert_entry(&tx, &default_artifact_root(catalog), &entry).unwrap();
             tx.execute(
@@ -1390,13 +1300,10 @@ mod tests {
             )
             .unwrap();
             tx.commit().unwrap();
-            commit_window.push(started.elapsed().as_secs_f64() * 1e3);
             // This stroke is durable now: the next commit's fresh hydration would mark it stored on
             // its own, and this harness has to say so itself because it never re-reads the entry it
             // just wrote.
-            if mark_fresh_as_stored {
-                table.mark_stored(id);
-            }
+            table.mark_stored(id);
             previous = entry;
             if (index + 1).is_multiple_of(every) || index + 1 == count {
                 let entries: i64 = connection
@@ -1413,11 +1320,8 @@ mod tests {
                     strokes: index + 1,
                     entries: entries as usize,
                     store: store as usize,
-                    catalog: std::fs::metadata(catalog).map(|m| m.len()).unwrap_or(0),
                     embedded: entries as usize + embedded,
-                    commit_ms: commit_window.iter().sum::<f64>() / commit_window.len() as f64,
                 });
-                commit_window.clear();
             }
         }
         drop(connection);
@@ -1471,161 +1375,24 @@ mod tests {
     /// positions and decimate to between 67 and 78, so the arithmetic on 100 would be wrong.
     const CEILING: usize = 1809;
 
-    /// The independent, larger-scale confirmation of the store's figures: a painting session run to
-    /// the per-recipe ceiling on 24 MP and 60 MP, sampled every fifty strokes, with the curve it
-    /// traces, the counterfactual beside it, and the time to reopen the catalog it left.
-    ///
-    /// Peak process memory belongs to the process, so a run measures one source at a time: set
-    /// `LUXFORGE_MASK_GROWTH_SOURCE` to a fixture's path and wrap the run in `/usr/bin/time -l`,
-    /// which is where the recorded peak resident set comes from. Without it both sources run in one
-    /// process and only the byte counts are attributable.
-    ///
-    /// Printed rather than asserted, because a timing gate does not belong in the test suite; the
-    /// tests below hold the design's figures, the ceiling and the bound in place.
-    ///
-    /// ```text
-    /// cargo test --release --package luxforge-core --lib measure_mask_growth -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "a measurement, not a gate"]
-    fn measure_mask_growth_across_a_painting_session() {
-        let generated = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated");
-        let chosen = std::env::var("LUXFORGE_MASK_GROWTH_SOURCE").ok();
-        let sources: Vec<(String, PathBuf)> = match &chosen {
-            Some(path) => vec![(path.clone(), PathBuf::from(path))],
-            None => ["24mp.jpg", "60mp.jpg"]
-                .iter()
-                .map(|name| ((*name).to_owned(), generated.join(name)))
-                .filter(|(_, path)| path.exists())
-                .collect(),
-        };
-        assert!(
-            !sources.is_empty(),
-            "generate fixtures first: cargo xtask generate-fixtures --output fixtures/generated"
-        );
-        println!(
-            "load average at the start of this run: {:.2}",
-            load_average()
-        );
-        for (name, source) in &sources {
-            let catalog = temp("mask-growth-measured.sqlite");
-            let (curve, asset) = painting_session(&catalog, source, CEILING, 50, true);
-            println!(
-                "\n{name}: strokes, stored entries + store (MB), catalog file (MB), embedded \
-                 counterfactual (MB), factor, mean commit ms (of the 50 since the last row, this \
-                 build's fresh-only write)"
-            );
-            for point in &curve {
-                println!(
-                    "  {:>4}  {:>8.3}  {:>8.3}  {:>9.3}  {:>5.1}x  {:>6.3} ms",
-                    point.strokes,
-                    point.stored() as f64 / 1e6,
-                    point.catalog as f64 / 1e6,
-                    point.embedded as f64 / 1e6,
-                    point.embedded as f64 / point.stored() as f64,
-                    point.commit_ms,
-                );
-            }
-            println!("  load average after this session: {:.2}", load_average());
-            let (a, b, c) = quadratic_fit(&curve);
-            let at = |n: usize| {
-                curve
-                    .iter()
-                    .find(|point| point.strokes == n)
-                    .copied()
-                    .expect("a sampled stroke count")
-            };
-            println!(
-                "  fit S(n) = {a:.4}·n² + {b:.1}·n + {c:.0} bytes; S(1000)/S(500) = {:.2} and \
-                 S(500)/S(250) = {:.2} (4 is quadratic, 2 would be linear)",
-                at(1000).stored() as f64 / at(500).stored() as f64,
-                at(500).stored() as f64 / at(250).stored() as f64,
-            );
-            println!(
-                "  one stroke serializes to {} bytes; the ceiling's {CEILING} distinct strokes hold \
-                 {} KiB",
-                at(CEILING).store / CEILING,
-                at(CEILING).store / 1024,
-            );
-            for round in 0..3 {
-                let started = Instant::now();
-                let service = EditorService::open(&catalog).unwrap();
-                let state = service.state(&asset).unwrap();
-                let elapsed = started.elapsed();
-                println!(
-                    "  reopen {round}: {:.1} ms at load {:.2} ({} masks, {} strokes resolved)",
-                    elapsed.as_secs_f64() * 1e3,
-                    load_average(),
-                    state.current_entry.snapshot.recipe.masks.len(),
-                    state
-                        .current_entry
-                        .snapshot
-                        .recipe
-                        .strokes
-                        .strokes()
-                        .count(),
-                );
-            }
-            std::fs::remove_file(&catalog).unwrap();
-
-            // The controlled counterfactual for TASK-006's commit-time claim: the same build, the
-            // same session, the one thing that changed toggled by hand — whether a fresh insert
-            // this session made is ever marked stored, which is what a real fresh hydration would
-            // do on its own between commits. With it off, `store_strokes` treats every reference
-            // the whole mask table carries as needing a write on every commit, which is this
-            // build's own record of the behavior before this task; with it on, only what each
-            // commit actually captured is written. A binary built before this task carries no
-            // commit-time instrumentation to compare against directly, so this is measured as an
-            // A/B within the one binary instead, in reversed order (after, before, before, after)
-            // so a difference has to survive the reversal to be attributed to the toggle.
-            let near_ceiling = |mark_fresh_as_stored: bool| -> f64 {
-                let catalog = temp("mask-growth-commit-time.sqlite");
-                let (curve, _) =
-                    painting_session(&catalog, source, CEILING, 50, mark_fresh_as_stored);
-                std::fs::remove_file(&catalog).unwrap();
-                curve.last().expect("at least one sample").commit_ms
-            };
-            let after_1 = near_ceiling(true);
-            let load_after_1 = load_average();
-            let before_1 = near_ceiling(false);
-            let load_before_1 = load_average();
-            let before_2 = near_ceiling(false);
-            let load_before_2 = load_average();
-            let after_2 = near_ceiling(true);
-            let load_after_2 = load_average();
-            println!(
-                "  commit time near the {CEILING}-stroke ceiling, this build only, mean of the \
-                 last 50 commits, reversed order (ms at one-minute load):"
-            );
-            println!(
-                "    fresh-only (after):        {after_1:.3} at {load_after_1:.2}, {after_2:.3} at \
-                 {load_after_2:.2}"
-            );
-            println!(
-                "    every reference (before):  {before_1:.3} at {load_before_1:.2}, {before_2:.3} \
-                 at {load_before_2:.2}"
-            );
-        }
-    }
-
     /// The growth is quadratic, and its square term is the one the design records.
     ///
     /// Scope: `luxforge-core`'s own catalog on the 24 MP generated fixture when it has been
     /// generated and on the small JPEG fixture otherwise — the catalog's bytes do not depend on the
-    /// source's pixel dimensions, which the measurement above confirms by measuring both — one
-    /// stroke of 100 positions per history entry, counting the bytes of every stored entry plus the
-    /// bytes of the stroke store. Byte counts, so no load average applies.
+    /// source's pixel dimensions, as the recorded 24 and 60 MP sessions agree — one stroke of 100
+    /// positions per history entry, counting the bytes of every stored entry plus the bytes of the
+    /// stroke store. Byte counts, so no load average applies.
     ///
-    /// It gates the shape at 400 strokes and leaves the thousand-stroke and ceiling figures to the
-    /// measurement above, so the suite does not carry a twenty-second session to learn what four
-    /// hundred strokes already say.
+    /// It gates the shape at 400 strokes; the thousand-stroke and ceiling figures in
+    /// `docs/design/masking.md` are recorded measurements, so the suite does not carry a
+    /// twenty-second session to learn what four hundred strokes already say.
     #[test]
     fn a_painting_session_grows_with_the_square_of_its_stroke_count() {
         let source =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated/24mp.jpg");
         let source = if source.exists() { source } else { fixture() };
         let catalog = temp("quadratic-growth.sqlite");
-        let (curve, _) = painting_session(&catalog, &source, 400, 100, true);
+        let (curve, _) = painting_session(&catalog, &source, 400, 100);
         std::fs::remove_file(&catalog).unwrap();
         let at = |n: usize| {
             curve
@@ -1681,7 +1448,7 @@ mod tests {
             lengths.iter().min().unwrap(),
             lengths.iter().max().unwrap(),
         );
-        // The measurement paints to CEILING, so CEILING has to be a session that packs, and the
+        // The recorded curve ends at CEILING, so CEILING has to be a session that packs, and the
         // stroke past it has to be one that does not: that is what makes the curve's far end the
         // real end rather than a number chosen to be round.
         assert_eq!(ceiling, CEILING);
@@ -1721,7 +1488,7 @@ mod tests {
     #[test]
     fn a_recipe_over_the_serialized_mask_bound_names_it_and_leaves_the_catalog_as_it_was() {
         let catalog = temp("serialized-mask-bound.sqlite");
-        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4, true);
+        let (_, asset) = painting_session(&catalog, &fixture(), 4, 4);
 
         // The durable state the refusal must not touch: the catalog's own bytes, and what a reopen
         // reads back out of them.
@@ -1890,45 +1657,5 @@ mod tests {
                 crate::POINTS_PER_MASK
             )
         );
-    }
-
-    #[test]
-    fn a_format_5_catalog_is_refused_by_name_and_left_untouched() {
-        let catalog = temp("format-5.sqlite");
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
-        let asset = service.import(&fixture()).unwrap().asset.id;
-        service
-            .apply_pixel(&asset, mutation(0, "pixel"), 1, 1, [9, 8, 7])
-            .unwrap();
-        drop(service);
-        // A format 5 catalog is this schema without the catalog identity and the artifact tables.
-        let connection = Connection::open(&catalog).unwrap();
-        connection
-            .execute_batch(
-                "DROP TRIGGER artifact_refs_are_permanent;
-                 DROP TABLE artifact_refs;
-                 DROP TABLE artifacts;
-                 DROP TABLE catalog_meta;
-                 PRAGMA user_version=5;",
-            )
-            .unwrap();
-        drop(connection);
-        let before = std::fs::read(&catalog).unwrap();
-        let error =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Incompatible);
-        assert_eq!(
-            error.detail,
-            "catalog format 5 is not supported; expected 10; choose a new catalog path"
-        );
-        assert_eq!(
-            std::fs::read(&catalog).unwrap(),
-            before,
-            "the refused catalog keeps every byte, and no artifact directory is created"
-        );
-        let stem = catalog.file_stem().unwrap().to_string_lossy().into_owned();
-        assert!(!catalog.with_file_name(format!("{stem}.artifacts")).exists());
-        std::fs::remove_file(catalog).unwrap();
     }
 }
