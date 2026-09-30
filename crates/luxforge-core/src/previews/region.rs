@@ -3,9 +3,10 @@
 //! for that rectangle alone, and otherwise from a neutral Luxforge development of the frame, made
 //! on demand, one RAW at a time, off the editor's source cache.
 //!
-//! These are the domain functions `preview.region` answers from. The preview lane runs them on a
-//! worker of its own, never on the catalog owner thread (performance rule 5), writes the answer's
-//! JPEG ([`encode_region`]) and labels it with [`RegionImage::origin`].
+//! These are the domain functions `preview.region` answers from. The preview lane runs them on its
+//! region worker (`regions.rs`), never on the catalog owner thread (performance rule 5), writes
+//! the answer's JPEG ([`encode_region`]) and labels it with [`RegionImage::origin`]; its
+//! extraction workers develop a RAW with no usable preview through [`developed_preview`].
 //!
 //! # The frame
 //!
@@ -85,10 +86,6 @@
 //! buffers, which follow the preview's frame. The development holds, one after another, the
 //! file's bytes (within `luxforge_raw::MAX_SOURCE_BYTES`) and the mosaic, the mosaic and the float
 //! planes, then the planes and the rendered RGBA8 frame; only the frame is kept.
-#![allow(
-    dead_code,
-    reason = "the 100% region's domain functions: the preview lane wires them to `preview.region`"
-)]
 
 use crate::{
     Cancel, Error, LayerId, LinearSettings, ModuleRegistry, PreviewSource, ProxyBounds, ProxyPlan,
@@ -228,7 +225,9 @@ pub(crate) fn region(request: &RegionRequest, cancel: &Cancel) -> Result<RegionI
 }
 
 /// The region from the embedded full-size preview alone: a JPEG original's own pixels, or a RAW's
-/// largest embedded JPEG when it is full size, and otherwise [`EmbeddedRegion::NotFullSize`].
+/// largest embedded JPEG when it is full size, and otherwise [`EmbeddedRegion::NotFullSize`]. The
+/// lane answers through [`region`], which takes this path first; the tests take it alone.
+#[cfg(test)]
 pub(crate) fn embedded_region(
     request: &RegionRequest,
     cancel: &Cancel,
@@ -239,15 +238,6 @@ pub(crate) fn embedded_region(
         SourceTag::Jpeg => jpeg_region(opened, request, cancel).map(EmbeddedRegion::Region),
         SourceTag::Raw => embedded_raw(&opened.file, request, cancel),
     }
-}
-
-/// The region from a neutral development of the RAW, one development at a time, kept for the next
-/// region of the same frame. A JPEG original is refused: it is its own full-size image.
-pub(crate) fn developed_region(
-    request: &RegionRequest,
-    cancel: &Cancel,
-) -> Result<RegionImage, Error> {
-    developed_region_in(&DEVELOPMENTS, request, cancel, develop)
 }
 
 /// The RAW at `path` developed neutrally and downscaled to `max_side` (1 to
@@ -296,6 +286,26 @@ pub(crate) fn release_development() {
     DEVELOPMENTS.release();
 }
 
+/// Develop the file at `path` through the process's one development slot with `develop`, as a
+/// test holds the slot while the lane's workers wait on it.
+#[cfg(test)]
+pub(crate) fn develop_in_slot(
+    path: &Path,
+    signature: &FileSignature,
+    develop: impl FnOnce(File, &Cancel) -> Result<Developed, Error>,
+) -> Result<(), Error> {
+    let opened = open(path, signature)?;
+    DEVELOPMENTS
+        .frame(path, opened, &Cancel::new(), develop)
+        .map(drop)
+}
+
+/// How many callers wait for the process's development now.
+#[cfg(test)]
+pub(crate) fn development_waiters() -> usize {
+    DEVELOPMENTS.waiting()
+}
+
 /// Whether an embedded preview of `preview`'s size is full size for a `visible` image: each of its
 /// edges at least [`FULL_SIZE_PERCENT`] of the visible image's, long edge against long edge, so a
 /// preview stored in either orientation compares the same way. A visible image of no pixels has
@@ -339,7 +349,11 @@ fn region_in(
     }
 }
 
-/// [`developed_region`] through `developments`, developing with `develop`.
+/// The region from a neutral development of the RAW through `developments`, developing with
+/// `develop`: one development at a time, kept for the next region of the same frame. A JPEG
+/// original is refused: it is its own full-size image. The lane answers through [`region`], which
+/// develops when the embedded preview will not do; the tests take this path alone.
+#[cfg(test)]
 fn developed_region_in(
     developments: &Developments,
     request: &RegionRequest,
@@ -404,8 +418,9 @@ fn open(path: &Path, expected: &FileSignature) -> Result<Opened, Error> {
     Ok(Opened { file, signature })
 }
 
-/// A rectangle of at least one pixel whose RGBA8 pixels fit [`MAX_REGION_BYTES`].
-fn check_rect(rect: PixelRect) -> Result<(), Error> {
+/// A rectangle of at least one pixel whose RGBA8 pixels fit [`MAX_REGION_BYTES`]: what the owner
+/// checks before it queues a region, and every entry here again.
+pub(crate) fn check_rect(rect: PixelRect) -> Result<(), Error> {
     if rect.width == 0 || rect.height == 0 {
         return Err(Error::validation("a region needs at least one pixel"));
     }

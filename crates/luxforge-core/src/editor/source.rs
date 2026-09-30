@@ -1,6 +1,6 @@
 use super::{
-    AssetRecord, CachedSource, EditorService, EditorState, MutationOutcome, PreparedFile,
-    RawDevelopment, SourceKind, SourceSignature,
+    AssetRecord, CachedSource, EditorService, EditorState, PreparedFile, RawDevelopment,
+    SourceKind, SourceSignature,
     catalog::{insert_entry, now_ms, write},
     catalog_rows::{NewAsset, insert_asset, insert_capture, top_level_folder, upsert_volume},
 };
@@ -10,6 +10,7 @@ use crate::{
     artifacts::{self, ArtifactRead, VerifiedArtifact},
     atomic_file::file_error,
     catalog_types::{Dimensions, ExifOrientation, HeaderMetadata},
+    library::availability,
     open_source_bytes, read_bounded_file,
     source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment},
 };
@@ -100,20 +101,58 @@ fn located_signature(path: &Path) -> Result<(PathBuf, Metadata, SourceSignature)
     Ok((canonical, metadata, signature))
 }
 
-/// The signature an asset's original has now, refused when the file is gone or is no longer the
-/// file that was imported.
-pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
-    let metadata = asset
-        .locator
-        .metadata()
-        .map_err(|_| Error::source_unavailable("original source is unavailable"))?;
-    let signature = source_signature(&asset.locator, &metadata);
-    if signature.file_identity != asset.file_identity || signature.byte_len != asset.byte_len {
-        return Err(Error::source_unavailable(
-            "original source fingerprint changed",
-        ));
+impl SourceSignature {
+    /// The file's length in bytes.
+    pub(crate) fn byte_len(&self) -> u64 {
+        self.byte_len
     }
-    Ok(signature)
+
+    /// The file's identity as the catalog records it (`assets.file_identity`).
+    pub(crate) fn file_identity(&self) -> &str {
+        &self.file_identity
+    }
+}
+
+/// The one stat every read of an original starts from — a preparation, an evaluation, an export,
+/// a rendered preview — and all a present original costs: its signature now, or whether a file is
+/// there that is no longer the one developed (`Err(true)`) or none is (`Err(false)`).
+fn current_signature(asset: &AssetRecord) -> Result<SourceSignature, bool> {
+    match asset.locator.metadata() {
+        Ok(metadata) => {
+            let signature = source_signature(&asset.locator, &metadata);
+            if signature.file_identity == asset.file_identity
+                && signature.byte_len == asset.byte_len
+            {
+                Ok(signature)
+            } else {
+                Err(true)
+            }
+        }
+        Err(_) => Err(false),
+    }
+}
+
+/// The signature an asset's original has now, off the owner (a preview worker): refused as
+/// `source-unavailable` when the file is gone or is no longer the file that was developed, without
+/// recording the observation, which only the owner's [`EditorService::original_signature`] does.
+pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
+    current_signature(asset).map_err(|changed| {
+        Error::source_unavailable(if changed {
+            "original source fingerprint changed"
+        } else {
+            "original source is unavailable"
+        })
+    })
+}
+
+impl EditorService {
+    /// The signature an asset's original has now. Refused as `source-unavailable`, naming why, when
+    /// the file is gone or is no longer the file that was developed ([`availability::refusal`]);
+    /// only then is the catalog read, the volume looked at and the observation recorded.
+    fn original_signature(&self, asset: &AssetRecord) -> Result<SourceSignature, Error> {
+        current_signature(asset)
+            .map_err(|changed| availability::refusal(&self.connection, asset, changed))
+    }
 }
 
 /// Immutable source settings for a known file. The worker receives bounded catalog metadata,
@@ -579,7 +618,7 @@ impl EditorService {
 
     pub(crate) fn cached_state(&self, asset_id: &AssetId) -> Result<Option<EditorState>, Error> {
         let state = self.state(asset_id)?;
-        let signature = original_signature(&state.asset)?;
+        let signature = self.original_signature(&state.asset)?;
         let cache = self.source_cache.borrow();
         Ok(cache
             .as_ref()
@@ -632,99 +671,6 @@ impl EditorService {
     pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
         let preparing = self.importing(path)?;
         self.run_preparation(preparing)
-    }
-
-    /// Point `asset_id` at the file now at `path`, where its original has moved: the asset's
-    /// locator, source root and file identity are rewritten in one catalog transaction, and after it
-    /// commits the cached head carries the row as stored ([`EntryCache::row_changed`]). History,
-    /// the fingerprint and the interpretation are untouched, and so is every file: the original is
-    /// only looked at, never written.
-    ///
-    /// The file must be a regular file of the original's length that no other asset names; its
-    /// bytes are not hashed here. A decode of it is checked against the stored fingerprint as every
-    /// preparation of a known file is, and the decoded source the service holds is keyed by the
-    /// file's signature, so a source decoded from the old file is never answered for a new one. A
-    /// relocation to where the asset already is changes nothing and is a no-op.
-    ///
-    /// The internal write the Locate milestone's command will make; no method exposes it yet.
-    ///
-    /// [`EntryCache::row_changed`]: super::entries::EntryCache::row_changed
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn relocate(
-        &mut self,
-        asset_id: &AssetId,
-        path: &Path,
-    ) -> Result<MutationOutcome, Error> {
-        let head = self.head(asset_id)?;
-        let (canonical, signature) = Self::request_signature(path)?;
-        if signature.byte_len != head.asset.byte_len {
-            return Err(Error::source_unavailable(
-                "the file is not this asset's original: its length differs",
-            ));
-        }
-        // Either identity a source has may already be another asset's; this asset's own row is not
-        // a conflict.
-        let other: Option<String> = self
-            .connection
-            .query_row(
-                "SELECT id FROM assets WHERE (canonical_locator=?1 OR file_identity=?2) AND id<>?3
-                 LIMIT 1",
-                params![
-                    canonical.to_string_lossy(),
-                    signature.file_identity,
-                    asset_id.as_str()
-                ],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(other) = other {
-            return Err(Error::conflict(format!(
-                "the file is already the original of asset {other}"
-            )));
-        }
-        // The row exactly as it is stored, so the cached head is what a fresh read returns.
-        let locator = canonical.to_string_lossy().into_owned();
-        let source_root = canonical
-            .parent()
-            .unwrap_or(Path::new(""))
-            .to_string_lossy()
-            .into_owned();
-        let asset = AssetRecord {
-            source_root: PathBuf::from(&source_root),
-            locator: PathBuf::from(&locator),
-            file_identity: signature.file_identity,
-            ..head.asset.clone()
-        };
-        if asset == head.asset {
-            return Ok(MutationOutcome::NoOp);
-        }
-        let volume = crate::index::volume_of(&canonical, now_ms())?;
-        let file_name = canonical
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        write(&mut self.connection, |tx| {
-            upsert_volume(tx, &volume)?;
-            let changed = tx.execute(
-                "UPDATE assets SET source_root=?1,locator=?2,canonical_locator=?2,file_identity=?3,
-                     source_folder=?1,file_name=?4,volume_id=?5
-                 WHERE id=?6",
-                params![
-                    source_root,
-                    locator,
-                    asset.file_identity,
-                    file_name,
-                    volume.id.as_str(),
-                    asset_id.as_str()
-                ],
-            )?;
-            if changed != 1 {
-                return Err(Error::validation("unknown asset"));
-            }
-            Ok(())
-        })?;
-        self.entries.borrow_mut().row_changed(asset);
-        Ok(MutationOutcome::Applied)
     }
 
     /// Prepare exactly what `needs` names on the caller's thread, blocking: the catalog owner's own
@@ -801,6 +747,17 @@ impl EditorService {
                 return Err(Error::incompatible(
                     "original source interpretation changed",
                 ));
+            }
+            // The original was just read and verified where the catalog looks for it, so it is
+            // available, whatever an earlier check or refusal observed. An observation that cannot
+            // be recorded is left to the next look; the preparation stands.
+            if state.asset.locator == canonical {
+                let _ = availability::observed(
+                    &self.connection,
+                    &state.asset.id,
+                    crate::catalog_types::FileAvailability::Available,
+                    now_ms(),
+                );
             }
             self.source_cache.replace(Some(CachedSource {
                 asset_id: state.asset.id.clone(),
@@ -922,7 +879,7 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &crate::Recipe,
     ) -> Result<PreparedSource, Error> {
-        let signature = original_signature(asset)?;
+        let signature = self.original_signature(asset)?;
         let raw_source = matches!(&asset.source, SourceKind::Raw { .. });
         let max_source_bytes = if raw_source {
             luxforge_raw::MAX_SOURCE_BYTES as u64

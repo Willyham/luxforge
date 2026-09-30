@@ -649,6 +649,8 @@ fn task(file: FileId) -> Task {
         key: (file, PreviewTier::Grid),
         control: JobControl::new(),
         budget: SHARED_PREVIEW_BUDGET_BYTES,
+        develops: true,
+        develop: None,
         hold: None,
         stage_hold: None,
     }

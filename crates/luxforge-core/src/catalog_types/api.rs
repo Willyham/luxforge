@@ -15,10 +15,11 @@
 )]
 
 use super::{
-    CatalogFolderId, CatalogLane, CollectionId, CollectionKind, DevelopInto, Facet, Grouping,
-    IndexSource, ItemRef, MAX_FILTER_TEXT, MAX_JOURNAL_PAGE, MAX_LIBRARY_NAME, MAX_PICK_PAGE,
-    MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
-    PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
+    CatalogFolderId, CatalogLane, CollectionId, CollectionKind, DevelopInto, Dimensions, Facet,
+    Grouping, IndexSource, ItemRef, MAX_FILTER_TEXT, MAX_JOURNAL_PAGE, MAX_LIBRARY_NAME,
+    MAX_PICK_PAGE, MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem,
+    PreviewPriority, PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery,
+    ViewSort, ViewSource,
     jobs::{self, CatalogJob},
 };
 use crate::{
@@ -55,6 +56,13 @@ host_params! {
     }
 }
 
+host_params! {
+    /// `disk.folders`.
+    pub(crate) struct DiskFoldersParams {
+        path: PathBuf = path().notes("an absolute folder, such as a volume's mount point from volume.list"),
+    }
+}
+
 // ── Lane B: previews ───────────────────────────────────────────────────────────────────────────
 
 host_params! {
@@ -70,7 +78,8 @@ host_params! {
     /// `preview.region`.
     pub(crate) struct PreviewRegion {
         item: PreviewItem = json("{kind: file, file_id} or {kind: photo, asset_id, entry_id?}"),
-        rect: PixelRect = json("{x, y, width, height} in the image's upright full-resolution pixels"),
+        rect: PixelRect = json("{x, y, width, height} in the image's upright full-resolution pixels, or in frame when it is named"),
+        frame: Option<Dimensions> = json("{width, height}: the upright frame rect is in, such as the loupe's preview or the header's dimensions turned upright; rect's centre is mapped into the source's frame and its size kept at 1:1; default the source's own full-resolution frame"),
     }
 }
 
@@ -427,8 +436,9 @@ impl MethodContract {
 
 use CatalogLane::{Catalog, Files, Previews, Views};
 use ErrorKind::{
-    Cancelled, Catalog as CatalogError, Conflict, FileAccess, Forbidden, ResourceLimit,
-    SourceUnavailable, UnsupportedInput, Validation,
+    Cancelled, Catalog as CatalogError, Conflict, Decode, FileAccess, Forbidden, NotReady,
+    ResourceLimit, SourceUnavailable, UnsupportedColor, UnsupportedInput, UnsupportedProfile,
+    Validation,
 };
 
 /// Every catalog method of the design's API table, in its order.
@@ -469,6 +479,20 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "lists a source again and reads the headers of new and changed files, reconciling by signature; a job with progress; resource-limit past the file limit",
     )
     .starts(&jobs::INDEX_REFRESH),
+    method::<NoParams>(
+        "volume.list",
+        Files,
+        "Volumes",
+        &[CatalogError],
+        "the mounted volumes, the startup disk first, each with whether it is removable and a card, then the volumes the catalog knows that are not mounted, offline",
+    ),
+    method::<DiskFoldersParams>(
+        "disk.folders",
+        Files,
+        "DiskFolders",
+        &[Validation, FileAccess],
+        "a folder's immediate subfolders in name order without what indexing skips (hidden and system folders, packages, other applications' caches, Luxforge's own directories), bounded",
+    ),
     method::<EventListParams>(
         "event.list",
         Views,
@@ -635,7 +659,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "collection.delete",
         Catalog,
         "LibraryAnswer",
-        &[Validation, Conflict, CatalogError],
+        &[Validation, Conflict, ResourceLimit, CatalogError],
         "deletes a collection with its memberships, or an empty group",
     ),
     method::<CollectionMembers>(
@@ -729,7 +753,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "source.locate",
         Catalog,
         "LibraryAnswer",
-        &[Validation, FileAccess, SourceUnavailable, Conflict, Cancelled, CatalogError],
+        &[Validation, FileAccess, SourceUnavailable, Conflict, ResourceLimit, Cancelled, CatalogError],
         "verifies one chosen file against a photograph's fingerprint and relinks it as one library change; a mismatch or a file another photograph names changes nothing",
     )
     .starts(&jobs::SOURCE_LOCATE),
@@ -760,16 +784,37 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "preview.read",
         Previews,
         "PreviewAnswer",
-        &[Validation, SourceUnavailable, UnsupportedInput, ResourceLimit],
-        "a cached preview's path, size and origin, or the job that makes it and the best preview cached meanwhile",
+        &[
+            Validation,
+            SourceUnavailable,
+            FileAccess,
+            UnsupportedInput,
+            UnsupportedColor,
+            UnsupportedProfile,
+            Decode,
+            ResourceLimit,
+            NotReady,
+            Cancelled,
+        ],
+        "a cached preview's path, size and origin, or the job that makes it and the best preview cached meanwhile; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one",
     )
     .starts(&jobs::PREVIEW_EXTRACT),
     method::<PreviewRegion>(
         "preview.region",
         Previews,
         "RegionAnswer",
-        &[Validation, SourceUnavailable, UnsupportedInput, ResourceLimit, Cancelled],
-        "a 100% region, decoded from the embedded full-size preview for that region alone or from a neutral development, labelled",
+        &[
+            Validation,
+            SourceUnavailable,
+            FileAccess,
+            UnsupportedInput,
+            UnsupportedColor,
+            UnsupportedProfile,
+            Decode,
+            ResourceLimit,
+            Cancelled,
+        ],
+        "a 100% region, decoded from the embedded full-size preview for that region alone or from a neutral development, labelled, with the frame its rectangle is in; a client's next region cancels its previous one",
     )
     .starts(&jobs::PREVIEW_REGION),
     method::<NoParams>(
@@ -910,5 +955,32 @@ mod tests {
         let read: PreviewRead =
             parse(&json!({"item": {"kind": "file", "file_id": 7}, "tier": "loupe"})).unwrap();
         assert_eq!(read.tier, PreviewTier::Loupe);
+        let region: PreviewRegion = parse(&json!({
+            "item": {"kind": "file", "file_id": 7},
+            "rect": {"x": 1, "y": 2, "width": 3, "height": 4},
+        }))
+        .unwrap();
+        assert_eq!(region.frame, None);
+        let region: PreviewRegion = parse(&json!({
+            "item": {"kind": "photo", "asset_id": crate::AssetId::new()},
+            "rect": {"x": 1, "y": 2, "width": 3, "height": 4},
+            "frame": {"width": 2560, "height": 1707},
+        }))
+        .unwrap();
+        assert_eq!(
+            region.frame,
+            Some(Dimensions {
+                width: 2560,
+                height: 1707
+            })
+        );
+        assert!(
+            parse::<PreviewRegion>(&json!({
+                "item": {"kind": "file", "file_id": 7},
+                "rect": {"x": 1, "y": 2, "width": 3, "height": 4},
+                "frame": {"width": 2560},
+            }))
+            .is_err()
+        );
     }
 }

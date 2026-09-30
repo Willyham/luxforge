@@ -16,8 +16,7 @@
 //! dimensions, colour space) is never kept, so it cannot reach an export. The orientation is read
 //! only by `jpeg_orientation`, never into [`CaptureMetadata`].
 
-// The index lane is the header reader's caller; until it lands only the tests call it.
-#[cfg_attr(not(test), allow(dead_code))]
+// The index lane (`crate::index`) is the header reader's caller.
 pub(crate) mod header;
 mod read;
 mod write;
