@@ -319,7 +319,7 @@
     {
       "id": "TASK-005",
       "description": "Show the section in the desktop and capture native rendered evidence: the tone-ramp fixture, the evidence curve steps for the Points list and typed coordinates, and the curve smoke scenario.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002",
         "TASK-003"
