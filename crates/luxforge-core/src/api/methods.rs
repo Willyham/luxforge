@@ -1002,6 +1002,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait",
         retries: Owner,
     ),
+    // Developing picks (TASK-013).
+
+    // Resolving missing originals (TASK-017).
+
+    // Removing (TASK-014).
+
+    // Batch preset and export (TASK-015).
+
     // ── end lane C ──
     // ── catalog lane D: views ──
     // ── end lane D ──
