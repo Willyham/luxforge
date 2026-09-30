@@ -24,8 +24,8 @@ use crate::state::masks::TypingTarget;
 use crate::state::palette::Panel;
 use iced::keyboard::{Key, Modifiers};
 use luxforge_core::{
-    AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
-    mask::commands::MaskListing,
+    AssetId, ClientId, ComponentId, ComponentMode, MASK_MODE, MaskCoverageTarget, MaskOverlayMode,
+    OwnerHandle, POINTER_MODE, mask::commands::MaskListing,
 };
 use serde_json::{Value, json};
 use std::{
@@ -37,7 +37,6 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 
 #[test]
 fn idle_brush_row_hover_shows_contribution_and_an_active_stroke_shows_composition() {
-    use luxforge_core::MaskCoverageTarget;
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.draw_mask();
@@ -1190,7 +1189,7 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
 }
 
 /// The overlay is per-client view state: O toggles it in Mask mode, and the
-/// grid the canvas draws is asked for beside the frame rather than by a second render.
+/// grid the canvas draws is the live coverage of the open mask rather than a second render.
 #[test]
 fn o_toggles_the_overlay_without_changing_thirds_in_mask_mode() {
     let mut masking = Masking::opened();
@@ -1206,28 +1205,35 @@ fn o_toggles_the_overlay_without_changing_thirds_in_mask_mode() {
         masking.editor.session.workspace.mask_overlay,
         MaskOverlayMode::Tint
     );
-    // With the overlay on and a mask open, a preview job asks for that mask's coverage grid.
-    let request = masking
+    // With the overlay on and a mask open, the live coverage covers that mask.
+    let selected = masking
         .editor
-        .mask_overlay_request()
-        .expect("the overlay names the mask whose grid it wants");
+        .mask_panel
+        .selected_mask
+        .clone()
+        .expect("a mask is open");
     assert_eq!(
-        Some(&request.mask),
-        masking.editor.mask_panel.selected_mask.as_ref()
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: selected,
+            component: None,
+        }),
+        "the overlay names the mask whose grid it wants"
     );
-    assert!(request.cells_w > 0 && request.cells_h > 0);
+    let (cells_w, cells_h) = masking.editor.overlay_cells().expect("a cell grid");
+    assert!(cells_w > 0 && cells_h > 0);
 
     // The eye hides one mask's overlay without changing what it does to the picture.
     let mask = masking.listing().masks[0].id.clone();
     masking.message(MaskMessage::ToggleVisible(mask.as_str().to_owned()));
-    assert!(masking.editor.mask_overlay_request().is_none());
+    assert!(masking.editor.mask_coverage_target().is_none());
     assert_eq!(
         masking.listing().masks[0].components.len(),
         1,
         "hiding an overlay changed the recipe"
     );
     masking.message(MaskMessage::ToggleVisible(mask.as_str().to_owned()));
-    assert!(masking.editor.mask_overlay_request().is_some());
+    assert!(masking.editor.mask_coverage_target().is_some());
 
     masking.message(MaskMessage::ToggleOverlay);
     assert_eq!(
@@ -1235,7 +1241,7 @@ fn o_toggles_the_overlay_without_changing_thirds_in_mask_mode() {
         MaskOverlayMode::Off
     );
     assert!(
-        masking.editor.mask_overlay_request().is_none(),
+        masking.editor.mask_coverage_target().is_none(),
         "an overlay that is off asks for no grid at all"
     );
 
@@ -1724,21 +1730,26 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
     let listed = masking.listing().masks[0].clone();
     let second = listed.components[1].id.clone();
 
+    let covering = |component: Option<&ComponentId>| {
+        Some(MaskCoverageTarget::Existing {
+            mask: listed.id.clone(),
+            component: component.cloned(),
+        })
+    };
+
     // With nothing hovered or selected, the overlay asks for the whole composed mask.
-    let request = masking
-        .editor
-        .mask_overlay_request()
-        .expect("the overlay is on and a mask is open");
-    assert_eq!(request.mask, listed.id);
     assert_eq!(
-        request.component, None,
+        masking.editor.mask_coverage_target(),
+        covering(None),
         "the composed mask, not a component"
     );
 
     // Hovering the second row asks for that component's own grid instead.
     masking.message(MaskMessage::Hover(Some(second.as_str().to_owned())));
-    let request = masking.editor.mask_overlay_request().expect("an overlay");
-    assert_eq!(request.component.as_ref(), Some(&second));
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        covering(Some(&second))
+    );
     assert!(
         masking.editor.workspace.masks.components[1].hovered,
         "the row says the overlay is showing it"
@@ -1749,8 +1760,7 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
 
     // Leaving the row restores the composed overlay.
     masking.message(MaskMessage::Hover(None));
-    let request = masking.editor.mask_overlay_request().expect("an overlay");
-    assert_eq!(request.component, None);
+    assert_eq!(masking.editor.mask_coverage_target(), covering(None));
     assert!(!masking.editor.workspace.masks.components[1].hovered);
 
     // The overlay follows the pointer and nothing else. A selected component opens that row's own
@@ -1758,26 +1768,15 @@ fn hovering_a_row_shows_that_components_contribution_and_leaving_restores_the_ma
     // the composition again — which is the comparison the component list exists to make.
     let first = listed.components[0].id.clone();
     masking.message(MaskMessage::SelectComponent(first.as_str().to_owned()));
-    assert_eq!(
-        masking.editor.mask_overlay_request().unwrap().component,
-        None
-    );
+    assert_eq!(masking.editor.mask_coverage_target(), covering(None));
     masking.message(MaskMessage::Hover(Some(second.as_str().to_owned())));
     assert_eq!(
-        masking
-            .editor
-            .mask_overlay_request()
-            .unwrap()
-            .component
-            .as_ref(),
-        Some(&second),
+        masking.editor.mask_coverage_target(),
+        covering(Some(&second)),
         "the pointer wins over the selection"
     );
     masking.message(MaskMessage::Hover(None));
-    assert_eq!(
-        masking.editor.mask_overlay_request().unwrap().component,
-        None
-    );
+    assert_eq!(masking.editor.mask_coverage_target(), covering(None));
     assert_eq!(
         masking.editor.mask_panel.selected_component.as_ref(),
         Some(&first),
@@ -2468,8 +2467,8 @@ fn a_refused_mask_command_ends_the_step_that_sent_it() {
 ///
 /// This is the refusal one step further out than
 /// [`a_refused_mask_command_ends_the_step_that_sent_it`]: the request is accepted, the frame is
-/// rendered, and it is the **grid** that is refused, on the worker, a round trip after the step
-/// returned. The mask here is drawn and **no layer is bound to it**, and it holds a component whose
+/// rendered, and it is the **grid** that is refused, on the coverage worker, a round trip after the
+/// step returned. The mask here is drawn and **no layer is bound to it**, and it holds a component whose
 /// coverage depends on the pixel the masked operation receives — so there is no operation to read
 /// that pixel from and no grid at all (proposal P16 of `docs/design/range-study.md`, decided and
 /// built). A step that asked for the overlay would otherwise wait out the run's whole deadline for a
@@ -2480,7 +2479,7 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         evidence::Settle,
         testing::{attach_script, evidence},
     };
-    use luxforge_core::{MaskOverlayRequest, PreviewRequest};
+    use luxforge_core::PreviewRequest;
 
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
@@ -2517,26 +2516,22 @@ fn a_refused_coverage_grid_ends_the_step_waiting_for_it() {
         "the step is waiting for the coverage grid"
     );
 
-    // The job the panel's own refresh would send, run through the editor's real queue and the real
-    // worker, so what ends the step is the host's answer and not a message this test wrote.
-    let request = masking
-        .editor
-        .mask_overlay_request()
-        .expect("the overlay names the mask whose grid it wants");
+    // A preview job run through the editor's real queue, whose evaluation the real coverage worker
+    // answers, so what ends the step is the host's answer and not a message this test wrote.
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: mask.clone(),
+            component: None,
+        }),
+        "the overlay names the mask whose grid it wants"
+    );
     let job = masking
         .owner()
-        .preview_job(
-            PreviewRequest::new(masking.editor.client, masking.asset.clone()).mask_overlay(
-                MaskOverlayRequest {
-                    mask: mask.clone(),
-                    component: None,
-                    cells_w: request.cells_w,
-                    cells_h: request.cells_h,
-                    whole_cells_w: request.whole_cells_w,
-                    whole_cells_h: request.whole_cells_h,
-                },
-            ),
-        )
+        .preview_job(PreviewRequest::new(
+            masking.editor.client,
+            masking.asset.clone(),
+        ))
         .expect("a preview job");
     masking.editor.request_preview(job);
     luxforge_testbase::wait_until("the refused overlay frame", || {
@@ -3279,7 +3274,6 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
 #[test]
 fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() {
     use crate::app::testing::{attach_log, logged};
-    use luxforge_core::MaskCoverageTarget;
     for (action, method, parameter, committed, candidate) in [
         ("set-basic", "edit.set-basic", "exposure", 0.3, 0.9),
         ("set-presence", "edit.set-presence", "dehaze", 20.0, 55.0),
@@ -3954,7 +3948,6 @@ fn overlay_state(masking: &Masking) -> (String, String, bool) {
 /// throughout that gesture. Automatic visibility does not mutate the stored setting.
 #[test]
 fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
-    use luxforge_core::MaskCoverageTarget;
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
@@ -4035,7 +4028,6 @@ fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
 /// choice changes the eye or loses the existing component identity.
 #[test]
 fn editing_a_hidden_shape_shows_automatic_coverage_until_explicitly_hidden() {
-    use luxforge_core::MaskCoverageTarget;
     for kind in [LINEAR, RADIAL] {
         let mut masking = Masking::opened();
         masking.enter_mask_mode();
@@ -4104,7 +4096,6 @@ fn an_evidence_tint_colour_choice_preserves_automatic_coverage() {
         evidence::Settle,
         testing::{attach_script, evidence},
     };
-    use luxforge_core::MaskCoverageTarget;
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
@@ -5117,7 +5108,7 @@ fn a_script_opens_a_kind_menu_and_presses_an_eye() {
     let _ = masking.editor.next_step();
     masking.editor.rederive();
     assert!(!masking.editor.workspace.masks.masks[0].visible);
-    assert!(masking.editor.mask_overlay_request().is_none());
+    assert!(masking.editor.mask_coverage_target().is_none());
     let run = evidence(&masking.editor);
     assert!(run.capture_pending && run.awaiting.is_none());
     let _ = masking.editor.next_step();
