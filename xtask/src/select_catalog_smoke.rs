@@ -386,7 +386,10 @@ pub fn verify(
         if facet != "date" {
             ensure(
                 column["rows"][0]["label"] == "All"
-                    && column["rows"][0]["count"] == total.to_string(),
+                    && column["rows"][0]["count"]
+                        .as_str()
+                        .map(|count| count.replace(',', ""))
+                        == Some(total.to_string()),
                 format!(
                     "catalog-metadata: {facet}'s All is {}, not {total}",
                     column["rows"][0]
