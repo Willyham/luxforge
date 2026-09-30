@@ -1162,6 +1162,60 @@ fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() 
     assert!(harness.picks().is_empty());
 }
 
+/// A Develop committed in several batches is undone as the one change it was: one `library.undo`
+/// sends every photograph back and picks every file again, recorded as one undo per batch and
+/// announced once, and a retry of that undo answers them all.
+#[test]
+fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
+    let harness = Harness::new("undo-batches");
+    let trip = harness.dir.join("trip");
+    let files: Vec<PathBuf> = (0..3)
+        .map(|index| {
+            photo(
+                &trip.join(format!("b{index}.jpg")),
+                &Shot::at(&format!("2026:09:12 10:00:0{index}")),
+            )
+        })
+        .collect();
+    let paths: Vec<&PathBuf> = files.iter().collect();
+    harness.index_paths(&paths);
+    harness.pick(&paths, "pick-batches");
+    let picks = harness.ok("pick.list", json!({}))["picks"].clone();
+    let report = harness.develop_paths("develop-batches", &paths);
+    assert_eq!(
+        report["changes"].as_array().unwrap().len(),
+        2,
+        "the first batch of one file, then the rest: {report}"
+    );
+    assert_eq!(harness.photographs(), 3);
+
+    let sequence = harness.sequence();
+    let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
+    assert_eq!(
+        (&undone["outcome"], &undone["items"]),
+        (&json!("applied"), &json!(7)),
+        "three photographs sent back, three picks restored and the new folder gone: {undone}"
+    );
+    assert_eq!(harness.photographs(), 0);
+    assert_eq!(harness.ok("folder.list", json!({}))["folders"], json!([]));
+    assert_eq!(harness.ok("pick.list", json!({}))["picks"], picks);
+    assert_eq!(harness.events_after(sequence).len(), 1, "announced once");
+    let journal = harness.ok("library.journal", json!({}))["changes"].clone();
+    let undos: Vec<&Value> = journal
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|change| change["method"] == "library.undo")
+        .collect();
+    assert_eq!(undos.len(), 2, "one undo per batch");
+    let retry = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
+    assert_eq!(
+        (&retry["change"], &retry["items"], &retry["deduplicated"]),
+        (&undone["change"], &json!(7), &json!(true))
+    );
+    assert_eq!(harness.photographs(), 0, "a retry undoes nothing more");
+}
+
 /// `asset.send-back` sends an unedited photograph back as one library change — its record gone,
 /// its file picked again with its signature now — answered once for a retry, and not undone; it
 /// refuses a photograph with an edit, one in a collection and one whose original is missing, each

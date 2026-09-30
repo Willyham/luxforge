@@ -15,7 +15,10 @@
 //! - **Whose.** The actor of the request is the undo scope (`client_key`), so a client undoes only
 //!   its own changes, and its undo survives a restart. Undo reverts the actor's latest change or
 //!   redo not yet undone; redo reverts the actor's latest undo not yet redone, made since its
-//!   latest new change (a new change ends what can be redone, as in an editor).
+//!   latest new change (a new change ends what can be redone, as in an editor). A request that
+//!   recorded its change in parts, as a Develop records a batch at a time, is undone and redone as
+//!   the one change it was: every part at once, newest first, each part's inverse a change of its
+//!   own, answered and announced as one.
 //! - **When not.** An undo (or redo) is refused with `conflict`, naming the items, when any of them
 //!   changed since the change it reverts: a later change touched it that is still in effect (a
 //!   later change and its undo, or a later undo and its redo, cancel out), or its value is no
@@ -209,8 +212,8 @@ pub(crate) fn apply(
     changes: Vec<(LibraryItem, Desired)>,
     label: impl FnOnce(&[LibraryChangeRow]) -> String,
 ) -> Result<Outcome, Error> {
-    if let Some(change) = find(tx, request)? {
-        return Ok(Outcome::deduplicated(change));
+    if let Some(answered) = answered(tx, request)? {
+        return Ok(answered);
     }
     apply_part(tx, request, changes, label)
 }
@@ -265,8 +268,8 @@ pub(crate) fn apply_part(
 /// Revert the actor's latest change (or redo) not yet undone, by appending its inverse; a no-op
 /// when there is none. Refused, naming the items, when any of them changed since.
 pub(crate) fn undo(tx: &Transaction<'_>, request: Request<'_>) -> Result<Outcome, Error> {
-    if let Some(change) = find(tx, request)? {
-        return Ok(Outcome::deduplicated(change));
+    if let Some(answered) = answered(tx, request)? {
+        return Ok(answered);
     }
     let latest: Option<u64> = tx
         .prepare_cached(
@@ -282,15 +285,15 @@ pub(crate) fn undo(tx: &Transaction<'_>, request: Request<'_>) -> Result<Outcome
     let Some(target) = latest else {
         return Ok(Outcome::NoOp);
     };
-    let label = format!("Undo {}", base_label(tx, target)?);
-    revert(tx, request, target, Relation::Undoes(target), &label)
+    let parts = siblings(tx, target, Sibling::Undoable)?;
+    revert_all(tx, request, parts, Relation::Undoes, "Undo")
 }
 
 /// Revert the actor's latest undo not yet redone, made since its latest new change, by appending
 /// its inverse; a no-op when there is none. Refused as undo is.
 pub(crate) fn redo(tx: &Transaction<'_>, request: Request<'_>) -> Result<Outcome, Error> {
-    if let Some(change) = find(tx, request)? {
-        return Ok(Outcome::deduplicated(change));
+    if let Some(answered) = answered(tx, request)? {
+        return Ok(answered);
     }
     let latest: Option<u64> = tx
         .prepare_cached(
@@ -308,8 +311,109 @@ pub(crate) fn redo(tx: &Transaction<'_>, request: Request<'_>) -> Result<Outcome
     let Some(target) = latest else {
         return Ok(Outcome::NoOp);
     };
-    let label = format!("Redo {}", base_label(tx, target)?);
-    revert(tx, request, target, Relation::Redoes(target), &label)
+    let parts = siblings(tx, target, Sibling::Redoable)?;
+    revert_all(tx, request, parts, Relation::Redoes, "Redo")
+}
+
+/// What a request recorded, as its retry is answered: its change, or, for a request that recorded
+/// its change in parts (a Develop's batches, or an undo of them), the last part carrying every
+/// part's items; none when it recorded nothing.
+pub(crate) fn answered(
+    connection: &Connection,
+    request: Request<'_>,
+) -> Result<Option<Outcome>, Error> {
+    let recorded: Vec<LibraryChange> = connection
+        .prepare_cached(&format!(
+            "SELECT {CHANGE_COLUMNS} FROM library_changes c
+             WHERE c.request_id = ?1 AND c.client_key = ?2 AND c.method = ?3
+             ORDER BY c.sequence"
+        ))?
+        .query_map(
+            params![request.request_id, request.actor, request.method],
+            read_change,
+        )?
+        .collect::<Result<_, _>>()?;
+    let items = recorded.iter().map(|change| change.item_count).sum();
+    Ok(recorded.into_iter().last().map(|mut change| {
+        change.item_count = items;
+        Outcome::deduplicated(change)
+    }))
+}
+
+/// Which changes of a request are reverted together.
+#[derive(Clone, Copy)]
+enum Sibling {
+    /// Its changes (or redos) not yet undone: an undo reverts them all.
+    Undoable,
+    /// Its undos not yet redone: a redo reverts them all.
+    Redoable,
+}
+
+/// The changes the request that recorded `target` recorded — the same actor, request identity and
+/// method — that are to be reverted with it, newest first: a request that recorded its change in
+/// parts, as a Develop does a batch at a time, is undone and redone as the one change it was.
+fn siblings(tx: &Transaction<'_>, target: u64, which: Sibling) -> Result<Vec<u64>, Error> {
+    let condition = match which {
+        Sibling::Undoable => {
+            "s.undoes IS NULL
+                 AND NOT EXISTS (SELECT 1 FROM library_changes u WHERE u.undoes = s.sequence)"
+        }
+        Sibling::Redoable => {
+            "s.undoes IS NOT NULL
+                 AND NOT EXISTS (SELECT 1 FROM library_changes r WHERE r.redoes = s.sequence)"
+        }
+    };
+    Ok(tx
+        .prepare_cached(&format!(
+            "SELECT s.sequence FROM library_changes t
+             JOIN library_changes s ON s.client_key = t.client_key AND s.request_id = t.request_id
+                 AND s.method = t.method
+             WHERE t.sequence = ?1 AND {condition}
+             ORDER BY s.sequence DESC"
+        ))?
+        .query_map([sql_sequence(target)], |row| {
+            row.get::<_, i64>(0).map(|sequence| sequence as u64)
+        })?
+        .collect::<Result<_, _>>()?)
+}
+
+/// Revert each of `parts`, newest first, each as a change of its own under `request` (`verb` its
+/// change's label), and answer them as one: the last carrying all their items. One refused part
+/// refuses them all, since the caller's transaction rolls back.
+fn revert_all(
+    tx: &Transaction<'_>,
+    request: Request<'_>,
+    parts: Vec<u64>,
+    relation: fn(u64) -> Relation,
+    verb: &str,
+) -> Result<Outcome, Error> {
+    let mut count = 0;
+    let mut items = Vec::new();
+    let mut last = None;
+    for part in parts {
+        let label = format!("{verb} {}", base_label(tx, part)?);
+        if let Outcome::Recorded {
+            change,
+            items: reverted,
+            ..
+        } = revert(tx, request, part, relation(part), &label)?
+        {
+            count += change.item_count;
+            items.extend(reverted);
+            last = Some(change);
+        }
+    }
+    Ok(match last {
+        Some(mut change) => {
+            change.item_count = count;
+            Outcome::Recorded {
+                change,
+                items,
+                deduplicated: false,
+            }
+        }
+        None => Outcome::NoOp,
+    })
 }
 
 /// Changes after `after`, oldest first, at most `limit`, with the cursor that continues them when
