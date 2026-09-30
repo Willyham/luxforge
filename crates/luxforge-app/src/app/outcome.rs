@@ -81,6 +81,11 @@ pub(crate) enum Outcome<'a> {
         record: Option<&'a Value>,
         failure: Option<&'a str>,
     },
+    // ── catalog lane D: views and desktop ──
+    /// Nothing the Select workspace asked the owner for is in flight: the events, the view, its
+    /// facets, the rows near the screen and a staleness check have all answered.
+    SelectSettled,
+    // ── end lane D ──
 }
 
 /// What reached the photo surface.
@@ -141,6 +146,7 @@ impl Outcome<'_> {
             Self::ExportPlanned(_) => "export_planned",
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",
+            Self::SelectSettled => "select_settled",
         }
     }
 }

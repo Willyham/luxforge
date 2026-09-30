@@ -1,4 +1,4 @@
-//! Thirteen renderer captures of the full 99-state widget gallery in the real desktop.
+//! Eighteen renderer captures of the full 124-state widget gallery in the real desktop.
 //!
 //! The board holds widget states only, at 1440x1000 logical points; the composed panels are proven
 //! by their own scenarios, and each page has renderer readback, state metadata and a matching
@@ -11,8 +11,8 @@ use crate::{
 use luxforge_evidence::{self as script};
 
 pub const WINDOW: [&str; 2] = ["1440", "1000"];
-pub const PAGES: usize = 13;
-pub const STATES: usize = 99;
+pub const PAGES: usize = 18;
+pub const STATES: usize = 124;
 
 /// The step that shows gallery page `page`.
 fn page_step(page: usize) -> String {

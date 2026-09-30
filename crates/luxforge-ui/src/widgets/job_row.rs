@@ -6,12 +6,17 @@
 //! the detail, formats the time and passes progress only when the work reports a truthful total.
 //! A running job reads bright with a filled marker; a finished one is dimmed with a hollow marker,
 //! the same circles as the history's, so neither needs a colour of its own.
+//!
+//! [`work_row`] is the section's row for long work the person can stop, as the catalog components
+//! board draws it (`jobrow`): the accent dot, the label, the estimate once one is truthful and
+//! Cancel, over a bar and the work's own count.
 
 use super::list_row::marker_circle;
+use super::long_work::{WorkProgress, count_text, work_bar};
 use super::truncated_text::truncated_text;
 use crate::theme;
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{Column, container, progress_bar, row, text};
+use iced::widget::{Column, button, column, container, progress_bar, row, text};
 use iced::{Alignment, Border, Element, Length, Padding};
 
 /// Plain data for one job row.
@@ -138,6 +143,69 @@ pub fn job_row<'a, M: Clone + 'a>(model: &JobRowModel) -> Element<'a, M> {
     rows.into()
 }
 
+/// Plain data for one piece of long work in the Performance section that can be stopped.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkRowModel {
+    /// What the work is doing, for people: `Indexing ~/Pictures`.
+    pub label: String,
+    /// How long is left, once the rate is steady (`about 1 min 40 s`); `None` draws nothing.
+    pub estimate: Option<String>,
+    pub progress: WorkProgress,
+}
+
+/// Renders one stoppable job: the accent dot, the label ending in an ellipsis when it does not
+/// fit, the estimate and Cancel, which publishes `on_cancel` (`None` draws no Cancel); under it,
+/// [`theme::WORK_ROW_INDENT`] in, a bar filling the width and the work's count, or `working`.
+pub fn work_row<'a, M: Clone + 'a>(model: &WorkRowModel, on_cancel: Option<M>) -> Element<'a, M> {
+    let mut first = row![
+        marker_circle(Some(theme::ACCENT), None),
+        truncated_text(
+            model.label.clone(),
+            theme::SIZE_CONTROL,
+            theme::FONT,
+            theme::TEXT_LABEL,
+        )
+        .line_height(LineHeight::Absolute(theme::JOB_LABEL_HEIGHT.into())),
+    ]
+    .spacing(theme::WORK_ROW_SPACING)
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
+    if let Some(estimate) = &model.estimate {
+        first = first.push(
+            text(estimate.clone())
+                .size(theme::SIZE_CAPTION)
+                .wrapping(Wrapping::None)
+                .color(theme::TEXT_TERTIARY),
+        );
+    }
+    if let Some(message) = on_cancel {
+        first = first.push(
+            button(
+                text("Cancel")
+                    .size(theme::SIZE_CAPTION)
+                    .wrapping(Wrapping::None),
+            )
+            .padding(0)
+            .style(theme::quiet_action)
+            .on_press(message),
+        );
+    }
+    let second = row![
+        work_bar(model.progress.fraction, theme::WORK_BAR_HEIGHT),
+        text(count_text(&model.progress).to_owned())
+            .size(theme::SIZE_SMALL_CAPTION)
+            .wrapping(Wrapping::None)
+            .color(theme::TEXT_TERTIARY),
+    ]
+    .spacing(theme::WORK_ROW_SPACING)
+    .align_y(Alignment::Center)
+    .padding(Padding::default().left(theme::WORK_ROW_INDENT));
+    container(column![first, second].spacing(theme::WORK_ROW_LINE_SPACING))
+        .padding(theme::WORK_ROW_PADDING)
+        .width(Length::Fill)
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +250,32 @@ mod tests {
                     let _: Element<'_, ()> = job_row(&job(detail, progress, running));
                 }
             }
+        }
+    }
+
+    /// A stoppable job with a count and an estimate, one still finding its extent, and one that
+    /// can say nothing yet, each with and without Cancel.
+    #[test]
+    fn every_work_row_builds() {
+        for (count, fraction, estimate) in [
+            (
+                Some("48,210 of about 200,000 files"),
+                Some(0.24),
+                Some("about 1 min 40 s"),
+            ),
+            (Some("1,204 files so far"), None, None),
+            (None, None, None),
+        ] {
+            let model = WorkRowModel {
+                label: "Indexing Pictures".into(),
+                estimate: estimate.map(Into::into),
+                progress: WorkProgress {
+                    count: count.map(Into::into),
+                    fraction,
+                },
+            };
+            let _: Element<'_, ()> = work_row(&model, Some(()));
+            let _: Element<'_, ()> = work_row(&model, None);
         }
     }
 }

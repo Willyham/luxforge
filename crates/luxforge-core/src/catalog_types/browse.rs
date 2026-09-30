@@ -444,6 +444,19 @@ pub struct BrowseSession {
     pub count: u32,
     pub stale: bool,
     pub selection: ViewSelection,
+    /// The library journal and index revision the view was evaluated at, which every read of the
+    /// session compares with the current ones to set `stale`; none without a view. Never
+    /// serialized: the view's summary reports them.
+    #[serde(skip)]
+    pub evaluated_at: Option<ViewStamp>,
+}
+
+/// What a view was evaluated at: the catalog's latest library change and the index's revision.
+/// A view is stale once either has moved on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ViewStamp {
+    pub library_sequence: LibraryChangeSeq,
+    pub index_revision: u64,
 }
 
 #[cfg(test)]

@@ -108,7 +108,9 @@ impl Editor {
     pub(crate) fn performance_sampling(&self) -> bool {
         sampling(
             self.performance.expanded,
-            self.session.workspace.state_panel && self.gallery_page().is_none(),
+            // The section is pinned under the state panel in Develop and the sources panel in
+            // Select (catalog lane D).
+            self.left_panel_shown() && self.gallery_page().is_none(),
         )
     }
 
