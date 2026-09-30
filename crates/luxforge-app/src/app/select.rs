@@ -81,7 +81,24 @@ pub(crate) struct Select {
     pub(crate) evidence_after: Option<u64>,
     /// The evaluation in flight reads a stale view again, which the status bar says when it lands.
     pub(crate) rereading: bool,
+    /// The folder being read before it is viewed: `index.refresh` lists it and reads its headers.
+    pub(crate) reading: Option<Reading>,
+    /// A `job.read` of the reading folder's job is in flight.
+    pub(crate) read_in_flight: bool,
 }
+
+/// A folder browsed on disk whose listing and headers the index lane is reading.
+#[derive(Clone, Debug)]
+pub(crate) struct Reading {
+    pub(crate) path: PathBuf,
+    /// The `index.refresh` job, once the owner has answered with it.
+    pub(crate) job: Option<String>,
+}
+
+/// How often the reading folder's job is read while it runs. The core pushes no client anything
+/// about a job, so a client waiting for one reads it, as export does; the timer exists only while
+/// a folder is being read.
+pub(crate) const READ_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Default for Select {
     fn default() -> Self {
@@ -104,6 +121,8 @@ impl Default for Select {
             facets_answered: 0,
             evidence_after: None,
             rereading: false,
+            reading: None,
+            read_in_flight: false,
         }
     }
 }
@@ -224,6 +243,35 @@ pub(crate) fn session_now(owner: &OwnerHandle, client: ClientId) -> Result<Clien
     parse(session)
 }
 
+/// `index.refresh` of a folder on disk with its subfolders: the job that lists it.
+pub(crate) fn refresh_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let (started, _) = call(
+        owner,
+        client,
+        "index.refresh",
+        json!({"source": {"kind": "folder", "path": path}}),
+    )?;
+    started["job_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("index.refresh answered no job: {started}"))
+}
+
+/// `job.read` for one job.
+pub(crate) fn job_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Result<Value, String> {
+    let (record, _) = call(
+        owner,
+        client,
+        luxforge_core::jobs::JOB_READ,
+        json!({ "job_id": job }),
+    )?;
+    Ok(record)
+}
+
 /// `browse.select`, answered with the session.
 pub(crate) fn select_call(
     owner: &OwnerHandle,
@@ -280,15 +328,26 @@ impl Editor {
             SelectMessage::FolderPicked(path) => {
                 self.view_state.picker_open = false;
                 if let Some(path) = path {
-                    self.select.state.folder = Some(path.clone());
-                    return self.evaluate(model::source_query(
-                        luxforge_core::catalog_types::ViewSource::Folder {
-                            path,
-                            subfolders: true,
-                        },
-                    ));
+                    return self.read_folder(path);
                 }
             }
+            SelectMessage::Reading(result) => match result {
+                Ok(job) => {
+                    if let Some(reading) = &mut self.select.reading {
+                        reading.job = Some(job);
+                    }
+                }
+                Err(error) => {
+                    if let Some(reading) = self.select.reading.take() {
+                        self.status.text = format!(
+                            "Could not read {}: {error}",
+                            model::shown_path(&reading.path, self.select.state.home.as_deref())
+                        );
+                    }
+                }
+            },
+            SelectMessage::ReadPoll => return self.poll_reading(),
+            SelectMessage::ReadAnswered(result) => return self.reading_answered(result),
             SelectMessage::Change(change) => {
                 self.select.state.menu = None;
                 if let Some(query) = &self.select.state.query {
@@ -384,7 +443,8 @@ impl Editor {
     /// its facets, a staleness check and the rows near the screen have all answered.
     pub(crate) fn select_quiet(&self) -> bool {
         let select = &self.select;
-        !select.state.loading
+        select.reading.is_none()
+            && !select.state.loading
             && !select.events.in_flight()
             && select.events.pending().is_none()
             && !select.check.in_flight()
@@ -445,6 +505,98 @@ impl Editor {
             return self.read_events();
         }
         Task::none()
+    }
+
+    /// Browse a folder on disk: the index lane lists it with its subfolders and reads each file's
+    /// header (`index.refresh`, a job), and the folder is viewed once the job has ended. The status
+    /// bar says it is reading until then.
+    pub(crate) fn read_folder(&mut self, path: PathBuf) -> Task<Message> {
+        self.select.state.folder = Some(path.clone());
+        self.select.state.menu = None;
+        self.status.text = format!(
+            "Reading {}\u{2026}",
+            model::shown_path(&path, self.select.state.home.as_deref())
+        );
+        self.select.reading = Some(Reading {
+            path: path.clone(),
+            job: None,
+        });
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || refresh_now(&owner, client, &path),
+            |result| Message::Select(SelectMessage::Reading(result)),
+        )
+    }
+
+    /// Read the reading folder's job, one read at a time.
+    fn poll_reading(&mut self) -> Task<Message> {
+        let Some(job) = self
+            .select
+            .reading
+            .as_ref()
+            .and_then(|reading| reading.job.clone())
+        else {
+            return Task::none();
+        };
+        if std::mem::replace(&mut self.select.read_in_flight, true) {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || job_now(&owner, client, &job),
+            |result| Message::Select(SelectMessage::ReadAnswered(result)),
+        )
+    }
+
+    /// The reading folder's job answered: still running, it says how far it has got; ended, the
+    /// folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
+    fn reading_answered(&mut self, result: Result<Value, String>) -> Task<Message> {
+        self.select.read_in_flight = false;
+        let Some(reading) = self.select.reading.clone() else {
+            return Task::none();
+        };
+        let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                self.select.reading = None;
+                self.status.text = format!("Could not read {name}: {error}");
+                return Task::none();
+            }
+        };
+        match record["status"].as_str() {
+            Some("queued" | "running") => {
+                self.status.text = match record["progress"]["message"].as_str() {
+                    Some(progress) => format!("Reading {name} \u{b7} {progress}"),
+                    None => format!("Reading {name}\u{2026}"),
+                };
+                Task::none()
+            }
+            Some("ready") => {
+                self.select.reading = None;
+                // The folder as the index listed it — its canonical path, which a symbolic link in
+                // the chosen one resolves to — is the one its files are indexed under.
+                let path = record["result"]["roots"][0]
+                    .as_str()
+                    .map_or(reading.path, PathBuf::from);
+                self.select.state.folder = Some(path.clone());
+                self.evaluate(model::source_query(
+                    luxforge_core::catalog_types::ViewSource::Folder {
+                        path,
+                        subfolders: true,
+                    },
+                ))
+            }
+            other => {
+                self.select.reading = None;
+                let reason = record["error"]["message"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("the listing ended {}", other.unwrap_or("unknown")));
+                self.status.text = format!("Could not read {name}: {reason}");
+                Task::none()
+            }
+        }
     }
 
     /// Ask `event.list` again for the search text.
@@ -854,6 +1006,7 @@ impl Editor {
             "sort": state.query.as_ref().map(|query| query.sort),
             "grouping": state.query.as_ref().map(|query| query.grouping),
             "loading": state.loading,
+            "reading_folder": self.select.reading.is_some(),
             "quiet": self.select_quiet(),
             "error": state.view_error,
             "revision": summary.map(|summary| summary.revision),
@@ -909,4 +1062,18 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         editor.outcome(Outcome::SelectSettled);
     }
     Task::batch([rows, check])
+}
+
+/// The reading folder's job timer, which exists only while a folder browsed on disk is being read.
+pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
+    if editor
+        .select
+        .reading
+        .as_ref()
+        .is_some_and(|reading| reading.job.is_some())
+    {
+        iced::time::every(READ_POLL).map(|_| Message::Select(SelectMessage::ReadPoll))
+    } else {
+        iced::Subscription::none()
+    }
 }
