@@ -1120,6 +1120,8 @@ fn owner_loop(
         #[cfg(test)]
         fault: None,
     };
+    // Lane A: a catalog with indexed folders has them watched from its opening.
+    files::opened(&mut owner);
     loop {
         // A wait past its deadline is answered before anything else is read, so a busy owner still
         // answers it on time; with none held the owner sleeps on a plain receive.
@@ -1959,7 +1961,7 @@ pub(super) fn job_cancel(
         }
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);
-            owner.catalog.cancelled(job_id, kind, &mut owner.jobs);
+            owner.catalog_cancelled(job_id, kind);
         }
     }
     owner.read_job(job_id, client)

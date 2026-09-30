@@ -3,6 +3,7 @@
 //! events, cancellation, the file limit, a rebuilt index, volumes, cards, folders on disk, indexed
 //! folders as library changes with undo and redo, and offline folders.
 use super::{super::catalog::CatalogMessage, FilesMessage};
+use crate::index::lane::{VolumeEvent, WatchEvent};
 use crate::{
     ModuleRegistry,
     api::{ApiRequest, ApiResponse, ClientId, OwnerHandle, owner::OwnerMessage},
@@ -19,6 +20,8 @@ use std::{
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
+
+mod watching;
 
 fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> ApiResponse {
     owner
@@ -421,12 +424,20 @@ fn every_batch_advances_the_revision_and_records_one_event() {
         events.len(),
         "only index events: {events:?}"
     );
+    // One event per batch, each naming the revision it left, then one as the job ended, naming
+    // the revision the job left.
+    let (ended, batches) = revisions.split_last().unwrap();
     assert_eq!(
-        revisions,
-        (1..=revisions.len() as u64).collect::<Vec<_>>(),
+        batches,
+        (1..=batches.len() as u64).collect::<Vec<_>>(),
         "one revision per batch, one event per revision"
     );
-    assert_eq!(fixture.revision(), *revisions.last().unwrap());
+    assert_eq!(
+        ended,
+        batches.last().unwrap(),
+        "the job's end names the last"
+    );
+    assert_eq!(fixture.revision(), *ended);
     assert!(
         events
             .iter()
@@ -1155,8 +1166,9 @@ fn stopping_the_owner_does_not_wait_for_a_held_question() {
 }
 
 /// The volume list answers from what the survey learned against the mount table read now: a
-/// volume taken out is gone from the very next answer, one mounted since appears once a survey has
-/// learned it, and its card can be listed before that, found on the query thread.
+/// volume taken out is gone from the very next answer, one mounted since appears once the
+/// watcher's report of it has had it surveyed, and its card can be listed before that, found on
+/// the query thread.
 #[test]
 fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk() {
     let fixture = Fixture::new("survey");
@@ -1169,15 +1181,13 @@ fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk()
     );
     let lumix = fixture.dir.join("LUMIX");
     put(&lumix.join("DCIM/100_PANA/P1000001.JPG"), &camera_jpeg());
+    let mount = crate::index::volumes::tests::mount_at(&lumix, "LUMIX", 4, true);
     {
         let mut table = table.lock().unwrap();
         table.retain(|mount| mount.mount_point != drive);
-        table.push(crate::index::volumes::tests::mount_at(
-            &lumix, "LUMIX", 4, true,
-        ));
+        table.push(mount.clone());
     }
-    // This answer asks for a survey and answers before it: the drive is gone, the card not yet
-    // learned.
+    // Nothing has reported the card yet: the drive is gone, the card not learned.
     assert_eq!(mounted_labels(owner, client), [json!("NIKON Z 6")]);
     let report = refresh(
         owner,
@@ -1185,6 +1195,11 @@ fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk()
         json!({"kind": "card", "volume_id": format!("volume-{}", "04".repeat(16))}),
     );
     assert_eq!(report["files"], 1, "{report}");
+    // The watcher reports it: the volumes are surveyed again.
+    tell(
+        owner,
+        FilesMessage::Inject(WatchEvent::Volume(VolumeEvent::Mounted { mount })),
+    );
     wait_for("the survey to learn the new card", || {
         (mounted_labels(owner, client) == [json!("NIKON Z 6"), json!("LUMIX")]).then_some(())
     });
@@ -1272,7 +1287,7 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
     let entry = image_mount(&mount);
     assert!(entry.removable, "{entry:?}");
     assert!(entry.uuid.is_some(), "{entry:?}");
-    let table = Arc::new(Mutex::new(vec![entry]));
+    let table = Arc::new(Mutex::new(vec![entry.clone()]));
     tell(
         owner,
         FilesMessage::Mounts(MountSource::Fixed(table.clone())),
@@ -1305,9 +1320,22 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
         "listing changed nothing on the card"
     );
     let ids: Vec<i64> = fixture.rows().into_iter().map(|(_, id, _)| id).collect();
+    let card_root = |fixture: &Fixture| {
+        database::root(
+            &database::connect_at(&fixture.index_dir()).unwrap(),
+            &mount.join("DCIM"),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let listed = card_root(&fixture).listed_ms;
 
     detach();
     table.lock().unwrap().clear();
+    // The watcher reports it taken out: its roots go offline.
+    wait_for("the card's root to go offline", || {
+        card_root(&fixture).offline.then_some(())
+    });
     let (code, _) = refused(
         owner,
         client,
@@ -1328,8 +1356,21 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
     );
     assert_eq!(fixture.rows().len(), 2, "its rows stay");
 
+    // Put back, the watcher reports it mounted: the survey that asks for finds its DCIM folder
+    // (in the table before the image mounts), and the card is listed again with no client
+    // asking, reading nothing, every row kept.
+    table.lock().unwrap().push(entry.clone());
     attach();
-    table.lock().unwrap().push(image_mount(&mount));
+    wait_for("the card to be listed again by itself", || {
+        let root = card_root(&fixture);
+        (!root.offline && root.listed_ms > listed).then_some(())
+    });
+    let cards = ok(owner, client, "card.list", json!({}))["cards"].clone();
+    assert_eq!(cards[0]["files"], 2, "{cards}");
+    wait_for("the folder on it to be watched again", || {
+        let folders = ok(owner, client, "index.folders", json!({}))["folders"].clone();
+        (folders[0]["watching"] == true).then_some(())
+    });
     let report = refresh(
         owner,
         client,

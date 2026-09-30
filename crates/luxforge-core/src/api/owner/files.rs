@@ -12,8 +12,16 @@
 //!   indexes runs none.
 //! - **Indexed folders follow the library.** Every committed library change that touched an indexed
 //!   folder — `index.add-folder`, `index.remove-folder`, and the undo or redo of one — reaches
-//!   [`indexed_folders_changed`]: a folder now indexed is listed, and a folder no longer indexed has
-//!   its listing stopped and its rows forgotten. The watchers of TASK-005 start and stop there too.
+//!   [`indexed_folders_changed`]: a folder now indexed is listed, and watched once listed; a folder
+//!   no longer indexed has its listing stopped, its watch stopped and its rows forgotten.
+//! - **Kept current.** The lane watches the indexed folders and the volumes (`crate::index::lane`),
+//!   from when the catalog opens with indexed folders ([`opened`]) or a client first asks about
+//!   the disk. What it applies on its own is announced as work no request made: method
+//!   [`UNREQUESTED`] with no request id, one event per batch. A volume mounted or taken out has
+//!   the volumes surveyed again, and a card mounted is listed as an `index.refresh` job.
+//! - **One event as a listing ends.** Every `index.refresh` job, however it ends, records one event
+//!   naming its request and the index revision it left, so a client learns it ended from the event
+//!   log.
 //! - **Never on the disk.** Nothing here touches a file system beyond the platform's mount table,
 //!   which waits on none: what stats, canonicalizes or lists a path runs on the index lane's query
 //!   thread, and the volumes, cards and offline folders are learned by its survey thread, while the
@@ -42,8 +50,9 @@ use crate::{
     catalog_types::{IndexSource, JobStarted, RootKind, jobs::INDEX_REFRESH},
     editor::folder_rows,
     index::{
+        database,
         exclude::OwnDirs,
-        lane::{Lane, LaneConfig, LaneEvent, Refresh, RootPlan, Work},
+        lane::{Lane, LaneConfig, LaneEvent, Maker, Refresh, RootPlan, Work},
         volumes::MountSource,
         walk::WalkLimits,
     },
@@ -51,7 +60,7 @@ use crate::{
 };
 use queries::{Queries, Resume, SurveyPost, Surveys};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -59,6 +68,16 @@ use std::{
 /// Work that may wait for the index lane behind the running one; past it `index.refresh` is
 /// refused with `resource-limit`.
 pub(crate) const MAX_WAITING: usize = 16;
+
+/// The method a change no request made is announced under: what the index lane applies from the
+/// platform's change notifications, and the listings it starts on its own (a card mounted, the
+/// indexed folders as the catalog opens). Its request id is empty.
+pub(crate) const UNREQUESTED: &str = "index-watch";
+
+/// The origin of work no request asked for.
+fn unrequested() -> Origin {
+    Origin::new(UNREQUESTED, "")
+}
 
 /// Lane A's state on the owner.
 pub(super) struct FilesLane {
@@ -75,8 +94,16 @@ pub(super) struct FilesLane {
     queries: Queries,
     /// The survey thread, what it learned, and the calls waiting for its first survey.
     surveys: Surveys,
+    /// Whether the lane follows each indexed folder's changes, or why not, as it last said.
+    watching: HashMap<PathBuf, Result<(), String>>,
+    /// Whether the lane's watcher reports volumes mounted and taken out, which keeps the survey
+    /// current without a survey per call.
+    notified: bool,
     #[cfg(test)]
     hold: Option<Arc<luxforge_testbase::Gate>>,
+    /// Every header read the lane has taken in.
+    #[cfg(test)]
+    reads: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 /// Work waiting for the lane, with the request it was made under.
@@ -96,6 +123,8 @@ enum Task {
         detail: String,
     },
     Forget(PathBuf),
+    /// Watch these indexed folders, as the catalog opens.
+    Watch(Vec<RootPlan>),
 }
 
 /// The work the lane is running: which job, if it is one, with its control, and the request its
@@ -128,6 +157,12 @@ pub(super) enum FilesMessage {
     /// Bound listings by these limits, from the lane's next start.
     #[cfg(test)]
     Limits(WalkLimits),
+    /// Hand the lane an event as its watcher would, starting it first.
+    #[cfg(test)]
+    Inject(crate::index::lane::WatchEvent),
+    /// How many header reads the lane has taken in.
+    #[cfg(test)]
+    HeaderReads(std::sync::mpsc::SyncSender<usize>),
 }
 
 impl FilesLane {
@@ -142,8 +177,12 @@ impl FilesLane {
             limits: WalkLimits::default(),
             queries: Queries::default(),
             surveys: Surveys::default(),
+            watching: HashMap::new(),
+            notified: false,
             #[cfg(test)]
             hold: None,
+            #[cfg(test)]
+            reads: Arc::default(),
         }
     }
 
@@ -153,12 +192,12 @@ impl FilesLane {
         self.forget_waiting(client);
     }
 
-    /// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one leaves the
-    /// queue; a running one stops at its next checkpoint through its control, which the table set.
-    pub(super) fn cancelled(&mut self, job_id: &JobId) {
-        self.waiting.retain(
-            |queued| !matches!(&queued.task, Task::Refresh { job_id: id, .. } if id == job_id),
-        );
+    /// Take a waiting job out of the queue: the request it was made under, if it waited.
+    fn unqueue(&mut self, job_id: &JobId) -> Option<Origin> {
+        let at = self.waiting.iter().position(
+            |queued| matches!(&queued.task, Task::Refresh { job_id: id, .. } if id == job_id),
+        )?;
+        self.waiting.remove(at).map(|queued| queued.origin)
     }
 
     /// Stop the lane as the owner stops: the running listing is cancelled, stopping at its next
@@ -269,6 +308,56 @@ pub(super) fn start_refresh(
     })
 }
 
+/// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one leaves the queue
+/// and its end is announced now; a running one stops at its next checkpoint through its control,
+/// which the table set, and its end is announced when the lane reports it.
+pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
+    if let Some(origin) = owner.catalog.files.unqueue(job_id) {
+        ended(owner, origin, None);
+    }
+}
+
+/// Announce that an `index.refresh` job made under `origin` ended: one event naming its request and
+/// the index revision it left, `revision` as the lane read it, else the index's revision now.
+fn ended(owner: &mut Owner, origin: Origin, revision: Option<u64>) {
+    let revision = revision.or_else(|| {
+        queries::index(owner)
+            .ok()
+            .flatten()
+            .and_then(|index| database::revision(index.connection()).ok())
+    });
+    let event = match revision {
+        Some(revision) => origin.index(revision),
+        None => origin,
+    };
+    announce_once(&mut owner.announced, &event);
+}
+
+/// Watch every indexed folder as the catalog opens, starting the lane: what changed while Luxforge
+/// was closed is caught up (replayed on macOS, listed elsewhere), and the volumes' notifications
+/// keep what `volume.list` answers current. A catalog without indexed folders starts nothing.
+pub(super) fn opened(owner: &mut Owner) {
+    let Ok(folders) = indexed_folders(owner) else {
+        return;
+    };
+    if folders.is_empty() {
+        return;
+    }
+    let roots = folders
+        .into_iter()
+        .map(|folder| RootPlan {
+            path: folder.path,
+            kind: RootKind::Indexed,
+            volume_id: Some(folder.volume_id),
+        })
+        .collect();
+    owner.catalog.files.waiting.push_back(Queued {
+        task: Task::Watch(roots),
+        origin: unrequested(),
+    });
+    dispatch(owner);
+}
+
 /// Hand the lane its next piece of work when it is idle, starting it on first use.
 fn dispatch(owner: &mut Owner) {
     while owner.catalog.files.running.is_none() {
@@ -278,6 +367,7 @@ fn dispatch(owner: &mut Owner) {
         if let Err(error) = ensure_lane(owner) {
             if let Task::Refresh { job_id, .. } = task {
                 owner.jobs.finish(&job_id, Err(error));
+                ended(owner, origin, None);
             }
             continue;
         }
@@ -311,6 +401,7 @@ fn dispatch(owner: &mut Owner) {
                 )
             }
             Task::Forget(path) => (Work::Forget(path), None, None),
+            Task::Watch(roots) => (Work::Watch(roots), None, None),
         };
         match lane.send(work) {
             Ok(()) => {
@@ -323,15 +414,16 @@ fn dispatch(owner: &mut Owner) {
             Err(error) => {
                 if let Some((job_id, _)) = job {
                     owner.jobs.finish(&job_id, Err(error));
+                    ended(owner, origin, None);
                 }
             }
         }
     }
 }
 
-/// Start the lane's threads, once. The lane opens the index itself on its first work (creating
-/// it, or recreating one it cannot use) and hands the owner a connection ([`LaneEvent::Opened`]),
-/// so nothing here touches the disk.
+/// Start the lane's threads, once, with its watcher. The lane opens the index itself on its first
+/// work (creating it, or recreating one it cannot use) and hands the owner a connection
+/// ([`LaneEvent::Opened`]), so nothing here touches the disk.
 fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
     if owner.catalog.files.lane.is_some() {
         return Ok(());
@@ -349,17 +441,20 @@ fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
         mounts: files.mounts.clone(),
         limits: files.limits,
         post: files.post(),
+        board: files.board.clone(),
         #[cfg(test)]
         hold: files.hold.clone(),
+        #[cfg(test)]
+        reads: files.reads.clone(),
     })?;
     files.lane = Some(lane);
     Ok(())
 }
 
 /// A committed library change changed whether `folders` are indexed (`indexed_folders` holds the
-/// answer now), under `origin`: a folder now indexed is listed; a folder no longer indexed has its
-/// listing stopped and its rows forgotten, unless another root lists them. TASK-005's watchers
-/// start and stop here too.
+/// answer now), under `origin`: a folder now indexed is listed, and watched once its listing ends;
+/// a folder no longer indexed has its listing and its watch stopped and its rows forgotten, unless
+/// another root lists them.
 pub(super) fn indexed_folders_changed(owner: &mut Owner, origin: &Origin, folders: &[PathBuf]) {
     for path in folders {
         let source = IndexSource::IndexedFolder { path: path.clone() };
@@ -383,8 +478,9 @@ pub(super) fn indexed_folders_changed(owner: &mut Owner, origin: &Origin, folder
                     owner
                         .jobs
                         .cancel(&job_id, "the folder is no longer indexed");
-                    owner.catalog.files.cancelled(&job_id);
+                    cancelled(owner, &job_id);
                 }
+                owner.catalog.files.watching.remove(path);
                 owner.catalog.files.waiting.push_back(Queued {
                     task: Task::Forget(path.clone()),
                     origin: origin.clone(),
@@ -399,15 +495,26 @@ pub(super) fn indexed_folders_changed(owner: &mut Owner, origin: &Origin, folder
 /// One message from the lane (or a test).
 pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
     match message {
-        FilesMessage::Lane(LaneEvent::Committed { revision }) => {
-            let origin = owner.catalog.files.running.as_ref().map_or_else(
-                || Origin::new(INDEX_REFRESH.job_kind, ""),
-                |running| running.origin.clone(),
-            );
+        FilesMessage::Lane(LaneEvent::Committed { revision, by }) => {
+            // A batch of the owner's work is announced under the request that asked for it; one
+            // the watcher's notifications made as work no request made.
+            let running = owner.catalog.files.running.as_ref();
+            let origin = match by {
+                Maker::Job(job) => {
+                    running.filter(|running| running.job.as_ref().map(|(id, _)| id) == Some(&job))
+                }
+                Maker::Owner => running,
+                Maker::Watcher => None,
+            }
+            .map_or_else(unrequested, |running| running.origin.clone());
             announce_once(&mut owner.announced, &origin.index(revision));
             owner.record_announced();
         }
-        FilesMessage::Lane(LaneEvent::Refreshed { job_id, result }) => {
+        FilesMessage::Lane(LaneEvent::Refreshed {
+            job_id,
+            result,
+            revision,
+        }) => {
             owner.jobs.finish(
                 &job_id,
                 result.and_then(|report| {
@@ -416,14 +523,28 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
                         .map_err(|error| Error::internal(error.to_string()))
                 }),
             );
-            owner.catalog.files.running = None;
+            let origin = owner
+                .catalog
+                .files
+                .running
+                .take()
+                .map_or_else(unrequested, |running| running.origin);
+            ended(owner, origin, revision);
+            owner.record_announced();
             dispatch(owner);
         }
-        FilesMessage::Lane(LaneEvent::Forgotten) => {
+        FilesMessage::Lane(LaneEvent::Forgotten | LaneEvent::Watched) => {
             owner.catalog.files.running = None;
             dispatch(owner);
         }
         FilesMessage::Lane(LaneEvent::Opened(index)) => owner.service.adopt_index(index),
+        FilesMessage::Lane(LaneEvent::Started { watcher }) => {
+            owner.catalog.files.notified = watcher.is_ok();
+        }
+        FilesMessage::Lane(LaneEvent::Watching { path, watching }) => {
+            owner.catalog.files.watching.insert(path, watching);
+        }
+        FilesMessage::Lane(LaneEvent::Volume(event)) => queries::volume(owner, event),
         FilesMessage::Answered(resume) => queries::answered(owner, resume),
         FilesMessage::Surveyed(post) => queries::surveyed(owner, *post),
         #[cfg(test)]
@@ -441,6 +562,34 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         FilesMessage::Hold(gate) => owner.catalog.files.hold = Some(gate),
         #[cfg(test)]
         FilesMessage::Limits(limits) => owner.catalog.files.limits = limits,
+        #[cfg(test)]
+        FilesMessage::HeaderReads(reply) => {
+            let _ = reply.send(
+                owner
+                    .catalog
+                    .files
+                    .reads
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            );
+        }
+        #[cfg(test)]
+        FilesMessage::Inject(event) => {
+            if ensure_lane(owner).is_ok()
+                && let Some(lane) = &owner.catalog.files.lane
+            {
+                lane.inject(event);
+            }
+        }
+    }
+}
+
+/// Whether the lane follows the changes of the indexed folder at `path`, and why not when it does
+/// not, for `index.folders`.
+fn watching(owner: &Owner, path: &Path) -> (bool, Option<String>) {
+    match owner.catalog.files.watching.get(path) {
+        Some(Ok(())) => (true, None),
+        Some(Err(reason)) => (false, Some(reason.clone())),
+        None => (false, Some("not watched yet".into())),
     }
 }
 
