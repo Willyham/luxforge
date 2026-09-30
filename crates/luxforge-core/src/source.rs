@@ -31,8 +31,9 @@ pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
 
 /// The largest JPEG original decoded: [`luxforge_raw::MAX_SIDE`] px per side (the same side limit
 /// every other source obeys) and 64 megapixels, so its RGBA frame stays inside the 512 MiB
-/// evaluated-frame limit.
-const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
+/// evaluated-frame limit. The preview lane decodes files' JPEGs within the same limits, the 100%
+/// region included, from an original or a RAW's embedded preview.
+pub(crate) const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
     max_side: luxforge_raw::MAX_SIDE,
     max_pixels: 64_000_000,
 };
@@ -123,9 +124,9 @@ const UPRIGHT_STRIP_ROWS: usize = 16;
 
 /// Where the decoded pixel `(x, y)` of a `width` × `height` image lands once EXIF `orientation`
 /// turns it upright: the inverse of the orientation's upright-to-stored mapping, so 5 to 8 swap
-/// the dimensions.
+/// the dimensions. The preview lane turns its tiers and its 100% regions upright through it too.
 #[inline]
-fn upright_position(
+pub(crate) fn upright_position(
     orientation: u8,
     width: usize,
     height: usize,
@@ -362,6 +363,7 @@ pub(crate) fn raw_error(error: RawError) -> Error {
         | RawError::UnsupportedCfa => ErrorKind::UnsupportedInput,
         RawError::MissingCalibration(_) => ErrorKind::UnsupportedColor,
         RawError::InvalidInput(_) | RawError::Native(_) => ErrorKind::Decode,
+        RawError::Io { .. } => ErrorKind::SourceUnavailable,
         RawError::NeutralPatch(_) => ErrorKind::Validation,
     };
     Error::new(kind, error.to_string())
@@ -730,6 +732,13 @@ mod tests {
             (RawError::Cancelled, ErrorKind::Conflict),
             (RawError::Native("x".into()), ErrorKind::Decode),
             (RawError::NeutralPatch("x".into()), ErrorKind::Validation),
+            (
+                RawError::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    message: "x".into(),
+                },
+                ErrorKind::SourceUnavailable,
+            ),
         ] {
             assert_eq!(raw_error(error.clone()).kind, kind, "{error:?}");
         }
