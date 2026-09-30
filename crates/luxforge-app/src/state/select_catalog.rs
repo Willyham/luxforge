@@ -487,6 +487,23 @@ pub(crate) fn view_query(state: &CatalogState, source: ViewSource) -> ViewQuery 
     query
 }
 
+/// A catalog folder's or collection's own name, which the title bar calls its view by.
+pub(crate) fn source_name(state: &CatalogState, source: &ViewSource) -> Option<String> {
+    match source {
+        ViewSource::CatalogFolder { folder_id, .. } => state
+            .folders
+            .as_ref()?
+            .folders
+            .iter()
+            .find(|folder| &folder.id == folder_id)
+            .map(|folder| folder.name.clone()),
+        ViewSource::Collection { collection_id } => {
+            collection(state, collection_id).map(|collection| collection.name.clone())
+        }
+        _ => None,
+    }
+}
+
 /// `query` with one change made to its filter, and nothing else changed.
 pub(crate) fn changed(query: &ViewQuery, change: &CatalogChange) -> ViewQuery {
     let mut query = query.clone();
