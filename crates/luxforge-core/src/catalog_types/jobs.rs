@@ -120,10 +120,27 @@ pub const CATALOG_JOBS: [CatalogJob; 10] = [
     BATCH_EXPORT,
 ];
 
+/// The catalog job that publishes activity board entries of kind `activity`, if one does: how a
+/// reader of the board tells long-running catalog work from the rest.
+pub fn catalog_job(activity: &str) -> Option<CatalogJob> {
+    CATALOG_JOBS
+        .into_iter()
+        .find(|job| job.activity == activity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn a_board_kind_names_its_catalog_job() {
+        for job in CATALOG_JOBS {
+            assert_eq!(catalog_job(job.activity), Some(job));
+        }
+        assert_eq!(catalog_job("preview.render"), None);
+        assert_eq!(catalog_job("source.develop"), None);
+    }
 
     /// Each kind is named once, apart from every kind the job table and the activity board already
     /// use, and its `job_kind` is its job kind as `job.read` reports it.

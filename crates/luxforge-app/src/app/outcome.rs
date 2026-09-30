@@ -85,6 +85,9 @@ pub(crate) enum Outcome<'a> {
     /// Nothing the Select workspace asked the owner for is in flight: the events, the view, its
     /// facets, the rows near the screen and a staleness check have all answered.
     SelectSettled,
+    /// Long-running work's model was derived again: what the status bar, the sheet and the
+    /// Performance rows show may have changed.
+    LongWorkShown,
     // ── end lane D ──
 }
 
@@ -147,6 +150,7 @@ impl Outcome<'_> {
             Self::ExportQueued(_) => "export_queued",
             Self::ExportEnded { .. } => "export_ended",
             Self::SelectSettled => "select_settled",
+            Self::LongWorkShown => "long_work_shown",
         }
     }
 }
