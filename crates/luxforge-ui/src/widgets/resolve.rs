@@ -258,7 +258,8 @@ pub fn resolve_group<'a, M: Clone + 'a>(
 }
 
 /// The floating bar: how many were found and verified, what else the results hold, Stop search
-/// while a search runs, and Relink N, the view's one primary action, with its Return hint.
+/// while a search runs, and Relink N, the view's one primary action. It carries no key hint: no key
+/// relinks yet.
 pub fn resolve_bar<'a, M: Clone + 'a>(
     model: &ResolveBarModel,
     on_stop: Option<M>,
@@ -308,7 +309,7 @@ pub fn resolve_bar<'a, M: Clone + 'a>(
         &LabelledButtonModel {
             label: model.relink.clone(),
             icon: None,
-            key_hint: Some("return".into()),
+            key_hint: None,
             tone: ButtonTone::Primary,
             size: ButtonSize::Regular,
             fill: false,

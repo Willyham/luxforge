@@ -123,6 +123,16 @@ fn group(model: &GroupModel) -> Element<'_, Message> {
             resolve_action(&find.label, enabled, enabled.then_some(press))
         })
     });
+    let mut rows: Vec<Element<'_, Message>> = model.rows.iter().map(photo_row).collect();
+    if let Some(more) = &model.more {
+        rows.push(
+            container(caption(more.clone()))
+                .padding(theme::RESOLVE_ROW_PADDING)
+                .height(Length::Fixed(theme::RESOLVE_ROW_HEIGHT))
+                .align_y(iced::alignment::Vertical::Center)
+                .into(),
+        );
+    }
     resolve_group(
         &ResolveGroupModel {
             path: model.path.clone(),
@@ -130,7 +140,7 @@ fn group(model: &GroupModel) -> Element<'_, Message> {
             status: model.status.clone(),
         },
         action,
-        model.rows.iter().map(photo_row).collect(),
+        rows,
     )
 }
 
