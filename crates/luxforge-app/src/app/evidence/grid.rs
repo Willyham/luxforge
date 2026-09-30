@@ -5,7 +5,8 @@
 //! driver sends the offset the grid's scrollable publishes (`SelectMessage::Scrolled`) moved down
 //! by the step's speed, and records `grid_scroll_frame`: the frame's time, the offset, and the
 //! cells on screen at that offset with a decoded preview to draw (`cached`), the placeholder while
-//! one loads (`pending`) or nothing ever (`unreadable`). The grid records `select_scrolled` in the
+//! one loads (`pending`) or nothing ever (`unreadable`), and the bytes of decoded previews the grid
+//! holds then against its budget. The grid records `select_scrolled` in the
 //! update that adopts the offset, the one whose redraw draws it. The step is captured once Select
 //! has nothing in flight after its last frame, or after the frame that reached the end of the grid.
 use super::{Evidence, Settle};
@@ -72,6 +73,7 @@ impl Editor {
         let frame_ms = at.saturating_duration_since(self.log.started).as_secs_f64() * 1000.0;
         let (cells, cached, pending, unreadable) = self.grid_cells_drawn();
         self.event("grid_scroll_frame", || {
+            let previews = self.select.previews.summary();
             json!({
                 "index": index,
                 "frame_ms": frame_ms,
@@ -81,6 +83,8 @@ impl Editor {
                 "cached": cached,
                 "pending": pending,
                 "unreadable": unreadable,
+                "decoded_bytes": previews["bytes"],
+                "decoded_budget": previews["budget"],
             })
         });
         if last || !moved {
@@ -168,6 +172,13 @@ mod tests {
         let scrolled = events(&records, "select_scrolled");
         assert!(!frames.is_empty() && frames.len() <= 3, "{frames:?}");
         assert_eq!(frames[0]["offset"], 40.0, "{frames:?}");
+        assert!(frames.iter().all(|frame| {
+            let budget = frame["decoded_budget"].as_u64();
+            frame["decoded_bytes"]
+                .as_u64()
+                .zip(budget)
+                .is_some_and(|(bytes, budget)| bytes <= budget)
+        }));
         assert!(frames.iter().all(|frame| {
             frame["cells"].as_u64()
                 == Some(

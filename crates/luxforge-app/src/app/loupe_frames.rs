@@ -341,6 +341,9 @@ pub(crate) struct LoupeFrames {
     plan_number: u64,
     /// Decoded frames dropped because they could not fit, for evidence.
     dropped: u64,
+    /// The most decoded bytes held at once since the cache was made, which releasing keeps: what
+    /// the budget held under the loupe's heaviest moment, for evidence.
+    peak: usize,
     /// Tests plan decodes without starting the worker, and hand the decodes in themselves.
     #[cfg(test)]
     pub(crate) paused: bool,
@@ -428,6 +431,7 @@ impl LoupeFrames {
             planned: Vec::new(),
             plan_number: 0,
             dropped: 0,
+            peak: 0,
             #[cfg(test)]
             paused: false,
         }
@@ -670,6 +674,7 @@ impl LoupeFrames {
             "plan_bytes": self.plan_bytes(),
             "decoding": self.decoder.as_ref().is_some_and(|decoder| decoder.worker.is_busy()),
             "dropped": self.dropped,
+            "peak_bytes": self.peak,
             "settled": self.settled(&self.wanted),
         })
     }
@@ -756,6 +761,7 @@ impl LoupeFrames {
             None => self.handles += 1,
         }
         self.bytes += bytes;
+        self.peak = self.peak.max(self.bytes);
     }
 
     /// Evict until `incoming` bytes fit — replacing `replaced` bytes of `item`'s own — within the
