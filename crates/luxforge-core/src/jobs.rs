@@ -791,16 +791,6 @@ impl Jobs {
         self.entries.get(job_id)?.origin.as_ref()
     }
 
-    /// Name the request that started a job that has none yet, as an import does for the
-    /// preparation it joined or opened.
-    pub(crate) fn set_origin(&mut self, job_id: &JobId, origin: Origin) {
-        if let Some(entry) = self.entries.get_mut(job_id)
-            && entry.origin.is_none()
-        {
-            entry.origin = Some(origin);
-        }
-    }
-
     /// A finished shared job's outcome as `client` reads it: its status, what it left and its
     /// error, for `job.adopt` to take the prepared asset from.
     pub(crate) fn outcome_for(

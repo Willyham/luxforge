@@ -100,15 +100,16 @@ impl Harness {
         path.canonicalize().unwrap()
     }
 
+    /// A copy of the fixture `name` (`s0/…`) at `path` in bytes no other copy has, so it develops
+    /// into a photograph of its own rather than linking to another copy's
+    /// ([`super::opening::distinct_copy`]).
+    fn distinct(&self, name: &str, path: &Path) -> PathBuf {
+        super::opening::distinct_copy(&fixture(&format!("s0/{name}")), path)
+    }
+
+    /// Develop the file at `path` and prepare its photograph, as a client opens a file.
     fn import(&self, path: &Path) -> AssetId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let started = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": envelope(&format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)))}),
-        );
-        let settled = self.settle(&started["job_id"]);
-        assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        serde_json::from_value(super::opening::import(&self.owner, self.client, path)).unwrap()
     }
 
     fn state(&self, asset: &AssetId) -> Value {
@@ -292,7 +293,12 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
     assert_eq!(groups[0]["source_folder"], json!(card));
     assert_eq!(groups[0]["count"], 3);
     assert_eq!(groups[0]["reason"], json!({"kind": "folder-gone"}));
-    assert_eq!(groups[0]["catalog_folders"][0]["name"], "2026-09-12");
+    // An opened file the index does not list is an undated frame of its folder, and its Develop
+    // makes that folder's Undated event's catalog folder.
+    assert_eq!(
+        groups[0]["catalog_folders"][0]["name"],
+        "Undated · 2026-09-12"
+    );
     assert_eq!(
         harness.ok("source.missing", json!({"grouping": "source-folder"})),
         missing
@@ -440,10 +446,13 @@ fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
         ),
     ];
     fs::remove_file(&originals[4]).unwrap();
-    // A copy of the original that another photograph was developed from.
-    let taken = harness.copy("orientation-6.jpg", &search.join("e").join("claimed.jpg"));
-    fs::remove_file(&originals[5]).unwrap();
+    // A file with the original's bytes that another photograph names: that photograph's own
+    // file, since overwritten with a copy of the original (a Develop never makes two photographs
+    // of one file's bytes).
+    let taken = harness.copy("greyscale.jpg", &search.join("e").join("claimed.jpg"));
     let other = harness.import(&taken);
+    fs::write(&taken, fs::read(&originals[5]).unwrap()).unwrap();
+    fs::remove_file(&originals[5]).unwrap();
 
     let refs: Vec<&AssetId> = assets.iter().collect();
     assert_eq!(harness.check(&refs), ["missing"; 6]);
@@ -631,25 +640,25 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
             "changed".to_owned(),
             2,
             json!({"kind": "changed"}),
-            vec!["changed".to_owned()],
+            vec!["Undated · changed".to_owned()],
         ),
         (
             "gone".to_owned(),
             2,
             json!({"kind": "folder-gone"}),
-            vec!["gone".to_owned(), "Konstanz".to_owned()],
+            vec!["Konstanz".to_owned(), "Undated · gone".to_owned()],
         ),
         (
             "mixed".to_owned(),
             2,
             json!({"kind": "files-gone"}),
-            vec!["mixed".to_owned()],
+            vec!["Undated · mixed".to_owned()],
         ),
         (
             "thinned".to_owned(),
             1,
             json!({"kind": "files-gone"}),
-            vec!["thinned".to_owned()],
+            vec!["Undated · thinned".to_owned()],
         ),
     ];
     assert_eq!(summary(&missing), expected, "{missing}");
@@ -661,7 +670,7 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
         "{missing}"
     );
     assert_eq!(
-        missing["groups"][1]["catalog_folders"][1]["id"], konstanz,
+        missing["groups"][1]["catalog_folders"][0]["id"], konstanz,
         "{missing}"
     );
 
@@ -675,7 +684,7 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
         "unchecked".to_owned(),
         1,
         json!({"kind": "files-gone"}),
-        vec!["unchecked".to_owned()],
+        vec!["Undated · unchecked".to_owned()],
     ));
     assert_eq!(summary(&missing), with_unchecked);
 }

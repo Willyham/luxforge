@@ -141,15 +141,16 @@ impl Harness {
         path.canonicalize().unwrap()
     }
 
+    /// A copy of the fixture `name` (`s0/…`) at `path` in bytes no other copy has, so it develops
+    /// into a photograph of its own rather than linking to another copy's
+    /// ([`super::opening::distinct_copy`]).
+    fn distinct(&self, name: &str, path: &Path) -> PathBuf {
+        super::opening::distinct_copy(&fixture(&format!("s0/{name}")), path)
+    }
+
+    /// Develop the file at `path` and prepare its photograph, as a client opens a file.
     fn import(&self, path: &Path) -> AssetId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let started = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": envelope(&format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)))}),
-        );
-        let settled = self.settle(&started["job_id"]);
-        assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        serde_json::from_value(super::opening::import(&self.owner, self.client, path)).unwrap()
     }
 
     fn state(&self, asset: &AssetId) -> Value {
@@ -547,8 +548,8 @@ fn what_is_not_the_original_is_refused_and_changes_nothing() {
 #[test]
 fn a_file_another_photograph_names_is_refused_without_a_merge() {
     let harness = Harness::new("claimed");
-    let a = harness.copy("orientation-1.jpg", &harness.dir.join("a.jpg"));
-    let b = harness.copy("orientation-1.jpg", &harness.dir.join("b.jpg"));
+    let a = harness.distinct("orientation-1.jpg", &harness.dir.join("a.jpg"));
+    let b = harness.distinct("orientation-1.jpg", &harness.dir.join("b.jpg"));
     let first = harness.import(&a);
     let second = harness.import(&b);
     harness.expose(&second, 1.0);
@@ -610,13 +611,30 @@ fn a_file_changed_around_its_verification_is_refused() {
         "{settled}"
     );
 
-    // Imported as another photograph after it was verified: taken, so refused, naming it. An edit
-    // committed while the Locate was held stands.
+    // Taken by another photograph after it was verified — that photograph relinked to it — so
+    // refused, naming it. An edit committed while the Locate was held stands.
+    let other = harness.import(&harness.distinct(
+        "orientation-1.jpg",
+        &harness.dir.join("c").join("other.jpg"),
+    ));
     let taken = candidate("taken.jpg");
     let gate = harness.hold_at(Phase::Verified);
     let job = harness.locate(&asset, &taken, "taken").result.unwrap();
     gate.wait_reached(1, "the verification");
-    let other = harness.import(&taken);
+    let (path, signature) = EditorService::request_signature(&taken).unwrap();
+    let source = crate::library::locate::source_value(
+        &path,
+        crate::index::volume_of(&path, 0).unwrap().id,
+        signature.file_identity(),
+    );
+    let relinked = other.clone();
+    harness.on_owner(move |owner| {
+        crate::editor::write(&mut owner.service.connection, |tx| {
+            crate::editor::library_rows::set_asset_source(tx, &relinked, &source)?;
+            Ok(())
+        })
+        .unwrap();
+    });
     harness.expose(&asset, 0.25);
     gate.open();
     let settled = harness.settle(&job["job_id"]);

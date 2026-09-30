@@ -33,12 +33,6 @@ pub(crate) const CATALOG_FORMAT: i64 = 12;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
-/// Assets per `catalog.list` page, and the page a request that names no `limit` gets. A page reads
-/// `limit + 1` rows of the asset table's own columns and decodes nothing, so its cost is bounded by
-/// the limit however large the catalog is.
-pub(crate) const MAX_ASSET_PAGE: usize = 500;
-pub(crate) const DEFAULT_ASSET_PAGE: usize = 100;
-
 /// A catalog failure: `conflict` while another connection holds the database, `catalog` otherwise.
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
@@ -806,29 +800,17 @@ mod tests {
     };
     use serde_json::{Value, json};
 
-    /// A page of assets reads the asset table's own columns: it decodes no stored value, whatever
-    /// the interpretations hold, and its kinds are the tags imported beside them.
+    /// The bounded read of photographs reads their identities alone, decoding nothing, in the
+    /// order they were developed.
     #[test]
-    fn an_asset_page_decodes_nothing() {
-        let catalog = temp("asset-page.sqlite");
+    fn asset_ids_decode_nothing() {
+        let catalog = temp("asset-ids.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let asset = service.import(&fixture()).unwrap().asset;
         crate::editor::read_counts::take();
-        let page = service.assets(None, MAX_ASSET_PAGE).unwrap();
+        assert_eq!(service.asset_ids(10).unwrap(), [asset.id]);
         assert_eq!(crate::editor::read_counts::take(), (0, 0));
-        assert_eq!(
-            page.assets,
-            [crate::AssetSummary {
-                id: asset.id.clone(),
-                locator: asset.locator.clone(),
-                kind: asset.source.tag(),
-                width: asset.width,
-                height: asset.height,
-            }]
-        );
-        assert_eq!(page.next, None);
-        assert!(service.assets(None, 0).is_err());
-        assert!(service.assets(None, MAX_ASSET_PAGE + 1).is_err());
+        assert!(service.asset_ids(0).unwrap().is_empty());
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

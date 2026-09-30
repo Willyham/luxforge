@@ -330,8 +330,8 @@ struct SourceTask {
 
 /// What a completed source job leaves for its clients to read.
 enum Completed {
-    /// A prepared asset, and whether this job created it.
-    Asset(Box<EditorState>, bool),
+    /// A prepared photograph.
+    Asset(Box<EditorState>),
     Value(Value),
 }
 
@@ -382,11 +382,8 @@ impl SourceQueue {
                 SourceFlightKey {
                     path: path.clone(),
                     signature: Some(signature.clone()),
-                    expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
-                    gains_bits: target
-                        .as_ref()
-                        .and_then(|target| target.raw.as_ref())
-                        .map(|raw| raw.gains.map(f32::to_bits)),
+                    expected_fingerprint: Some(target.fingerprint.clone()),
+                    gains_bits: target.raw.as_ref().map(|raw| raw.gains.map(f32::to_bits)),
                     artifacts: flight_artifacts(&artifacts),
                 },
                 None,
@@ -713,14 +710,6 @@ fn source_worker(
 }
 
 host_params! {
-    /// `catalog.import`.
-    pub(super) struct Import {
-        path: PathBuf = path().notes("the photo to import"),
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
     /// `job.read`, `job.cancel` and `job.adopt`.
     pub(super) struct JobParams {
         job_id: JobId = job(),
@@ -1009,9 +998,10 @@ impl OwnerHandle {
         let _ = self.sender.send(OwnerMessage::WatchEvents { client, wake });
     }
 
-    /// Block the calling thread until `job`, a source job of `client`'s, is no longer queued or
-    /// running — it finished, failed, or `client` left it through `job.cancel` — or, with no job
-    /// named, until any source job finishes, which is what makes room after a full source queue.
+    /// Block the calling thread until `job`, a source job of `client`'s or a library job (such as
+    /// the Develop that opens a file), is no longer queued or running — it finished, failed, or
+    /// `client` left or cancelled it through `job.cancel` — or, with no job named, until any source
+    /// job finishes, which is what makes room after a full source queue.
     /// It answers at once when there is nothing to wait for and reports nothing about the job: the
     /// caller reads `job.read` afterwards. A blocking receive on the caller's thread rather than
     /// a poll, so a client waiting on a decode costs nothing until it ends. Never call it on the
@@ -1105,7 +1095,7 @@ fn owner_loop(
         sessions: HashMap::new(),
         queue,
         activity,
-        latest_import: HashMap::new(),
+        latest_preparation: HashMap::new(),
         log: EventLog::default(),
         requests: RequestTable::default(),
         announced: Vec::new(),
@@ -1340,7 +1330,8 @@ pub(super) struct Owner {
     /// The analysis worker: one running job and one replaceable pending job.
     queue: AnalysisQueue,
     activity: Arc<ActivityBoard>,
-    latest_import: HashMap<ClientId, JobId>,
+    /// Each client's latest `source.prepare`, whose ready result `job.adopt` takes.
+    latest_preparation: HashMap<ClientId, JobId>,
     log: EventLog,
     requests: RequestTable,
     /// What the message being handled changed, each change once. The owner records them as events
@@ -1503,10 +1494,12 @@ impl Owner {
     fn await_source(&mut self, client: ClientId, job: Option<JobId>, reply: SyncSender<()>) {
         let pending = match &job {
             Some(id) => {
-                self.jobs
+                (self
+                    .jobs
                     .kind(id)
                     .is_some_and(|kind| kind.family() == Family::Source)
-                    && self.jobs.wanted_by(id, client)
+                    && self.jobs.wanted_by(id, client))
+                    || self.catalog.library.holds(id)
             }
             None => self.jobs.any_live(Family::Source),
         };
@@ -1733,7 +1726,7 @@ impl Owner {
         for (job_id, kind) in self.jobs.disconnect(client) {
             self.stop(&job_id, kind);
         }
-        self.latest_import.remove(&client);
+        self.latest_preparation.remove(&client);
         self.points.disconnect(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
@@ -1742,8 +1735,7 @@ impl Owner {
         self.catalog.disconnect(client, &mut self.jobs);
     }
 
-    /// A source job finished on the worker: commit what it prepared for the clients still waiting,
-    /// and record the import event when it created an asset.
+    /// A source job finished on the worker: adopt what it prepared for the clients still waiting.
     fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
         let interested = self.jobs.wanted(id);
         #[cfg(test)]
@@ -1756,8 +1748,8 @@ impl Owner {
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
                 SourceResult::Prepared(prepared) => {
-                    let (state, created) = service.complete_preparation(*prepared)?;
-                    Ok(Completed::Asset(Box::new(state), created))
+                    let state = service.complete_preparation(*prepared)?;
+                    Ok(Completed::Asset(Box::new(state)))
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
@@ -1766,20 +1758,10 @@ impl Owner {
         } else {
             Err(Error::conflict("source job cancelled"))
         };
-        // An import is announced when it commits an asset, under the request that asked for it,
-        // naming the asset it created.
-        if let Ok(Completed::Asset(state, true)) = &outcome
-            && let Some(origin) = self.jobs.origin(id)
-        {
-            let origin = origin
-                .clone()
-                .changed(state.asset.id.clone(), Some(state.revision));
-            self.log.record(&origin);
-        }
         self.jobs.finish(
             id,
             outcome.map(|completed| match completed {
-                Completed::Asset(state, _) => Output::Asset(state),
+                Completed::Asset(state) => Output::Asset(state),
                 Completed::Value(value) => Output::Value(value),
             }),
         );
@@ -1855,35 +1837,6 @@ impl Owner {
     }
 }
 
-/// `catalog.import`: queue the preparation, or answer from the verified cache. The import is
-/// announced when it commits an asset, not here.
-pub(super) fn catalog_import(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: Import,
-) -> Result<Value, Error> {
-    let (id, status) = match owner.service.importing(&params.path)? {
-        Preparing::Ready(state) => (
-            owner.sources.ready(&mut owner.jobs, call.client, *state)?,
-            JobStatus::Ready,
-        ),
-        Preparing::Work(work, reads) => (
-            queue_work(
-                &owner.service,
-                &mut owner.sources,
-                &mut owner.jobs,
-                call.client,
-                work,
-                reads,
-            )?,
-            JobStatus::Queued,
-        ),
-    };
-    owner.jobs.set_origin(&id, call.origin.clone());
-    owner.latest_import.insert(call.client, id.clone());
-    Ok(json!({"job_id": id, "status": status}))
-}
-
 /// `job.read`: any job of any kind, in the one shape. A source or analysis job is read by the
 /// clients that requested it; a capability or export job by any client.
 pub(super) fn job_read(
@@ -1911,8 +1864,8 @@ pub(super) fn job_cancel(
     let kind = owner.jobs.kind_for(job_id, client)?;
     match kind.family() {
         Family::Source | Family::Analysis => {
-            if owner.latest_import.get(&client) == Some(job_id) {
-                owner.latest_import.remove(&client);
+            if owner.latest_preparation.get(&client) == Some(job_id) {
+                owner.latest_preparation.remove(&client);
             }
             if owner.jobs.release(job_id, client)? == Release::Stopped {
                 owner.stop(job_id, kind);
@@ -1932,35 +1885,43 @@ pub(super) fn job_cancel(
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);
             owner.catalog.cancelled(job_id, kind, &mut owner.jobs);
+            // A waiting library job has ended with its cancel; a running one ends when its worker
+            // posts back.
+            if !owner.catalog.library.holds(job_id) {
+                owner.release_waiters(|waiter| waiter.job.as_ref() == Some(job_id));
+            }
         }
     }
     owner.read_job(job_id, client)
 }
 
-/// `job.adopt`: the ready result of this client's latest import becomes its current asset.
+/// `job.adopt`: the ready result of this client's latest preparation (`source.prepare`) becomes
+/// its current photograph; a preparation it asked for since supersedes it.
 pub(super) fn job_adopt(
     owner: &mut Owner,
     call: &Call<'_>,
     params: JobParams,
 ) -> Result<Value, Error> {
-    if owner.latest_import.get(&call.client) != Some(&params.job_id) {
-        return Err(Error::conflict("a newer import superseded this job"));
+    if owner.latest_preparation.get(&call.client) != Some(&params.job_id) {
+        return Err(Error::conflict(
+            "this is not the latest preparation this client asked for",
+        ));
     }
     let state = match owner.jobs.outcome_for(&params.job_id, call.client)? {
         (JobStatus::Ready, Some(Output::Asset(state)), _) => (**state).clone(),
         (JobStatus::Queued | JobStatus::Running, ..) => {
             return Err(
-                Error::preparation_required("the import is still being prepared")
+                Error::preparation_required("the photograph is still being prepared")
                     .with_preparation(Preparation::Queued(params.job_id.clone())),
             );
         }
         (_, _, Some(error)) => return Err(error.clone()),
-        _ => return Err(Error::validation("this job is not an import")),
+        _ => return Err(Error::validation("this job is not a preparation")),
     };
     let session = owner.sessions.entry(call.client).or_default();
     session.preview.return_current();
     session.touch();
-    owner.latest_import.remove(&call.client);
+    owner.latest_preparation.remove(&call.client);
     Ok(json!({"asset": state, "session": session}))
 }
 
@@ -1979,6 +1940,7 @@ pub(super) fn source_prepare(
         call.client,
         &needs,
     )?;
+    owner.latest_preparation.insert(call.client, id.clone());
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
 }
 
@@ -2608,7 +2570,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 first,
-                SourceWork::file(&fixture(), None).unwrap(),
+                SourceWork::unrun_file(&fixture()).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2617,7 +2579,7 @@ mod tests {
                 .enqueue(
                     &mut jobs,
                     second,
-                    SourceWork::file(&fixture(), None).unwrap(),
+                    SourceWork::unrun_file(&fixture()).unwrap(),
                     Vec::new()
                 )
                 .unwrap(),
@@ -2640,7 +2602,7 @@ mod tests {
                 .enqueue(
                     &mut jobs,
                     first,
-                    SourceWork::file(&fixture(), None).unwrap(),
+                    SourceWork::unrun_file(&fixture()).unwrap(),
                     Vec::new()
                 )
                 .unwrap(),
@@ -2673,7 +2635,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 client,
-                SourceWork::file(&fixture(), None).unwrap(),
+                SourceWork::unrun_file(&fixture()).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2701,7 +2663,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 ClientId(1),
-                SourceWork::file(&path.clone(), None).unwrap(),
+                SourceWork::unrun_file(&path).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2712,7 +2674,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 ClientId(2),
-                SourceWork::file(&path.clone(), None).unwrap(),
+                SourceWork::unrun_file(&path).unwrap(),
                 Vec::new(),
             )
             .unwrap();
