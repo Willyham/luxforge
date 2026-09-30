@@ -972,7 +972,8 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["Handle::from_rgba"],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &[],
+        // The gallery's stand-in photographs, each made once in a `LazyLock` and cloned.
+        allowed: &["crates/luxforge-ui/src/gallery_thumbnails.rs"],
         mode: Match::Whole,
         tests: true,
         once: false,
