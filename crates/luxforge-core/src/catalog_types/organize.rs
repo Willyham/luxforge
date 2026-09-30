@@ -329,6 +329,25 @@ pub struct Event {
     pub undated: bool,
 }
 
+/// One month of `event.list`: how many events and files it holds, and how many are picked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MonthCount {
+    pub month: Month,
+    pub events: u32,
+    pub files: u32,
+    pub picked: u32,
+}
+
+/// What `event.list` answers: the events asked for, newest first, and every month that has any,
+/// newest first, for the sources panel.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventList {
+    pub events: Vec<Event>,
+    pub months: Vec<MonthCount>,
+}
+
 /// The gazetteer the event names come from: the nearest populated place to a position, from data
 /// bundled with Luxforge and never an online lookup (P4). Lane A implements it.
 pub trait PlaceNames {

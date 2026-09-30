@@ -73,11 +73,40 @@ pub struct IndexedFolderState {
     pub listed_ms: Option<i64>,
 }
 
+/// What `index.add-folder` answers: the library change, the folder, and the `index.refresh` job
+/// that lists it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexFolderAnswer {
+    pub change: super::LibraryAnswer,
+    pub folder: IndexedFolderState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<crate::JobId>,
+}
+
 /// What `index.folders` answers.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexFolders {
     pub folders: Vec<IndexedFolderState>,
+}
+
+/// An `index.refresh` job's result: what the listing found against what the index held.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexReport {
+    /// The roots listed.
+    pub roots: Vec<PathBuf>,
+    /// Supported files found.
+    pub files: u32,
+    /// New rows, rows whose signature changed and were read again, rows carried across a move by
+    /// file identity, rows dropped because their file vanished, and files whose header could not
+    /// be read.
+    pub added: u32,
+    pub changed: u32,
+    pub moved: u32,
+    pub removed: u32,
+    pub unreadable: u32,
 }
 
 /// What `index.refresh` lists again: one indexed folder, a card, any folder being browsed, or every

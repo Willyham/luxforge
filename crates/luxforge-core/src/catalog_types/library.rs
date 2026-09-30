@@ -22,6 +22,8 @@ pub const MAX_LIBRARY_BATCH: usize = 50_000;
 pub const MAX_LIBRARY_NAME: usize = 128;
 /// The most changes one `library.journal` page answers.
 pub const MAX_JOURNAL_PAGE: usize = 500;
+/// The most picks one `pick.list` page answers.
+pub const MAX_PICK_PAGE: usize = 5000;
 
 /// A picked file (`picks`): kept by path and signature with who picked it and when, until it is
 /// developed or cleared, so a culling session survives a crash or a restart. A picked file whose
@@ -641,6 +643,58 @@ pub struct BatchReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub written: Vec<PathBuf>,
     pub skipped: Vec<BatchSkip>,
+}
+
+/// What `pick.list` answers: picks in path order after the cursor, and the cursor that continues
+/// it when the page is full.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PickPage {
+    pub picks: Vec<Pick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_after: Option<PathBuf>,
+}
+
+/// What `folder.create` answers: the change and the folder it made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderAnswer {
+    pub change: LibraryAnswer,
+    pub folder: CatalogFolder,
+}
+
+/// What `collection.create` and `collection.create-smart` answer: the change and the collection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionAnswer {
+    pub change: LibraryAnswer,
+    pub collection: Collection,
+}
+
+/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted. It is
+/// not a library change: nothing it deletes can be restored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyRemovedAnswer {
+    pub outcome: MutationOutcome,
+    pub deleted: u32,
+    pub deduplicated: bool,
+}
+
+/// A `source.check` job's result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AvailabilityReport {
+    pub rows: Vec<AvailabilityRow>,
+}
+
+/// How `source.missing` groups photographs: by the folder on disk each was developed from, the one
+/// grouping there is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MissingGrouping {
+    #[default]
+    SourceFolder,
 }
 
 /// What a method that starts a job answers at once: the job to read with `job.read` and cancel

@@ -739,6 +739,17 @@ pub(super) fn entry_from(
     Ok(entry)
 }
 
+// The catalog lanes' additions to the asset rows and the history they read and write, one marked
+// section per lane. The format-12 tables' own rows are written in `catalog_rows.rs`.
+// ── catalog lane A: files ──
+// ── end lane A ──
+// ── catalog lane B: previews ──
+// ── end lane B ──
+// ── catalog lane C: catalog ──
+// ── end lane C ──
+// ── catalog lane D: views ──
+// ── end lane D ──
+
 #[cfg(test)]
 mod tests {
     use super::*;
