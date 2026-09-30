@@ -559,7 +559,7 @@ impl Keeper {
             kind: RootKind::Indexed,
             volume_id: Some(self.roots[index].volume_id.clone()),
         };
-        // What the unit wrote so far is committed before the listing reconciles against it.
+        // The job commits what the unit wrote so far before the listing reconciles against it.
         run.stamp = next_stamp(last_stamp);
         let listed = run.own_job(&root, subtree, |run| {
             if whole {
