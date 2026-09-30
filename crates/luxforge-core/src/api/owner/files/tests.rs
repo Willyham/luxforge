@@ -1287,7 +1287,7 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
     let entry = image_mount(&mount);
     assert!(entry.removable, "{entry:?}");
     assert!(entry.uuid.is_some(), "{entry:?}");
-    let table = Arc::new(Mutex::new(vec![entry]));
+    let table = Arc::new(Mutex::new(vec![entry.clone()]));
     tell(
         owner,
         FilesMessage::Mounts(MountSource::Fixed(table.clone())),
@@ -1320,9 +1320,22 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
         "listing changed nothing on the card"
     );
     let ids: Vec<i64> = fixture.rows().into_iter().map(|(_, id, _)| id).collect();
+    let card_root = |fixture: &Fixture| {
+        database::root(
+            &database::connect_at(&fixture.index_dir()).unwrap(),
+            &mount.join("DCIM"),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let listed = card_root(&fixture).listed_ms;
 
     detach();
     table.lock().unwrap().clear();
+    // The watcher reports it taken out: its roots go offline.
+    wait_for("the card's root to go offline", || {
+        card_root(&fixture).offline.then_some(())
+    });
     let (code, _) = refused(
         owner,
         client,
@@ -1343,8 +1356,21 @@ fn a_disk_image_card_goes_offline_and_comes_back() {
     );
     assert_eq!(fixture.rows().len(), 2, "its rows stay");
 
+    // Put back, the watcher reports it mounted: the survey that asks for finds its DCIM folder
+    // (in the table before the image mounts), and the card is listed again with no client
+    // asking, reading nothing, every row kept.
+    table.lock().unwrap().push(entry.clone());
     attach();
-    table.lock().unwrap().push(image_mount(&mount));
+    wait_for("the card to be listed again by itself", || {
+        let root = card_root(&fixture);
+        (!root.offline && root.listed_ms > listed).then_some(())
+    });
+    let cards = ok(owner, client, "card.list", json!({}))["cards"].clone();
+    assert_eq!(cards[0]["files"], 2, "{cards}");
+    wait_for("the folder on it to be watched again", || {
+        let folders = ok(owner, client, "index.folders", json!({}))["folders"].clone();
+        (folders[0]["watching"] == true).then_some(())
+    });
     let report = refresh(
         owner,
         client,

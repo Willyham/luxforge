@@ -545,7 +545,7 @@ impl Coordinator {
                     Ok(Input::Wake) | Err(_) => break,
                 }
             }
-            keeper.drop_gone(&mut run, &mounts, false)?;
+            keeper.drop_gone(&mut run, &mounts)?;
             run.settle()?;
             keeper.record_cursors(&mut run);
             run.batch.commit(run.connection, &config.post)
