@@ -61,6 +61,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered module capabilities: settings, a profile, its key, a download grant and install through `api` steps, the photo-data consent denied then allowed, a task with progress, Apply and a refused task through the desktop, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 reopened with its grip swung to −12°, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | Native masking interaction regressions: unplaced creation, selected/armed targets, live and committed brush flow/feather, deliberate hiding and analytic live-gradient coverage under rotated crop at Fit/100% | `cargo xtask smoke --scenario mask-interactions --output NEW_DIR` |
+| Rendered Select workspace over a catalog the run generates (`generate-catalog --files 2000 --assets 3000`, seed 1, with no image files, so cells are placeholders): `G`, an event opened from the sources panel with its grid grouped by day, camera and moment, the first cell made active and the selection extended with the arrow keys, the Group chip set to Day, an agent's `pick.set` through a second client read again through the event sync, and back to Develop; each frame's `select` block checked against the core's own `browse.view` answers and the owner's `session.state` for the desktop, and the catalog left behind read again for the agent's pick | `cargo xtask smoke --scenario select --output NEW_DIR` |
 | The capability framework's own costs (registration, capability reads, a task, artifact publish, cancellation), release only | `cargo test --release --locked -p luxforge-core --lib capability_timing -- --ignored --nocapture` |
 | How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture cancelled` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
@@ -288,7 +289,7 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and all 37 smoke scenarios a checkout can open, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `select`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -770,7 +771,25 @@ Each step is an object with exactly one key.
   at. At Fit there is no scrollable and the step fails.
 - `key` (`{"key": "w"}`, one letter or digit, or `"Escape"`) presses one key with no text field
   focused, through the desktop's own key table: a key that enters a canvas mode is captured once the
-  session follows, any other bound key on the next frame, and a key the table does not bind fails.
+  session follows, a Select key (`g` among them) once Select has nothing in flight, any other bound
+  key on the next frame, and a key the table does not bind fails.
+- `select` is one gesture on the Select workspace, sent through the message its control or the key
+  table sends: `{"switch": "select"}` or `"develop"` presses the title bar's workspace switch;
+  `{"source": "Konstanz · 12–13 Sep"}` presses the source row showing that name, or that name and its
+  dates; `{"arrow": {"direction": "right", "extend": true}}` presses an arrow key through the key
+  table, Shift held when `extend`; `{"choose": {"menu": "group", "item": "Day"}}` opens the Camera,
+  Kind or Group chip's menu or the sort's (`camera`, `kind`, `group`, `sort`) and chooses the item
+  with that label, or presses a pick segment (`pick`); `{"click": {"position": 5, "shift": true}}`
+  presses the grid cell showing that view position, with Shift or Command (`command`); and
+  `{"agent_pick": {"positions": [5]}}` has the run's second client (as for `agent`, actor
+  `evidence-agent`) pick the files at those positions with `pick.set` (`"picked": false` clears
+  them). Each is captured once nothing Select asked the owner for is in flight — the events, the
+  view, its facets, a staleness check and the rows near the screen — and an `agent_pick` only once
+  the desktop has evaluated its view again, which it learns of through its own event sync; switching
+  to Develop is captured on the next frame. A settled step records `owner_browse`, the owner's
+  `session.state` `browse` block for the desktop's client, so a frame's selection can be checked
+  against what the owner holds. A source row that opens the native folder dialog, a menu item that
+  does not exist and a position whose row is not read fail the step.
 - `wait` (`{"ms": N}`, 1 to 10000) asks nothing of the editor for at least that long and then
   captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, so the frame
   shows what repeated rebuilds with nothing new to show did.

@@ -437,6 +437,7 @@ impl Editor {
         self.palette.open = false;
         self.view_state.menu = None;
         self.select.state.shown = Shown::Select;
+        self.status.text = "Showing Select".into();
         if std::mem::take(&mut self.select.check_on_show) {
             self.select.check.offer(());
         }
@@ -828,7 +829,7 @@ impl Editor {
                 json!({"kind": "several", "count": count, "active": active})
             }
         };
-        let sources: Vec<Value> = model
+        let listed: Vec<Value> = model
             .sources
             .months
             .iter()
@@ -871,7 +872,7 @@ impl Editor {
             },
             "labels": state.content.labels.len(),
             "events": state.events.as_ref().map(|list| list.events.len()),
-            "sources": sources,
+            "listed": listed,
             "facets": facets,
             "rows": state.rows.len(),
             "row_blocks": state.rows.blocks(),

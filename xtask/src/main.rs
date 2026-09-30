@@ -40,6 +40,7 @@ mod raw_editor;
 mod raw_panel_smoke;
 mod repository;
 mod scenario;
+mod select_smoke;
 mod smoke;
 mod stats;
 mod verify;
