@@ -903,3 +903,47 @@ impl Step {
         }
     }
 }
+
+#[test]
+fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
+    let steps = round_trip(json!([
+        {"select": {"switch": "select"}},
+        {"select": {"source": "Konstanz \u{b7} 12\u{2013}13 Sep"}},
+        {"select": {"arrow": {"direction": "right"}}},
+        {"select": {"arrow": {"direction": "up", "extend": true}}},
+        {"select": {"choose": {"menu": "group", "item": "Day"}}},
+        {"select": {"choose": {"menu": "pick", "item": "Picked"}}},
+        {"select": {"click": {"position": 5, "shift": true}}},
+        {"select": {"click": {"position": 0, "command": true}}},
+        {"select": {"agent_pick": {"positions": [5, 6]}}},
+        {"select": {"agent_pick": {"positions": [5], "picked": false}}},
+        {"select": {"switch": "develop"}},
+    ]));
+    assert_eq!(
+        steps[2],
+        Step::Select(SelectStep::Arrow {
+            direction: ArrowKey::Right,
+            extend: false
+        })
+    );
+    assert_eq!(
+        steps[8],
+        Step::Select(SelectStep::AgentPick {
+            positions: vec![5, 6],
+            picked: true
+        })
+    );
+    refused(json!([{"select": {"source": " "}}]), "select source");
+    refused(
+        json!([{"select": {"agent_pick": {"positions": []}}}]),
+        "1 to 64 positions",
+    );
+    refused(
+        json!([{"select": {"choose": {"menu": "lens", "item": "x"}}}]),
+        "unknown variant `lens`",
+    );
+    refused(
+        json!([{"select": {"switch": "library"}}]),
+        "unknown variant",
+    );
+}

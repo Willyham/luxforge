@@ -96,6 +96,8 @@ pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
 pub(crate) mod select;
 #[cfg(test)]
+mod select_owner_tests;
+#[cfg(test)]
 mod select_tests;
 // ── end lane D ──
 

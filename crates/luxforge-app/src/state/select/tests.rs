@@ -767,8 +767,10 @@ fn the_select_rows_window_reads_near_the_screen_within_its_bound() {
     assert_eq!(rows.next_request(4000..4150), None);
     // An older revision's rows are no answer.
     assert!(!rows.answered(2, 4000, block(4000, 200), 4000..4150));
-    assert_eq!(rows.in_flight(), Some(20));
+    assert_eq!(rows.in_flight(), Some(request));
+    assert!(rows.wants(4000..4150));
     assert!(rows.answered(3, 4000, block(4000, 200), 4000..4150));
+    assert!(!rows.wants(4000..4150), "the block is held");
     assert_eq!(rows.row(4123).unwrap().position, 4123);
     assert!(rows.row(3999).is_none());
     assert_eq!(rows.next_request(4000..4150), None, "the block is held");
@@ -1108,4 +1110,35 @@ fn select_bursts_and_cell_widths() {
     assert_eq!(state.catalog_cell_width, CELL_WIDTH_MIN);
     assert_eq!(state.files_cell_width, CELL_WIDTH_MAX);
     assert_eq!(clamp_cell_width(f32::NAN), FILES_CELL_WIDTH);
+}
+
+/// An event's row and title name it without the dates its name ends with, which they show beside
+/// it, and an Undated event by its folder under the Undated heading; any other name stays whole.
+#[test]
+fn a_select_event_is_labelled_without_the_dates_it_is_shown_with() {
+    let named = |name: &str, first: Option<LocalDay>, last: Option<LocalDay>| Event {
+        name: name.into(),
+        first_day: first,
+        last_day: last,
+        undated: first.is_none(),
+        ..listed(name, Vec::new(), 1, 0, 0)
+    };
+    let (twelve, thirteen) = (Some(day(2026, 9, 12)), Some(day(2026, 9, 13)));
+    assert_eq!(
+        event_label(&named("Konstanz \u{b7} 12\u{2013}13 Sep", twelve, thirteen)),
+        "Konstanz"
+    );
+    assert_eq!(
+        event_label(&named("Lake \u{b7} 12 Sep", twelve, twelve)),
+        "Lake"
+    );
+    assert_eq!(
+        event_label(&named("Undated \u{b7} From Anna", None, None)),
+        "From Anna"
+    );
+    assert_eq!(
+        event_label(&named("Konstanz \u{b7} 4 Sep", twelve, thirteen)),
+        "Konstanz \u{b7} 4 Sep",
+        "a name whose dates are not the event's own is kept whole"
+    );
 }

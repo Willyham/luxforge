@@ -180,6 +180,8 @@ pub enum Step {
     /// The title bar's Export menu opened, or one export written into the run's evidence
     /// directory through the same chain the menu starts, bypassing only the save dialog.
     Export(ExportStep),
+    /// One gesture on the Select workspace, or an agent's pick beside it.
+    Select(SelectStep),
 }
 
 impl Step {
@@ -311,6 +313,7 @@ impl Step {
             Self::Capability(step) => step.validate(),
             Self::Mask(step) => step.validate(),
             Self::Export(step) => step.validate(),
+            Self::Select(step) => step.validate(),
         }
     }
 }
@@ -1638,6 +1641,97 @@ impl MaskRow {
             RowStep::Mode(mode) => text(mode, "mask row mode"),
             RowStep::DeleteStroke(stroke) => stroke.validate(),
             _ => Ok(()),
+        }
+    }
+}
+
+/// The most view positions one `agent_pick` names.
+pub const MAX_AGENT_PICKS: usize = 64;
+
+/// One gesture on the Select workspace, each sent through the message the control or the key table
+/// sends, and captured once nothing Select asked the owner for is still in flight.
+///
+/// `{"switch": "select"}` presses the title bar's workspace switch. `{"source": "Konstanz · 12–13
+/// Sep"}` presses the source row showing that name, or that name and its dates. `{"arrow":
+/// {"direction": "right", "extend": true}}` presses an arrow key through the key table, Shift held
+/// when `extend`. `{"choose": {"menu": "group", "item": "Day"}}` opens a chip's or the sort's menu
+/// and chooses the item labelled so, or presses a pick segment (`pick`). `{"click": {"position":
+/// 5, "shift": true}}` presses the grid cell showing that view position. `{"agent_pick":
+/// {"positions": [5]}}` has a second client registered on the same owner pick the files at those
+/// view positions with `pick.set` (`"picked": false` clears them); the step waits until the
+/// desktop has evaluated its view again, which it learns of only through its own event sync.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SelectStep {
+    Switch(SelectWorkspace),
+    Source(String),
+    Arrow {
+        direction: ArrowKey,
+        #[serde(default, skip_serializing_if = "is_false")]
+        extend: bool,
+    },
+    Choose {
+        menu: SelectMenu,
+        item: String,
+    },
+    Click {
+        position: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        shift: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        command: bool,
+    },
+    AgentPick {
+        positions: Vec<u32>,
+        #[serde(default = "yes", skip_serializing_if = "is_true")]
+        picked: bool,
+    },
+}
+
+/// A workspace the switch shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectWorkspace {
+    Select,
+    Develop,
+}
+
+/// An arrow key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowKey {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// What a `choose` step chooses from: the pick segments, or the Camera, Kind or Group chip's menu,
+/// or the floating strip's sort.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectMenu {
+    Pick,
+    Camera,
+    Kind,
+    Group,
+    Sort,
+}
+
+impl SelectStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Source(name) => text(name, "select source"),
+            Self::Choose { item, .. } => text(item, "select choose item"),
+            Self::AgentPick { positions, .. } => {
+                if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {
+                    return Err(format!(
+                        "select agent_pick names 1 to {MAX_AGENT_PICKS} positions"
+                    ));
+                }
+                Ok(())
+            }
+            Self::Switch(_) | Self::Arrow { .. } | Self::Click { .. } => Ok(()),
         }
     }
 }

@@ -3,6 +3,9 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+// ── catalog lane D: views and desktop ──
+mod select;
+// ── end lane D ──
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -430,6 +433,11 @@ pub(crate) enum Settle {
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
+    // ── catalog lane D: views and desktop ──
+    /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
+    /// the view has been evaluated again.
+    Select,
+    // ── end lane D ──
 }
 
 impl Settle {
@@ -453,6 +461,7 @@ impl Settle {
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
+            Self::Select => "select",
         }
     }
 
@@ -564,6 +573,7 @@ impl Editor {
         if self.document.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -611,6 +621,7 @@ impl Editor {
         if self.document.state.is_none()
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -871,6 +882,9 @@ impl Editor {
                 return self.host_answered(result.map(|answer| *answer));
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
+            // ── catalog lane D: views and desktop ──
+            EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
+            // ── end lane D ──
         }
         Task::none()
     }
@@ -941,6 +955,9 @@ impl Editor {
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Export(step) => self.export_step(step),
+            // ── catalog lane D: views and desktop ──
+            Step::Select(step) => self.select_step(step),
+            // ── end lane D ──
         }
     }
 
@@ -3151,6 +3168,19 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // ── catalog lane D: views and desktop ──
+            // A Select key waits for what it asked the owner for; a refused switch has nothing to
+            // wait for and is captured with its reason.
+            Some(Message::Select(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                if self.select_shown() {
+                    self.await_step(Settle::Select);
+                } else {
+                    self.capture_next_frame();
+                }
+                task
+            }
+            // ── end lane D ──
             Some(_) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.capture_next_frame();
@@ -3693,6 +3723,9 @@ impl Editor {
                 }
                 self.settle_step(Settle::Export, by);
             }
+            // ── catalog lane D: views and desktop ──
+            Outcome::SelectSettled => self.select_settled(by),
+            // ── end lane D ──
         }
     }
 

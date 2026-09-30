@@ -30,16 +30,17 @@ use crate::app::{
         Message,
         select::{SelectMessage, Step},
     },
+    outcome::Outcome,
     tasks::{call, owner_task},
 };
 use crate::coalesce::Coalesce;
 use crate::state::select::{
-    self as model, Block, GridContent, SelectGesture, SelectPanel, SelectState, SelectionModel,
-    Shown,
+    self as model, Block, GridContent, RowsRequest, SelectGesture, SelectPanel, SelectState,
+    SelectionModel, Shown,
 };
 use iced::{Size, Task};
 use luxforge_core::{
-    ClientSession,
+    ClientId, ClientSession, OwnerHandle,
     catalog_types::{EventList, Facets, ViewQuery, ViewRows, ViewSummary},
 };
 use luxforge_ui::{
@@ -74,6 +75,12 @@ pub(crate) struct Select {
     pub(crate) check: Coalesce<()>,
     /// The owner woke the desktop while Develop was shown, so showing Select checks once.
     pub(crate) check_on_show: bool,
+    /// The evaluation whose facets have answered, successfully or not.
+    pub(crate) facets_answered: u64,
+    /// An evidence step that waits for the view to be evaluated again: the revision it must pass.
+    pub(crate) evidence_after: Option<u64>,
+    /// The evaluation in flight reads a stale view again, which the status bar says when it lands.
+    pub(crate) rereading: bool,
 }
 
 impl Default for Select {
@@ -94,6 +101,9 @@ impl Default for Select {
             events_read: false,
             check: Coalesce::default(),
             check_on_show: false,
+            facets_answered: 0,
+            evidence_after: None,
+            rereading: false,
         }
     }
 }
@@ -161,6 +171,67 @@ fn direction(step: Step) -> GridDirection {
 
 fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
+}
+
+// -- The owner calls, each the body of one owner task (or, for `browse.select`, the one synchronous
+// call), so a test runs exactly what a task would against a real owner. --
+
+/// `event.list` for the sources panel's search text.
+pub(crate) fn events_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    search: &str,
+) -> Result<EventList, String> {
+    let (list, _) = call(owner, client, "event.list", model::events_params(search))?;
+    parse(list)
+}
+
+/// `browse.view` with the whole query, then `session.state` for the selection the owner carried
+/// over to the new evaluation.
+pub(crate) fn evaluate_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    query: &ViewQuery,
+) -> Result<Box<(ViewSummary, ClientSession)>, String> {
+    let (summary, _) = call(owner, client, "browse.view", model::view_params(query))?;
+    let summary = parse::<ViewSummary>(summary)?;
+    Ok(Box::new((summary, session_now(owner, client)?)))
+}
+
+/// `browse.facets` for the chips' menus.
+pub(crate) fn facets_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    query: &ViewQuery,
+) -> Result<Facets, String> {
+    let (counts, _) = call(owner, client, "browse.facets", model::facets_params(query))?;
+    parse(counts)
+}
+
+/// `browse.rows` for one block.
+pub(crate) fn rows_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    request: &RowsRequest,
+) -> Result<ViewRows, String> {
+    let (rows, _) = call(owner, client, "browse.rows", model::rows_params(request))?;
+    parse(rows)
+}
+
+/// `session.state`: the session, whose `browse` says whether the view went stale.
+pub(crate) fn session_now(owner: &OwnerHandle, client: ClientId) -> Result<ClientSession, String> {
+    let (session, _) = call(owner, client, "session.state", json!({}))?;
+    parse(session)
+}
+
+/// `browse.select`, answered with the session.
+pub(crate) fn select_call(
+    owner: &OwnerHandle,
+    client: ClientId,
+    params: Value,
+) -> Result<ClientSession, String> {
+    let (session, _) = call(owner, client, "browse.select", params)?;
+    parse(session)
 }
 
 impl Editor {
@@ -231,6 +302,7 @@ impl Editor {
                 if serial == self.select.serial {
                     // A failure leaves the menus saying the counts are unavailable.
                     self.select.state.facets = result.ok();
+                    self.select.facets_answered = serial;
                 }
             }
             SelectMessage::Rows {
@@ -308,6 +380,20 @@ impl Editor {
         Task::none()
     }
 
+    /// Nothing Select asked the owner for is in flight or still wanted: the events, the view and
+    /// its facets, a staleness check and the rows near the screen have all answered.
+    pub(crate) fn select_quiet(&self) -> bool {
+        let select = &self.select;
+        !select.state.loading
+            && !select.events.in_flight()
+            && select.events.pending().is_none()
+            && !select.check.in_flight()
+            && select.check.pending().is_none()
+            && (select.state.query.is_none() || select.facets_answered == select.serial)
+            && select.state.rows.in_flight().is_none()
+            && (select.state.summary.is_none() || !select.state.rows.wants(self.wanted_items()))
+    }
+
     /// The Select workspace is on screen.
     pub(crate) fn select_shown(&self) -> bool {
         self.select.state.shown == Shown::Select
@@ -372,10 +458,7 @@ impl Editor {
         };
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (list, _) = call(&owner, client, "event.list", model::events_params(&search))?;
-                parse::<EventList>(list)
-            },
+            move || events_now(&owner, client, &search),
             |result| Message::Select(SelectMessage::Events(result)),
         )
     }
@@ -392,28 +475,20 @@ impl Editor {
             state.facets = None;
         }
         self.select.serial += 1;
+        self.select.rereading = false;
         let serial = self.select.serial;
-        let view = model::view_params(&query);
-        let facets = model::facets_params(&query);
-        state.query = Some(query);
+        state.query = Some(query.clone());
         state.loading = true;
         state.view_error = None;
         let (owner, client) = (self.owner.clone(), self.client);
+        let counted_query = query.clone();
         let evaluated = owner_task(
-            move || {
-                let (summary, _) = call(&owner, client, "browse.view", view)?;
-                let summary = parse::<ViewSummary>(summary)?;
-                let (session, _) = call(&owner, client, "session.state", json!({}))?;
-                Ok(Box::new((summary, parse::<ClientSession>(session)?)))
-            },
+            move || evaluate_now(&owner, client, &query),
             move |result| Message::Select(SelectMessage::Viewed { serial, result }),
         );
         let owner = self.owner.clone();
         let counted = owner_task(
-            move || {
-                let (counts, _) = call(&owner, client, "browse.facets", facets)?;
-                parse::<Facets>(counts)
-            },
+            move || facets_now(&owner, client, &counted_query),
             move |result| Message::Select(SelectMessage::Faceted { serial, result }),
         );
         Task::batch([evaluated, counted])
@@ -449,8 +524,15 @@ impl Editor {
                 }
                 state.rows.reset(summary.revision, summary.count);
                 state.query = Some(summary.query.clone());
+                let count = model::thousands(summary.count);
                 state.summary = Some(summary);
                 state.view_error = None;
+                let name = model::title(state).name;
+                self.status.text = if std::mem::take(&mut self.select.rereading) {
+                    format!("{name} changed elsewhere and was read again \u{b7} {count} in view")
+                } else {
+                    format!("{name} \u{b7} {count} in view")
+                };
                 self.rebuild_grid();
                 if same_source {
                     self.select.scroll = self.near_active(self.select.scroll);
@@ -536,9 +618,7 @@ impl Editor {
             return false;
         };
         let params = model::select_params(gesture, Some(revision));
-        match call(&self.owner, self.client, "browse.select", params)
-            .and_then(|(session, _)| parse::<ClientSession>(session))
-        {
+        match select_call(&self.owner, self.client, params) {
             Ok(session) => {
                 self.adopt(session);
                 true
@@ -674,6 +754,7 @@ impl Editor {
                 .map(|summary| summary.query.clone())
         {
             tasks.push(self.evaluate(query));
+            self.select.rereading = true;
         }
         Task::batch(tasks)
     }
@@ -689,10 +770,7 @@ impl Editor {
         };
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (rows, _) = call(&owner, client, "browse.rows", model::rows_params(&request))?;
-                parse::<ViewRows>(rows)
-            },
+            move || rows_now(&owner, client, &request),
             move |result| {
                 Message::Select(SelectMessage::Rows {
                     revision: request.revision,
@@ -710,18 +788,17 @@ impl Editor {
         }
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (session, _) = call(&owner, client, "session.state", json!({}))?;
-                parse::<ClientSession>(session).map(Box::new)
-            },
+            move || session_now(&owner, client).map(Box::new),
             |result| Message::Select(SelectMessage::Checked(result)),
         )
     }
 
-    /// What the Select workspace shows, for correlated evidence. No path is recorded: a folder
-    /// source is named by its kind.
+    /// What the Select workspace shows, for correlated evidence: what it asked for and what the
+    /// owner answered, what the grid laid out, the session's selection and what each region says.
+    /// No path is recorded: a folder source is named by its kind.
     pub(crate) fn select_summary(&self) -> Value {
         let state = &self.select.state;
+        let model = &self.workspace.select;
         let source = state.query.as_ref().map(|query| {
             let mut source = serde_json::to_value(&query.source).unwrap_or_default();
             if let Some(object) = source.as_object_mut() {
@@ -730,6 +807,45 @@ impl Editor {
             source
         });
         let summary = state.summary.as_ref();
+        let blocks = |kind: fn(&Block) -> bool| {
+            state
+                .content
+                .blocks
+                .iter()
+                .filter(|block| kind(block))
+                .count()
+        };
+        let info = match &model.info {
+            model::InfoModel::Nothing => json!({"kind": "nothing"}),
+            model::InfoModel::Reading => json!({"kind": "reading"}),
+            model::InfoModel::One(item) => json!({
+                "kind": "one",
+                "name": item.name,
+                "moment": item.moment,
+                "metadata": item.metadata.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+            }),
+            model::InfoModel::Several { count, active } => {
+                json!({"kind": "several", "count": count, "active": active})
+            }
+        };
+        let sources: Vec<Value> = model
+            .sources
+            .months
+            .iter()
+            .map(|month| {
+                json!({
+                    "month": month.label,
+                    "events": month.rows.iter().map(|row| &row.name).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let facets = state.facets.as_ref().map(|facets| {
+            facets
+                .counts
+                .iter()
+                .map(|(facet, values)| (facet.as_str().to_owned(), json!(values.len())))
+                .collect::<serde_json::Map<_, _>>()
+        });
         json!({
             "shown": state.shown.as_str(),
             "source": source,
@@ -737,29 +853,59 @@ impl Editor {
             "sort": state.query.as_ref().map(|query| query.sort),
             "grouping": state.query.as_ref().map(|query| query.grouping),
             "loading": state.loading,
+            "quiet": self.select_quiet(),
             "error": state.view_error,
             "revision": summary.map(|summary| summary.revision),
             "count": summary.map(|summary| summary.count),
             "picked": summary.map(|summary| summary.picked),
+            "groups": summary.map(|summary| json!({
+                "days": summary.groups.days.len(),
+                "cameras": summary.groups.cameras.len(),
+                "moments": summary.groups.moments.len(),
+            })),
+            "blocks": {
+                "days": blocks(|block| matches!(block, Block::Day { .. })),
+                "cameras": blocks(|block| matches!(block, Block::Camera { .. })),
+                "moments": blocks(|block| matches!(block, Block::Moment { .. })),
+                "singles": blocks(|block| matches!(block, Block::Singles(_))),
+            },
+            "labels": state.content.labels.len(),
             "events": state.events.as_ref().map(|list| list.events.len()),
+            "sources": sources,
+            "facets": facets,
             "rows": state.rows.len(),
             "row_blocks": state.rows.blocks(),
             "cells": self.select.layout.cell_count(),
+            "items": self.select.layout.item_count(),
             "content_height": self.select.layout.height(),
             "scroll": self.select.scroll,
             "viewport": [self.select.viewport.width, self.select.viewport.height],
             "selection": self.session.browse.selection,
             "stale": self.session.browse.stale,
+            "session_revision": self.session.browse.revision,
             "collapsed": state.collapsed,
             "sources_panel": state.sources_panel,
             "info_panel": state.info_panel,
             "cell_width": state.cell_width(),
+            "title": {
+                "name": model.title.name,
+                "summary": model.title.summary,
+                "picks": model.title.picks,
+            },
+            "status_line": model.status.line,
+            "note": model.note,
+            "info": info,
         })
     }
 }
 
 /// After every message: read the rows near the screen and start a staleness check a wake asked for.
+/// An evidence run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
-    Task::batch([rows, editor.start_check()])
+    let check = editor.start_check();
+    if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
+        editor.outcome(Outcome::SelectSettled);
+    }
+    Task::batch([rows, check])
 }
