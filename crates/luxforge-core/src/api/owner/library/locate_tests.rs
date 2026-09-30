@@ -822,6 +822,59 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
     assert_eq!(undone["outcome"], "no-op");
 }
 
+/// A volume mounted again after another disk may be given another device number, which renumbers
+/// the file identity of every file on it: a check finds each photograph's own file still at its
+/// locator, confirms it by its fingerprint and records its identity now, as one change by the
+/// system, so the photograph is available again without a Locate.
+#[test]
+fn a_check_locates_an_original_whose_file_identity_was_renumbered() {
+    let harness = Harness::new("renumbered");
+    let path = harness.copy(
+        "orientation-1.jpg",
+        &harness.dir.join("Photos").join("one.jpg"),
+    );
+    let asset = harness.import(&path);
+    let catalog = harness.catalog.clone();
+    let recorded = std::cell::RefCell::new(String::new());
+    let harness = harness.restart(|_| {
+        let connection = rusqlite::Connection::open(&catalog).unwrap();
+        let identity: String = connection
+            .query_row(
+                "SELECT file_identity FROM assets WHERE id = ?1",
+                [asset.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let inode = identity.rsplit(':').next().unwrap().to_owned();
+        connection
+            .execute(
+                "UPDATE assets SET file_identity = ?1 WHERE id = ?2",
+                [format!("unix:1:{inode}"), asset.to_string()],
+            )
+            .unwrap();
+        *recorded.borrow_mut() = identity;
+    });
+    let sequence = harness.sequence();
+    assert_eq!(
+        harness.check(&[&asset]),
+        json!({asset.as_str(): "available"})
+    );
+    assert_eq!(locator(&harness.state(&asset)), path);
+    let detail = harness.last_change();
+    assert_eq!(
+        (&detail["change"]["actor"], &detail["change"]["label"]),
+        (&json!("system"), &json!("Found one.jpg again"))
+    );
+    assert_eq!(
+        detail["rows"][0]["after"]["file_identity"],
+        json!(*recorded.borrow()),
+        "the identity it has now"
+    );
+    assert_eq!(harness.events_after(sequence).len(), 1);
+    // The photograph exports as before.
+    assert!(!harness.export(&asset, "after.jpg").is_empty());
+}
+
 /// Availability across a disk image, on the Mac: a detached image makes every photograph on it
 /// offline with one look, Develop and export refuse naming the volume, a Locate onto the image is
 /// refused when the image goes while it verifies, and re-attached, everything is available again
@@ -829,70 +882,7 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_detached_disk_image_makes_its_photographs_offline() {
-    use std::process::Command;
-
-    /// A 16 MB HFS+ disk image in a scratch directory, mounted at a folder beside it, never
-    /// shown in the Finder.
-    struct DiskImage {
-        image: PathBuf,
-        mount: PathBuf,
-        attached: bool,
-    }
-
-    impl DiskImage {
-        fn create(dir: &Path, label: &str) -> Self {
-            let image = dir.join(format!("{label}.dmg"));
-            let status = Command::new("hdiutil")
-                .args([
-                    "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", label,
-                ])
-                .arg(&image)
-                .status()
-                .expect("hdiutil runs; this test needs it");
-            assert!(status.success(), "hdiutil create: {status}");
-            let mount = dir.join(label);
-            fs::create_dir_all(&mount).unwrap();
-            let mut disk = Self {
-                image,
-                mount,
-                attached: false,
-            };
-            disk.attach();
-            disk
-        }
-
-        fn attach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
-                .arg(&self.mount)
-                .arg(&self.image)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil attach: {status}");
-            self.attached = true;
-        }
-
-        fn detach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["detach", "-quiet", "-force"])
-                .arg(&self.mount)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil detach: {status}");
-            self.attached = false;
-        }
-    }
-
-    impl Drop for DiskImage {
-        fn drop(&mut self) {
-            if self.attached {
-                let _ = Command::new("hdiutil")
-                    .args(["detach", "-quiet", "-force"])
-                    .arg(&self.mount)
-                    .status();
-            }
-        }
-    }
+    use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");
     let mut disk = DiskImage::create(&harness.dir, "LuxforgeTest");
