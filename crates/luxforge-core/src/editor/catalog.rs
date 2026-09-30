@@ -746,6 +746,25 @@ pub(super) fn entry_from(
 // ── catalog lane B: previews ──
 // ── end lane B ──
 // ── catalog lane C: catalog ──
+impl EditorService {
+    /// One library change in one catalog transaction ([`write`]): `change` reads and writes
+    /// through the library journal (`crate::library::journal`), and once it commits, each cached
+    /// head of a photograph whose original it moved carries that photograph's row as stored, as a
+    /// relocation's does ([`EntryCache::row_changed`](super::entries::EntryCache::row_changed)).
+    pub(crate) fn library_write(
+        &mut self,
+        change: impl FnOnce(&Transaction<'_>) -> Result<crate::library::journal::Outcome, Error>,
+    ) -> Result<crate::library::journal::Outcome, Error> {
+        let outcome = write(&mut self.connection, change)?;
+        for asset_id in outcome.sources() {
+            if self.entries.borrow().revision(asset_id).is_some() {
+                let head = head_from(&self.connection, asset_id)?;
+                self.entries.borrow_mut().row_changed(head.asset);
+            }
+        }
+        Ok(outcome)
+    }
+}
 // ── end lane C ──
 // ── catalog lane D: views ──
 // ── end lane D ──
