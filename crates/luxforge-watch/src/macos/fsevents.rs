@@ -14,9 +14,9 @@ use crate::{RescanReason, Resume, WatchEvent, WatchRoot, changed, mounts::c_fiel
 use objc2_core_foundation::{CFArray, CFString};
 use objc2_core_services::{
     ConstFSEventStreamRef, FSEventStreamContext, FSEventStreamCreateRelativeToDevice,
-    FSEventStreamInvalidate, FSEventStreamRelease, FSEventStreamSetDispatchQueue,
+    FSEventStreamInvalidate, FSEventStreamRef, FSEventStreamRelease, FSEventStreamSetDispatchQueue,
     FSEventStreamStart, FSEventStreamStop, FSEventsCopyUUIDForDevice, FSEventsGetCurrentEventId,
-    FSEventStreamRef, kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagFullHistory,
+    kFSEventStreamCreateFlagFileEvents, kFSEventStreamCreateFlagFullHistory,
     kFSEventStreamCreateFlagNoDefer, kFSEventStreamCreateFlagWatchRoot,
     kFSEventStreamEventFlagEventIdsWrapped, kFSEventStreamEventFlagHistoryDone,
     kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagRootChanged,
@@ -431,8 +431,16 @@ mod tests {
             &mut caught_up,
             &[
                 (b"Users/me/Pictures/b.jpg", FILE, 106),
-                (b"Users/me/Pictures/a.jpg", kFSEventStreamEventFlagItemRenamed, 103),
-                (b"Users/me/Pictures", kFSEventStreamEventFlagHistoryDone, 106),
+                (
+                    b"Users/me/Pictures/a.jpg",
+                    kFSEventStreamEventFlagItemRenamed,
+                    103,
+                ),
+                (
+                    b"Users/me/Pictures",
+                    kFSEventStreamEventFlagHistoryDone,
+                    106,
+                ),
                 (b"Users/me/Pictures/sub/c.jpg", FILE, 110),
             ],
         );

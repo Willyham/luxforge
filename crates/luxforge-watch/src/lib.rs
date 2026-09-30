@@ -164,7 +164,10 @@ pub enum WatchEvent {
         reason: RescanReason,
     },
     /// The replay of what changed while no watcher ran is over; what follows is live.
-    CaughtUp { root: u64, cursor: Option<Resume> },
+    CaughtUp {
+        root: u64,
+        cursor: Option<Resume>,
+    },
     /// Changes under `subtree` are no longer reported, for the reason given.
     Unwatched {
         root: u64,
@@ -228,6 +231,12 @@ impl Watcher {
         self.platform.remove_root(id);
     }
 }
+
+/// A lane may start its watcher on one thread and keep it on another.
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Watcher>();
+};
 
 /// Where a new root under `path` would resume from if it were added now: read it before the
 /// root's first listing and add the root with it, so what changes during the listing replays.

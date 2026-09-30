@@ -139,7 +139,11 @@ impl Watcher {
 impl Drop for Watcher {
     fn drop(&mut self) {
         self.shared.stopped.store(true, Ordering::SeqCst);
-        let contexts: Vec<_> = self.streams.drain().map(|(_, stream)| stream.stop()).collect();
+        let contexts: Vec<_> = self
+            .streams
+            .drain()
+            .map(|(_, stream)| stream.stop())
+            .collect();
         let disks = self.disks.take().map(disks::Session::stop);
         // No callback runs after this, so the contexts they read can go.
         self.shared.barrier();

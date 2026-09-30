@@ -32,7 +32,12 @@ impl<T: Into<WatchEvent>> Events<T> {
     }
 
     /// Read until `done` holds for what was received about `root`, and answer it.
-    fn until(&mut self, what: &str, root: u64, done: impl Fn(&[WatchEvent]) -> bool) -> Vec<WatchEvent> {
+    fn until(
+        &mut self,
+        what: &str,
+        root: u64,
+        done: impl Fn(&[WatchEvent]) -> bool,
+    ) -> Vec<WatchEvent> {
         wait_until(what, || {
             self.seen.extend(self.receiver.try_iter().map(Into::into));
             done(&about(&self.seen, root))
@@ -131,13 +136,16 @@ fn changes_in_a_watched_folder_arrive_as_paths_under_the_root_as_given() {
         .iter()
         .map(|name| dir.join(name))
         .collect();
-    let seen = events.until("every change", 1, |seen| changed(seen).is_superset(&expected));
+    let seen = events.until("every change", 1, |seen| {
+        changed(seen).is_superset(&expected)
+    });
     assert!(
         changed(&seen).iter().all(|path| path.starts_with(&dir)),
         "{seen:?}"
     );
     assert!(
-        seen.iter().all(|event| matches!(event, WatchEvent::Changed { .. })),
+        seen.iter()
+            .all(|event| matches!(event, WatchEvent::Changed { .. })),
         "nothing but changes: {seen:?}"
     );
     assert!(last_cursor(&seen).is_some(), "live changes carry a cursor");
@@ -188,19 +196,28 @@ fn a_watcher_started_again_replays_what_changed_while_none_ran() {
     watcher.add_root(root(1, &dir, Some(cursor))).unwrap();
     // Changes the service had not yet stored when the stream read its history arrive live, just
     // after the replay; either way each arrives once the root is watched again.
-    let expected: BTreeSet<PathBuf> =
-        ["added.jpg", "kept.jpg", "renamed.jpg", "new name.jpg", "first.jpg"]
-            .iter()
-            .map(|name| dir.join(name))
-            .collect();
+    let expected: BTreeSet<PathBuf> = [
+        "added.jpg",
+        "kept.jpg",
+        "renamed.jpg",
+        "new name.jpg",
+        "first.jpg",
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
     let seen = events.until("the replay", 1, |seen| {
         caught_up(seen).is_some() && changed(seen).is_superset(&expected)
     });
     assert!(
-        !seen.iter().any(|event| matches!(event, WatchEvent::Rescan { .. })),
+        !seen
+            .iter()
+            .any(|event| matches!(event, WatchEvent::Rescan { .. })),
         "a cursor from this history replays: {seen:?}"
     );
-    let resumed = caught_up(&seen).unwrap().expect("a cursor at the end of the replay");
+    let resumed = caught_up(&seen)
+        .unwrap()
+        .expect("a cursor at the end of the replay");
     assert_eq!(resumed.volume, cursor.volume);
     assert!(resumed.event_id >= cursor.event_id);
     let replay = seen
@@ -220,7 +237,9 @@ fn a_watcher_started_again_replays_what_changed_while_none_ran() {
         event_id: cursor.event_id,
     };
     watcher.add_root(root(2, &other, Some(foreign))).unwrap();
-    let seen = events.until("the other root caught up", 2, |seen| caught_up(seen).is_some());
+    let seen = events.until("the other root caught up", 2, |seen| {
+        caught_up(seen).is_some()
+    });
     assert_eq!(
         seen[0],
         WatchEvent::Rescan {
@@ -245,7 +264,11 @@ fn a_new_root_listed_after_reading_its_cursor_replays_what_changed_during_the_li
     let seen = events.until("the replay", 1, |seen| {
         caught_up(seen).is_some() && changed(seen).contains(&dir.join("during.jpg"))
     });
-    assert!(!seen.iter().any(|event| matches!(event, WatchEvent::Rescan { .. })));
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, WatchEvent::Rescan { .. }))
+    );
 }
 
 /// Every event the watcher tried to send to [`Probe`]'s channel, delivered or refused, since the
@@ -308,7 +331,13 @@ fn a_full_channel_becomes_a_rescan_of_the_root_once_there_is_room() {
     };
     assert_eq!(seen[0], overflow, "{seen:?}");
     assert!(
-        matches!(seen.last(), Some(WatchEvent::CaughtUp { cursor: Some(_), .. })),
+        matches!(
+            seen.last(),
+            Some(WatchEvent::CaughtUp {
+                cursor: Some(_),
+                ..
+            })
+        ),
         "{seen:?}"
     );
     // Once it is paid, changes are sent as they come.
@@ -433,9 +462,9 @@ fn a_disk_image_mounted_and_unmounted_is_reported() {
     ]);
     wait_until("the mount", || {
         events.seen.extend(events.receiver.try_iter());
-        volumes(&events.seen)
-            .iter()
-            .any(|volume| matches!(volume, VolumeEvent::Mounted { mount: m } if m.mount_point == mount))
+        volumes(&events.seen).iter().any(
+            |volume| matches!(volume, VolumeEvent::Mounted { mount: m } if m.mount_point == mount),
+        )
     });
     let mounted = volumes(&events.seen)
         .into_iter()
@@ -445,7 +474,10 @@ fn a_disk_image_mounted_and_unmounted_is_reported() {
         })
         .unwrap();
     assert_eq!(mounted.name.as_deref(), Some(name.as_str()), "{mounted:?}");
-    assert!(mounted.removable && mounted.local && mounted.uuid.is_some(), "{mounted:?}");
+    assert!(
+        mounted.removable && mounted.local && mounted.uuid.is_some(),
+        "{mounted:?}"
+    );
     hdiutil(&["detach".as_ref(), mount.as_os_str()]);
     wait_until("the unmount", || {
         events.seen.extend(events.receiver.try_iter());

@@ -61,7 +61,8 @@ pub(crate) fn parse(buffer: &[u8]) -> Vec<Event<'_>> {
     let mut events = Vec::new();
     let mut rest = buffer;
     while rest.len() >= HEADER {
-        let word = |at: usize| u32::from_ne_bytes([rest[at], rest[at + 1], rest[at + 2], rest[at + 3]]);
+        let word =
+            |at: usize| u32::from_ne_bytes([rest[at], rest[at + 1], rest[at + 2], rest[at + 3]]);
         let (wd, mask, length) = (word(0) as i32, word(4), word(12) as usize);
         let Some(name) = rest.get(HEADER..HEADER + length) else {
             break;
@@ -119,11 +120,16 @@ impl Tree {
     /// Watch `path` and every folder under it, before anything lists it. A limit reached or an
     /// error on the root refuses the root and leaves nothing watched for it; a folder under it that
     /// vanished or cannot be read is skipped, as the listing will skip it.
-    pub(crate) fn add_root(&mut self, kernel: &mut impl Kernel, id: u64, path: &Path) -> io::Result<()> {
+    pub(crate) fn add_root(
+        &mut self,
+        kernel: &mut impl Kernel,
+        id: u64,
+        path: &Path,
+    ) -> io::Result<()> {
         if self.contains(id) {
             return Err(crate::already_watched(id));
         }
-        if !path.is_dir() {
+        if !std::fs::metadata(path)?.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::NotADirectory,
                 format!("{} is not a folder", path.display()),
@@ -394,12 +400,11 @@ mod tests {
     #[test]
     fn a_root_is_watched_folder_by_folder_without_following_links() {
         let root = scratch("inotify-walk");
-        let outside = scratch("inotify-outside");
         std::fs::create_dir_all(root.join("2024/09")).unwrap();
         std::fs::create_dir_all(root.join("2025")).unwrap();
         std::fs::write(root.join("2024/a.jpg"), b"a").unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(scratch("inotify-outside"), root.join("link")).unwrap();
         let (mut tree, mut kernel) = (Tree::default(), FakeKernel::default());
         tree.add_root(&mut kernel, 1, &root).unwrap();
         assert_eq!(
@@ -484,7 +489,10 @@ mod tests {
         let (mut tree, mut kernel) = (Tree::default(), FakeKernel::default());
         tree.add_root(&mut kernel, 1, &first).unwrap();
         tree.add_root(&mut kernel, 2, &second).unwrap();
-        let rescans = tree.handle(&mut kernel, &parse(&buffer(&[event(-1, IN_Q_OVERFLOW, "")])));
+        let rescans = tree.handle(
+            &mut kernel,
+            &parse(&buffer(&[event(-1, IN_Q_OVERFLOW, "")])),
+        );
         assert_eq!(
             rescans,
             [
