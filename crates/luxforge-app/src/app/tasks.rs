@@ -2280,8 +2280,9 @@ mod tests {
         };
         assert_eq!(
             poll(&mut editor),
-            (false, 1),
-            "the desktop's own import is read and costs nothing"
+            (false, 2),
+            "the desktop's own import, its Develop's change and its job's end, is read and costs \
+             nothing"
         );
         let caught_up = editor.sync.sequence;
 

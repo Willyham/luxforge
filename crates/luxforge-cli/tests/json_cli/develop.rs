@@ -1,7 +1,8 @@
 //! Developing picks through `luxforge-json`, as an independent process: a JSON client picks three
 //! files in a scratch folder of copied fixtures, plans them, develops them as a job it reads with
-//! `job.read`, undoes the Develop's last batch (which sends its photographs back and picks their
-//! files again) and sends the last photograph back, with every file unchanged throughout.
+//! `job.read`, undoes the Develop (which sends every batch's photographs back and picks their files
+//! again, in one step), develops them again and sends one photograph back, with every file
+//! unchanged throughout.
 use luxforge_testbase::paths;
 use luxforge_testkit::JsonProcess;
 use serde_json::{Value, json};
@@ -70,7 +71,7 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(picks(&mut client).len(), 3);
 
     // Plan them: one event (the folder's undated files, since nothing indexed them), a new folder
-    // named after it, nothing removable or offline.
+    // named after their folder on disk, nothing removable or offline.
     let plan = client.call("pick.plan", json!({"targets": targets}));
     assert_eq!(plan["count"], 3, "{plan}");
     assert_eq!(plan["offline"], 0, "{plan}");
@@ -79,7 +80,7 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(events[0]["name"], "Undated · Konstanz");
     assert_eq!(
         events[0]["folder"],
-        json!({"kind": "new", "name": "Undated · Konstanz"})
+        json!({"kind": "new", "name": "Konstanz"})
     );
 
     // Develop them into the plan's folder, as a job read with job.read.
@@ -117,7 +118,7 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     );
     assert_eq!(photographs(&mut client), 3);
     let folders = client.call("folder.list", json!({}))["folders"].clone();
-    assert_eq!(folders[0]["name"], "Undated · Konstanz");
+    assert_eq!(folders[0]["name"], "Konstanz");
     assert_eq!(folders[0]["count"], 3);
     // Retried, it answers the first job and changes nothing.
     let retried = client.call(
@@ -140,16 +141,26 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(developing[0]["label"], "Developed orientation-1.jpg");
     assert_eq!(developing[1]["label"], "Developed 2");
 
-    // Undo sends the last batch's photographs back and picks their files again.
+    // Undo sends every batch's photographs back at once and picks their files again.
     let undone = client.call("library.undo", json!({"mutation": envelope("undo")}));
     assert_eq!(undone["outcome"], "applied", "{undone}");
-    assert_eq!(photographs(&mut client), 1);
-    assert_eq!(picks(&mut client), [json!(files[1]), json!(files[2])]);
+    assert_eq!(photographs(&mut client), 0);
+    assert_eq!(picks(&mut client).len(), 3);
 
-    // Send the first photograph back: its record goes and its file is picked again.
-    let first = developed
+    // Developed again, then the first photograph sent back: its record goes and its file is
+    // picked again.
+    let again = client.call(
+        "pick.develop",
+        json!({"targets": targets, "into": [], "mutation": envelope("develop-again")}),
+    );
+    let job = client.settle("job.read", &again["job_id"]);
+    assert_eq!(job["status"], "ready", "{job}");
+    assert_eq!(photographs(&mut client), 3);
+    let first = job["result"]["developed"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|pick| pick["path"] == json!(files[0]))
+        .find(|developed| developed["path"] == json!(files[0]))
         .unwrap()["asset_id"]
         .clone();
     let sent = client.call(
@@ -159,8 +170,8 @@ fn develop_picks_plans_develops_undoes_and_sends_back_over_the_pipe() {
     assert_eq!(sent["outcome"], "applied", "{sent}");
     let refused = client.error("asset.state", json!({"asset_id": first}));
     assert_eq!(refused["code"], "validation");
-    assert_eq!(photographs(&mut client), 0);
-    assert_eq!(picks(&mut client).len(), 3);
+    assert_eq!(photographs(&mut client), 2);
+    assert_eq!(picks(&mut client), [json!(files[0])]);
 
     client.finish();
     let after: Vec<_> = files.iter().map(untouched).collect();
