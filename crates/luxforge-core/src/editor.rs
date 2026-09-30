@@ -61,7 +61,8 @@ pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::{
-    Prepared, Preparing, SourceWork, source_signature, source_signature_for_handle,
+    NewPhotograph, Prepared, Preparing, SourceWork, insert_photograph, source_signature,
+    source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

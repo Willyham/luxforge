@@ -535,6 +535,68 @@ pub(crate) mod library_rows {
         ])
     }
 
+    /// What keeps a photograph from being sent back, as its refusal says it: history beyond its
+    /// Original entry, a named version, or a collection it is in; none for a photograph that holds
+    /// only its Original. Three indexed counts.
+    pub(crate) fn kept_by(
+        connection: &Connection,
+        asset: &AssetId,
+    ) -> Result<Option<&'static str>, Error> {
+        let (entries, versions, memberships): (i64, i64, i64) = connection
+            .prepare_cached(
+                "SELECT (SELECT count(*) FROM entries WHERE asset_id = ?1),
+                     (SELECT count(*) FROM versions WHERE asset_id = ?1),
+                     (SELECT count(*) FROM collection_members m
+                         JOIN assets a ON a.row_id = m.asset_row WHERE a.id = ?1)",
+            )?
+            .query_row([asset.as_str()], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?;
+        Ok(if entries > 1 {
+            Some("has been edited since it was developed")
+        } else if versions > 0 {
+            Some("has a named version")
+        } else if memberships > 0 {
+            Some("is in a collection")
+        } else {
+            None
+        })
+    }
+
+    /// Delete a photograph's catalog record — its request log, versions, memberships, capture
+    /// row, state row, entries and asset row — answering how many asset rows went (none when the
+    /// catalog has no such photograph). The caller has checked it holds nothing but its Original
+    /// ([`kept_by`]); nothing on disk is touched, and the journal keeps what it recorded of it.
+    pub(crate) fn delete_photograph(
+        tx: &Transaction<'_>,
+        asset: &AssetId,
+    ) -> rusqlite::Result<usize> {
+        let id = asset.as_str();
+        for table in ["requests", "versions"] {
+            tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id = ?1"))?
+                .execute([id])?;
+        }
+        for table in ["collection_members", "capture"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table} WHERE asset_row = (SELECT row_id FROM assets WHERE id = ?1)"
+            ))?
+            .execute([id])?;
+        }
+        for table in ["asset_state", "entries"] {
+            tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id = ?1"))?
+                .execute([id])?;
+        }
+        tx.prepare_cached("DELETE FROM assets WHERE id = ?1")?
+            .execute([id])
+    }
+
+    /// Whether the catalog holds the photograph `asset`.
+    pub(crate) fn has_asset(connection: &Connection, asset: &AssetId) -> Result<bool, Error> {
+        Ok(connection
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM assets WHERE id = ?1)")?
+            .query_row([asset.as_str()], |row| row.get(0))?)
+    }
+
     /// The columns [`read_catalog_folder`] maps, in its order.
     pub(crate) const CATALOG_FOLDER_COLUMNS: &str =
         "id, name, parent_id, created_ms, event_start_ms, event_end_ms, event_key";
