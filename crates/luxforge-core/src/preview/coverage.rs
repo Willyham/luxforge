@@ -1,7 +1,7 @@
 //! One mask's coverage over a whole evaluated stage on a small grid, and the identity of what that
 //! grid depends on: the Masks panel's per-mask thumbnail.
 //!
-//! The grid is the one [`mask_overlay_for`] fills for the preview's overlay — the same compiled
+//! The grid is the one [`mask_overlay_for`] fills for the canvas's live overlay — the same compiled
 //! mask, the same geometry tail and, for a mask that reads pixels, the same input of its first
 //! bound layer — asked for over the whole output stage at the caller's cell count. It reads no pixel
 //! of any rendered frame and allocates only the cells, so a thumbnail costs no render.
@@ -12,13 +12,214 @@
 //! and, only when the mask reads pixels, the stack before its first bound layer with the masks that
 //! stack applies through — so a caller holding the key of the grid it already has learns in
 //! `O(recipe)` and without filling a cell that nothing changed.
-use super::{MaskOverlayOutcome, MaskOverlayRequest, PreviewSource, worker::mask_overlay_for};
+use super::PreviewSource;
 use crate::{
-    Cancel, ComponentId, Error, Evaluation, Mask, MaskId, Region, mask::CompiledMask,
+    Cancel, Component, ComponentId, ComponentMode, Error, ErrorKind, Evaluation, Mask, MaskId,
+    ModuleRegistry, Recipe, Region, Render, RenderContext,
+    analysis::{MaskOverlay, MaskPixels},
+    mask::CompiledMask,
     modules::Stage,
 };
+use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+
+/// One mask's coverage grid, or the reason it has none: what [`Evaluation::mask_overlay_coverage`]
+/// and [`Evaluation::mask_coverage`] answer.
+///
+/// It reads no pixel of any rendered frame — only the geometry tail of the evaluation's exact
+/// compilation, and for a mask that reads pixels, the input of its first bound layer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MaskOverlayOutcome {
+    /// The coverage grid of the mask asked for, over the evaluation's exact output stage or the
+    /// rectangle of it that was asked for. `None` means the mask had nothing to describe or the
+    /// grid was refused. It never means a mask whose coverage happens to be zero everywhere: that
+    /// is a grid of zeros, and this is its absence.
+    pub grid: Option<MaskOverlay>,
+    /// Why the grid asked for is not in `grid`, in the host's own words.
+    ///
+    /// A client that asked for an overlay and waits for its texture has to be able to stop waiting:
+    /// the grid is refused for reasons that belong to the mask rather than to the frame — a mask
+    /// whose coverage depends on the pixel it reads has no grid at all
+    /// ([proposal P16](../../../../docs/design/range-study.md#proposals)) — and an absence with no reason
+    /// beside it is indistinguishable from a grid still on its way. `None` beside no grid means the
+    /// mask had nothing to describe.
+    pub absent: Option<String>,
+}
+
+/// One mask's coverage grid to fill: the mask, optionally one of its components alone, on a
+/// `cells_w × cells_h` display grid.
+///
+/// **Why a component *identity* and not an index.** Hovering a row of the component list shows that
+/// row's own contribution, so one component's grid has to be obtainable on its own. The host derives
+/// a one-component mask and compiles it through the same [`CompiledMask`] the whole mask goes
+/// through, so the row's overlay and the mask's overlay cannot disagree about that component's
+/// field, and compiling one component is strictly cheaper than compiling all of them. It is a
+/// [`ComponentId`] rather than a position because a position is not an identity: the component list
+/// is reorderable, a hover and the grid that answers it are a request apart, and an index that
+/// silently slid onto the neighbouring row would draw the wrong field with no way to tell. A
+/// component the mask does not hold is refused by name instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct MaskOverlayRequest {
+    /// The mask to describe. It must be one the recipe holds.
+    pub(super) mask: MaskId,
+    /// One component of that mask, on its own, or `None` for the whole composed mask.
+    pub(super) component: Option<ComponentId>,
+    pub(super) cells_w: u32,
+    pub(super) cells_h: u32,
+}
+
+/// The mask a component's own row describes: that one component alone.
+///
+/// Its mode is `add` because there is nothing before it to subtract from or intersect with, the
+/// whole-mask amount and inversion are left out because they are the mask's modifiers and not the
+/// row's, and the component's *own* inversion is kept because that is a control on the row. `None`
+/// when the mask does not hold that component.
+fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask> {
+    let found = mask.components.iter().find(|held| &held.id == component)?;
+    let alone = Component {
+        mode: ComponentMode::Add,
+        ..found.clone()
+    };
+    Some(Mask {
+        id: mask.id.clone(),
+        name: mask.name.clone(),
+        amount: Mask::FULL_AMOUNT,
+        invert: false,
+        next_ordinal: BTreeMap::new(),
+        components: vec![alone],
+    })
+}
+
+/// One mask's coverage grid over the exact output stage of `frame`, the one compilation of `recipe`
+/// at the exact stage, or over the `region` of that stage when one is given.
+///
+/// It reads no pixel of the exact frame: only the geometry tail of `frame`, and for a mask that
+/// reads pixels, the input of its first bound layer.
+///
+/// Every reason there is no grid is a reason there is none to draw, never a silently empty one, and
+/// the reason travels in [`MaskOverlayOutcome::absent`] — the host's own words, for a client that
+/// asked for an overlay and would otherwise wait for a texture nothing will fill. Two absences carry
+/// **no** reason on purpose: a mask with nothing to describe, which
+/// [`crate::analysis::coverage_grid`] decides in closed form and which a grid of zeros would
+/// misreport, and a cancel, which each caller turns into [`ErrorKind::Cancelled`] itself.
+pub(super) fn mask_overlay_for(
+    registry: &ModuleRegistry,
+    frame: &Render<'_>,
+    recipe: &Recipe,
+    request: &MaskOverlayRequest,
+    region: Option<Region>,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> MaskOverlayOutcome {
+    let refused = |error: Error| MaskOverlayOutcome {
+        grid: None,
+        absent: match error.kind {
+            ErrorKind::Cancelled => None,
+            _ => Some(error.detail),
+        },
+    };
+    let absent = |reason: String| MaskOverlayOutcome {
+        grid: None,
+        absent: Some(reason),
+    };
+    let Some(held) = recipe.masks.iter().find(|mask| mask.id == request.mask) else {
+        return absent(format!(
+            "mask {} is not in the stack this frame was rendered from",
+            request.mask
+        ));
+    };
+    let derived;
+    let mask = match &request.component {
+        None => held,
+        Some(component) => match one_component(held, component) {
+            Some(one) => {
+                derived = one;
+                &derived
+            }
+            None => {
+                return absent(format!("mask {} holds no component {component}", held.name));
+            }
+        },
+    };
+    // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
+    // reads no pixel.
+    let transform = match frame.transform() {
+        Ok(transform) => transform,
+        Err(error) => return refused(error),
+    };
+    let stage = Stage {
+        width: transform.content.width,
+        height: transform.content.height,
+    };
+    let compiled = match CompiledMask::new(mask, stage, &recipe.strokes) {
+        Ok(compiled) => compiled,
+        Err(error) => return refused(error),
+    };
+    // A value-based component is answered on the pixel the masked operation receives, which is the
+    // input of the mask's **first bound layer** — the rule `mask::commands::input_layer_index`
+    // states once for everything that reads a pixel through a mask, and which the colour-constrained
+    // brush's seed and `mask.sample-input` already read, so the overlay and the seed cannot disagree
+    // about which pixel a mask reads. The prefix is compiled once and asked once per cell.
+    let input;
+    let unavailable;
+    let pixels = if !compiled.reads_pixels() {
+        // Position-only: no operation is needed and none is looked for, so a geometric grid costs
+        // exactly what it did before a value-based component existed.
+        MaskPixels::Unavailable("this mask reads no pixel")
+    } else {
+        match crate::mask::commands::input_layer_index(recipe, &request.mask).and_then(|layer| {
+            crate::render::layer_input(registry, frame.source(), recipe, layer, context)
+        }) {
+            // Two different stages would be two different coverage fields, and `coverage_grid`
+            // refuses that mismatch for the frame; it is refused here for the operation, in the same
+            // voice, rather than read at coordinates of another stage.
+            Ok((received, _)) if received != stage => {
+                unavailable = format!(
+                    "the masked operation receives a {}x{} stage and this mask is compiled against \
+                     {}x{}",
+                    received.width, received.height, stage.width, stage.height
+                );
+                MaskPixels::Unavailable(&unavailable)
+            }
+            Ok((_, prefix)) => {
+                input = prefix;
+                MaskPixels::Input(&*input)
+            }
+            // No layer is bound to this mask, or its prefix holds a spatial layer, or it does not
+            // compile: in every case there is no operation whose input this grid can read, and the
+            // refusal's own sentence says which and what to do about it.
+            Err(error) => {
+                unavailable = error.detail;
+                MaskPixels::Unavailable(&unavailable)
+            }
+        }
+    };
+    let (cells_w, cells_h) = (request.cells_w, request.cells_h);
+    let region = region.unwrap_or(Region {
+        x0: 0,
+        y0: 0,
+        width: transform.output.width,
+        height: transform.output.height,
+    });
+    let coverage = match crate::analysis::coverage_grid_region(
+        &compiled, &transform, region, cells_w, cells_h, pixels, cancel,
+    ) {
+        Ok(Some(coverage)) => coverage,
+        Ok(None) => return MaskOverlayOutcome::default(),
+        Err(error) => return refused(error),
+    };
+    MaskOverlayOutcome {
+        grid: Some(MaskOverlay {
+            mask: request.mask.clone(),
+            component: request.component.clone(),
+            cells_w,
+            cells_h,
+            coverage,
+        }),
+        absent: None,
+    }
+}
 
 /// One mask's coverage grid, or the key alone when the caller already holds the grid it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,8 +396,6 @@ impl Evaluation {
             component: component.cloned(),
             cells_w,
             cells_h,
-            whole_cells_w: cells_w,
-            whole_cells_h: cells_h,
         };
         let mut hasher = DefaultHasher::new();
         // Full recipe identity is intentionally conservative. No cached source/evaluation is kept;
@@ -338,8 +537,6 @@ impl Evaluation {
             component: None,
             cells_w,
             cells_h,
-            whole_cells_w: cells_w,
-            whole_cells_h: cells_h,
         };
         let outcome = mask_overlay_for(
             self.registry(),

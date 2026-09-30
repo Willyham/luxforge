@@ -86,9 +86,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewIntent,
-    PreviewJob, PreviewPhase, PreviewQueue, PreviewResult, PreviewSession, PreviewSource,
-    ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
+    PreviewQueue, PreviewResult, PreviewSession, PreviewSource, ProxyOutcome, Queued,
+    RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{

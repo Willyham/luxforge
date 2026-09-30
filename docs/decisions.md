@@ -142,7 +142,7 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 - The brush's cap of 64 segments per grid cell is measured on a realistic back-and-forth scrub before it changes. How a stroke that would pass it is handled was decided on 2026-09-26 ([post-consolidation review](#post-consolidation-review)).
 - The crop draft moves onto the core `draft.*` lifecycle once the desktop has one draft driver, so agents see it in `session.state`. The crop geometry and canvas stay as they are. This supersedes "the crop draft stays desktop-local".
 - Every mutating method carries `{request_id, actor}` and is deduplicated, with `expected_revision` wherever a revision exists, so an agent can retry any mutation safely. This supersedes the presets default that library methods take no mutation envelope.
-- A mask's coverage grid is delivered with the proxy phase rather than after the exact render, because it reads no pixel of the exact frame.
+- A mask's coverage grid never waits for the exact render, because it reads no pixel of the exact frame: the live overlay is filled by its own coverage worker from the preview's evaluation.
 - Mask, component and stroke identities become a declared parameter kind, validated and deduplicated like any other parameter.
 - The path primitives stay host primitives, and the recipe stops scanning every layer payload for strokes until a consumer other than masks exists.
 - The developer component gallery's page is desktop view state and leaves the core session schema.
