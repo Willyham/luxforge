@@ -602,6 +602,13 @@ pub const STATUS_FACT_SPACING: f32 = 12.0;
 pub const STATUS_DOT_SIZE: f32 = 6.0;
 pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
 
+// -- Select: the thumbnail grid ---------------------------------------------------------------
+
+// The Select workspace's grid, cells and moment rows, from the catalog boards' CSS (`.cc`,
+// `.mom`, `.dayh`, `.camh`, `.wrap`, and `.cell` for the catalog's larger cells).
+
+// -- end Select: the thumbnail grid ------------------------------------------------------------
+
 // -- Masks panel ----------------------------------------------------------------------------------
 
 // The Masks panel's rows and controls, from the mask-panels board of the masking workspace design
@@ -807,6 +814,13 @@ pub const ADD_ROW_HEIGHT: f32 = 28.0;
 pub const ADD_ROW_MARGIN: f32 = 2.0;
 /// Between Invert mask and the first component row.
 pub const COMPONENTS_GAP: f32 = 4.0;
+
+// -- Select: sources, filters, title bar, long-running work, loupe and filmstrip ----------------
+
+// The Select workspace's chrome, from the catalog boards' CSS (`.src`, `.fbar`, `.fchip`,
+// `.seg`, `.tb`, `.sheet`, `.bar`, `.mstrip`, `.fstrip`).
+
+// -- end Select chrome ---------------------------------------------------------------------------
 
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
@@ -1414,6 +1428,10 @@ pub fn slider_style(dragging: bool) -> impl Fn(&Theme, slider::Status) -> slider
 mod tests {
     use super::*;
 
+    // -- Select: the thumbnail grid's token tests.
+
+    // -- end Select: the thumbnail grid's token tests.
+
     #[test]
     fn surface_tokens_match_the_visual_language_table() {
         assert_eq!(CANVAS, Color::from_rgb8(0x19, 0x19, 0x1b));
@@ -1968,4 +1986,8 @@ mod tests {
         assert_eq!((SWATCH_SLOT_WIDTH, SWATCH_SLOT_HEIGHT), (22.0, 18.0));
         assert_eq!(STROKE_ROW_HEIGHT, 20.0);
     }
+
+    // -- Select chrome's token tests.
+
+    // -- end Select chrome's token tests.
 }

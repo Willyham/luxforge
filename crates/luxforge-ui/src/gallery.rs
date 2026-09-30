@@ -637,5 +637,11 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         (),
         None,
     ));
+
+    // -- Select: the thumbnail grid's states.
+    // -- end Select: the thumbnail grid's states.
+
+    // -- Select: chrome's states.
+    // -- end Select: chrome's states.
     states
 }

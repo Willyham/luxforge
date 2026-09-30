@@ -29,6 +29,7 @@ mod gallery;
 mod gallery_components;
 mod gallery_masks;
 mod gallery_performance;
+mod gallery_thumbnails;
 
 /// Builds one instance of every widget in every state shown on the components board
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
@@ -45,7 +46,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// keep every example visible in a native 1440×1000 background capture: the two large canvases get
 /// their own pages, while related compact states stay together.
 #[doc(hidden)]
-pub const GALLERY_PAGES: [(&str, &[&str]); 13] = [
+pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     (
         "Sliders and sections",
         &[
@@ -207,6 +208,11 @@ pub const GALLERY_PAGES: [(&str, &[&str]); 13] = [
             "Face · mask draft bar, brush with Done",
         ],
     ),
+    // -- Select: the thumbnail grid's pages.
+    // -- end Select: the thumbnail grid's pages.
+    //
+    // -- Select: chrome's pages.
+    // -- end Select: chrome's pages.
 ];
 
 /// Builds gallery page `page`'s states in draw order, each with its 1-based number on the whole
