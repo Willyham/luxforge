@@ -30,6 +30,9 @@ pub(in crate::api) mod sources;
 mod worker_tests;
 
 // Developing picks (TASK-013): `pick.plan`, `pick.develop`, `asset.send-back`.
+pub(in crate::api) mod develop;
+#[cfg(test)]
+mod develop_picks_tests;
 
 // Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
 

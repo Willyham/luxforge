@@ -47,6 +47,8 @@ pub(crate) mod locate;
 pub(crate) mod worker;
 
 // Developing picks (TASK-013).
+/// Developing picks: planning, the develop lane's reads, committing in batches, sending back.
+pub(crate) mod develop;
 
 // Resolving missing originals (TASK-017).
 

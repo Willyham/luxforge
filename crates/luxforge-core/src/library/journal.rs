@@ -22,7 +22,9 @@
 //!   longer the one that change left, whoever changed it.
 //! - **Retries.** A request is found again by its actor, request identity and method ([`find`]),
 //!   durably, so a retried request answers with the change its first attempt recorded, after a
-//!   restart too, and never changes anything twice.
+//!   restart too, and never changes anything twice. A request that records its change in parts,
+//!   as a Develop commits a batch at a time, records each part with [`apply_part`] and is answered
+//!   from all of them ([`parts`]).
 //!
 //! The journal is append-only; the schema refuses updating or deleting its rows, undoing a change
 //! twice and redoing an undo twice.
@@ -69,6 +71,11 @@ pub(crate) enum Desired {
     /// The value it has, when it has one; otherwise this. A pick of a file already picked keeps
     /// who picked it and when, and so changes nothing.
     UnlessPresent(Value),
+    /// The caller has already set the item, earlier in the same transaction, from `before`: the
+    /// journal records it as it now reads and writes nothing. For an item whose value a change
+    /// cannot carry, as a Develop's photograph (`developed-asset`), whose asset, capture and entry
+    /// rows the develop lane writes, and the catalog folder those rows need to exist first.
+    Written { before: Option<Value> },
 }
 
 /// What a library write did.
@@ -169,10 +176,33 @@ pub(crate) fn find(
         .optional()?)
 }
 
+/// Every change a request recorded, oldest first, with its rows: the parts of a request that
+/// records its change in parts ([`apply_part`]), which a retry of it is answered from.
+pub(crate) fn parts(
+    connection: &Connection,
+    request: Request<'_>,
+) -> Result<Vec<LibraryChangeDetail>, Error> {
+    let sequences: Vec<i64> = connection
+        .prepare_cached(
+            "SELECT sequence FROM library_changes
+             WHERE request_id = ?1 AND client_key = ?2 AND method = ?3 ORDER BY sequence",
+        )?
+        .query_map(
+            params![request.request_id, request.actor, request.method],
+            |row| row.get(0),
+        )?
+        .collect::<Result<_, _>>()?;
+    sequences
+        .into_iter()
+        .map(|sequence| inspect(connection, sequence as u64))
+        .collect()
+}
+
 /// Record one library change in the caller's transaction: set each item to what it is to become,
 /// leaving out the ones that already are, and record the rest with their values before and after,
-/// labelled by `label` from the rows it records. An item named twice counts once, as first named.
-/// A retry of a request that recorded a change answers that change and writes nothing.
+/// labelled by `label` from the rows it records. An item named twice counts once, as first named;
+/// an item the caller wrote itself ([`Desired::Written`]) is recorded, not written. A retry of a
+/// request that recorded a change answers that change and writes nothing.
 pub(crate) fn apply(
     tx: &Transaction<'_>,
     request: Request<'_>,
@@ -182,6 +212,19 @@ pub(crate) fn apply(
     if let Some(change) = find(tx, request)? {
         return Ok(Outcome::deduplicated(change));
     }
+    apply_part(tx, request, changes, label)
+}
+
+/// Record one part of a request that records its change in parts, as a Develop records each batch
+/// it commits: [`apply`] without the retry check, so each part is a change of its own under the
+/// request's identity, never taken for a retry of an earlier part. The caller answers a retry of
+/// the whole request before its first part, from [`find`] or [`parts`].
+pub(crate) fn apply_part(
+    tx: &Transaction<'_>,
+    request: Request<'_>,
+    changes: Vec<(LibraryItem, Desired)>,
+    label: impl FnOnce(&[LibraryChangeRow]) -> String,
+) -> Result<Outcome, Error> {
     if changes.len() > MAX_LIBRARY_BATCH {
         return Err(batch_limit(changes.len()));
     }
@@ -191,15 +234,21 @@ pub(crate) fn apply(
         if !named.insert(item.clone()) {
             continue;
         }
-        let before = items::read(tx, &item)?;
-        let after = match desired {
-            Desired::Value(value) => value,
-            Desired::UnlessPresent(value) => Some(before.clone().unwrap_or(value)),
+        let now = items::read(tx, &item)?;
+        let (before, after, write) = match desired {
+            Desired::Value(value) => (now, value, true),
+            Desired::UnlessPresent(value) => {
+                let after = Some(now.clone().unwrap_or(value));
+                (now, after, true)
+            }
+            Desired::Written { before } => (before, now, false),
         };
         if before == after {
             continue;
         }
-        items::write(tx, &item, after.as_ref())?;
+        if write {
+            items::write(tx, &item, after.as_ref())?;
+        }
         rows.push(LibraryChangeRow {
             item,
             before,
