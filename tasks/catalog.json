@@ -1,0 +1,1101 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "catalog",
+  "title": "Browse, pick, develop: the catalog",
+  "objective": "Deliver a two-step flow: browse cards and folders very fast through an automatic organization into events, days, cameras and moments, examine frames in detail and pick a few; develop only the picks into the catalog, browsed with collections in Select and edited in Develop through a development-set filmstrip, all through the one command registry.",
+  "context_summary": "Planning proposal, not implementation authorization: sixteen proposals await the owner (the first task). Today the catalog imports one file at a time by fully decoding and developing it on the one source worker, persists no capture metadata, stores no previews and exposes only a paged `catalog.list`; the desktop holds one document and never lists photographs. The design adds catalog format 12 (no migration) holding picks, catalog folders made from events at develop time, collections and a library journal but no record of unpicked files; a disposable index and previews cache; index, preview and develop lanes; events and moments computed from headers, an offline gazetteer and previews; owner-held browse views; and the Select workspace drawn on the design canvas. There are no ratings or keywords. HDR merging is left room for, not planned. Core tasks come before the desktop so every capability is programmable first; timing runs wait for the last task.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Resolve the catalog proposals and authorize implementation.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The design is a proposal with sixteen numbered defaults (P1 to P16). P1, browsing files through an automatic event layer and developing only picks into the catalog, and P2, no ratings or keywords, are the owner's own direction and shape every other task. Planning does not authorize implementation (AGENTS.md, How we work).",
+        "HDR and panorama merging stay unselected; the design only leaves room for a merge source kind. Backup, portability, sidecars and sync stay open storage questions."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "The questions, defaults and reasons.",
+          "locator": "Proposals"
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Where answers are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Source recovery",
+          "target": "docs/specs/source-recovery.md",
+          "relevance": "The accepted Locate rules that resolving missing originals extends."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each of P1 to P16 is accepted, changed or deferred and recorded in docs/decisions.md and the design.",
+        "Implementation is explicitly authorized, or the plan stays a proposal.",
+        "Changed defaults are reflected in the design and in the affected tasks before they start."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Walk the owner through the boards and the proposals table.",
+          "Record each answer with its date."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Every proposal has an owner answer recorded; the pending tasks match it."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add catalog format 12 with picks, indexed folders, catalog folders, capture metadata, collections and the library journal, the separate disposable index database, and generators for large folders and catalogs.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Format 11 is `CATALOG_FORMAT` in crates/luxforge-core/src/editor/catalog.rs, created by `EditorService::create_schema` and checked on open in editor.rs; a format-11 catalog is refused by name and never rewritten.",
+        "`assets` already holds `source_root` (the file's directory), `locator`, `canonical_locator`, `file_identity`, `fingerprint`, `byte_len`, dimensions, `source_json` and `source_kind`. Picks carry a path and signature and no fingerprint. Browsed files live only in the disposable index (`<catalog>.index/index.sqlite`), never in the catalog. Capture positions are stored for developed photographs.",
+        "`cargo xtask generate-catalog` writes deterministic synthetic indexes (10,000 files across trips with bursts, brackets and positions) and catalogs (100,000 and 1,000,000 photographs) with no image files, for the view, journal and desktop tasks and the final measurement."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Tables, columns and indexes.",
+          "locator": "Storage: catalog format 12"
+        },
+        {
+          "kind": "file",
+          "label": "Current format",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "How format changes are refused and documented.",
+          "locator": "Storage: catalog format 11"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog schema",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "`create_schema`, `CATALOG_FORMAT`, `write()`."
+        }
+      ],
+      "acceptance_criteria": [
+        "An empty database initializes as format 12; format 11 and earlier are refused by name without changing their bytes.",
+        "Every table, index and constraint in the design exists (one pick per path, one catalog folder per photograph, smart collections not referring to smart collections, immutable journal rows), and the index database is created, versioned and discarded on a mismatch without touching the catalog.",
+        "`cargo xtask generate-catalog --files N --assets M --output NEW` is deterministic from a seed.",
+        "versions-and-lineage.md describes format 12 and the architecture's persistence section lists the new tables."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Test initialization, refusal and every constraint.",
+          "Generate and open the large catalogs."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core catalog",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Format 12 and the index exist, and large generated data is available."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Read capture metadata from a header alone, with typed values, including subsecond time, body serial, exposure bias and GPS position.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "`CaptureMetadata` (crates/luxforge-core/src/export/metadata/mod.rs, reader in read.rs) parses a 33-field EXIF whitelist from JPEG and TIFF-structured or RAF-embedded RAW, but its values are private and it is built only from a whole prepared source. The scan needs the same values from a bounded header read.",
+        "Grouping needs SubSecTimeOriginal, OffsetTimeOriginal, BodySerialNumber, ExposureBiasValue, ExposureTime, FNumber, ISO, FocalLength and the GPS latitude and longitude. The export's written field set must not change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "What indexing reads.",
+          "locator": "Browsing the filesystem"
+        },
+        {
+          "kind": "file",
+          "label": "EXIF reader",
+          "target": "crates/luxforge-core/src/export/metadata/mod.rs",
+          "relevance": "`CaptureMetadata` and the whitelist."
+        },
+        {
+          "kind": "file",
+          "label": "RAW metadata",
+          "target": "crates/luxforge-raw/src/lib.rs",
+          "relevance": "`RawMetadata` make, model and mode."
+        }
+      ],
+      "acceptance_criteria": [
+        "Typed accessors return every field grouping and the Info panel need, each optional, from a header read bounded in bytes.",
+        "Values equal those read from the whole file for every fixture and one authentic file of each RAW format the camera catalog admits.",
+        "Export output is byte-identical before and after."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Accessor tests on JPEG and RAW fixtures, including missing, malformed and offset-less times.",
+          "Export metadata tests unchanged."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core metadata",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Capture metadata is typed and cheap to read."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Add browsing of the filesystem: cards, folders and indexed folders, the index lane, rescan by signature and offline folders.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Indexing reads directory entries and headers only, on its own bounded lane of two workers, writing the disposable index database; the catalog owner is not involved. No hashing and no image data.",
+        "Card detection lists mounted volumes with a DCIM folder and whether they are removable; it adds no timer beyond the platform's mount notification. Indexed folders are a short list kept in the catalog (`folder.*`)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Browsing the filesystem"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "`folder.*`, `card.list`, `index.refresh`.",
+          "locator": "API"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner-thread and bounded-queue rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "Indexing lists a mixed folder's supported files with their header metadata, follows no symlink out of its roots, crosses no volume and refuses past its file limit with `resource-limit`.",
+        "A refresh adds new files, drops vanished ones and keeps picks on files whose signature changed; a folder on an unmounted volume keeps its cached rows and previews.",
+        "Files are unchanged by hash, length, time and location before and after indexing.",
+        "Deleting the index directory while closed and reopening rebuilds it with the same content."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Core tests over generated folders, a disk image for offline and removable cases, and injected unreadable files."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core index",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Browsing is cheap, bounded, read-only and disposable."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Organize files into events by time and place, and into days, cameras and moments, with bursts by speed and brackets by exposure from metadata or previews.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Events and moments are pure functions of ordered header metadata, an offline gazetteer (P4) and view thresholds (P3, P5); nothing about them is stored. Bracket detection reads exposure from the metadata first and, when it cannot say, compares grid previews already decoded by the preview lane: mean log luminance of a small centre-weighted thumbnail and an edge correlation to check the framing is unchanged.",
+        "The gazetteer is a bundled data asset (for example GeoNames cities15000, CC BY 4.0) with its notice; the manual asset review stays deferred and is not claimed.",
+        "A labelled corpus is needed: real trips with positions, bursts, auto-exposure brackets with and without exposure bias recorded, and single frames from several makes, gathered as the RAW corpus was (CC0 or the owner's private manifest)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Event rules and names.",
+          "locator": "Events"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Moment rules.",
+          "locator": "Grouping inside a view"
+        },
+        {
+          "kind": "file",
+          "label": "Modern camera support",
+          "target": "docs/design/modern-camera-support.md",
+          "relevance": "The camera corpus practice."
+        },
+        {
+          "kind": "file",
+          "label": "Owner priorities",
+          "target": "docs/decisions.md",
+          "relevance": "Bracket and panorama identification.",
+          "locator": "Owner workflow priorities"
+        }
+      ],
+      "acceptance_criteria": [
+        "Events and moments agree with the labelled corpus, with every misgrouping and the chosen thresholds recorded in the design; each bracket reports its evidence (metadata or previews) and its steps.",
+        "Event names follow the design's order (place, user-named folder, date and cameras) and never make a network request.",
+        "Changing a threshold regroups the view without touching any stored data; undated files form an Undated event per folder."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Property tests of the grouping functions.",
+          "A corpus evaluation run recorded once."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core organize",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Events and moments match how the photographs were taken."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add the preview lane and the disposable previews cache: embedded previews, region decode for 100%, the on-demand development fallback and rendered previews of developed photographs.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Nothing stores previews today; the proxy (proxy.rs) is one in-memory entry in the preview worker. The lane must not use or evict the editor's one-slot `source_cache`.",
+        "File previews are keyed by signature; developed ones by asset, entry and tier; the manifest carries the renderer generation. Embedded previews come through `luxforge-raw` (LibRaw) and scaled or cropped JPEG decodes through `luxforge-jpeg`.",
+        "Record, per camera in the corpus, the size of its largest embedded preview, which decides where the 100% fallback (P5) runs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Layout, tiers, keys, budgets.",
+          "locator": "The index and previews cache"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Preview lane.",
+          "locator": "Architecture"
+        },
+        {
+          "kind": "file",
+          "label": "Proxy",
+          "target": "crates/luxforge-core/src/proxy.rs",
+          "relevance": "The rendering path for developed previews."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG codec",
+          "target": "docs/design/architecture.md",
+          "relevance": "The codec crate's boundary.",
+          "locator": "The JPEG codec"
+        }
+      ],
+      "acceptance_criteria": [
+        "`preview.read` returns a cached preview with what it is (camera, rendered entry) or a job that makes it; the loupe's look-ahead outranks visible cells, which outrank the rest.",
+        "`preview.region` decodes only the region's rows and columns of a full-size embedded preview, and otherwise develops that frame neutrally, one RAW at a time, labelled.",
+        "Commits make new rendered keys and collect the old; deleting the directory while closed loses nothing but time; the loupe and large tiers respect their budget."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Cache key, invalidation, budget and region tests.",
+          "A backlog test with the editor's source resident."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core preview_cache",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Previews are fast, honest and disposable, and never slow the editor."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Add owner-held browse views, facets and selection over events, folders, cards and the catalog.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "A view is the client's one ordered item list with group boundaries in its `ClientSession` (api/mod.rs), 16 bytes an item, marked stale by library-change revision. Queries are structured JSON, never SQL text; smart collections store the same query. P13 decides the fallback if the measurement misses."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "`browse.*`, `session.state`.",
+          "locator": "API"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Filters and sort.",
+          "locator": "The catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Sessions",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "Sessions live with the owner.",
+          "locator": "Sessions live with the owner"
+        },
+        {
+          "kind": "file",
+          "label": "Client session",
+          "target": "crates/luxforge-core/src/api/mod.rs",
+          "relevance": "`ClientSession`."
+        }
+      ],
+      "acceptance_criteria": [
+        "Views and group boundaries agree with an independent evaluation over generated indexes and catalogs, including picks, moments, missing capture times, removed photographs and every sort's tie-break.",
+        "Facet counts equal the views they predict; `browse.rows` reads windows by position; `browse.select` supports replace, add, remove, ranges and all-in-view and is reported in `session.state`.",
+        "`catalog.list` is removed and its users moved."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Agreement tests on seeded indexes and catalogs.",
+          "Session selection and staleness tests."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core browse",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "One query model answers every view in Select."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Add picks and the library journal with undo and redo.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Every mutation carries `{request_id, actor}` and is deduplicated. A pick is kept by path and signature until it is developed or cleared. One library change is one journal row plus per-item before/after rows, at most `MAX_LIBRARY_BATCH` items, and one event naming its sequence. Undo appends the inverse, only for the calling client's own changes, and refuses on an intervening change. There are no ratings, keywords or flags (P2)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Pick behaviour.",
+          "locator": "Picking"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Journal rules.",
+          "locator": "Library changes and undo"
+        },
+        {
+          "kind": "file",
+          "label": "Agent contract",
+          "target": "docs/design/architecture.md",
+          "relevance": "Mutation envelope and events.",
+          "locator": "Agent contract"
+        }
+      ],
+      "acceptance_criteria": [
+        "`pick.set` accepts paths, ids or the selection and writes one change; `pick.list` reports picks per source; picks survive a restart.",
+        "Undo and redo restore exact prior values, refuse on intervening changes naming the items, and are journaled.",
+        "A 5,000-item change records one event; `library.journal` pages after a cursor."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Journal and undo tests with two concurrent clients.",
+          "Batch-limit refusal.",
+          "Restart persistence."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core journal",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Every pick is attributed, durable, bounded and undoable."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Develop picks into the catalog on its own lane, into the catalog folder chosen per event, with linking, relinking, card-copy substitution, removable-media confirmation and sending back; replace `catalog.import`.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Today `catalog.import` fully decodes and develops a file on the one source worker (capacity 8) before committing (`import_prepared`, editor/source.rs), and `job.adopt` accepts only the client's latest import. Developing picks streams the fingerprint and reads the RAW interpretation without developing, off the source worker; whether any format needs its mosaic unpacked is measured and recorded.",
+        "An identical file links to its existing photograph; a missing original relinks through the crate-visible `EditorService::relocate` only on a fingerprint match (source recovery); a pick on removable media uses a copy in an indexed folder when name, size and fingerprint match (P8). `pick.plan` proposes each event's catalog folder: a new one named after the event, or the folder an earlier Develop from the same event span created (P15). Sending back deletes a photograph that has only its Original entry (P9). A single opened file is picked and developed at once."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Developing picks"
+        },
+        {
+          "kind": "file",
+          "label": "Current import",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "`importing`, `prepare_file`, `import_prepared`, `relocate`."
+        },
+        {
+          "kind": "file",
+          "label": "Owner import handler",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "`catalog_import`, `job.adopt`, the event log."
+        }
+      ],
+      "acceptance_criteria": [
+        "`pick.plan` reports the picks by event with their default folders; `pick.develop` creates exactly the picked photographs, each in the folder `into` names, with fingerprints, interpretations, Original entries and capture metadata, in batches, clearing the picks it committed; cancellation or a failing file keeps every committed photograph whole and nothing partial; a retry answers with the first result.",
+        "Identical files link, missing originals relink only on a match, card picks use verified copies when asked, removable media otherwise needs `confirm_removable`, and `asset.send-back` refuses a photograph with history beyond its Original.",
+        "`catalog.import` is removed; opening a photograph uses `source.prepare` with a generalized adopt; the user guide and schema reflect it.",
+        "Originals are unchanged by hash, length, time and location."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Core tests over generated folders with every case, cancellation mid-batch and injected failures.",
+          "An API conformance test through `luxforge-json`."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core develop_picks",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Only picked files enter the catalog, safely and off the editor's path."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Add catalog folders (rename, nest, merge, delete, move photographs), collections, groups and smart collections.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Every developed photograph is in exactly one catalog folder (P15); folders nest and are grouped by year only in the view. Collections are one tree of collections, smart collections and groups. Every change is a library change; a smart collection stores a browse query and may not refer to another. Nothing on disk changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Catalog folders, collections and smart collections.",
+          "locator": "The catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "`folder.*`, `asset.move`, `collection.*`.",
+          "locator": "API"
+        }
+      ],
+      "acceptance_criteria": [
+        "`folder.*` and `asset.move` rename, nest, merge and move, each journaled and undoable; deleting a folder that holds photographs is refused.",
+        "`collection.*` creates, renames, moves, deletes and changes membership, each journaled and undoable.",
+        "A smart collection evaluates its stored query now; a reference to a smart collection is refused.",
+        "Deleting a collection removes no photograph."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Folder tree, merge and move tests; collection membership and smart-evaluation tests."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core catalog_folder collection",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Catalog folders and collections share the one query and journal model."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Build the Select workspace: workspace switch, sources (search, cards, events, folders, catalog), the grouped virtualized grid, the Info panel, picking from the keyboard and Develop N.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "The desktop holds one document and never lists assets; its title bar says it has no library (view/title_bar.rs). Layering (state/, view/, app/, luxforge-ui) is enforced by `cargo xtask check-repository`.",
+        "The grid creates each image handle once and keeps it while the cell is shown, with decoded previews under a byte budget. Every gesture sends the request its API equivalent sends. Draw to the event and components boards and list what is not matched, as the Develop design does."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Layout.",
+          "locator": "Workspaces"
+        },
+        {
+          "kind": "file",
+          "label": "Event board",
+          "target": "docs/design/catalog/event.png",
+          "relevance": "The reference screen."
+        },
+        {
+          "kind": "file",
+          "label": "Components board",
+          "target": "docs/design/catalog/components.png",
+          "relevance": "Cell, moment and button states."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Tokens, density, interaction rules, architecture."
+        }
+      ],
+      "acceptance_criteria": [
+        "Select and Develop switch with `G` and `D` without losing session state; an open draft refuses the switch with its reason.",
+        "A generated 10,000-file event scrolls with only visible cells realised; days, cameras, moments with their evidence, collapsed bursts and picks match the core's view; the sources search finds events by place, date and camera.",
+        "`P` is a journaled change; `Cmd+Z` undoes this client's last; an agent's pick appears without a reload.",
+        "Develop N shows its confirmation with the proposed catalog folder (Return accepts, typing renames, an existing folder can be chosen), then develops the picks and opens Develop, with the card-copy offer and removable-media confirmation when they apply.",
+        "A `select` smoke scenario captures an event from a generated folder, picks, an agent's pick, undo and Develop N with correlated state and logs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "State and view-model tests for the grid window, groups, selection and keymap.",
+          "Rendered smoke scenario in a background launch."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-app select",
+          "cargo xtask smoke --scenario select --output NEW_DIR",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Selecting in the desktop is the API, drawn."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Add the loupe, the 100% focus check and moment compare, with look-ahead.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "The loupe is its own surface with a byte-budgeted cache of display-size decodes and a look-ahead in the direction of travel. `Z` requests `preview.region`; `C` shows up to four frames of the moment at one zoom. In a burst, `P` moves to the next moment (P7)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Browsing at speed"
+        },
+        {
+          "kind": "file",
+          "label": "Burst board",
+          "target": "docs/design/catalog/choosing-from-a-burst.png",
+          "relevance": "The reference screen."
+        },
+        {
+          "kind": "file",
+          "label": "Instant previews",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Surface identity and labelling rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "The loupe never shows a frame under another's name (draw identity checked as the viewport scenarios do).",
+        "The look-ahead decodes the next frames in the direction of travel within its byte budget, and a held arrow never queues more decodes than the budget holds.",
+        "The 100% inset shows the embedded full-size region, or a labelled development where the preview is smaller than the sensor.",
+        "A `loupe` smoke scenario steps a burst, checks 100%, compares and picks."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Surface and cache tests.",
+          "Rendered smoke scenario."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-app loupe",
+          "cargo xtask smoke --scenario loupe --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Choosing the best frame is fast and shows real detail."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Add Develop's workspace switch, development-set filmstrip and preview-first photograph switching.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "The development set is the view Develop was opened from. Switching replaces the one document through the open path, drawing the large preview first, labelled in the status bar's render slot; controls enable when the source is prepared; no neighbour preparation. A switch is refused while a draft is open."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Develop and the development set"
+        },
+        {
+          "kind": "file",
+          "label": "Development set board",
+          "target": "docs/design/catalog/development-set.png",
+          "relevance": "The reference screen."
+        },
+        {
+          "kind": "file",
+          "label": "Instant previews",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "How exact renders replace approximate ones."
+        }
+      ],
+      "acceptance_criteria": [
+        "`←`/`→` and a click move through the set; a cached preview is presented in the frame after the key.",
+        "No preview is shown for the wrong photograph or entry.",
+        "A `filmstrip` smoke scenario switches across JPEG and RAW photographs with correlated identities."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "State tests for switching, refusal and identity.",
+          "Rendered smoke scenario."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-app filmstrip",
+          "cargo xtask smoke --scenario filmstrip --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Moving between photographs in Develop is immediate and never wrong."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Add catalog browsing in Select: catalog folders by year in the sources, search, filter chips, the metadata browser (Date, Place, Camera, Lens), sort, Save as smart collection and the batch form.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Chips and columns build the `browse.view` query; counts come from `browse.facets`. The batch form writes one library change for organising and starts the batch jobs for preset and export."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "The catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog board",
+          "target": "docs/design/catalog/catalog.png",
+          "relevance": "The reference screen."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every chip, column value and sort changes the view query and nothing else; counts equal `browse.facets`; a saved smart collection stores exactly the query shown.",
+        "Batch moves and collection changes are one change each; a folder or collection holding part of the selection shows its count; dragging to a folder moves.",
+        "The `select` smoke scenario gains a catalog search, the metadata browser, a smart collection and a batch collection change."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "View-model tests from chips to query.",
+          "Rendered smoke steps."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-app catalog_browse",
+          "cargo xtask smoke --scenario select --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Finding developed photographs is the API's query, drawn."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Track original availability by volume, record each photograph's source folder, and ship manual Locate through the API and desktop.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "The internal relocation write exists (`EditorService::relocate`, crate-visible, test-only access through `OwnerMessage::Relocate`); Locate verifies the fingerprint first on a bounded, cancellable job. Availability is persisted with its check time; an absent mount point marks a volume's photographs and browsed folders offline with one check."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Availability and Locate.",
+          "locator": "Missing originals"
+        },
+        {
+          "kind": "file",
+          "label": "Source recovery",
+          "target": "docs/specs/source-recovery.md",
+          "relevance": "Accepted Locate steps and acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Relocate",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "`relocate`, `original_signature`, `verify_fingerprint`."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every item of the source-recovery spec's Locate acceptance passes through the API and the desktop.",
+        "An unmounted disk image marks its photographs and folders offline; browsing, picking and collections still work; Develop and export refuse with Locate offered.",
+        "Feature status and the user guide describe Locate as delivered."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core tests with a mounted disk image and copied fixtures, never the user's archive.",
+          "A rendered smoke step for the notice."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core locate",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Missing originals are honest and recoverable."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Resolve missing originals per photograph, grouped by the folder on disk each was developed from.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-015"
+      ],
+      "extra_context": [
+        "Gated on P11. Catalog folders need not mirror the disk, so resolution follows each photograph's recorded `source_folder`. `source.find` searches one chosen folder for a group's files by name and size, then fingerprint, and reports a result per photograph (found, different bytes, several identical candidates, not found, already claimed by another photograph); `source.relink` commits verified pairs in one transaction as one undoable library change and updates each `source_folder`."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Missing originals"
+        },
+        {
+          "kind": "file",
+          "label": "Resolve board",
+          "target": "docs/design/catalog/resolve-missing.png",
+          "relevance": "The reference screen."
+        },
+        {
+          "kind": "file",
+          "label": "Source recovery",
+          "target": "docs/specs/source-recovery.md",
+          "relevance": "Folder moves.",
+          "locator": "Later: folder moves and assistance"
+        }
+      ],
+      "acceptance_criteria": [
+        "`source.missing` groups missing photographs by source folder with reasons; `source.find` reports every photograph's result and is cancellable; `source.relink` changes only verified pairs, and stop, failure or an unplugged volume leaves everything as it was.",
+        "A file another photograph already points at is reported and never taken; identical candidates wait for a choice.",
+        "A `resolve-missing` smoke scenario resolves photographs moved within a disk image, some rewritten, duplicated or deleted, in a background launch."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Core tests with moved, rewritten, duplicated and missing files.",
+          "Rendered smoke scenario."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core resolve_missing",
+          "cargo xtask smoke --scenario resolve-missing --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Moved originals are found and relinked per photograph, verified."
+        ]
+      }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Add Remove from catalog, Removed, Put back and Empty Removed.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Removal is a journaled library change. Emptying deletes catalog records including immutable history, so it lifts the immutability triggers only inside its own transaction and needs permission authority (P12)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Behaviour.",
+          "locator": "Removing"
+        },
+        {
+          "kind": "file",
+          "label": "Agent contract",
+          "target": "docs/design/architecture.md",
+          "relevance": "Permission authority.",
+          "locator": "Agent contract"
+        }
+      ],
+      "acceptance_criteria": [
+        "Removed photographs leave every other view and return intact with Put back; files are untouched.",
+        "`catalog.empty-removed` is refused to an edit-authority client and otherwise deletes only removed photographs, collecting their unreferenced strokes and artifacts; no other path deletes an entry."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Removal, restore, authority and collection tests."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core remove",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Removing is reversible; erasing history needs the person."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Add batch Apply preset and batch Export over a selection of developed photographs.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Each photograph is its own history entry or export; the job reports per photograph and skips, with a reason, one with an open draft, a historical preview in the session or a missing original. Batch export uses the existing JPEG export and naming rule only (P11)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Batch.",
+          "locator": "The catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Presets",
+          "target": "docs/design/presets.md",
+          "relevance": "`edit.apply-preset`."
+        },
+        {
+          "kind": "file",
+          "label": "Export",
+          "target": "docs/design/export.md",
+          "relevance": "The one JPEG export path."
+        }
+      ],
+      "acceptance_criteria": [
+        "`batch.apply-preset` and `batch.export` produce exactly what N single calls would and report every skip; cancel stops between photographs with finished ones kept.",
+        "The batch form sends these requests."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Batch-versus-single comparison and skip-reason tests."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core batch",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Batches are many single actions with one report."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Verify and measure the complete browse, pick and develop feature, and update the shipped documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-012",
+        "TASK-013",
+        "TASK-014",
+        "TASK-016",
+        "TASK-017",
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Timing runs happen here, once, on the integrated build: the design's provisional targets with a real 1,000-frame RAW trip from the internal SSD and a card reader, a generated 10,000-file folder and a 100,000-photograph catalog, reported with host load and scope, including loupe stepping, the 100% check, bracket detection from previews, Develop switching, and a Basic drag during a scan and a preview backlog. Answer the performance-rules checklist for the finished change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Targets to measure.",
+          "locator": "Performance"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "What must hold.",
+          "locator": "Acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "When to verify",
+          "target": "docs/engineering/development.md",
+          "relevance": "Tiers and evidence rules."
+        },
+        {
+          "kind": "file",
+          "label": "Performance",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where figures are recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every acceptance item of the design holds with evidence; the rendered tier passes with the new scenarios.",
+        "Each provisional target is measured and recorded with its scope; misses are reported with figures.",
+        "Feature status, the roadmap, the user guide, the architecture's limits and the design's status describe what shipped; proposals are replaced by decisions; this plan is deleted."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the rendered tier and the new scenarios.",
+          "Run the measurements once."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier full --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Select and the catalog are verified, measured and documented as delivered."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-009",
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-012",
+        "TASK-013",
+        "TASK-014",
+        "TASK-015",
+        "TASK-017",
+        "TASK-018"
+      ]
+    },
+    {
+      "wave": 10,
+      "task_ids": [
+        "TASK-016"
+      ]
+    },
+    {
+      "wave": 11,
+      "task_ids": [
+        "TASK-019"
+      ]
+    }
+  ]
+}
