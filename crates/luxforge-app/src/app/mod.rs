@@ -94,6 +94,8 @@ mod view_state;
 mod view_state_tests;
 pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod select;
 #[cfg(test)]
 mod select_owner_tests;
@@ -367,7 +369,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 13] = [
+const AFTER_MESSAGE: [AfterMessage; 15] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -382,6 +384,8 @@ const AFTER_MESSAGE: [AfterMessage; 13] = [
     mask_coverage::after_message,
     // ── catalog lane D: views and desktop ──
     select::after_message,
+    loupe::after_message,
+    long_work::after_message,
     // ── end lane D ──
 ];
 
@@ -392,7 +396,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -403,6 +407,8 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     export::subscription,
     // ── catalog lane D: views and desktop ──
     select::subscription,
+    loupe::subscription,
+    long_work::subscription,
     // ── end lane D ──
 ];
 
@@ -694,6 +700,7 @@ impl Editor {
             Message::Evidence(message) => self.evidence_update(message),
             // ── catalog lane D: views and desktop ──
             Message::Select(message) => self.select_update(message),
+            Message::LongWork(message) => self.long_work_update(message),
             // ── end lane D ──
             Message::Close => self.close(),
         }
@@ -832,6 +839,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             select: self.select_shown(),
             select_menu_open: self.select.state.menu.is_some(),
+            loupe_open: self.loupe_open(),
             // ── end lane D ──
         }
     }
