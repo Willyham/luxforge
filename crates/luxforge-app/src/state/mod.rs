@@ -16,6 +16,7 @@ pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod select;
+pub(crate) mod select_missing;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -2288,7 +2289,7 @@ mod tests {
             notice.body, "Crop is unavailable: disabled by --disable-module",
             "the notice names the module and the reason, not the effect identity"
         );
-        assert!(notice.actions.is_empty(), "Locate is a later feature");
+        assert!(notice.actions.is_empty(), "a stale preview offers nothing");
 
         // A layer nothing provides is still named, by its effect identity.
         scene.render_error = Some(luxforge_core::Error::unavailable_effect(
@@ -2312,7 +2313,19 @@ mod tests {
             let notice = &scene.derive().canvas.notices[0];
             assert_eq!(notice.title, title, "{kind:?}");
             assert_eq!(notice.body, "the detail");
-            assert!(notice.actions.is_empty());
+            let locates = kind != luxforge_core::ErrorKind::ResourceLimit;
+            assert_eq!(
+                notice.actions,
+                if locates {
+                    vec![(
+                        "Locate original\u{2026}".to_owned(),
+                        canvas::NoticeAction::LocateOriginal,
+                    )]
+                } else {
+                    Vec::new()
+                },
+                "{kind:?}: an original that is not there offers Locate original…"
+            );
         }
         // A kind the workspace has nothing to say about is left to the status bar.
         scene.render_error = Some(luxforge_core::Error::internal("boom"));

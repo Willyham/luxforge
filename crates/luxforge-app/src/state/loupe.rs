@@ -1002,6 +1002,7 @@ mod tests {
                         span_ms: 0,
                         start,
                         len,
+                        picked: 0,
                     })
                     .collect(),
                 ..GroupLayout::default()
