@@ -1244,10 +1244,49 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
         )
     };
 
+    // A rendered preview the preview cache holds of the photograph, as lane B writes one.
+    let index = rusqlite::Connection::open(
+        crate::index::index_dir(&harness.catalog).join(crate::INDEX_FILE),
+    )
+    .unwrap();
+    index
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let previews_of = |asset: &Value| -> i64 {
+        index
+            .query_row(
+                "SELECT count(*) FROM photo_previews WHERE asset_id = ?1",
+                [asset.as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    index
+        .execute(
+            "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
+                 bytes, origin, last_used_ms, approximate)
+             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0)",
+            [
+                assets[0].as_str().unwrap().to_owned(),
+                harness
+                    .dir
+                    .join("k0-grid.jpg")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(previews_of(&assets[0]), 1);
+
     let answer = send(&assets[0], "send-1").result.unwrap();
     assert_eq!(answer["outcome"], "applied");
     assert_eq!(answer["items"], 2);
     assert_eq!(harness.photographs(), 3);
+    assert_eq!(
+        previews_of(&assets[0]),
+        0,
+        "the preview cache forgets a photograph sent back"
+    );
     assert_eq!(
         harness
             .refused("asset.state", json!({"asset_id": assets[0]}))

@@ -120,6 +120,23 @@ impl Owner {
         if !folders.is_empty() {
             files::indexed_folders_changed(self, origin, &folders);
         }
+        // Lane C: photographs a change sent back (an `asset.send-back`, or the undo of a Develop)
+        // are gone from the catalog, and lane B forgets their rendered previews.
+        let sent_back: Vec<crate::AssetId> = items
+            .iter()
+            .filter_map(|item| match item {
+                LibraryItem::DevelopedAsset { asset_id } => Some(asset_id),
+                _ => None,
+            })
+            .filter(|asset_id| {
+                !crate::editor::library_rows::has_asset(&self.service.connection, asset_id)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if !sent_back.is_empty() {
+            previews::forget_photographs(self, &sent_back);
+        }
     }
 
     /// Hand one catalog message to the lane whose worker posted it.
