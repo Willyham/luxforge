@@ -30,6 +30,7 @@ use crate::{
 };
 use luxforge_core::CURVE_EFFECT;
 use luxforge_evidence::{self as script, CurveStep, CurveStepEvent, MaskStep, SliderEnd};
+use luxforge_reference as reference;
 
 pub const FIXTURE: &str = "fixtures/generated/tone-ramp.jpg";
 const CURVE_MODULE: &str = "luxforge.curve";
@@ -379,25 +380,11 @@ fn ramp_half(frame: &Frame, upper: bool) -> Result<f64> {
     Ok(0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2])
 }
 
-/// The sRGB decoding of an 8-bit code, from its standard.
-fn linear(code: f64) -> f64 {
-    let e = code / 255.0;
-    if e <= 0.04045 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// The Oklab hue angle of a mean 8-bit sRGB colour, in degrees, from Oklab's published matrices.
+/// The Oklab hue angle of a mean 8-bit sRGB colour, in degrees, through the shared test reference's
+/// sRGB decoding and Oklab conversion, independent of the core's.
 fn hue(rgb: [f64; 3]) -> f64 {
-    let [r, g, b] = rgb.map(linear);
-    let l = (0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b).cbrt();
-    let m = (0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b).cbrt();
-    let s = (0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b).cbrt();
-    let a = 1.977_998_495_1 * l - 2.428_592_205_0 * m + 0.450_593_709_9 * s;
-    let bb = 0.025_904_037_1 * l + 0.782_771_766_2 * m - 0.808_675_766_0 * s;
-    bb.atan2(a).to_degrees()
+    let linear = rgb.map(|code| reference::srgb::decode_encoded(code / 255.0));
+    reference::colour::hue_degrees(reference::colour::to_oklab(linear))
 }
 
 /// The difference between two angles in degrees, in `[0, 180]`.
