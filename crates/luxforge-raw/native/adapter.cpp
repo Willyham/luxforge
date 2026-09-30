@@ -200,6 +200,17 @@ extern "C" int lf_raw_copy(void *handle, uint16_t *dest, size_t length,
 
 extern "C" void lf_raw_close(void *handle) noexcept { delete static_cast<Handle*>(handle); }
 
+// LibRaw's 65536-entry linearization table after unpack; the decoders that
+// apply it wrote curve[stored value] into the mosaic. Crate tests compare it
+// with RawSpeed's uncorrected values.
+extern "C" int lf_raw_curve(void *handle, uint16_t *dest, size_t length) noexcept {
+  if (!handle || !dest) return LF_STATUS_INVALID_INPUT;
+  const auto &curve=static_cast<Handle*>(handle)->decoder.imgdata.color.curve;
+  if (length != sizeof(curve)/sizeof(curve[0])) return LF_STATUS_INVALID_INPUT;
+  std::memcpy(dest,curve,sizeof(curve));
+  return LF_STATUS_OK;
+}
+
 // Demosaic Rust's normalized float mosaic, in which sensor white is 65535, into
 // three planes at the same scale. Rust owns the mosaic and planes, normalizes
 // before this call and divides the planes by 65535 after it.

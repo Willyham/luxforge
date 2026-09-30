@@ -23,6 +23,7 @@ mod neutral;
 mod normalize;
 mod opcodes;
 mod profiles;
+mod rawspeed;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
 use format::{classify_mode, raf_default_crop};
 pub use limits::{

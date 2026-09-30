@@ -22,6 +22,19 @@ fn native_raw_notices(root: &Path, out: &Path) -> Result {
             "vendor/librtprocess-9a858270/README.md",
             "librtprocess-9a858270/README.md",
         ),
+        (
+            "vendor/rawspeed-c835b05a/LICENSE",
+            "rawspeed-c835b05a/LICENSE",
+        ),
+        (
+            "vendor/rawspeed-c835b05a/credits.txt",
+            "rawspeed-c835b05a/credits.txt",
+        ),
+        (
+            "vendor/rawspeed-c835b05a/README.rst",
+            "rawspeed-c835b05a/README.rst",
+        ),
+        ("vendor/pugixml-1.16/LICENSE.md", "pugixml-1.16/LICENSE.md"),
     ];
     for (from, to) in notices {
         let input = source.join(from);
@@ -146,6 +159,22 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "selected_license":"GPL-3.0-or-later",
                     "notices":"native/librtprocess-9a858270",
                     "build":"Bundled RCD, Markesteijn and border source; no OpenMP"
+                },
+                {
+                    "name":"RawSpeed",
+                    "version":"develop (no release)",
+                    "revision":"c835b05aecfacb7343f7c424abd620aa12116c3f",
+                    "selected_license":"LGPL-2.0-or-later (code; per-file exceptions in THIRD_PARTY.md) AND CC-BY-SA-3.0 (data/cameras.xml)",
+                    "notices":"native/rawspeed-c835b05a",
+                    "build":"Bundled library source and embedded cameras.xml; C++20, generic CPU; no OpenMP, zlib or libjpeg; not yet routed"
+                },
+                {
+                    "name":"pugixml",
+                    "version":"1.16",
+                    "revision":"c8033ce9d039e7f9d134877c363397b3cfe20816",
+                    "selected_license":"MIT",
+                    "notices":"native/pugixml-1.16",
+                    "build":"Bundled source built with RawSpeed; PUGIXML_NO_XPATH"
                 },
                 {
                     "name":"libjpeg-turbo (mozjpeg-sys)",
