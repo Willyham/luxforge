@@ -297,6 +297,7 @@ mod tests {
             span_ms: 0,
             start,
             len,
+            picked: 0,
         };
         let moments = [moment(2, 3), moment(5, 2), moment(10, 4)];
         let at = |position| moment_of(&moments, position).map(|found| (found.index, found.frame));

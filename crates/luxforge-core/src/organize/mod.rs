@@ -137,6 +137,7 @@ pub(crate) fn group(
             day,
             start: start as u32,
             len: len as u32,
+            picked: 0,
         });
         let day_frames = &frames[start..start + len];
         if grouping == Grouping::DayCameraMoment && day.is_some() {

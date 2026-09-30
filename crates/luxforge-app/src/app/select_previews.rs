@@ -165,8 +165,10 @@ impl Wanted {
             height,
             scale_factor,
         } = window;
+        // A collapsed burst's cell shows its pick, so that frame's preview is the one wanted.
         let file = |cell: u32| {
-            let row = rows.row(layout.cell(cell).item)?;
+            let cell = layout.cell(cell);
+            let row = rows.row(rows.shown(cell.item, cell.span))?;
             match row.item {
                 RowItem::File { file_id } => Some((file_id, row.preview)),
                 RowItem::Photo { .. } => None,
