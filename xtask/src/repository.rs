@@ -593,6 +593,10 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/artifacts",
             "crates/luxforge-core/src/lib.rs",
+            // The catalog's preview lane reads a browsed JPEG whole, bounded, for its grid and
+            // loupe tiers, on its own worker and off the editor's source cache
+            // (`docs/design/catalog.md`, "The index and previews cache").
+            "crates/luxforge-core/src/previews/extract.rs",
         ],
         mode: Match::Whole,
         tests: true,
