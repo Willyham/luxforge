@@ -97,6 +97,7 @@ pub(crate) mod waker;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod select;
+pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
 #[cfg(test)]
 mod select_missing_tests;
@@ -372,7 +373,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 16] = [
+const AFTER_MESSAGE: [AfterMessage; 17] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -388,6 +389,7 @@ const AFTER_MESSAGE: [AfterMessage; 16] = [
     // ── catalog lane D: views and desktop ──
     select::after_message,
     select_missing::after_message,
+    select_catalog::after_message,
     loupe::after_message,
     long_work::after_message,
     // ── end lane D ──
@@ -843,7 +845,7 @@ impl Editor {
                     .is_none_or(|shape| shape.brush().is_some()),
             // ── catalog lane D: views and desktop ──
             select: self.select_shown(),
-            select_menu_open: self.select.state.menu.is_some(),
+            select_menu_open: self.select.state.menu.is_some() || self.select.state.catalog.open(),
             loupe_open: self.loupe_open(),
             // ── end lane D ──
         }
