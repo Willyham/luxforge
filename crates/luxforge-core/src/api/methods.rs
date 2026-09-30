@@ -874,7 +874,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // Catalog folders and collections (TASK-012).
 
     // Availability and Locate (TASK-016).
-
+    owner!(
+        "source.check",
+        crate::catalog_types::api::SourceCheck,
+        owner::library::sources::source_check,
+        "starts a source-check job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, availability, checked_ms}]}: each photograph's original as found now, available (its recorded file at its path), offline (its volume is not connected: one look at the mount point covers every photograph on it), missing (no file at its path) or changed (another file there), recorded with the time it was looked at, outside the journal; a photograph whose file moved within its volume is found again by its file identity in the index, confirmed by its fingerprint and relinked as one library change by the actor system, and nothing else is relinked; one event when anything changed, naming the change when there is one; targets are photographs by id, by the path of their original or its index row, or the photographs selected in the caller's view; read and cancel the job with job.read and job.cancel; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+    ),
+    owner!(
+        "source.locate",
+        crate::catalog_types::api::SourceLocate,
+        owner::library::sources::source_locate,
+        "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait",
+        retries: Owner,
+    ),
     // ── end lane C ──
     // ── catalog lane D: views ──
     // ── end lane D ──

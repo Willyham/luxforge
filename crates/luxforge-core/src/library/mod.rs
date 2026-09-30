@@ -31,3 +31,5 @@ pub(crate) mod targets;
 // Catalog folders and collections (TASK-012).
 
 // Availability and Locate (TASK-016).
+pub(crate) mod availability;
+pub(crate) mod locate;
