@@ -436,9 +436,9 @@ impl MethodContract {
 
 use CatalogLane::{Catalog, Files, Previews, Views};
 use ErrorKind::{
-    Cancelled, Catalog as CatalogError, Conflict, Decode, FileAccess, Forbidden, NotReady,
-    ResourceLimit, SourceUnavailable, UnsupportedColor, UnsupportedInput, UnsupportedProfile,
-    Validation,
+    Cancelled, Catalog as CatalogError, Conflict, Decode, FileAccess, Forbidden, Incompatible,
+    NotReady, ResourceLimit, SourceUnavailable, UnsupportedColor, UnsupportedInput,
+    UnsupportedProfile, Validation,
 };
 
 /// Every catalog method of the design's API table, in its order.
@@ -792,11 +792,12 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
             UnsupportedColor,
             UnsupportedProfile,
             Decode,
+            Incompatible,
             ResourceLimit,
             NotReady,
             Cancelled,
         ],
-        "a cached preview's path, size and origin, or the job that makes it and the best preview cached meanwhile; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one",
+        "a cached preview's path, size and origin, or the job that makes it and the best preview cached meanwhile: a file's grid or loupe tier (job preview-extract; a RAW with no usable preview is developed for a visible or look-ahead request and not-ready for a background one), or a developed photograph's grid or large tier rendered from its current or named entry (job preview-render, one per tier; its camera preview is the fallback until its first render, and an edit's missing module is incompatible)",
     )
     .starts(&jobs::PREVIEW_EXTRACT),
     method::<PreviewRegion>(

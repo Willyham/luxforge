@@ -1642,9 +1642,12 @@ impl Owner {
 
     /// Record every change the message just handled announced, once each.
     fn record_announced(&mut self) {
-        for origin in std::mem::take(&mut self.announced) {
-            self.log.record(&origin);
+        let announced = std::mem::take(&mut self.announced);
+        for origin in &announced {
+            self.log.record(origin);
         }
+        // Lane B: a developed photograph whose history moved has its grid tier rendered again.
+        previews::follow_changes(self, &announced);
     }
 
     /// A preview job for the requesting client. A draft is session state, so the owner looks it up
