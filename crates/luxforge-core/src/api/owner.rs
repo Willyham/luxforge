@@ -1305,6 +1305,7 @@ impl EventLog {
             request_id: origin.request_id.clone(),
             asset_id: origin.asset_id.clone(),
             revision: origin.revision,
+            library_sequence: origin.library_sequence,
         });
     }
 

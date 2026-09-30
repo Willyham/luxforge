@@ -1962,6 +1962,7 @@ name = "luxforge-raw"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "image",
  "libc",
  "luxforge-testbase",
  "rayon",

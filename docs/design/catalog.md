@@ -10,7 +10,7 @@ The contracts have landed:
 - generated data (`cargo xtask generate-catalog`);
 - module skeletons.
 
-Browse views, facets, the selection and the event list are built and registered (`browse.*`, `event.list`; [Views on the owner](#architecture)), and the desktop's Select workspace shell browses them ([Workspaces](#workspaces)). No other catalog method is registered yet. What the catalog does today is in [feature status](../features.md).
+Registered so far: browse views, facets, the selection and the event list (`browse.*`, `event.list`; [Views on the owner](#architecture)), which the desktop's Select workspace shell browses ([Workspaces](#workspaces)); picks and the journal of library changes (`pick.set`, `pick.list`, `library.journal`, `library.inspect`, `library.undo`, `library.redo`) and `catalog.info`, which nothing in the desktop uses yet. What the catalog does today is in [feature status](../features.md).
 
 ## Product
 
@@ -103,7 +103,7 @@ Whatever is browsed is **indexed**: a bounded, cancellable walk that lists suppo
 Events are Luxforge's organization over the indexed folders and mounted cards ([P3](#proposals)):
 
 - Photographs are sorted by capture time across every camera and folder, and a new event starts at a gap of more than 3 hours, or, when both sides carry a position, where consecutive photographs are more than 25 km apart. A calendar day is never split below that; a long day stays one event.
-- An event is named by its place and dates: the nearest populated place to its photographs' median position, from an offline gazetteer bundled with Luxforge, never an online lookup ([P4](#proposals)); without positions, a user-named folder that holds most of it ("2026-09-12 Lake"), unless the folder's name is a camera's (`100NZ8_1`); otherwise the date and cameras.
+- An event is named by its place and dates: the nearest populated place to its photographs' median position, from an offline gazetteer bundled with Luxforge, never an online lookup ([P4](#proposals)), whose places are GeoNames' `cities15000` extract, compiled in and credited in the notices under CC BY 4.0 ([bundled place names](../engineering/dependencies.md#bundled-place-names)); without positions, a user-named folder that holds most of it ("2026-09-12 Lake"), unless the folder's name is a camera's (`100NZ8_1`); otherwise the date and cameras.
 - Events are listed by month, newest first, each with its picks and total, and are searchable by place, date and camera from the sources panel.
 - An event's photographs from several folders and cards are one view; the Info panel says where each file is.
 
@@ -187,6 +187,13 @@ Across folders there are **collections**, sets a photograph can be in any number
 ### Library changes and undo
 
 Every pick and clear, folder and collection change, Develop and relink is one **library change**: a numbered row naming the actor, request, method and a label ("Picked L1003206.DNG", "Added 5 to Portfolio › Landscapes", "Developed 18"), with each item's value before and after. The journal is append-only. `library.undo` reverts the calling client's latest change not yet undone by appending its inverse, and is refused, naming the items, when any of them changed since; `library.redo` reverts that undo under the same rule. In Select, `Cmd+Z` and `Shift+Cmd+Z` are these; in Develop they stay the photograph's history ([P10](#proposals)). A Develop is undone by sending its unedited photographs back; one already edited refuses the undo with that reason.
+
+How it works (built for picks; every later library change records through the same core, `crate::library::journal`):
+
+- A method says only what each item is to become. In one catalog transaction the journal reads each item's value, leaves out the items that already have it, writes the rest and records each with its value before and after; a change that changes nothing records nothing and announces nothing. One reader and one writer per item kind (`library::items`) serve every change, its undo and its redo, so undo and redo revert any change the same way: an undo writes each row's `before` back in reverse order, and records that as a change that `undoes` the first.
+- The calling client is the request's `actor` (`library_changes.client_key`), so an undo survives a restart. Undo reverts the actor's latest change or redo not yet undone; redo reverts its latest undo not yet redone, made since its latest new change, which ends what can be redone as in an editor.
+- An item "changed since" when a later change that is still in effect touched it — a later change and its undo, or a later undo and its redo, cancel out — or when its value is no longer the one the change left, whoever changed it. The refusal is `conflict` with the items in `data.items` (the first 100, and `data.count`); nothing changes.
+- A retried request, the same actor, request identity and method, is answered with the change its first attempt recorded, after a restart too, before its targets are resolved again.
 
 One change covers at most `MAX_LIBRARY_BATCH` items (provisionally 50,000, set by measuring the owner transaction); a larger request is refused with `resource-limit`, never split silently.
 
@@ -275,9 +282,18 @@ A photograph's position is kept because places are how the catalog is searched; 
 
 Grid tiers are kept (about 40 KB each); loupe and large tiers share a byte budget with least-recently-used eviction ([P8](#proposals)). A changed renderer generation discards the rendered tiers.
 
+**What cameras embed** ([inventory](../research/embedded-previews.md), 120 files from 103 cameras). `luxforge-raw` lists a RAW file's embedded images and extracts one by positional reads, without unpacking it ([its README](../../crates/luxforge-raw/README.md#embedded-previews)); listing read 17 to 205 KB a file. Which tier needs the development fallback follows from the camera:
+
+| Cameras | Largest embedded preview | Needs a development for |
+| --- | --- | --- |
+| 53: every Nikon, Pentax, Ricoh and Leica; every Canon but the EOS R5 Mark II and R8; Sony A1, A7 IV, A7C II, A7CR, A7R V, A7S III and a6700 | Full-size JPEG | Nothing: the 100% check reads the preview |
+| 43: every Fujifilm, OM System, Olympus and Panasonic; Sony A7 III, A7R II–IV, A7C, A9 and a6000–a6600 | JPEG of 1616–4416 px | The 100% check |
+| 5: the DJI drones, the owner's Air 2S among them | JPEG of 960 px | The loupe and the 100% check |
+| 2: Canon EOS R5 Mark II and R8 | H.265 only, which is not extracted | Every tier, the grid included |
+
 ## API
 
-The methods, in the one method table with declared parameters. Every shape is declared once in the core's `catalog_types` module: each method's parameter struct, answer, envelope, job and error codes in `catalog_types/api.rs` (`CATALOG_METHODS`), and the types they name beside their concept (`identity`, `header`, `disk`, `organize`, `browse`, `library`, `previews`, `jobs`). `event.list` and the `browse.*` methods are registered; each other lane adds its methods to the method table when they work, so `schema.list` never lists a method that does nothing, and a test holds every registered catalog method to its declaration. Mutations carry `{request_id, actor}` (`mutation`) and the owner answers their retries; only `catalog.empty-removed` needs permission authority. A method that starts a job answers `{job_id, status, deduplicated}` at once, and the job's result, read with `job.read` and cancelled with `job.cancel`, is the answer named here. Every method may also answer `protocol` and `internal`.
+The methods, in the one method table with declared parameters. Every shape is declared once in the core's `catalog_types` module: each method's parameter struct, answer, envelope, job and error codes in `catalog_types/api.rs` (`CATALOG_METHODS`), and the types they name beside their concept (`identity`, `header`, `disk`, `organize`, `browse`, `library`, `previews`, `jobs`). Each lane adds its methods to the method table when they work (so far `event.list`, the `browse.*` methods, `pick.set`, `pick.list`, the `library.*` methods and `catalog.info`), so `schema.list` never lists a method that does nothing, and a test holds every registered catalog method to its declaration. Mutations carry `{request_id, actor}` (`mutation`) and the owner answers their retries; only `catalog.empty-removed` needs permission authority. A method that starts a job answers `{job_id, status, deduplicated}` at once, and the job's result, read with `job.read` and cancelled with `job.cancel`, is the answer named here. Every method may also answer `protocol` and `internal`.
 
 `targets` is `{kind: paths, paths}`, `{kind: files, file_ids}`, `{kind: assets, asset_ids}` or `{kind: selection}` (the caller's selection in its current view), at most `MAX_LIBRARY_BATCH` (50,000) items; a larger request is `resource-limit`. A file is named by its index row (`file_id`, valid while the index exists) and always also by its `path`; a photograph by its `asset_id`.
 
@@ -327,9 +343,9 @@ The methods, in the one method table with declared parameters. Every shape is de
 | `batch.export` | `targets`, `destination` (a folder), `mutation`, `keep_metadata?` | job `batch-export` → `BatchReport` | validation, read-error, resource-limit, cancelled | C |
 | `preview.read` | `item`: `{kind: file, file_id}` or `{kind: photo, asset_id, entry_id?}`, `tier` (grid, loupe, large), `priority?` (look-ahead, visible, background) | `PreviewAnswer`: `{state: ready, preview: {item, tier, path, width, height, origin, bytes, key}}` or `{state: queued, job_id, fallback?}`, job `preview-extract` (or `preview-render` for a photograph) | validation, source-unavailable, unsupported-input, resource-limit | B |
 | `preview.region` | `item`, `rect: {x, y, width, height}` | job `preview-region` → `RegionAnswer {item, rect, path, width, height, origin}` | validation, source-unavailable, unsupported-input, resource-limit, cancelled | B |
-| `catalog.info` | — | `CatalogInfo {path, catalog_id, format, index_format, counts, index, previews}` | catalog | C |
+| `catalog.info` | — | `CatalogInfo {path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index, previews?}` (`previews` once the preview lane reports its size) | catalog | C |
 
-A preview's `origin` is `exif-thumbnail`, `embedded`, `developed` (a neutral Luxforge development) or `rendered` (a photograph's entry), which every surface that shows it names. `catalog.list` is replaced by `browse.view` and `browse.rows`, and `catalog.import` by picks and `pick.develop`; opening a developed photograph in Develop uses the existing `source.prepare` with an adopt that accepts any preparation the client asked for. A library change records one event naming its sequence, and an index or develop batch one event naming the source or the assets, so no batch can overrun the 256-event log.
+A preview's `origin` is `exif-thumbnail`, `embedded`, `developed` (a neutral Luxforge development) or `rendered` (a photograph's entry), which every surface that shows it names. `catalog.list` is replaced by `browse.view` and `browse.rows`, and `catalog.import` by picks and `pick.develop`; opening a developed photograph in Develop uses the existing `source.prepare` with an adopt that accepts any preparation the client asked for. A library change records one event naming its sequence (the event's `library_sequence`), and an index or develop batch one event naming the source or the assets, so no batch can overrun the 256-event log.
 
 ## Architecture
 

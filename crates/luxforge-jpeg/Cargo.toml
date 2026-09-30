@@ -18,9 +18,12 @@ image = { workspace = true, features = ["jpeg"] }
 serde_json.workspace = true
 sha2.workspace = true
 
-# The decoder reads libjpeg's warning code through its error manager's raw pointer: one `unsafe`
-# block, in `decode.rs`, allowed there by name. The crate denies `unsafe` everywhere else, and the
-# rest of the workspace keeps its forbid(unsafe_code) policy.
+# `unsafe` is allowed by name only on the functions that need it, each block beside its `SAFETY:`
+# comment: in `decode.rs`, the one read of libjpeg's warning code through the error manager's raw
+# pointer; in `session.rs`, the region decode's own libjpeg session over `mozjpeg-sys` (creating,
+# reading, cropping, skipping and destroying it, and reading the segments it saved), since
+# `mozjpeg`'s safe API cannot crop or skip. The crate denies `unsafe` everywhere else, and the rest
+# of the workspace keeps its forbid(unsafe_code) policy.
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"

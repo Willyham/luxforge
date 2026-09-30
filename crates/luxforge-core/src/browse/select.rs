@@ -88,10 +88,6 @@ pub(crate) fn select(
 }
 
 /// The items selected in `view`, in view order.
-#[allow(
-    dead_code,
-    reason = "the seam lane C's selection targets call through ViewsLane::selected"
-)]
 pub(crate) fn selected_items(view: &View) -> Vec<ViewItem> {
     let mut items = Vec::with_capacity(view.selection.count as usize);
     for range in &view.selection.ranges {
