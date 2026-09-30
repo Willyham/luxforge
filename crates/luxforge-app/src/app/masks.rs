@@ -886,57 +886,19 @@ impl Editor {
         })
     }
 
-    /// Which mask's coverage the next preview job should fill, and for which component. `None`
-    /// leaves the frame without a grid, which is what every request outside Mask mode asks for.
-    /// It follows the overlay the canvas draws now, which an open shape gesture may show of its own
-    /// accord ([`Editor::effective_mask_overlay`]).
-    #[cfg(test)]
-    pub(crate) fn mask_overlay_request(&self) -> Option<luxforge_core::MaskOverlayRequest> {
-        let luxforge_core::MaskCoverageTarget::Existing { mask, component } =
-            self.mask_coverage_target()?
-        else {
-            return None;
-        };
-        let mut request = self.overlay_request(self.effective_mask_overlay(), Some(&mask))?;
-        request.component = component;
-        Some(request)
-    }
-
-    /// The request the first frame after the open gesture ends will carry: the setting's own, with
-    /// nothing the gesture shows of its own accord. A scripted Apply or Cancel waits on that frame.
-    pub(crate) fn settled_mask_overlay_request(&self) -> Option<luxforge_core::MaskOverlayRequest> {
-        self.overlay_request(self.session.workspace.mask_overlay, None)
-    }
-
-    fn overlay_request(
-        &self,
-        mode: MaskOverlayMode,
-        gesture_mask: Option<&MaskId>,
-    ) -> Option<luxforge_core::MaskOverlayRequest> {
-        if mode == MaskOverlayMode::Off || !self.mask_mode_active() {
-            return None;
-        }
-        let mask = gesture_mask
-            .or(self.mask_panel.selected_mask.as_ref())?
-            .clone();
-        if self.mask_panel.hidden.contains(&mask) {
-            return None;
-        }
-        let (cells_w, cells_h) = self.overlay_cells()?;
-        let (whole_cells_w, whole_cells_h) = self.whole_overlay_cells()?;
-        Some(luxforge_core::MaskOverlayRequest {
-            mask,
-            // The **pointer** is what asks for one component's own contribution, and nothing else:
-            // hovering a row shows that component alone, and leaving the list restores the composed
-            // mask. Tying it to the selection instead would leave the overlay showing one component
-            // long after the pointer had gone, and there would be no way to see the composition
-            // again without deselecting — which is the comparison the list exists to make.
-            component: self.mask_panel.hovered_component.clone(),
-            cells_w,
-            cells_h,
-            whole_cells_w,
-            whole_cells_h,
-        })
+    /// Whether the first frame after the open gesture ends will show the selected mask's overlay:
+    /// the setting's own, with nothing the gesture shows of its own accord. A scripted Apply or
+    /// Cancel waits on that overlay.
+    pub(crate) fn settled_mask_overlay_wanted(&self) -> bool {
+        self.session.workspace.mask_overlay != MaskOverlayMode::Off
+            && self.mask_mode_active()
+            && self
+                .mask_panel
+                .selected_mask
+                .as_ref()
+                .is_some_and(|mask| !self.mask_panel.hidden.contains(mask))
+            && self.overlay_cells().is_some()
+            && self.whole_overlay_cells().is_some()
     }
 
     // ---- what the canvas shows while a gesture is open -----------------------------------------
@@ -1511,10 +1473,10 @@ pub(crate) fn control_target(
 
 /// The mask overlay's own painting: one bounded display-cell grid into RGBA.
 ///
-/// The grid itself comes from the preview worker, beside the frame it rendered, so nothing here
-/// rasterizes a pixel or allocates a full-resolution plane. What the overlay draws is chosen by the
-/// session's own view state, and the tint is green or white — never red, blue or the magenta between
-/// them, which the delivered clipping indicators own on this canvas.
+/// The grid itself comes from the mask coverage worker, so nothing here rasterizes a pixel or
+/// allocates a full-resolution plane. What the overlay draws is chosen by the session's own view
+/// state, and the tint is green or white — never red, blue or the magenta between them, which the
+/// delivered clipping indicators own on this canvas.
 pub(crate) mod mask_overlay {
     use luxforge_core::{
         MaskOverlayColour, MaskOverlayMode,
@@ -1579,15 +1541,13 @@ pub(crate) mod mask_overlay {
 }
 
 impl Editor {
-    /// Lay a coverage grid the preview worker filled for `generation` over the photograph, in the
-    /// update that takes it up: beside an exact-only frame or a region once that frame is on
-    /// screen, or in the overlay phase that follows a proxy frame.
+    /// Lay a coverage grid the mask coverage worker filled over the photograph of `generation`, in
+    /// the update that takes it up.
     ///
     /// It goes to the presenter in this update and the photo surface draws it over the photograph,
     /// never changing the photograph, in the next redraw. It is kept with its generation and drawn
     /// only while that frame is the one on screen — an overlay drawn over another image would claim
-    /// a selection covers pixels it does not. The grid is agnostic to which phase of the job
-    /// delivered it.
+    /// a selection covers pixels it does not.
     pub(crate) fn present_mask_overlay(
         &mut self,
         generation: u64,

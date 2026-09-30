@@ -1,14 +1,11 @@
-//! What one preview job renders — the evaluation it was planned with — and how it presents it and
-//! what it asks for beside the frame.
+//! What one preview job renders — the evaluation it was planned with — and how it presents it.
 
 use crate::{
-    Component, ComponentId, ComponentMode, Error, Evaluation, LinearImage, LinearSettings, Mask,
-    MaskId, ProxyBounds, Region, RenderSource, SourceImage,
-    analysis::{AnalysisIdentity, MAX_OVERLAY_CELLS},
+    Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, Region, RenderSource, SourceImage,
+    analysis::AnalysisIdentity,
 };
 #[cfg(doc)]
-use crate::{ExactOutcome, analysis::Report, mask::CompiledMask};
-use std::collections::BTreeMap;
+use crate::{ExactOutcome, analysis::Report};
 
 #[derive(Clone, Debug)]
 pub enum PreviewSource {
@@ -69,54 +66,6 @@ impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     }
 }
 
-/// What a preview job asks the worker for beside the frame: the coverage grid of one mask, over the
-/// frame that job renders, on a `cells_w × cells_h` display grid.
-///
-/// **Why a component *identity* and not an index.** Hovering a row of the component list shows that
-/// row's own contribution, so one component's grid has to be obtainable on its own. The cheapest
-/// honest way to ask for it is one more field on this request, because it costs nothing anywhere
-/// else: the host derives a one-component mask and compiles it through the same [`CompiledMask`]
-/// the whole mask goes through, so the row's overlay and the mask's overlay cannot disagree about
-/// that component's field, and compiling one component is strictly cheaper than compiling all of
-/// them. It is a [`ComponentId`] rather than a position because a position is not an identity: the
-/// component list is reorderable, a hover and the frame that answers it are a request apart, and an
-/// index that silently slid onto the neighbouring row would draw the wrong field with no way to
-/// tell. A component the mask does not hold is refused by name instead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MaskOverlayRequest {
-    /// The mask to describe. It must be one this job's recipe holds.
-    pub mask: MaskId,
-    /// One component of that mask, on its own, or `None` for the whole composed mask.
-    pub component: Option<ComponentId>,
-    pub cells_w: u32,
-    pub cells_h: u32,
-    /// Grid dimensions for a later settled whole-stage frame. Region frames use `cells_w/h`.
-    pub whole_cells_w: u32,
-    pub whole_cells_h: u32,
-}
-
-/// The mask a component's own row describes: that one component alone.
-///
-/// Its mode is `add` because there is nothing before it to subtract from or intersect with, the
-/// whole-mask amount and inversion are left out because they are the mask's modifiers and not the
-/// row's, and the component's *own* inversion is kept because that is a control on the row. `None`
-/// when the mask does not hold that component.
-pub(super) fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask> {
-    let found = mask.components.iter().find(|held| &held.id == component)?;
-    let alone = Component {
-        mode: ComponentMode::Add,
-        ..found.clone()
-    };
-    Some(Mask {
-        id: mask.id.clone(),
-        name: mask.name.clone(),
-        amount: Mask::FULL_AMOUNT,
-        invert: false,
-        next_ordinal: BTreeMap::new(),
-        components: vec![alone],
-    })
-}
-
 /// How much work the one preview lane may do for this request. An interactive request produces
 /// visible pixels only; the desktop asks for settlement once its shared quiet gate opens or the
 /// gesture commits. A normal request preserves the existing two-phase path for callers that need
@@ -171,15 +120,11 @@ pub struct PreviewJob {
     /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
     /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
     pub viewport_declined: Option<String>,
-    /// Fill one mask's coverage grid beside the frame and return it with it, exactly as
-    /// [`PreviewJob::analyse`] returns a [`Report`]. Set through
-    /// [`PreviewJob::with_mask_overlay`], which is what validates it against this job's own stack.
-    pub mask_overlay: Option<MaskOverlayRequest>,
 }
 
 impl PreviewJob {
     /// A job that renders `evaluation` whole, exactly and at once: no layer prefix, no report, no
-    /// proxy phase, no viewport and no coverage grid, which the caller sets afterwards. Its identity
+    /// proxy phase and no viewport, which the caller sets afterwards. Its identity
     /// is the evaluation's ([`Evaluation::identity`]), which hashes the stack: `O(recipe)`.
     pub fn new(evaluation: Evaluation) -> Result<Self, Error> {
         Ok(Self {
@@ -191,60 +136,6 @@ impl PreviewJob {
             viewport: None,
             intent: PreviewIntent::Immediate,
             viewport_declined: None,
-            // A coverage grid is asked for by the client that will draw it, through
-            // `PreviewJob::with_mask_overlay`, which validates it against this stack.
-            mask_overlay: None,
         })
-    }
-
-    /// Ask this job's exact phase for one mask's coverage grid, validated against the stack this
-    /// job renders.
-    ///
-    /// Validation happens here and not on the worker because the answer depends on the stack, and
-    /// the stack is in hand: a mask or a component this recipe does not hold is a named
-    /// `validation` refusal now rather than a silently absent overlay later. It costs
-    /// `O(masks + components)` and reads no pixel, so the thread that plans a job may call it
-    /// ([performance rule 5](../../../../docs/engineering/performance-rules.md#rules)).
-    pub fn with_mask_overlay(mut self, request: MaskOverlayRequest) -> Result<Self, Error> {
-        let mask = self
-            .evaluation
-            .recipe()
-            .masks
-            .iter()
-            .find(|mask| mask.id == request.mask)
-            .ok_or_else(|| {
-                Error::validation(format!(
-                    "mask {} is not in the stack this preview renders",
-                    request.mask
-                ))
-            })?;
-        if let Some(component) = &request.component
-            && !mask.components.iter().any(|held| &held.id == component)
-        {
-            return Err(Error::validation(format!(
-                "mask {} holds no component {component}",
-                mask.name
-            )));
-        }
-        if request.cells_w == 0
-            || request.cells_h == 0
-            || request.whole_cells_w == 0
-            || request.whole_cells_h == 0
-        {
-            return Err(Error::validation(
-                "a mask overlay needs a non-empty cell grid",
-            ));
-        }
-        if request.cells_w > MAX_OVERLAY_CELLS
-            || request.cells_h > MAX_OVERLAY_CELLS
-            || request.whole_cells_w > MAX_OVERLAY_CELLS
-            || request.whole_cells_h > MAX_OVERLAY_CELLS
-        {
-            return Err(Error::resource_limit(format!(
-                "a mask overlay grid exceeds the {MAX_OVERLAY_CELLS} cells a side the display overlay allows"
-            )));
-        }
-        self.mask_overlay = Some(request);
-        Ok(self)
     }
 }

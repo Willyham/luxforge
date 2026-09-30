@@ -338,12 +338,11 @@ impl Editor {
         })
     }
 
-    /// The visible region's grid. The worker uses this for motion and refinement at 100% and above.
+    /// The visible region's grid at 100% and above, and the whole stage's below.
     pub(crate) fn overlay_cells(&self) -> Option<(u32, u32)> {
         // The displayed raster's size, or the source's own before the first frame has landed: the
         // grid is bounded by what the display can show, and the aspect ratio is what decides how
-        // the cells divide, so a mask overlay can be asked for with the first preview job rather
-        // than only from the second one onwards.
+        // the cells divide, so a mask's coverage can be planned before its first frame lands.
         let source = self.presentation.dimensions.or_else(|| {
             self.document
                 .state

@@ -1,18 +1,18 @@
-//! The mask overlay end to end: a preview job asks for one mask's coverage grid, the worker returns
-//! it with the frame it describes under that frame's generation, and the per-client view state that
-//! asks for it commits nothing.
+//! The mask overlay end to end: one mask's coverage grid over the evaluation the owner plans for a
+//! client's current stack, and the per-client view state that asks for it commits nothing.
 //!
 //! Everything here goes through the same owner every client reaches — `catalog.import`,
-//! `mask.create-linear`, `mask.add-linear`, `edit.set-basic`, `workspace.set` and `session.state` — and
-//! the frames come from the real [`PreviewQueue`], so nothing is proved against a hand-built job.
-//! The expected bytes are computed from [`CompiledMask`] directly, not from the unit that filled
-//! the grid.
+//! `mask.create-linear`, `mask.add-linear`, `edit.set-basic`, `workspace.set` and `session.state` — the
+//! grids come from [`luxforge_core::Evaluation::mask_overlay_coverage`] over the evaluation of an
+//! owner-planned preview job, and the frames they are compared with come from the real
+//! [`PreviewQueue`], so nothing is proved against a hand-built job. The expected bytes are computed
+//! from [`CompiledMask`] directly, not from the unit that filled the grid.
 use super::*;
 use luxforge_core::{
-    ApiRequest, ApiResponse, AssetId, ClientId, ComponentId, MaskId, MaskOverlayRequest,
-    OwnerHandle, PreviewPhase, PreviewQueue, PreviewRequest, PreviewResult, Recipe, Stage,
-    StageTransform,
-    analysis::{self, MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MAX_OVERLAY_CELLS},
+    ApiRequest, ApiResponse, AssetId, Cancel, ClientId, ComponentId, Error, MaskCoverageTarget,
+    MaskId, MaskOverlayOutcome, OwnerHandle, PreviewJob, PreviewPhase, PreviewQueue,
+    PreviewRequest, PreviewResult, Recipe, Stage, StageTransform,
+    analysis::{self, MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MAX_OVERLAY_CELLS, MaskOverlay},
     mask::CompiledMask,
     stage_transform,
 };
@@ -162,6 +162,33 @@ fn exact(job: luxforge_core::PreviewJob) -> PreviewResult {
     result
 }
 
+/// One mask's (or one component's) coverage over `job`'s evaluation at `cells`, over the whole
+/// output stage: what the canvas's live overlay draws.
+fn coverage(
+    job: &PreviewJob,
+    mask: &MaskId,
+    component: Option<ComponentId>,
+    cells: (u32, u32),
+) -> Result<MaskOverlayOutcome, Error> {
+    let target = MaskCoverageTarget::Existing {
+        mask: mask.clone(),
+        component,
+    };
+    Ok(job
+        .evaluation
+        .mask_overlay_coverage(&target, cells, None, None, &Cancel::never())?
+        .outcome
+        .expect("no cached key was offered, so the grid is filled"))
+}
+
+/// The grid [`coverage`] fills, which the caller expects to exist.
+fn grid(job: &PreviewJob, mask: &MaskId, cells: (u32, u32)) -> MaskOverlay {
+    let outcome = coverage(job, mask, None, cells).expect("the stack holds the mask");
+    outcome
+        .grid
+        .unwrap_or_else(|| panic!("a grid: {:?}", outcome.absent))
+}
+
 /// The cell arithmetic, transcribed here rather than shared with the unit under test: the pixel at
 /// the centre of one cell's own span.
 fn cell_pixel(cell: u32, extent: u32, cells: u32) -> u32 {
@@ -223,10 +250,10 @@ fn mask_id(result: &Value) -> MaskId {
 // The grid, and the frame it describes
 // -------------------------------------------------------------------------------------------
 
-/// The returned grid's bytes are the mask's own coverage field at the cells it names, and it comes
-/// back under the generation of the very frame it describes.
+/// The returned grid's bytes are the mask's own coverage field at the cells it names, over the
+/// output stage of the frame the same evaluation renders.
 #[test]
-fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
+fn the_returned_grid_is_the_masks_field_over_the_rendered_frame() {
     let f = Fixture::open("field");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
@@ -237,14 +264,7 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
     );
 
     let (cells_w, cells_h) = (31, 19);
-    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    }));
+    let job = f.job(f.preview());
     let registry = job.evaluation.registry().clone();
     let recipe = job.evaluation.recipe().clone();
     let source = job.evaluation.source().dimensions();
@@ -255,13 +275,9 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
         .expect("the stack holds the mask")
         .clone();
 
+    let overlay = &grid(&job, &mask, (cells_w, cells_h));
     let result = exact(job);
-    let generation = result.generation;
     let raster = result.raster().expect("a frame");
-    let overlay = result
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.as_ref())
-        .expect("the job asked for a coverage grid");
 
     assert_eq!(overlay.mask, mask);
     assert_eq!(overlay.component, None);
@@ -272,7 +288,7 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
     assert_eq!(
         (transform.output.width, transform.output.height),
         (raster.width, raster.height),
-        "the grid's frame is the frame that came back"
+        "the grid's stage is the frame the evaluation renders"
     );
     assert_eq!(
         overlay.coverage, expected,
@@ -302,31 +318,6 @@ fn the_returned_grid_is_the_masks_field_over_the_frame_it_arrived_with() {
         MASK_COVERAGE_FULL,
         "the field's full end is a whole byte"
     );
-
-    // The grid is the frame's, not a frame's: the generation is the one the raster arrived under,
-    // and a second job is a second generation carrying its own grid.
-    let again = exact(f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    })));
-    assert!(
-        again.generation > 0,
-        "a fresh queue's first generation is its own"
-    );
-    assert_eq!(
-        again
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.as_ref())
-            .expect("a grid")
-            .coverage
-            .len(),
-        overlay.coverage.len()
-    );
-    assert_eq!(generation, result.generation);
 }
 
 /// A geometry tail moves the mask with the picture, and the grid follows: the same stored mask
@@ -344,14 +335,7 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
     f.edit("transform", json!({"transform": "rotate-right"}), "turn");
 
     let (cells_w, cells_h) = (24, 32);
-    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    }));
+    let job = f.job(f.preview());
     let registry = job.evaluation.registry().clone();
     let recipe = job.evaluation.recipe().clone();
     let source = job.evaluation.source().dimensions();
@@ -361,12 +345,9 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
         .find(|held| held.id == mask)
         .expect("the mask survived the turn")
         .clone();
+    let overlay = &grid(&job, &mask, (cells_w, cells_h));
     let result = exact(job);
     let raster = result.raster().expect("a frame");
-    let overlay = result
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.as_ref())
-        .expect("a grid");
     let (expected, transform) = expected_grid(&registry, &recipe, &held, source, cells_w, cells_h);
     assert_eq!(
         (transform.output.width, transform.output.height),
@@ -407,22 +388,14 @@ fn one_components_grid_is_that_components_own_contribution() {
     );
 
     let (cells_w, cells_h) = (21, 17);
+    let job = f.job(f.preview());
     let overlay_of = |component: Option<ComponentId>| {
-        let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-            mask: mask.clone(),
-            component,
-            cells_w,
-            cells_h,
-            whole_cells_w: cells_w,
-            whole_cells_h: cells_h,
-        }));
         let registry = job.evaluation.registry().clone();
         let recipe = job.evaluation.recipe().clone();
         let source = job.evaluation.source().dimensions();
-        let result = exact(job);
-        let overlay = result
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.clone())
+        let overlay = coverage(&job, &mask, component, (cells_w, cells_h))
+            .expect("the mask holds the component")
+            .grid
             .expect("a grid");
         (overlay, registry, recipe, source)
     };
@@ -462,25 +435,17 @@ fn one_components_grid_is_that_components_own_contribution() {
 
     // A component the mask does not hold is refused by name, never answered with another row.
     let stranger = ComponentId::new();
-    let error = f
-        .owner
-        .preview_job(f.preview().mask_overlay(MaskOverlayRequest {
-            mask: mask.clone(),
-            component: Some(stranger.clone()),
-            cells_w,
-            cells_h,
-            whole_cells_w: cells_w,
-            whole_cells_h: cells_h,
-        }))
+    let error = coverage(&job, &mask, Some(stranger.clone()), (cells_w, cells_h))
         .expect_err("a component of no mask");
     assert_eq!(error.kind, luxforge_core::ErrorKind::Validation);
     assert!(error.detail.contains(&stranger.to_string()), "{error}");
 }
 
-/// Nothing to describe is absent, never a grid of zeros: a mask at amount zero has no overlay at
-/// all, and a job that asks for none has none either.
+/// Nothing to describe is settled, never a reason: a mask at amount zero has no thumbnail grid at
+/// all — absence rather than zeros — while the live overlay answers the same valid selection with a
+/// grid of zeros, so a client waiting for it has a settled result. Neither carries a reason.
 #[test]
-fn a_mask_with_nothing_to_describe_has_no_grid() {
+fn a_mask_with_nothing_to_describe_has_no_thumbnail_and_a_zero_overlay() {
     let f = Fixture::open("absent");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
@@ -489,80 +454,62 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
         json!({"mask": mask.as_str(), "exposure": 1.0}),
         "lift",
     );
-
-    let request = |mask: &MaskId| MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w: 12,
-        cells_h: 9,
-        whole_cells_w: 12,
-        whole_cells_h: 9,
+    let cells = (12, 9);
+    let thumbnail = |job: &PreviewJob| {
+        job.evaluation
+            .mask_coverage(&mask, cells, None, &Cancel::never())
+            .expect("the stack holds the mask")
+            .outcome
+            .expect("no cached key was offered")
     };
 
-    // A job that never asked carries no grid, exactly as it carries no report.
-    let plain = exact(f.job(f.preview()));
-    assert!(
-        plain
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.clone())
-            .is_none()
-    );
-    assert!(
-        plain
-            .exact()
-            .and_then(|exact| exact.report.clone())
-            .is_none()
-    );
-
-    // The mask as drawn does describe something.
-    let drawn = exact(f.job(f.preview().mask_overlay(request(&mask))));
-    let covered = drawn
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.clone())
-        .expect("a grid");
+    // The mask as drawn does describe something, on both paths.
+    let drawn = f.job(f.preview());
+    let covered = grid(&drawn, &mask, cells);
     assert!(
         covered
             .coverage
             .iter()
             .any(|cell| *cell > MASK_COVERAGE_NONE)
     );
+    assert_eq!(
+        thumbnail(&drawn).grid.expect("a thumbnail").coverage,
+        covered.coverage,
+        "the thumbnail and the overlay are one grid"
+    );
 
-    // Silenced to zero, it describes nothing, and the answer is absence rather than zeros.
+    // Silenced to zero, it describes nothing.
     f.mask_command(
         "mask.set-amount",
         json!({"mask": mask.as_str(), "amount": 0.0}),
         "silence",
     );
-    let silent = exact(f.job(f.preview().mask_overlay(request(&mask))));
+    let silent = f.job(f.preview());
+    let still = thumbnail(&silent);
     assert!(
-        silent
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.clone())
-            .is_none(),
-        "an amount of zero is no grid at all, not a grid of zeros"
+        still.grid.is_none(),
+        "an amount of zero is no thumbnail grid at all, not a grid of zeros"
     );
-    assert!(silent.raster().is_ok(), "the frame still came back");
     // Nothing to describe is an ordinary absence and carries no reason: there is nothing to tell a
     // client that a frame of the photograph does not already say.
+    assert!(still.absent.is_none(), "{:?}", still.absent);
+    let overlay = coverage(&silent, &mask, None, cells).expect("the stack holds the mask");
+    assert!(overlay.absent.is_none(), "{:?}", overlay.absent);
+    let zeros = overlay
+        .grid
+        .expect("the live overlay settles a valid, uncovered selection");
+    assert_eq!((zeros.cells_w, zeros.cells_h), cells);
     assert!(
-        silent
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
-            .is_none(),
-        "{:?}",
-        silent
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
+        zeros
+            .coverage
+            .iter()
+            .all(|cell| *cell == MASK_COVERAGE_NONE),
+        "an amount of zero is an uncovered overlay"
     );
-    assert!(
-        plain
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
-            .is_none()
-    );
+    assert!(exact(silent).raster().is_ok(), "the frame still renders");
 }
 
-/// A mask that reads pixels and that **no layer is bound to** has no coverage grid, and the frame
+/// A mask that reads pixels and that **no layer is bound to** has no coverage grid, and the answer
 /// says so in the host's own words rather than arriving with a silent absence.
 ///
 /// A value-based component's coverage is a function of the pixel the masked operation *receives*, and
@@ -571,37 +518,21 @@ fn a_mask_with_nothing_to_describe_has_no_grid() {
 /// `mask.sample-input` and the constrained brush's seed are refused by. So the grid is refused, the
 /// reason names both halves — that the coverage depends on the pixel it reads and that no layer is
 /// bound — and it says where such a selection *can* be read. What is asserted here is that the reason
-/// reaches the client with the frame: a client that asked for an overlay and waits for its texture has
-/// nothing else to stop waiting on.
+/// reaches the client: a client that asked for an overlay and waits for its texture has nothing else
+/// to stop waiting on.
 #[test]
 fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
     let f = Fixture::open("reads-pixels");
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
-    let request = MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w: 12,
-        cells_h: 9,
-        whole_cells_w: 12,
-        whole_cells_h: 9,
-    };
+    let cells = (12, 9);
+    let overlay = || coverage(&f.job(f.preview()), &mask, None, cells).expect("the mask is held");
 
     // The gradient alone has a grid, bound or not, because its coverage is position alone: the
     // difference below is the range component and nothing else.
-    let geometric = exact(f.job(f.preview().mask_overlay(request.clone())));
-    assert!(
-        geometric
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.clone())
-            .is_some()
-    );
-    assert!(
-        geometric
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
-            .is_none()
-    );
+    let geometric = overlay();
+    assert!(geometric.grid.is_some());
+    assert!(geometric.absent.is_none());
 
     f.mask_command(
         "mask.add-luminance-range",
@@ -609,20 +540,15 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
                "high": 80.0, "high_feather": 5.0}),
         "add-range",
     );
-    let reading = exact(f.job(f.preview().mask_overlay(request.clone())));
     assert!(
-        reading.raster().is_ok(),
+        exact(f.job(f.preview())).raster().is_ok(),
         "the frame itself still renders: only the overlay is refused"
     );
-    assert!(
-        reading
-            .exact()
-            .is_some_and(|exact| exact.mask_overlay.grid.is_none())
-    );
+    let reading = overlay();
+    assert!(reading.grid.is_none());
     let reason = reading
-        .exact()
-        .and_then(|exact| exact.mask_overlay.absent.clone())
-        .expect("the host's own reason travels with the frame");
+        .absent
+        .expect("the host's own reason travels with the answer");
     assert!(
         reason.contains("depends on the pixel it reads")
             && reason.contains("no layer is bound to mask")
@@ -637,23 +563,13 @@ fn a_value_based_mask_no_layer_is_bound_to_says_why_it_has_no_grid() {
         json!({"mask": mask.as_str(), "exposure": 1.0}),
         "lift",
     );
-    let bound = exact(f.job(f.preview().mask_overlay(request)));
+    let bound = overlay();
     assert!(
-        bound
-            .exact()
-            .and_then(|exact| exact.mask_overlay.grid.clone())
-            .is_some(),
+        bound.grid.is_some(),
         "a bound value-based mask has a grid: {:?}",
-        bound
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
+        bound.absent
     );
-    assert!(
-        bound
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
-            .is_none()
-    );
+    assert!(bound.absent.is_none());
 }
 
 /// Every cell of a value-based mask's grid is the mask's own field at the pixel **the masked
@@ -681,14 +597,7 @@ fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
     );
 
     let (cells_w, cells_h) = (13, 9);
-    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    }));
+    let job = f.job(f.preview());
     let registry = job.evaluation.registry().clone();
     let recipe = job.evaluation.recipe().clone();
     let (width, height) = job.evaluation.source().dimensions();
@@ -698,11 +607,7 @@ fn a_value_based_grid_is_read_on_the_pixel_mask_sample_input_answers() {
         .find(|held| held.id == mask)
         .expect("the stack holds the mask")
         .clone();
-    let result = exact(job);
-    let overlay = result
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.as_ref())
-        .expect("a bound value-based mask has a grid");
+    let overlay = &grid(&job, &mask, (cells_w, cells_h));
 
     let transform = stage_transform(&registry, width, height, &recipe).expect("a tail");
     let stage = Stage {
@@ -788,25 +693,14 @@ fn the_value_based_grid_is_the_coverage_the_render_applies() {
     );
 
     let (cells_w, cells_h) = (23, 15);
-    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    }));
+    let job = f.job(f.preview());
     let source = match job.evaluation.source() {
         luxforge_core::PreviewSource::Jpeg(image) => image.clone(),
         other => panic!("the JPEG fixture is not a {other:?}"),
     };
+    let overlay = grid(&job, &mask, (cells_w, cells_h));
     let result = exact(job);
     let raster = result.raster().expect("a frame").clone();
-    let overlay = result
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.as_ref())
-        .expect("a grid")
-        .clone();
     assert_eq!((raster.width, raster.height), (source.width, source.height));
 
     // The lift the layer applies, in linear light: one stop down.
@@ -915,14 +809,7 @@ fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
     );
 
     let (cells_w, cells_h) = (17, 11);
-    let job = f.job(f.preview().mask_overlay(MaskOverlayRequest {
-        mask: mask.clone(),
-        component: None,
-        cells_w,
-        cells_h,
-        whole_cells_w: cells_w,
-        whole_cells_h: cells_h,
-    }));
+    let job = f.job(f.preview());
     let registry = job.evaluation.registry().clone();
     let recipe = job.evaluation.recipe().clone();
     let (width, height) = job.evaluation.source().dimensions();
@@ -938,17 +825,9 @@ fn a_painted_mask_with_a_limited_stroke_has_a_grid() {
         compiled.reads_pixels(),
         "a stroke limited to a colour makes the mask read pixels"
     );
-    let result = exact(job);
-    let overlay = result
-        .exact()
-        .and_then(|exact| exact.mask_overlay.grid.as_ref())
-        .expect("a painted mask a person can see");
-    assert!(
-        result
-            .exact()
-            .and_then(|exact| exact.mask_overlay.absent.clone())
-            .is_none()
-    );
+    let outcome = coverage(&job, &mask, None, (cells_w, cells_h)).expect("the mask is held");
+    assert!(outcome.absent.is_none(), "{:?}", outcome.absent);
+    let overlay = outcome.grid.expect("a painted mask a person can see");
     assert!(
         overlay
             .coverage
@@ -1001,18 +880,9 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
     let created = f.mask_command("mask.create-linear", linear(0.5, 0.0, 0.5, 1.0), "create");
     let mask = mask_id(&created);
 
-    for (cells_w, cells_h) in [(MAX_OVERLAY_CELLS + 1, 8), (8, MAX_OVERLAY_CELLS + 1)] {
-        let error = f
-            .owner
-            .preview_job(f.preview().mask_overlay(MaskOverlayRequest {
-                mask: mask.clone(),
-                component: None,
-                cells_w,
-                cells_h,
-                whole_cells_w: cells_w,
-                whole_cells_h: cells_h,
-            }))
-            .expect_err("a grid past the cell cap");
+    let job = f.job(f.preview());
+    for cells in [(MAX_OVERLAY_CELLS + 1, 8), (8, MAX_OVERLAY_CELLS + 1)] {
+        let error = coverage(&job, &mask, None, cells).expect_err("a grid past the cell cap");
         assert_eq!(error.kind, luxforge_core::ErrorKind::ResourceLimit);
         assert!(
             error.detail.contains(&MAX_OVERLAY_CELLS.to_string()),
@@ -1038,9 +908,6 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
         forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
         inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
     };
-    let state = f.call("state", "asset.state", json!({"asset_id": f.asset_value}));
-    let _ = state;
-    let job = f.job(f.preview());
     let held = job
         .evaluation
         .recipe()
