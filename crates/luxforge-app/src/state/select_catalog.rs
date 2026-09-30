@@ -19,7 +19,7 @@ use luxforge_core::{
     catalog_types::{
         BodyKey, CatalogFolder, CatalogFolderId, CatalogFolders, Collection, CollectionId,
         CollectionKind, Collections, DateRange, Facet, FacetValue, FileAvailability, LocalDay,
-        MAX_FILTER_TEXT, Month, RowItem, ViewFilter, ViewQuery, ViewRow, ViewSource,
+        MAX_FILTER_TEXT, Month, ViewFilter, ViewQuery, ViewRow, ViewSource,
     },
 };
 use serde_json::{Value, json};
@@ -91,7 +91,9 @@ pub(crate) enum CatalogMenu {
 /// What a name being typed makes or renames.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NamingTarget {
-    NewFolder { parent: Option<CatalogFolderId> },
+    NewFolder {
+        parent: Option<CatalogFolderId>,
+    },
     NewCollection {
         kind: CollectionKind,
         parent: Option<CollectionId>,
@@ -283,7 +285,10 @@ impl CatalogGesture {
 
     /// Whether the request names the selection, which a stale view refuses.
     pub(crate) fn of_selection(self) -> bool {
-        matches!(self, Self::MovePhotos | Self::AddPhotos | Self::RemovePhotos)
+        matches!(
+            self,
+            Self::MovePhotos | Self::AddPhotos | Self::RemovePhotos
+        )
     }
 
     /// What the status bar says when the owner changed nothing.
@@ -414,7 +419,11 @@ pub(crate) fn collection_create_params(
 
 /// `collection.create-smart`'s parameters: exactly `query`, the view's query as shown, under
 /// `name`.
-pub(crate) fn smart_create_params(name: &str, query: &ViewQuery, mutation: &MutationRequest) -> Value {
+pub(crate) fn smart_create_params(
+    name: &str,
+    query: &ViewQuery,
+    mutation: &MutationRequest,
+) -> Value {
     json!({"name": name, "query": query, "mutation": mutation})
 }
 
@@ -653,10 +662,19 @@ pub(crate) struct CatalogSources {
     pub(crate) add_menu: Option<Vec<ActionChoice>>,
 }
 
+/// Which column a set condition is of, for its chip's glyph.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConditionGlyph {
+    Date,
+    Place,
+    Camera,
+    Lens,
+}
+
 /// A set condition of the Metadata browser's, drawn as a chip in the accent with its clear ✕.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ConditionChip {
-    pub(crate) facet: Facet,
+    pub(crate) glyph: ConditionGlyph,
     pub(crate) label: String,
     pub(crate) clear: CatalogAction,
 }
@@ -678,8 +696,8 @@ pub(crate) struct CatalogFilterBar {
     pub(crate) metadata_open: bool,
     pub(crate) edited: EditedChip,
     pub(crate) conditions: Vec<ConditionChip>,
-    /// Save as smart collection…: `Ok` while it can save, else why not.
-    pub(crate) save: Result<(), String>,
+    /// Why Save as smart collection… cannot save now; none while it can.
+    pub(crate) save_refused: Option<String>,
     /// The smart collection's name being typed, while its field is open.
     pub(crate) naming: Option<String>,
     /// "9 of 55", or the view's size with no filter.
@@ -806,7 +824,7 @@ impl<'a> FolderTree<'a> {
         Self { by_id, children }
     }
 
-    fn children(&self, parent: Option<&CatalogFolderId>) -> &[&'a CatalogFolder] {
+    fn children(&self, parent: Option<&'a CatalogFolderId>) -> &[&'a CatalogFolder] {
         self.children.get(&parent).map_or(&[], Vec::as_slice)
     }
 
@@ -832,7 +850,7 @@ impl<'a> FolderTree<'a> {
     }
 
     /// The photographs in `folder` and its subfolders, and the earliest capture year among them.
-    fn subtree(&self, folder: &CatalogFolder) -> (u32, Option<i32>) {
+    fn subtree(&self, folder: &'a CatalogFolder) -> (u32, Option<i32>) {
         let (mut count, mut year) = (0u32, None::<i32>);
         let mut stack = vec![folder];
         while let Some(at) = stack.pop() {
@@ -858,13 +876,16 @@ impl<'a> FolderTree<'a> {
             if steps > self.by_id.len() {
                 return false;
             }
-            at = self.by_id.get(id).and_then(|folder| folder.parent_id.as_ref());
+            at = self
+                .by_id
+                .get(id)
+                .and_then(|folder| folder.parent_id.as_ref());
         }
         false
     }
 
     /// A folder's name with its parents', as a menu that lists every folder says it.
-    fn path(&self, folder: &CatalogFolder) -> String {
+    fn path(&self, folder: &'a CatalogFolder) -> String {
         let mut names = vec![folder.name.as_str()];
         let mut at = folder.parent_id.as_ref();
         while let Some(id) = at {
@@ -1039,10 +1060,10 @@ fn new_folder_row(
     }
 }
 
-fn push_folder(
+fn push_folder<'a>(
     catalog: &CatalogState,
-    tree: &FolderTree<'_>,
-    folder: &CatalogFolder,
+    tree: &FolderTree<'a>,
+    folder: &'a CatalogFolder,
     count: u32,
     indent: u8,
     viewing: Option<&ViewSource>,
@@ -1055,7 +1076,8 @@ fn push_folder(
         subfolders: true,
     };
     let renaming = catalog.naming.as_ref().and_then(|naming| {
-        (naming.target == NamingTarget::RenameFolder(folder.id.clone())).then(|| naming.text.clone())
+        (naming.target == NamingTarget::RenameFolder(folder.id.clone()))
+            .then(|| naming.text.clone())
     });
     rows.push(CatalogRow {
         count: (count > 0).then(|| thousands(count)),
@@ -1100,10 +1122,10 @@ fn push_folder(
 
 /// A folder row's menu while it is open: Rename…, New folder inside…, Move to…, Merge into… and
 /// Delete, which only an empty folder offers; or one of its two pickers.
-fn folder_menu(
+fn folder_menu<'a>(
     catalog: &CatalogState,
-    tree: &FolderTree<'_>,
-    folder: &CatalogFolder,
+    tree: &FolderTree<'a>,
+    folder: &'a CatalogFolder,
     count: u32,
     children: usize,
 ) -> Option<Vec<ActionChoice>> {
@@ -1221,7 +1243,12 @@ fn collection_rows(
     }
     let mut stack: Vec<(&Collection, u8)> = children
         .get(&None)
-        .map(|top| top.iter().rev().map(|collection| (*collection, 0)).collect())
+        .map(|top| {
+            top.iter()
+                .rev()
+                .map(|collection| (*collection, 0))
+                .collect()
+        })
         .unwrap_or_default();
     let mut seen = 0usize;
     while let Some((collection, indent)) = stack.pop() {
@@ -1237,7 +1264,8 @@ fn collection_rows(
             collection_id: id.clone(),
         };
         let renaming = catalog.naming.as_ref().and_then(|naming| {
-            (naming.target == NamingTarget::RenameCollection(id.clone())).then(|| naming.text.clone())
+            (naming.target == NamingTarget::RenameCollection(id.clone()))
+                .then(|| naming.text.clone())
         });
         rows.push(CatalogRow {
             count: collection.count.map(thousands),
@@ -1249,7 +1277,9 @@ fn collection_rows(
                 CatalogAction::View(source)
             }),
             toggle: group.then(|| CatalogAction::ToggleGroup(id.clone())),
-            context: Some(CatalogAction::Menu(Some(CatalogMenu::Collection(id.clone())))),
+            context: Some(CatalogAction::Menu(Some(CatalogMenu::Collection(
+                id.clone(),
+            )))),
             menu: (catalog.menu == Some(CatalogMenu::Collection(id.clone())))
                 .then(|| collection_menu(collection, inside)),
             naming: renaming,
@@ -1374,14 +1404,14 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
     let mut conditions = Vec::new();
     if let Some(range) = filter.dates {
         conditions.push(ConditionChip {
-            facet: Facet::Date,
+            glyph: ConditionGlyph::Date,
             label: dates_label(range),
             clear: CatalogAction::Change(CatalogChange::Dates(None)),
         });
     }
     if !filter.places.is_empty() {
         conditions.push(ConditionChip {
-            facet: Facet::Place,
+            glyph: ConditionGlyph::Place,
             label: match filter.places.as_slice() {
                 [one] => one.clone(),
                 several => many(several.len(), "places"),
@@ -1391,7 +1421,7 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
     }
     if !filter.cameras.is_empty() {
         conditions.push(ConditionChip {
-            facet: Facet::Camera,
+            glyph: ConditionGlyph::Camera,
             label: match filter.cameras.as_slice() {
                 [one] => label_of(Facet::Camera, &one.0),
                 several => many(several.len(), "cameras"),
@@ -1401,7 +1431,7 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
     }
     if !filter.lenses.is_empty() {
         conditions.push(ConditionChip {
-            facet: Facet::Lens,
+            glyph: ConditionGlyph::Lens,
             label: match filter.lenses.as_slice() {
                 [one] => one.clone(),
                 several => many(several.len(), "lenses"),
@@ -1413,15 +1443,15 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
         .summary
         .as_ref()
         .filter(|summary| summary.query.source == query.source);
-    let save = match (&query.source, summary) {
-        (_, None) => Err("Waiting for the view".to_owned()),
+    let save_refused = match (&query.source, summary) {
+        (_, None) => Some("Waiting for the view".to_owned()),
         (ViewSource::Collection { collection_id }, _)
             if collection(catalog, collection_id)
                 .is_some_and(|collection| collection.kind == CollectionKind::Smart) =>
         {
-            Err("A smart collection cannot be saved from another smart collection".to_owned())
+            Some("A smart collection cannot be saved from another smart collection".to_owned())
         }
-        _ => Ok(()),
+        _ => None,
     };
     let count = match summary {
         None if state.loading => "Reading\u{2026}".to_owned(),
@@ -1432,11 +1462,9 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
                 .as_ref()
                 .filter(|total| total.source == summary.query.source)
             {
-                Some(total) => format!(
-                    "{} of {}",
-                    thousands(summary.count),
-                    thousands(total.count)
-                ),
+                Some(total) => {
+                    format!("{} of {}", thousands(summary.count), thousands(total.count))
+                }
                 None => photographs(summary.count),
             }
         }
@@ -1447,7 +1475,7 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
         metadata_open: catalog.metadata,
         edited,
         conditions,
-        save,
+        save_refused,
         naming: catalog.naming.as_ref().and_then(|naming| {
             (naming.target == NamingTarget::SmartCollection).then(|| naming.text.clone())
         }),
@@ -1614,7 +1642,11 @@ fn date_rows(values: &[FacetValue], chosen: Option<DateRange>) -> Vec<FacetRow> 
         if open != Some(year) {
             continue;
         }
-        for (&month, &count) in months.range(..).rev().filter(|(month, _)| month.year == year) {
+        for (&month, &count) in months
+            .range(..)
+            .rev()
+            .filter(|(month, _)| month.year == year)
+        {
             let range = month_range(month);
             let selected = range.is_some() && chosen == range;
             rows.push(FacetRow {
@@ -1660,7 +1692,7 @@ fn month_name(month: u32) -> &'static str {
 
 /// The row at `position` of the view on screen: from the rows near the screen, or those read for
 /// the selection.
-fn row_at<'a>(state: &'a SelectState, position: u32) -> Option<&'a ViewRow> {
+fn row_at(state: &SelectState, position: u32) -> Option<&ViewRow> {
     state.rows.row(position).or_else(|| {
         let read = state.catalog.selection_rows.as_ref()?;
         (Some(read.revision) == state.revision())
@@ -1671,14 +1703,14 @@ fn row_at<'a>(state: &'a SelectState, position: u32) -> Option<&'a ViewRow> {
 
 /// The selection's positions, ascending.
 fn positions(selection: &SelectionModel) -> impl Iterator<Item = u32> + '_ {
-    selection
-        .ranges
-        .iter()
-        .flat_map(|&(start, end)| start..end)
+    selection.ranges.iter().flat_map(|&(start, end)| start..end)
 }
 
 /// The selected rows, when the desktop holds every one; `None` otherwise.
-fn selected_rows<'a>(state: &'a SelectState, selection: &SelectionModel) -> Option<Vec<&'a ViewRow>> {
+fn selected_rows<'a>(
+    state: &'a SelectState,
+    selection: &SelectionModel,
+) -> Option<Vec<&'a ViewRow>> {
     if selection.count > MAX_SELECTION_ROWS {
         return None;
     }
@@ -1712,7 +1744,10 @@ fn folder_name(state: &CatalogState, id: &CatalogFolderId) -> String {
         .folders
         .as_ref()
         .and_then(|folders| folders.folders.iter().find(|folder| &folder.id == id))
-        .map_or_else(|| "A catalog folder".to_owned(), |folder| folder.name.clone())
+        .map_or_else(
+            || "A catalog folder".to_owned(),
+            |folder| folder.name.clone(),
+        )
 }
 
 fn collection_path(state: &CatalogState, collection: &Collection) -> String {
@@ -1764,7 +1799,11 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         if let Some(rows) = &rows {
             info.metadata = batch_metadata(rows);
             let edited = rows.iter().filter(|row| row.edited).count();
-            info.edited = Some(format!("{} of {}", thousands(edited as u32), thousands(count)));
+            info.edited = Some(format!(
+                "{} of {}",
+                thousands(edited as u32),
+                thousands(count)
+            ));
         }
     }
     let Some(rows) = rows else {
@@ -1776,8 +1815,8 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         } else {
             "Reading the selected photographs\u{2026}".to_owned()
         });
-        info.move_menu = (catalog.menu == Some(CatalogMenu::MovePhotos))
-            .then(|| move_choices(catalog, None));
+        info.move_menu =
+            (catalog.menu == Some(CatalogMenu::MovePhotos)).then(|| move_choices(catalog, None));
         info.add_menu = (catalog.menu == Some(CatalogMenu::AddTo))
             .then(|| add_choices(catalog, &BTreeMap::new(), count));
         return Some(info);
@@ -1793,7 +1832,8 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
             *in_collections.entry(collection).or_default() += 1;
         }
     }
-    let partial = |held: u32| (held < count).then(|| format!("{} of {}", thousands(held), thousands(count)));
+    let partial =
+        |held: u32| (held < count).then(|| format!("{} of {}", thousands(held), thousands(count)));
     let mut folders: Vec<(&CatalogFolderId, u32)> = in_folders.into_iter().collect();
     folders.sort_by(|a, b| b.1.cmp(&a.1));
     info.folders = folders
@@ -1807,16 +1847,20 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         })
         .collect();
     let every = (folders.len() == 1 && folders[0].1 == count).then(|| folders[0].0.clone());
-    info.move_menu =
-        (catalog.menu == Some(CatalogMenu::MovePhotos)).then(|| move_choices(catalog, every.as_ref()));
-    let mut members: Vec<(&CollectionId, u32)> =
-        in_collections.iter().map(|(id, held)| (*id, *held)).collect();
+    info.move_menu = (catalog.menu == Some(CatalogMenu::MovePhotos))
+        .then(|| move_choices(catalog, every.as_ref()));
+    let mut members: Vec<(&CollectionId, u32)> = in_collections
+        .iter()
+        .map(|(id, held)| (*id, *held))
+        .collect();
     members.sort_by(|a, b| b.1.cmp(&a.1));
     info.collections = members
         .iter()
         .map(|(id, held)| {
-            let name = collection(catalog, id)
-                .map_or_else(|| "A collection".to_owned(), |c| collection_path(catalog, c));
+            let name = collection(catalog, id).map_or_else(
+                || "A collection".to_owned(),
+                |c| collection_path(catalog, c),
+            );
             let menu = (catalog.menu == Some(CatalogMenu::Member((*id).clone()))).then(|| {
                 let mut choices = vec![ActionChoice::new(
                     if count == 1 {
@@ -1838,7 +1882,9 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
                 collection: true,
                 label: name,
                 partial: partial(*held),
-                press: Some(CatalogAction::Menu(Some(CatalogMenu::Member((*id).clone())))),
+                press: Some(CatalogAction::Menu(Some(CatalogMenu::Member(
+                    (*id).clone(),
+                )))),
                 menu,
             }
         })
@@ -1852,7 +1898,10 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
 /// refused.
 fn move_choices(catalog: &CatalogState, every: Option<&CatalogFolderId>) -> Vec<ActionChoice> {
     let Some(list) = &catalog.folders else {
-        return vec![ActionChoice::refused("Reading folders\u{2026}", "The folders are being read")];
+        return vec![ActionChoice::refused(
+            "Reading folders\u{2026}",
+            "The folders are being read",
+        )];
     };
     let tree = FolderTree::of(list);
     let choices: Vec<ActionChoice> = tree
@@ -1871,7 +1920,10 @@ fn move_choices(catalog: &CatalogState, every: Option<&CatalogFolderId>) -> Vec<
         })
         .collect();
     if choices.is_empty() {
-        vec![ActionChoice::refused("No folders", "The catalog has no folders")]
+        vec![ActionChoice::refused(
+            "No folders",
+            "The catalog has no folders",
+        )]
     } else {
         choices
     }
@@ -1953,12 +2005,20 @@ fn batch_metadata(rows: &[&ViewRow]) -> Vec<(String, String)> {
         }
         metadata.push(("Places".to_owned(), text));
     }
-    let cameras: BTreeSet<&str> = rows.iter().filter_map(|row| row.camera.as_deref()).collect();
+    let cameras: BTreeSet<&str> = rows
+        .iter()
+        .filter_map(|row| row.camera.as_deref())
+        .collect();
     match cameras.len() {
         0 => {}
         1 => metadata.push((
             "Cameras".to_owned(),
-            cameras.iter().next().copied().unwrap_or_default().to_owned(),
+            cameras
+                .iter()
+                .next()
+                .copied()
+                .unwrap_or_default()
+                .to_owned(),
         )),
         several => metadata.push(("Cameras".to_owned(), format!("{several} cameras"))),
     }

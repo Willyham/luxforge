@@ -5,11 +5,13 @@
 //! (`select.rs`) drives it.
 //!
 //! - **What is wanted.** After every message the Select seam hands over the grid as it is
-//!   ([`GridWindow`]): the files of the cells on screen, then of those within one screen of it,
-//!   nearest first, with the view's revision and the pixels a cell's photograph box needs
-//!   ([`Wanted`]). A row the grid has not read yet, or a photograph's, wants nothing.
+//!   ([`GridWindow`]): the files or photographs of the cells on screen, then of those within one
+//!   screen of it, nearest first, with the view's revision and the pixels a cell's photograph box
+//!   needs ([`Wanted`]). A row the grid has not read yet wants nothing.
 //! - **Reads.** `preview.read {item: {kind: file, file_id}, tier: grid, priority}` for every wanted
-//!   file not yet asked under this revision — `visible` on screen, `background` in the margin — at
+//!   file, and `preview.read {item: {kind: photo, asset_id}, tier: grid, priority}` for every
+//!   wanted photograph of a catalog view (its current entry's rendered tier), not yet asked under
+//!   this revision — `visible` on screen, `background` in the margin — at
 //!   most [`READ_BATCH`] in one owner task and one task at a time, never for a row whose grid state
 //!   is `unavailable`. `ready` names the tier; `queued` names the job making it and the best preview
 //!   cached meanwhile (the thumbnail stage), which is drawn until the tier replaces it; a refusal is
@@ -28,9 +30,11 @@
 //!   A plan with a decode the running one lacks supersedes it after the decode it is making, so
 //!   the cells scrolled away are never decoded; a plan that only shrank lets the running one go on.
 //! - **Handles.** A decoded preview becomes its handle here, once, on the update loop, while it is
-//!   still the preview the file's newest answer names (its `key`): the one `Handle::from_rgba` in
+//!   still the preview the item's newest answer names (its `key`): the one `Handle::from_rgba` in
 //!   the desktop. The handle keeps its id while it is held, so its texture is uploaded once; the
-//!   grid borrows it ([`GridImages`]). A better stage — the embedded preview after the thumbnail —
+//!   grid borrows it ([`GridImages`]), which also says when a photograph's held preview is
+//!   `approximate` (a rendered tier made through an approximate proxy), for the cell's footer to
+//!   say so, as the loupe does. A better stage — the embedded preview after the thumbnail —
 //!   replaces the held one when it is decoded, so the cell never goes blank between the two.
 //! - **Budget.** A held preview is charged its RGBA bytes against [`DECODED_BUDGET_BYTES`], and at
 //!   most [`MAX_HANDLES`] are held. Past either, the least recently wanted go first; a cell on
@@ -47,7 +51,7 @@ use crate::app::{
 use crate::state::select::RowCache;
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
-    ClientId, DecodedPreview, ErrorKind, OwnerHandle,
+    AssetId, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
     catalog_types::{
         FileId, PreviewAnswer, PreviewInfo, PreviewItem, PreviewPriority, PreviewState,
         PreviewTier, RowItem,
@@ -96,6 +100,40 @@ pub(crate) const DECODED_WAITING: usize = 8;
 /// enlarges past anyway.
 pub(crate) const MAX_SIDE: u32 = 1024;
 
+/// A cell's item as the cache keys it: a file of the index, or a developed photograph.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum Item {
+    File(FileId),
+    Photo(AssetId),
+}
+
+impl From<FileId> for Item {
+    fn from(file: FileId) -> Self {
+        Self::File(file)
+    }
+}
+
+impl Item {
+    /// The item a view row names.
+    pub(crate) fn of(row: &RowItem) -> Self {
+        match row {
+            RowItem::File { file_id } => Self::File(*file_id),
+            RowItem::Photo { asset_id } => Self::Photo(asset_id.clone()),
+        }
+    }
+
+    /// `preview.read`'s `item`: a file, or a photograph's current entry.
+    pub(crate) fn preview(&self) -> PreviewItem {
+        match self {
+            Self::File(file_id) => PreviewItem::File { file_id: *file_id },
+            Self::Photo(asset_id) => PreviewItem::Photo {
+                asset_id: asset_id.clone(),
+                entry_id: None,
+            },
+        }
+    }
+}
+
 /// What this module's owner tasks and its signal bring back to the update loop. The Select seam
 /// carries it in one variant of its own message and hands it to [`SelectPreviews::update`].
 #[derive(Clone, Debug)]
@@ -107,21 +145,21 @@ pub(crate) enum SelectPreviewMessage {
     Woken,
 }
 
-/// One owner task's reads: each file with the priority it is asked at, under the view revision
+/// One owner task's reads: each item with the priority it is asked at, under the view revision
 /// the cells were read at.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ReadBatch {
     pub(crate) serial: u64,
     pub(crate) revision: u64,
-    pub(crate) reads: Vec<(FileId, PreviewPriority)>,
+    pub(crate) reads: Vec<(Item, PreviewPriority)>,
 }
 
-/// What the owner answered one [`ReadBatch`], file by file.
+/// What the owner answered one [`ReadBatch`], item by item.
 #[derive(Clone, Debug)]
 pub(crate) struct ReadAnswers {
     pub(crate) serial: u64,
     pub(crate) revision: u64,
-    pub(crate) answers: Vec<(FileId, Result<PreviewAnswer, Refusal>)>,
+    pub(crate) answers: Vec<(Item, Result<PreviewAnswer, Refusal>)>,
 }
 
 /// Why the owner refused a file's preview: its error code and message.
@@ -136,10 +174,10 @@ pub(crate) struct Refusal {
 pub(crate) struct Wanted {
     /// The view revision the rows were read at.
     pub(crate) revision: u64,
-    /// The files of the cells on screen, in reading order, each with its row's grid state.
-    pub(crate) visible: Vec<(FileId, PreviewState)>,
-    /// The files of the cells within one screen of them, nearest first.
-    pub(crate) margin: Vec<(FileId, PreviewState)>,
+    /// The items of the cells on screen, in reading order, each with its row's grid state.
+    pub(crate) visible: Vec<(Item, PreviewState)>,
+    /// The items of the cells within one screen of them, nearest first.
+    pub(crate) margin: Vec<(Item, PreviewState)>,
     /// The longest side of a cell's photograph box, in pixels.
     pub(crate) side: u32,
 }
@@ -156,7 +194,7 @@ pub(crate) struct GridWindow<'a> {
 }
 
 impl Wanted {
-    /// The files `window` shows and those within one screen of it: the rows window's own reach.
+    /// The items `window` shows and those within one screen of it: the rows window's own reach.
     pub(crate) fn of(window: GridWindow<'_>) -> Self {
         let GridWindow {
             layout,
@@ -169,10 +207,7 @@ impl Wanted {
         let file = |cell: u32| {
             let cell = layout.cell(cell);
             let row = rows.row(rows.shown(cell.item, cell.span))?;
-            match row.item {
-                RowItem::File { file_id } => Some((file_id, row.preview)),
-                RowItem::Photo { .. } => None,
-            }
+            Some((Item::of(&row.item), row.preview))
         };
         let on_screen = layout.visible_cells(scroll, height, 0.0);
         let near = layout.visible_cells(scroll, height, height);
@@ -221,13 +256,15 @@ enum Read {
     Refused(Refusal),
 }
 
-/// The preview a file's newest answer names.
+/// The preview an item's newest answer names.
 #[derive(Clone, Debug)]
 struct Source {
     key: String,
     path: PathBuf,
     /// Its longest side, which a decode never passes.
     long_edge: u32,
+    /// A photograph's rendered tier made through an approximate proxy.
+    approximate: bool,
 }
 
 impl From<PreviewInfo> for Source {
@@ -236,6 +273,7 @@ impl From<PreviewInfo> for Source {
             key: info.key,
             path: info.path,
             long_edge: info.width.max(info.height).max(1),
+            approximate: info.approximate,
         }
     }
 }
@@ -249,7 +287,7 @@ struct Held {
     bytes: usize,
 }
 
-/// One file's reads, its preview and its handle.
+/// One item's reads, its preview and its handle.
 struct Entry {
     read: Read,
     source: Option<Source>,
@@ -287,7 +325,7 @@ impl Default for Entry {
 /// One decode: the preview an answer named, fitted within `side`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Decode {
-    pub(crate) file: FileId,
+    pub(crate) file: Item,
     pub(crate) key: String,
     pub(crate) path: PathBuf,
     pub(crate) side: u32,
@@ -338,10 +376,10 @@ impl DecodeWorker {
 /// the byte budget, the one read batch in flight and the decode worker. See the
 /// [module documentation](self).
 pub(crate) struct SelectPreviews {
-    entries: HashMap<FileId, Entry>,
+    entries: HashMap<Item, Entry>,
     wanted: Wanted,
-    /// The files of the cells on screen, never evicted.
-    on_screen: HashSet<FileId>,
+    /// The items of the cells on screen, never evicted.
+    on_screen: HashSet<Item>,
     /// Raised by every change of what is wanted; an entry wanted now was stamped with it.
     tick: u64,
     budget: usize,
@@ -398,14 +436,14 @@ pub(crate) fn subscription() -> Subscription<SelectPreviewMessage> {
     Subscription::run(|| signal().stream())
 }
 
-/// `preview.read` of each file of `batch`, as the API reads it, answered file by file.
+/// `preview.read` of each item of `batch`, as the API reads it, answered item by item.
 pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> ReadAnswers {
     let answers = batch
         .reads
         .into_iter()
         .map(|(file, priority)| {
             let params = json!({
-                "item": PreviewItem::File { file_id: file },
+                "item": file.preview(),
                 "tier": PreviewTier::Grid,
                 "priority": priority,
             });
@@ -502,17 +540,36 @@ impl SelectPreviews {
 
     /// The handle to draw for `file`, borrowed so it keeps its id.
     pub(crate) fn handle(&self, file: FileId) -> Option<&Handle> {
+        self.held(&Item::File(file))
+    }
+
+    /// The handle to draw for `item`, a file or a photograph, borrowed so it keeps its id.
+    pub(crate) fn held(&self, item: &Item) -> Option<&Handle> {
         self.entries
-            .get(&file)?
+            .get(item)?
             .held
             .as_ref()
             .map(|held| &held.handle)
     }
 
-    /// The size of the handle held for `file`.
+    /// Whether the preview held for `item` is a photograph's rendered tier made through an
+    /// approximate proxy: the one its newest answer names, which the held handle is.
+    pub(crate) fn approximate(&self, item: &Item) -> bool {
+        self.entries.get(item).is_some_and(|entry| {
+            entry.source.as_ref().is_some_and(|source| {
+                source.approximate
+                    && entry
+                        .held
+                        .as_ref()
+                        .is_some_and(|held| held.key == source.key)
+            })
+        })
+    }
+
+    /// The size of the handle held for `item`.
     #[cfg(test)]
-    pub(crate) fn size(&self, file: FileId) -> Option<(u32, u32)> {
-        match self.handle(file)? {
+    pub(crate) fn size(&self, item: &Item) -> Option<(u32, u32)> {
+        match self.held(item)? {
             Handle::Rgba { width, height, .. } => Some((*width, *height)),
             Handle::Path(..) | Handle::Bytes(..) => None,
         }
@@ -520,8 +577,8 @@ impl SelectPreviews {
 
     /// `file` is wanted and has nothing to draw yet, and was neither refused nor reported
     /// unavailable: its cell shows the loading placeholder.
-    pub(crate) fn loading(&self, file: FileId) -> bool {
-        self.entries.get(&file).is_some_and(|entry| {
+    pub(crate) fn loading(&self, file: &Item) -> bool {
+        self.entries.get(file).is_some_and(|entry| {
             entry.wanted_at == self.tick
                 && entry.held.is_none()
                 && !entry.unavailable
@@ -535,7 +592,7 @@ impl SelectPreviews {
     /// decodes happened to land first.
     pub(crate) fn settled(&self) -> bool {
         self.on_screen.iter().all(|file| {
-            !self.loading(*file)
+            !self.loading(file)
                 || self
                     .entries
                     .get(file)
@@ -545,8 +602,8 @@ impl SelectPreviews {
 
     /// `file` has nothing to draw and never will as it is: its row reported it `unavailable`, or
     /// the owner found no usable preview in it. Its cell is Unreadable.
-    pub(crate) fn unreadable(&self, file: FileId) -> bool {
-        self.entries.get(&file).is_some_and(|entry| {
+    pub(crate) fn unreadable(&self, file: &Item) -> bool {
+        self.entries.get(file).is_some_and(|entry| {
             entry.held.is_none()
                 && (entry.unavailable
                     || matches!(&entry.read, Read::Refused(refusal) if refusal.code == "unsupported-input"))
@@ -576,7 +633,9 @@ impl SelectPreviews {
             "side": self.wanted.side,
             "visible": self.wanted.visible.len(),
             "margin": self.wanted.margin.len(),
-            "loading": self.entries.keys().filter(|file| self.loading(**file)).count(),
+            "loading": self.entries.keys().filter(|file| self.loading(file)).count(),
+            "photographs": self.entries.keys().filter(|item| matches!(item, Item::Photo(_))).count(),
+            "approximate": self.entries.keys().filter(|item| self.approximate(item)).count(),
             "reading": self.reading.is_some(),
             "queued": count(|read| matches!(read, Read::Queued | Read::Recheck)),
             "refused": count(|read| matches!(read, Read::Refused(_))),
@@ -620,11 +679,15 @@ impl SelectPreviews {
                 entry.over_budget = None;
             }
             for (file, state) in wanted.visible.iter().chain(&wanted.margin) {
-                let entry = self.entries.entry(*file).or_default();
+                let entry = self.entries.entry(file.clone()).or_default();
                 entry.wanted_at = self.tick;
                 entry.unavailable = *state == PreviewState::Unavailable;
             }
-            self.on_screen = wanted.visible.iter().map(|(file, _)| *file).collect();
+            self.on_screen = wanted
+                .visible
+                .iter()
+                .map(|(file, _)| file.clone())
+                .collect();
             self.wanted = wanted;
         }
         self.plan()
@@ -755,7 +818,7 @@ impl SelectPreviews {
         }
         let replaced = entry.held.as_ref().map(|held| held.bytes);
         let bytes = preview.rgba.len();
-        if !self.make_room(decode.file, bytes, replaced) {
+        if !self.make_room(&decode.file, bytes, replaced) {
             self.dropped += 1;
             if let Some(entry) = self.entries.get_mut(&decode.file) {
                 entry.over_budget = Some(decode.key);
@@ -787,27 +850,27 @@ impl SelectPreviews {
     /// budget and the handle count: the least recently wanted first, never a cell on screen, and a
     /// margin cell only for a cell on screen. Evicts nothing and answers `false` when they cannot
     /// fit so.
-    fn make_room(&mut self, file: FileId, incoming: usize, replaced: Option<usize>) -> bool {
+    fn make_room(&mut self, file: &Item, incoming: usize, replaced: Option<usize>) -> bool {
         let mut bytes = self.bytes - replaced.unwrap_or(0) + incoming;
         let mut handles = self.handles + usize::from(replaced.is_none());
         let over = |bytes: usize, handles: usize| bytes > self.budget || handles > MAX_HANDLES;
         if !over(bytes, handles) {
             return true;
         }
-        let for_screen = self.on_screen.contains(&file);
-        let mut candidates: Vec<(u64, FileId, usize)> = self
+        let for_screen = self.on_screen.contains(file);
+        let mut candidates: Vec<(u64, &Item, usize)> = self
             .entries
             .iter()
             .filter(|(held_file, entry)| {
-                **held_file != file
-                    && !self.on_screen.contains(held_file)
+                *held_file != file
+                    && !self.on_screen.contains(*held_file)
                     && (for_screen || entry.wanted_at != self.tick)
             })
             .filter_map(|(held_file, entry)| {
-                Some((entry.wanted_at, *held_file, entry.held.as_ref()?.bytes))
+                Some((entry.wanted_at, held_file, entry.held.as_ref()?.bytes))
             })
             .collect();
-        candidates.sort_unstable();
+        candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| item_order(a.1, b.1)));
         let mut evict = 0;
         for (_, _, held) in &candidates {
             if !over(bytes, handles) {
@@ -820,15 +883,19 @@ impl SelectPreviews {
         if over(bytes, handles) {
             return false;
         }
-        for (_, evicted, _) in &candidates[..evict] {
-            self.evict(*evicted);
+        let evicted: Vec<Item> = candidates[..evict]
+            .iter()
+            .map(|(_, item, _)| (*item).clone())
+            .collect();
+        for evicted in &evicted {
+            self.evict(evicted);
         }
         true
     }
 
     /// Drop `file`'s handle, and its entry when nothing wants it.
-    fn evict(&mut self, file: FileId) {
-        let Some(entry) = self.entries.get_mut(&file) else {
+    fn evict(&mut self, file: &Item) {
+        let Some(entry) = self.entries.get_mut(file) else {
             return;
         };
         if let Some(held) = entry.held.take() {
@@ -836,7 +903,7 @@ impl SelectPreviews {
             self.handles -= 1;
         }
         if entry.wanted_at != self.tick {
-            self.entries.remove(&file);
+            self.entries.remove(file);
         }
     }
 
@@ -881,9 +948,9 @@ impl SelectPreviews {
             }
             entry.read = Read::Asking;
             if on_screen {
-                visible.push(*file);
+                visible.push(file.clone());
             } else {
-                margin.push(*file);
+                margin.push(file.clone());
             }
         }
         if visible.is_empty() && margin.is_empty() {
@@ -938,7 +1005,7 @@ impl SelectPreviews {
                 continue;
             }
             plan.push(Decode {
-                file: *file,
+                file: file.clone(),
                 key: source.key.clone(),
                 path: source.path.clone(),
                 side,
@@ -994,23 +1061,37 @@ pub(crate) struct GridImages<'a> {
 }
 
 impl<'a> GridImages<'a> {
-    fn file(&self, item: u32) -> Option<FileId> {
-        match self.rows.row(item)?.item {
-            RowItem::File { file_id } => Some(file_id),
-            RowItem::Photo { .. } => None,
-        }
+    fn item(&self, item: u32) -> Option<Item> {
+        Some(Item::of(&self.rows.row(item)?.item))
     }
 
     /// The handle to draw for the cell at view position `item`.
     pub(crate) fn image(&self, item: u32) -> Option<&'a Handle> {
         let previews: &'a SelectPreviews = self.previews;
-        previews.handle(self.file(item)?)
+        previews.held(&self.item(item)?)
     }
 
     /// The cell at `item` is Unreadable: the owner found no usable preview in its file.
     pub(crate) fn unreadable(&self, item: u32) -> bool {
-        self.file(item)
-            .is_some_and(|file| self.previews.unreadable(file))
+        self.item(item)
+            .is_some_and(|file| self.previews.unreadable(&file))
+    }
+
+    /// The photograph at `item` is drawn from a rendered preview made through an approximate
+    /// proxy, which its cell's footer says.
+    pub(crate) fn approximate(&self, item: u32) -> bool {
+        self.item(item)
+            .is_some_and(|photo| self.previews.approximate(&photo))
+    }
+}
+
+/// A total order of items, so eviction among equally old previews is the same every time.
+fn item_order(a: &Item, b: &Item) -> std::cmp::Ordering {
+    match (a, b) {
+        (Item::File(a), Item::File(b)) => a.cmp(b),
+        (Item::Photo(a), Item::Photo(b)) => a.cmp(b),
+        (Item::File(_), Item::Photo(_)) => std::cmp::Ordering::Less,
+        (Item::Photo(_), Item::File(_)) => std::cmp::Ordering::Greater,
     }
 }
 

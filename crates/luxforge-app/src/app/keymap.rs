@@ -440,9 +440,9 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
             return Some(Message::Select(SelectMessage::SelectNone));
         }
         if character(key, "f") {
-            return Some(Message::Select(SelectMessage::Catalog(CatalogMessage::Act(
-                CatalogAction::FocusSearch,
-            ))));
+            return Some(Message::Select(SelectMessage::Catalog(
+                CatalogMessage::Act(CatalogAction::FocusSearch),
+            )));
         }
         return None;
     }

@@ -16,11 +16,19 @@ const REVISION: u64 = 7;
 /// A Select cell's photograph box at scale 2.
 const SIDE: u32 = 240;
 
-fn file(id: i64) -> FileId {
-    FileId(id)
+fn file(id: i64) -> Item {
+    Item::File(FileId(id))
 }
 
-fn cells(ids: &[i64]) -> Vec<(FileId, PreviewState)> {
+/// A file's row in the index, from its cache key.
+fn id_of(item: &Item) -> i64 {
+    match item {
+        Item::File(file) => file.0,
+        Item::Photo(_) => unreachable!("the tests name files"),
+    }
+}
+
+fn cells(ids: &[i64]) -> Vec<(Item, PreviewState)> {
     ids.iter()
         .map(|id| (file(*id), PreviewState::Pending))
         .collect()
@@ -45,7 +53,9 @@ fn paused(budget: usize) -> SelectPreviews {
 /// A grid preview of `file` at `stage`, `width` × `height`.
 fn info(id: i64, origin: PreviewOrigin, width: u32, height: u32) -> PreviewInfo {
     PreviewInfo {
-        item: PreviewItem::File { file_id: file(id) },
+        item: PreviewItem::File {
+            file_id: FileId(id),
+        },
         tier: PreviewTier::Grid,
         path: PathBuf::from(format!(
             "/c.index/previews/files/{id}-{}.jpg",
@@ -60,9 +70,9 @@ fn info(id: i64, origin: PreviewOrigin, width: u32, height: u32) -> PreviewInfo 
     }
 }
 
-fn ready(file: FileId) -> Result<PreviewAnswer, Refusal> {
+fn ready(file: Item) -> Result<PreviewAnswer, Refusal> {
     Ok(PreviewAnswer::Ready {
-        preview: info(file.0, PreviewOrigin::Embedded, 512, 341),
+        preview: info(id_of(&file), PreviewOrigin::Embedded, 512, 341),
     })
 }
 
@@ -81,14 +91,14 @@ fn refused(code: &str) -> Result<PreviewAnswer, Refusal> {
 }
 
 /// The owner's answers to `batch`, file by file.
-fn answer(batch: &ReadBatch, by: impl Fn(FileId) -> Result<PreviewAnswer, Refusal>) -> ReadAnswers {
+fn answer(batch: &ReadBatch, by: impl Fn(Item) -> Result<PreviewAnswer, Refusal>) -> ReadAnswers {
     ReadAnswers {
         serial: batch.serial,
         revision: batch.revision,
         answers: batch
             .reads
             .iter()
-            .map(|(file, _)| (*file, by(*file)))
+            .map(|(file, _)| (file.clone(), by(file.clone())))
             .collect(),
     }
 }
@@ -159,7 +169,7 @@ fn reads(batch: &ReadBatch) -> Vec<(i64, PreviewPriority)> {
     batch
         .reads
         .iter()
-        .map(|(file, priority)| (file.0, *priority))
+        .map(|(file, priority)| (id_of(file), *priority))
         .collect()
 }
 
@@ -190,15 +200,15 @@ fn select_previews_read_cells_on_screen_before_the_margin_and_each_once() {
         "one batch in flight"
     );
     for id in 1..=5 {
-        assert!(previews.loading(file(id)), "{id} waits for its preview");
+        assert!(previews.loading(&file(id)), "{id} waits for its preview");
     }
     assert!(
-        !previews.loading(file(6)) && previews.unreadable(file(6)),
+        !previews.loading(&file(6)) && previews.unreadable(&file(6)),
         "an unavailable row is not loading: it is Unreadable"
     );
 
     let thumbnail = info(2, PreviewOrigin::ExifThumbnail, 160, 107);
-    let next = previews.answered(answer(&batch, |file| match file.0 {
+    let next = previews.answered(answer(&batch, |file| match id_of(&file) {
         1 | 5 => ready(file),
         2 => queued(Some(thumbnail.clone())),
         3 => queued(None),
@@ -206,15 +216,15 @@ fn select_previews_read_cells_on_screen_before_the_margin_and_each_once() {
     }));
     assert!(next.is_none(), "every wanted file was asked once");
     assert!(previews.plan_for(want.clone()).is_none(), "and not again");
-    assert!(previews.unreadable(file(4)));
-    assert!(!previews.loading(file(4)));
-    assert!(!previews.unreadable(file(3)) && previews.loading(file(3)));
+    assert!(previews.unreadable(&file(4)));
+    assert!(!previews.loading(&file(4)));
+    assert!(!previews.unreadable(&file(3)) && previews.loading(&file(3)));
     // Decodes: cells on screen first, each fitted to the cell and never past its preview: the
     // embedded previews at the cell's side, the thumbnail at its own.
     let plan: Vec<(i64, &str, u32)> = previews
         .last_plan
         .iter()
-        .map(|decode| (decode.file.0, decode.key.as_str(), decode.side))
+        .map(|decode| (id_of(&decode.file), decode.key.as_str(), decode.side))
         .collect();
     assert_eq!(
         plan,
@@ -247,7 +257,7 @@ fn select_previews_ask_again_only_after_a_wake_or_a_new_revision() {
     let mut previews = paused(DECODED_BUDGET_BYTES);
     let want = wanted(REVISION, &[1, 2, 3], &[]);
     let batch = previews.plan_for(want.clone()).expect("a batch");
-    previews.answered(answer(&batch, |file| match file.0 {
+    previews.answered(answer(&batch, |file| match id_of(&file) {
         1 => refused("source-unavailable"),
         2 => queued(None),
         _ => refused("resource-limit"),
@@ -260,7 +270,7 @@ fn select_previews_ask_again_only_after_a_wake_or_a_new_revision() {
     // The owner wrote a preview this client waits on.
     previews.woken.store(true, Ordering::Release);
     let batch = previews.woken().expect("the queued files");
-    let mut asked: Vec<i64> = batch.reads.iter().map(|(file, _)| file.0).collect();
+    let mut asked: Vec<i64> = batch.reads.iter().map(|(file, _)| id_of(file)).collect();
     asked.sort_unstable();
     assert_eq!(
         asked,
@@ -351,7 +361,7 @@ fn select_previews_a_read_that_ended_without_a_preview_is_not_asked_again() {
         "not asked again under the revision"
     );
     assert!(
-        !previews.unreadable(file(1)),
+        !previews.unreadable(&file(1)),
         "a placeholder, not Unreadable"
     );
     assert!(
@@ -373,9 +383,9 @@ fn select_previews_a_better_stage_replaces_the_held_one() {
     previews.answered(answer(&batch, |_| queued(Some(thumbnail.clone()))));
     let soft = planned(&previews, 1).expect("the thumbnail is decoded");
     previews.adopt(decoded(&soft, 160, 107));
-    assert_eq!(previews.size(file(1)), Some((160, 107)));
-    let id = previews.handle(file(1)).expect("drawn soft").id();
-    assert_eq!(previews.handle(file(1)).map(Handle::id), Some(id), "one id");
+    assert_eq!(previews.size(&file(1)), Some((160, 107)));
+    let id = previews.held(&file(1)).expect("drawn soft").id();
+    assert_eq!(previews.held(&file(1)).map(Handle::id), Some(id), "one id");
     assert!(
         previews.plan_for(want.clone()).is_none(),
         "held at its own size: nothing more"
@@ -394,26 +404,26 @@ fn select_previews_a_better_stage_replaces_the_held_one() {
     let sharp = planned(&previews, 1).expect("the embedded preview is decoded");
     assert_eq!(sharp.side, SIDE);
     assert_eq!(
-        previews.handle(file(1)).map(Handle::id),
+        previews.held(&file(1)).map(Handle::id),
         Some(id),
         "the thumbnail stays until the embedded preview is decoded"
     );
     previews.adopt(decoded(&soft, 160, 107));
     assert_eq!(
-        previews.handle(file(1)).map(Handle::id),
+        previews.held(&file(1)).map(Handle::id),
         Some(id),
         "a late decode of the older stage changes nothing"
     );
     previews.adopt(decoded(&sharp, 240, 160));
-    assert_eq!(previews.size(file(1)), Some((240, 160)));
-    assert_ne!(previews.handle(file(1)).map(Handle::id), Some(id));
+    assert_eq!(previews.size(&file(1)), Some((240, 160)));
+    assert_ne!(previews.held(&file(1)).map(Handle::id), Some(id));
     assert_eq!(previews.handles, 1);
     assert_eq!(previews.bytes, 240 * 160 * 4);
     assert_accounted(&previews);
     // The same decode again is not a second handle.
-    let held = previews.handle(file(1)).map(Handle::id);
+    let held = previews.held(&file(1)).map(Handle::id);
     previews.adopt(decoded(&sharp, 240, 160));
-    assert_eq!(previews.handle(file(1)).map(Handle::id), held);
+    assert_eq!(previews.held(&file(1)).map(Handle::id), held);
 
     // A larger cell decodes the preview again, up to its own size only.
     let mut larger = want.clone();
@@ -430,8 +440,8 @@ fn select_previews_a_better_stage_replaces_the_held_one() {
         .plan_for(wanted(REVISION + 1, &[1], &[]))
         .expect("asked again");
     previews.answered(answer(&batch, |_| queued(None)));
-    assert!(previews.handle(file(1)).is_none());
-    assert!(previews.loading(file(1)));
+    assert!(previews.held(&file(1)).is_none());
+    assert!(previews.loading(&file(1)));
     assert_eq!((previews.bytes, previews.handles), (0, 0));
 }
 
@@ -462,7 +472,7 @@ fn select_previews_evict_the_least_recently_wanted_never_a_cell_on_screen() {
             .entries
             .iter()
             .filter(|(_, entry)| entry.held.is_some())
-            .map(|(file, _)| file.0)
+            .map(|(file, _)| id_of(file))
             .collect();
         held.sort_unstable();
         held
@@ -538,8 +548,8 @@ fn select_previews_hold_at_most_the_handle_count() {
     let decode = planned(&previews, -1).expect("the new cell");
     previews.adopt(decoded(&decode, 1, 1));
     assert_eq!(previews.handles, MAX_HANDLES);
-    assert!(previews.handle(file(-1)).is_some());
-    assert!(previews.handle(file(0)).is_none(), "the oldest gave way");
+    assert!(previews.held(&file(-1)).is_some());
+    assert!(previews.held(&file(0)).is_none(), "the oldest gave way");
     assert_accounted(&previews);
 }
 
@@ -637,16 +647,17 @@ fn select_previews_the_worker_decodes_a_generated_jpeg_at_the_cell_size() {
             key: format!("file:{id}:sig:grid:embedded"),
             path,
             long_edge: 480,
+            approximate: false,
         });
     }
     previews.plan_for(want.clone());
     settle(&mut previews, "the decodes", |previews| {
-        previews.size(file(1)).is_some() && previews.entries[&file(2)].failed.is_some()
+        previews.size(&file(1)).is_some() && previews.entries[&file(2)].failed.is_some()
     });
-    assert_eq!(previews.size(file(1)), Some((240, 160)));
-    assert_quadrants(previews.handle(file(1)).expect("decoded"), QUADRANTS, 8);
+    assert_eq!(previews.size(&file(1)), Some((240, 160)));
+    assert_quadrants(previews.held(&file(1)).expect("decoded"), QUADRANTS, 8);
     assert_eq!(previews.bytes, 240 * 160 * 4);
-    assert!(previews.handle(file(2)).is_none());
+    assert!(previews.held(&file(2)).is_none());
     assert!(previews.plan_for(want).is_none());
     assert!(
         previews.planned.is_empty(),
@@ -685,7 +696,7 @@ fn select_previews_a_real_owner_answers_and_the_preview_is_decoded() {
         }])
         .expect("the file");
     seeder.finish().expect("the index");
-    let photo = files[0];
+    let photo = Item::File(files[0]);
     let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
     let client = owner.register();
 
@@ -693,7 +704,7 @@ fn select_previews_a_real_owner_answers_and_the_preview_is_decoded() {
     previews.watch(&owner, client);
     let want = Wanted {
         revision: 1,
-        visible: vec![(photo, PreviewState::Pending)],
+        visible: vec![(photo.clone(), PreviewState::Pending)],
         margin: Vec::new(),
         side: SIDE,
     };
@@ -710,17 +721,17 @@ fn select_previews_a_real_owner_answers_and_the_preview_is_decoded() {
             let answers = read(&owner, client, batch);
             previews.answered(answers);
         }
-        previews.size(photo).is_some()
+        previews.size(&photo).is_some()
     });
     // The fixture is 480 × 320: its grid tier is that size, and the cell's 240 px a half of it.
-    assert_eq!(previews.size(photo), Some((240, 160)));
+    assert_eq!(previews.size(&photo), Some((240, 160)));
     let entry = &previews.entries[&photo];
     assert_eq!(entry.read, Read::Ready);
     let source = entry.source.as_ref().expect("the tier");
     assert!(source.key.ends_with(":grid:embedded"), "{}", source.key);
     assert_eq!(source.long_edge, 480);
     assert_quadrants(
-        previews.handle(photo).expect("drawn"),
+        previews.held(&photo).expect("drawn"),
         jpeg_quadrants(&path),
         16,
     );
