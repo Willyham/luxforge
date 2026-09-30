@@ -1983,6 +1983,151 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// Cold saved-white-balance preparation through the catalog owner, as the [performance
+    /// plan](../../../../docs/specs/performance.md#native-development-and-saved-white-balance-preparation)
+    /// measures it. One catalog is made first, holding the RAW with a saved custom red gain of
+    /// 1.1 × as-shot. Every observation then starts a new owner on it, so the source cache is
+    /// empty while the filesystem cache stays warm, and times from immediately before
+    /// `catalog.import` until a strict exact-source `PreviewJob` for the current entry is
+    /// available: reading, hashing, decoding and developing the original at the saved gains, and
+    /// waiting for and adopting that one job. Starting the owner and opening the catalog,
+    /// hashing the planes and stopping the owner are outside the clock, and nothing is rendered.
+    /// Every observation's planes must hash the same. A measurement, not a gate; the one-minute
+    /// load average is read before the first and after the last observation:
+    ///
+    /// ```text
+    /// LUXFORGE_RAW_FIXTURE=/path/to/nikon_z6.NEF [LUXFORGE_RAW_SAMPLES=15] cargo test --release \
+    ///   --locked -p luxforge-core --lib cold_saved_white_balance_preparation_timing -- \
+    ///   --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; run alone in release"]
+    fn cold_saved_white_balance_preparation_timing() {
+        use crate::{ApiRequest, OwnerHandle, PreviewRequest};
+        use std::time::Instant;
+        let path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
+        let samples: usize = std::env::var("LUXFORGE_RAW_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(15);
+        let load = || {
+            std::process::Command::new("/usr/sbin/sysctl")
+                .args(["-n", "vm.loadavg"])
+                .output()
+                .ok()
+                .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+                .unwrap_or_else(|| "unavailable".into())
+        };
+        let catalog = temp("cold-saved-wb-timing.sqlite");
+        let _ = std::fs::remove_file(&catalog);
+        let (asset, gains) = {
+            let mut service = EditorService::open(&catalog).unwrap();
+            let initial = service.import(&path).unwrap();
+            let asset = initial.asset.id;
+            let as_shot = raw_payload(&initial.current_entry.snapshot.recipe).unwrap();
+            let gain = (f64::from(as_shot.gains[0]) * 1.1).min(16.0);
+            service
+                .apply_action(
+                    &asset,
+                    mutation(0, "raw-red"),
+                    "set-raw-red-gain",
+                    json!({"gain": gain}),
+                )
+                .unwrap();
+            let current = service.state(&asset).unwrap().current_entry;
+            let gains = raw_payload(&current.snapshot.recipe).unwrap().gains;
+            assert_ne!(gains, as_shot.gains, "a custom white balance");
+            (asset, gains)
+        };
+        let call = |owner: &OwnerHandle, client, method: &str, params: Value| {
+            let response = owner
+                .call(
+                    client,
+                    ApiRequest {
+                        id: method.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap();
+            assert!(response.error.is_none(), "{method}: {:?}", response.error);
+            response.result.unwrap()
+        };
+        fn find<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
+            match value {
+                Value::Object(map) => map
+                    .get(key)
+                    .or_else(|| map.values().find_map(|v| find(v, key))),
+                Value::Array(items) => items.iter().find_map(|v| find(v, key)),
+                _ => None,
+            }
+        }
+        let (mut times, mut digest, mut backend) = (Vec::new(), None, None);
+        let load_start = load();
+        for observation in 0..samples {
+            let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+            let client = owner.register();
+            let started = Instant::now();
+            let queued = call(
+                &owner,
+                client,
+                "catalog.import",
+                json!({"path": path, "mutation": {
+                    "request_id": format!("cold-import-{observation}"), "actor": "timing",
+                }}),
+            );
+            let job = queued["job_id"].clone();
+            owner.wait_source(client, None).unwrap();
+            let adopted = call(&owner, client, "job.adopt", json!({"job_id": job}));
+            let preview = owner
+                .preview_job(PreviewRequest::new(client, asset.clone()))
+                .expect("a strict exact-source preview job after the one source job");
+            let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+            let PreviewSource::Raw { image, .. } = preview.evaluation.source() else {
+                panic!("a RAW source");
+            };
+            assert!(
+                !preview.evaluation.source().approximate_white_balance(),
+                "exact, not approximated"
+            );
+            let mut hash = Sha256::new();
+            for chunk in image.planes().chunks(4096) {
+                let bytes: Vec<u8> = chunk
+                    .iter()
+                    .flat_map(|v| v.to_bits().to_le_bytes())
+                    .collect();
+                hash.update(bytes);
+            }
+            let hash = format!("{:x}", hash.finalize());
+            assert_eq!(digest.get_or_insert_with(|| hash.clone()), &hash);
+            let named = find(&adopted, "backend").cloned();
+            assert_eq!(backend.get_or_insert_with(|| named.clone()), &named);
+            times.push(elapsed);
+            drop(preview);
+            owner.stop();
+            join.join().unwrap();
+        }
+        let load_end = load();
+        let distribution = luxforge_testbase::Distribution::of(times.clone()).expect("samples");
+        println!(
+            "{}",
+            json!({
+                "source": path,
+                "saved_gains": gains,
+                "backend": backend,
+                "observations": samples,
+                "p50_p95_ms": [distribution.p50, distribution.p95],
+                "min_max_ms": [distribution.min, distribution.max],
+                "times_ms": times,
+                "planes_sha256": digest,
+                "load_start": load_start,
+                "load_end": load_end,
+            })
+        );
+        std::fs::remove_file(catalog).unwrap();
+    }
+
     #[test]
     fn aliases_reuse_asset_but_copies_do_not_and_changed_sources_fail() {
         let dir = temp("aliases");

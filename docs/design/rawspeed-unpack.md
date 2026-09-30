@@ -1,6 +1,6 @@
 # RawSpeed unpacking
 
-Status: authorized by the owner on 2026-09-30; implementation in progress ([plan](../../tasks/raw-cameras.json)). 64 catalog modes are routed ([routed and unrouted decoders](#routed-modes)); the speed measurement is outstanding.
+Status: authorized by the owner on 2026-09-30; implementation in progress ([plan](../../tasks/raw-cameras.json)). 64 catalog modes are routed ([routed and unrouted decoders](#routed-modes)), every one exact and at least 1.3× faster to unpack ([measurements](../specs/performance.md#rawspeed-unpacking)).
 
 For the recording modes where it is exact and faster, the RAW adapter fills the sensor mosaic with [RawSpeed](https://github.com/darktable-org/rawspeed) instead of LibRaw's own decoder. LibRaw still identifies the file, reads every piece of metadata, and runs every step of its unpack after the pixels are read. The [RawSpeed evaluation](../research/rawspeed-evaluation.md) measured 2.5–3.7× faster unpacking on Nikon lossless and lossy NEF, Canon CR2, Fujifilm lossless compressed RAF, ORF, PEF and lossless and packed DNG, with byte-identical samples and metadata. Those families are about a third of popular-camera files and save 130–550 ms per open. CR3 and Sony ARW stay on LibRaw.
 
@@ -46,18 +46,18 @@ No listed decoder was dropped. The crate's authentic comparison routes every row
 
 ### Routed modes
 
-The current routing rule, pending the speed measurement: every catalog mode on a replaceable decoder whose every local authentic sample is exact is routed. A sample is exact when its routed mosaic equals LibRaw's and the LibRaw-only hash recorded before routing (the evidence manifest's, or for the Z6 lossless and X100VI lossless modes, which have no evidence entry, the pins in `tests/real_files.rs`), every metadata field but `backend` is identical, and the as-shot and perturbed-white-balance developments are identical to LibRaw's and to the evidence manifest's hashes. The measurement task applies the 1.3× speed gate afterwards and moves any mode below it back to LibRaw. [Modern camera support](modern-camera-support.md#rawspeed-routed-modes) lists every candidate.
+The routing rule: a catalog mode on a replaceable decoder is routed when every local authentic sample of it is exact and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. A sample is exact when its routed mosaic equals LibRaw's and the LibRaw-only hash recorded before routing (the evidence manifest's, or for the Z6 lossless and X100VI lossless modes, which have no evidence entry, the pins in `tests/real_files.rs`), every metadata field but `backend` is identical, and the as-shot and perturbed-white-balance developments are identical to LibRaw's and to the evidence manifest's hashes. The speed is the median of `RawSource::decode` (identify, classification, unpack, interpretation and the mosaic copy, with the bytes in memory and nothing developed) over 16 alternating observations per unpacker in one release process, LibRaw forced against RawSpeed (`rawspeed_unpack_timing`). Every exact candidate passed the gate, so no mode was moved back to LibRaw. [Modern camera support](modern-camera-support.md#rawspeed-routed-modes) lists every candidate with its measured unpack time and ratio.
 
-| LibRaw decoder | Routed | Left on LibRaw |
-| --- | --- | --- |
-| `nikon_load_raw()` | all 19 Nikon lossless and lossy modes | none |
-| `lossless_jpeg_load_raw()` | all 7 Canon CR2 modes, including the 5D Mark IV Dual Pixel mode | none |
-| `fuji_compressed_load_raw()` | the 9 lossless compressed RAF modes (RAF header 2) | the 2 lossy compressed modes (X-H2, X-T5 lossy, RAF header 3): RawSpeed's `FujiDecompressor` requires the compressed header's third byte (LibRaw's lossless flag, RawSpeed's version) to be 1, and a lossy file stores 0, so RawSpeed refuses every lossy file with "compressed RAF header check" |
-| `olympus_load_raw()` | all 7 ORF modes | none |
-| `pentax_load_raw()` | both PEF modes | none |
-| `lossless_dng_load_raw()` | 6 of 7 modes (Leica M10 and M10-R, Pentax KP and K-1 Mark II, Ricoh GR III and GR IIIx) | DJI FC4382: its lossless JPEG tiles use predictor 6, and RawSpeed's `LJpegDecoder::decodeScan` implements only predictor 1 |
-| `packed_dng_load_raw()` | all 7 modes, including the owner Air 2S | none |
-| `panasonic_load_raw()`, `panasonicC6_load_raw()`, `panasonicC8_load_raw()` | all 7 RW2 modes | none |
+| LibRaw decoder | Routed | Unpack p50, LibRaw → RawSpeed (ratio) | Left on LibRaw |
+| --- | --- | --- | --- |
+| `nikon_load_raw()` | all 19 Nikon lossless and lossy modes | 177–425 → 59–161 ms (2.38–3.30×) | none |
+| `lossless_jpeg_load_raw()` | all 7 Canon CR2 modes, including the 5D Mark IV Dual Pixel mode | 205–315 → 56–95 ms (3.08–3.64×) | none |
+| `fuji_compressed_load_raw()` | the 9 lossless compressed RAF modes (RAF header 2) | 536–844 → 180–304 ms (2.71–3.02×) | the 2 lossy compressed modes (X-H2, X-T5 lossy, RAF header 3): RawSpeed's `FujiDecompressor` requires the compressed header's third byte (LibRaw's lossless flag, RawSpeed's version) to be 1, and a lossy file stores 0, so RawSpeed refuses every lossy file with "compressed RAF header check" |
+| `olympus_load_raw()` | all 7 ORF modes | 258–317 → 109–124 ms (2.28–2.83×) | none |
+| `pentax_load_raw()` | both PEF modes | 200–223 → 59–66 ms (3.37–3.40×) | none |
+| `lossless_dng_load_raw()` | 6 of 7 modes (Leica M10 and M10-R, Pentax KP and K-1 Mark II, Ricoh GR III and GR IIIx) | 238–423 → 71–151 ms (2.80–3.37×) | DJI FC4382: its lossless JPEG tiles use predictor 6, and RawSpeed's `LJpegDecoder::decodeScan` implements only predictor 1 |
+| `packed_dng_load_raw()` | all 7 modes, including the owner Air 2S | 7.7–292 → 3.5–47 ms (2.16–6.21×); the uncompressed DJI files take 8–13 ms either way | none |
+| `panasonic_load_raw()`, `panasonicC6_load_raw()`, `panasonicC8_load_raw()` | all 7 RW2 modes | 43–189 → 29–97 ms (1.50–2.22×); the lowest is the S5 (`panasonicC6_load_raw()`, 42.9 → 28.5 ms) | none |
 
 No guard or curve rule was changed to admit a mode. Every other catalog decoder (`unpacked_load_raw()`, `crxLoadRaw()`, `sony_arw2_load_raw()`, `sony_ljpeg_load_raw()`, `nikon_14bit_load_raw()`) is not in the replaceable table and stays on LibRaw.
 
@@ -69,8 +69,8 @@ No guard or curve rule was changed to admit a mode. Every other catalog decoder 
 
 ## Constraints and consequences
 
-- **Liveness.** RawSpeed's `decodeRaw` has no progress callback. Cancellation is checked immediately before and after it. The longest routed decode measured is 305 ms (Fujifilm X-T5 lossless compressed), which replaces 858 ms of LibRaw work that could be cancelled part-way. A cancelled open still publishes nothing.
-- **Memory.** No encoded copy is made. RawSpeed decodes into its own image, which is released as soon as the rows are copied, so a routed unpack briefly holds a second u16 mosaic (for example 91 MiB at 45.7 MP). The retained mosaic, the development and every later buffer are unchanged.
+- **Liveness.** RawSpeed's `decodeRaw` has no progress callback. Cancellation is checked immediately before and after it. The longest routed decode measured is about 304 ms p50 (Fujifilm X-T5 and X100VI lossless compressed, 7872 × 5196), which replaces 844 ms of LibRaw work that could be cancelled part-way. A cancelled open still publishes nothing.
+- **Memory.** No encoded copy is made. RawSpeed decodes into its own image, which is released as soon as the rows are copied, so a routed unpack briefly holds a second u16 mosaic (for example 91 MiB at 45.7 MP) beside LibRaw's raw buffer and the encoded bytes. It is released before the adapter allocates the mosaic it keeps, so it does not raise the decode's peak: one decode per process peaks 5.6 to 5.7 MiB higher routed than LibRaw-forced on the D850 and Leica Q2 samples, which is RawSpeed's code and camera data ([performance](../specs/performance.md#rawspeed-unpacking)). The retained mosaic, the development and every later buffer are unchanged.
 - **Threading.** Serial, on the existing source worker. No OpenMP, thread pool or new executor.
 - **Attack surface.** Both parsers read a routed file. RawSpeed is fuzzed upstream; the adapter's existing size bounds apply before either runs.
 
@@ -79,20 +79,16 @@ No guard or curve rule was changed to admit a mode. Every other catalog decoder 
 - Unit tests: the catalog refuses `rawspeed` on an unlisted decoder and on unknown values. Classification before unpack refuses unsupported modes without unpacking. A RawSpeed failure on a routed mode is an explicit error, with no LibRaw fallback. Cancellation before and after the RawSpeed decode publishes nothing. A RawSpeed warning writes nothing to standard output.
 - Crate tests force the unpacker: `RawSource::decode_forcing` overrides the classified mode's unpacker, so a routed mode's LibRaw-only decode stays testable, and a test-only native open without the catalog check (`lf_raw_open_uncatalogued`) compares the two unpackers on files whose camera or mode the catalog does not hold. Production never calls either.
 - Authentic tests for every routed mode (`replaceable_catalog_modes_match_libraw_on_every_local_sample`, over every local sample of every candidate mode): the routed mosaic equals LibRaw's and the LibRaw-only hash recorded before routing; the source hash is unchanged; every metadata field but `backend` equals LibRaw's; the as-shot and perturbed-white-balance developments equal LibRaw's and the evidence manifest's; and the catalog's own decode names RawSpeed. A routed mode must pass on every sample, with every evidence sample of it found. The qualifier reproduces every evidence entry after routing. The owner Z6 and Air 2S originals and the existing oracles (`bayer_owner_mosaic_and_rgb_oracle`, the DNG reference) still pass, and the background `raw-editor` journey passes on the owner Z6 and Air 2S and on one routed public mode per family except lossless DNG, whose samples carry no DNG opcode and so stop at the scenario's DNG precondition ([modern camera support](modern-camera-support.md#rawspeed-routed-modes)).
-- The routed set is every catalog mode on a replaceable decoder whose evidence passes ([routed modes](#routed-modes)); a mode that fails stays on LibRaw, and the reason is recorded in [modern camera support](modern-camera-support.md#rawspeed-routed-modes). The 1.3× speed gate in the adapter's own release measurement is applied by the measurement below, which moves any mode that falls short back to LibRaw.
-- Measurement, after the feature is complete:
-  - adapter unpack time per routed mode, before and after;
-  - the owner Z6's cold saved-WB preparation p50 and p95, against the 546 ms baseline in [performance](../specs/performance.md#native-development-and-saved-white-balance-preparation);
-  - peak process RSS for one open of the largest routed mode.
-  They follow the [performance rules](../engineering/performance-rules.md) and are recorded in the [performance spec](../specs/performance.md).
+- The routed set is every catalog mode on a replaceable decoder whose evidence passes and whose adapter unpack is at least 1.3× faster through RawSpeed ([routed modes](#routed-modes)); a mode that fails either stays on LibRaw, and the reason is recorded in [modern camera support](modern-camera-support.md#rawspeed-routed-modes).
+- Measurement ([performance](../specs/performance.md#rawspeed-unpacking)): the adapter unpack time of every routed mode with LibRaw forced and with RawSpeed (`rawspeed_unpack_timing`); the owner Z6's and Air 2S's cold saved-white-balance preparation with the mode on LibRaw and routed (`cold_saved_white_balance_preparation_timing`); and peak process RSS for one decode of the largest routed modes (`one_decode_for_peak_rss`).
 
 ## Performance checklist
 
 - **Original reads.** Unchanged: the source worker reads, hashes and decodes the original once through the verified source cache. The routed decode reads the same borrowed bytes LibRaw opened; nothing is copied or read again.
-- **New full-frame allocations.** A routed unpack briefly holds RawSpeed's own u16 image of the sensor size (91 MiB at 45.7 MP) until its rows are copied into LibRaw's raw buffer, bounded by the same sensor limits checked at open (16,384 per side, 128 million pixels) and released before the unpack returns. The Nikon rule adds a 128 KiB value map for the same span. The retained mosaic, the development and every later buffer are unchanged and still shared.
+- **New full-frame allocations.** A routed unpack briefly holds RawSpeed's own u16 image of the sensor size (91 MiB at 45.7 MP) until its rows are copied into LibRaw's raw buffer, before the adapter's retained mosaic is allocated, bounded by the same sensor limits checked at open (16,384 per side, 128 million pixels) and released before the unpack returns. The Nikon rule adds a 128 KiB value map for the same span. The retained mosaic, the development and every later buffer are unchanged and still shared.
 - **Point queries, validation and no-op checks.** None render. The catalog check is at build time; the replaceable-table lookup and guard are a few comparisons before unpack.
 - **Owner thread.** Nothing new; the decode stays on the source worker. RawSpeed runs serially, with no new thread or pool.
 - **Desktop messages.** No new `asset.state`, `history.list`, preview or upload.
 - **Timers, polls and subscriptions.** None.
-- **Measurement.** Outstanding: the owner asked for performance to be measured once, after the feature is complete. The unpack time per routed mode, the owner Z6's cold saved-WB preparation and the peak RSS of the largest routed mode are measured then, and no speed claim is made for the routed modes until it is.
+- **Measurement.** Recorded in [performance](../specs/performance.md#rawspeed-unpacking): routed unpacks are 1.50 to 6.21× faster than LibRaw's (median per sample), the owner Z6's cold saved-white-balance preparation falls from 303.1 / 305.9 to 162.1 / 167.2 ms p50 / p95 and the Air 2S's from 205.2 / 207.2 to 198.9 / 204.6 ms, and the decode's peak RSS rises by under 6 MiB. `editor-performance` and the rest of the `timing` tier open generated JPEGs only, so they do not exercise this change.
 - **Exactness.** Unit tests compare the routed and LibRaw mosaics and metadata on synthetic DNGs, with and without a curve; the authentic tests compare them on every replaceable decoder, and on every local sample of every candidate catalog mode against the recorded LibRaw-only mosaic and development hashes. The retained mosaic's sharing is unchanged.

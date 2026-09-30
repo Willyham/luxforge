@@ -2959,6 +2959,103 @@ orders: p50 about 3 ms and p95 7 to 14 ms lower. With two commits a run, the rel
 not a distribution. The committed frame read about 6 ms later after the move in both pairs, which
 is noted rather than claimed.
 
+## RawSpeed unpacking
+
+For 64 catalog modes RawSpeed fills the sensor mosaic inside LibRaw's unpack
+([RawSpeed unpacking](../design/rawspeed-unpack.md)). A mode is routed only when its unpack is at
+least 1.3× faster through RawSpeed; every exact candidate passed, so none was moved back to LibRaw.
+
+Native M4 Pro, 14 cores, 48 GiB, macOS 26.5.2, Rust 1.94.0, release with locked pins,
+30 September 2026. Measured source: `7f4cac99` with only the three ignored measurement tests added;
+no build or test of this worktree ran during a timing run, and other sessions shared the host.
+Every p50 and p95 is nearest-rank, with no tails removed. Observations, per-run load and scripts
+are retained locally under the measuring worktree's `target/task-007/`.
+
+### Adapter unpack per routed mode
+
+`rawspeed_unpack_timing` times `RawSource::decode` (identify, classification, unpack,
+interpretation and the copy of the mosaic out of LibRaw, with the encoded bytes already in memory)
+on every local authentic sample of every routed mode: 67 samples, one process. Reading the file and
+dropping the decoded source are outside the clock and nothing is developed. Each sample is decoded
+once by each unpacker first (the first routed unpack parses RawSpeed's camera data, about 4 ms) and
+the two mosaics are compared; then 16 observations per unpacker in LibRaw, RawSpeed, RawSpeed,
+LibRaw blocks. One-minute load was 3.41 at the start and 4.13 at the end, 2.6 to 4.2 per sample.
+
+| LibRaw decoder | Modes (samples) | LibRaw p50 | RawSpeed p50 | Ratio | Saved per open |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `nikon_load_raw()` | 19 (22) | 177–425 ms | 59–161 ms | 2.38–3.30× | 118–264 ms |
+| `lossless_jpeg_load_raw()` (CR2) | 7 (7) | 205–315 ms | 56–95 ms | 3.08–3.64× | 149–226 ms |
+| `fuji_compressed_load_raw()` (lossless) | 9 (9) | 536–844 ms | 180–304 ms | 2.71–3.02× | 338–541 ms |
+| `olympus_load_raw()` | 7 (7) | 258–317 ms | 109–124 ms | 2.28–2.83× | 148–199 ms |
+| `pentax_load_raw()` | 2 (2) | 200–223 ms | 59–66 ms | 3.37–3.40× | 141–157 ms |
+| `lossless_dng_load_raw()` | 6 (6) | 238–423 ms | 71–151 ms | 2.80–3.37× | 166–272 ms |
+| `packed_dng_load_raw()` | 7 (7) | 7.7–292 ms | 3.5–47 ms | 2.16–6.21× | 4–245 ms |
+| `panasonic_load_raw()` | 2 (2) | 65.5–66.2 ms | 31.6 ms | 2.07–2.09× | 34–35 ms |
+| `panasonicC6_load_raw()` | 1 (1) | 42.9 ms | 28.5 ms | 1.50× | 14 ms |
+| `panasonicC8_load_raw()` | 4 (4) | 174–189 ms | 86–97 ms | 1.84–2.22× | 79–104 ms |
+
+Every mode's figure is in [modern camera support](../design/modern-camera-support.md#rawspeed-routed-modes).
+The lowest ratio is the Panasonic S5's 1.50×, outside the 1.2–1.4× band that would have been
+rerun with more observations; every other mode is 1.84× or more. The spread within a leg is small:
+the largest p95 over p50 is 12% (the Leica CL, Q2 and SL2 packed DNGs through RawSpeed, for example Q2 47.0 / 52.2 ms). The uncompressed DJI
+DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 unpacks in
+203.6 / 207.4 ms with LibRaw and 65.5 / 66.5 ms with RawSpeed.
+
+### Cold saved-white-balance preparation, LibRaw and RawSpeed
+
+`cold_saved_white_balance_preparation_timing` in `luxforge-core` reproduces the method of
+[native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation):
+a catalog whose RAW has a saved custom red gain of 1.1 × as-shot, a new owner and empty source cache
+per observation with the filesystem warm, and the clock from immediately before `catalog.import`
+until a strict exact-source `PreviewJob` for the current entry is available, through the one source
+job's wait and adoption. The harness that produced the earlier figures is not in the repository, so
+this one was written to that description. Before is the same source built with the Z6's
+`NikonZ6Lossless14` and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed);
+after is the source as routed. The two builds differ only in those catalog lines, so each builds
+its own catalog. 15 observations per leg in before, after, after, before order give 30 per variant.
+The planes of every observation hash the same within and across the two builds.
+
+| Source | Before (LibRaw) p50 / p95 | After (RawSpeed) p50 / p95 | Median time saved | Leg load |
+| --- | ---: | ---: | ---: | ---: |
+| Nikon Z6 | 303.1 / 305.9 ms | 162.1 / 167.2 ms | 141.0 ms, 46.5% | 4.97–6.65 |
+| DJI Air 2S | 205.2 / 207.2 ms | 198.9 / 204.6 ms | 6.3 ms, 3.1% | 3.89–4.97 |
+| Fujifilm X100VI, not routed (control) | 364.3 / 368.3 ms | 364.7 / 366.9 ms | none | 3.73–4.75 |
+
+The Z6 saving is the unpack saving above (138 ms), and the X100VI control, whose uncompressed mode
+is the same in both builds, moves by 0.4 ms. The Air 2S's packed DNG unpacks in 13 ms either way, so
+routing it saves little. The 546.5 / 584.6 ms Z6 figure recorded earlier predates the later
+development work in [startup and RAW throughput](#startup-and-raw-throughput); the same
+measurement with LibRaw now reads 303.1 / 305.9 ms.
+
+### Peak process RSS
+
+One decode per process under `/usr/bin/time -l` (`one_decode_for_peak_rss`), LibRaw forced and
+RawSpeed, five alternating processes each, on the largest routed sensors: the Nikon D850 lossless
+NEF (1840, 8288 × 5520, a 91.5 MB mosaic) and the Leica Q2 packed DNG (3204, 8424 × 5632,
+94.9 MB). Every run of a variant read within 0.1 MB of the others; the table gives each variant's median.
+
+| Sample (encoded size) | LibRaw peak RSS | RawSpeed peak RSS | Difference |
+| --- | ---: | ---: | ---: |
+| D850 1840 (55.2 MB) | 242.6 MB | 248.6 MB | +6.0 MB (5.7 MiB) |
+| Q2 3204 (87.2 MB) | 281.4 MB | 287.2 MB | +5.9 MB (5.6 MiB) |
+
+The design allowed for a transient second mosaic of about 91 MiB. It does not raise the peak: the
+peak is the encoded bytes, LibRaw's raw buffer and the mosaic the adapter keeps, and RawSpeed's
+image is released before the adapter allocates that mosaic. What remains is RawSpeed's code and
+parsed camera data.
+
+### What these measurements do not claim
+
+The unpack figures are the adapter's decode alone, not an editor open; a first open also reads and
+hashes the file, develops, converts and renders. The cold-preparation figures exclude owner
+startup, catalog open, rendering and presentation, and cover only the two owner originals that are
+routed. RSS is one decode in a test process, not the editor's peak, which also holds developments
+and GPU resources. The `timing` tier (`editor-performance`, `editor-latency` and `measure`) opens
+generated JPEGs only and does not exercise RAW unpacking; it passed on the measured tree, but its
+timing components started at one-minute load 12.0 to 12.6, after the tier's own `check`, so their
+rows are marked unreliable and are not compared with earlier figures. Native Windows and Linux
+builds are not measured.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
