@@ -769,18 +769,77 @@ impl EditorService {
             if let crate::catalog_types::LibraryItem::DevelopedAsset { asset_id } = item
                 && !super::library_rows::has_asset(&self.connection, asset_id)?
             {
-                self.entries.borrow_mut().forget(asset_id);
-                let cached = self
-                    .source_cache
-                    .borrow()
-                    .as_ref()
-                    .is_some_and(|cached| cached.asset_id == *asset_id);
-                if cached {
-                    self.source_cache.replace(None);
-                }
+                self.forget_deleted(asset_id);
             }
         }
         Ok(outcome)
+    }
+
+    /// Empty Removed (`catalog.empty-removed`): at most `limit` removed photographs' records, with
+    /// the strokes and artifact rows nothing left names, deleted in one catalog transaction
+    /// ([`crate::library::remove::empty`]). Once it commits, each deleted photograph is forgotten —
+    /// its cached head and entries and its prepared source — as is each deleted artifact's
+    /// verified bytes. Answers what it deleted and, when it deleted an artifact row, the collection
+    /// that removes those artifacts' files on the source worker, as `artifact.collect` plans one:
+    /// every artifact the catalog still records, and every one published while this service is
+    /// open, is kept.
+    pub(crate) fn empty_removed(
+        &mut self,
+        limit: usize,
+    ) -> Result<
+        (
+            crate::library::remove::Emptied,
+            Option<crate::artifacts::Collection>,
+        ),
+        Error,
+    > {
+        let live = self.live_artifacts.clone();
+        let (emptied, keep) = write(&mut self.connection, |tx| {
+            let emptied = crate::library::remove::empty(tx, &live, limit)?;
+            let keep = if emptied.artifacts.is_empty() {
+                None
+            } else {
+                let mut statement = tx.prepare_cached("SELECT id FROM artifacts")?;
+                let ids = statement.query_map([], |row| row.get::<_, String>(0))?;
+                let mut keep = std::collections::HashSet::new();
+                for id in ids {
+                    keep.insert(crate::artifacts::ArtifactId::parse(id?)?);
+                }
+                Some(keep)
+            };
+            Ok((emptied, keep))
+        })?;
+        for asset_id in &emptied.assets {
+            self.forget_deleted(asset_id);
+        }
+        let mut prepared = self.prepared_artifacts.borrow_mut();
+        for artifact in &emptied.artifacts {
+            prepared.remove(artifact);
+        }
+        drop(prepared);
+        let collection = keep.map(|keep| crate::artifacts::Collection {
+            root: self.artifact_root.clone(),
+            catalog_id: self.catalog_id.clone(),
+            keep,
+            live,
+            rows: emptied.artifacts.len(),
+        });
+        Ok((emptied, collection))
+    }
+
+    /// A committed write deleted this photograph's records: nothing cached answers for it any
+    /// more, neither its head and entries ([`EntryCache::forget`](super::entries::EntryCache::forget))
+    /// nor its prepared source.
+    fn forget_deleted(&self, asset_id: &AssetId) {
+        self.entries.borrow_mut().forget(asset_id);
+        let cached = self
+            .source_cache
+            .borrow()
+            .as_ref()
+            .is_some_and(|cached| cached.asset_id == *asset_id);
+        if cached {
+            self.source_cache.replace(None);
+        }
     }
 }
 // ── end lane C ──
