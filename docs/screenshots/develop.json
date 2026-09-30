@@ -1,0 +1,36 @@
+[
+  {
+    "api": {
+      "method": "edit.set-basic",
+      "params": {
+        "exposure": 0.25,
+        "contrast": 8.0,
+        "highlights": -25.0,
+        "shadows": 20.0,
+        "vibrance": 10.0
+      }
+    }
+  },
+  {
+    "api": {
+      "method": "edit.set-presence",
+      "params": {
+        "texture": 10.0,
+        "clarity": 8.0
+      }
+    }
+  },
+  {
+    "api": {
+      "method": "edit.set-vignette",
+      "params": {
+        "amount": -10.0
+      }
+    }
+  },
+  {
+    "wait": {
+      "ms": 3000
+    }
+  }
+]
