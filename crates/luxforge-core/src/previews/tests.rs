@@ -551,6 +551,47 @@ fn preview_cache_a_changed_or_missing_file_is_refused_and_nothing_written() {
     );
 }
 
+/// A file that changes while its previews are read is checked again before anything is written:
+/// what was made from it is discarded, and the tier is not written.
+#[test]
+fn preview_cache_a_file_changed_while_read_is_discarded() {
+    let mut fixture = Fixture::new("preview-cache-changed-while-read");
+    let (bytes, offset, len) = camera_jpeg((640, 427), (160, 107), 1);
+    let path = fixture.file("A.JPG", &bytes);
+    let file = fixture.add(
+        &path,
+        SourceTag::Jpeg,
+        header(1, Some((offset, len, (160, 107)))),
+    );
+    // The file is rewritten once the thumbnail stage is written, while the embedded stage is read.
+    let outcome = lane::run(
+        &mut fixture.store(),
+        &task((file, PreviewTier::Grid)),
+        &|| {
+            fs::write(&path, [bytes.as_slice(), b"edited"].concat()).unwrap();
+        },
+    );
+    let error = outcome.result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::SourceUnavailable);
+    assert!(
+        error
+            .detail
+            .contains("changed while its previews were read"),
+        "{}",
+        error.detail
+    );
+    assert!(!outcome.permanent);
+    let grid = fixture
+        .tiers(file)
+        .grid
+        .expect("the stage written before the change");
+    assert_eq!(
+        grid.origin,
+        PreviewOrigin::ExifThumbnail,
+        "no embedded stage was written"
+    );
+}
+
 /// Every file under `dir`, sorted.
 fn walk(dir: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();

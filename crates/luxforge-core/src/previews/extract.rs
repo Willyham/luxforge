@@ -11,8 +11,8 @@
 //!   from the largest JPEG decoded at a scale, then the other JPEGs, then the largest bitmap.
 //!   OM System, Olympus and Panasonic files carry one preview only, and every tier comes from it.
 //! - **No usable preview.** A file whose listed images are none of them extractable, or none of
-//!   which decodes (the Canon EOS R5 Mark II's and R8's H.265 previews), is [`Found::Unusable`] with
-//!   the reason, and the lane hands it to [`develop_instead`].
+//!   which decodes (the Canon EOS R5 Mark II's and R8's H.265 previews), is [`Found::Unusable`]
+//!   with the reason, and the lane hands it to [`develop_instead`].
 //!
 //! Many camera JPEGs carry bytes after their last EOI marker (every Canon CR3's full-size preview,
 //! the Leica CL's, Q2's and SL2's, some DJI files'), which the strict codec refuses; each is cut
@@ -96,7 +96,8 @@ pub(crate) enum FileImages {
         candidates: Vec<EmbeddedPreview>,
         /// The smallest extractable image, when the file carries another.
         thumbnail: Option<EmbeddedPreview>,
-        /// Why each listed image the crate does not extract is refused, for a file with none usable.
+        /// Why each listed image the crate does not extract is refused, for a file with none
+        /// usable.
         refused: Vec<&'static str>,
     },
 }

@@ -235,16 +235,14 @@ pub(crate) fn file_tiers(
     connection: &Connection,
     file: FileId,
 ) -> Result<Option<FileTiers>, Error> {
-    let mut statement = connection.prepare_cached(&format!(
-        "SELECT f.byte_len, f.modified_ns, f.device, f.inode, {}
+    // The file's signature, then the columns of [`Stored`] from each of its preview rows.
+    let mut statement = connection.prepare_cached(
+        "SELECT f.byte_len, f.modified_ns, f.device, f.inode, p.file_id, p.tier, p.byte_len,
+             p.modified_ns, p.device, p.inode, p.path, p.width, p.height, p.bytes, p.origin,
+             p.last_used_ms
          FROM files f LEFT JOIN previews p ON p.file_id = f.id
          WHERE f.id = ?1",
-        COLUMNS
-            .split(", ")
-            .map(|column| format!("p.{column}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))?;
+    )?;
     let mut rows = statement.query([file.0])?;
     let mut found: Option<FileTiers> = None;
     while let Some(row) = rows.next()? {

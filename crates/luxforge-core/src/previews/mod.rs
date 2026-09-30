@@ -7,13 +7,13 @@
 //!   through a temporary file and a rename, the loupe and large tiers' shared byte budget with
 //!   least-recently-used eviction — and the reads other lanes use: [`grid_states`] (lane D's
 //!   `browse.rows`) and [`cache_bytes`] (lane C's `catalog.info`).
-//! - `extract.rs`: a file's grid tier, in two stages (its thumbnail, then its embedded preview), and
-//!   its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`, with
-//!   scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a file with no
-//!   usable preview is developed instead (`develop_instead`, TASK-009's).
+//! - `extract.rs`: a file's grid tier, in two stages (its thumbnail, then its embedded preview),
+//!   and its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`,
+//!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a file
+//!   with no usable preview is developed instead (`develop_instead`, TASK-009's).
 //! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
-//!   the view — deduplicated by (file, tier) and bounded, the failures it remembers, and at most two
-//!   worker threads, each blocked on its channel while idle.
+//!   the view — deduplicated by (file, tier) and bounded, the failures it remembers, and at most
+//!   two worker threads, each blocked on its channel while idle.
 //!
 //! The owner's side — each request's job, each client's view job and its progress on the activity
 //! board, waking clients, `preview.read` — is `api/owner/previews.rs`. The lane never uses or
@@ -28,7 +28,7 @@ mod lane;
 
 #[allow(
     unused_imports,
-    reason = "the reads lanes C and D call as they land: grid states for browse.rows, cache bytes for catalog.info"
+    reason = "lanes C and D read these as they land: browse.rows and catalog.info"
 )]
 pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
 pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};

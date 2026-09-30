@@ -9,9 +9,10 @@
 //!
 //! - **Tasks and jobs.** A task is one file's tier. A client's `preview.read` that finds no valid
 //!   tier queues the task, or joins it, and answers its job: one catalog job per task, shared by
-//!   every client that asks, whose result is the [`PreviewInfo`]. `job.cancel` of it removes the
-//!   task from the queue, or stops it while it runs, unless a view still wants it. These jobs are
-//!   too short for rows of their own on the activity board.
+//!   every client that asks, whose result is the
+//!   [`PreviewInfo`](crate::catalog_types::PreviewInfo). `job.cancel` of it removes the task from
+//!   the queue, or stops it while it runs, unless a view still wants it. These jobs are too short
+//!   for rows of their own on the activity board.
 //! - **View jobs.** [`want_view`] queues, in the background, the grid tiers a client's view lacks,
 //!   as one catalog job per client ("Reading previews", `n of N`), which replaces the client's
 //!   previous one and whose cancel drops the tasks it alone wanted.
