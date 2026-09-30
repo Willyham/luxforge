@@ -18,7 +18,7 @@ Detail's choices are delegated and recorded in its [design](../docs/design/detai
 
 The Lens and perspective plan runs on the owner's decisions of 2026-09-30 in [decisions](../docs/decisions.md#lens-and-perspective-planning) and the recorded defaults in its [design](../docs/design/lens-and-perspective.md); it is not yet authorized for implementation. Profile qualification needs authentic photographs the owner supplies; without them it stays incomplete.
 
-The Tone curve plan is planned work, not yet authorized for implementation: it runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
+The Tone curve plan is being implemented (authorized by the owner on 2026-09-30): it runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
 
 The three plans share host surfaces. When they are implemented, the Tone curve and the first wave of Lens and perspective can land at any time; Detail's host contracts (the restoration stage, compile context, window planner and Fit settlement) land before the Lens warp and render tasks; measurements run after all feature work, one plan at a time on a quiet host.
 
