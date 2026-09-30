@@ -48,9 +48,10 @@ Paths are under `crates/luxforge-core/src`.
 
 | Path | Holds |
 | --- | --- |
-| `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `colour`, `jobs`, `latest`, `mask`, `path` and `resources`). Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
+| `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `catalog_types`, `colour`, `jobs`, `latest`, `mask`, `path`, `resources` and `seed`). It keeps one marked section per lane of the catalog work for that lane's exports. Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
 | `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
+| `editor/catalog_rows.rs` | The format-12 catalog tables' row writers and readers, which the import, the seeder and the catalog lanes share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
 | `editor/source.rs` | Source preparation and cache, import, file identity and RAW settings |
@@ -69,7 +70,13 @@ Paths are under `crates/luxforge-core/src`.
 | `capabilities/secrets.rs` and `capabilities/transport.rs` | The two contracts the host is given rather than owns: the `SecretStore` trait, with the in-memory and unavailable stores, and the `Transport` trait that sends one checked request, with the unavailable transport. The core names no TLS, HTTP or Keychain crate, which `cargo xtask check-repository` enforces |
 | `capabilities/document.rs` | The one JSON document store the settings, grants and installed-resource records and the artifact manifest share |
 | `atomic_file.rs` | The crate's one durable file write, which the document store and the derived-artifact store write through, and its one disk flush (`flush`), which every durable write in the crate makes and which test builds skip ([tests skip the disk flush](../engineering/development.md#tests-skip-the-disk-flush)) |
-| `jobs.rs` | Every job the catalog owner runs — source preparation, analysis, capability work and export — as a record in one table, which also runs the capability and export lanes ([jobs](modules-and-api.md#jobs)) |
+| `jobs.rs` | Every job the catalog owner runs — source preparation, analysis, capability work, export and the catalog lanes' work — as a record in one table, which also runs the capability and export lanes ([jobs](modules-and-api.md#jobs)) |
+| `catalog_types/` | The [catalog](catalog.md)'s shared shapes, which every lane codes against, one file per concept: `identity.rs` (file identities and signatures, volumes, catalog folders, collections, events, moments, library changes and the owner's 16-byte view item), `header.rs` (header metadata), `disk.rs` (volumes, cards, indexed folders and the index's file and root records), `organize.rs` (thresholds, events, moments and group layouts), `browse.rs` (view queries, summaries, rows, facets and the selection), `library.rs` (picks, targets, catalog folders, collections, the journal, developing picks, availability and missing originals), `previews.rs`, `jobs.rs` (each long-running catalog job's names) and `api.rs` (every catalog method's parameters, answer, envelope, job and error codes, declared once for the lane that registers it) |
+| `index/` | The index of the files Luxforge browses (lane A): its database in `<catalog stem>.index/index.sqlite`, versioned on its own and discarded rather than refused (`database.rs`), and which volume a path is on (`volume.rs`); the index lane is to come |
+| `organize/` | Events, days, cameras and moments, pure functions of header metadata (lane A); their signatures are final and their bodies placeholders |
+| `previews/`, `library/`, `browse/` | The preview lane and cache (lane B), picks, the library journal, catalog folders, collections and developing picks (lane C), and browse views, facets and selection (lane D); each a module documenting its lane and its planned files |
+| `seed.rs` | Generated catalogs and indexes written in bulk, for `cargo xtask generate-catalog` and tests, through the same row writers |
+| `api/owner/catalog.rs` and `files.rs`, `previews.rs`, `library.rs`, `views.rs` | The catalog lanes on the owner: each lane's owner-side state, the messages its workers post back, its handlers and its per-client clean-up, one file per lane |
 
 ### The transport's files
 
@@ -86,6 +93,7 @@ Paths are under `crates/luxforge-app/src`.
 - `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver.
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
+- The Select workspace of the [catalog](catalog.md) is one seam across the three layers: `app/select.rs` (with `app/message/select.rs`), `state/select.rs` and `view/select.rs`, skeletons its lane fills.
 - `layout.rs`: the window's framework-free layout: the bar and panel sizes, the rules between them, the Fit inset and the photo surface they leave.
 - `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync and the Performance sampler share.
 - `crop_draft.rs`: the crop frame's geometry, whose draft is a core draft like every other gesture's.
@@ -135,11 +143,12 @@ A mask is a host object beside the layers — an ordered list of components with
 
 ## Persistence
 
-- Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-11)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
+- Local SQLite holds current state, history entries with their snapshots, a monotonic revision, redo navigation and each request's whole answer (the [current catalog format](versions-and-lineage.md#storage-catalog-format-12)). The catalog owner is its only writer, in short atomic transactions; a failed write preserves the prior durable state. Originals and disposable pixel caches stay outside the database.
 - Only the current catalog and payload shapes are supported: an unsupported format fails explicitly without rewriting data, and unknown payloads and missing providers are retained and reported, never dropped.
 - Entry records are the only stored copy of a stack. Each entry's history row (sequence, action, label, actor, timestamp, undo parent and restore target) has its own columns, so a history page decodes no entry.
 - Every entry is retained: undo and redo navigate without inverse rows, Restore copies a snapshot into a new action, and versions are named references to entries ([versions and lineage](versions-and-lineage.md)).
 - Beside the entries the catalog holds the preset library ([presets](presets.md#library)), a content-addressed store of painted paths ([masking](masking.md#stroke-storage)) and each entry's references to derived artifacts, immutable content-addressed files in a `<catalog stem>.artifacts` directory that moves with the catalog ([derived artifacts](module-capabilities.md#derived-artifacts)).
+- The catalog's index and preview cache live in a `<catalog stem>.index` directory beside it: `index.sqlite`, what Luxforge read from the files it browses, and `previews/`. It is a cache with a format of its own, opened on first use and discarded and recreated when it cannot be used, never touching the catalog ([catalog](catalog.md#the-index-and-previews-cache)).
 - Module settings, grants, secrets and installed resources are user-level and never part of a catalog.
 - The owner keeps the last 8 entries it read, with their strokes resolved and shared between clones, and the last 16 assets' heads, each updated where a write commits: a history move, or a relocation that rewrites where an asset's original is (an internal write the Locate command will make; no method exposes it yet), announced as an event naming the asset. Reopening starts that cache empty and recovers the same IDs, current snapshot and navigation state.
 - Backups need a consistent SQLite snapshot, not a copy of a live file.

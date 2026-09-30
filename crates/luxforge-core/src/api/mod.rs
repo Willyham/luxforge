@@ -295,6 +295,12 @@ pub struct ClientSession {
     /// and no method changes it.
     #[serde(default)]
     pub authority: ClientAuthority,
+    /// This client's one browse view as its session carries it: the query, revision, size,
+    /// staleness and selection. The view's item list stays with the owner, outside the session, so
+    /// a session answer never carries it (`docs/design/catalog.md`, "Views on the owner"). Boxed, so
+    /// every message that carries a session stays small.
+    #[serde(default)]
+    pub browse: Box<crate::catalog_types::BrowseSession>,
 }
 
 impl ClientSession {
