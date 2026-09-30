@@ -297,7 +297,7 @@ fn read_list(editor: &mut Editor) {
     assert!(!editor.select.state.missing.reading);
 }
 
-/// Read the running jobs as the timer would, until none runs.
+/// Read the running jobs as the board's wakes would, until none runs.
 fn poll_until_ended(editor: &mut Editor) {
     luxforge_testbase::wait_for("Missing originals' jobs to end", || {
         let (search, locate) = editor.select.state.missing.running_jobs();
@@ -645,5 +645,50 @@ fn resolve_missing_locate_original_in_develop_reopens_the_photograph() {
         scene.editor.status.text
     );
     assert!(scene.editor.busy, "the Open path is under way");
+    finish(scene);
+}
+
+/// A search is read with `job.read` once as soon as it is named, and again each time long-running
+/// work reads the activity board — which its watch wakes it to do as the search reports each row
+/// and when it ends — one read at a time, a board read while one is out asking for one more. No
+/// timer asks after it.
+#[test]
+fn resolve_missing_follows_a_search_through_the_activity_board() {
+    let mut scene = scene("followed");
+    let _ = find(&mut scene.editor, &scene.lake, &scene.archive);
+    let editor = &mut scene.editor;
+    assert!(
+        editor.select.state.missing.polling,
+        "read as soon as it is named"
+    );
+    let _ = editor.missing_followed();
+    assert!(
+        editor.select.state.missing.poll_again,
+        "a board read while that read is out asks for one more"
+    );
+    let mut reads = 0;
+    luxforge_testbase::wait_for("the search to end", || {
+        let (search, _) = editor.select.state.missing.running_jobs();
+        let Some(job) = search else {
+            return Some(());
+        };
+        if editor.select.state.missing.polling {
+            // The read that is out answers, as its task would.
+            reads += 1;
+            let record = job_now(&editor.owner, editor.client, &job);
+            let _ = editor.update(missing(MissingMessage::Polled {
+                search: Some((job, record)),
+                locate: None,
+            }));
+        } else {
+            // What long-running work calls after each read of the board.
+            let _ = editor.missing_followed();
+        }
+        None
+    });
+    let state = &editor.select.state.missing;
+    assert!(reads >= 2, "named, then after the board read");
+    assert_eq!(state.searches[&scene.lake].status, SearchStatus::Ended);
+    assert!(!state.polling && !state.poll_again);
     finish(scene);
 }

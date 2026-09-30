@@ -588,7 +588,12 @@ fn listed(name: &str, months: Vec<Month>, count: u32, picked: u32, offline: u32)
     Event {
         id: EventId::new(),
         name: name.into(),
-        label: name.into(),
+        // As the core labels it: the name without its dates, or the whole of an Undated one.
+        label: if months.is_empty() {
+            name.into()
+        } else {
+            name.split(" \u{b7} ").next().unwrap_or(name).into()
+        },
         place: None,
         first_day: months.first().map(|month| day(month.year, month.month, 12)),
         last_day: months.last().map(|month| day(month.year, month.month, 13)),
@@ -1397,35 +1402,37 @@ fn select_bursts_and_cell_widths() {
     assert_eq!(clamp_cell_width(f32::NAN), FILES_CELL_WIDTH);
 }
 
-/// An event's row and title name it without the dates its name ends with, which they show beside
-/// it, and an Undated event by its folder under the Undated heading; any other name stays whole.
+/// An event's row and title name it by the core's label, the name without its dates, which they
+/// show beside it; an Undated event by its folder under the Undated heading; and one whose name is
+/// its dates alone by that name.
 #[test]
 fn a_select_event_is_labelled_without_the_dates_it_is_shown_with() {
-    let named = |name: &str, first: Option<LocalDay>, last: Option<LocalDay>| Event {
+    let labelled = |name: &str, label: &str, first: Option<LocalDay>| Event {
         name: name.into(),
+        label: label.into(),
         first_day: first,
-        last_day: last,
+        last_day: first,
         undated: first.is_none(),
         ..listed(name, Vec::new(), 1, 0, 0)
     };
-    let (twelve, thirteen) = (Some(day(2026, 9, 12)), Some(day(2026, 9, 13)));
+    let twelve = Some(day(2026, 9, 12));
     assert_eq!(
-        event_label(&named("Konstanz \u{b7} 12\u{2013}13 Sep", twelve, thirteen)),
+        event_label(&labelled(
+            "Konstanz \u{b7} 12\u{2013}13 Sep",
+            "Konstanz",
+            twelve
+        )),
         "Konstanz"
     );
     assert_eq!(
-        event_label(&named("Lake \u{b7} 12 Sep", twelve, twelve)),
-        "Lake"
-    );
-    assert_eq!(
-        event_label(&named("Undated \u{b7} From Anna", None, None)),
+        event_label(&labelled(
+            "Undated \u{b7} From Anna",
+            "Undated \u{b7} From Anna",
+            None
+        )),
         "From Anna"
     );
-    assert_eq!(
-        event_label(&named("Konstanz \u{b7} 4 Sep", twelve, thirteen)),
-        "Konstanz \u{b7} 4 Sep",
-        "a name whose dates are not the event's own is kept whole"
-    );
+    assert_eq!(event_label(&labelled("12 Sep", "", twelve)), "12 Sep");
 }
 
 /// `P` clears only a selection the desktop has read whole and every one picked, and otherwise

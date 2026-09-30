@@ -105,6 +105,9 @@ pub(crate) struct Select {
     pub(crate) reading: Option<Reading>,
     /// A `job.read` of the reading source's job is in flight.
     pub(crate) read_in_flight: bool,
+    /// The view on screen went stale while the card or folder being read waited to replace it: it
+    /// is read again, quietly, only if the reading ends without replacing it.
+    pub(crate) stale_while_reading: bool,
     /// `card.list` and `volume.list`: one read in flight, one waiting.
     pub(crate) disks: Coalesce<()>,
     /// `catalog.info`: one read in flight, one waiting.
@@ -145,6 +148,9 @@ pub(crate) enum Reread {
     Elsewhere,
     /// This desktop's own library change made it stale; the status bar says that change.
     Own,
+    /// It went stale while the index lane read a card or folder for this desktop, whose batches
+    /// are the likeliest change: the status bar keeps saying how far the reading has got.
+    Quiet,
 }
 
 impl Default for Select {
@@ -170,6 +176,7 @@ impl Default for Select {
             reread: Reread::Asked,
             reading: None,
             read_in_flight: false,
+            stale_while_reading: false,
             disks: Coalesce::default(),
             counts: Coalesce::default(),
             listing: BTreeSet::new(),
@@ -423,6 +430,10 @@ impl Editor {
             }
             SelectMessage::Source(source) => {
                 self.select.state.menu = None;
+                // Another view chosen while a card or folder is being read: the reading goes on
+                // as the status bar's job, and its end no longer replaces the view.
+                self.select.reading = None;
+                self.select.stale_while_reading = false;
                 return self.evaluate(model::source_query(source));
             }
             SelectMessage::BrowseFolder => {
@@ -454,11 +465,12 @@ impl Editor {
                     }
                 }
                 Err(error) => {
-                    if let Some(reading) = self.select.reading.take() {
+                    if let Some(reading) = &self.select.reading {
                         self.status.text = format!(
                             "Could not read {}: {error}",
                             reading.source.name(self.select.state.home.as_deref())
                         );
+                        return self.reading_ended();
                     }
                 }
             },
@@ -835,9 +847,8 @@ impl Editor {
         let record = match result {
             Ok(record) => record,
             Err(error) => {
-                self.select.reading = None;
                 self.status.text = format!("Could not read {name}: {error}");
-                return Task::none();
+                return self.reading_ended();
             }
         };
         match record["status"].as_str() {
@@ -853,6 +864,7 @@ impl Editor {
             }
             Some("ready") => {
                 self.select.reading = None;
+                self.select.stale_while_reading = false;
                 let source = match reading.source {
                     // The folder as the index listed it — its canonical path, which a symbolic
                     // link in the chosen one resolves to — is the one its files are indexed under.
@@ -877,18 +889,16 @@ impl Editor {
                 Task::batch([disks, self.evaluate(model::source_query(source))])
             }
             Some("cancelled") => {
-                self.select.reading = None;
                 self.status.text = format!("Cancelled reading {name}");
-                Task::none()
+                self.reading_ended()
             }
             other => {
-                self.select.reading = None;
                 let reason = record["error"]["message"]
                     .as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("the listing ended {}", other.unwrap_or("unknown")));
                 self.status.text = format!("Could not read {name}: {reason}");
-                Task::none()
+                self.reading_ended()
             }
         }
     }
@@ -923,6 +933,8 @@ impl Editor {
         }
         self.select.serial += 1;
         self.select.reread = Reread::Asked;
+        // Whatever made the view stale, it is being read now.
+        self.select.stale_while_reading = false;
         let serial = self.select.serial;
         state.query = Some(query.clone());
         state.loading = true;
@@ -985,8 +997,9 @@ impl Editor {
                             "{name} changed elsewhere and was read again \u{b7} {count} in view"
                         );
                     }
-                    // The status bar says the change itself, from its label.
-                    Reread::Own => {}
+                    // The status bar says the change itself, from its label, or the reading's
+                    // progress.
+                    Reread::Own | Reread::Quiet => {}
                 }
                 self.rebuild_grid();
                 if same_source {
@@ -1232,10 +1245,64 @@ impl Editor {
                 .as_ref()
                 .map(|summary| summary.query.clone())
         {
-            tasks.push(self.evaluate(query));
-            self.select.reread = Reread::Elsewhere;
+            match self.reading_waits() {
+                // The card or folder being read is about to replace the view, and its batches are
+                // what make it stale: it is read again only if the reading ends without replacing
+                // it.
+                Some(true) => self.select.stale_while_reading = true,
+                // Sent to the background, the reading goes on while the person browses: the view
+                // is read again, without calling the reading's batches a change made elsewhere.
+                Some(false) => {
+                    tasks.push(self.evaluate(query));
+                    self.select.reread = Reread::Quiet;
+                }
+                None => {
+                    tasks.push(self.evaluate(query));
+                    self.select.reread = Reread::Elsewhere;
+                }
+            }
         }
         Task::batch(tasks)
+    }
+
+    /// Whether a card or folder is being read for this desktop, and if so whether it still waits to
+    /// replace the view (`true`) or was sent to the background (`false`).
+    fn reading_waits(&self) -> Option<bool> {
+        let reading = self.select.reading.as_ref()?;
+        let background = self.long_work.state.background.as_deref();
+        Some(reading.job.is_none() || reading.job.as_deref() != background)
+    }
+
+    /// The card or folder being read, while it waits to replace the view: the title names it.
+    fn waiting_source(&self) -> Option<ReadSource> {
+        if self.reading_waits() != Some(true) {
+            return None;
+        }
+        self.select
+            .reading
+            .as_ref()
+            .map(|reading| reading.source.clone())
+    }
+
+    /// The reading ended without replacing the view: failed, refused or cancelled. A view that went
+    /// stale meanwhile is read again now, quietly, so the status bar keeps what the ending said.
+    fn reading_ended(&mut self) -> Task<Message> {
+        self.select.reading = None;
+        if !std::mem::take(&mut self.select.stale_while_reading) || self.select.state.loading {
+            return Task::none();
+        }
+        let Some(query) = self
+            .select
+            .state
+            .summary
+            .as_ref()
+            .map(|summary| summary.query.clone())
+        else {
+            return Task::none();
+        };
+        let task = self.evaluate(query);
+        self.select.reread = Reread::Quiet;
+        task
     }
 
     // -- Picking and library undo ------------------------------------------------------------------
@@ -1659,6 +1726,10 @@ impl Editor {
 /// After every message: read the rows near the screen and start a staleness check a wake asked for.
 /// An evidence run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    let waiting = editor.waiting_source();
+    if editor.select.state.reading != waiting {
+        editor.select.state.reading = waiting;
+    }
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();

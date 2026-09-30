@@ -12,11 +12,13 @@
 //!   desktop — and again after this desktop's own Relink or Locate, whose answers wake nothing.
 //! - **Searches.** Find in a folder… asks the native folder dialog and sends `source.find
 //!   {search_root, source_folder}`, a `source-find` job on the library lane, one search at a time.
-//!   The core records no event when a job ends, so the running search and the running Locate are
-//!   read with `job.read` on a [`JOB_POLL`] timer that exists only while either runs, as the Select
-//!   shell reads `index.refresh`; while a search runs its `result` is the report so far, each row
-//!   `checking` until it is settled. Stop search is `job.cancel`: a cancelled search remembers
-//!   nothing, so its group goes back to its header and nothing has changed.
+//!   The running search and the running Locate are read with `job.read` when each is named, and
+//!   then whenever long-running work reads the activity board, which its watch wakes it to do as
+//!   catalog jobs begin, report progress or end ([`Editor::missing_followed`]) — as the Select
+//!   shell follows `index.refresh` — so no timer asks after them; while a search runs its `result`
+//!   is the report so far, each row `checking` until it is settled. Stop search is `job.cancel`: a
+//!   cancelled search remembers nothing, so its group goes back to its header and nothing has
+//!   changed.
 //! - **Relink N** sends `source.relink {pairs}` with exactly the pairs finished searches verified
 //!   and the files chosen among several identical ones ([`model::relink_pairs`]), one library change
 //!   the core's `library.undo` reverts.
@@ -34,21 +36,14 @@ use crate::app::{
 use crate::state::select_missing::{
     self as model, LocateFrom, Locating, PhotoFacts, Search, SearchStatus,
 };
-use iced::{Subscription, Task};
+use iced::Task;
 use luxforge_core::{
     AssetId, ClientId, OwnerHandle,
     catalog_types::{FindReport, MissingOriginals, VolumeState, Volumes},
     jobs::JOB_CANCEL,
 };
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
-/// How often a running search or Locate is read. The core pushes no client a job's end, so the
-/// desktop reads it, as it reads a folder's listing; the timer exists only while one runs.
-pub(crate) const JOB_POLL: Duration = Duration::from_millis(100);
+use std::path::{Path, PathBuf};
 
 fn missing(message: MissingMessage) -> Message {
     Message::Select(SelectMessage::Missing(message))
@@ -217,7 +212,12 @@ impl Editor {
                     return Task::none();
                 }
                 match result {
-                    Ok(job) => search.status = SearchStatus::Running { job },
+                    // Read once as soon as it is named, which a job that ended before any wake
+                    // reached the desktop needs.
+                    Ok(job) => {
+                        search.status = SearchStatus::Running { job };
+                        return self.poll_jobs();
+                    }
                     Err(error) => {
                         self.status.text = format!("Could not search: {error}");
                         search.status = SearchStatus::Failed(error);
@@ -241,15 +241,24 @@ impl Editor {
                     (None, Ok(_)) => {}
                 }
             }
-            MissingMessage::Poll => return self.poll_jobs(),
             MissingMessage::Polled { search, locate } => {
-                self.select.state.missing.polling = false;
+                let state = &mut self.select.state.missing;
+                state.polling = false;
+                let again = std::mem::take(&mut state.poll_again);
                 if let Some((job, result)) = search {
                     self.search_read(&job, result);
                 }
-                if let Some((job, result)) = locate {
-                    return self.locate_read(&job, result);
-                }
+                let located = match locate {
+                    Some((job, result)) => self.locate_read(&job, result),
+                    None => Task::none(),
+                };
+                // The board changed while that read was out: read what still runs once more.
+                let polled = if again {
+                    self.poll_jobs()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([located, polled]);
             }
             MissingMessage::Filter(filter) => {
                 let state = &mut self.select.state.missing;
@@ -326,7 +335,10 @@ impl Editor {
                     return Task::none();
                 };
                 match result {
-                    Ok(job) => locating.job = Some(job),
+                    Ok(job) => {
+                        locating.job = Some(job);
+                        return self.poll_jobs();
+                    }
                     Err(error) => {
                         self.status.text =
                             format!("Could not locate {}: {error}", locating.file_name);
@@ -402,11 +414,24 @@ impl Editor {
         )
     }
 
-    /// Read the running search and Locate, one read at a time.
+    /// Long-running work has read the activity board, which its watch wakes it to read whenever a
+    /// catalog job begins, reports progress or ends: the running search and Locate are read then,
+    /// so a search's rows fill in as it reports each settled one and its end is heard, and nothing
+    /// polls them.
+    pub(crate) fn missing_followed(&mut self) -> Task<Message> {
+        self.poll_jobs()
+    }
+
+    /// Read the running search and Locate, one read at a time; asked again while one is out, they
+    /// are read once more when it answers.
     fn poll_jobs(&mut self) -> Task<Message> {
         let state = &mut self.select.state.missing;
         let (search, locate) = state.running_jobs();
-        if state.polling || (search.is_none() && locate.is_none()) {
+        if search.is_none() && locate.is_none() {
+            return Task::none();
+        }
+        if state.polling {
+            state.poll_again = true;
             return Task::none();
         }
         state.polling = true;
@@ -878,14 +903,4 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         tasks.push(editor.missing_evidence_after());
     }
     Task::batch(tasks)
-}
-
-/// The job timer, which exists only while a search or a Locate runs.
-pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    let (search, locate) = editor.select.state.missing.running_jobs();
-    if search.is_some() || locate.is_some() {
-        iced::time::every(JOB_POLL).map(|_| missing(MissingMessage::Poll))
-    } else {
-        Subscription::none()
-    }
 }
