@@ -678,3 +678,369 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
     }
     proof.finish();
 }
+
+/// The shared curve editor's desktop rules, on the proof's curve: its `master` channel holds 2 to
+/// 8 monotone points and its control is labelled `Curve`.
+mod curve_editor {
+    use super::*;
+    use crate::state::tools::{CURVE_HINT, CurveControl, CurveUi, ValueEdit};
+    use luxforge_core::{Control, GroupControl, ParameterKind};
+
+    const MASTER: &str = "master";
+    const THREE: [[f64; 2]; 3] = [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]];
+
+    impl Proof {
+        /// The proof's curve as the tools panel derives it.
+        fn curve(&self) -> CurveControl {
+            let mut models = Vec::new();
+            flatten(
+                &self.editor.workspace.tools.developer[0].controls,
+                &mut models,
+            );
+            models
+                .into_iter()
+                .find_map(|model| match model {
+                    ControlModel::Curve(curve) => Some(curve.clone()),
+                    _ => None,
+                })
+                .expect("the proof draws its curve")
+        }
+
+        /// The curve's local state, keyed by its action and first channel.
+        fn curve_ui(&self) -> CurveUi {
+            self.editor
+                .controls
+                .ui
+                .curve(&(ACTION.into(), MASTER.into()))
+                .cloned()
+                .unwrap_or_default()
+        }
+
+        /// One curve editor event on the `master` channel, and the task it returned.
+        fn curve_event(&mut self, event: CurveEditorEvent) -> iced::Task<Message> {
+            self.editor.update(Message::Control(ControlMessage::Curve {
+                action: ACTION.into(),
+                parameter: MASTER.into(),
+                event,
+            }))
+        }
+
+        /// Set the `master` points as an independent JSON client would, and refresh the desktop.
+        fn post_points(&mut self, points: Value) {
+            let mutation = json!({
+                "expected_revision": self.editor.document.state.as_ref().unwrap().revision,
+                "request_id": format!("proof-json-{}", NEXT.fetch_add(1, Ordering::Relaxed)),
+                "actor": "proof-json-client"
+            });
+            call(
+                &self.editor.owner,
+                self.json_client,
+                &format!("edit.{ACTION}"),
+                json!({"asset_id": self.asset, "mutation": mutation, MASTER: points}),
+            );
+            let refreshed = tasks::refresh(
+                &self.editor.owner,
+                self.editor.client,
+                self.asset.clone(),
+                tasks::Scope::Elsewhere,
+                None,
+            )
+            .unwrap();
+            let _ = self
+                .editor
+                .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                    refreshed,
+                )))));
+            assert_eq!(
+                self.editor.control_field_value(ACTION, MASTER),
+                Some(points)
+            );
+            assert!(!self.editor.busy);
+        }
+
+        /// The `master` points the desktop would send next.
+        fn sent_points(&mut self) -> Value {
+            self.editor.request_for(ACTION, Some(MASTER)).unwrap()["params"][MASTER].clone()
+        }
+
+        /// Load `descriptor` in place of the proof's own, as discovery would.
+        fn load(&mut self, descriptor: ModuleDescriptor) {
+            let _ = self
+                .editor
+                .update(Message::Sync(SyncMessage::ModulesLoaded(Ok(vec![
+                    descriptor,
+                ]))));
+        }
+
+        /// The proof's descriptor with the `master` parameter declared as `kind`.
+        fn with_master_kind(&self, kind: ParameterKind) -> ModuleDescriptor {
+            let mut descriptor = self.descriptor().clone();
+            for action in &mut descriptor.actions {
+                for parameter in &mut action.parameters {
+                    if parameter.name == MASTER {
+                        parameter.kind = kind.clone();
+                    }
+                }
+            }
+            descriptor
+        }
+    }
+
+    #[test]
+    fn adding_a_point_selects_it() {
+        let mut proof = Proof::new();
+        proof.post_points(json!(THREE));
+        let _ = proof.curve_event(CurveEditorEvent::Select(2));
+        assert_eq!(proof.curve().selected_point, Some(2));
+
+        let _ = proof.curve_event(CurveEditorEvent::Add([0.25, 0.25]));
+        assert!(proof.editor.busy, "the add commits at once");
+        assert_eq!(
+            proof.sent_points(),
+            json!([[0.0, 0.0], [0.25, 0.25], [0.5, 0.5], [1.0, 1.0]])
+        );
+        assert_eq!(
+            proof.curve_ui().point,
+            Some(1),
+            "the new point's sorted index is selected"
+        );
+        let curve = proof.curve();
+        assert_eq!(curve.selected_point, Some(1));
+        assert_eq!(curve.points[1], [0.25, 0.25]);
+        proof.finish();
+    }
+
+    #[test]
+    fn removing_a_point_clears_the_selection() {
+        let mut proof = Proof::new();
+        proof.post_points(json!(THREE));
+        let _ = proof.curve_event(CurveEditorEvent::Select(1));
+        assert_eq!(proof.curve().selected_point, Some(1));
+
+        let _ = proof.curve_event(CurveEditorEvent::Remove(1));
+        assert!(proof.editor.busy, "the removal commits at once");
+        assert_eq!(proof.sent_points(), json!([[0.0, 0.0], [1.0, 1.0]]));
+        assert_eq!(proof.curve_ui().point, None);
+        assert_eq!(proof.curve().selected_point, None);
+        proof.finish();
+    }
+
+    /// A double-click on a point, Delete or Backspace on the selected point and a point row's
+    /// remove button all publish the same `Remove`, so this refusal covers every desktop removal.
+    #[test]
+    fn removing_an_end_point_is_refused_with_a_status() {
+        let mut proof = Proof::new();
+        proof.post_points(json!(THREE));
+        for end in [0, 2] {
+            let _ = proof.curve_event(CurveEditorEvent::Select(end));
+            proof.editor.status.text.clear();
+            let task = proof.curve_event(CurveEditorEvent::Remove(end));
+            assert_eq!(
+                proof.editor.status.text,
+                "The end points move but are not removed"
+            );
+            assert_eq!(task.units(), 0, "nothing is sent");
+            assert!(!proof.editor.busy);
+            assert_eq!(
+                proof.editor.control_field_value(ACTION, MASTER),
+                Some(json!(THREE))
+            );
+            assert_eq!(
+                proof.curve().selected_point,
+                Some(end),
+                "a refused removal keeps the selection"
+            );
+        }
+        proof.finish();
+    }
+
+    #[test]
+    fn an_add_past_the_maximum_reports_the_limit() {
+        let mut proof = Proof::new();
+        let full: Vec<[f64; 2]> = (0..8)
+            .map(|k| {
+                let x = f64::from(k) / 7.0;
+                [x, x]
+            })
+            .collect();
+        proof.post_points(json!(full));
+        let task = proof.curve_event(CurveEditorEvent::Add([0.1, 0.1]));
+        assert_eq!(proof.editor.status.text, "Curve holds at most 8 points");
+        assert_eq!(task.units(), 0, "nothing is sent");
+        assert!(!proof.editor.busy);
+        assert_eq!(
+            proof.editor.control_field_value(ACTION, MASTER),
+            Some(json!(full))
+        );
+        proof.finish();
+    }
+
+    #[test]
+    fn a_remove_below_the_minimum_reports_the_limit() {
+        let mut proof = Proof::new();
+        proof.post_points(json!([[0.0, 0.0], [1.0, 1.0]]));
+        assert_eq!(proof.curve().points.len(), 2, "the curve is at its minimum");
+        for index in [0, 1] {
+            proof.editor.status.text.clear();
+            let task = proof.curve_event(CurveEditorEvent::Remove(index));
+            assert_eq!(proof.editor.status.text, "Curve needs at least 2 points");
+            assert_eq!(task.units(), 0, "nothing is sent");
+            assert!(!proof.editor.busy);
+            assert_eq!(proof.curve().points.len(), 2);
+        }
+        proof.finish();
+    }
+
+    #[test]
+    fn opening_the_points_list_sends_no_request() {
+        let mut proof = Proof::new();
+        let closed = proof.curve();
+        assert!(!closed.points_open, "the list starts closed");
+        let fields = proof.editor.controls.fields.clone();
+        let revision = proof.editor.document.state.as_ref().unwrap().revision;
+        let sequence = proof.editor.curve_sampling.sequence;
+        for open in [true, false, true] {
+            let task = proof.curve_event(CurveEditorEvent::Points(open));
+            assert_eq!(task.units(), 0, "toggling the list sends nothing");
+            assert!(!proof.editor.busy);
+            assert!(proof.editor.slider_gesture().is_none());
+            assert_eq!(proof.editor.controls.fields, fields);
+            assert_eq!(
+                proof.editor.document.state.as_ref().unwrap().revision,
+                revision
+            );
+            assert_eq!(
+                proof.editor.curve_sampling.sequence, sequence,
+                "no sample query is asked"
+            );
+            assert_eq!(proof.curve_ui().points_open, open);
+            let curve = proof.curve();
+            assert_eq!(curve.points_open, open);
+            assert_eq!(curve.version, closed.version, "the plot is not redrawn");
+        }
+
+        // Open or closed is view state: a refresh of the photo and dropped samples keep it.
+        proof.post_points(json!(THREE));
+        assert!(proof.curve().points_open, "a refresh keeps the list open");
+        proof.editor.controls.ui.clear_curve_samples();
+        assert!(
+            proof.curve_ui().points_open,
+            "dropping samples keeps it open"
+        );
+        proof.finish();
+    }
+
+    #[test]
+    fn closing_the_points_list_drops_uncommitted_text() {
+        let mut proof = Proof::new();
+        proof.post_points(json!(THREE));
+        let _ = proof.curve_event(CurveEditorEvent::Points(true));
+        let _ = proof.curve_event(CurveEditorEvent::Text {
+            index: 1,
+            axis: 1,
+            text: "0.7".into(),
+        });
+        assert_eq!(
+            proof.curve().point_rows[1].edit[1],
+            ValueEdit::Typing("0.7".into())
+        );
+
+        let task = proof.curve_event(CurveEditorEvent::Points(false));
+        assert_eq!(task.units(), 0, "closing sends nothing");
+        assert!(!proof.editor.busy);
+        assert!(
+            proof.curve_ui().edits.is_empty(),
+            "the typed text is dropped"
+        );
+        let _ = proof.curve_event(CurveEditorEvent::Points(true));
+        assert_eq!(
+            proof.curve().point_rows[1].edit[1],
+            ValueEdit::None,
+            "reopening shows the committed value"
+        );
+        let _ = proof.curve_event(CurveEditorEvent::Submit { index: 1, axis: 1 });
+        assert!(
+            !proof.editor.busy,
+            "Enter after reopening has no typed text to commit"
+        );
+        assert_eq!(
+            proof.editor.control_field_value(ACTION, MASTER),
+            Some(json!(THREE)),
+            "nothing typed was committed"
+        );
+        proof.finish();
+    }
+
+    #[test]
+    fn the_hint_shows_only_when_points_can_be_added_and_removed() {
+        let mut proof = Proof::new();
+        let curve = proof.curve();
+        assert_eq!(curve.hint.as_deref(), Some(CURVE_HINT));
+        assert_eq!(curve.points_max, 8);
+
+        for (case, points_min, points_max, fixed_x) in [
+            ("a fixed x", 3, 3, Some(vec![0.0, 0.5, 1.0])),
+            ("a fixed x with a varying count", 2, 8, Some(vec![0.0, 1.0])),
+            ("a fixed point count", 2, 2, None),
+        ] {
+            let descriptor = proof.with_master_kind(ParameterKind::Curve {
+                points_min,
+                points_max,
+                monotone: true,
+                fixed_x,
+            });
+            proof.load(descriptor);
+            let curve = proof.curve();
+            assert_eq!(curve.hint, None, "{case}: no hint");
+            assert_eq!(curve.points_max, points_max);
+        }
+        let descriptor = proof.with_master_kind(ParameterKind::Curve {
+            points_min: 2,
+            points_max: 16,
+            monotone: true,
+            fixed_x: None,
+        });
+        proof.load(descriptor);
+        let curve = proof.curve();
+        assert_eq!(curve.hint.as_deref(), Some(CURVE_HINT));
+        assert_eq!(curve.points_max, 16);
+        proof.finish();
+    }
+
+    #[test]
+    fn a_single_curve_group_draws_no_label_line() {
+        let mut proof = Proof::new();
+        assert!(
+            proof.curve().label_shown,
+            "a curve beside other controls in a headerless group keeps its label"
+        );
+
+        let mut descriptor = proof.descriptor().clone();
+        let Some(Control::Group(GroupControl { controls, .. })) = descriptor.controls.first_mut()
+        else {
+            panic!("the proof's controls are one group");
+        };
+        controls.retain(|control| matches!(control, Control::Curve(_)));
+        assert_eq!(controls.len(), 1);
+        proof.load(descriptor.clone());
+        let section = &proof.editor.workspace.tools.developer[0];
+        assert!(
+            matches!(section.controls.as_slice(), [ControlModel::Curve(_)]),
+            "the curve is the headerless section's only control"
+        );
+        let curve = proof.curve();
+        assert!(!curve.label_shown, "the band already names it");
+        assert_eq!(curve.label, "Curve");
+
+        // With a second group the module is no longer headerless: the curve sits under its
+        // group's header, which does not name the control, so it keeps its label line.
+        let mut second = descriptor.controls[0].clone();
+        if let Control::Group(group) = &mut second {
+            group.label = "Second".into();
+        }
+        descriptor.controls.push(second);
+        proof.load(descriptor);
+        assert!(proof.curve().label_shown);
+        proof.finish();
+    }
+}
