@@ -215,7 +215,7 @@
   {
    "id": "TASK-004",
    "description": "Classify the recording mode before unpack by splitting the native open into identify and unpack calls.",
-   "status": "in_progress",
+   "status": "completed",
    "dependencies": [
     "TASK-001"
    ],
@@ -274,7 +274,7 @@
   {
    "id": "TASK-005",
    "description": "Add the RawSpeed unpacker capability: the catalog field, the replaceable-decoder table and the load_raw substitution.",
-   "status": "pending",
+   "status": "in_progress",
    "dependencies": [
     "TASK-002",
     "TASK-004"
