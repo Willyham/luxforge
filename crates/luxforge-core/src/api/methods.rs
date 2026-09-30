@@ -815,6 +815,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}",
         retries: Owner,
     ),
+    // The catalog's methods, one marked section per lane. Each is declared once in
+    // `catalog_types::api` (its parameter struct, answer, errors and notes) and registered here by
+    // its lane when it works; name the parameter struct and the handler by path
+    // (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`) so no lane edits the
+    // imports above. A mutation declares `retries: Owner`.
+    // ── catalog lane A: files ──
+    // ── end lane A ──
+    // ── catalog lane B: previews ──
+    // ── end lane B ──
+    // ── catalog lane C: catalog ──
+    // ── end lane C ──
+    // ── catalog lane D: views ──
+    // ── end lane D ──
 ];
 
 /// A resolved method: a host method from the static table, or one generated from an action, query
