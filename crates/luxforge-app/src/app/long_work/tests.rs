@@ -40,8 +40,9 @@ fn tick(editor: &mut Editor) {
     let _ = editor.update(Message::LongWork(LongWorkMessage::Tick));
 }
 
-/// With nothing running there is no timer, and no other seam's message reads the board: only the
-/// watch's wake, which the board posts when catalog work changes, does.
+/// With nothing running long work has no timer and takes no read: only the watch's wake, which the
+/// board posts when catalog work changes, makes it read. The Performance section's tick reads the
+/// board as the section's own read, which counts as the section's, not long work's.
 #[test]
 fn nothing_wakes_while_nothing_runs() {
     let (mut editor, catalog) = boot();
@@ -61,6 +62,123 @@ fn nothing_wakes_while_nothing_runs() {
         summary["timers"],
         json!({"throttle": false, "refresh": false})
     );
+    finish(editor, catalog);
+}
+
+/// The status bar's job and the Performance section's rows are one read of the board: after each
+/// read a wake asks for, with no sample of the section's between, the section's rows are that
+/// board's, the running job the status bar shows is the section's row with Cancel, and once it has
+/// ended neither shows it running. The section's own tick reads the board through the same watch.
+/// Idle, nothing new wakes: no long-work timer or read, and none at all once the section is closed.
+#[test]
+fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
+    let (mut editor, catalog) = boot();
+    assert!(editor.performance_sampling(), "the section is open");
+    // The first message starts the section's sampling, whose first read goes out and stays out:
+    // the section samples nothing more here, so whatever its rows show came from long work's reads.
+    let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+    assert!(editor.performance.read.in_flight());
+    let requested = editor.performance.requested;
+    let agree = |editor: &Editor| {
+        let work = crate::state::performance::Work {
+            board: editor.long_work.state.board.as_ref(),
+            rates: &editor.long_work.state.rates,
+            home: editor.select.state.home.as_deref(),
+        };
+        let rows = crate::state::performance::jobs(work).rows;
+        assert_eq!(
+            editor.workspace.performance.board, editor.long_work.state.version,
+            "the section is derived from long work's latest read"
+        );
+        assert_eq!(editor.workspace.performance.jobs, rows);
+        match &editor.workspace.long_work.busiest {
+            Some(busiest) => {
+                let row = rows
+                    .iter()
+                    .find(|row| {
+                        row.work
+                            .as_ref()
+                            .is_some_and(|work| work.job_id == busiest.job_id)
+                    })
+                    .expect("the status bar's job is a row of the section's with Cancel");
+                assert!(row.running);
+                assert_eq!(row.label, busiest.label);
+            }
+            None => assert!(
+                rows.iter().all(|row| row.work.is_none()),
+                "no catalog work runs in the section either: {rows:?}"
+            ),
+        }
+    };
+    let wake = |editor: &mut Editor| {
+        editor.long_work.read_at = Some(Instant::now() - MIN_INTERVAL);
+        let _ = editor.update(Message::LongWork(LongWorkMessage::Woken));
+    };
+    let folder = files(&catalog, "agree", 3_000);
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    )
+    .unwrap();
+    let mut shown = false;
+    let record = luxforge_testbase::wait_for("the listing to end", || {
+        wake(&mut editor);
+        agree(&editor);
+        shown |= editor
+            .workspace
+            .long_work
+            .busiest
+            .as_ref()
+            .is_some_and(|busiest| busiest.job_id == job);
+        let record = job_now(&editor.owner, editor.client, &job).unwrap();
+        (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+    });
+    assert_eq!(record["status"], "ready");
+    assert!(shown, "the listing ran long enough to be shown");
+    // The read that finds it ended.
+    wake(&mut editor);
+    agree(&editor);
+    assert!(editor.long_work.state.job(&job).is_none());
+    assert_eq!(editor.long_work.timers(), Timers::default());
+    assert_eq!(
+        editor.performance.requested, requested,
+        "no sample of the section's"
+    );
+
+    // Idle with the section open, its tick is the only read, the section's own.
+    let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
+        epoch: editor.performance.epoch,
+        result: Err("stand-in".into()),
+    }));
+    let (reads, wakes, version) = (
+        editor.long_work.reads,
+        editor.long_work.wakes,
+        editor.long_work.state.version,
+    );
+    let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+    assert_eq!(editor.performance.requested, requested + 1);
+    assert_eq!(
+        editor.long_work.state.version,
+        version + 1,
+        "the section read the board"
+    );
+    agree(&editor);
+    assert_eq!(
+        (editor.long_work.reads, editor.long_work.wakes),
+        (reads, wakes)
+    );
+    assert_eq!(editor.long_work.timers(), Timers::default());
+    // Closed, nothing reads it at all: a tick already queued as it closed reads nothing.
+    let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
+    assert!(!editor.performance_sampling());
+    for _ in 0..3 {
+        let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
+    }
+    assert_eq!(editor.long_work.state.version, version + 1);
+    assert_eq!(editor.performance.requested, requested + 1);
+    assert_eq!(editor.long_work.timers(), Timers::default());
+    std::fs::remove_dir_all(folder).unwrap();
     finish(editor, catalog);
 }
 

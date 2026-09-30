@@ -392,12 +392,15 @@ fn indexed_as(owner: &Owner, canonical: Option<PathBuf>) -> Result<Option<PathBu
     }
 }
 
-/// An indexed folder as `index.folders` answers it: whether it is `offline`, and what the index's
-/// last listing of it found.
+/// An indexed folder as `index.folders` answers it: whether it is `offline`, what the index's last
+/// listing of it found, and whether a listing the lane ran on its own left it stale.
 fn state(owner: &Owner, folder: IndexedFolder, offline: bool) -> Result<IndexedFolderState, Error> {
-    let root = match queries::index(owner)? {
-        Some(index) => database::root(index.connection(), &folder.path)?,
-        None => None,
+    let (root, stale) = match queries::index(owner)? {
+        Some(index) => (
+            database::root(index.connection(), &folder.path)?,
+            database::root_stale(index.connection(), &folder.path)?,
+        ),
+        None => (None, false),
     };
     let (watching, unwatched) = super::watching(owner, &folder.path);
     Ok(IndexedFolderState {
@@ -406,6 +409,7 @@ fn state(owner: &Owner, folder: IndexedFolder, offline: bool) -> Result<IndexedF
         listed_ms: root.and_then(|root| root.listed_ms),
         watching,
         unwatched,
+        stale,
         folder,
     })
 }
