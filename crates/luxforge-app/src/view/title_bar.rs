@@ -261,19 +261,23 @@ fn actions(model: &TitleBarModel) -> Element<'_, Message> {
             &IconButtonModel {
                 icon: Icon::StatePanel,
                 tooltip: "Toggle the state panel".into(),
-                enabled: true,
+                enabled: model.can_toggle_panels,
                 selected: model.state_panel_open,
             },
-            Some(Message::View(ViewMessage::TogglePanel(Panel::State))),
+            model
+                .can_toggle_panels
+                .then_some(Message::View(ViewMessage::TogglePanel(Panel::State))),
         ),
         title_bar_icon_button(
             &IconButtonModel {
                 icon: Icon::ToolsPanel,
                 tooltip: "Toggle the tools panel".into(),
-                enabled: true,
+                enabled: model.can_toggle_panels,
                 selected: model.tools_panel_open,
             },
-            Some(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
+            model
+                .can_toggle_panels
+                .then_some(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
         ),
     ]
     .spacing(theme::TITLE_ACTION_SPACING)

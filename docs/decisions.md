@@ -142,7 +142,7 @@ Decided by the owner on 2026-09-24 after a whole-codebase review of `main` at `7
 - The brush's cap of 64 segments per grid cell is measured on a realistic back-and-forth scrub before it changes. How a stroke that would pass it is handled was decided on 2026-09-26 ([post-consolidation review](#post-consolidation-review)).
 - The crop draft moves onto the core `draft.*` lifecycle once the desktop has one draft driver, so agents see it in `session.state`. The crop geometry and canvas stay as they are. This supersedes "the crop draft stays desktop-local".
 - Every mutating method carries `{request_id, actor}` and is deduplicated, with `expected_revision` wherever a revision exists, so an agent can retry any mutation safely. This supersedes the presets default that library methods take no mutation envelope.
-- A mask's coverage grid is delivered with the proxy phase rather than after the exact render, because it reads no pixel of the exact frame.
+- A mask's coverage grid never waits for the exact render, because it reads no pixel of the exact frame: the live overlay is filled by its own coverage worker from the preview's evaluation.
 - Mask, component and stroke identities become a declared parameter kind, validated and deduplicated like any other parameter.
 - The path primitives stay host primitives, and the recipe stops scanning every layer payload for strokes until a consumer other than masks exists.
 - The developer component gallery's page is desktop view state and leaves the core session schema.
@@ -225,9 +225,11 @@ Decided by the owner on 2026-09-27, who took every recommended default of the [s
 
 Decided on 2026-09-28. The owner delegated the behaviour choices of the [Masks panel design](design/masking-workspace.md#decisions) and asked for the panel to match its boards; current behaviour is described there and in the [user guide](user-guide.md#masks).
 
+The owner requests [interaction repairs](design/masking-interactions.md): unplaced click-drag creation, actual coverage while drawing/painting, `O` for mask visibility, exclusive creation, correct selection/brush targets and responsive hover. These revisions are implemented with exact live coverage and strict creation ownership. Extra modifier shortcuts, relaxed navigation during creation and a numeric cursor target remain proposals; hover uses settled exact bytes without deferring readout.
+
 - The panel is the design's: rows at the module-panel density, a Masks band, one overlay row, New mask and Add component as kind menus, the Brush section only while a brush is armed or selected, and an accent scope chip on each band bound to the open mask.
 - Each component row carries its own `+ − ∩` mode control; the first component's shows `+` alone, dimmed, with the host's reason.
-- An overlay set to off shows the tint while a shape gesture reshapes an existing mask and returns afterwards; the stored setting never changes. A brush and a gesture creating a mask are not forced.
+- Tool starts over Off show Tint automatically, including new gradients and brushes; explicit O/Off during the tool is honoured. Existing visible presentations are kept.
 - Renames happen in place, from the row's menu. A component rename is a host command, `mask.rename-component`, with `mask.rename`'s rules.
 - `mask.list` reports each stroke's settings so a stroke row can say what it painted.
 - The luminance range is drawn with a generic `range` control kind above its four fields.

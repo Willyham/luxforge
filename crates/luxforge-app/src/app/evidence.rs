@@ -204,6 +204,8 @@ pub(crate) struct ViewIdleObservation {
 /// therefore taken only when the frame drawn last was built after every update so far, and the
 /// state is recorded at that moment, beside the request for the screenshot.
 pub(crate) struct CaptureSync {
+    /// One bounded native cursor diagnostic, shared with this evidence window's wrapper.
+    pub(crate) cursor: view::cursor_probe::Probe,
     /// Updates handled so far.
     pub(crate) updates: u64,
     /// `updates` as it stood when the frame drawn last was built, stored by that frame's
@@ -222,6 +224,7 @@ pub(crate) struct CaptureSync {
 impl Default for CaptureSync {
     fn default() -> Self {
         Self {
+            cursor: view::cursor_probe::Probe::default(),
             updates: 0,
             drawn: Arc::new(AtomicU64::new(u64::MAX)),
             state: None,
@@ -294,14 +297,17 @@ pub(crate) fn marked<'a>(
     content: iced::Element<'a, Message>,
     sync: &CaptureSync,
 ) -> iced::Element<'a, Message> {
-    iced::widget::stack![
-        content,
-        iced::Element::new(DrawnMarker {
-            updates: sync.updates,
-            sink: sync.drawn.clone(),
-        })
-    ]
-    .into()
+    view::cursor_probe::wrap(
+        iced::widget::stack![
+            content,
+            iced::Element::new(DrawnMarker {
+                updates: sync.updates,
+                sink: sync.drawn.clone(),
+            })
+        ]
+        .into(),
+        sync.cursor.clone(),
+    )
 }
 
 /// The second press of a scripted double-click: what the wrapper publishes, `gap_ms` after the
@@ -395,7 +401,9 @@ pub(crate) enum Settle {
     /// frame the preview worker renders, so the frame lands first and the grid's own texture a
     /// message later; settling on the frame would capture the photograph without the overlay.
     MaskOverlay,
-    /// The pointer readout must come back from `render.sample`.
+    /// An armed mask tool's content map is available before scripted positions are sent.
+    MaskMap,
+    /// The pointer readout must answer: from the retained exact frame, or from `render.sample`.
     Readout,
     /// A canvas pick has reached an outcome that commits nothing: filled coordinates, or a refusal
     /// with its reason in the status bar. A pick that does commit re-arms [`Settle::Preview`]
@@ -434,6 +442,7 @@ impl Settle {
             Self::SliderDraft => "slider_draft",
             Self::Overlay => "overlay",
             Self::MaskOverlay => "mask_overlay",
+            Self::MaskMap => "mask_map",
             Self::Readout => "readout",
             Self::Pick => "pick",
             Self::Presets => "presets",
@@ -669,6 +678,7 @@ impl Editor {
                 let proxy_ready = self.capture_proxy_ready();
                 let photo_ready = self.capture_photo_ready();
                 let clipping_ready = self.capture_clipping_ready();
+                let mask_ready = !self.mask_frame_pending() && !self.mask_coverage_pending();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -680,6 +690,7 @@ impl Editor {
                 if !evidence.capture_pending
                     || evidence.saving
                     || !evidence.sync.current()
+                    || evidence.sync.cursor.waiting()
                     || self.activity.backend.is_none()
                     || !self.modules_ready
                     || !self.presets.library.ready()
@@ -688,7 +699,7 @@ impl Editor {
                     || (!proxy_ready && !evidence.allow_unready_capture)
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
-                    || self.presentation.overlay_awaited.is_some()
+                    || (!mask_ready && !evidence.allow_unready_capture)
                 {
                     return Task::none();
                 }
@@ -704,6 +715,11 @@ impl Editor {
                 };
                 evidence.capture_pending = false;
                 evidence.saving = true;
+                let cursor = evidence.sync.cursor.trace();
+                if let Some(trace) = cursor {
+                    self.note_step(json!({"cursor_probe":trace}));
+                    self.event("cursor_probe", || trace);
+                }
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
@@ -871,6 +887,12 @@ impl Editor {
         };
         let record = {
             let evidence = self.evidence.as_mut().expect("evidence mode");
+            if !matches!(
+                step,
+                Step::CanvasHover { .. } | Step::CanvasHoverSweep { .. }
+            ) {
+                evidence.sync.cursor.clear();
+            }
             evidence.step += 1;
             evidence.awaiting = None;
             evidence.allow_unready_capture = false;
@@ -903,6 +925,11 @@ impl Editor {
             Step::Preview(preview) => self.preview_step(preview),
             Step::Palette(palette) => self.palette_step(palette),
             Step::Hover { x, y } => self.hover_step(x, y),
+            Step::CanvasHover { x, y } => self.canvas_hover_step(x, y),
+            Step::CanvasHoverSweep {
+                points,
+                interval_ms,
+            } => self.canvas_hover_sweep_step(points, interval_ms),
             Step::Preset(pick) => self.preset_step(pick),
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
@@ -956,7 +983,7 @@ impl Editor {
     /// refusal's own words, so an overlay asked for on a mask that reads pixels fails here rather
     /// than running the step to its deadline.
     fn mask_settle(&self) -> Settle {
-        if self.mask_overlay_request().is_some() {
+        if self.mask_coverage_target().is_some() {
             Settle::MaskOverlay
         } else {
             Settle::Preview
@@ -966,7 +993,12 @@ impl Editor {
     /// What a step that ends the open gesture waits for: the same, for the overlay the setting asks
     /// of the frame after it.
     fn settled_mask_settle(&self) -> Settle {
-        if self.settled_mask_overlay_request().is_some() {
+        let created_coverage = self
+            .mask_shape()
+            .is_some_and(crate::mask_draft::MaskDraft::owns_creation)
+            && self.mask_mode_active()
+            && self.session.workspace.mask_overlay != luxforge_core::MaskOverlayMode::Off;
+        if created_coverage || self.settled_mask_overlay_wanted() {
             Settle::MaskOverlay
         } else {
             Settle::Preview
@@ -994,7 +1026,9 @@ impl Editor {
     /// A frame will follow the mask gesture messages sent since the preview generation was
     /// `asked`: they requested one, or a round trip whose answer brings one is still in flight.
     fn mask_frame_coming(&self, asked: u64) -> bool {
-        self.presentation.preview_generation != asked || self.mask_frame_pending()
+        self.presentation.preview_generation != asked
+            || self.mask_frame_pending()
+            || self.mask_coverage_pending()
     }
 
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
@@ -1384,14 +1418,14 @@ impl Editor {
         if !self.mask_mode_active() {
             return self.fail_step("a mask step needs Mask mode");
         }
-        let overlay = self.mask_overlay_request().is_some();
+        let overlay = self.mask_coverage_target().is_some();
         // A drag is several messages; every other gesture is exactly one.
         if let MaskStep::Drag { handle, points } = &step {
             let handle = mask_handle(*handle);
             let Some((first, rest)) = points.split_first() else {
                 return self.fail_step("a mask drag needs at least one point");
             };
-            if self.mask_gesture().is_none() {
+            if self.held_mask().is_none() {
                 return self.fail_step("no mask gesture is open to drag");
             }
             let asked = self.presentation.preview_generation;
@@ -1432,10 +1466,24 @@ impl Editor {
             Expect::Redraw
         };
         let (message, expect) = match step {
-            MaskStep::Select(reference) => match self.resolve_mask(&reference) {
-                Ok(id) => (Message::Mask(MaskMessage::Select(id)), Expect::Redraw),
-                Err(reason) => return self.fail_step(reason),
-            },
+            MaskStep::Select(reference) => {
+                let id = match self.resolve_mask(&reference) {
+                    Ok(id) => id,
+                    Err(reason) => return self.fail_step(reason),
+                };
+                let refused = self.gesture_refusal(crate::app::gesture::Starting::Mode);
+                let task = self.dispatch(Message::Mask(MaskMessage::Select(id)));
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                if let Some(reason) = refused {
+                    return Task::batch([task, self.fail_step(reason)]);
+                }
+                if self.mask_coverage_target().is_some() && self.mask_coverage_pending() {
+                    self.await_step(Settle::MaskOverlay);
+                } else {
+                    self.capture_next_frame();
+                }
+                return task;
+            }
             // A selection opens that row's own numbers and renders nothing: the overlay follows the
             // pointer, not the selection, so the step is captured on the next frame rather than
             // waiting for pixels nothing asked for.
@@ -1448,13 +1496,10 @@ impl Editor {
                     Err(reason) => return self.fail_step(reason),
                 }
             }
-            MaskStep::SelectComponent(None) => {
-                self.mask_panel.selected_component = None;
-                self.seed_mask_fields();
-                self.note_step(json!({"masks": self.workspace.masks.summary()}));
-                self.capture_next_frame();
-                return Task::none();
-            }
+            MaskStep::SelectComponent(None) => (
+                Message::Mask(MaskMessage::SelectComponent(String::new())),
+                Expect::Redraw,
+            ),
             MaskStep::Hover(Some(reference)) => match self.resolve_component(None, &reference) {
                 Ok(id) => (Message::Mask(MaskMessage::Hover(Some(id))), hovering),
                 Err(reason) => return self.fail_step(reason),
@@ -1469,7 +1514,7 @@ impl Editor {
                     Err(reason) => return self.fail_step(reason),
                 };
                 let task = self.dispatch(Message::Mask(MaskMessage::ToggleVisible(id)));
-                if self.mask_overlay_request().is_some() {
+                if self.mask_coverage_target().is_some() {
                     self.await_step(Settle::MaskOverlay);
                 } else {
                     self.capture_next_frame();
@@ -1509,7 +1554,7 @@ impl Editor {
                     Expect::Redraw,
                 )
             }
-            // A kind with handles opens a gesture; a **typed** kind — one whose geometry is entirely
+            // A drawn kind arms a tool; a **typed** kind — one whose geometry is entirely
             // defaulted, as a range selection's is — is created straight away and so has a round
             // trip rather than a draft to wait for. The step reads the host's own declarations to
             // know which, exactly as the panel's button does, so registering a kind is still all it
@@ -1530,8 +1575,8 @@ impl Editor {
                 };
                 (Message::Mask(MaskMessage::Add(kind)), expect)
             }
-            // Putting a brush in hand opens no draft and asks for no frame: its stroke's draft opens
-            // at the press, so the step is captured on the next frame.
+            // Putting a brush in hand opens no draft; its map must answer before the next step
+            // sends positions, and the settled frame shows the armed tool without any new coverage.
             MaskStep::Paint(target) => {
                 let target = match target {
                     PaintStep::NewMask => PaintTarget::NewMask,
@@ -1549,7 +1594,11 @@ impl Editor {
                     let reason = self.status.text.clone();
                     return Task::batch([task, self.fail_step(reason)]);
                 }
-                self.capture_next_frame();
+                if self.held_mask().is_some_and(|mask| mask.map.is_some()) {
+                    self.capture_next_frame();
+                } else {
+                    self.await_step(Settle::MaskMap);
+                }
                 return task;
             }
             // The brush changes no pixel and asks for nothing: it is the setting the next stroke
@@ -1644,7 +1693,7 @@ impl Editor {
                 return Task::batch(tasks);
             }
             MaskStep::Sweep { from, to } => {
-                if self.mask_gesture().is_none() {
+                if self.held_mask().is_none() {
                     return self.fail_step("no mask gesture is open to sweep");
                 }
                 (
@@ -1656,7 +1705,7 @@ impl Editor {
                 )
             }
             MaskStep::Release => {
-                if self.mask_gesture().is_none() {
+                if self.held_mask().is_none() {
                     return self.fail_step("no mask gesture is open to release");
                 }
                 (
@@ -1757,6 +1806,15 @@ impl Editor {
             // release that ends a sweep, sends nothing, so the frame is the next redraw.
             Expect::Gesture => {
                 let open = self.mask_gesture().is_some();
+                if !open && let Some(mask) = self.held_mask() {
+                    if mask.map.is_some() {
+                        self.capture_next_frame();
+                    } else {
+                        self.await_step(Settle::MaskMap);
+                    }
+                    self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                    return task;
+                }
                 // A gesture that has just opened on a mask shows the tint of its own accord, and its
                 // first frame brings the grid: the step waits for it as for one the setting asked for.
                 if open
@@ -2164,6 +2222,7 @@ impl Editor {
     /// stretches the stroke's real time instead of losing positions to the render pipeline.
     fn paced_stroke_settled(&self) -> bool {
         !self.mask_frame_pending()
+            && !self.mask_coverage_pending()
             && self.presentation.presented_generation == self.presentation.preview_generation
     }
 
@@ -2798,6 +2857,31 @@ impl Editor {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
+        let mask_mode = match step.mask_overlay.as_deref() {
+            Some(value) => match luxforge_core::MaskOverlayMode::ALL
+                .into_iter()
+                .find(|mode| mode.as_str() == value)
+            {
+                Some(mode) => Some(mode),
+                None => return self.fail_step("workspace mask overlay mode is not declared"),
+            },
+            None => None,
+        };
+        let mask_colour = match step.mask_overlay_colour.as_deref() {
+            Some(value) => match luxforge_core::MaskOverlayColour::ALL
+                .into_iter()
+                .find(|colour| colour.as_str() == value)
+            {
+                Some(colour) => Some(colour),
+                None => return self.fail_step("workspace mask overlay colour is not declared"),
+            },
+            None => None,
+        };
+        // Tint colour is presentation within the current mode, as the UI swatches are. Only an
+        // explicit mode choice overrides the tool's automatic Tint over a stored Off setting.
+        if step.mask_overlay.is_some() {
+            self.mask_panel.overlay_manual = true;
+        }
         let mut diff = Map::new();
         let workspace = &self.session.workspace;
         if let Some(value) = step.state_panel
@@ -2865,31 +2949,54 @@ impl Editor {
         // left in is not `off`, Mask mode is the canvas mode and a mask is open. Switching the
         // overlay off, or switching it on with nothing to draw, still asks for the frame — so the
         // step settles on those pixels rather than on a grid that will never arrive.
-        let leaving_on = step
-            .mask_overlay
-            .as_deref()
-            .unwrap_or(workspace.mask_overlay.as_str())
-            != luxforge_core::MaskOverlayMode::Off.as_str();
+        let leaving_on = step.mask_overlay.as_deref().map_or_else(
+            || self.effective_mask_overlay() != luxforge_core::MaskOverlayMode::Off,
+            |mode| mode != luxforge_core::MaskOverlayMode::Off.as_str(),
+        );
+        let automatic = self.mask_overlay_forced();
         let entering_mask_mode =
             step.mode.as_deref().unwrap_or(workspace.mode.as_str()) == luxforge_core::MASK_MODE;
-        let grid_expected =
-            leaving_on && entering_mask_mode && self.mask_panel.selected_mask.is_some();
+        let target_exists = match self.mask_shape() {
+            Some(shape) => {
+                !shape.unplaced()
+                    && if shape.owns_creation() {
+                        self.mask_gesture().is_some()
+                    } else {
+                        shape
+                            .mask
+                            .as_ref()
+                            .is_some_and(|mask| automatic || !self.mask_panel.hidden.contains(mask))
+                    }
+            }
+            None => self
+                .mask_panel
+                .selected_mask
+                .as_ref()
+                .is_some_and(|mask| !self.mask_panel.hidden.contains(mask)),
+        };
+        let grid_expected = leaving_on && entering_mask_mode && target_exists;
         if diff.is_empty() {
             self.capture_next_frame();
             return Task::none();
         }
         if mask_overlay {
-            // The session answer is followed by one preview job, and — when there is a grid to
-            // draw — its own texture a message after that, so the capture waits for the overlay's
-            // pixels rather than for the frame they are drawn over. With nothing to draw, that
-            // texture never arrives and the frame itself is what the step waits for.
+            // Coverage is independent of photograph rendering. Off or an unplaced tool settles
+            // on the session answer; a visible target settles on its own coverage texture.
+            // Match the UI setter's eager local view state before refreshing. Its source task can
+            // answer before workspace.set, so an old-mode or old-colour grid must already be stale.
+            if let Some(mode) = mask_mode {
+                self.session.workspace.mask_overlay = mode;
+            }
+            if let Some(colour) = mask_colour {
+                self.session.workspace.mask_overlay_colour = colour;
+            }
             self.await_step(if grid_expected {
                 Settle::MaskOverlay
             } else {
-                Settle::Preview
+                Settle::Session
             });
             let session = workspace_task(self.owner.clone(), self.client, Value::Object(diff));
-            let frame = self.refresh_mask_overlay();
+            let frame = self.refresh_mask_coverage();
             return Task::batch([session, frame]);
         }
         self.await_step(if overlay {
@@ -2932,8 +3039,62 @@ impl Editor {
         }
     }
 
+    /// One canvas position routed through the laid-out widget tree with an armed brush, as a sweep
+    /// of one: captured with the brush cursor it drew.
+    fn canvas_hover_step(&mut self, x: f32, y: f32) -> Task<Message> {
+        self.canvas_hover_sweep_step(vec![[x, y]], 1)
+    }
+
+    fn canvas_hover_sweep_step(
+        &mut self,
+        points: Vec<[f32; 2]>,
+        interval_ms: u64,
+    ) -> Task<Message> {
+        if !self.mask_shape().is_some_and(MaskDraft::paints) {
+            return self.fail_step("canvas_hover needs an armed brush cursor");
+        }
+        let Some(photo) = self.drawn_photo() else {
+            return self.fail_step("no photograph is drawn");
+        };
+        let title = &self.workspace.title;
+        let [left, top, right, bottom] = crate::layout::canvas_logical(
+            self.view_state.window,
+            title.state_panel_open,
+            title.tools_panel_open,
+        );
+        let canvas = iced::Rectangle::new(
+            iced::Point::new(left, top),
+            iced::Size::new(right - left, bottom - top),
+        );
+        let Some(visible) = photo.intersection(&canvas) else {
+            return self.fail_step("no photograph is visible");
+        };
+        // A fraction at the far edge stays inside the half-open widget bounds.
+        let positions: Vec<_> = points
+            .into_iter()
+            .map(|[x, y]| {
+                iced::Point::new(
+                    visible.x + (visible.width * x).min(visible.width - 0.01),
+                    visible.y + (visible.height * y).min(visible.height - 0.01),
+                )
+            })
+            .collect();
+        if let Some(evidence) = &self.evidence {
+            let epoch = if positions.len() == 1 {
+                evidence.sync.cursor.arm(positions[0])
+            } else {
+                evidence.sync.cursor.sweep(&positions, interval_ms)
+            };
+            self.note_step(
+                json!({"cursor_epoch":epoch,"positions":positions.len(),"interval_ms":interval_ms}),
+            );
+        }
+        self.capture_next_frame();
+        Task::none()
+    }
+
     /// One pointer position over the photograph, published exactly as the canvas publishes a move,
-    /// and captured once `render.sample` has answered with the three output codes under it.
+    /// and captured once the readout has answered with the three output codes under it.
     fn hover_step(&mut self, x: u32, y: u32) -> Task<Message> {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
@@ -2945,7 +3106,13 @@ impl Editor {
         }
         self.await_step(Settle::Readout);
         let task = self.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
-        if !self.hover.sample.in_flight() {
+        if !self.hover.sample.in_flight()
+            && self
+                .hover
+                .readout
+                .as_ref()
+                .is_none_or(|readout| (readout.x, readout.y) != (x, y))
+        {
             return self.fail_step("the pointer readout could not be requested");
         }
         task
@@ -3434,6 +3601,19 @@ impl Editor {
                 }
                 None => self.settle_step(Settle::Overlay, by),
             },
+            Outcome::MaskMap { available } => {
+                if self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.awaiting == Some(Settle::MaskMap))
+                {
+                    if !available {
+                        let reason = self.status.text.clone();
+                        self.refuse_step(&reason);
+                    }
+                    self.settle_step(Settle::MaskMap, by);
+                }
+            }
             // Released either way: a refused grid is visible in the evidence rather than leaving
             // the run waiting for a frame nothing will arm. With nothing drawn the capture is the
             // frame as it is: waiting for the overlay of the frame on screen would wait for one

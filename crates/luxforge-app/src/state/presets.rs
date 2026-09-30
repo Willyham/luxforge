@@ -360,6 +360,7 @@ pub(crate) struct PresetCheck {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PresetFormModel {
+    pub(crate) enabled: bool,
     pub(crate) open: bool,
     pub(crate) name: String,
     pub(crate) group: String,
@@ -382,6 +383,7 @@ pub(crate) struct PresetsModel {
     pub(crate) error: Option<String>,
     pub(crate) form: PresetFormModel,
     pub(crate) can_import: bool,
+    pub(crate) can_manage: bool,
     /// Why no row applies right now, when none does.
     pub(crate) apply_disabled: Option<String>,
 }
@@ -399,6 +401,8 @@ impl PresetsModel {
             "loading": self.loading,
             "error": self.error,
             "empty": self.empty,
+            "can_manage": self.can_manage,
+            "can_import": self.can_import,
             "apply_disabled": self.apply_disabled,
             "rows": self.rows().map(|row| json!({
                 "id": row.id,
@@ -410,6 +414,7 @@ impl PresetsModel {
                 "enabled": row.enabled,
             })).collect::<Vec<_>>(),
             "form": {
+                "enabled": self.form.enabled,
                 "open": self.form.open,
                 "name": self.form.name,
                 "group": self.form.group,
@@ -430,6 +435,7 @@ pub(crate) fn presets_model(
     enabled: bool,
     reason: Option<&str>,
 ) -> PresetsModel {
+    let can_manage = !inputs.mask_tool_owns_controls();
     let library = inputs.presets;
     let declared = crate::state::tools::declared_action(inputs.modules, action);
     // One draft per client: a preset is a commit, so it waits for an open gesture or crop draft to
@@ -476,7 +482,8 @@ pub(crate) fn presets_model(
             fields: group.fields,
         })
         .collect();
-    let can_create = inputs.document.state.is_some()
+    let can_create = can_manage
+        && inputs.document.state.is_some()
         && inputs.document.display_entry.is_some()
         && !inputs.busy
         && !library.pending
@@ -490,6 +497,7 @@ pub(crate) fn presets_model(
         error: library.error.clone(),
         groups,
         form: PresetFormModel {
+            enabled: can_manage,
             open: form.open,
             name: form.name.clone(),
             group: form.group.clone(),
@@ -497,7 +505,8 @@ pub(crate) fn presets_model(
             error: form.error.clone(),
             can_create,
         },
-        can_import: !library.pending,
+        can_import: can_manage && !library.pending,
+        can_manage,
         apply_disabled,
     }
 }

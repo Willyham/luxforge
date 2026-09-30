@@ -114,6 +114,9 @@ impl Editor {
             }
             PresetMessage::ImportPicked(path) => {
                 self.view_state.picker_open = false;
+                if let Some(reason) = self.mask_tool_refusal() {
+                    return self.preset_refused(reason);
+                }
                 if let Some(path) = path {
                     return self.preset_import(path);
                 }
@@ -252,7 +255,7 @@ impl Editor {
     }
 
     /// A library request that cannot be sent: say why.
-    fn preset_refused(&mut self, reason: String) -> Task<Message> {
+    pub(super) fn preset_refused(&mut self, reason: String) -> Task<Message> {
         self.preset_failed(reason);
         Task::none()
     }

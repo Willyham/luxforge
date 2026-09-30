@@ -128,6 +128,19 @@ pub enum Step {
         x: u32,
         y: u32,
     },
+    /// Route a cursor move through the window's actual laid-out widgets, including the mask
+    /// canvas and surrounding readout mouse area. Fractions address the visible photograph;
+    /// the captured frame and trace measure cursor geometry submission, never display scanout.
+    CanvasHover {
+        x: f32,
+        y: f32,
+    },
+    /// A bounded hover path through the real widget tree, paced by native redraw requests.
+    /// Overdue scheduled positions are coalesced to newest before dispatch.
+    CanvasHoverSweep {
+        points: Vec<[f32; 2]>,
+        interval_ms: u64,
+    },
     /// Click one library preset's row.
     Preset(PresetPick),
     /// Open the create form, type its name and group, set every checkbox and press Create.
@@ -234,6 +247,26 @@ impl Step {
             Self::Tab(step) => text(&step.module, "tab module"),
             Self::Section(step) => text(&step.module, "section module"),
             Self::Gallery { .. } | Self::Hover { .. } | Self::Pick(_) | Self::SliderDraft(_) => {
+                Ok(())
+            }
+            Self::CanvasHover { x, y } => {
+                unit(f64::from(*x), "canvas_hover x")?;
+                unit(f64::from(*y), "canvas_hover y")
+            }
+            Self::CanvasHoverSweep {
+                points,
+                interval_ms,
+            } => {
+                if !(1..=240).contains(&points.len())
+                    || !(1..=1000).contains(interval_ms)
+                    || points.len() as u64 * interval_ms > MAX_WAIT_MS
+                {
+                    return Err("canvas_hover_sweep needs 1..240 points paced 1..1000 ms and at most 10000 ms total".into());
+                }
+                for [x, y] in points {
+                    unit(f64::from(*x), "canvas_hover_sweep x")?;
+                    unit(f64::from(*y), "canvas_hover_sweep y")?;
+                }
                 Ok(())
             }
             Self::ToolsScroll(fraction) => unit(*fraction, "tools_scroll"),

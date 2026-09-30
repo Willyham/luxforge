@@ -8,10 +8,10 @@
 //!
 //! **What starts one.** The stack of every settled full-stack preview job — not a truncated crop
 //! input, and not the interactive frames of a drag, whose 16 ms ticks send exactly what they sent
-//! before thumbnails existed — is the thumbnails' source when it holds a mask. While Mask mode is
-//! on screen a new source is handed to the worker as its frame is requested; outside it nothing
-//! runs and only the source's identity is noted, and entering Mask mode plans the stack on screen
-//! again on an owner task, as a preview is planned, and hands that to the worker. A stack without
+//! before thumbnails existed — is the thumbnails' source when it holds a mask. While the Masks
+//! panel is on screen — Mask mode, or a pick taken from it — a new source is handed to the worker
+//! as its frame is requested; otherwise nothing runs and only the source's identity is noted, and
+//! showing the panel plans the stack on screen again on an owner task, as a preview is planned, and hands that to the worker. A stack without
 //! masks clears the thumbnails.
 //!
 //! **What it never holds.** The desktop keeps no stack between messages, only identities. An
@@ -204,7 +204,7 @@ pub(crate) struct ThumbnailSource {
     pub(crate) latest: Option<AnalysisIdentity>,
     /// The identity last handed to the worker, so an unchanged stack starts nothing.
     pub(crate) requested: Option<AnalysisIdentity>,
-    /// The identity whose stack an owner task is planning again, because Mask mode was entered
+    /// The identity whose stack an owner task is planning again, because the Masks panel was shown
     /// after it settled; so it is planned once.
     pub(crate) planning: Option<AnalysisIdentity>,
 }
@@ -220,9 +220,9 @@ pub(crate) struct Thumbnailer {
 
 impl Editor {
     /// Take note of `job`'s stack when it is a settled full-stack frame, and hand it to the
-    /// worker at once while Mask mode shows the thumbnails. A crop's truncated input and the
+    /// worker at once while the Masks panel shows the thumbnails. A crop's truncated input and the
     /// interactive frames of a drag are not noted: the first is not the photograph the masks apply
-    /// to, and the second changes every 16 ms tick. Outside Mask mode only the identity is noted.
+    /// to, and the second changes every 16 ms tick. Without the panel only the identity is noted.
     pub(super) fn note_thumbnail_source(&mut self, job: &PreviewJob) {
         if job.layer_count.is_some() || job.intent == PreviewIntent::Interactive {
             return;
@@ -238,16 +238,16 @@ impl Editor {
             return;
         }
         self.thumbnailer.source.latest = Some(job.identity.clone());
-        if self.mask_mode_active() {
+        if self.mask_panel_shown() {
             self.thumbnailer.source.requested = Some(job.identity.clone());
             // The worker's clone lives as long as its job, as the preview worker's does.
             self.thumbnailer.queue.request(job.evaluation.clone());
         }
     }
 
-    /// When Mask mode shows the thumbnails and the stack on screen settled while it did not, plan
+    /// When the Masks panel shows the thumbnails and the stack on screen settled while it did not, plan
     /// that stack again on an owner task, as a preview is planned, and hand it to the worker when
-    /// it arrives ([`Self::thumbnail_source_planned`]). Outside Mask mode nothing runs; with
+    /// it arrives ([`Self::thumbnail_source_planned`]). Without the panel nothing runs; with
     /// another photograph open, or none, the last one's thumbnails are dropped.
     pub(super) fn refresh_thumbnails(&mut self) -> Task<Message> {
         let open = self.document.state.as_ref().map(|state| &state.asset.id);
@@ -263,7 +263,7 @@ impl Editor {
             self.thumbnailer.queue.cancel();
             self.adopt_thumbnails(Vec::new());
         }
-        if !self.mask_mode_active() {
+        if !self.mask_panel_shown() {
             return Task::none();
         }
         let source = &self.thumbnailer.source;
@@ -284,14 +284,14 @@ impl Editor {
         )
     }
 
-    /// The stack [`Self::refresh_thumbnails`] planned again: handed to the worker when Mask mode
-    /// still shows the thumbnails and it is still the stack on screen, and dropped otherwise. It is
+    /// The stack [`Self::refresh_thumbnails`] planned again: handed to the worker when the Masks
+    /// panel still shows the thumbnails and it is still the stack on screen, and dropped otherwise. It is
     /// never kept.
     pub(super) fn thumbnail_source_planned(&mut self, planned: Result<Box<PreviewJob>, String>) {
         let Some(identity) = self.thumbnailer.source.planning.take() else {
             return;
         };
-        if !self.mask_mode_active() || self.thumbnailer.source.latest.as_ref() != Some(&identity) {
+        if !self.mask_panel_shown() || self.thumbnailer.source.latest.as_ref() != Some(&identity) {
             return;
         }
         // Asked for either way, so a failed plan is not planned again until the stack changes.
@@ -328,7 +328,7 @@ impl Editor {
     }
 }
 
-/// After every message: Mask mode's thumbnails follow the settled stack
+/// After every message: the Masks panel's thumbnails follow the settled stack
 /// ([`Editor::refresh_thumbnails`]).
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.refresh_thumbnails()

@@ -275,6 +275,10 @@ impl Editor {
         path: PathBuf,
         queued: Option<tasks::StartupImport>,
     ) -> Task<Message> {
+        if let Some(reason) = self.mask_tool_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
         self.begin_request();
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;

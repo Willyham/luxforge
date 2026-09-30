@@ -50,6 +50,7 @@ pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
+pub(crate) mod mask_coverage;
 pub(crate) mod mask_panel;
 pub(crate) mod masks;
 #[cfg(test)]
@@ -276,14 +277,16 @@ pub(crate) struct Editor {
     pub(crate) crop_section: state::CropSection,
     /// The Masks panel: selection, hover, hidden overlays, mode, brush, typing, drag, thumbnails.
     pub(crate) mask_panel: state::masks::MaskPanel,
-    /// The Masks panel's brush in hand between strokes: this desktop's view state, holding no core
-    /// draft. Its press opens the stroke's draft ([`Editor::paint_press`]). It holds the gesture's
+    /// A brush in hand between strokes or an unplaced gradient: local state holding no core
+    /// draft. Its first valid placement opens the core draft. It holds the gesture's
     /// identity and content map, which the view model may not name, so it is not in the panel's
     /// view-model state.
     pub(crate) armed: Option<masks::ArmedBrush>,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
+    /// Independently evaluated, bounded coverage of the current mask or live candidate.
+    pub(crate) coverage_worker: mask_coverage::CoverageWorker,
     /// The command palette.
     pub(crate) palette: state::palette::Palette,
     /// The version chip row's naming form.
@@ -320,6 +323,8 @@ pub(crate) struct Before {
     pub(crate) workers_busy: bool,
     /// The entry the canvas was showing ([`Editor::displayed_entry`]).
     pub(crate) entry: Option<luxforge_core::EntryId>,
+    /// The mask and component the generated fields addressed ([`Editor::field_target`]).
+    pub(crate) field_target: masks::FieldTarget,
 }
 
 impl Before {
@@ -330,6 +335,7 @@ impl Before {
             view_epoch: editor.view_plan.epoch,
             workers_busy: editor.workers_busy(),
             entry: editor.displayed_entry(),
+            field_target: editor.field_target(),
         }
     }
 }
@@ -348,7 +354,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 11] = [
+const AFTER_MESSAGE: [AfterMessage; 12] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -360,6 +366,7 @@ const AFTER_MESSAGE: [AfterMessage; 11] = [
     sync::after_message,
     overlay::after_message,
     thumbnails::after_message,
+    mask_coverage::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -431,6 +438,7 @@ impl Editor {
             mask_panel: Default::default(),
             armed: None,
             thumbnailer: Default::default(),
+            coverage_worker: Default::default(),
             palette: Default::default(),
             version_form: Default::default(),
             presets: Default::default(),
@@ -441,12 +449,13 @@ impl Editor {
             export: Default::default(),
             workspace: Default::default(),
         };
-        // Both workers wake the event loop through one channel instead of a poll. The closure is
+        // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
         // its signals comes and goes with the queues' business.
         editor.presentation.queue.set_waker(waker::waker());
         editor.overlays.queue.set_waker(waker::waker());
         editor.thumbnailer.queue.set_waker(waker::waker());
+        editor.coverage_worker.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
@@ -518,6 +527,12 @@ impl Editor {
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
         self.log.loop_timing.set(timing);
+        if let Some(evidence) = &self.evidence {
+            evidence
+                .sync
+                .cursor
+                .editor_loop_observed(timing.last_update_ms, timing.last_rederive_ms);
+        }
         task
     }
 
@@ -542,11 +557,12 @@ impl Editor {
         Task::batch(tasks)
     }
 
-    /// One of the three workers — preview, clipping overlay, mask thumbnails — has a job.
+    /// One of the bounded preview or overlay workers has a job.
     fn workers_busy(&self) -> bool {
         self.presentation.queue.is_busy()
             || self.overlays.queue.is_busy()
             || self.thumbnailer.queue.is_busy()
+            || self.coverage_worker.queue.is_busy()
     }
 
     /// Bring the screen up to date with the state this message left behind: every region is
@@ -574,7 +590,8 @@ impl Editor {
                 self.document.state.as_ref(),
                 &self.session,
                 self.busy,
-            ),
+            )
+            .or_else(|| self.mask_tool_refusal()),
             draft: self.crop(),
             mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
@@ -587,7 +604,7 @@ impl Editor {
             session: &self.session,
             status: &self.status.text,
             busy: self.busy,
-            can_open: !self.busy && self.evidence.is_none(),
+            can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
             can_export: self.can_export(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
@@ -616,6 +633,15 @@ impl Editor {
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function
     /// decides what its message does.
     fn dispatch(&mut self, message: Message) -> Task<Message> {
+        if message.yields_to_mask_tool()
+            && let Some(reason) = self.mask_tool_refusal()
+        {
+            if matches!(message, Message::Preset(_)) {
+                return self.preset_refused(reason);
+            }
+            self.status.text = reason;
+            return Task::none();
+        }
         match message {
             Message::Key(event, status) => {
                 // The whole keyboard table is one pure function; only its result reaches the state.

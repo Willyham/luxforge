@@ -86,7 +86,7 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
+    MaskCoverageTarget, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
     PreviewQueue, PreviewResult, PreviewSession, PreviewSource, ProxyOutcome, Queued,
     RegionOutcome, ViewState, Zoom,
 };

@@ -149,6 +149,12 @@ pub const POINTS_PER_STROKE: usize = 1024;
 /// decimation pass bounded.
 pub(crate) const POSTED_POINTS_PER_STROKE: usize = 16 * POINTS_PER_STROKE;
 
+/// Distinct positions a live path capture may retain. This is the posted path's own bound:
+/// capture never needs more input than one legal request can carry. At the limit it refuses the
+/// whole path, retains its earlier positions and stops growing; it never returns a truncated path
+/// as successful. Consecutive positions in the same stored grid cell use no additional storage.
+pub const CAPTURED_POINTS_PER_STROKE: usize = POSTED_POINTS_PER_STROKE;
+
 /// Whether `radius` is one a path can be decimated for: finite, positive and no larger than
 /// [`RADIUS_MAX`]. A consumer holds its strokes to its own, narrower range before it captures.
 fn radius_is_decimable(radius: f64) -> bool {
@@ -355,7 +361,11 @@ pub(crate) trait StrokeCarrier {
 /// stored positions, and — with the consumer's own settings, which it checks before it calls this —
 /// the same [`StrokeId`]. Every coordinate is checked finite and in range by name.
 pub(crate) fn capture_grid(points: &[[f64; 2]], radius_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
-    let grid = decimate_to_grid(points, radius_steps)?;
+    stored_bound(decimate_to_grid(points, radius_steps)?)
+}
+
+/// A decimated grid path held to [`POINTS_PER_STROKE`], the one bound a stored stroke meets.
+fn stored_bound(grid: Vec<[i32; 2]>) -> Result<Vec<[i32; 2]>, Error> {
     if grid.len() > POINTS_PER_STROKE {
         return Err(Error::resource_limit(format!(
             "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} \
@@ -450,25 +460,51 @@ pub struct PathCapture {
     pushed: usize,
     /// The first position outside the stored range, by its index and axis. A path holding one is
     /// refused whole, as [`decimate`] refuses it, and nothing pushed after it is held.
-    refused: Option<(usize, &'static str)>,
+    refused: Option<CaptureRefusal>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CaptureRefusal {
+    Coordinate(usize, &'static str),
+    Limit,
 }
 
 impl PathCapture {
     /// Take the next position of the path.
     pub fn push(&mut self, point: [f64; 2]) {
         let index = self.pushed;
-        self.pushed += 1;
+        self.pushed = self.pushed.saturating_add(1);
         if self.refused.is_some() {
             return;
         }
         match snap(point) {
             Ok(point) => {
                 if self.grid.last() != Some(&point) {
-                    self.grid.push(point);
+                    if self.grid.len() == CAPTURED_POINTS_PER_STROKE {
+                        self.refused = Some(CaptureRefusal::Limit);
+                    } else {
+                        self.grid.push(point);
+                    }
                 }
             }
-            Err(axis) => self.refused = Some((index, axis)),
+            Err(axis) => self.refused = Some(CaptureRefusal::Coordinate(index, axis)),
         }
+    }
+
+    /// The original failure of this capture, if any. A failed path stays failed even if later
+    /// positions re-enter the valid range: those later positions were not retained and therefore
+    /// cannot be claimed as a successful stroke. Starting a new capture is explicit recovery.
+    pub fn capture_error(&self) -> Option<Error> {
+        self.refused.as_ref().map(|refusal| match refusal {
+            CaptureRefusal::Coordinate(index, axis) => Error::validation(format!(
+                "path position {index} {axis} must be a number within \
+                     {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
+            )),
+            CaptureRefusal::Limit => Error::resource_limit(format!(
+                "live stroke exceeds {CAPTURED_POINTS_PER_STROKE} captured positions; \
+                 cancel this stroke and start a new one"
+            )),
+        })
     }
 
     /// How many positions were pushed.
@@ -491,12 +527,18 @@ impl PathCapture {
         Ok(from_grid(&self.grid_decimated(quantize(size))?).collect())
     }
 
+    /// The stroke this capture stores at radius `size`: [`Self::decimated`] and held to
+    /// [`POINTS_PER_STROKE`], exactly as the host captures the same posted path.
+    pub fn stroke(&self, size: f64) -> Result<Vec<[f64; 2]>, Error> {
+        if !radius_is_decimable(size) {
+            return Err(illegal_radius());
+        }
+        Ok(from_grid(&stored_bound(self.grid_decimated(quantize(size))?)?).collect())
+    }
+
     fn grid_decimated(&self, size_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
-        if let Some((index, axis)) = self.refused {
-            return Err(Error::validation(format!(
-                "path position {index} {axis} must be a number within \
-                     {COORDINATE_MIN:.0}..={COORDINATE_MAX:.0}"
-            )));
+        if let Some(error) = self.capture_error() {
+            return Err(error);
         }
         if self.grid.is_empty() {
             return Err(Error::validation("a path must hold at least one position"));

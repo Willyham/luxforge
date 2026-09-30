@@ -560,10 +560,12 @@ fn presets_view<'a>(model: &'a PresetsModel, menu: Option<&'a MenuTarget>) -> El
             &IconButtonModel {
                 icon: Icon::Plus,
                 tooltip: "New preset from the displayed settings".into(),
-                enabled: true,
+                enabled: model.can_manage,
                 selected: model.form.open,
             },
-            Some(preset(PresetMessage::ToggleForm)),
+            model
+                .can_manage
+                .then_some(preset(PresetMessage::ToggleForm)),
         ),
         text_button(
             "Import…",
@@ -600,29 +602,31 @@ fn presets_view<'a>(model: &'a PresetsModel, menu: Option<&'a MenuTarget>) -> El
 
 /// The create form: the name, the group, one checkbox per presettable group, Cancel and Create.
 fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
-    let mut block = column![
-        text_input("Preset name", &form.name)
+    let mut name = text_input("Preset name", &form.name)
+        .style(theme::text_input_style(false))
+        .size(theme::SIZE_CONTROL)
+        .width(Length::Fill);
+    let mut group = text_input("Group", &form.group)
+        .style(theme::text_input_style(false))
+        .size(theme::SIZE_CONTROL)
+        .width(Length::Fill);
+    if form.enabled {
+        name = name
             .on_input(|text| Message::Preset(PresetMessage::Name(text)))
-            .on_submit(Message::Preset(PresetMessage::Create))
-            .style(theme::text_input_style(false))
-            .size(theme::SIZE_CONTROL)
-            .width(Length::Fill),
-        text_input("Group", &form.group)
+            .on_submit(Message::Preset(PresetMessage::Create));
+        group = group
             .on_input(|text| Message::Preset(PresetMessage::Group(text)))
-            .on_submit(Message::Preset(PresetMessage::Create))
-            .style(theme::text_input_style(false))
-            .size(theme::SIZE_CONTROL)
-            .width(Length::Fill),
-        caption("Keep these settings"),
-    ]
-    .spacing(theme::SPACING / 2.0);
+            .on_submit(Message::Preset(PresetMessage::Create));
+    }
+    let mut block =
+        column![name, group, caption("Keep these settings"),].spacing(theme::SPACING / 2.0);
     for check in &form.checks {
         let label = check.label.clone();
         block = block.push(toggle(
             &ToggleModel {
                 label: check.label.clone(),
                 on: check.checked,
-                enabled: true,
+                enabled: form.enabled,
             },
             move |checked| {
                 Message::Preset(PresetMessage::Check {

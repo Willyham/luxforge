@@ -127,6 +127,50 @@ fn a_posted_path_over_its_declared_count_names_the_posted_bound() {
     );
 }
 
+#[test]
+fn live_capture_stops_at_its_bound_and_never_returns_a_truncated_success() {
+    let mut capture = PathCapture::default();
+    for index in 0..CAPTURED_POINTS_PER_STROKE {
+        capture.push([index as f64 / COORDINATE_STEPS_PER_UNIT, 0.25]);
+    }
+    assert_eq!(capture.grid.len(), CAPTURED_POINTS_PER_STROKE);
+    assert!(capture.capture_error().is_none());
+    assert_eq!(capture.decimated(0.1).unwrap().len(), 2);
+    // Consecutive repeats store nothing and do not consume the distinct-position bound.
+    capture.push([
+        (CAPTURED_POINTS_PER_STROKE - 1) as f64 / COORDINATE_STEPS_PER_UNIT,
+        0.25,
+    ]);
+    assert!(capture.capture_error().is_none());
+    capture.push([1.1, 0.25]);
+    let error = capture.decimated(0.1).unwrap_err();
+    assert_eq!(error.kind, crate::ErrorKind::ResourceLimit);
+    assert!(error.detail.contains("16384 captured positions"));
+    for _ in 0..10_000 {
+        capture.push([0.5, 0.8]);
+    }
+    assert_eq!(capture.grid.len(), CAPTURED_POINTS_PER_STROKE);
+    assert_eq!(capture.decimated(0.1).unwrap_err().detail, error.detail);
+}
+
+#[test]
+fn live_capture_keeps_the_first_invalid_coordinate_reason() {
+    for value in [f64::NAN, f64::INFINITY, -1.01, 2.01] {
+        let mut capture = PathCapture::default();
+        capture.push([0.2, 0.3]);
+        capture.push([value, 0.4]);
+        capture.push([0.4, 0.5]);
+        let error = capture.decimated(0.1).unwrap_err();
+        assert_eq!(error.kind, crate::ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "path position 1 x must be a number within -1..=2"
+        );
+        assert_eq!(capture.grid.len(), 1);
+        assert_eq!(capture.capture_error().unwrap().detail, error.detail);
+    }
+}
+
 /// The radii decimation is measured at: the mask brush's declared minimum and maximum and the
 /// desktop's default brush between them, written out here because the brush's range is the brush's
 /// and not this file's.

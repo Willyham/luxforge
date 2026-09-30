@@ -7,6 +7,7 @@
 //! stay a circle in pixels at any aspect ratio and follow a crop or a quarter turn with the picture.
 use super::editor::{
     DISTANCE_DECIMALS, DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, WHOLE, compact, finite,
+    placeable,
 };
 use luxforge_core::mask::{
     ANGLE_MAX, ANGLE_MIN, DISTANCE_MAX, DISTANCE_MIN, FEATHER_MAX, FEATHER_MIN, POSITION_MAX,
@@ -103,6 +104,12 @@ impl RadialEditor {
 }
 
 impl ShapeEditor for RadialEditor {
+    fn placement_valid(&self, from: (f64, f64), to: (f64, f64), aspect: f64) -> bool {
+        placeable(from, to)
+            && ((to.0 - from.0) * aspect).abs() >= DISTANCE_MIN
+            && (to.1 - from.1).abs() >= DISTANCE_MIN
+    }
+
     fn kind(&self) -> &'static str {
         KIND
     }

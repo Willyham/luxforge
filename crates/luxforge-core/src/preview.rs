@@ -22,12 +22,11 @@ mod result;
 mod tests;
 mod worker;
 
-pub use coverage::MaskCoverage;
-pub use job::{MaskOverlayRequest, PreviewIntent, PreviewJob, PreviewSource};
+pub use coverage::{MaskCoverage, MaskCoverageTarget, MaskOverlayOutcome};
+pub use job::{PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewQueue, Queued};
 pub use result::{
-    ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome,
-    RegionOutcome,
+    ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome, RegionOutcome,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
