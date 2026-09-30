@@ -345,8 +345,11 @@ fn ready_raw_frame(frame: &Frame) -> Result {
     // The core's own answer for the displayed development: a custom temperature and tint, or
     // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
     // the forward map must reproduce.
+    // At the ±100 tint limit the core also answers a white up to half a tint unit beyond it, held
+    // to the limit, so that answer selects gains within that half unit rather than exactly.
     let [kelvin, tint] = payload.white_balance_controls();
     if payload.wb_mode == luxforge_core::WhiteBalanceMode::AsShot
+        && tint.abs() < 100.0
         && let Ok(gains) = luxforge_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)
     {
         ensure(
