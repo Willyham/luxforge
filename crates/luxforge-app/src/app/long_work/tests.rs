@@ -95,7 +95,11 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
             Some(busiest) => {
                 let row = rows
                     .iter()
-                    .find(|row| row.work.as_ref().is_some_and(|work| work.job_id == busiest.job_id))
+                    .find(|row| {
+                        row.work
+                            .as_ref()
+                            .is_some_and(|work| work.job_id == busiest.job_id)
+                    })
                     .expect("the status bar's job is a row of the section's with Cancel");
                 assert!(row.running);
                 assert_eq!(row.label, busiest.label);
@@ -149,7 +153,11 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
     );
     let _ = editor.update(Message::Performance(PerformanceMessage::Tick));
     assert_eq!(editor.performance.requested, requested + 1);
-    assert_eq!(editor.long_work.state.version, version + 1, "the section read the board");
+    assert_eq!(
+        editor.long_work.state.version,
+        version + 1,
+        "the section read the board"
+    );
     agree(&editor);
     assert_eq!(
         (editor.long_work.reads, editor.long_work.wakes),

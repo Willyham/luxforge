@@ -375,7 +375,10 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         assert_eq!(job["status"], "cancelled", "{job}");
         assert_eq!(folder(owner, client, &photos)["stale"], true);
         let connection = database::connect_at(&fixture.index_dir()).unwrap();
-        assert!(database::root_stale(&connection, &photos).unwrap(), "on its row");
+        assert!(
+            database::root_stale(&connection, &photos).unwrap(),
+            "on its row"
+        );
         let events = events_after(owner, client, start);
         let last = events.last().expect("the job's end");
         assert_eq!(
@@ -398,7 +401,12 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
 
         // Cancelled again, it is still stale as the catalog closes.
         let entry = held_rescan(owner, client, &gate, &photos);
-        ok(owner, client, "job.cancel", json!({"job_id": entry["job_id"]}));
+        ok(
+            owner,
+            client,
+            "job.cancel",
+            json!({"job_id": entry["job_id"]}),
+        );
         assert_eq!(
             finished(owner, client, &entry["job_id"])["status"],
             "cancelled"
@@ -461,7 +469,9 @@ fn a_card_mounted_as_the_catalog_opens_is_listed() {
             .iter()
             .rev()
             .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
-            .unwrap_or_else(|| panic!("{request}: the listing is work no request made: {events:?}"));
+            .unwrap_or_else(|| {
+                panic!("{request}: the listing is work no request made: {events:?}")
+            });
         assert_eq!(ended["request_id"], "", "{ended}");
         let job = finished(owner, client, &ended["job_id"]);
         assert_eq!(

@@ -207,7 +207,8 @@ impl Keeper {
                 continue;
             };
             let index = self.keep(&plan.path, volume_id);
-            self.roots[index].stale |= database::root_stale(connection, &plan.path).unwrap_or(false);
+            self.roots[index].stale |=
+                database::root_stale(connection, &plan.path).unwrap_or(false);
             let resume = self.resume(connection, index);
             self.add(index, resume, mounts, post);
         }
