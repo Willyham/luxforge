@@ -439,12 +439,10 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
 /// Record one library change and announce it: `change` runs the journal in one catalog
 /// transaction ([`EditorService::library_write`](crate::EditorService::library_write)), and a
 /// change it recorded now is one event naming its sequence, however many items it covered, and is
-/// handed to the lanes that follow its items ([`CatalogLanes::library_changed`]). A change that
-/// moved exactly one photograph's original (a Locate, or its undo) also names that photograph, as
-/// every change to one photograph does, so a client showing it reads it again. A retry the journal
+/// handed to the lanes that follow its items ([`Owner::library_changed`]). A change that moved
+/// exactly one photograph's original (a Locate, or its undo) also names that photograph, as every
+/// change to one photograph does, so a client showing it reads it again. A retry the journal
 /// answered announces nothing and hands over nothing, as its first attempt did.
-///
-/// [`CatalogLanes::library_changed`]: super::catalog::CatalogLanes::library_changed
 ///
 /// Every lane's library change goes through here, lane A's indexed folders included: its
 /// `index.add-folder` passes `|tx| { upsert_volume(tx, &volume)?; journal::apply(tx, request,
@@ -464,7 +462,7 @@ pub(super) fn change(
             announced = announced.changed(asset.clone(), None);
         }
         announce_once(&mut owner.announced, &announced);
-        owner.catalog.library_changed(outcome.items());
+        owner.library_changed(origin, outcome.items());
     }
     Ok(outcome.answer())
 }
