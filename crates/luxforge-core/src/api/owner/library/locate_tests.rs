@@ -236,6 +236,19 @@ impl Harness {
             .clone()
     }
 
+    /// The events after `after` that changed something, leaving out a job's end: an event that
+    /// names a job and nothing it changed.
+    fn changes_after(&self, after: u64) -> Vec<Value> {
+        self.events_after(after)
+            .into_iter()
+            .filter(|event| {
+                event.get("job_id").is_none()
+                    || event.get("library_sequence").is_some()
+                    || event.get("asset_id").is_some()
+            })
+            .collect()
+    }
+
     /// The newest library change, with its rows.
     fn last_change(&self) -> Value {
         let journal = self.ok("library.journal", json!({"limit": 500}));
@@ -400,9 +413,23 @@ fn a_moved_original_is_located_and_exports_the_same_edits() {
         json!(moved_dir.canonicalize().unwrap())
     );
     let events = harness.events_after(sequence);
-    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(
+        events.len(),
+        2,
+        "the change, then the job's end: {events:?}"
+    );
     assert_eq!(events[0]["method"], "source.locate");
     assert_eq!(events[0]["library_sequence"], change);
+    assert_eq!(events[0]["job_id"], job["job_id"]);
+    assert_eq!(
+        (
+            &events[1]["method"],
+            &events[1]["job_id"],
+            events[1].get("library_sequence")
+        ),
+        (&json!("source.locate"), &job["job_id"], None),
+        "the job's end"
+    );
     assert_eq!(
         events[0]["asset_id"],
         json!(asset),
@@ -540,7 +567,7 @@ fn what_is_not_the_original_is_refused_and_changes_nothing() {
 
     assert_eq!(harness.state(&asset), before);
     assert_eq!(harness.ok("library.journal", json!({})), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 }
 
 /// A file another photograph already names is refused, naming that photograph, and neither is
@@ -714,7 +741,7 @@ fn a_cancel_and_a_failed_commit_leave_the_last_state() {
     assert_eq!(job["status"], "failed", "{job}");
     assert_eq!(harness.state(&asset), before);
     assert_eq!(harness.ok("library.journal", json!({})), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 
     harness.on_owner(|owner| {
         owner
@@ -822,19 +849,21 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
     assert_eq!(detail["change"]["label"], "Found renamed.jpg again");
     assert_eq!(detail["rows"].as_array().unwrap().len(), 1);
     assert_eq!(detail["rows"][0]["item"]["asset_id"], json!(assets[0]));
-    let events = harness.events_after(sequence);
+    let events = harness.changes_after(sequence);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["method"], "source.check");
     assert_eq!(events[0]["library_sequence"], detail["change"]["sequence"]);
+    assert_eq!(harness.events_after(sequence).len(), 2, "and the job's end");
     // The unavailable count follows what was recorded, and a check that changes nothing announces
-    // nothing.
+    // only its end.
     assert_eq!(
         harness.ok("catalog.info", json!({}))["counts"]["unavailable"],
         3
     );
     let sequence = harness.sequence();
     assert_eq!(harness.check(&asset_refs), rows);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
+    assert_eq!(harness.events_after(sequence).len(), 1, "its end");
     // The relink is the system's: a client's undo does not take it back.
     let undone = harness.ok("library.undo", json!({"mutation": envelope("undo")}));
     assert_eq!(undone["outcome"], "no-op");
@@ -888,7 +917,7 @@ fn a_check_locates_an_original_whose_file_identity_was_renumbered() {
         json!(*recorded.borrow()),
         "the identity it has now"
     );
-    assert_eq!(harness.events_after(sequence).len(), 1);
+    assert_eq!(harness.changes_after(sequence).len(), 1);
     // The photograph exports as before.
     assert!(!harness.export(&asset, "after.jpg").is_empty());
 }

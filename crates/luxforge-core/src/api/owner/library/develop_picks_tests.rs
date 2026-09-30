@@ -630,12 +630,31 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
         "Developed 2"
     );
     let events = harness.events_after(sequence);
+    let job = &events
+        .iter()
+        .rev()
+        .find(|event| event["method"] == "pick.develop")
+        .map(|event| event["job_id"].clone())
+        .expect("the job's end");
+    assert!(job.is_string(), "{events:?}");
     let announced: Vec<&Value> = events
         .iter()
         .filter(|event| event["method"] == "pick.develop")
         .map(|event| &event["library_sequence"])
         .collect();
-    assert_eq!(announced, changes.iter().collect::<Vec<_>>(), "{events:?}");
+    let mut expected: Vec<&Value> = changes.iter().collect();
+    expected.push(&Value::Null);
+    assert_eq!(
+        announced, expected,
+        "one event a batch, then the job's end: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|event| event["method"] == "pick.develop")
+            .all(|event| &event["job_id"] == job),
+        "every one names the job: {events:?}"
+    );
 
     // The folders the plan proposed, made from their events.
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();

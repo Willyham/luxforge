@@ -334,10 +334,12 @@ impl LibraryLane {
     pub(super) fn disconnect(&mut self, _: ClientId) {}
 
     /// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one, which the
-    /// table has already finished, leaves the queue; a running one stops at its next checkpoint,
-    /// and a result that arrives after the cancel is not committed.
-    pub(super) fn cancelled(&mut self, job_id: &JobId) {
+    /// table has already finished, leaves the queue, answering true; a running one stops at its
+    /// next checkpoint, and a result that arrives after the cancel is not committed.
+    fn unqueue(&mut self, job_id: &JobId) -> bool {
+        let waiting = self.waiting.len();
         self.waiting.retain(|queued| queued.job_id != *job_id);
+        self.waiting.len() != waiting
     }
 
     /// Whether `job_id` is this lane's, waiting or running: a job a client may block on until it
@@ -400,12 +402,15 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 _ => None,
             };
             // A cancel the owner took before the result arrived wins: nothing is committed.
+            let first = owner.announced.len();
             let result = match control {
                 Some(control) if control.is_cancelled() => Err(control.cancelled_error()),
                 _ => panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
                     Err(Error::internal("the job's result could not be recorded"))
                 }),
             };
+            name_the_job(owner, first, &job_id);
+            announce_end(owner, &job_id);
             owner.jobs.finish(&job_id, result.map(Output::Value));
             owner.record_announced();
             // A client blocked until this job ended ([`OwnerHandle::wait_source`]) reads it now.
@@ -423,6 +428,7 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 Some((running, control)) if *running == job_id => Some(control.clone()),
                 _ => None,
             };
+            let first = owner.announced.len();
             let result = match running {
                 Some(control) if !control.is_cancelled() => {
                     panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
@@ -432,6 +438,7 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 Some(control) => Err(control.cancelled_error()),
                 None => Err(Error::internal("the job is no longer running")),
             };
+            name_the_job(owner, first, &job_id);
             owner.record_announced();
             let _ = reply.send(result);
         }
@@ -439,6 +446,30 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
         LibraryMessage::Hold(hold) => owner.catalog.library.hold = hold,
         #[cfg(test)]
         LibraryMessage::Run(run) => run(owner),
+    }
+}
+
+/// `job.cancel` cancelled one of this lane's jobs. A waiting one ended with the cancel, so its end
+/// is announced now; a running one's is announced when its worker posts back.
+pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
+    if owner.catalog.library.unqueue(job_id) {
+        announce_end(owner, job_id);
+    }
+}
+
+/// Announce that `job_id` ended, however it ended: one event under the request that started it,
+/// naming the job, so a client waits for events rather than polling `job.read`.
+fn announce_end(owner: &mut Owner, job_id: &JobId) {
+    if let Some(origin) = owner.jobs.origin(job_id).cloned() {
+        announce_once(&mut owner.announced, &origin.job(job_id.clone()));
+    }
+}
+
+/// Name `job_id` on every event its commit announced (those from `first` on): a Develop's batch, a
+/// Locate's change, what a check changed.
+fn name_the_job(owner: &mut Owner, first: usize, job_id: &JobId) {
+    for origin in owner.announced.iter_mut().skip(first) {
+        origin.job_id = Some(job_id.clone());
     }
 }
 
