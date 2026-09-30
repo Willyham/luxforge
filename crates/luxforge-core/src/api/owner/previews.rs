@@ -47,6 +47,7 @@ use super::{
     Call, ClientId, EventWake, Owner, OwnerHandle, OwnerMessage,
     catalog::{CatalogMessage, Poster},
 };
+use crate::api::{Origin, announce_once};
 use crate::{
     EditorService, Error, ErrorKind, JobId,
     activity::{ActivityBoard, ActivitySpec},
@@ -171,6 +172,10 @@ struct View {
     deferred: usize,
     /// The tasks it still waits on.
     pending: HashSet<TaskKey>,
+    /// Whether one of its tasks wrote a file's complete grid tier, and with it the tier's
+    /// brightness fingerprint: a view grouped before then may hold a metadata-less bracket it
+    /// called a burst, so the view's end advances the index's revision ([`fingerprints_written`]).
+    fingerprinted: bool,
 }
 
 impl View {
@@ -765,6 +770,7 @@ pub(super) fn want_view_items(
         failed: 0,
         deferred: 0,
         pending,
+        fingerprinted: false,
     };
     view.progress();
     lane.views.insert(client, view);
@@ -1000,6 +1006,13 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
             }),
         );
     }
+    // A file's complete grid tier writes its fingerprint beside it.
+    let fingerprint = matches!(
+        (&key, &result),
+        ((ViewItem::File(_), PreviewTier::Grid), Ok(info))
+            if matches!(info.origin, PreviewOrigin::Embedded | PreviewOrigin::Developed)
+    );
+    let mut advance = false;
     for client in &wanted.views {
         let Some(view) = lane.views.get_mut(client) else {
             continue;
@@ -1007,6 +1020,7 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         if !view.pending.remove(&key) {
             continue;
         }
+        view.fingerprinted |= fingerprint;
         if deferred {
             view.deferred += 1;
         } else if result.is_err() {
@@ -1015,6 +1029,7 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         view.progress();
         if view.pending.is_empty() {
             let view = lane.views.remove(client).expect("the view is held");
+            advance |= view.fingerprinted;
             owner.jobs.finish(
                 &view.job_id,
                 Ok(Output::Value(json!({
@@ -1026,7 +1041,34 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
             );
         }
     }
+    if advance {
+        fingerprints_written(owner);
+    }
     dispatch(owner);
+}
+
+/// A view job that wrote grid fingerprints has ended: advance the index's revision once and record
+/// one index event naming it, as a batch of the index lane does, so a browse view grouped before
+/// the fingerprints existed is stale and groups its metadata-less runs again with them. Only a
+/// view job's end does this, never each tier or a replaced view, so a view that regroups on the
+/// event and asks for its missing tiers again cannot keep itself busy: the view job it starts
+/// holds only the tiers still missing, and ends with one more revision only when it wrote some.
+fn fingerprints_written(owner: &mut Owner) {
+    let revision = owner.service.index().and_then(|mut index| {
+        let tx = index.connection_mut().transaction()?;
+        let revision = crate::index::database::advance_revision(&tx)?;
+        tx.commit()?;
+        Ok(revision)
+    });
+    // The index is a cache: a revision that could not be written leaves views as they are until
+    // the next change, never an error for a finished job.
+    if let Ok(revision) = revision {
+        announce_once(
+            &mut owner.announced,
+            &Origin::new(PREVIEW_EXTRACT.job_kind, "").index(revision),
+        );
+        owner.record_announced();
+    }
 }
 
 #[cfg(test)]
