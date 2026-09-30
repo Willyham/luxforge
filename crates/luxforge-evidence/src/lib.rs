@@ -16,6 +16,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 mod build;
+mod missing;
+
+pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
@@ -182,6 +185,8 @@ pub enum Step {
     Export(ExportStep),
     /// One gesture on the Select workspace, or an agent's pick beside it.
     Select(SelectStep),
+    /// One gesture on Select's Missing originals.
+    Missing(MissingStep),
 }
 
 impl Step {
@@ -314,6 +319,7 @@ impl Step {
             Self::Mask(step) => step.validate(),
             Self::Export(step) => step.validate(),
             Self::Select(step) => step.validate(),
+            Self::Missing(step) => step.validate(),
         }
     }
 }
