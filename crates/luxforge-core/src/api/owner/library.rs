@@ -43,6 +43,9 @@ mod resolve_missing_tests;
 // Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
 
 // Batch preset and export (TASK-015): `batch.apply-preset`, `batch.export`.
+pub(in crate::api) mod batch;
+#[cfg(test)]
+mod batch_tests;
 
 pub(in crate::api) use info::catalog_info;
 pub(in crate::api) use journal::{library_inspect, library_journal, library_redo, library_undo};

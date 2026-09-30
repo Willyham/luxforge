@@ -1091,7 +1091,20 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // Removing (TASK-014).
 
     // Batch preset and export (TASK-015).
-
+    owner!(
+        "batch.apply-preset",
+        crate::catalog_types::api::BatchApplyPreset,
+        owner::library::batch::batch_apply_preset,
+        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait",
+        retries: Owner,
+    ),
+    owner!(
+        "batch.export",
+        crate::catalog_types::api::BatchExport,
+        owner::library::batch::batch_export,
+        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written, skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-preset's; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait",
+        retries: Owner,
+    ),
     // ── end lane C ──
     // ── catalog lane D: views ──
     // ── end lane D ──
