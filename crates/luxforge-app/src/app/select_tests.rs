@@ -639,6 +639,42 @@ fn select_arrows_start_at_the_first_cell_and_s_collapses_the_active_burst() {
     finish(editor, catalog);
 }
 
+/// A view evaluated again keeps its scroll: moved as little as keeps the active item in view when
+/// it was on screen, and left where it was when the grid had been scrolled away from it.
+#[test]
+fn a_select_view_read_again_keeps_its_scroll() {
+    let mut flat = summary(2000);
+    flat.groups = GroupLayout::default();
+    let (mut editor, catalog) = viewing(flat.clone(), &[(0, 1)], Some(0));
+    let height = editor.select.viewport.height;
+    let far = editor.select.layout.height() * 0.5;
+    let again = |editor: &mut Editor| {
+        let _ = editor.update(Message::Select(SelectMessage::Source(
+            flat.query.source.clone(),
+        )));
+        let session = browsing(editor, &[(0, 1)], Some(0));
+        let serial = editor.select.serial;
+        let _ = editor.update(Message::Select(SelectMessage::Viewed {
+            serial,
+            result: Ok(Box::new((flat.clone(), session))),
+        }));
+    };
+    // Scrolled away from the active first cell: the scroll stays.
+    let _ = editor.update(Message::Select(SelectMessage::Scrolled(far)));
+    let scrolled = editor.select.scroll;
+    assert!(scrolled > height, "{scrolled}");
+    again(&mut editor);
+    assert_eq!(editor.select.scroll, scrolled);
+    // With the active cell on screen, it stays on screen.
+    let _ = editor.update(Message::Select(SelectMessage::Scrolled(0.0)));
+    again(&mut editor);
+    assert_eq!(
+        editor.select.scroll,
+        editor.select.layout.reveal(0, 0.0, height)
+    );
+    finish(editor, catalog);
+}
+
 /// The owner's wake reads the session while Select is shown; a stale view is evaluated again with
 /// the query it was evaluated from, and the events read again. A wake while Develop is shown waits
 /// for Select to be shown.

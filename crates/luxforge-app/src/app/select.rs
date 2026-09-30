@@ -18,16 +18,17 @@
 //!   owner reports them.
 //! - The owner's wake for another client's change asks for `session.state` while Select is shown;
 //!   a view the session reports stale — a library change or an index revision since it was
-//!   evaluated — is evaluated again, the scroll kept near the active item.
+//!   evaluated — is evaluated again, keeping its scroll, moved as little as keeps the active item
+//!   in view when it was on screen.
 //! - A library change — `P` and the Info panel's Pick (`pick.set` of the selection), a bracket's
 //!   Pick all (`pick.set` of its files), and `Cmd+Z` and `Shift+Cmd+Z` (`library.undo` and
 //!   `library.redo`) — is sent synchronously in the update of its key or press, as this desktop's
 //!   actor: the journal records the gestures in the order they were made, and a pick of the
 //!   selection names the selection on screen, which the next arrow key's synchronous
 //!   `browse.select` would otherwise overtake. The owner's work is one catalog transaction. What
-//!   the change leaves is read as another client's change is: the view evaluated again, keeping
-//!   the scroll and the active item, the events and the catalog's counts read again, and the
-//!   change's label from the journal said in the status bar, as owner tasks.
+//!   the change leaves is read as another client's change is: the view evaluated again, the
+//!   events and the catalog's counts read again, and the change's label from the journal said in
+//!   the status bar, as owner tasks.
 //! - The sources panel reads the cards and volumes (`card.list`, `volume.list`) and the catalog's
 //!   counts (`catalog.info`) each time Select is shown, the counts again after a library change,
 //!   and a volume's or folder's subfolders (`disk.folders`) when it is opened On disk. A card or a
@@ -900,6 +901,9 @@ impl Editor {
         match result {
             Ok(answer) => {
                 let (summary, session) = *answer;
+                // Whether the active item was on screen, which decides whether the scroll follows
+                // it or stays where the person left it.
+                let active_shown = self.active_on_screen();
                 self.adopt(session);
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
@@ -935,7 +939,15 @@ impl Editor {
                 }
                 self.rebuild_grid();
                 if same_source {
-                    self.select.scroll = self.near_active(self.select.scroll);
+                    // The same source read again keeps its scroll, moved as little as keeps the
+                    // active item in view when it was: scrolled away from it, to a bracket's Pick
+                    // all say, the grid stays where it is.
+                    self.select.scroll = if active_shown {
+                        self.near_active(self.select.scroll)
+                    } else {
+                        let height = self.select.viewport.height;
+                        self.select.layout.clamp_scroll(self.select.scroll, height)
+                    };
                 } else {
                     self.select.scroll = 0.0;
                     self.select.anchor = None;
@@ -981,6 +993,21 @@ impl Editor {
             Some(active) => self.select.layout.reveal(active, scroll, height),
             None => self.select.layout.clamp_scroll(scroll, height),
         }
+    }
+
+    /// Whether the active item's cell is on screen in the grid as it is laid out now.
+    fn active_on_screen(&self) -> bool {
+        let layout = &self.select.layout;
+        let Some(cell) = self
+            .selection()
+            .active
+            .and_then(|active| layout.cell_of_item(active))
+        else {
+            return false;
+        };
+        layout
+            .visible_cells(self.select.scroll, self.select.viewport.height, 0.0)
+            .contains(&cell)
     }
 
     /// The items of the cells on and one screen either side of the grid's viewport: what the rows
@@ -1547,7 +1574,7 @@ impl Editor {
             "status_line": model.status.line,
             "note": model.note,
             "info": info,
-            "sources": sources,
+            "source_rows": sources,
             "groups_picked": groups_picked,
             "headers": headers,
             "library": self.select.library,
