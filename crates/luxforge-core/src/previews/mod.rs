@@ -9,27 +9,34 @@
 //!   `browse.rows`) and [`cache_bytes`] (lane C's `catalog.info`).
 //! - `extract.rs`: a file's grid tier, in two stages (its thumbnail, then its embedded preview),
 //!   and its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`,
-//!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a file
-//!   with no usable preview is developed instead (`develop_instead`, TASK-009's).
+//!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a RAW
+//!   with no usable preview is developed instead (`develop_instead`), for a visible or look-ahead
+//!   task.
 //! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
-//!   the view — deduplicated by (file, tier) and bounded, the failures it remembers, and at most
-//!   two worker threads, each blocked on its channel while idle.
+//!   the view — deduplicated by (file, tier) and bounded, the failures and deferrals it remembers,
+//!   and at most two worker threads, each blocked on its channel while idle.
+//! - `region.rs`: the 100% region's domain functions, from the embedded full-size preview for that
+//!   region alone or from a neutral development, one RAW at a time in the process, off the
+//!   editor's cache, and the one development kept.
+//! - `regions.rs`: the region worker, one thread apart from the extraction workers, that answers
+//!   `preview.region` jobs one at a time and writes each answer's JPEG.
+//! - `rendered.rs`: developed photographs' grid and large tiers, planned on the owner and rendered
+//!   through the Fit preview's proxy path off the editor's cache (TASK-010); the lane wires them to
+//!   `preview.read` of a photograph.
 //!
 //! The owner's side — each request's job, each client's view job and its progress on the activity
-//! board, waking clients, `preview.read` — is `api/owner/previews.rs`. The lane never uses or
-//! evicts the editor's one-slot source cache.
+//! board, waking clients, `preview.read`, and the region jobs of `preview.region` with their queue
+//! and answers — is `api/owner/previews.rs` and `api/owner/previews/regions.rs`. The lane never
+//! uses or evicts the editor's one-slot source cache.
 //!
-//! - `region.rs`: the 100% region's domain functions, from the embedded full-size preview for that
-//!   region alone or from a neutral development, one RAW at a time, off the editor's cache
-//!   (TASK-009); the lane wires them to `preview.region`.
-//!
-//! To come in this lane: `rendered.rs` (previews of developed photographs, TASK-010) and
-//! `bracket.rs` (the brightness check, a [`BracketProbe`](crate::catalog_types::BracketProbe) over
-//! decoded grid previews).
+//! To come in this lane: `bracket.rs` (the brightness check, a
+//! [`BracketProbe`](crate::catalog_types::BracketProbe) over decoded grid previews).
 mod cache;
 mod extract;
 mod lane;
 pub(crate) mod region;
+mod regions;
+pub(crate) mod rendered;
 
 #[allow(
     unused_imports,
@@ -37,8 +44,14 @@ pub(crate) mod region;
 )]
 pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
 pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};
+#[cfg(test)]
+pub(crate) use lane::DevelopHook;
 pub(crate) use lane::{
     Failures, Outcome, PREVIEW_WORKERS, Post, Queue, Task, TaskKey, WorkerEvent, Workers,
+};
+pub(crate) use regions::{
+    RegionDone, RegionPost, RegionSource, RegionWork, RegionWorker, answer_path,
+    remove as remove_answer,
 };
 
 /// A file's grid tier's long edge at most, in pixels, as a developed photograph's

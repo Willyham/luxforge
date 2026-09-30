@@ -1,15 +1,16 @@
 use super::{
-    AssetPage, AssetSummary, EditorService, EditorState, LayerDescription, RecipeDescription,
-    SourceTag,
+    AssetPage, AssetRecord, AssetSummary, EditorService, EditorState, LayerDescription,
+    RecipeDescription, SourceTag,
     catalog::{MAX_ASSET_PAGE, stored_revision},
     entries::Head,
+    source_signature,
 };
 use crate::{
     AssetId, EntryId, Error, HistoryEntry, Layer, LayerReport, ModuleRegistry, ORIENTATION_EFFECT,
     Orientation, StageSize, modules::stored_orientation,
 };
 use rusqlite::{OptionalExtension, params};
-use std::path::PathBuf;
+use std::{fs::Metadata, path::PathBuf};
 
 impl EditorState {
     /// The state a cached head and its current entry describe: a copy of both.
@@ -20,6 +21,16 @@ impl EditorState {
             current_entry: current.clone(),
             redo: head.redo,
         }
+    }
+}
+
+impl AssetRecord {
+    /// Whether `metadata`, read of the file now at [`Self::locator`], is still this asset's
+    /// original: the file identity and length the catalog recorded, the rule the editor applies
+    /// before it prepares an original.
+    pub(crate) fn is_original(&self, metadata: &Metadata) -> bool {
+        let signature = source_signature(&self.locator, metadata);
+        signature.file_identity == self.file_identity && signature.byte_len == self.byte_len
     }
 }
 
@@ -38,6 +49,29 @@ impl EditorService {
     /// It copies the cached head and never touches an entry, cached or not.
     pub(crate) fn current_entry_id(&self, asset_id: &AssetId) -> Result<EntryId, Error> {
         Ok(self.head(asset_id)?.current)
+    }
+
+    /// The record of `asset_id`'s original — its path, kind and the identity and length the catalog
+    /// recorded — for a reader outside the editor that reads the original itself, such as the 100%
+    /// region of a developed photograph; `entry_id`, when named, must be one of its entries. It
+    /// copies the cached head and reads no entry.
+    pub(crate) fn photo_original(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<AssetRecord, Error> {
+        let asset = self.head(asset_id)?.asset;
+        if let Some(entry_id) = entry_id {
+            self.connection
+                .query_row(
+                    "SELECT 1 FROM entries WHERE id=?1 AND asset_id=?2",
+                    params![entry_id.as_str(), asset_id.as_str()],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
+        }
+        Ok(asset)
     }
 
     /// The asset's current revision, which is all a draft's conflict check compares. It decodes
