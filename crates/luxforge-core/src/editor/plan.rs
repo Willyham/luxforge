@@ -3146,7 +3146,7 @@ mod tests {
     #[test]
     fn every_built_in_action_stores_the_label_of_this_table() {
         let registry = ModuleRegistry::developer();
-        let table: [(&str, Value, &str); 76] = [
+        let table: [(&str, Value, &str); 80] = [
             (
                 "apply-preset",
                 json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
@@ -3231,6 +3231,18 @@ mod tests {
             ),
             ("set-presence", json!({}), "Set Presence"),
             ("reset-presence", json!({}), "Reset Presence"),
+            (
+                "set-curve",
+                json!({"luminance":[[0.0,0.0],[0.5,0.6],[1.0,1.0]]}),
+                "Tone curve 3 points",
+            ),
+            (
+                "set-curve",
+                json!({"luminance":[[0,0],[1,1]]}),
+                "Reset Tone curve",
+            ),
+            ("set-curve", json!({}), "Set Tone curve"),
+            ("reset-curve", json!({}), "Reset Tone curve"),
             ("set-mixer", json!({"red-hue":90.0}), "Red hue +90"),
             (
                 "set-mixer",
