@@ -182,6 +182,9 @@ pub enum Step {
     Export(ExportStep),
     /// One gesture on the Select workspace, or an agent's pick beside it.
     Select(SelectStep),
+    /// One gesture on the Select workspace's loupe that its timing needs: a warm press or a held
+    /// arrow, or the pointer over the picture.
+    Loupe(LoupeStep),
 }
 
 impl Step {
@@ -314,6 +317,7 @@ impl Step {
             Self::Mask(step) => step.validate(),
             Self::Export(step) => step.validate(),
             Self::Select(step) => step.validate(),
+            Self::Loupe(step) => step.validate(),
         }
     }
 }
@@ -1752,6 +1756,64 @@ impl SelectStep {
             | Self::Click { .. }
             | Self::ContinueInBackground
             | Self::CancelWork => Ok(()),
+        }
+    }
+}
+
+/// The most presses one loupe `arrows` step sends.
+pub const MAX_LOUPE_ARROWS: u32 = 240;
+
+/// One gesture on the Select workspace's loupe that its timing needs, beside the `select` and `key`
+/// steps that open it and step it.
+///
+/// `{"arrows": {"direction": "right", "count": 30, "interval_ms": 30}}` waits until the loupe's
+/// look-ahead is warm — every frame it wants, the one on screen and the ones ahead, decoded at the
+/// size it is drawn at, or with nothing more to wait for — then presses the arrow `count` times
+/// through the key table, `interval_ms` apart, the first a press and the rest the key's repeats as
+/// a held key sends them, and is captured once Select has nothing in flight after the last. One
+/// press takes no interval. `{"pointer": [0.25, 0.3]}` moves the pointer over the loupe's picture
+/// to those fractions of it, as the pointer does, and is captured once Select has nothing in
+/// flight: with the focus check on, once the region under the pointer has landed.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LoupeStep {
+    Arrows(LoupeArrows),
+    Pointer([f32; 2]),
+}
+
+/// A loupe `arrows` step: which arrow, how many presses and how far apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoupeArrows {
+    pub direction: ArrowKey,
+    pub count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
+}
+
+impl LoupeStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Arrows(arrows) => {
+                if !(1..=MAX_LOUPE_ARROWS).contains(&arrows.count) {
+                    return Err(format!(
+                        "loupe arrows count takes an integer from 1 to {MAX_LOUPE_ARROWS}"
+                    ));
+                }
+                match (arrows.count, arrows.interval_ms) {
+                    (1, None) => Ok(()),
+                    (1, Some(_)) => Err("one loupe arrow press takes no interval_ms".into()),
+                    (_, Some(interval)) if (1..=1000).contains(&interval) => Ok(()),
+                    _ => Err(
+                        "loupe arrows of more than one press need interval_ms from 1 to 1000"
+                            .into(),
+                    ),
+                }
+            }
+            Self::Pointer([x, y]) => {
+                unit(f64::from(*x), "loupe pointer x")?;
+                unit(f64::from(*y), "loupe pointer y")
+            }
         }
     }
 }
