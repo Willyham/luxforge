@@ -166,10 +166,8 @@ struct ExportJob {
 }
 
 impl ExportJob {
-    /// Render the frozen entry exactly, encode it into a temporary file beside the destination and
-    /// publish that under the destination's name without replacing anything. A cancel stops the
-    /// render within a row or chunk and the encoder within about 1% of the rows; a failure or a
-    /// cancel before the publish drops the staged file, which removes it.
+    /// Write the frozen entry to its destination ([`write`]), publishing each phase on the board
+    /// and naming it in the progress message too, which is what `job.read` answers with.
     fn run(self) -> Result<Value, Error> {
         let Self {
             plan,
@@ -179,8 +177,6 @@ impl ExportJob {
             #[cfg(test)]
             hold,
         } = self;
-        // Each phase is published on the board and named by the progress message too, which is
-        // what `job.read` answers with; a cancel that arrived meanwhile stops the job there.
         let phase = |phase: &'static str| {
             control.set_phase(phase);
             control.set_progress(None, phase);
@@ -190,44 +186,66 @@ impl ExportJob {
             }
             control.checkpoint()
         };
-        phase(RENDERING)?;
-        let ExportPlan {
-            identity,
-            evaluation,
-            capture,
-        } = plan;
-        // The frame is the render's own exact frame, from the compilation the plan made, inside the
-        // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
-        // artifacts are released with the evaluation.
-        let frame = evaluation
-            .exact(control.render_cancel())?
-            .frame(identity.snapshot_id.clone())?;
-        drop(evaluation);
-        let mut staged = destination.stage()?;
-        phase(ENCODING)?;
-        let exif = keep_metadata.then(|| capture.exif_payload(frame.width, frame.height));
-        encode_jpeg(
-            &mut staged,
-            &frame,
-            exif.as_deref(),
+        write(
+            plan,
+            &destination,
+            keep_metadata,
+            &control,
+            &phase,
             &mut |fraction| control.set_progress(Some(fraction), ENCODING),
-            &|| control.checkpoint(),
-        )?;
-        let (width, height) = (frame.width, frame.height);
-        drop(frame);
-        phase(WRITING)?;
-        let bytes = staged.publish()?;
-        let metadata = if keep_metadata {
-            capture.field_names()
-        } else {
-            Vec::new()
-        };
-        Ok(json!({
-            "path": destination.path(),
-            "bytes": bytes,
-            "width": width,
-            "height": height,
-            "metadata": metadata,
-        }))
+        )
     }
+}
+
+/// One export's work once its entry is frozen, shared by `export.jpeg`'s job and each photograph of
+/// `batch.export`: render the entry exactly, encode it into a temporary file beside `destination`
+/// and publish that under the destination's name without replacing anything, answering `{path,
+/// bytes, width, height, metadata}`. `phase` is called as each phase begins (`rendering`,
+/// `encoding`, then `writing`) and stops the export where it answers an error, as a cancel that
+/// arrived meanwhile does; `encoded` is told the fraction of rows encoded. A cancel of `control`
+/// stops the render within a row or chunk and the encoder within about 1% of the rows; a failure or
+/// a cancel before the publish drops the staged file, which removes it.
+pub(super) fn write(
+    plan: ExportPlan,
+    destination: &Destination,
+    keep_metadata: bool,
+    control: &JobControl,
+    phase: &dyn Fn(&'static str) -> Result<(), Error>,
+    encoded: &mut dyn FnMut(f64),
+) -> Result<Value, Error> {
+    phase(RENDERING)?;
+    let ExportPlan {
+        identity,
+        evaluation,
+        capture,
+    } = plan;
+    // The frame is the render's own exact frame, from the compilation the plan made, inside the
+    // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
+    // artifacts are released with the evaluation.
+    let frame = evaluation
+        .exact(control.render_cancel())?
+        .frame(identity.snapshot_id.clone())?;
+    drop(evaluation);
+    let mut staged = destination.stage()?;
+    phase(ENCODING)?;
+    let exif = keep_metadata.then(|| capture.exif_payload(frame.width, frame.height));
+    encode_jpeg(&mut staged, &frame, exif.as_deref(), encoded, &|| {
+        control.checkpoint()
+    })?;
+    let (width, height) = (frame.width, frame.height);
+    drop(frame);
+    phase(WRITING)?;
+    let bytes = staged.publish()?;
+    let metadata = if keep_metadata {
+        capture.field_names()
+    } else {
+        Vec::new()
+    };
+    Ok(json!({
+        "path": destination.path(),
+        "bytes": bytes,
+        "width": width,
+        "height": height,
+        "metadata": metadata,
+    }))
 }

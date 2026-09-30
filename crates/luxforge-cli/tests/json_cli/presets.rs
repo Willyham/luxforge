@@ -28,17 +28,8 @@ fn a_preset_imports_lists_and_applies_and_a_refused_file_is_an_error_over_the_pi
         &["--catalog", catalog.to_str().expect("catalog is UTF-8")],
         "presets",
     );
-    let job = client.call(
-        "catalog.import",
-        json!({
-            "path": paths::jpeg().canonicalize().expect("the fixture"),
-            "mutation": request(),
-        }),
-    )["job_id"]
-        .clone();
-    let status = client.settle("job.read", &job);
-    assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
+    let fixture = paths::jpeg().canonicalize().expect("the fixture");
+    let asset = client.open(&fixture, "presets-json-cli")["asset"]["id"].clone();
 
     // The file's text crosses the pipe as one JSON string, and the record comes back whole.
     let imported = client.call(

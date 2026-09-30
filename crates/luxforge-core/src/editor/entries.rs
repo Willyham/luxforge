@@ -302,8 +302,7 @@ mod tests {
         let dir = temp("entry-cache-coherence");
         std::fs::create_dir_all(&dir).unwrap();
         let catalog = dir.join("catalog.sqlite");
-        let second_source = dir.join("second.jpg");
-        std::fs::copy(fixture(), &second_source).unwrap();
+        let second_source = crate::editor::distinct_jpeg(&fixture(), &dir.join("second.jpg"));
         let mut service =
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
 
@@ -630,8 +629,8 @@ mod tests {
         .unwrap();
         let mut assets = Vec::new();
         for index in 0..CACHED_HEADS + 2 {
-            let source = dir.join(format!("source-{index}.jpg"));
-            std::fs::copy(fixture(), &source).unwrap();
+            let source =
+                crate::editor::distinct_jpeg(&fixture(), &dir.join(format!("source-{index}.jpg")));
             let asset = service.import(&source).unwrap().asset.id;
             service.state(&asset).unwrap();
             assets.push(asset);

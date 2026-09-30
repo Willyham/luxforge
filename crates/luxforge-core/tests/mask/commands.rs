@@ -39,8 +39,7 @@ impl Session {
         )
         .expect("an owner");
         let client = owner.client();
-        let asset =
-            owner.import(client, &source).expect("the fixture imports")["asset"]["id"].clone();
+        let asset = owner.open(client, &source).expect("the fixture opens")["asset"]["id"].clone();
         Self {
             owner,
             client,

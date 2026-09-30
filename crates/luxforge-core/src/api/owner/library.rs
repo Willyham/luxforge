@@ -8,7 +8,8 @@
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
 //! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
-//! `source.relink`) and `info.rs` (`catalog.info`). Every method that changes the
+//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`) and
+//! `info.rs` (`catalog.info`). Every method that changes the
 //! library records it through [`change`], which runs the journal in one catalog transaction and
 //! announces the change it recorded as one event.
 
@@ -34,6 +35,9 @@ mod worker_tests;
 pub(in crate::api) mod develop;
 #[cfg(test)]
 mod develop_picks_tests;
+/// Opening a file as every client does — develop, prepare, adopt — for the core's tests.
+#[cfg(test)]
+pub(in crate::api) mod opening;
 
 // Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
 pub(in crate::api) mod missing;
@@ -41,8 +45,14 @@ pub(in crate::api) mod missing;
 mod resolve_missing_tests;
 
 // Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
+pub(in crate::api) mod remove;
+#[cfg(test)]
+mod remove_tests;
 
 // Batch preset and export (TASK-015): `batch.apply-preset`, `batch.export`.
+pub(in crate::api) mod batch;
+#[cfg(test)]
+mod batch_tests;
 
 pub(in crate::api) use info::catalog_info;
 pub(in crate::api) use journal::{library_inspect, library_journal, library_redo, library_undo};
@@ -324,10 +334,21 @@ impl LibraryLane {
     pub(super) fn disconnect(&mut self, _: ClientId) {}
 
     /// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one, which the
-    /// table has already finished, leaves the queue; a running one stops at its next checkpoint,
-    /// and a result that arrives after the cancel is not committed.
-    pub(super) fn cancelled(&mut self, job_id: &JobId) {
+    /// table has already finished, leaves the queue, answering true; a running one stops at its
+    /// next checkpoint, and a result that arrives after the cancel is not committed.
+    fn unqueue(&mut self, job_id: &JobId) -> bool {
+        let waiting = self.waiting.len();
         self.waiting.retain(|queued| queued.job_id != *job_id);
+        self.waiting.len() != waiting
+    }
+
+    /// Whether `job_id` is this lane's, waiting or running: a job a client may block on until it
+    /// ends ([`OwnerHandle::wait_source`](crate::api::OwnerHandle::wait_source)).
+    pub(super) fn holds(&self, job_id: &JobId) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|(running, _)| running == job_id)
+            || self.waiting.iter().any(|queued| queued.job_id == *job_id)
     }
 
     /// Stop as the owner stops: the running job is cancelled and the worker's channel closed, so
@@ -381,14 +402,21 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 _ => None,
             };
             // A cancel the owner took before the result arrived wins: nothing is committed.
+            let first = owner.announced.len();
             let result = match control {
                 Some(control) if control.is_cancelled() => Err(control.cancelled_error()),
                 _ => panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
                     Err(Error::internal("the job's result could not be recorded"))
                 }),
             };
+            name_the_job(owner, first, &job_id);
+            announce_end(owner, &job_id);
             owner.jobs.finish(&job_id, result.map(Output::Value));
             owner.record_announced();
+            // A client blocked until this job ended ([`OwnerHandle::wait_source`]) reads it now.
+            //
+            // [`OwnerHandle::wait_source`]: crate::api::OwnerHandle::wait_source
+            owner.release_waiters(|waiter| waiter.job.as_ref() == Some(&job_id));
             owner.catalog.library.dispatch(&mut owner.jobs);
         }
         LibraryMessage::Partial {
@@ -400,6 +428,7 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 Some((running, control)) if *running == job_id => Some(control.clone()),
                 _ => None,
             };
+            let first = owner.announced.len();
             let result = match running {
                 Some(control) if !control.is_cancelled() => {
                     panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
@@ -409,6 +438,7 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
                 Some(control) => Err(control.cancelled_error()),
                 None => Err(Error::internal("the job is no longer running")),
             };
+            name_the_job(owner, first, &job_id);
             owner.record_announced();
             let _ = reply.send(result);
         }
@@ -416,6 +446,30 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
         LibraryMessage::Hold(hold) => owner.catalog.library.hold = hold,
         #[cfg(test)]
         LibraryMessage::Run(run) => run(owner),
+    }
+}
+
+/// `job.cancel` cancelled one of this lane's jobs. A waiting one ended with the cancel, so its end
+/// is announced now; a running one's is announced when its worker posts back.
+pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
+    if owner.catalog.library.unqueue(job_id) {
+        announce_end(owner, job_id);
+    }
+}
+
+/// Announce that `job_id` ended, however it ended: one event under the request that started it,
+/// naming the job, so a client waits for events rather than polling `job.read`.
+fn announce_end(owner: &mut Owner, job_id: &JobId) {
+    if let Some(origin) = owner.jobs.origin(job_id).cloned() {
+        announce_once(&mut owner.announced, &origin.job(job_id.clone()));
+    }
+}
+
+/// Name `job_id` on every event its commit announced (those from `first` on): a Develop's batch, a
+/// Locate's change, what a check changed.
+fn name_the_job(owner: &mut Owner, first: usize, job_id: &JobId) {
+    for origin in owner.announced.iter_mut().skip(first) {
+        origin.job_id = Some(job_id.clone());
     }
 }
 
@@ -454,8 +508,10 @@ pub(super) fn change(
 /// before its targets are resolved again, so it neither reads the disk nor fails on a file that has
 /// moved since.
 pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
-    Ok(library_journal::find(&owner.service.connection, request)?
-        .map(|change| Outcome::deduplicated(change).answer()))
+    Ok(
+        library_journal::answered(&owner.service.connection, request)?
+            .map(|answered| answered.answer()),
+    )
 }
 
 /// The items selected in the calling client's view.

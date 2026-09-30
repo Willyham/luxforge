@@ -40,16 +40,15 @@ mod source;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
+pub(crate) use test_support::{distinct_jpeg, mutation, mutation_json, recast_as_raw};
 
 pub(crate) use catalog::{
-    CATALOG_FORMAT, DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, decode, default_artifact_root, encode,
-    insert_entry, now_ms, write,
+    CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
 };
 #[allow(unused_imports, reason = "catalog contracts: used as the lanes land")]
 pub(crate) use catalog_rows::{
     NewAsset, capture_of, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
-    insert_indexed_folder, insert_member, insert_pick, top_level_folder, upsert_volume,
+    insert_indexed_folder, insert_member, insert_pick, upsert_volume,
 };
 // Lane A: the indexed folders and known volumes.
 pub(crate) use catalog_rows::folder_rows;
@@ -200,28 +199,6 @@ pub struct AssetRecord {
     pub width: u32,
     pub height: u32,
     pub source: SourceKind,
-}
-
-/// One asset as `catalog.list` lists it: what a client needs to pick a photo, read from the asset's
-/// own columns. It carries the source kind's tag but not the interpretation, which is never decoded
-/// for a listing; `source.inspect` and `asset.state` read one asset's whole record.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetSummary {
-    pub id: AssetId,
-    pub locator: PathBuf,
-    pub kind: SourceTag,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// One page of the catalog's assets in import order. `next` is the cursor that continues it, the
-/// last asset listed, or `None` when nothing follows.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AssetPage {
-    pub assets: Vec<AssetSummary>,
-    pub next: Option<AssetId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,6 +529,8 @@ pub(crate) struct SourceSignature {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedFile {
+    /// The photograph whose original was prepared.
+    pub(crate) asset_id: AssetId,
     pub(crate) canonical: PathBuf,
     pub(crate) signature: SourceSignature,
     pub(crate) source: PreparedSource,

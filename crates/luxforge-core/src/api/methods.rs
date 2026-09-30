@@ -29,7 +29,7 @@ use crate::{
         },
         resources, settings,
     },
-    editor::{DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
+    editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
     jobs::{JOB_CANCEL, JOB_READ},
     path,
     presets::MAX_PRESET_GROUP,
@@ -271,13 +271,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |service, _, _| Ok(schemas(service.registry())),
         "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
     ),
-    owner!(
-        "catalog.import",
-        owner::Import,
-        owner::catalog_import,
-        "queues bounded source preparation; returns a job to inspect with job.read; commits only on verified success, which emits the event",
-        retries: Owner,
-    ),
     // The one job table belongs to the catalog owner, so the owner answers for every kind.
     owner!(
         JOB_READ,
@@ -297,7 +290,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "job.adopt",
         owner::JobParams,
         owner::job_adopt,
-        "select the ready result of this client's latest import as current; stale imports are refused"
+        "selects the ready result of this client's latest source.prepare as its current photograph, answering {asset, session}: the state it prepared and the session; a job that is not the client's latest preparation (one it asked for since supersedes it) is conflict, one still preparing is preparation-required naming it, a failed one is its error; opening a file is pick.develop of it (targets its path, into [], confirm_removable, as the person chose it), then source.prepare of the photograph the Develop answers, then job.adopt"
     ),
     owner!(
         JOB_CANCEL,
@@ -309,15 +302,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.prepare",
         owner::SourcePrepare,
         owner::source_prepare,
-        "queue signature-verified preparation of an imported source after reopen or cache eviction"
-    ),
-    service!(
-        "catalog.list",
-        CatalogList,
-        |service, _, p| value(
-            service.assets(p.after.as_ref(), p.limit.unwrap_or(DEFAULT_ASSET_PAGE))?
-        ),
-        "{assets, next}: one page of referenced assets in import order, each {id, locator, kind, width, height} read from the asset's own row without decoding its source interpretation; next is the after cursor of the following page, or null on the last; source.inspect reads one asset's full interpretation"
+        "queues signature-verified preparation of a photograph's original — to open it after it is developed, after a reopen or after cache eviction — answering {job_id, status}; job.adopt takes its ready result as the client's current photograph"
     ),
     service!(
         "asset.state",
@@ -1044,13 +1029,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.check",
         crate::catalog_types::api::SourceCheck,
         owner::library::sources::source_check,
-        "starts a source-check job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, availability, checked_ms}]}: each photograph's original as found now, available (its recorded file at its path), offline (its volume is not connected: one look at the mount point covers every photograph on it), missing (no file at its path) or changed (another file there), recorded with the time it was looked at, outside the journal; a photograph whose file moved within its volume is found again by its file identity in the index, confirmed by its fingerprint and relinked as one library change by the actor system, and nothing else is relinked; one event when anything changed, naming the change when there is one; targets are photographs by id, by the path of their original or its index row, or the photographs selected in the caller's view; read and cancel the job with job.read and job.cancel; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+        "starts a source-check job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, availability, checked_ms}]}: each photograph's original as found now, available (its recorded file at its path), offline (its volume is not connected: one look at the mount point covers every photograph on it), missing (no file at its path) or changed (another file there), recorded with the time it was looked at, outside the journal; a photograph whose file moved within its volume is found again by its file identity in the index, confirmed by its fingerprint and relinked as one library change by the actor system, and nothing else is relinked; one event when anything changed, naming the change when there is one; targets are photographs by id, by the path of their original or its index row, or the photographs selected in the caller's view; read and cancel the job with job.read and job.cancel; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id"
     ),
     owner!(
         "source.locate",
         crate::catalog_types::api::SourceLocate,
         owner::library::sources::source_locate,
-        "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait",
+        "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     // Developing picks (TASK-013).
@@ -1064,7 +1049,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "pick.develop",
         crate::catalog_types::api::PickDevelop,
         owner::library::develop::pick_develop,
-        "starts a develop-picks job, answering {job_id, status, deduplicated}, whose result is {developed: [{path, used?, asset_id, outcome: created | linked | relinked}], failed: [{path, asset_id?, code, message}], changes}: the files are planned as pick.plan plans them and each event goes into the folder its into entry names by event_id, else the entry with no event_id, else the plan's proposal, so into: [] accepts the plan; an existing folder must exist and a new one's name is checked as folder.create's (validation, conflict), and events given the same new folder share it, made with their span; each file is read once off the owner, bounded, its SHA-256 streamed, its header read and its interpretation read without developing, and must keep its signature while it is read and until it commits; a file whose bytes are a photograph's is linked to it, one whose name, length and fingerprint match a photograph whose original is not there relinks it (asset-source, its folder and history unchanged), a file another photograph names with other bytes fails with conflict, and any other becomes a photograph with its Original, capture row, source folder and moment in its event's folder; the job commits in batches, the first of one file, then up to 100 files or 5 s, never across an event, each one library change (developed-asset, catalog-folder, asset-source and pick items) announced as one event, clearing its picks; a file that fails is listed in failed and stays picked; picks on a removable volume are conflict (naming it in data) unless use_copies finds each a copy to verify or confirm_removable is set, and with use_copies a card's pick is developed from the first copy whose fingerprint matches (used), else from the card only with confirm_removable; an offline file fails with source-unavailable; nothing to develop is validation; job.cancel stops between files and keeps every batch committed; library.undo of a batch sends its photographs back and picks their files again; a retry answers the first job, and after a restart a finished job with the report its changes record; resource-limit when 4 library jobs already wait",
+        "starts a develop-picks job, answering {job_id, status, deduplicated}, whose result is {developed: [{path, used?, asset_id, outcome: created | linked | relinked}], failed: [{path, asset_id?, code, message}], changes}: the files are planned as pick.plan plans them and each event goes into the folder its into entry names by event_id, else the entry with no event_id, else the plan's proposal, so into: [] accepts the plan; an existing folder must exist and a new one's name is checked as folder.create's (validation, conflict), and events given the same new folder share it, made with their span; each file is read once off the owner, bounded, its SHA-256 streamed, its header read and its interpretation read without developing, and must keep its signature while it is read and until it commits; a file whose bytes are a photograph's is linked to it, one whose name, length and fingerprint match a photograph whose original is not there relinks it (asset-source, its folder and history unchanged), a file another photograph names with other bytes fails with conflict, and any other becomes a photograph with its Original, capture row, source folder and moment in its event's folder; the job commits in batches, the first of one file, then up to 100 files or 5 s, never across an event, each one library change (developed-asset, catalog-folder, asset-source and pick items) announced as one event, clearing its picks; a file that fails is listed in failed and stays picked; picks on a removable volume are conflict (naming it in data) unless use_copies finds each a copy to verify or confirm_removable is set, and with use_copies a card's pick is developed from the first copy whose fingerprint matches (used), else from the card only with confirm_removable; an offline file fails with source-unavailable; nothing to develop is validation; job.cancel stops between files and keeps every batch committed; library.undo of a batch sends its photographs back and picks their files again; a retry answers the first job, and after a restart a finished job with the report its changes record; resource-limit when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     owner!(
@@ -1085,7 +1070,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.find",
         crate::catalog_types::api::SourceFind,
         owner::library::missing::source_find,
-        "starts a source-find job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, file_name, result: found {path} | several-identical {paths} | different-bytes {path} | claimed {path, by} | not-found}]} and which changes nothing: search_root (an absolute folder) is walked with its subfolders, following no symbolic link, entering no other volume and skipping hidden folders, packages and other applications' caches, for files of each photograph's original's name (ignoring case on macOS and Windows) and length, and each candidate's SHA-256 is streamed off the owner, cancellable, one file at a time; found is one file with the original's bytes, several-identical more than one (a choice to make), claimed a file with its bytes that another photograph already names (never taken), different-bytes a file of the same name whose bytes differ, left as it is; while the job runs, job.read's result is the report so far with result checking for photographs not yet looked at, and its progress counts files looked at, then photographs checked; the files found and several-identical name are remembered for source.relink; exactly one of targets (photographs, as source.check's) and source_folder (every missing photograph developed from that folder, as source.missing lists it) is validation otherwise; a relative path or a file as search_root is validation and one that cannot be read read-error; the job fails with read-error for a folder or file it cannot read, source-unavailable when the folder's drive is disconnected, and resource-limit past 500,000 files or 100,000 folders; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+        "starts a source-find job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, file_name, result: found {path} | several-identical {paths} | different-bytes {path} | claimed {path, by} | not-found}]} and which changes nothing: search_root (an absolute folder) is walked with its subfolders, following no symbolic link, entering no other volume and skipping hidden folders, packages and other applications' caches, for files of each photograph's original's name (ignoring case on macOS and Windows) and length, and each candidate's SHA-256 is streamed off the owner, cancellable, one file at a time; found is one file with the original's bytes, several-identical more than one (a choice to make), claimed a file with its bytes that another photograph already names (never taken), different-bytes a file of the same name whose bytes differ, left as it is; while the job runs, job.read's result is the report so far with result checking for photographs not yet looked at, and its progress counts files looked at, then photographs checked; the files found and several-identical name are remembered for source.relink; exactly one of targets (photographs, as source.check's) and source_folder (every missing photograph developed from that folder, as source.missing lists it) is validation otherwise; a relative path or a file as search_root is validation and one that cannot be read read-error; the job fails with read-error for a folder or file it cannot read, source-unavailable when the folder's drive is disconnected, and resource-limit past 500,000 files or 100,000 folders; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id"
     ),
     owner!(
         "source.relink",
@@ -1095,9 +1080,42 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     // Removing (TASK-014).
-
+    owner!(
+        "asset.remove",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::remove::asset_remove,
+        "moves the photographs targets names to Removed as one library change of asset-removal items (labelled Removed <file> or Removed N photographs), answering {outcome, change?, items, deduplicated}: each keeps its edits, history, versions, collections and catalog folder, and leaves every browse source but removed and every count; a photograph already removed keeps when it was removed, and none to remove is a no-op; library.undo puts them back; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "asset.restore",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::remove::asset_restore,
+        "puts the removed photographs targets names back as one library change (labelled Put back <file> or Put back N photographs), answering {outcome, change?, items, deduplicated}: each returns to its catalog folder, collections and every view as it was; a photograph not removed is left out, and none to put back is a no-op; library.undo removes them again; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "catalog.empty-removed",
+        crate::catalog_types::api::LibraryRequest,
+        owner::library::remove::catalog_empty_removed,
+        "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, remaining, deduplicated} (remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references and asset row, then the strokes and artifact rows no remaining entry names (the artifacts' files are removed by a collect job it queues); not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
+        retries: Owner,
+    ),
     // Batch preset and export (TASK-015).
-
+    owner!(
+        "batch.apply-preset",
+        crate::catalog_types::api::BatchApplyPreset,
+        owner::library::batch::batch_apply_preset,
+        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        retries: Owner,
+    ),
+    owner!(
+        "batch.export",
+        crate::catalog_types::api::BatchExport,
+        owner::library::batch::batch_export,
+        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written, skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-preset's; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        retries: Owner,
+    ),
     // ── end lane C ──
     // ── catalog lane D: views ──
     owner!(
@@ -1116,7 +1134,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "browse.rows",
         crate::catalog_types::api::BrowseRows,
         owner::views::browse_rows,
-        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
+        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, folder_id?, collections?, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
     ),
     owner!(
         "browse.facets",
@@ -1537,13 +1555,6 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
 
 /// The history page `history.list` and `history.lineage` answer when the request names no `limit`.
 const DEFAULT_HISTORY_PAGE: usize = 50;
-
-host_params! {
-    pub(super) struct CatalogList {
-        limit: Option<usize> = integer(1, MAX_ASSET_PAGE as i64).default(DEFAULT_ASSET_PAGE),
-        after: Option<AssetId> = asset().notes("the last asset of the previous page, its next cursor; default the first page"),
-    }
-}
 
 host_params! {
     pub(super) struct AssetParams {

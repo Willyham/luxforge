@@ -16,8 +16,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 mod build;
+mod catalog;
 mod missing;
 
+pub use catalog::{CatalogStep, FacetColumn};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -192,6 +194,9 @@ pub enum Step {
     Loupe(LoupeStep),
     /// The Select grid scrolled continuously, one offset per display frame, for its timing.
     GridScroll(GridScrollStep),
+    /// One gesture on the catalog in Select: its folders and collections, filter bar, Metadata
+    /// browser and Info panel.
+    Catalog(CatalogStep),
 }
 
 impl Step {
@@ -327,6 +332,7 @@ impl Step {
             Self::Missing(step) => step.validate(),
             Self::Loupe(step) => step.validate(),
             Self::GridScroll(step) => step.validate(),
+            Self::Catalog(step) => step.validate(),
         }
     }
 }
