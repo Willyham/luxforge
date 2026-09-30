@@ -1264,6 +1264,7 @@ impl EventLog {
             revision: origin.revision,
             library_sequence: origin.library_sequence,
             index_revision: origin.index_revision,
+            job_id: origin.job_id.clone(),
         });
     }
 
