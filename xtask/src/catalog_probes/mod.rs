@@ -35,13 +35,6 @@ use luxforge_evidence::{self as script, SelectStep};
 use std::time::Duration;
 
 /// What the probes run with: exactly the measuring command's `DesktopContext`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the catalog measurement's desktop stub (lane A) delegates here once it lands"
-    )
-)]
 pub(crate) struct ProbeContext {
     /// The release editor.
     pub binary: PathBuf,
