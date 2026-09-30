@@ -553,7 +553,10 @@ fn catalog_info_reports_the_counts_behind_the_catalog_sources_and_the_journal() 
     );
     assert_eq!(info["index"]["files"], 2);
     assert!(info["index"]["bytes"].as_u64().unwrap() > 0);
-    assert_eq!(info.get("previews"), None);
+    assert_eq!(
+        (&info["previews"]["bytes"], &info["previews"]["files"]),
+        (&json!(0), &json!(0))
+    );
     owner.stop();
     join.join().unwrap();
 }

@@ -84,8 +84,12 @@ impl ApiResponse {
 /// one, the asset it changed and the revision it left that asset at. A version names its asset but
 /// no revision, since naming an entry moves none; a change to the preset library, a module or the
 /// artifact store names no asset. A library change (a pick or clear, a catalog folder or collection
-/// change, or the undo or redo of one) names the journal sequence it recorded and no asset: one
-/// event however many items it covered.
+/// change, a Locate, or the undo or redo of one) names the journal sequence it recorded, one event
+/// however many items it covered, and names an asset only when it moved exactly that one
+/// photograph's original, with no revision. A batch the index lane committed names the index
+/// revision it left, under the request that started the listing (`index.refresh`,
+/// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
+/// wrote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -98,6 +102,8 @@ pub struct ApiEvent {
     pub revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub library_sequence: Option<LibraryChangeSeq>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_revision: Option<u64>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -110,6 +116,7 @@ pub(crate) struct Origin {
     pub asset_id: Option<AssetId>,
     pub revision: Option<u64>,
     pub library_sequence: Option<LibraryChangeSeq>,
+    pub index_revision: Option<u64>,
 }
 
 impl Origin {
@@ -120,12 +127,19 @@ impl Origin {
             asset_id: None,
             revision: None,
             library_sequence: None,
+            index_revision: None,
         }
     }
 
     /// The same request, naming the library change it recorded.
     pub(crate) fn library(mut self, sequence: LibraryChangeSeq) -> Self {
         self.library_sequence = Some(sequence);
+        self
+    }
+
+    /// The same request, naming the index revision a batch of its listing left.
+    pub(crate) fn index(mut self, revision: u64) -> Self {
+        self.index_revision = Some(revision);
         self
     }
 
