@@ -48,6 +48,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | Masks: model, kinds, commands, and the Masks panel and next kinds (proposal) | [docs/design/masking.md](docs/design/masking.md), [docs/design/masking-workspace.md](docs/design/masking-workspace.md) |
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
+| Browse, pick, develop: events, moments, picks, the catalog, filmstrip, Locate (proposal) | [docs/design/catalog.md](docs/design/catalog.md) |
 | Specs: history, crop and export, recovery, performance | [docs/specs](docs/specs) |
 | Task plans and conventions | [tasks/README.md](tasks/README.md) |
 | Reference research: stack options, Lightroom, darktable, object removal and AI masks | [docs/research](docs/research), [object removal](docs/research/object-removal/README.md) |
