@@ -544,11 +544,11 @@ fn journal_undo_and_redo_restore_every_item_kind_exactly() {
     std::fs::copy(&original, &moved).unwrap();
     let moved = moved.canonicalize().unwrap();
     // The value a relocation to the copy writes, read back, and the original restored.
-    service.relocate(&asset, &moved).unwrap();
+    crate::library::locate::locate_now(&mut service, &asset, &moved).unwrap();
     let moved_source = crate::editor::library_rows::asset_source(&service.connection, &asset)
         .unwrap()
         .unwrap();
-    service.relocate(&asset, &original).unwrap();
+    crate::library::locate::locate_now(&mut service, &asset, &original).unwrap();
     let home = rows_folder(&service, &asset);
 
     let folder = CatalogFolderId::new();

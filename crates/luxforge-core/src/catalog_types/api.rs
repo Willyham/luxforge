@@ -656,7 +656,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "collection.delete",
         Catalog,
         "LibraryAnswer",
-        &[Validation, Conflict, CatalogError],
+        &[Validation, Conflict, ResourceLimit, CatalogError],
         "deletes a collection with its memberships, or an empty group",
     ),
     method::<CollectionMembers>(
@@ -750,7 +750,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "source.locate",
         Catalog,
         "LibraryAnswer",
-        &[Validation, FileAccess, SourceUnavailable, Conflict, Cancelled, CatalogError],
+        &[Validation, FileAccess, SourceUnavailable, Conflict, ResourceLimit, Cancelled, CatalogError],
         "verifies one chosen file against a photograph's fingerprint and relinks it as one library change; a mismatch or a file another photograph names changes nothing",
     )
     .starts(&jobs::SOURCE_LOCATE),
