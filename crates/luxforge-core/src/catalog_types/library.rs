@@ -115,15 +115,15 @@ pub struct LibraryChange {
 ///
 /// | Kind | Key | Value |
 /// | --- | --- | --- |
-/// | `pick` | the file's path | the [`Pick`] |
-/// | `asset-folder` | the asset | `{folder_id}` |
-/// | `asset-removal` | the asset | `{removed_ms}`, `null` while not removed |
-/// | `asset-source` | the asset | `{locator, source_folder, volume_id, file_identity}` |
-/// | `catalog-folder` | the folder | the [`CatalogFolder`] without its counts |
-/// | `collection` | the collection | the [`Collection`] without its count |
-/// | `membership` | `collection-…/asset-…` | `{added_ms}` |
+/// | `pick` | the file's path | the [`Pick`], without its `file_id` |
+/// | `asset-folder` | the asset | [`AssetFolderValue`] `{folder_id}` |
+/// | `asset-removal` | the asset | [`AssetRemovalValue`] `{removed_ms}`, `null` while not removed |
+/// | `asset-source` | the asset | [`AssetSourceValue`] `{locator, source_folder, volume_id, file_identity}` |
+/// | `catalog-folder` | the folder | [`FolderValue`], the [`CatalogFolder`] without its counts |
+/// | `collection` | the collection | [`CollectionValue`], the [`Collection`] without its count |
+/// | `membership` | `collection-…/asset-…` | [`MembershipValue`] `{added_ms}` |
 /// | `indexed-folder` | the folder's path | the [`IndexedFolder`](super::IndexedFolder) |
-/// | `developed-asset` | the asset | `{path}` of the file it was developed from; a Develop's undo sends it back |
+/// | `developed-asset` | the asset | [`DevelopedAssetValue`] `{path}` of the file it was developed from; a Develop's undo sends it back |
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LibraryItem {
@@ -243,6 +243,127 @@ impl LibraryItem {
             }
         })
     }
+}
+
+/// An `asset-folder` row's value: the catalog folder a photograph is in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetFolderValue {
+    pub folder_id: CatalogFolderId,
+}
+
+/// An `asset-removal` row's value: when a photograph was removed; absent while it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetRemovalValue {
+    pub removed_ms: i64,
+}
+
+/// An `asset-source` row's value: where the catalog looks for a photograph's original. The source
+/// root and file name follow from the locator.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssetSourceValue {
+    pub locator: PathBuf,
+    /// The folder on disk the photograph was developed from, or relinked into.
+    pub source_folder: PathBuf,
+    pub volume_id: VolumeId,
+    /// The file's identity as the catalog records it (`assets.file_identity`).
+    pub file_identity: String,
+}
+
+/// A `catalog-folder` row's value: the [`CatalogFolder`] without its counts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderValue {
+    pub id: CatalogFolderId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<CatalogFolderId>,
+    pub created_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<EventSpan>,
+}
+
+impl From<CatalogFolder> for FolderValue {
+    fn from(folder: CatalogFolder) -> Self {
+        Self {
+            id: folder.id,
+            name: folder.name,
+            parent_id: folder.parent_id,
+            created_ms: folder.created_ms,
+            event: folder.event,
+        }
+    }
+}
+
+impl From<FolderValue> for CatalogFolder {
+    fn from(folder: FolderValue) -> Self {
+        Self {
+            id: folder.id,
+            name: folder.name,
+            parent_id: folder.parent_id,
+            created_ms: folder.created_ms,
+            event: folder.event,
+            count: 0,
+            year: None,
+        }
+    }
+}
+
+/// A `collection` row's value: the [`Collection`] without its count.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollectionValue {
+    pub id: CollectionId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<CollectionId>,
+    pub kind: CollectionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<ViewQuery>,
+    pub created_ms: i64,
+}
+
+impl From<Collection> for CollectionValue {
+    fn from(collection: Collection) -> Self {
+        Self {
+            id: collection.id,
+            name: collection.name,
+            parent_id: collection.parent_id,
+            kind: collection.kind,
+            query: collection.query,
+            created_ms: collection.created_ms,
+        }
+    }
+}
+
+impl From<CollectionValue> for Collection {
+    fn from(collection: CollectionValue) -> Self {
+        Self {
+            id: collection.id,
+            name: collection.name,
+            parent_id: collection.parent_id,
+            kind: collection.kind,
+            query: collection.query,
+            created_ms: collection.created_ms,
+            count: None,
+        }
+    }
+}
+
+/// A `membership` row's value: when the photograph joined the collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MembershipValue {
+    pub added_ms: i64,
+}
+
+/// A `developed-asset` row's value: the file a photograph was developed from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevelopedAssetValue {
+    pub path: PathBuf,
 }
 
 /// One item of a library change with its value before and after (`null` for absent), exactly as
@@ -708,12 +829,18 @@ pub struct JobStarted {
     pub deduplicated: bool,
 }
 
-/// Counts `catalog.info` reports.
+/// Counts `catalog.info` reports: the sizes of the Catalog sources (All photographs, Recently
+/// developed, Missing originals, Removed) and of the tables behind the rest.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogCounts {
+    /// Photographs not removed: All photographs.
     pub photographs: u64,
+    /// Photographs developed in the last [`DEFAULT_RECENT_DAYS`](super::DEFAULT_RECENT_DAYS)
+    /// days, not removed: Recently developed.
+    pub recently_developed: u64,
     pub removed: u64,
+    /// Photographs not removed whose original was last seen offline, missing or changed.
     pub unavailable: u64,
     pub folders: u64,
     pub collections: u64,
@@ -740,9 +867,11 @@ pub struct CatalogInfo {
     pub format: i64,
     pub index_format: i64,
     pub counts: CatalogCounts,
-    /// The index database, and the files it lists.
+    /// The index database, and the files it lists; zero before the index is first used.
     pub index: CacheSize,
-    pub previews: CacheSize,
+    /// The preview cache, once the preview lane reports its size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previews: Option<CacheSize>,
 }
 
 #[cfg(test)]

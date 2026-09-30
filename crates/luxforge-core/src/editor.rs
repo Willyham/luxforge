@@ -51,6 +51,8 @@ pub(crate) use catalog_rows::{
     NewAsset, capture_of, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
     insert_indexed_folder, insert_member, insert_pick, top_level_folder, upsert_volume,
 };
+// Lane C: the library journal's item rows.
+pub(crate) use catalog_rows::library_rows;
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
