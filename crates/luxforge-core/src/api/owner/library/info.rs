@@ -1,9 +1,9 @@
 //! `catalog.info` on the owner: the catalog's path, identity and formats, the counts behind the
-//! Catalog sources, and the index's size. It reads counts and file sizes only, and opens no index
-//! that does not exist yet.
+//! Catalog sources, and the index's and the preview cache's sizes. It reads counts and file sizes
+//! only, and opens no index that does not exist yet.
 use super::{Call, Owner};
 use crate::{
-    EditorService, Error, INDEX_FILE, INDEX_FORMAT,
+    EditorService, Error, INDEX_FILE, INDEX_FORMAT, PREVIEWS_DIR,
     api::{methods::value, params::NoParams},
     catalog_types::{CacheSize, CatalogCounts, CatalogInfo, DEFAULT_RECENT_DAYS},
     editor::{CATALOG_FORMAT, now_ms},
@@ -18,6 +18,7 @@ pub(in crate::api) fn catalog_info(
     _: NoParams,
 ) -> Result<Value, Error> {
     let service = &owner.service;
+    let (index, previews) = cache_sizes(service)?;
     value(CatalogInfo {
         path: service
             .connection
@@ -28,8 +29,8 @@ pub(in crate::api) fn catalog_info(
         format: CATALOG_FORMAT,
         index_format: INDEX_FORMAT,
         counts: counts(service)?,
-        index: index_size(service)?,
-        previews: None,
+        index,
+        previews,
     })
 }
 
@@ -66,16 +67,19 @@ fn counts(service: &EditorService) -> Result<CatalogCounts, Error> {
         })?)
 }
 
-/// The index database's bytes on disk, with its write-ahead log, and the files it lists; zero
-/// before it is first used.
-fn index_size(service: &EditorService) -> Result<CacheSize, Error> {
+/// The index database's bytes on disk, with its write-ahead log, and the files it lists; and the
+/// preview cache's bytes and files, as its rows record them (`crate::previews::cache_bytes`). Both
+/// are zero before the index is first used, which this does not open.
+fn cache_sizes(service: &EditorService) -> Result<(CacheSize, CacheSize), Error> {
     let path = service.index_dir().join(INDEX_FILE);
+    let previews = service.index_dir().join(PREVIEWS_DIR);
     if !path.exists() {
-        return Ok(CacheSize {
+        let empty = |path| CacheSize {
             path,
             bytes: 0,
             files: 0,
-        });
+        };
+        return Ok((empty(path), empty(previews)));
     }
     let bytes = ["", "-wal", "-shm"]
         .iter()
@@ -91,9 +95,17 @@ fn index_size(service: &EditorService) -> Result<CacheSize, Error> {
         .connection()
         .prepare_cached("SELECT count(*) FROM files")?
         .query_row([], |row| row.get(0))?;
-    Ok(CacheSize {
-        path,
-        bytes,
-        files: files as u64,
-    })
+    let cached = crate::previews::cache_bytes(index.connection())?;
+    Ok((
+        CacheSize {
+            path,
+            bytes,
+            files: files as u64,
+        },
+        CacheSize {
+            path: previews,
+            bytes: cached.total(),
+            files: cached.files,
+        },
+    ))
 }

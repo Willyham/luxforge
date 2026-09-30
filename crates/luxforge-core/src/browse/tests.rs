@@ -1481,6 +1481,69 @@ fn browse_queries_are_validated_and_bounded() {
     assert!(nowhere.items.is_empty());
 }
 
+/// A smart collection whose stored query names a catalog folder or a collection merged away or
+/// deleted since finds nothing from it: an empty view, not the error the same source named directly
+/// is refused with, so the smart collection still opens.
+#[test]
+fn browse_a_smart_collection_naming_a_deleted_source_is_empty() {
+    let fx = testing::fixture("smart-gone");
+    let gone_folder = testing::folder_id("merged-away");
+    let gone_collection =
+        crate::catalog_types::CollectionId::parse("collection-deleted-since").unwrap();
+    let smart = |id: &str, source: serde_json::Value| {
+        (
+            crate::catalog_types::CollectionId::parse(id).unwrap(),
+            serde_json::json!({"source": source}).to_string(),
+        )
+    };
+    let smarts = [
+        smart(
+            "collection-names-a-gone-folder",
+            serde_json::json!({"kind": "catalog-folder", "folder_id": gone_folder}),
+        ),
+        smart(
+            "collection-names-a-gone-collection",
+            serde_json::json!({"kind": "collection", "collection_id": gone_collection}),
+        ),
+    ];
+    {
+        let connection = Connection::open(&fx.catalog).unwrap();
+        for (id, query) in &smarts {
+            connection
+                .execute(
+                    "INSERT INTO collections (id, name, parent_id, kind, query_json, created_ms)
+                     VALUES (?1, ?1, NULL, 'smart', ?2, 1)",
+                    rusqlite::params![id.as_str(), query],
+                )
+                .unwrap();
+        }
+    }
+    let service = EditorService::open(&fx.catalog).unwrap();
+    let mut events = EventCache::default();
+    for (id, _) in &smarts {
+        let view = run(
+            &service,
+            &mut events,
+            &ViewQuery::of(ViewSource::Collection {
+                collection_id: id.clone(),
+            }),
+        );
+        assert!(view.items.is_empty(), "{id}");
+    }
+    for direct in [
+        ViewQuery::of(ViewSource::CatalogFolder {
+            folder_id: gone_folder,
+            subfolders: true,
+        }),
+        ViewQuery::of(ViewSource::Collection {
+            collection_id: gone_collection,
+        }),
+    ] {
+        let error = try_run(&service, &mut events, &direct, MAX_VIEW_ITEMS).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation, "{direct:?}");
+    }
+}
+
 /// The seam lane C calls: the files a source over files covers, whatever a filter would say.
 #[test]
 fn browse_source_files_lists_what_a_source_covers() {

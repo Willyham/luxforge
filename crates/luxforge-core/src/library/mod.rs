@@ -18,12 +18,30 @@
 //! - `items.rs`: each item's value, read and written.
 //! - `targets.rs`: the files or photographs a method's `targets` name.
 //! - `picks.rs`: picking and clearing, and the pick pages.
+//! - `folders.rs`, `collections.rs` and `tree.rs`: catalog folders and moving photographs;
+//!   collections, smart collections and groups; what the two trees share.
+//! - `availability.rs`, `locate.rs` and `worker.rs`: where originals are, Locate, and the lane's
+//!   worker thread that checks and verifies off the owner.
 //!
-//! Planned: `folders.rs` (catalog folders and moving photographs), `collections.rs`, `develop.rs`
-//! (the develop lane: fingerprint, RAW interpretation without developing, linking, relinking, card
-//! copies, sending back), `availability.rs` (volumes and checks), `missing.rs` (find, locate and
-//! relink), `remove.rs` and `batch.rs`.
+//! Planned: `develop.rs` (the develop lane: fingerprint, RAW interpretation without developing,
+//! linking, relinking, card copies, sending back), `missing.rs` (find and relink), `remove.rs` and
+//! `batch.rs`.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
 pub(crate) mod targets;
+
+// Catalog folders and collections (TASK-012).
+#[cfg(test)]
+mod catalog_folder_tests;
+/// Collections, smart collections and groups, and their members.
+pub(crate) mod collections;
+/// Catalog folders, and moving photographs between them.
+pub(crate) mod folders;
+/// What folders and collections share as named trees: names, clashes, order, a planned change.
+pub(crate) mod tree;
+
+// Availability and Locate (TASK-016).
+pub(crate) mod availability;
+pub(crate) mod locate;
+pub(crate) mod worker;
