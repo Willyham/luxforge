@@ -519,6 +519,16 @@ fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
         session.browse.stale = true;
         Ok(Box::new(session))
     };
+    // Stale with no library change since — the index alone moved — it is read again without a word.
+    let _ = editor.update(Message::Select(SelectMessage::Checked(stale(&editor))));
+    assert!(editor.select.state.loading, "read again");
+    evaluate(&mut editor);
+    assert!(
+        !editor.status.text.contains("changed elsewhere"),
+        "{}",
+        editor.status.text
+    );
+
     let folder = catalog.parent().unwrap().join("Trip");
     let read = |editor: &mut Editor, job: &str| {
         let _ = editor.update(Message::Select(SelectMessage::FolderPicked(Some(

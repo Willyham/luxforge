@@ -287,6 +287,10 @@ impl Editor {
                 state.relinking = false;
                 match result {
                     Ok(answer) => {
+                        if let Some(change) = answer["change"].as_u64() {
+                            self.select.own_change = Some(change);
+                        }
+                        let state = &mut self.select.state.missing;
                         state.resolved(&pairs);
                         // The desktop's own change wakes nothing: the list is read again here.
                         state.read_for = None;
@@ -685,6 +689,10 @@ impl Editor {
             Some("ready") => {
                 state.locating = None;
                 state.resolved(std::slice::from_ref(&locating.asset_id));
+                if let Some(change) = record["result"]["change"].as_u64() {
+                    self.select.own_change = Some(change);
+                }
+                let state = &mut self.select.state.missing;
                 state.read_for = None;
                 let home = self.select.state.home.as_deref();
                 self.status.text = format!(

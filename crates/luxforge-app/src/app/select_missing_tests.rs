@@ -687,7 +687,7 @@ fn resolve_missing_follows_a_search_through_the_activity_board() {
         None
     });
     let state = &editor.select.state.missing;
-    assert!(reads >= 2, "named, then after the board read");
+    assert!(reads >= 1, "the read out when it was named answered");
     assert_eq!(state.searches[&scene.lake].status, SearchStatus::Ended);
     assert!(!state.polling && !state.poll_again);
     finish(scene);
