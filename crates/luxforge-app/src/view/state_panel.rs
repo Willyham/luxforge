@@ -391,7 +391,23 @@ mod tests {
                     tooltip: "GPU time is not reported on Linux yet".into(),
                 },
             ],
-            jobs: vec![job.clone(); 4],
+            jobs: vec![
+                job.clone(),
+                job.clone(),
+                job.clone(),
+                // Catalog work: a work row with its estimate and Cancel.
+                JobRow {
+                    label: "Indexing ~/Pictures".into(),
+                    detail: None,
+                    progress: None,
+                    work: Some(crate::state::long_work::WorkInfo {
+                        job_id: "job-1".into(),
+                        count: Some("48,210 of about 200,000 files".into()),
+                        estimate: Some("about 1 min 40 s".into()),
+                    }),
+                    ..job.clone()
+                },
+            ],
             reserve_detail: false,
             more: Some("+2 more".into()),
             version: 7,
