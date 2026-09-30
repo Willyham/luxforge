@@ -316,6 +316,7 @@ fn compute(
             event: Event {
                 id: group.id.clone(),
                 name: group.name.clone(),
+                label: group.label.clone(),
                 place: group.place.clone(),
                 first_day: group.first_day,
                 last_day: group.last_day,

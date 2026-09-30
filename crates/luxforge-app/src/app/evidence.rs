@@ -4,6 +4,7 @@
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
+mod long_work;
 mod select;
 // ── end lane D ──
 use crate::state::MenuTarget;
@@ -116,6 +117,8 @@ pub(crate) struct Evidence {
     pub(crate) agent: Option<ClientId>,
     /// What a running `agent` step still waits for.
     pub(crate) agent_wait: Option<AgentWait>,
+    /// What a running long-running-work step still waits for (catalog lane D).
+    pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -186,6 +189,7 @@ impl Evidence {
             wait_until: None,
             agent: None,
             agent_wait: None,
+            long_work_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         }
@@ -437,6 +441,9 @@ pub(crate) enum Settle {
     /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
     /// the view has been evaluated again.
     Select,
+    /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
+    /// sent to the background, or a cancelled job ended.
+    LongWork,
     // ── end lane D ──
 }
 
@@ -462,6 +469,7 @@ impl Settle {
             Self::Export => "export",
             Self::Agent => "agent",
             Self::Select => "select",
+            Self::LongWork => "long_work",
         }
     }
 
@@ -3725,6 +3733,7 @@ impl Editor {
             }
             // ── catalog lane D: views and desktop ──
             Outcome::SelectSettled => self.select_settled(by),
+            Outcome::LongWorkShown => self.long_work_shown(by),
             // ── end lane D ──
         }
     }
@@ -4399,6 +4408,7 @@ mod tests {
             wait_until: None,
             agent: None,
             agent_wait: None,
+            long_work_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         });

@@ -1070,7 +1070,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
-    SelectModel {
+    let mut model = SelectModel {
         shown: state.shown,
         title: SelectTitle {
             fullscreen,
@@ -1089,8 +1089,13 @@ pub(crate) fn model(
         selection,
         note: note(state),
         catalog_cells: state.over_catalog(),
-        loupe: super::loupe::derive(state.summary.as_ref(), browse, &state.loupe),
+        loupe: super::loupe::derive(state, browse),
+    };
+    // The loupe says what it shows and whether its next frames are ready.
+    if model.loupe.open && !model.loupe.status.is_empty() {
+        model.status.line = model.loupe.status.clone();
     }
+    model
 }
 
 /// The source being viewed, or asked for.

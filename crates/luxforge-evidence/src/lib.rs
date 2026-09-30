@@ -1662,6 +1662,14 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// desktop has evaluated its view again, which it learns of only through its own event sync.
 /// `{"folder": "/path"}` browses that folder on disk as Browse a folder… does, bypassing only the
 /// native dialog: the index lane reads it and the step waits until it is viewed.
+///
+/// Long-running work: `{"first_look": "/path"}` browses that folder the same way and waits, while
+/// its first look is still being read, until the view shows its progress sheet. `"continue_in_background"`
+/// presses the sheet's Continue in background and waits until the sheet is gone with its job still
+/// in the status bar and in the Performance section as a row that can be cancelled.
+/// `"cancel_work"` presses Cancel on the Performance section's first such row and waits until the
+/// job has ended on the activity board, the view that waited on it has heard, and the section has
+/// read the board again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -1689,6 +1697,9 @@ pub enum SelectStep {
         #[serde(default = "yes", skip_serializing_if = "is_true")]
         picked: bool,
     },
+    FirstLook(String),
+    ContinueInBackground,
+    CancelWork,
 }
 
 /// A workspace the switch shows.
@@ -1726,6 +1737,7 @@ impl SelectStep {
         match self {
             Self::Source(name) => text(name, "select source"),
             Self::Folder(path) => text(path, "select folder"),
+            Self::FirstLook(path) => text(path, "select first_look"),
             Self::Choose { item, .. } => text(item, "select choose item"),
             Self::AgentPick { positions, .. } => {
                 if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {
@@ -1735,7 +1747,11 @@ impl SelectStep {
                 }
                 Ok(())
             }
-            Self::Switch(_) | Self::Arrow { .. } | Self::Click { .. } => Ok(()),
+            Self::Switch(_)
+            | Self::Arrow { .. }
+            | Self::Click { .. }
+            | Self::ContinueInBackground
+            | Self::CancelWork => Ok(()),
         }
     }
 }

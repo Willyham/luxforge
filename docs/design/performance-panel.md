@@ -14,13 +14,13 @@ The board holds current state rather than delivering a stream of events, for thr
 - The existing event log (`events.since`) is a 256-entry record of catalog mutations that clients use to resynchronise. Preview jobs start and finish up to 120 times a second during a drag; routing them through that log would evict the mutations and force full refreshes.
 - A snapshot costs one lock and a copy of at most 64 small entries, with no subscriber bookkeeping and no queue to bound per reader.
 
-The board's `sequence` changes whenever its contents change, so a poller can skip an unchanged snapshot. When push notifications exist, the board can announce a coalesced change; nothing here depends on that.
+The board's `sequence` changes whenever its contents change, so a poller can skip an unchanged snapshot. A reader in the host's process can watch the board instead of polling it (`ActivityBoard::watch`), which the desktop's long-running work does ([below](#long-running-catalog-work)); the section's sampler does not depend on it.
 
 ## Scope
 
 In scope: the activity board and `activity.list`; the resource counters and `resources.read`; publishing from the work that exists today (source preparation, RAW redevelopment, preview jobs, owner-side analysis and capability jobs); the Performance section with its sampler; widgets, evidence and measurement.
 
-Out of scope: export and AI jobs, which will publish through the same board when they exist; cancelling work from the panel; per-cache memory attribution; persisting the section's expanded state across launches; GPU time and GPU allocations on Windows and Linux.
+Out of scope: AI jobs, which will publish through the same board when they exist; cancelling work other than the catalog's from the panel; per-cache memory attribution; persisting the section's expanded state across launches; GPU time and GPU allocations on Windows and Linux.
 
 ## Activity board
 
@@ -31,6 +31,7 @@ Out of scope: export and AI jobs, which will publish through the same board when
 - `activity.finish(outcome)` with `completed`, `cancelled` or `failed` moves the entry to the recent list. Dropping the guard without finishing records `cancelled`, or `failed` when the thread is panicking, so an entry can never outlive its work.
 - Bounds: at most 64 active entries; a `begin` past that is still allowed to run, returns a guard that records nothing and increments `untracked`. At most 16 recent entries, newest first, and only work that ran for at least 250 ms enters the recent list, so a drag's preview churn never evicts a RAW redevelopment. The threshold is a board constant that tests may lower.
 - Cost: `begin`, `phase` and `finish` each take one uncontended mutex and allocate only the optional detail string. Labels are `&'static str`. No timer, thread or queue is added.
+- Watches: `board.watch(follows, wake)` registers a reader, at most 8 per board (`resource-limit` past that). `follows` picks the entries it cares about; once the watch has read the board (`ActivityWatch::read`, the snapshot and the re-arming under the one lock), the next begin, phase, progress or end of such an entry calls `wake` once, on the publishing thread, and the watch is not woken again until it reads again. So a watcher is woken at most once per read, never while nothing it follows changes, and no change can fall between a read and the next wake. `wake` only posts a signal. Dropping the watch removes it.
 
 Publishers today:
 
@@ -121,6 +122,7 @@ Layout at the panel's 240 pt, inside its 8 pt padding:
 | Metric row | 24 pt, three rows: Memory, CPU, GPU | Label, 11 pt secondary in a 48 pt box; the sparkline filling the middle, 16 pt tall; the value, 12 pt primary right-aligned in a 56 pt box with its unit in 10.5 pt tertiary; 8 pt gaps |
 | Sparkline | 60 samples, newest at the right edge | 1 px baseline `#313134`; area at 16% of `#a3a3aa`; 1.25 px line `#a3a3aa`; the newest point a 1.75 pt dot `#ececee`. No accent and no colour: the photograph is the only colour on screen. Until 60 samples exist the line starts part-way across |
 | Job row | 16 pt label line, 14 pt detail line, optional 2 pt bar | A 6 pt marker (filled `#e8e8ea` running, hollow tertiary finished), the label in 12 pt primary, elapsed on the right in 10.5 pt secondary; the detail line in 10.5 pt tertiary aligned with the label, reading the entry's detail and its phase joined by ` · ` (`DSC_0412.NEF`, `exact phase`), and omitted when it has neither; a determinate progress bar under it only when the entry has progress |
+| Work row | Label line, then a bar and count line | Running catalog work, drawn as the [catalog components board](catalog/components.png) draws it (`luxforge_ui::work_row`): the accent dot, the label with the place or file the work acts on, the estimate once one is truthful and **Cancel** on the right; under them, indented, a bar filling the width, filled only with the fraction the work reports, and the work's own count, or `working` |
 | Bottom | 8 pt | Panel padding |
 
 Values and scales, all derived by pure functions in the view model:
@@ -133,6 +135,14 @@ Values and scales, all derived by pure functions in the view model:
 
 At one sample a second, a job shorter than about a second may never be seen running; it is still in `activity.list` and appears here as finished. The 500 ms display threshold is a view rule; the API reports every active entry.
 
+### Long-running catalog work
+
+The catalog's jobs — indexing (`index.refresh`), reading and rendering previews, the 100% region, developing picks, checking, finding and verifying originals, batch preset and export, each an activity board kind named in `catalog_types::jobs` — are rows that can be stopped ([catalog design](catalog.md#long-running-work)). Each running one is a work row: its label names what it works on (`Indexing ~/Pictures`, `Indexing the NIKON Z 8 card`, `Rendering previews · DSC_0412.NEF`; a path under the home folder from `~`, one longer than 28 characters by its last component), its count is the work's own progress message, its bar its reported fraction and nothing else, and **Cancel** sends `job.cancel` with the entry's `job_id`. A finished catalog row keeps that label, and its detail says how it ended (`Cancelled 1 s ago`). The desktop's own work — preparations, RAW development, renders, histograms — keeps the plain job row and no Cancel.
+
+- **Estimate.** Shown only once the rate is steady, from the fraction the work reports at each read of the board: at least 4 updates over at least 2 s within the last 10 s, with the rate over the newest 4 updates within 25% of the rate over the whole window. It stays while that rate is within 50% of the window's and is withdrawn past it, when progress goes back (a new phase measures from its own start), when the work stops stating a fraction, when it stalls — nothing has moved for three times its usual interval between updates and at least 2 s — or when the time left at that rate has run out. It reads `about 4 s`, `about 1 min 40 s` (tens of seconds under ten minutes), `about 14 min` or `about 1 h 20 min`, never `about 0 s`. The rules are `state/long_work.rs`'s, tested with made-up boards.
+- **Truthful counts.** The index lane reports a count while its walk is still finding a folder's files (`5,120 files found`, or `48,210 of about 200,000 files` from an earlier listing) and a fraction only once the walk has listed everything and so knows how many headers there are to read, so a first look never reads nearly done while most of the folder is still unlisted.
+- **Waking.** These rows come from the section's samples like every other row. The status bar's job, the in-view progress sheet and the finished sentence follow the board between samples through the desktop's watch on it, which follows catalog kinds only: a wake reads the board at once unless it was read in the last 250 ms, when a timer that exists only while a read is due reads it 250 ms later; while a catalog job runs the board is also read once a second, since the display threshold and a stall can only be seen as time passes. With no catalog job running nothing is read and no timer exists, whether the section is open or not.
+
 ## Performance rules checklist
 
 - **Original reads and decodes:** none added.
@@ -140,7 +150,7 @@ At one sample a second, a job shorter than about a second may never be seen runn
 - **Point queries:** none added.
 - **Owner thread:** `resources.read` (system calls and IORegistry reads, measured) and `activity.list` (one lock and a copy). No frame work.
 - **Desktop messages:** a tick every second while the section is expanded, one owner task per tick, and a derivation of the workspace; no `asset.state`, `history.list`, preview job or upload.
-- **Timers:** one, gated on the section being expanded and the state panel shown; its interval is the sparkline's resolution. Its cost is measured as idle CPU with the section expanded and collapsed.
+- **Timers:** one, gated on the section being expanded and the state panel shown; its interval is the sparkline's resolution. Its cost is measured as idle CPU with the section expanded and collapsed. Long-running catalog work adds no polling: its watch wakes it, and its two timers exist only while a read is due or a catalog job runs.
 - **Timing:** `editor-latency` Exposure drag before and after, since every preview job now begins and finishes one activity.
 
 ## Acceptance
@@ -159,7 +169,9 @@ On the owner's M4 Mac, 2026-09-23, release builds:
 - `verify --tier rendered` passes with every smoke scenario. `smoke --scenario performance` opens the generated 60 MP JPEG and captures eight frames: opened with the section open and sampling, after 3.6 s, a 16:9 straighten at 3°, Presence Clarity, Texture and Dehaze at 100 over it (an exact render of over a second, listed running as "Rendering preview · exact phase" and then as finished; Clarity alone now renders in about 0.35 s, under the section's 0.5 s threshold), 2.5 s later, collapsed, 2.5 s later with the reads and samples unchanged, and opened again on the first read of a fresh window. The runner re-derives every displayed figure, series length and job row from the recorded `resources.read` and `activity.list` answers without the editor's code, requires footprint memory with GPU time and unified GPU allocations, and checks each expanded frame's resident memory and footprint against its own `ps` and `footprint` readings of the same process taken just before and after the sample: they agree to the byte while the editor idles. The finished row must be the heavy commit's own render: its entry began after every entry the frame before the commit recorded, so a long job from before it, such as the open's "Preparing original", cannot stand in. With `--source` a RAW, the heavy commit is the same three fields over the straighten.
 - Timing, idle CPU and each method's cost are in [performance](../specs/performance.md#performance-section-activity-board-and-resource-counters): no drag regression; the expanded section costs 0.3 to 0.6% of one core and the collapsed one nothing; each method answers in a few microseconds.
 
-Not verified: native Linux and Windows runs (their counters compile, and the unavailable rows are unit-tested); the `+N more` caption and the tooltips in a rendered frame (unit-tested); the heading's hover, which no scripted step moves the pointer over.
+Catalog work rows: the board's watch is unit-tested in the core (woken once per read by followed entries only, never after it is dropped, bounded), the rows, estimates and Cancel in `state/long_work` and `app/long_work` tests, and the `select` smoke scenario captures a first look's work row with Cancel after Continue in background and the job cancelled from it, its row then reading `Cancelled 1 s ago`, each against the recorded board.
+
+Not verified: native Linux and Windows runs (their counters compile, and the unavailable rows are unit-tested); the `+N more` caption and the tooltips in a rendered frame (unit-tested); the heading's hover, which no scripted step moves the pointer over; a work row's estimate in a rendered frame (a first look reports no fraction until its walk has ended; unit-tested).
 
 ## Decisions
 

@@ -695,4 +695,19 @@ impl EditorService {
             slot.as_mut().expect("the index was opened above")
         }))
     }
+
+    /// The catalog's index database when it is open, never opening it: the catalog owner's lane A
+    /// reads the index only once a thread of the index lane has opened it ([`Self::adopt_index`]).
+    pub(crate) fn index_open(&self) -> Option<std::cell::RefMut<'_, crate::index::IndexDb>> {
+        std::cell::RefMut::filter_map(self.index.borrow_mut(), Option::as_mut).ok()
+    }
+
+    /// Take an index opened elsewhere, off the owner, as this service's own, unless one is open
+    /// already.
+    pub(crate) fn adopt_index(&self, index: crate::index::IndexDb) {
+        let mut slot = self.index.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(index);
+        }
+    }
 }

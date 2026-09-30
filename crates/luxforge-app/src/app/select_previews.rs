@@ -595,6 +595,8 @@ impl SelectPreviews {
             Arc::new(move || {
                 woken.store(true, Ordering::Release);
                 signal().post();
+                // The loupe waits on the same wake, the one a client has.
+                crate::app::loupe::owner_woke();
             }),
         );
     }

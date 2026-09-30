@@ -273,6 +273,10 @@ pub struct EventGroup {
     /// The design's naming order: the nearest place, a user-named folder holding most of it, or
     /// the date and cameras.
     pub name: String,
+    /// The name without its dates: the place, the folder or the cameras ("Konstanz", "Lake",
+    /// "NIKON Z 8, LEICA Q3 +1"); the whole name for an Undated event ("Undated · From Anna"); empty
+    /// when the name is its dates alone.
+    pub label: String,
     pub place: Option<String>,
     /// The first and last frames' instants; none for an undated event.
     pub start_ms: Option<i64>,
@@ -307,6 +311,8 @@ pub struct EventSet {
 pub struct Event {
     pub id: EventId,
     pub name: String,
+    /// [`EventGroup::label`]: the name without its dates, so a client never parses the name.
+    pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
     /// Camera-local first and last days; absent for an Undated event.
