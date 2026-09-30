@@ -59,7 +59,13 @@ pub(super) fn handle(_: &mut Owner, message: LibraryMessage) {
 /// transaction ([`EditorService::library_write`](crate::EditorService::library_write)), and a
 /// change it recorded now is one event naming its sequence, however many items it covered. A retry
 /// the journal answered announces nothing, as its first attempt did.
-fn change(
+///
+/// Every lane's library change goes through here, lane A's indexed folders included: its
+/// `index.add-folder` passes `|tx| { upsert_volume(tx, &volume)?; journal::apply(tx, request,
+/// vec![(LibraryItem::IndexedFolder { path }, Desired::Value(Some(folder)))], label) }`, and
+/// `index.remove-folder` the same with `Desired::Value(None)`; undo and redo rewrite the
+/// `indexed_folders` row from the journal like any other item.
+pub(super) fn change(
     owner: &mut Owner,
     origin: &crate::api::Origin,
     change: impl FnOnce(&Transaction<'_>) -> Result<Outcome, Error>,
@@ -74,7 +80,7 @@ fn change(
 /// The answer a request's first attempt recorded, when it recorded a change: a retry is answered
 /// before its targets are resolved again, so it neither reads the disk nor fails on a file that has
 /// moved since.
-fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
+pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
     Ok(
         library_journal::find(&owner.service.connection, request)?.map(|change| {
             Outcome::Recorded {
