@@ -402,6 +402,12 @@ fn a_moved_original_is_located_and_exports_the_same_edits() {
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["method"], "source.locate");
     assert_eq!(events[0]["library_sequence"], change);
+    assert_eq!(
+        events[0]["asset_id"],
+        json!(asset),
+        "a change to one photograph's original names it, so a client showing it reads it again"
+    );
+    assert_eq!(events[0].get("revision"), None, "its history did not move");
 
     // The original edits export exactly as before the move.
     assert_eq!(harness.export(&asset, "after.jpg"), exported);

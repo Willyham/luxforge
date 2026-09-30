@@ -876,9 +876,8 @@ pub struct CatalogInfo {
     pub counts: CatalogCounts,
     /// The index database, and the files it lists; zero before the index is first used.
     pub index: CacheSize,
-    /// The preview cache, once the preview lane reports its size.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previews: Option<CacheSize>,
+    /// The preview cache: the bytes and files its rows record.
+    pub previews: CacheSize,
 }
 
 #[cfg(test)]

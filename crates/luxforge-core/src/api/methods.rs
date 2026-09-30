@@ -875,7 +875,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "catalog.info",
         params::NoParams,
         owner::library::catalog_info,
-        "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days) and the index database's size and the files it lists"
+        "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}, previews: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days), the index database's size and the files it lists, and the preview cache's bytes and files as its rows record them"
     ),
     // Catalog folders and collections (TASK-012).
     owner!(
