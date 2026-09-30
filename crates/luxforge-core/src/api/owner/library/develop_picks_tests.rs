@@ -1261,3 +1261,94 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
     );
     assert_eq!(harness.photographs(), 3);
 }
+
+/// `into` sends an event to the folder its entry names, and every other event to the folder the
+/// entry with no event names, made with that event's span; an unknown event, two default entries,
+/// an unknown folder and a new folder whose name is taken are each refused, developing nothing.
+#[test]
+fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
+    let harness = Harness::new("into");
+    let trip = harness.dir.join("trip");
+    let k1 = photo(&trip.join("k1.jpg"), &Shot::at("2026:09:12 10:00:00"));
+    let z1 = photo(
+        &trip.join("z1.jpg"),
+        &Shot::at("2026:09:16 10:00:00").in_place(47.3769, 8.5417),
+    );
+    harness.index_paths(&[&k1, &z1]);
+    let targets = json!({"kind": "paths", "paths": [&k1, &z1]});
+    let plan = harness.ok("pick.plan", json!({"targets": targets}));
+    let (konstanz, zurich) = (
+        plan["events"][0]["event_id"].clone(),
+        plan["events"][1]["event_id"].clone(),
+    );
+    let portfolio = harness.ok(
+        "folder.create",
+        json!({"name": "Portfolio", "mutation": envelope("portfolio")}),
+    )["folder"]["id"]
+        .clone();
+
+    for (into, code) in [
+        (
+            json!([{"event_id": "event-00000000000000000000000000000000", "folder": {"kind": "new", "name": "X"}}]),
+            "conflict",
+        ),
+        (
+            json!([{"folder": {"kind": "new", "name": "X"}}, {"folder": {"kind": "new", "name": "Y"}}]),
+            "validation",
+        ),
+        (
+            json!([{"folder": {"kind": "existing", "folder_id": CatalogFolderId::new()}}]),
+            "validation",
+        ),
+        (
+            json!([{"folder": {"kind": "new", "name": "portfolio"}}]),
+            "conflict",
+        ),
+    ] {
+        let refused = harness
+            .develop("refused", json!({"targets": targets, "into": into}))
+            .error
+            .unwrap_or_else(|| panic!("{into} was accepted"));
+        assert_eq!(refused.code, code, "{into}: {}", refused.message);
+    }
+    assert_eq!(harness.photographs(), 0);
+
+    let job = harness.developed(
+        "develop-into",
+        json!({"targets": targets, "into": [
+            {"event_id": konstanz, "folder": {"kind": "existing", "folder_id": portfolio}},
+            {"folder": {"kind": "new", "name": "Rest"}},
+        ]}),
+    );
+    let report = &job["result"];
+    let folder_of = |asset: &Value| {
+        harness.query(
+            "SELECT f.name FROM assets a JOIN catalog_folders f ON f.id = a.catalog_folder_id
+             WHERE a.id = ?1",
+            vec![asset.as_str().unwrap().to_owned()],
+            |row| row.get::<_, String>(0),
+        )
+    };
+    assert_eq!(folder_of(&asset_of(report, "k1.jpg")), ["Portfolio"]);
+    assert_eq!(folder_of(&asset_of(report, "z1.jpg")), ["Rest"]);
+    let folders = harness.ok("folder.list", json!({}))["folders"].clone();
+    let rest = folders
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|folder| folder["name"] == "Rest")
+        .unwrap();
+    assert_eq!(rest["event"]["event_id"], zurich);
+    assert_eq!(rest["event"]["start_ms"], instant("2026:09:16 10:00:00"));
+    let portfolio = folders
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|folder| folder["name"] == "Portfolio")
+        .unwrap();
+    assert_eq!(
+        portfolio.get("event"),
+        None,
+        "an existing folder keeps its own"
+    );
+}

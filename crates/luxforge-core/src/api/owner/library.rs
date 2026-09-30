@@ -78,13 +78,6 @@ pub(super) type Work = Box<dyn FnOnce(&JobContext<'_>) -> Commit + Send>;
 
 /// What a job's work is given on the worker: its control (its cancel flag and the activity it
 /// publishes to), where a test may hold it, and a way to commit part of its result as it goes.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "pick.develop commits its batches through it as it lands"
-    )
-)]
 pub(super) struct JobContext<'a> {
     pub control: &'a JobControl,
     job_id: &'a JobId,
@@ -105,13 +98,6 @@ impl JobContext<'_> {
     /// the rest. The worker waits for the owner, which runs the commit between two messages and
     /// records what it announced. A job cancelled by then commits nothing and answers `cancelled`,
     /// as does a job whose owner has stopped.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "pick.develop commits its batches through it as it lands"
-        )
-    )]
     pub(super) fn commit(&self, commit: Commit) -> Result<Value, Error> {
         self.control.checkpoint()?;
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
@@ -181,13 +167,6 @@ pub(super) enum LibraryMessage {
     Done { job_id: JobId, commit: Commit },
     /// The running job commits part of its result now and waits for the answer
     /// ([`JobContext::commit`]).
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "pick.develop commits its batches through it as it lands"
-        )
-    )]
     Partial {
         job_id: JobId,
         commit: Commit,
