@@ -678,7 +678,9 @@ impl Editor {
                 let proxy_ready = self.capture_proxy_ready();
                 let photo_ready = self.capture_photo_ready();
                 let clipping_ready = self.capture_clipping_ready();
-                let mask_ready = !self.mask_frame_pending() && !self.mask_coverage_pending();
+                let mask_ready = !self.mask_frame_pending()
+                    && !self.mask_coverage_pending()
+                    && self.presentation.reused.is_none();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -1029,6 +1031,7 @@ impl Editor {
         self.presentation.preview_generation != asked
             || self.mask_frame_pending()
             || self.mask_coverage_pending()
+            || self.presentation.reused.is_some()
     }
 
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
@@ -2223,6 +2226,7 @@ impl Editor {
     fn paced_stroke_settled(&self) -> bool {
         !self.mask_frame_pending()
             && !self.mask_coverage_pending()
+            && self.presentation.reused.is_none()
             && self.presentation.presented_generation == self.presentation.preview_generation
     }
 
