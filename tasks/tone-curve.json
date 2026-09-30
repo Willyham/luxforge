@@ -87,7 +87,7 @@
     {
       "id": "TASK-002",
       "description": "Change the shared curve editor and its desktop mapping: click classification, drag slop, the snapping add, end-point and limit refusals with status text, selection after add and remove, the hint, the Points disclosure and the headerless label rule.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner asked on 2026-09-30 that a double-click on a point removes it and that the point list starts closed; the rest of this task is what makes that reliable. Every curve control receives it, the developer controls proof's included, so the tests run on the proof's curve; no core or descriptor change.",
