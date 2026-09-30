@@ -291,6 +291,7 @@ fn a_sample_answer_behind_a_request_in_flight_is_refused_with_its_reason() {
     let sequence = editor.sync.sequence;
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
+        target: editor.field_target(),
         action,
         point: (100, 42),
         result: Ok(Value::Object(answer)),

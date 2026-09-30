@@ -16,13 +16,23 @@ mod native_status;
 mod opcodes;
 #[path = "src/profiles.rs"]
 mod profiles;
+// The replaceable-decoder table: the catalog is validated against it and it is written into the
+// native adapter's header.
+#[path = "src/unpacker.rs"]
+mod unpacker;
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
+/// Add every `extension` source under `root` except the `excluded` paths, given relative to
+/// `root`, each of which must exist.
+fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str, excluded: &[&str]) {
+    let excluded: Vec<PathBuf> = excluded.iter().map(|path| root.join(path)).collect();
+    for path in &excluded {
+        assert!(path.is_file(), "excluded native source missing: {path:?}");
+    }
     let mut dirs = vec![root.to_path_buf()];
     let mut sources = Vec::<PathBuf>::new();
     while let Some(dir) = dirs.pop() {
@@ -31,6 +41,7 @@ fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
             if path.is_dir() {
                 dirs.push(path);
             } else if path.extension().is_some_and(|ext| ext == extension)
+                && !excluded.contains(&path)
                 && path
                     .file_name()
                     .is_none_or(|name| name != "postprocessing_ph.cpp" && name != "write_ph.cpp")
@@ -192,13 +203,15 @@ fn mode(mode: &profiles::Mode) -> String {
         },
     );
     format!(
-        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression} }}",
+        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?}, unpacker: Unpacker::{:?} }}",
         text(&mode.id),
         mode.bits,
         mode.raw_count,
         text(&mode.decoder),
         mode.dng_version,
         mode.validation,
+        mode.frame_size,
+        mode.unpacker,
     )
 }
 
@@ -314,21 +327,29 @@ fn main() {
             camera.make, camera.model, calibrated, matrix
         ));
     }
-    native.push_str("};\n");
-    native.push_str(&format!(
-        "\n#define LF_MAX_SOURCE_BYTES {}ull\n#define LF_MAX_PIXELS {}ull\n#define LF_MAX_SIDE {}u\n#define LF_MAX_RGB_BYTES {}ull\n",
-        limits::MAX_SOURCE_BYTES, limits::MAX_PIXELS, limits::MAX_SIDE, limits::MAX_RGB_BYTES
-    ));
-    native.push_str("\nenum LfStatus {\n");
+    native.push_str("};\n\n#include \"native_limits.h\"\n");
+    // The limits and status codes both native adapters share; the camera table above is the
+    // LibRaw adapter's alone.
+    let mut shared = format!(
+        "// Generated from src/limits.rs and src/native_status.rs; do not edit.\n#pragma once\n\n#define LF_MAX_SOURCE_BYTES {}ull\n#define LF_MAX_PIXELS {}ull\n#define LF_MAX_SIDE {}u\n#define LF_MAX_RGB_BYTES {}ull\n",
+        limits::MAX_SOURCE_BYTES,
+        limits::MAX_PIXELS,
+        limits::MAX_SIDE,
+        limits::MAX_RGB_BYTES
+    );
+    shared.push_str("\nenum LfStatus {\n");
     for status in native_status::NativeStatus::ALL {
-        native.push_str(&format!(
+        shared.push_str(&format!(
             "  LF_STATUS_{} = {},\n",
             screaming_snake(&format!("{status:?}")),
             status as i32
         ));
     }
-    native.push_str("};\n");
+    shared.push_str("};\n");
+    fs::write(out.join("native_limits.h"), shared).expect("write native limits");
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
+    fs::write(out.join("rawspeed_decoders.h"), unpacker::native_header())
+        .expect("write replaceable decoder table");
     fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
         .expect("write static camera catalog");
     let rt = out.join("librtprocess-9a858270");
@@ -355,19 +376,106 @@ fn main() {
         .file(manifest.join("native/adapter.cpp"));
     // No USE_ZLIB/JPEG/RAWSPEED/DNGSDK/LCMS or OpenMP features.
     // The qualified NEF/RAF/DNG decoding paths do not require them.
-    add_cpp_tree(&mut build, &libraw.join("src"), "cpp");
+    add_cpp_tree(&mut build, &libraw.join("src"), "cpp", &[]);
     for source in ["rcd.cc", "markesteijn.cc", "border.cc"] {
         build.file(rt.join("src/demosaic").join(source));
     }
     build.compile("luxforge_raw_native");
+    rawspeed(&manifest, &out);
     println!("cargo:rerun-if-changed=data/cameras.json");
     println!("cargo:rerun-if-changed=src/profiles.rs");
     println!("cargo:rerun-if-changed=src/mat3.rs");
     println!("cargo:rerun-if-changed=src/opcodes.rs");
     println!("cargo:rerun-if-changed=src/limits.rs");
     println!("cargo:rerun-if-changed=src/native_status.rs");
+    println!("cargo:rerun-if-changed=src/unpacker.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
     println!("cargo:rerun-if-changed=patches/librtprocess-local.patch");
+    println!("cargo:rerun-if-changed=native/rawspeed_adapter.cpp");
+    println!("cargo:rerun-if-changed=native/rawspeed");
+    println!("cargo:rerun-if-changed={RAWSPEED}");
+    println!("cargo:rerun-if-changed={PUGIXML}");
+}
+
+/// The pinned RawSpeed and pugixml trees, as `vendor/` directory names.
+const RAWSPEED: &str = "vendor/rawspeed-c835b05a";
+const PUGIXML: &str = "vendor/pugixml-1.16";
+
+/// The preprocessor settings every translation unit that includes a RawSpeed or pugixml header
+/// shares, so the vendored library and the adapter agree on every class layout and inline body.
+/// RawSpeed's own configuration is the hand-written `native/rawspeed/rawspeedconfig.h`.
+fn rawspeed_settings(build: &mut cc::Build, manifest: &Path, vendored_include: bool) {
+    let rawspeed = manifest.join(RAWSPEED);
+    let includes = [
+        manifest.join("native/rawspeed"),
+        rawspeed.join("src/librawspeed"),
+        rawspeed.join("src/external"),
+        manifest.join(PUGIXML).join("src"),
+    ];
+    build
+        .cpp(true)
+        .std("c++20")
+        // Upstream's Release build type: no assertions.
+        .define("NDEBUG", None)
+        // RawSpeed reads cameras.xml with pugixml's DOM only.
+        .define("PUGIXML_NO_XPATH", None);
+    let msvc = build.get_compiler().is_like_msvc();
+    if !msvc {
+        // Upstream's CMake visibility presets.
+        build
+            .flag("-fvisibility=hidden")
+            .flag("-fvisibility-inlines-hidden");
+    }
+    for include in includes {
+        if vendored_include && !msvc {
+            // The adapter keeps its own warnings; the vendored headers it includes do not add any.
+            build
+                .flag("-isystem")
+                .flag(include.to_str().expect("UTF-8 include path"));
+        } else {
+            build.include(include);
+        }
+    }
+}
+
+/// Build RawSpeed with its pugixml, and the crate's RawSpeed adapter, as two static libraries.
+/// RawSpeed is C++20, generic-CPU (no `-march`), serial (no OpenMP) and has no zlib or libjpeg;
+/// no source file is patched. The adapter links first so its references resolve into RawSpeed.
+fn rawspeed(manifest: &Path, out: &Path) {
+    let xml = fs::read(manifest.join(RAWSPEED).join("data/cameras.xml")).expect("read cameras.xml");
+    assert!(!xml.is_empty(), "bundled cameras.xml is empty");
+    let mut embedded = String::with_capacity(xml.len() * 4);
+    for line in xml.chunks(32) {
+        for byte in line {
+            embedded.push_str(&byte.to_string());
+            embedded.push(',');
+        }
+        embedded.push('\n');
+    }
+    fs::write(out.join("rawspeed_cameras_xml.inc"), embedded).expect("write embedded cameras.xml");
+
+    let mut adapter = cc::Build::new();
+    rawspeed_settings(&mut adapter, manifest, true);
+    adapter
+        .warnings(true)
+        .include(out)
+        .file(manifest.join("native/rawspeed_adapter.cpp"));
+    adapter.compile("luxforge_rawspeed_adapter");
+
+    let mut library = cc::Build::new();
+    rawspeed_settings(&mut library, manifest, false);
+    // Upstream builds with its own warning set; its warnings are not Luxforge's to fix here.
+    library.warnings(false);
+    // `common/Common.cpp` defines only `rawspeed::writeLog`, which prints to standard output; the
+    // adapter defines its own, which prints to standard error.
+    add_cpp_tree(
+        &mut library,
+        &manifest.join(RAWSPEED).join("src/librawspeed"),
+        "cpp",
+        &["common/Common.cpp"],
+    );
+    library.file(manifest.join(PUGIXML).join("src/pugixml.cpp"));
+    library.compile("luxforge_rawspeed");
 }

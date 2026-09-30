@@ -7,7 +7,8 @@
 #[repr(i32)]
 pub(crate) enum NativeStatus {
     Ok = 0,
-    /// Missing or mismatched arguments or buffers.
+    /// Missing or mismatched arguments or buffers, an unknown unpacker, or a handle unpacked
+    /// twice or copied before unpack.
     InvalidInput = 1,
     /// The caller's cancel callback asked to stop.
     Cancelled = 2,
@@ -22,11 +23,13 @@ pub(crate) enum NativeStatus {
     Allocation = 6,
     /// A camera or frame count outside the catalog.
     UnsupportedMode = 7,
+    /// LibRaw chose its Nikon High Efficiency decoder, which reads nothing.
+    NikonHighEfficiency = 8,
 }
 
 impl NativeStatus {
     /// Every status, in code order.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Ok,
         Self::InvalidInput,
         Self::Cancelled,
@@ -35,5 +38,6 @@ impl NativeStatus {
         Self::UnsupportedCfa,
         Self::Allocation,
         Self::UnsupportedMode,
+        Self::NikonHighEfficiency,
     ];
 }

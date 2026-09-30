@@ -403,7 +403,7 @@ pub(crate) enum Settle {
     MaskOverlay,
     /// An armed mask tool's content map is available before scripted positions are sent.
     MaskMap,
-    /// The pointer readout must come back from `render.sample`.
+    /// The pointer readout must answer: from the retained exact frame, or from `render.sample`.
     Readout,
     /// A canvas pick has reached an outcome that commits nothing: filled coordinates, or a refusal
     /// with its reason in the status bar. A pick that does commit re-arms [`Settle::Preview`]
@@ -700,7 +700,6 @@ impl Editor {
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
                     || (!mask_ready && !evidence.allow_unready_capture)
-                    || self.presentation.overlay_awaited.is_some()
                 {
                     return Task::none();
                 }
@@ -999,7 +998,7 @@ impl Editor {
             .is_some_and(crate::mask_draft::MaskDraft::owns_creation)
             && self.mask_mode_active()
             && self.session.workspace.mask_overlay != luxforge_core::MaskOverlayMode::Off;
-        if created_coverage || self.settled_mask_overlay_request().is_some() {
+        if created_coverage || self.settled_mask_overlay_wanted() {
             Settle::MaskOverlay
         } else {
             Settle::Preview
@@ -2997,7 +2996,7 @@ impl Editor {
                 Settle::Session
             });
             let session = workspace_task(self.owner.clone(), self.client, Value::Object(diff));
-            let frame = self.refresh_mask_overlay();
+            let frame = self.refresh_mask_coverage();
             return Task::batch([session, frame]);
         }
         self.await_step(if overlay {
@@ -3040,8 +3039,8 @@ impl Editor {
         }
     }
 
-    /// One pointer position over the photograph, published exactly as the canvas publishes a move,
-    /// and captured once `render.sample` has answered with the three output codes under it.
+    /// One canvas position routed through the laid-out widget tree with an armed brush, as a sweep
+    /// of one: captured with the brush cursor it drew.
     fn canvas_hover_step(&mut self, x: f32, y: f32) -> Task<Message> {
         self.canvas_hover_sweep_step(vec![[x, y]], 1)
     }
@@ -3094,6 +3093,8 @@ impl Editor {
         Task::none()
     }
 
+    /// One pointer position over the photograph, published exactly as the canvas publishes a move,
+    /// and captured once the readout has answered with the three output codes under it.
     fn hover_step(&mut self, x: u32, y: u32) -> Task<Message> {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");

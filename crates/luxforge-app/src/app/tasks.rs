@@ -1350,8 +1350,8 @@ pub(crate) fn locate_task(
     asset_id: AssetId,
     entry: EntryId,
     mode: String,
-    x: u32,
-    y: u32,
+    target: super::masks::FieldTarget,
+    (x, y): (u32, u32),
 ) -> Task<Message> {
     let picked = entry.clone();
     let picked_mode = mode.clone();
@@ -1369,6 +1369,7 @@ pub(crate) fn locate_task(
             Message::Pointer(PointerMessage::Located {
                 entry: picked.clone(),
                 mode: picked_mode.clone(),
+                target: target.clone(),
                 view: (x, y),
                 result,
             })
@@ -1391,6 +1392,7 @@ pub(crate) fn query_task(
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
+    target: super::masks::FieldTarget,
     method: String,
     action: String,
     coordinates: (String, String),
@@ -1412,6 +1414,7 @@ pub(crate) fn query_task(
         move |result| {
             Message::Pointer(PointerMessage::SampleQueried {
                 entry: answered.clone(),
+                target: target.clone(),
                 action: action.clone(),
                 point,
                 result,
@@ -1430,18 +1433,18 @@ pub(crate) fn sample_task(
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
-    draft_id: Option<String>,
+    draft: Option<DraftId>,
     x: u32,
     y: u32,
 ) -> Task<Message> {
-    let sampled = entry.clone();
+    let sampled = (entry.clone(), draft.clone());
     owner_task(
         move || {
             let mut params = json!({"asset_id":asset_id,"x":x,"y":y});
-            if let Some(draft_id) = draft_id
+            if let Some(draft) = &draft
                 && let Some(object) = params.as_object_mut()
             {
-                object.insert("draft_id".into(), Value::from(draft_id));
+                object.insert("draft_id".into(), json!(draft));
             }
             let (sampled, _) = call(&owner, client, "render.sample", params)?;
             let rgba: Option<[u8; 4]> = parse(sampled["rgba"].clone())?;
@@ -1451,7 +1454,8 @@ pub(crate) fn sample_task(
         },
         move |result| {
             Message::Pointer(PointerMessage::Sampled {
-                entry: sampled.clone(),
+                entry: sampled.0.clone(),
+                draft: sampled.1.clone(),
                 result,
             })
         },
