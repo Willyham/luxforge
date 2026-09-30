@@ -1221,11 +1221,13 @@ fn owner_loop(
         catalog,
         ..
     } = owner;
-    // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it, and the catalog lanes, whose
-    // workers post into it too, stop after it. Every live job is asked to stop, the source
-    // worker's included, and the lanes are joined; a running export stops at its next row or block
-    // and removes its temporary file.
+    // Every live job is asked to stop first, the source worker's included, so a running export
+    // stops at its next row or block and removes its temporary file however long the lanes below
+    // take to stop, and before a caller can see the owner gone. The lanes post into the receiver,
+    // so it goes next: a lane finishing as it stops is never left waiting on a full channel while
+    // the owner waits for it, and the catalog lanes, whose workers post into it too, stop after
+    // it. Then the job lanes are joined.
+    jobs.cancel_live();
     drop(receiver);
     catalog.shutdown();
     jobs.shutdown();

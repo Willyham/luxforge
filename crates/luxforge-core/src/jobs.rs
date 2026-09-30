@@ -1372,15 +1372,21 @@ impl Jobs {
             .count()
     }
 
-    /// Stop everything: ask every live job to stop, including those on the owner's own workers,
-    /// drop the lanes' waiting jobs, close the lanes and wait for their threads, which finish at
-    /// their job's next checkpoint.
-    pub(crate) fn shutdown(&mut self) {
+    /// Ask every live job to stop, including those on the owner's own workers, without waiting for
+    /// any of them.
+    pub(crate) fn cancel_live(&self) {
         for entry in self.entries.values() {
             if entry.is_live() {
                 entry.control.cancel("the editor is closing");
             }
         }
+    }
+
+    /// Stop everything: ask every live job to stop ([`Self::cancel_live`]), drop the lanes'
+    /// waiting jobs, close the lanes and wait for their threads, which finish at their job's next
+    /// checkpoint.
+    pub(crate) fn shutdown(&mut self) {
+        self.cancel_live();
         for lane in &mut self.lanes {
             lane.waiting.clear();
             lane.sender = None;

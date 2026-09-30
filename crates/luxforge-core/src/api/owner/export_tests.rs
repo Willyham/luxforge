@@ -892,8 +892,24 @@ fn stopping_the_owner_cancels_a_running_export_and_leaves_no_file() {
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     assert_eq!(listing(&out).len(), 1, "staged");
     harness.owner.stop();
-    // The owner is now joining the lane, which is held; letting it go stops the job at its next
-    // check.
+    // A call after the stop is dropped unanswered once the owner has asked every live job to stop
+    // and closed its channel, so the export is cancelled before it is let go; it then stops at its
+    // next check.
+    assert!(
+        harness
+            .owner
+            .call(
+                harness.client,
+                ApiRequest {
+                    id: "after-stop".into(),
+                    method: "catalog.info".into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .is_err(),
+        "the stopped owner answers nothing"
+    );
     release.send(()).unwrap();
     harness.join.take().unwrap().join().unwrap();
     assert!(listing(&out).is_empty(), "{:?}", listing(&out));
