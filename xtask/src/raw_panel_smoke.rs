@@ -399,11 +399,13 @@ fn white_balance_accuracy_verdict(
     }
 }
 
-/// How far the photo surface of one capture is from another's: the mean absolute channel
-/// difference in codes over the surface columns the frame records, between its top and bottom
-/// tenths (the title and status bars stay outside), and the share of those pixels differing by more
-/// than two codes in any channel. The surface draws the photograph and nothing else here: no
-/// overlay is on and no draft bar is shown for a slider gesture.
+/// How far the photograph in one capture is from another's: the mean absolute channel difference
+/// in codes over the photograph as the second frame draws it on screen (its photo rectangle clipped
+/// to the canvas and to the surface columns, between the frame's top and bottom tenths, so the
+/// title and status bars stay outside), and the share of those pixels differing by more than two
+/// codes in any channel. Only the photograph counts: the canvas beside a 3:2 or 4:3 photo at Fit
+/// never changes and would dilute the mean. No overlay is on and no draft bar is shown for a
+/// slider gesture.
 fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
     let frame = second;
     let first = first.image()?;
@@ -414,9 +416,10 @@ fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
     )?;
     let (width, height) = first.dimensions();
     let [left, right] = frame.columns()?.unwrap_or([0, width]);
+    let [photo_left, photo_top, photo_right, photo_bottom] = frame.visible_photo()?;
     let (mut total, mut over, mut count) = (0_u64, 0_u64, 0_u64);
-    for y in height / 10..height - height / 10 {
-        for x in left..right.min(width) {
+    for y in (height / 10).max(photo_top)..(height - height / 10).min(photo_bottom) {
+        for x in left.max(photo_left)..right.min(photo_right).min(width) {
             let (a, b) = (first.get_pixel(x, y).0, second.get_pixel(x, y).0);
             let differences = [0, 1, 2].map(|channel| a[channel].abs_diff(b[channel]));
             total += differences
@@ -427,7 +430,7 @@ fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
             count += 1;
         }
     }
-    ensure(count > 0, "The frame records no photo surface")?;
+    ensure(count > 0, "The frame draws no photograph on its surface")?;
     Ok((
         total as f64 / (3 * count) as f64,
         over as f64 / count as f64,
