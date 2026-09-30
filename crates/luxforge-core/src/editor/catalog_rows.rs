@@ -62,36 +62,6 @@ pub(crate) fn insert_catalog_folder(
     Ok(())
 }
 
-/// The top-level catalog folder named `name` (ignoring case), made now when there is none: where
-/// the single-file import puts a photograph until picks are developed into chosen folders.
-pub(crate) fn top_level_folder(
-    tx: &Transaction<'_>,
-    name: &str,
-    now_ms: i64,
-) -> Result<CatalogFolderId, Error> {
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT id FROM catalog_folders WHERE parent_id IS NULL AND name = ?1 COLLATE NOCASE",
-            [name],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(id) = existing {
-        return CatalogFolderId::parse(id);
-    }
-    let folder = CatalogFolder {
-        id: CatalogFolderId::new(),
-        name: name.to_owned(),
-        parent_id: None,
-        created_ms: now_ms,
-        event: None,
-        count: 0,
-        year: None,
-    };
-    insert_catalog_folder(tx, &folder)?;
-    Ok(folder.id)
-}
-
 /// Everything an asset row holds beside its record: where it lives in the catalog and on disk, when
 /// it was developed, whether it is removed, and its original's availability.
 pub(crate) struct NewAsset<'a> {
@@ -650,6 +620,41 @@ pub(crate) mod library_rows {
         }
         tx.prepare_cached("DELETE FROM assets WHERE id = ?1")?
             .execute([id])
+    }
+
+    /// Delete the whole catalog record of each of `assets` — its entries' artifact references,
+    /// versions, state row, request log, collection memberships, capture row, entries and asset
+    /// row — one statement per table for them all, answering how many asset rows went. Only
+    /// emptying Removed calls it, with the artifact references' permanence lifted for it
+    /// (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
+    /// recorded of them.
+    pub(crate) fn delete_photographs(
+        tx: &Transaction<'_>,
+        assets: &[AssetId],
+    ) -> Result<usize, Error> {
+        let ids = serde_json::to_string(assets)
+            .map_err(|error| Error::internal(format!("cannot encode photographs: {error}")))?;
+        const THESE: &str = "(SELECT value FROM json_each(?1))";
+        tx.prepare_cached(&format!(
+            "DELETE FROM artifact_refs
+             WHERE entry_id IN (SELECT id FROM entries WHERE asset_id IN {THESE})"
+        ))?
+        .execute([&ids])?;
+        for table in ["versions", "asset_state", "requests"] {
+            tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
+                .execute([&ids])?;
+        }
+        for table in ["collection_members", "capture"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table} WHERE asset_row IN (SELECT row_id FROM assets WHERE id IN {THESE})"
+            ))?
+            .execute([&ids])?;
+        }
+        tx.prepare_cached(&format!("DELETE FROM entries WHERE asset_id IN {THESE}"))?
+            .execute([&ids])?;
+        Ok(tx
+            .prepare_cached(&format!("DELETE FROM assets WHERE id IN {THESE}"))?
+            .execute([&ids])?)
     }
 
     /// Whether the catalog holds the photograph `asset`.

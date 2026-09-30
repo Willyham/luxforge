@@ -845,5 +845,5 @@ fn only_capability_events_ask_for_capability_reads() {
     assert!(capability_event("module.permission.revoke"));
     assert!(capability_event("task.generate-proof-tint"));
     assert!(!capability_event("edit.apply-proof-tint"));
-    assert!(!capability_event("catalog.import"));
+    assert!(!capability_event("pick.develop"));
 }

@@ -62,9 +62,7 @@ pub use pixel::PIXEL_EFFECT;
 pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
-#[cfg(test)]
-pub(crate) use presets::APPLY_PRESET;
-pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};
+pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{ColorOperation, PointwiseColor, Processing, Stage};
 pub use processing::{ExactGeometry, Resample};
