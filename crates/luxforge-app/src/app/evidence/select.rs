@@ -125,7 +125,8 @@ impl Editor {
         });
         let status = iced::event::Status::Ignored;
         match keymap(&event, status, &self.key_context()) {
-            Some(Message::Select(SelectMessage::Move { .. })) => {
+            // In the loupe the arrows step its frames and moments.
+            Some(Message::Select(SelectMessage::Move { .. } | SelectMessage::Loupe(_))) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.await_select(task)
             }
