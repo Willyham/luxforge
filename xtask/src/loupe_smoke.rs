@@ -646,7 +646,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // P on the bracket's frame: Select's own pick of it, and the loupe stays where it is.
     let pick = launch.at("pick")?;
     pick_frame(&mut checks, &expected, compare, pick, "pick", bracket + 1)?;
-    loupe_frame(&mut checks, &expected, pick, "pick", bracket + 1)?;
+    ensure(
+        loupe(pick)["open"] == true
+            && loupe(pick)["compare"] == true
+            && loupe(pick)["subject"]["position"] == bracket + 1
+            && select(pick)["selection"]["active"] == bracket + 1,
+        format!(
+            "pick: a bracket's pick moved the loupe or left compare: {}",
+            loupe(pick)["subject"]
+        ),
+    )?;
 
     let back = launch.at("back")?;
     ensure(

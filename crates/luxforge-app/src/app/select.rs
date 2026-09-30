@@ -117,6 +117,9 @@ pub(crate) struct Select {
     /// This desktop's newest library change and the gesture that made it: its label is read from
     /// the journal for the status bar.
     pub(crate) change: Option<(u64, LibraryGesture)>,
+    /// The newest library change this desktop recorded, by any gesture — a pick, an undo, a
+    /// relink, a Locate: a view read again at that change was not changed elsewhere.
+    pub(crate) own_change: Option<u64>,
     /// The change whose label is being read.
     pub(crate) label: Option<u64>,
     /// The last library request this desktop sent and what the owner answered, for evidence.
@@ -144,7 +147,8 @@ pub(crate) enum Reread {
     /// A source, filter, sort or grouping was chosen: the status bar names the view.
     #[default]
     Asked,
-    /// Another client's change made it stale.
+    /// A wake's staleness check found it stale: another client's library change, which the status
+    /// bar says, or the index alone moving, which it does not.
     Elsewhere,
     /// This desktop's own library change made it stale; the status bar says that change.
     Own,
@@ -181,6 +185,7 @@ impl Default for Select {
             counts: Coalesce::default(),
             listing: BTreeSet::new(),
             change: None,
+            own_change: None,
             label: None,
             library: None,
             read_again: false,
@@ -973,6 +978,12 @@ impl Editor {
                 let same_source = previous
                     .as_ref()
                     .is_some_and(|held| held.query.source == summary.query.source);
+                // Whether a library change was recorded since the view on screen was read, and
+                // was not this desktop's own newest: only that is a change made elsewhere.
+                let library_moved = previous
+                    .as_ref()
+                    .is_none_or(|held| held.library_sequence != summary.library_sequence)
+                    && self.select.own_change != Some(summary.library_sequence.0);
                 if previous
                     .as_ref()
                     .is_none_or(|held| held.query != summary.query)
@@ -992,14 +1003,16 @@ impl Editor {
                 let name = model::title(state).name;
                 match std::mem::take(&mut self.select.reread) {
                     Reread::Asked => self.status.text = format!("{name} \u{b7} {count} in view"),
-                    Reread::Elsewhere => {
+                    Reread::Elsewhere if library_moved => {
                         self.status.text = format!(
                             "{name} changed elsewhere and was read again \u{b7} {count} in view"
                         );
                     }
                     // The status bar says the change itself, from its label, or the reading's
-                    // progress.
-                    Reread::Own | Reread::Quiet => {}
+                    // progress; and the index alone moving — a card or folder being read, grid
+                    // previews' fingerprints landing, a folder's files changing on disk — reads
+                    // the view again without a word.
+                    Reread::Elsewhere | Reread::Own | Reread::Quiet => {}
                 }
                 self.rebuild_grid();
                 if same_source {
@@ -1439,6 +1452,7 @@ impl Editor {
             return Task::none();
         };
         self.select.change = Some((sequence, gesture));
+        self.select.own_change = Some(sequence);
         self.select.label = Some(sequence);
         let (owner, client) = (self.owner.clone(), self.client);
         let mut tasks = vec![
