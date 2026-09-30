@@ -121,6 +121,8 @@ pub enum Step {
     ViewIdle(ViewIdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
+    /// Move the comparison divider, or release a backslash hold through the keymap.
+    Compare(CompareStep),
     Palette(PaletteStep),
     /// Move the pointer to one pixel of the displayed raster, exactly as the canvas reports a
     /// hover, and wait for the readout `render.sample` answers with.
@@ -282,6 +284,12 @@ impl Step {
             Self::ViewIdle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::Compare(CompareStep::Position(position)) => {
+                unit(f64::from(*position), "compare position")
+            }
+            Self::Compare(CompareStep::Tap | CompareStep::Release | CompareStep::FocusLoss) => {
+                Ok(())
+            }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
@@ -300,11 +308,11 @@ impl Step {
                 let mut characters = key.chars();
                 let single = characters.next().is_some_and(char::is_alphanumeric)
                     && characters.next().is_none();
-                if single || key == KEY_ESCAPE {
+                if single || key == KEY_ESCAPE || matches!(key.as_str(), "\\" | "|") {
                     Ok(())
                 } else {
                     Err(format!(
-                        "key takes one letter or digit, or {KEY_ESCAPE}, not {key:?}"
+                        "key takes one letter or digit, a comparison key, or {KEY_ESCAPE}, not {key:?}"
                     ))
                 }
             }
@@ -1046,6 +1054,16 @@ impl WorkspaceStep {
 pub enum PreviewStep {
     Sequence(u64),
     Current,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareStep {
+    /// Press and release backslash in the same update turn, through the keymap.
+    Tap,
+    Position(f32),
+    Release,
+    FocusLoss,
 }
 
 /// Open the command palette with this query, or open it, run the query and run its first match.

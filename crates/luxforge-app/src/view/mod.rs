@@ -10,6 +10,7 @@
 pub(crate) mod canvas;
 pub(crate) mod canvas_view;
 mod capabilities;
+mod compare_canvas;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 mod gallery;
@@ -47,6 +48,7 @@ pub(crate) struct Surfaces<'a> {
     ///
     /// The photograph.
     pub(crate) photo: Option<&'a luxforge_ui::Frame>,
+    pub(crate) comparison: Option<(&'a luxforge_ui::Frame, f32)>,
     pub(crate) photo_content: Option<u64>,
     pub(crate) current_content: u64,
     pub(crate) region: Option<&'a luxforge_ui::RegionFrame>,

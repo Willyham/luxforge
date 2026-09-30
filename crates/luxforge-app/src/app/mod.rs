@@ -245,6 +245,8 @@ pub(crate) struct Editor {
     pub(crate) presentation: preview::Presentation,
     /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
     pub(crate) view_plan: preview::ViewPlan,
+    /// The pending backslash tap or temporary hold; its deadline exists only while pending.
+    pub(crate) compare_key: keymap::CompareKey,
     /// The clipping overlays' worker and the request on screen.
     pub(crate) overlays: overlay::Overlays,
     /// This desktop's own view state: window, zoom and pan, menu, gallery page and file dialog.
@@ -420,6 +422,7 @@ impl Editor {
             document: Default::default(),
             presentation: Default::default(),
             view_plan: Default::default(),
+            compare_key: Default::default(),
             overlays: Default::default(),
             view_state: state::ViewState::new(window),
             hover: Default::default(),
@@ -695,12 +698,29 @@ impl Editor {
     /// What the canvas draws the photograph from: the presentation's frames, the open mask gesture
     /// and the crop draft.
     fn surfaces(&self) -> view::Surfaces<'_> {
-        view::Surfaces {
+        let mut surfaces = view::Surfaces {
+            comparison: self
+                .presentation
+                .compare_after
+                .as_ref()
+                .zip(self.session.preview.comparison.as_ref())
+                .filter(|_| {
+                    !self.document.compare_hold
+                        && self.presentation.presented_entry == self.document.original_entry
+                })
+                .map(|(frame, comparison)| (frame, comparison.position)),
             mask_draft: self.mask_shape(),
             mask_map: self.held_mask().and_then(|mask| mask.map),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
+        };
+        if self.presentation.compare_after.is_some() {
+            surfaces.clipping = None;
+            surfaces.coverage = None;
+            surfaces.region_clipping = None;
+            surfaces.region_coverage = None;
         }
+        surfaces
     }
 
     /// Where the canvas draws the photograph in the window now, in logical pixels, through
@@ -759,6 +779,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             gallery_open: self.gallery_page().is_some(),
+            comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some() || self.held_mask().is_some(),
             crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),
