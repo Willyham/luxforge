@@ -1229,15 +1229,10 @@ impl Editor {
         self.library_now(LibraryGesture::PickAll, params)
     }
 
-    /// Pick the active frame alone, or clear it when it is picked: `pick.set` naming its file. The
-    /// loupe's `P` (TASK-020, the design's P7) calls this, then moves on to
-    /// [`model::next_moment`] with `browse.select`; the view is evaluated again as after any pick.
+    /// Pick the active frame alone, or clear it when it is picked, through [`Self::select_pick`].
     #[cfg_attr(
         not(test),
-        allow(
-            dead_code,
-            reason = "the loupe's P7 (TASK-020) calls it; lane B wires it"
-        )
+        allow(dead_code, reason = "the loupe (TASK-020) picks through select_pick")
     )]
     pub(crate) fn pick_active(&mut self) -> Task<Message> {
         let Some(active) = self.selection().active else {
@@ -1247,20 +1242,47 @@ impl Editor {
             self.status.text = "Reading the frame\u{2026}".into();
             return Task::none();
         };
-        let RowItem::File { file_id } = row.item else {
-            self.status.text =
-                "Only files are picked: a developed photograph is already in the catalog".into();
-            return Task::none();
-        };
         let picked = !row.picked;
-        let params = model::pick_params(
-            &Targets::Files {
-                file_ids: vec![file_id],
-            },
-            picked,
-            &request(),
-        );
-        self.library_now(LibraryGesture::Pick { picked }, params)
+        self.select_pick(&[active], picked)
+    }
+
+    /// Pick or clear the files at `positions` of the view: one journaled `pick.set` naming their
+    /// files, as this desktop's actor — the request an agent sends, and the one the grid's Pick all
+    /// sends. The loupe's `P` (TASK-020) calls it with its active frame. It is answered in this
+    /// update, like every library gesture here, and [`Self::loupe_picked`] hears the outcome at
+    /// once, which is where the loupe moves on to the next moment after a burst's pick (the
+    /// design's P7; [`model::next_moment`] is that position). The view is then evaluated again as
+    /// after any pick. A position whose row is not read yet, or a developed photograph, refuses
+    /// the whole pick with its reason and sends nothing.
+    pub(crate) fn select_pick(&mut self, positions: &[u32], picked: bool) -> Task<Message> {
+        let mut file_ids = Vec::with_capacity(positions.len());
+        for &position in positions {
+            let Some(row) = self.select.state.rows.row(position) else {
+                self.status.text = "Reading the frame\u{2026}".into();
+                self.loupe_picked(positions, picked, false);
+                return Task::none();
+            };
+            let RowItem::File { file_id } = row.item else {
+                self.status.text =
+                    "Only files are picked: a developed photograph is already in the catalog"
+                        .into();
+                self.loupe_picked(positions, picked, false);
+                return Task::none();
+            };
+            file_ids.push(file_id);
+        }
+        if file_ids.is_empty() {
+            return Task::none();
+        }
+        let params = model::pick_params(&Targets::Files { file_ids }, picked, &request());
+        let task = self.library_now(LibraryGesture::Pick { picked }, params);
+        let succeeded = self
+            .select
+            .library
+            .as_ref()
+            .is_some_and(|last| last["error"].is_null());
+        self.loupe_picked(positions, picked, succeeded);
+        task
     }
 
     /// Send one library change synchronously, in this update, as this desktop's actor, and follow

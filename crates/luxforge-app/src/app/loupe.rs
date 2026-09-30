@@ -28,6 +28,12 @@ impl Editor {
     pub(crate) fn loupe_open(&self) -> bool {
         self.select_shown() && self.select.state.loupe.open
     }
+
+    /// A pick of the frames at `positions` through [`Editor::select_pick`] was answered, in the
+    /// update that sent it: `succeeded` says whether it recorded (a no-op records nothing and still
+    /// succeeds). The loupe's task moves on from here to the next moment after a burst's pick (the
+    /// design's P7).
+    pub(crate) fn loupe_picked(&mut self, _positions: &[u32], _picked: bool, _succeeded: bool) {}
 }
 
 /// After every message: the loupe's look-ahead and decodes, once it has them.
