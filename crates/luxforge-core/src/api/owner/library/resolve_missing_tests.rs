@@ -100,13 +100,6 @@ impl Harness {
         path.canonicalize().unwrap()
     }
 
-    /// A copy of the fixture `name` (`s0/…`) at `path` in bytes no other copy has, so it develops
-    /// into a photograph of its own rather than linking to another copy's
-    /// ([`super::opening::distinct_copy`]).
-    fn distinct(&self, name: &str, path: &Path) -> PathBuf {
-        super::opening::distinct_copy(&fixture(&format!("s0/{name}")), path)
-    }
-
     /// Develop the file at `path` and prepare its photograph, as a client opens a file.
     fn import(&self, path: &Path) -> AssetId {
         serde_json::from_value(super::opening::import(&self.owner, self.client, path)).unwrap()

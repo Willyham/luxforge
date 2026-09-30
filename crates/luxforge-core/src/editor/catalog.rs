@@ -1037,8 +1037,7 @@ mod tests {
         assert_eq!(header.orientation.map(|value| value.get()), Some(1));
         // A second file of the same folder joins the same catalog folder.
         let dir = luxforge_testbase::paths::temp_dir("format-import");
-        let copy = dir.join("copy.jpg");
-        std::fs::copy(fixture(), &copy).unwrap();
+        let copy = crate::editor::distinct_jpeg(&fixture(), &dir.join("copy.jpg"));
         service.import(&copy).unwrap();
         let folders: i64 = service
             .connection
@@ -1155,46 +1154,46 @@ mod tests {
             .execute_batch(
                 "INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
                      label, time_ms, item_count)
-                     VALUES (1, 'desktop', 'desktop', 'r1', 'pick.set', 'Picked a.jpg', 1, 1);
+                     VALUES (1001, 'desktop', 'desktop', 'r1', 'pick.set', 'Picked a.jpg', 1, 1);
                  INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key,
                      before_json, after_json)
-                     VALUES (1, 0, 'pick', '/a.jpg', NULL, '{}');
+                     VALUES (1001, 0, 'pick', '/a.jpg', NULL, '{}');
                  INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
                      label, time_ms, item_count, undoes)
-                     VALUES (2, 'desktop', 'desktop', 'r2', 'library.undo', 'Undo', 2, 1, 1);",
+                     VALUES (1002, 'desktop', 'desktop', 'r2', 'library.undo', 'Undo', 2, 1, 1001);",
             )
             .unwrap();
         refused(
-            "UPDATE library_changes SET label = 'x' WHERE sequence = 1",
+            "UPDATE library_changes SET label = 'x' WHERE sequence = 1001",
             "library changes are immutable",
         );
         refused(
-            "DELETE FROM library_changes WHERE sequence = 1",
+            "DELETE FROM library_changes WHERE sequence = 1001",
             "library changes are permanent",
         );
         refused(
-            "UPDATE library_change_rows SET after_json = NULL WHERE change_seq = 1",
+            "UPDATE library_change_rows SET after_json = NULL WHERE change_seq = 1001",
             "library changes are immutable",
         );
         refused(
-            "DELETE FROM library_change_rows WHERE change_seq = 1",
+            "DELETE FROM library_change_rows WHERE change_seq = 1001",
             "library changes are permanent",
         );
         refused(
             "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
                  time_ms, item_count, undoes)
-                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1)",
+                 VALUES (1003, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1001)",
             "UNIQUE constraint failed",
         );
         refused(
             "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
                  time_ms, item_count, undoes)
-                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 4)",
+                 VALUES (1003, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1004)",
             "CHECK constraint failed",
         );
         refused(
             "INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key)
-                 VALUES (2, 0, 'rating', 'x')",
+                 VALUES (1002, 0, 'rating', 'x')",
             "CHECK constraint failed",
         );
         drop(service);
