@@ -34,9 +34,8 @@ pub(crate) enum SelectMessage {
     FolderPicked(Option<PathBuf>),
     /// `index.refresh` of the folder answered with its job, or refused.
     Reading(Result<String, String>),
-    /// The reading folder's job is read again: the timer that exists while the job runs.
-    ReadPoll,
-    /// `job.read` for the reading folder's job answered.
+    /// `job.read` for the reading folder's job answered: read when the activity board no longer
+    /// lists it running.
     ReadAnswered(Result<serde_json::Value, String>),
     /// One change of the filter bar, the Group chip or the sort.
     Change(QueryChange),

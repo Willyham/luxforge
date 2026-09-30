@@ -8,13 +8,16 @@
 //! Time enters only through the answers themselves — the monotonic clock each read was taken at and
 //! the elapsed and ended times each board snapshot carries — so nothing here reads a clock and
 //! every rule can be tested with made-up samples.
-use crate::state::Inputs;
+use crate::state::{
+    Inputs,
+    long_work::{Rates, WorkInfo, work_info, work_label},
+};
 use luxforge_core::{
     ActivitySnapshot,
     activity::{ActiveActivity, Outcome, RecentActivity},
     resources::{MemoryKind, ResourceReport},
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::Path};
 
 /// The sparklines' window: one sample a second for a minute.
 pub(crate) const WINDOW: usize = 60;
@@ -116,6 +119,8 @@ pub(crate) struct MetricRow {
 /// One job row as the section shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct JobRow {
+    /// What the work is doing; for catalog work, with the place or file it works on
+    /// (`Indexing ~/Pictures`).
     pub(crate) label: String,
     /// Elapsed while running, duration once finished; empty on the quiet row.
     pub(crate) trailing: String,
@@ -123,6 +128,29 @@ pub(crate) struct JobRow {
     /// Only for work that reports a truthful total.
     pub(crate) progress: Option<f32>,
     pub(crate) running: bool,
+    /// Running catalog work: the job Cancel stops, its count and its estimate. Such a row is drawn
+    /// as the components board's work row rather than a plain job row.
+    pub(crate) work: Option<WorkInfo>,
+}
+
+/// What the job rows read of long-running work: each running catalog job's rate, for its
+/// estimate, and the home folder its place is shown from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Work<'a> {
+    pub(crate) rates: &'a Rates,
+    pub(crate) home: Option<&'a Path>,
+}
+
+/// No rates read yet and no home folder.
+static NO_RATES: Rates = Rates::EMPTY;
+
+impl Default for Work<'_> {
+    fn default() -> Self {
+        Self {
+            rates: &NO_RATES,
+            home: None,
+        }
+    }
 }
 
 /// The job rows, the `+N more` caption under them and the heading's caption.
@@ -165,12 +193,20 @@ impl PerformanceModel {
         if self.expanded == expanded && self.version == history.version() {
             return;
         }
-        *self = derive(expanded, history);
+        let work = Work {
+            rates: &inputs.long_work.rates,
+            home: inputs.select.home.as_deref(),
+        };
+        *self = derive(expanded, history, work);
     }
 }
 
 /// The section for this history, expanded or collapsed.
-pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> PerformanceModel {
+pub(crate) fn derive(
+    expanded: bool,
+    history: &PerformanceHistory,
+    work: Work<'_>,
+) -> PerformanceModel {
     if !expanded {
         return PerformanceModel {
             version: history.version(),
@@ -178,12 +214,15 @@ pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> Performanc
         };
     }
     let samples: Vec<&ResourceReport> = history.samples().iter().collect();
-    let jobs = jobs(history.activity());
+    let jobs = jobs(history.activity(), work);
     PerformanceModel {
         expanded,
         caption: jobs.caption,
         metrics: vec![memory_row(&samples), cpu_row(&samples), gpu_row(&samples)],
-        reserve_detail: matches!(jobs.rows.as_slice(), [only] if only.detail.is_none()),
+        reserve_detail: matches!(
+            jobs.rows.as_slice(),
+            [only] if only.detail.is_none() && only.work.is_none()
+        ),
         jobs: jobs.rows,
         more: jobs.more,
         version: history.version(),
@@ -489,7 +528,10 @@ fn gpu_row(samples: &[&ResourceReport]) -> MetricRow {
 /// [`RECENT_JOB_MS`], dimmed, with its duration and how it ended. Otherwise one dimmed `No
 /// background work` row, so there is always one job line and the section's height changes only
 /// when two long jobs overlap. Before the first snapshot there is nothing running to show either.
-pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
+///
+/// A running catalog job's row is a work row: its place in its label, its own count, its estimate
+/// once its rate is steady, and Cancel ([`JobRow::work`]).
+pub(crate) fn jobs(activity: Option<&ActivitySnapshot>, work: Work<'_>) -> Jobs {
     let quiet = || Jobs {
         rows: vec![JobRow {
             label: "No background work".to_owned(),
@@ -512,7 +554,7 @@ pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
             rows: long
                 .iter()
                 .take(MAX_JOB_ROWS)
-                .map(|job| running(job))
+                .map(|job| running(job, work))
                 .collect(),
             more: (hidden > 0).then(|| format!("+{hidden} more")),
             caption: Some(match long.len() {
@@ -533,9 +575,25 @@ pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
         .unwrap_or_else(quiet)
 }
 
-/// A running job: its elapsed time, and its detail and phase joined on the line under it.
-fn running(job: &ActiveActivity) -> JobRow {
+/// A running job: its elapsed time, and its detail and phase joined on the line under it; for
+/// catalog work, its place in its label and its work part.
+fn running(job: &ActiveActivity, work: Work<'_>) -> JobRow {
     let entry = &job.entry;
+    if let Some(info) = work_info(job, work.rates) {
+        return JobRow {
+            label: work_label(entry, work.home),
+            trailing: format_elapsed(job.elapsed_ms),
+            detail: None,
+            progress: entry
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.fraction)
+                .filter(|fraction| fraction.is_finite())
+                .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
+            running: true,
+            work: Some(info),
+        };
+    }
     let parts: Vec<String> = entry
         .detail
         .iter()
@@ -552,6 +610,7 @@ fn running(job: &ActiveActivity) -> JobRow {
             .and_then(|progress| progress.fraction)
             .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
         running: true,
+        work: None,
     }
 }
 
@@ -570,6 +629,7 @@ fn finished(job: &RecentActivity) -> JobRow {
         detail: Some(format!("{how} {} s ago", ago.max(1))),
         progress: None,
         running: false,
+        work: None,
     }
 }
 
@@ -583,6 +643,15 @@ mod tests {
     use serde_json::json;
 
     const MS: u64 = 1_000_000;
+
+    /// The section with no catalog work read, as the tests of its own rules see it.
+    fn derive(expanded: bool, history: &PerformanceHistory) -> PerformanceModel {
+        super::derive(expanded, history, Work::default())
+    }
+
+    fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
+        super::jobs(activity, Work::default())
+    }
 
     /// A sample at `at_ms` on the monotonic clock with the given counters.
     fn sample(at_ms: u64, cpu_ms: u64, gpu_ms: u64, bytes: u64) -> ResourceReport {
@@ -1010,6 +1079,7 @@ mod tests {
                     detail: Some("DSC_0412.NEF".into()),
                     progress: None,
                     running: true,
+                    work: None,
                 },
                 JobRow {
                     label: "Rendering preview".into(),
@@ -1017,6 +1087,7 @@ mod tests {
                     detail: Some("exact phase".into()),
                     progress: None,
                     running: true,
+                    work: None,
                 },
                 JobRow {
                     label: "Preparing original".into(),
@@ -1024,6 +1095,7 @@ mod tests {
                     detail: Some("a.jpg \u{b7} decode phase".into()),
                     progress: None,
                     running: true,
+                    work: None,
                 },
             ],
             "the finished job is not shown while long work runs"
@@ -1056,7 +1128,7 @@ mod tests {
             fraction: None,
             message: Some("preparing".into()),
         });
-        let no_fraction = running(&preparing);
+        let no_fraction = running(&preparing, Work::default());
         assert_eq!(no_fraction.progress, None, "no truthful fraction, no bar");
     }
 
@@ -1098,6 +1170,7 @@ mod tests {
                 detail: Some("Finished 4 s ago".into()),
                 progress: None,
                 running: false,
+                work: None,
             }]
         );
         for (outcome, word) in [
