@@ -362,6 +362,7 @@ pub(crate) fn raw_error(error: RawError) -> Error {
         | RawError::UnsupportedCfa => ErrorKind::UnsupportedInput,
         RawError::MissingCalibration(_) => ErrorKind::UnsupportedColor,
         RawError::InvalidInput(_) | RawError::Native(_) => ErrorKind::Decode,
+        RawError::Io { .. } => ErrorKind::SourceUnavailable,
         RawError::NeutralPatch(_) => ErrorKind::Validation,
     };
     Error::new(kind, error.to_string())
@@ -730,6 +731,13 @@ mod tests {
             (RawError::Cancelled, ErrorKind::Conflict),
             (RawError::Native("x".into()), ErrorKind::Decode),
             (RawError::NeutralPatch("x".into()), ErrorKind::Validation),
+            (
+                RawError::Io {
+                    kind: std::io::ErrorKind::NotFound,
+                    message: "x".into(),
+                },
+                ErrorKind::SourceUnavailable,
+            ),
         ] {
             assert_eq!(raw_error(error.clone()).kind, kind, "{error:?}");
         }
