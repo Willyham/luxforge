@@ -10,18 +10,15 @@
 //! database with its journal files, and the `previews/` directory whose files the database lists).
 //!
 //! Several connections may be open at once — the owner's, which views read, and the index lane's
-//! workers' ([`IndexDb::connect`]) — so the database uses SQLite's write-ahead log and, as a cache,
-//! `synchronous=NORMAL`.
-#![allow(
-    dead_code,
-    reason = "catalog contracts: the row readers are used as the lanes land"
-)]
+//! own ([`connect_at`]) — so the database uses SQLite's write-ahead log and, as a cache,
+//! `synchronous=NORMAL`. The lane writes files and roots in batches, each advancing the index's
+//! [`revision`] in the same transaction.
 use crate::{
     Error, SourceTag,
     catalog_types::{
         CameraBody, CaptureTime, Dimensions, EmbeddedFormat, EmbeddedImage, ExifOrientation,
         Exposure, FileId, FileIdentity, FileRecord, FileSignature, GeoPosition, HeaderMetadata,
-        HeaderState, IndexRoot, VolumeId,
+        HeaderState, IndexRoot, RootKind, VolumeId,
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -575,6 +572,259 @@ impl StoredFile {
     }
 }
 
+/// A connection to the index database in `dir`, configured as every index connection is, for the
+/// index lane's own thread. The owner opens (and, when it cannot be used, recreates) the index
+/// first ([`IndexDb::open`]).
+pub(crate) fn connect_at(dir: &Path) -> Result<Connection, Error> {
+    configured(&dir.join(INDEX_FILE))
+}
+
+/// The index's revision: how many write batches have changed its files or roots since it was
+/// created, 0 for a new index (`index_meta.revision`, absent until the first batch). A view
+/// evaluated at one revision is stale at any other.
+pub(crate) fn revision(connection: &Connection) -> Result<u64, Error> {
+    let stored: Option<String> = connection
+        .prepare_cached("SELECT value FROM index_meta WHERE key = 'revision'")?
+        .query_row([], |row| row.get(0))
+        .optional()?;
+    stored.map_or(Ok(0), |value| {
+        value
+            .parse()
+            .map_err(|_| Error::incompatible("index revision: not a number"))
+    })
+}
+
+/// Advance the revision in the caller's transaction, the one that writes a batch of files or
+/// roots, and answer the new revision.
+pub(crate) fn advance_revision(tx: &Transaction<'_>) -> Result<u64, Error> {
+    let next = revision(tx)? + 1;
+    tx.prepare_cached(
+        "INSERT INTO index_meta (key, value) VALUES ('revision', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )?
+    .execute([next.to_string()])?;
+    Ok(next)
+}
+
+/// What reconciling needs of one row: its identity, path, signature and whether its header is
+/// still to be read.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct KnownFile {
+    pub id: FileId,
+    pub path: PathBuf,
+    pub name: String,
+    pub volume_id: String,
+    pub signature: FileSignature,
+    pub pending: bool,
+}
+
+const KNOWN_COLUMNS: &str =
+    "id, path, name, volume_id, byte_len, modified_ns, device, inode, header_state";
+
+fn known(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnownFile> {
+    Ok(KnownFile {
+        id: FileId(row.get(0)?),
+        path: row.get::<_, String>(1)?.into(),
+        name: row.get(2)?,
+        volume_id: row.get(3)?,
+        signature: FileSignature {
+            len: u64::try_from(row.get::<_, i64>(4)?).unwrap_or_default(),
+            modified_ns: row.get(5)?,
+            identity: FileIdentity::from_columns(row.get(6)?, row.get(7)?),
+        },
+        pending: row.get::<_, String>(8)? == "pending",
+    })
+}
+
+/// The rows of the files the index lists directly in `folder`.
+pub(crate) fn files_in_folder(
+    connection: &Connection,
+    folder: &Path,
+) -> Result<Vec<KnownFile>, Error> {
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT {KNOWN_COLUMNS} FROM files WHERE folder = ?1"
+    ))?;
+    let rows = statement.query_map([folder.to_string_lossy()], known)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The rows of the files with this file identity, wherever the index last saw them.
+pub(crate) fn files_with_identity(
+    connection: &Connection,
+    identity: FileIdentity,
+) -> Result<Vec<KnownFile>, Error> {
+    let (device, inode) = identity.to_columns();
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT {KNOWN_COLUMNS} FROM files WHERE device = ?1 AND inode = ?2"
+    ))?;
+    let rows = statement.query_map(params![device, inode], known)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The text bounds of the paths strictly under `root`: every path that starts with the root and a
+/// separator sorts at or after the first and before the second, as SQLite compares text.
+fn under(root: &Path) -> (String, String) {
+    let separator = std::path::MAIN_SEPARATOR;
+    let next = char::from_u32(separator as u32 + 1).expect("the separator's successor");
+    let text = root.to_string_lossy();
+    let trimmed = text.trim_end_matches(separator);
+    (format!("{trimmed}{separator}"), format!("{trimmed}{next}"))
+}
+
+/// The rows under `root` last seen before `before_ms`, in path order.
+pub(crate) fn files_under_seen_before(
+    connection: &Connection,
+    root: &Path,
+    before_ms: i64,
+) -> Result<Vec<FileId>, Error> {
+    let (from, to) = under(root);
+    let mut statement = connection.prepare_cached(
+        "SELECT id FROM files WHERE path >= ?1 AND path < ?2 AND last_seen_ms < ?3 ORDER BY path",
+    )?;
+    let rows = statement.query_map(params![from, to, before_ms], |row| row.get(0))?;
+    Ok(rows.map(|row| row.map(FileId)).collect::<Result<_, _>>()?)
+}
+
+/// Every row under `root`, in path order.
+pub(crate) fn files_under(connection: &Connection, root: &Path) -> Result<Vec<FileId>, Error> {
+    files_under_seen_before(connection, root, i64::MAX)
+}
+
+/// Carry the row `id` to the file at `record`'s path, keeping its [`FileId`]: a file moved or
+/// renamed within its volume. When its length or time changed too its header is marked for
+/// reading again (`pending`), so a listing stopped before that read reads it next time.
+pub(crate) fn move_file(
+    tx: &Transaction<'_>,
+    id: FileId,
+    record: &FileRecord,
+    reread: bool,
+) -> Result<(), Error> {
+    let identity = record.signature.identity.map(FileIdentity::to_columns);
+    tx.prepare_cached(
+        "UPDATE files SET path = ?2, folder = ?3, name = ?4, volume_id = ?5, byte_len = ?6,
+             modified_ns = ?7, device = ?8, inode = ?9, last_seen_ms = ?10,
+             header_state = CASE WHEN ?11 THEN 'pending' ELSE header_state END,
+             header_error = CASE WHEN ?11 THEN NULL ELSE header_error END
+         WHERE id = ?1",
+    )?
+    .execute(params![
+        id.0,
+        record.path.to_string_lossy(),
+        record.folder.to_string_lossy(),
+        record.name,
+        record.volume_id.as_str(),
+        i64::try_from(record.signature.len)
+            .map_err(|_| Error::resource_limit("file length exceeds index range"))?,
+        record.signature.modified_ns,
+        identity.map(|(device, _)| device),
+        identity.map(|(_, inode)| inode),
+        record.last_seen_ms,
+        reread,
+    ])?;
+    Ok(())
+}
+
+/// Record the file identity and volume a row's unchanged file carries now: a card mounted again
+/// under another device number keeps its rows and headers.
+pub(crate) fn refresh_identity(
+    tx: &Transaction<'_>,
+    id: FileId,
+    identity: Option<FileIdentity>,
+    volume: &VolumeId,
+) -> Result<(), Error> {
+    let identity = identity.map(FileIdentity::to_columns);
+    tx.prepare_cached("UPDATE files SET device = ?2, inode = ?3, volume_id = ?4 WHERE id = ?1")?
+        .execute(params![
+            id.0,
+            identity.map(|(device, _)| device),
+            identity.map(|(_, inode)| inode),
+            volume.as_str(),
+        ])?;
+    Ok(())
+}
+
+/// Drop the rows `ids`; their preview records go with them.
+pub(crate) fn delete_files(tx: &Transaction<'_>, ids: &[FileId]) -> Result<(), Error> {
+    let mut statement = tx.prepare_cached("DELETE FROM files WHERE id = ?1")?;
+    for id in ids {
+        statement.execute([id.0])?;
+    }
+    Ok(())
+}
+
+/// Drop the row of the file at `path`, if there is one.
+pub(crate) fn delete_file_at(tx: &Transaction<'_>, path: &Path) -> Result<(), Error> {
+    tx.prepare_cached("DELETE FROM files WHERE path = ?1")?
+        .execute([path.to_string_lossy()])?;
+    Ok(())
+}
+
+/// Every root the index lists, in path order.
+pub(crate) fn roots(connection: &Connection) -> Result<Vec<IndexRoot>, Error> {
+    let mut statement = connection.prepare_cached(
+        "SELECT path, kind, volume_id, listed_ms, file_count, offline FROM roots ORDER BY path",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<u32>>(4)?,
+            row.get::<_, bool>(5)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (path, kind, volume_id, listed_ms, file_count, offline) = row?;
+        Ok(IndexRoot {
+            path: path.into(),
+            kind: RootKind::parse(&kind)
+                .ok_or_else(|| Error::incompatible("index root row: unknown kind"))?,
+            volume_id: VolumeId::parse(volume_id)?,
+            listed_ms,
+            file_count,
+            offline,
+        })
+    })
+    .collect()
+}
+
+/// The root at `path`, if the index lists one there.
+pub(crate) fn root(connection: &Connection, path: &Path) -> Result<Option<IndexRoot>, Error> {
+    Ok(roots(connection)?
+        .into_iter()
+        .find(|root| root.path == path))
+}
+
+/// Forget the root at `path`.
+pub(crate) fn delete_root(tx: &Transaction<'_>, path: &Path) -> Result<(), Error> {
+    tx.prepare_cached("DELETE FROM roots WHERE path = ?1")?
+        .execute([path.to_string_lossy()])?;
+    Ok(())
+}
+
+/// The bodies whose files the index lists under `root`, at most `limit`, by make and model.
+pub(crate) fn cameras_under(
+    connection: &Connection,
+    root: &Path,
+    limit: usize,
+) -> Result<Vec<CameraBody>, Error> {
+    let (from, to) = under(root);
+    let mut statement = connection.prepare_cached(
+        "SELECT DISTINCT make, model, body_serial FROM files
+         WHERE path >= ?1 AND path < ?2 AND make IS NOT NULL
+         ORDER BY make, model, body_serial LIMIT ?3",
+    )?;
+    let rows = statement.query_map(params![from, to, limit as i64], |row| {
+        Ok(CameraBody {
+            make: row.get(0)?,
+            model: row.get(1)?,
+            serial: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 /// Record one root, or replace what the index knew of the root at its path, and answer its row.
 pub(crate) fn upsert_root(tx: &Transaction<'_>, root: &IndexRoot) -> Result<i64, Error> {
     Ok(tx.query_row(
@@ -599,7 +849,6 @@ pub(crate) fn upsert_root(tx: &Transaction<'_>, root: &IndexRoot) -> Result<i64,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog_types::RootKind;
     use luxforge_testbase::paths::temp_dir;
 
     fn tables(connection: &Connection) -> Vec<String> {

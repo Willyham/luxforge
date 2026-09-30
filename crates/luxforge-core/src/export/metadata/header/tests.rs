@@ -326,6 +326,12 @@ fn camera_exif(big_endian: bool) -> Vec<u8> {
     tiff.finish()
 }
 
+/// A camera's JPEG with [`camera_exif`]'s header — a Nikon Z 6, a capture time with its subsecond
+/// and offset, a GPS position and a thumbnail — for the index's tests.
+pub(crate) fn camera_jpeg() -> Vec<u8> {
+    jpeg(&camera_exif(false), 6048, 4024)
+}
+
 fn date_time(year: u16, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> DateTime {
     DateTime::new(year, month, day, hour, minute, second).unwrap()
 }
