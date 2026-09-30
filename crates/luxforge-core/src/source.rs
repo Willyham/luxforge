@@ -357,6 +357,7 @@ pub(crate) fn raw_error(error: RawError) -> Error {
         RawError::ResourceLimit(_) => ErrorKind::ResourceLimit,
         RawError::Cancelled => ErrorKind::Conflict,
         RawError::UnsupportedMode(_)
+        | RawError::UnsupportedCompression(_)
         | RawError::UnsupportedRequiredOpcodes(_)
         | RawError::UnsupportedCfa => ErrorKind::UnsupportedInput,
         RawError::MissingCalibration(_) => ErrorKind::UnsupportedColor,
@@ -699,6 +700,40 @@ mod tests {
     };
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
+
+    /// Each RAW failure maps to one API error kind, and a refused compression, such as Nikon High
+    /// Efficiency, is unsupported input that keeps the RAW crate's message.
+    #[test]
+    fn raw_errors_map_to_their_error_kinds() {
+        let he = "Nikon High Efficiency (HE/HE*) is not supported; record Lossless compressed RAW \
+                  instead";
+        let refused = raw_error(RawError::UnsupportedCompression(he));
+        assert_eq!(refused.kind, ErrorKind::UnsupportedInput);
+        assert_eq!(refused.kind.code(), "unsupported-input");
+        assert_eq!(refused.detail, format!("unsupported RAW compression: {he}"));
+        for (error, kind) in [
+            (RawError::InvalidInput("x"), ErrorKind::Decode),
+            (
+                RawError::UnsupportedMode("x".into()),
+                ErrorKind::UnsupportedInput,
+            ),
+            (
+                RawError::UnsupportedRequiredOpcodes(vec![1]),
+                ErrorKind::UnsupportedInput,
+            ),
+            (RawError::UnsupportedCfa, ErrorKind::UnsupportedInput),
+            (
+                RawError::MissingCalibration("x"),
+                ErrorKind::UnsupportedColor,
+            ),
+            (RawError::ResourceLimit("x"), ErrorKind::ResourceLimit),
+            (RawError::Cancelled, ErrorKind::Conflict),
+            (RawError::Native("x".into()), ErrorKind::Decode),
+            (RawError::NeutralPatch("x".into()), ErrorKind::Validation),
+        ] {
+            assert_eq!(raw_error(error.clone()).kind, kind, "{error:?}");
+        }
+    }
 
     /// The gate opens when the last view of a held development drops, on whichever thread drops
     /// it, and a stop wakes it while planes are still held. Waits are bounded by a watchdog so a

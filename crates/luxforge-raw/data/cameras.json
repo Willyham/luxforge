@@ -25,7 +25,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "NikonZ6Lossless14",
@@ -37,7 +38,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "NikonZ6Raw14",
@@ -86,7 +88,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -136,7 +139,8 @@
           "dng_version": 17039360,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -161,7 +165,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -186,7 +191,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -211,7 +217,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -264,7 +271,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -314,7 +322,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -339,7 +348,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -364,7 +374,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -389,7 +400,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -442,7 +454,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -518,6 +531,15 @@
           "validation": "decoder_metadata",
           "compression": null,
           "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7M3Compressed14",
+          "bits": 14,
+          "decoder": "sony_arw2_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
         }
       ]
     },
@@ -570,7 +592,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -595,7 +618,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -698,7 +722,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -751,7 +776,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -779,7 +805,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -804,7 +831,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -882,7 +910,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -907,7 +936,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -932,7 +962,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -982,7 +1013,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1038,7 +1070,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1163,7 +1196,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1213,7 +1247,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1263,7 +1298,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1338,7 +1374,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1388,7 +1425,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1413,7 +1451,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1469,7 +1508,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1497,6 +1537,31 @@
             "probe": "raf_header",
             "value": 2
           },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        },
+        {
+          "id": "FujifilmXT5Uncompressed14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "raf_header",
+            "value": 0
+          },
+          "raw_count": 1
+        },
+        {
+          "id": "FujifilmXT5Lossy14",
+          "bits": 14,
+          "decoder": "fuji_compressed_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "raf_header",
+            "value": 3
+          },
           "raw_count": 1
         }
       ]
@@ -1522,7 +1587,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1548,6 +1614,15 @@
           "validation": "decoder_metadata",
           "compression": null,
           "raw_count": 1
+        },
+        {
+          "id": "CanonEOSR6MarkIIRaw14DualPixel",
+          "bits": 14,
+          "decoder": "crxLoadRaw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 2
         }
       ]
     },
@@ -1625,7 +1700,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1651,6 +1727,19 @@
           "validation": "decoder_metadata",
           "compression": null,
           "raw_count": 1
+        },
+        {
+          "id": "SonyILCE6700Lossless14",
+          "bits": 14,
+          "decoder": "sony_ljpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "frame_size": [
+            6656,
+            4608
+          ]
         }
       ]
     },
@@ -1676,6 +1765,28 @@
           "validation": "decoder_metadata",
           "compression": null,
           "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7CM2Compressed14",
+          "bits": 14,
+          "decoder": "sony_arw2_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7CM2Lossless14",
+          "bits": 14,
+          "decoder": "sony_ljpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "frame_size": [
+            7168,
+            5120
+          ]
         }
       ]
     },
@@ -1700,7 +1811,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1726,6 +1838,28 @@
           "validation": "decoder_metadata",
           "compression": null,
           "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7M4Compressed14",
+          "bits": 14,
+          "decoder": "sony_arw2_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7M4Lossless14",
+          "bits": 14,
+          "decoder": "sony_ljpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "frame_size": [
+            7168,
+            5120
+          ]
         }
       ]
     },
@@ -1750,7 +1884,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1775,7 +1910,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1800,7 +1936,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1825,7 +1962,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ],
       "calibration": {
@@ -1899,7 +2037,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1924,7 +2063,18 @@
           "decoder": "lossless_jpeg_load_raw()",
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
+        },
+        {
+          "id": "CanonEOS5DMarkIVRaw14",
+          "bits": 14,
+          "decoder": "lossless_jpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1949,7 +2099,8 @@
           "decoder": "lossless_jpeg_load_raw()",
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1986,7 +2137,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2023,7 +2175,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2060,7 +2213,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2097,7 +2251,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2134,7 +2289,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2215,7 +2371,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2265,7 +2422,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2315,7 +2473,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2365,7 +2524,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2421,7 +2581,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2447,6 +2608,32 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null
+        },
+        {
+          "id": "NikonD850Lossless14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "nef_maker_note",
+            "value": 3
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        },
+        {
+          "id": "NikonD850Lossy14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "nef_maker_note",
+            "value": 4
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2496,7 +2683,8 @@
           "raw_count": 1,
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2521,7 +2709,8 @@
           "raw_count": 1,
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2597,6 +2786,28 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null
+        },
+        {
+          "id": "SonyILCE7RM5Compressed14",
+          "bits": 14,
+          "decoder": "sony_arw2_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
+        },
+        {
+          "id": "SonyILCE7RM5Lossless14",
+          "bits": 14,
+          "decoder": "sony_ljpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "frame_size": [
+            9728,
+            6656
+          ]
         }
       ]
     },
@@ -2672,6 +2883,15 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null
+        },
+        {
+          "id": "CanonEOSR5Raw14DualPixel",
+          "bits": 14,
+          "decoder": "crxLoadRaw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 2
         }
       ]
     },
@@ -2821,7 +3041,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2872,7 +3093,254 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z6_3",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ63Lossless14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "nef_maker_note",
+            "value": 3
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        }
+      ]
+    },
+    {
+      "make": "Nikon",
+      "model": "Z50_2",
+      "sensor_size": [
+        5600,
+        3728
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ502Lossless14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "nef_maker_note",
+            "value": 3
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        }
+      ],
+      "calibration": {
+        "xyz_to_camera": [
+          [
+            1.164,
+            -0.4829,
+            -0.1079
+          ],
+          [
+            -0.5107,
+            1.3006,
+            0.2325
+          ],
+          [
+            -0.0972,
+            0.1711,
+            0.738
+          ]
+        ],
+        "source": "https://github.com/darktable-org/rawspeed/blob/0a4a6fdc2da228c71c39025a2a5647b081042299/data/cameras.xml",
+        "license": "CC-BY-SA-3.0"
+      }
+    },
+    {
+      "make": "Nikon",
+      "model": "Z5_2",
+      "sensor_size": [
+        6064,
+        4040
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "NikonZ52Lossless14",
+          "bits": 14,
+          "decoder": "nikon_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "nef_maker_note",
+            "value": 3
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        }
+      ],
+      "calibration": {
+        "xyz_to_camera": [
+          [
+            1.3133,
+            -0.5542,
+            -0.128
+          ],
+          [
+            -0.4325,
+            1.2543,
+            0.1972
+          ],
+          [
+            0.0034,
+            0.0792,
+            0.7662
+          ]
+        ],
+        "source": "https://github.com/darktable-org/rawspeed/blob/0a4a6fdc2da228c71c39025a2a5647b081042299/data/cameras.xml",
+        "license": "CC-BY-SA-3.0"
+      }
+    },
+    {
+      "make": "Sony",
+      "model": "ZV-E10",
+      "sensor_size": [
+        6048,
+        4024
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "SonyZVE10Compressed14",
+          "bits": 14,
+          "decoder": "sony_arw2_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
+        }
+      ]
+    },
+    {
+      "make": "Fujifilm",
+      "model": "X-M5",
+      "sensor_size": [
+        6336,
+        4182
+      ],
+      "cfa_size": [
+        6,
+        6
+      ],
+      "crop": "raf_tags",
+      "dng": null,
+      "modes": [
+        {
+          "id": "FujifilmXM5Uncompressed14",
+          "bits": 14,
+          "decoder": "unpacked_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "raf_header",
+            "value": 0
+          },
+          "raw_count": 1
+        },
+        {
+          "id": "FujifilmXM5Lossless14",
+          "bits": 14,
+          "decoder": "fuji_compressed_load_raw()",
+          "dng_version": null,
+          "validation": "container_compression",
+          "compression": {
+            "probe": "raf_header",
+            "value": 2
+          },
+          "raw_count": 1,
+          "unpacker": "rawspeed"
+        }
+      ]
+    },
+    {
+      "make": "Canon",
+      "model": "EOS 90D",
+      "sensor_size": [
+        7128,
+        4732
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "CanonEOS90DRaw14",
+          "bits": 14,
+          "decoder": "crxLoadRaw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1
+        }
+      ]
+    },
+    {
+      "make": "Canon",
+      "model": "EOS 5D Mark III",
+      "sensor_size": [
+        5920,
+        3950
+      ],
+      "cfa_size": [
+        2,
+        2
+      ],
+      "crop": "libraw_inset",
+      "dng": null,
+      "modes": [
+        {
+          "id": "CanonEOS5DMarkIIIRaw14",
+          "bits": 14,
+          "decoder": "lossless_jpeg_load_raw()",
+          "dng_version": null,
+          "validation": "decoder_metadata",
+          "compression": null,
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     }

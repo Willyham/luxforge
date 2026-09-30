@@ -32,6 +32,10 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - M4 responsiveness, memory and JPEG regression measurements
 - End-to-end RAW editing journey
 
+**Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).
+- Nikon High Efficiency NEF once upstream LibRaw decodes it; refused explicitly until then
+- Sony A7 V compressed ARW once a pinned decoder reads it
+
 ## Editing tools
 
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.

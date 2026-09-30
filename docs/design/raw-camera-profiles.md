@@ -10,7 +10,8 @@ are tracked in [modern camera support](modern-camera-support.md).
 The version-1 JSON catalog contains exact LibRaw make/model identities, sensor
 size, CFA dimensions, and recording modes. Each mode records its identifier,
 bit depth, raw frame count, decoder name, validation strategy, optional DNG
-version, and container compression probe and expected value. Each camera selects
+version, container compression probe and expected value, and, when the decoder
+stores the sensor in a larger padded frame, that frame's size. Each camera selects
 a crop source (`libraw_inset`, `raf_tags`, `active_area`, or `dng_tags`) and
 optional DNG processing settings. DNG settings declare the
 illuminant pair, fixed matrix selection, calibration/interpretation identities,
@@ -35,7 +36,12 @@ file. No runtime file lookup, environment override, download or JSON parsing is
 introduced. Build-generated native allowlist entries come from the same
 validated catalog, and a public recording mode is a reference to one of its
 modes, serialized as the mode's identifier; an identifier the catalog does not
-declare fails to deserialize. Unknown cameras still fail before unpack.
+declare fails to deserialize. Unknown cameras, and unknown recording modes of
+catalogued cameras, fail before unpack: the adapter classifies the mode from
+LibRaw's identify-time metadata and the container before it unpacks.
+Nikon High Efficiency (maker-note NEF compression 13 or 14, or JPEG XS markers at
+the raw strip) is refused before the catalog is consulted, whatever the model, so
+no mode can admit it ([popular camera support](popular-camera-support.md)).
 
 ## Field reference
 
@@ -50,12 +56,14 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `cfa_size` | `[2, 2]` for Bayer/RCD or `[6, 6]` for X-Trans/one-pass Markesteijn; phase remains file metadata |
 | `crop` | `libraw_inset`, `raf_tags`, `active_area`, or `dng_tags`; selects authoritative crop metadata |
 | Camera `calibration` | Optional non-DNG `{xyz_to_camera: [[number; 3]; 3], source: HTTPS URL, license: string}`. A source-attributed fixed matrix, converted through pinned LibRaw; finite bounded nonsingular values required. Omit for backend calibration; forbidden alongside DNG source calibration |
-| `modes` | 1–32 distinct recording-mode selectors |
+| `modes` | 1–32 distinct recording-mode selectors: no two modes of a camera share bit depth, frame count, stored frame, decoder, DNG version and compression probe |
 | Mode `id` | Globally unique alphanumeric identifier starting with an uppercase letter, at most 80 characters, excluding `Self`; also the generated Rust enum variant and serialized metadata label |
 | `bits`, `raw_count`, `decoder` | Integer precision/storage depth, LibRaw raw-frame count (1 or 2), and exact decoder name |
 | `validation` | `container_compression` for an explicit container marker, or `decoder_metadata` for validated decoder metadata |
 | `compression` | `null`, or `{ "probe": "nef_maker_note" or "raf_header", "value": integer }`; absent/malformed source markers never match |
 | `dng_version` | Packed DNG version integer or `null`; `17039360` is `0x01040000` |
+| Mode `frame_size` | Optional `[width, height]` of the decoder's stored frame when the mode pads the sensor, such as Sony's lossless compressed ARW in 512-pixel tiles. At least `sensor_size` in each dimension, different from it, within the same limits, and not allowed on a DNG profile. Omit when the stored frame is the sensor |
+| `unpacker` | Optional: `libraw` (the default when omitted) fills the mosaic with LibRaw's own decoder; `rawspeed` fills it with RawSpeed in place of that decoder, and is accepted only when `decoder` is in the code-owned replaceable table (`crates/luxforge-raw/src/unpacker.rs`). Any other value fails the build. Route a mode only with authentic evidence that its mosaic equals the LibRaw-only hash ([RawSpeed unpacking](rawspeed-unpack.md)) |
 | Camera `dng` | `null` for backend calibration, or the complete DNG settings object below; enabled together with `dng_tags` |
 | DNG `container` | `uncompressed_u16_single_strip` or `integer_cfa_single_segment`: one-channel integer CFA storage with matching sensor geometry and integral crop |
 | `calibration` | `root_fixed_matrix`: both source matrices required, identity AnalogBalance, no alternate calibration/forward profiles |
@@ -95,9 +103,11 @@ RAW payloads and generated outputs remain outside the repository.
 ## Acceptance
 
 - No Luxforge production branch selects processing by camera name or mode ID.
-- The current catalog contains 100 camera profiles and 103 recording modes.
-  One authentic selected mode per model has adapter evidence; controlled color
-  and broader recording-mode qualification remain separate.
+- The current catalog contains 107 camera profiles and 126 recording modes.
+  Authentic adapter evidence covers 123 of the modes with 130 samples, every
+  model at least once; the Z6 lossless and X100VI lossless modes are covered by
+  the crate's authentic fixture tests. Controlled color and the remaining
+  recording modes' qualification remain separate.
 - Camera addition using existing strategies requires only data; implementing a
   new format/algorithm still requires code, tests and authentic qualification.
 - Invalid catalogs fail explicitly, with no partially accepted entries.
@@ -114,6 +124,6 @@ Profiles add a bounded immutable catalog. Sensor repairs add at most 65,536
 sorted sparse patches shared with the source, with no additional full-frame
 mosaic copy. Neutral sampling validates the bounded patch list and uses binary
 search per sampled site; it never develops or renders a frame. Owner work,
-desktop refreshes and timers gain no frame processing. Native allowlist lookup remains before unpack. Existing
+desktop refreshes and timers gain no frame processing. Native allowlist lookup and mode classification run before unpack. Existing
 exact mosaic, correction, geometry and sharing tests remain applicable. Timing
 verification covers photo-sized workloads; this refactor claims no speedup.

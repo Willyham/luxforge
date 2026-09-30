@@ -425,6 +425,8 @@ mod tests {
     /// until the gate's hang bound failed the stalled handler, and the checks that it is still held
     /// would fail.
     #[test]
+    // `..Options::default()` fills the `tls` feature's fields; without that feature it is empty.
+    #[allow(clippy::needless_update)]
     fn a_stalled_connection_holds_up_no_other_and_dropping_the_server_stops_it() {
         let stall = Arc::new(Gate::new());
         stall.shut();

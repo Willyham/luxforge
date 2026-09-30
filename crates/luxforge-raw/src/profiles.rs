@@ -4,6 +4,7 @@
 //! static data equals it and to exercise the validation on mutated catalogs.
 //! Camera policy is data; these enums name implemented format/processing capabilities.
 use crate::opcodes;
+pub(crate) use crate::unpacker::Unpacker;
 use serde::Deserialize;
 use std::{borrow::Cow, collections::HashSet};
 
@@ -47,6 +48,22 @@ pub(crate) struct Mode {
     pub dng_version: Option<u32>,
     pub validation: ModeValidation,
     pub compression: Option<Compression>,
+    /// The decoder's stored frame, `[width, height]`, when this mode stores the sensor in a
+    /// larger padded frame (such as tiled lossless compression); omitted when the frame is the
+    /// camera's `sensor_size`. Never smaller than the sensor in either dimension.
+    #[serde(default)]
+    pub frame_size: Option<[u32; 2]>,
+    /// The decoder that fills the mosaic; LibRaw's own when omitted. RawSpeed is allowed only
+    /// on a decoder in the code-owned replaceable table.
+    #[serde(default)]
+    pub unpacker: Unpacker,
+}
+
+impl Mode {
+    /// The frame this mode's decoder stores: its padded frame, or the camera's sensor.
+    pub fn frame(&self, camera: &Camera) -> [u32; 2] {
+        self.frame_size.unwrap_or(camera.sensor_size)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -150,14 +167,15 @@ impl Catalog {
             {
                 return fail("invalid or duplicate camera identity");
             }
-            let [w, h] = camera.sensor_size;
-            if w == 0
-                || h == 0
-                || w > crate::limits::MAX_SIDE
-                || h > crate::limits::MAX_SIDE
-                || u64::from(w) * u64::from(h) > crate::limits::MAX_PIXELS as u64
-                || u64::from(w) * u64::from(h) * 12 > crate::limits::MAX_RGB_BYTES as u64
-            {
+            let within_limits = |[w, h]: [u32; 2]| {
+                w != 0
+                    && h != 0
+                    && w <= crate::limits::MAX_SIDE
+                    && h <= crate::limits::MAX_SIDE
+                    && u64::from(w) * u64::from(h) <= crate::limits::MAX_PIXELS as u64
+                    && u64::from(w) * u64::from(h) * 12 <= crate::limits::MAX_RGB_BYTES as u64
+            };
+            if !within_limits(camera.sensor_size) {
                 return fail("sensor size exceeds decode/development limits");
             }
             if !matches!(camera.cfa_size, [2, 2] | [6, 6]) {
@@ -272,6 +290,23 @@ impl Catalog {
                 {
                     return fail("invalid or duplicate mode identifier, decoder or bit depth");
                 }
+                if let Some(frame) = mode.frame_size {
+                    // A padded frame holds the whole sensor: it is never smaller, never merely
+                    // restates the sensor size, and DNG geometry stays the container's own.
+                    if !within_limits(frame)
+                        || frame == camera.sensor_size
+                        || frame[0] < camera.sensor_size[0]
+                        || frame[1] < camera.sensor_size[1]
+                        || camera.dng.is_some()
+                    {
+                        return fail("invalid padded mode frame size");
+                    }
+                }
+                if mode.unpacker == Unpacker::Rawspeed
+                    && crate::unpacker::replaceable(&mode.decoder).is_none()
+                {
+                    return fail("RawSpeed unpacker requires a replaceable LibRaw decoder");
+                }
                 if let Some(dng) = &camera.dng {
                     if (dng.container == DngContainer::UncompressedU16SingleStrip
                         && mode.bits != 16)
@@ -308,6 +343,8 @@ impl Catalog {
                 }
                 if camera.modes[..i].iter().any(|other| {
                     mode.bits == other.bits
+                        && mode.raw_count == other.raw_count
+                        && mode.frame(camera) == other.frame(camera)
                         && mode.decoder == other.decoder
                         && mode.dng_version == other.dng_version
                         && mode.compression == other.compression
@@ -475,6 +512,111 @@ mod tests {
         assert!(Catalog::parse("{broken").is_err());
     }
 
+    /// A mode's `unpacker` is LibRaw when omitted, parses only as `libraw` or `rawspeed`, and is
+    /// `rawspeed` only on a decoder in the replaceable table.
+    #[test]
+    fn mode_unpacker_is_strict_and_rawspeed_needs_a_replaceable_decoder() {
+        let data = catalog();
+        let find = |decoder: &str| {
+            data["cameras"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .find_map(|(camera, entry)| {
+                    entry["modes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .position(|mode| mode["decoder"] == decoder)
+                        .map(|mode| format!("/cameras/{camera}/modes/{mode}"))
+                })
+                .unwrap_or_else(|| panic!("a catalog mode with {decoder}"))
+        };
+        let replaceable = find("nikon_load_raw()");
+        let other = find("unpacked_load_raw()");
+        let unpacker_at = |value: Option<Value>, pointer: &str| {
+            let mut changed = data.clone();
+            let mode = changed
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            match value {
+                Some(value) => mode.insert("unpacker".into(), value),
+                None => mode.remove("unpacker"),
+            };
+            let result = parse(&changed);
+            let mode = |catalog: &Catalog| {
+                catalog
+                    .cameras
+                    .iter()
+                    .flat_map(|camera| camera.modes.iter())
+                    .find(|mode| {
+                        Some(mode.id.as_ref()) == changed.pointer(pointer).unwrap()["id"].as_str()
+                    })
+                    .unwrap()
+                    .unpacker
+            };
+            result.map(|catalog| mode(&catalog))
+        };
+        assert_eq!(unpacker_at(None, &replaceable), Ok(Unpacker::Libraw));
+        assert_eq!(
+            unpacker_at(Some(json!("libraw")), &replaceable),
+            Ok(Unpacker::Libraw)
+        );
+        assert_eq!(
+            unpacker_at(Some(json!("rawspeed")), &replaceable),
+            Ok(Unpacker::Rawspeed)
+        );
+        assert_eq!(
+            unpacker_at(Some(json!("libraw")), &other),
+            Ok(Unpacker::Libraw)
+        );
+        assert!(
+            unpacker_at(Some(json!("rawspeed")), &other)
+                .unwrap_err()
+                .contains("RawSpeed unpacker requires a replaceable LibRaw decoder")
+        );
+        for invalid in [
+            json!("RawSpeed"),
+            json!("lib_raw"),
+            json!("dng_sdk"),
+            json!(""),
+            json!(1),
+            Value::Null,
+        ] {
+            assert!(
+                unpacker_at(Some(invalid.clone()), &replaceable).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        // Every catalog mode on a replaceable decoder may be routed, and no other.
+        let parsed = parse(&data).unwrap();
+        let (mut routable, mut refused) = (0, 0);
+        for (camera, entry) in parsed.cameras.iter().enumerate() {
+            for (index, mode) in entry.modes.iter().enumerate() {
+                let mut routed = parsed.clone();
+                routed.cameras.to_mut()[camera].modes.to_mut()[index].unpacker = Unpacker::Rawspeed;
+                let result = routed.validate();
+                if crate::unpacker::replaceable(&mode.decoder).is_some() {
+                    assert_eq!(result, Ok(()), "{}", mode.id);
+                    routable += 1;
+                } else {
+                    assert!(
+                        result
+                            .as_ref()
+                            .is_err_and(|text| text.contains("RawSpeed unpacker")),
+                        "{}: {result:?}",
+                        mode.id
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert!(routable > 0 && refused > 0, "{routable} {refused}");
+    }
+
     #[test]
     fn camera_and_mode_names_are_labels_not_processing_switches() {
         let mut data = catalog();
@@ -484,7 +626,7 @@ mod tests {
         data["cameras"][1]["modes"][0]["id"] = json!("ExampleUncompressed");
         data["cameras"][1]["modes"][0]["compression"]["value"] = json!(7);
         let profiles = parse(&data).unwrap();
-        let mut native = crate::RawSource::blank_native();
+        let mut native = crate::NativeIdentity::blank();
         native.width = 600;
         native.height = 400;
         native.cfa_width = 6;
@@ -494,7 +636,7 @@ mod tests {
         let mut bytes = vec![0; 0x70];
         bytes[..8].copy_from_slice(b"FUJIFILM");
         bytes[0x6c..0x70].copy_from_slice(&7_u32.to_be_bytes());
-        let classify = |n: &crate::NativeMetadata, b: &[u8], make: &str| {
+        let classify = |n: &crate::NativeIdentity, b: &[u8], make: &str| {
             crate::format::classify_mode(
                 &profiles,
                 n,
@@ -528,7 +670,7 @@ mod tests {
         let mut data = catalog();
         data["cameras"][1]["modes"][0]["raw_count"] = json!(2);
         let profiles = parse(&data).unwrap();
-        let mut native = crate::RawSource::blank_native();
+        let mut native = crate::NativeIdentity::blank();
         native.width = 7872;
         native.height = 5196;
         native.cfa_width = 6;
@@ -560,6 +702,80 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A mode may store the sensor in a larger padded frame, such as tiled lossless compression:
+    /// it is selected at that frame alone, the camera's other modes keep the sensor size, and a
+    /// frame smaller than the sensor, equal to it, over the limits or on a DNG profile is refused.
+    #[test]
+    fn padded_frame_size_is_a_mode_selector_never_smaller_than_the_sensor() {
+        let padded = |frame: Value| {
+            let mut data = catalog();
+            let mut mode = data["cameras"][0]["modes"][2].clone();
+            mode["id"] = json!("PaddedMode");
+            mode["frame_size"] = frame;
+            data["cameras"][0]["modes"]
+                .as_array_mut()
+                .unwrap()
+                .push(mode);
+            data
+        };
+        let profiles = parse(&padded(json!([6144, 4096]))).unwrap();
+        let mut native = crate::NativeIdentity::blank();
+        (native.width, native.height) = (6144, 4096);
+        (native.cfa_width, native.cfa_height) = (2, 2);
+        native.raw_count = 1;
+        native.raw_bps = 14;
+        let classify = |n: &crate::NativeIdentity| {
+            crate::format::classify_mode(
+                &profiles,
+                n,
+                "Nikon",
+                "Z 6",
+                "nikon_14bit_load_raw()",
+                &[],
+            )
+            .map(|(_, mode)| mode.id.to_string())
+        };
+        assert_eq!(classify(&native).unwrap(), "PaddedMode");
+        (native.width, native.height) = (6064, 4040);
+        assert_eq!(classify(&native).unwrap(), "NikonZ6Raw14");
+        (native.width, native.height) = (6144, 4040);
+        assert!(classify(&native).is_err());
+        for invalid in [
+            json!([6064, 4040]),
+            json!([6000, 4096]),
+            json!([6144, 4000]),
+            json!([0, 4096]),
+            json!([16_385, 4096]),
+            json!([16_000, 16_000]),
+            json!([6144]),
+        ] {
+            assert!(
+                parse(&padded(invalid.clone())).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        let mut dng = catalog();
+        dng["cameras"][2]["modes"][0]["frame_size"] = json!([5632, 3712]);
+        assert!(parse(&dng).is_err(), "accepted a padded DNG frame");
+    }
+
+    /// Modes that differ only in raw-frame count or stored frame are distinct selectors, as the
+    /// classifier matches both exactly; any other identical pair stays ambiguous.
+    #[test]
+    fn raw_count_and_frame_size_disambiguate_mode_selectors() {
+        for (field, value) in [("raw_count", json!(2)), ("frame_size", json!([6144, 4096]))] {
+            let mut data = catalog();
+            let mut mode = data["cameras"][0]["modes"][2].clone();
+            mode["id"] = json!("DistinctMode");
+            mode[field] = value;
+            data["cameras"][0]["modes"]
+                .as_array_mut()
+                .unwrap()
+                .push(mode);
+            assert!(parse(&data).is_ok(), "{field}");
+        }
     }
 
     #[test]
@@ -648,7 +864,7 @@ mod tests {
             ),
         ];
         for (make, model, width, height, cfa, bits, version, decoder, bytes, id) in cases {
-            let mut n = crate::RawSource::blank_native();
+            let mut n = crate::NativeIdentity::blank();
             n.width = width;
             n.height = height;
             n.cfa_width = cfa;
@@ -656,7 +872,7 @@ mod tests {
             n.raw_bps = bits;
             n.raw_count = 1;
             n.dng_version = version;
-            let classify = |n: &crate::NativeMetadata, decoder: &str| {
+            let classify = |n: &crate::NativeIdentity, decoder: &str| {
                 crate::format::classify_mode(
                     crate::camera_catalog(),
                     n,
