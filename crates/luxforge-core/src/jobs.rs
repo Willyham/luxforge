@@ -791,16 +791,6 @@ impl Jobs {
         self.entries.get(job_id)?.origin.as_ref()
     }
 
-    /// Name the request that started a job that has none yet, as an import does for the
-    /// preparation it joined or opened.
-    pub(crate) fn set_origin(&mut self, job_id: &JobId, origin: Origin) {
-        if let Some(entry) = self.entries.get_mut(job_id)
-            && entry.origin.is_none()
-        {
-            entry.origin = Some(origin);
-        }
-    }
-
     /// A finished shared job's outcome as `client` reads it: its status, what it left and its
     /// error, for `job.adopt` to take the prepared asset from.
     pub(crate) fn outcome_for(
@@ -1382,15 +1372,21 @@ impl Jobs {
             .count()
     }
 
-    /// Stop everything: ask every live job to stop, including those on the owner's own workers,
-    /// drop the lanes' waiting jobs, close the lanes and wait for their threads, which finish at
-    /// their job's next checkpoint.
-    pub(crate) fn shutdown(&mut self) {
+    /// Ask every live job to stop, including those on the owner's own workers, without waiting for
+    /// any of them.
+    pub(crate) fn cancel_live(&self) {
         for entry in self.entries.values() {
             if entry.is_live() {
                 entry.control.cancel("the editor is closing");
             }
         }
+    }
+
+    /// Stop everything: ask every live job to stop ([`Self::cancel_live`]), drop the lanes'
+    /// waiting jobs, close the lanes and wait for their threads, which finish at their job's next
+    /// checkpoint.
+    pub(crate) fn shutdown(&mut self) {
+        self.cancel_live();
         for lane in &mut self.lanes {
             lane.waiting.clear();
             lane.sender = None;

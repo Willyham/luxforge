@@ -22,9 +22,9 @@ use crate::{
         long_work::LongWorkModel,
         performance::PerformanceModel,
         select::{
-            Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, ChipModel, Count,
-            FilterBarModel, GridContent, InfoModel, ItemInfo, MenuChoice, PickFilter, QueryChange,
-            RowCache, SelectMenu, SelectModel, SelectPanel, SelectStatus, SelectTitle,
+            Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, ChipModel, Count, Dot,
+            FilterBarModel, GridContent, InfoModel, ItemInfo, MenuChoice, PickBand, PickFilter,
+            QueryChange, RowCache, SelectMenu, SelectModel, SelectPanel, SelectStatus, SelectTitle,
             SelectionModel, Shown, SourceIcon, SourcePress, SourceRow, SourcesModel, StripModel,
         },
     },
@@ -48,13 +48,17 @@ use luxforge_ui::{
 
 /// The sources panel's search field, as a focus target.
 pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
+/// The sources panel's scrolling list, as a scroll target.
+pub(crate) const SOURCES_SCROLL: &str = "luxforge.select.sources";
 
 /// What is not built yet, as the controls waiting for it say on hover.
 const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
-const NOT_YET_UNDO: &str = "Library undo and redo come with picks (not yet available)";
 const NOT_YET_DEVELOP: &str = "Developing picks is not yet available";
 /// Why the strip's Loupe cannot be entered without a view.
 const NO_LOUPE: &str = "choose a source first";
+
+/// A catalog cell's footer when its photograph is drawn from an approximate rendered preview.
+const APPROXIMATE: &str = "approximate";
 
 /// The width of an Info panel row's label.
 const INFO_LABEL_WIDTH: f32 = 96.0;
@@ -106,6 +110,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         middle = middle.push(
             container(sources(
                 &select.sources,
+                &select.catalog.sources,
                 &model.performance,
                 model.panel.can_interact,
             ))
@@ -119,10 +124,16 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
     if select.title.info_open {
         middle = middle.push(vertical_divider());
         middle = middle.push(
-            container(info(&select.info))
-                .width(Length::Fixed(TOOLS_PANEL_WIDTH))
-                .height(Length::Fill)
-                .style(theme::panel_surface),
+            container(if select.missing.shown {
+                crate::view::select_missing::info(&select.missing)
+            } else if let Some(photos) = &select.catalog.info {
+                crate::view::select_catalog::info(photos, grid.images)
+            } else {
+                info(&select.info)
+            })
+            .width(Length::Fixed(TOOLS_PANEL_WIDTH))
+            .height(Length::Fill)
+            .style(theme::panel_surface),
         );
     }
     let status = container(status_bar(&select.status, &model.long_work))
@@ -142,8 +153,8 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
 
 // -- Title bar -------------------------------------------------------------------------------------
 
-/// The switch, the view's name and summary; Add a folder…, Undo and Redo (waiting for their lanes),
-/// Develop N and the two panel toggles.
+/// The switch, the view's name and summary; Add a folder… (waiting for its lane), Undo and Redo of
+/// library changes, Develop N and the two panel toggles.
 fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
     let identity = row![
         switch(Shown::Select),
@@ -177,15 +188,15 @@ fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
         NOT_YET_FOLDERS.into(),
         tooltip::Position::Bottom,
     );
-    let disabled = |icon, tooltip: &str| {
+    let library = |icon, tooltip: &str, message: SelectMessage| {
         title_bar_icon_button(
             &IconButtonModel {
                 icon,
                 tooltip: tooltip.into(),
-                enabled: false,
+                enabled: true,
                 selected: false,
             },
-            None,
+            Some(Message::Select(message)),
         )
     };
     let toggle = |icon, tooltip: &str, open: bool, panel: SelectPanel| {
@@ -211,8 +222,16 @@ fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
     );
     let actions = row![
         add_folder,
-        disabled(Icon::Undo, NOT_YET_UNDO),
-        disabled(Icon::Redo, NOT_YET_UNDO),
+        library(
+            Icon::Undo,
+            "Undo this desktop's last library change (\u{2318}Z)",
+            SelectMessage::Undo,
+        ),
+        library(
+            Icon::Redo,
+            "Redo it (\u{21e7}\u{2318}Z)",
+            SelectMessage::Redo,
+        ),
         develop,
         toggle(
             Icon::StatePanel,
@@ -250,10 +269,11 @@ fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
 
 // -- Sources panel ---------------------------------------------------------------------------------
 
-/// The search field, Events by month, On disk and Catalog scrolling above a rule, and the
-/// Performance section pinned under it, as in Develop.
+/// The search field, Cards when one is mounted, Events by month, On disk and Catalog scrolling
+/// above a rule, and the Performance section pinned under it, as in Develop.
 fn sources<'a>(
     model: &'a SourcesModel,
+    catalog: &'a crate::state::select_catalog::CatalogSources,
     performance: &'a PerformanceModel,
     can_interact: bool,
 ) -> Element<'a, Message> {
@@ -290,15 +310,20 @@ fn sources<'a>(
         events =
             events.push(container(caption(note.clone())).padding([2.0, theme::SOURCE_ROW_PADDING]));
     }
-    let content = column![
-        search,
-        events,
-        section("On disk", &model.on_disk),
-        section("Catalog", &model.catalog),
-    ]
-    .spacing(theme::SOURCE_SECTION_SPACING)
-    .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
-    .width(Length::Fill);
+    let mut content = column![search];
+    if !model.cards.is_empty() {
+        content = content.push(section("Cards", &model.cards));
+    }
+    let content = content
+        .push(events)
+        .push(section("On disk", &model.on_disk))
+        .push(crate::view::select_catalog::catalog_section(
+            &model.catalog,
+            catalog,
+        ))
+        .spacing(theme::SOURCE_SECTION_SPACING)
+        .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
+        .width(Length::Fill);
     let rule = container(
         container(Space::new())
             .width(Length::Fill)
@@ -308,6 +333,7 @@ fn sources<'a>(
     .padding([0.0, theme::PANEL_PADDING_X]);
     column![
         scrollable(content)
+            .id(iced::widget::Id::from(SOURCES_SCROLL))
             .direction(theme::panel_scrollbar())
             .height(Length::Fill),
         rule,
@@ -333,20 +359,24 @@ fn section<'a>(label: &str, rows: &'a [SourceRow]) -> Element<'a, Message> {
         .into()
 }
 
-fn source(model: &SourceRow) -> Element<'_, Message> {
+pub(crate) fn source(model: &SourceRow) -> Element<'_, Message> {
     let row = SourceRowModel {
         icon: match model.icon {
             SourceIcon::Event | SourceIcon::AllPhotographs => Icon::Photos,
             SourceIcon::Folder => Icon::Folder,
+            SourceIcon::Drive => Icon::Drive,
             SourceIcon::Recent => Icon::Clock,
             SourceIcon::Missing => Icon::Warning,
             SourceIcon::Removed => Icon::Trash,
         },
         name: model.name.clone(),
         secondary: model.secondary.clone(),
-        indent: 0,
-        disclosure: None,
-        volume: model.offline.then_some(Volume::Offline),
+        indent: model.indent,
+        disclosure: model.disclosure.as_ref().map(|(open, _)| *open),
+        volume: model.dot.map(|dot| match dot {
+            Dot::Mounted => Volume::Mounted,
+            Dot::Offline => Volume::Offline,
+        }),
         count: match &model.count {
             Count::None => SourceCount::None,
             Count::Total(total) => SourceCount::Total(total.clone()),
@@ -354,15 +384,24 @@ fn source(model: &SourceRow) -> Element<'_, Message> {
                 picked: picked.clone(),
                 total: total.clone(),
             },
+            Count::Unavailable(count) => SourceCount::Unavailable(count.clone()),
         },
         selected: model.selected,
         dimmed: model.dimmed,
     };
-    let press = match &model.press {
-        SourcePress::View(source) => SelectMessage::Source(source.clone()),
-        SourcePress::BrowseFolder => SelectMessage::BrowseFolder,
-    };
-    source_row(&row, Some(Message::Select(press)), None)
+    let press = model.press.as_ref().map(|press| {
+        Message::Select(match press {
+            SourcePress::View(source) => SelectMessage::Source(source.clone()),
+            SourcePress::Read(source) => SelectMessage::Read(source.clone()),
+            SourcePress::Toggle(path) => SelectMessage::Toggle(path.clone()),
+            SourcePress::BrowseFolder => SelectMessage::BrowseFolder,
+        })
+    });
+    let toggle = model
+        .disclosure
+        .as_ref()
+        .map(|(_, path)| Message::Select(SelectMessage::Toggle(path.clone())));
+    source_row(&row, press, toggle)
 }
 
 // -- Centre ----------------------------------------------------------------------------------------
@@ -376,6 +415,9 @@ fn centre<'a>(
 ) -> Element<'a, Message> {
     if model.loupe.open {
         return crate::view::loupe::loupe(&model.loupe, grid.loupe);
+    }
+    if model.missing.shown {
+        return crate::view::select_missing::centre(&model.missing);
     }
     let Grid {
         layout,
@@ -397,6 +439,7 @@ fn centre<'a>(
             cell_view(cell, rows, content, selection, images)
         })
         .on_press(|press| Message::Select(SelectMessage::Press(press)))
+        .on_moment_action(|moment| Message::Select(SelectMessage::PickAll(moment)))
         .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
         .viewport(viewport)
         .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)))
@@ -421,16 +464,27 @@ fn centre<'a>(
             .align_bottom(Length::Fill)
             .padding(Padding::default().bottom(theme::SPACING * 1.75)),
     );
-    column![
-        filters(&model.filter),
-        layers.width(Length::Fill).height(Length::Fill)
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    // Over the catalog: its own filter bar, and the Metadata browser under it while open.
+    let mut regions = match &model.catalog.filter {
+        Some(catalog) => column![crate::view::select_catalog::filter_bar(
+            catalog,
+            &model.filter.kind,
+            model.filter.enabled,
+        )],
+        None => column![filters(&model.filter)],
+    };
+    if let Some(columns) = &model.catalog.metadata {
+        regions = regions.push(crate::view::select_catalog::metadata(columns));
+    }
+    regions
+        .push(layers.width(Length::Fill).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
-/// One visible cell, from its row when it has been read and the session's selection.
+/// One visible cell, from its row when it has been read and the session's selection. A collapsed
+/// burst shows its pick, or its first frame, with its frame count.
 fn cell_view<'a>(
     cell: GridCell,
     rows: &'a RowCache,
@@ -438,12 +492,13 @@ fn cell_view<'a>(
     selection: &SelectionModel,
     images: GridImages<'a>,
 ) -> CellView<'a> {
-    let facts = rows.cell(cell.item).unwrap_or_default();
-    let unreadable = images.unreadable(cell.item);
+    let shown = rows.shown(cell.item, cell.span);
+    let facts = rows.cell(shown).unwrap_or_default();
+    let unreadable = images.unreadable(shown);
     CellView {
         // The decoded preview while the cache holds it; the placeholder at the photograph's shape
         // while it loads.
-        image: images.image(cell.item),
+        image: images.image(shown),
         aspect: facts.aspect,
         picked: facts.picked,
         selected: selection.selected(cell.item, cell.span),
@@ -456,7 +511,11 @@ fn cell_view<'a>(
             Availability::Unreadable => CellAvailability::Unreadable,
         },
         count: (cell.span > 1).then_some(cell.span),
-        label: content.label(cell.item),
+        // A bracket frame's exposure step; a photograph drawn from an approximate rendered preview
+        // says so, quietly, as the loupe does.
+        label: content
+            .label(cell.item)
+            .or_else(|| images.approximate(shown).then_some(APPROXIMATE)),
         edited: facts.edited,
     }
 }
@@ -503,7 +562,7 @@ fn filters(model: &FilterBarModel) -> Element<'_, Message> {
 }
 
 /// A chip that opens its menu under it; pressing it again, or anywhere else, closes the menu.
-fn chip<'a>(
+pub(crate) fn chip<'a>(
     model: &'a ChipModel,
     icon: Option<Icon>,
     menu: SelectMenu,
@@ -607,14 +666,48 @@ fn info(model: &InfoModel) -> Element<'_, Message> {
 fn item_view(item: &ItemInfo) -> Element<'_, Message> {
     let mut content =
         column![preview_placeholder(item.aspect)].spacing(theme::PANEL_SECTION_SPACING);
+    if let Some(pick) = &item.pick {
+        content = content.push(pick_band(pick));
+    }
     if !item.moment.is_empty() {
         content = content.push(band("Moment", &item.moment));
     }
     content.push(band("Metadata", &item.metadata)).into()
 }
 
+/// The Pick band: "Picked for Develop" in the accent tint once picked, otherwise "Pick", each with
+/// `P`, which does the same; and once picked, what that means.
+fn pick_band(band: &PickBand) -> Element<'_, Message> {
+    let button = labelled_button(
+        &LabelledButtonModel {
+            label: if band.picked {
+                "Picked for Develop"
+            } else {
+                "Pick"
+            }
+            .into(),
+            icon: band.picked.then_some(Icon::Check),
+            key_hint: Some("P".into()),
+            tone: if band.picked {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Control
+            },
+            size: ButtonSize::Regular,
+            fill: true,
+            enabled: true,
+        },
+        Some(Message::Select(SelectMessage::Pick)),
+    );
+    let mut band_column = column![button].spacing(theme::SPACING);
+    if let Some(note) = &band.note {
+        band_column = band_column.push(caption(note.clone()));
+    }
+    band_column.width(Length::Fill).into()
+}
+
 /// The preview's place at the photograph's shape: previews come with the preview lane.
-fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
+pub(crate) fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
     let width = TOOLS_PANEL_WIDTH - 2.0 * theme::PANEL_PADDING_X;
     let aspect = aspect
         .filter(|aspect| aspect.is_finite() && *aspect > 0.0)
@@ -635,7 +728,7 @@ fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
 }
 
 /// A band: its title, then one label and value per row.
-fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a, Message> {
+pub(crate) fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a, Message> {
     let heading = text(title.to_owned())
         .size(theme::SIZE_TITLE)
         .font(theme::FONT_SEMIBOLD)

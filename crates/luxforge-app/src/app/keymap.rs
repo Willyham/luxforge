@@ -13,8 +13,10 @@ use crate::state::palette::Panel;
 use crate::app::message::{
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
+    select_catalog::CatalogMessage,
 };
 use crate::state::select::{SelectPanel, Shown};
+use crate::state::select_catalog::CatalogAction;
 // ── end lane D ──
 use iced::{
     Event, Subscription,
@@ -371,9 +373,12 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 
 /// The Select workspace's keys: Escape closes an open menu whatever has focus; otherwise only a key
 /// no text field took acts. The arrows move the active item and repeat while held, with Shift
-/// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Tab` toggles the side panels,
-/// and `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst.
-/// `D`, which will develop the active frame, waits for picks, and the loupe's keys for the loupe.
+/// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Cmd+Z` and `Shift+Cmd+Z`
+/// undo and redo this desktop's library changes; `Cmd+F` puts the focus in the search field (the
+/// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
+/// `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst; `P`
+/// picks or clears the selection. `D`, which will develop the active frame, waits for developing
+/// picks, and the loupe's keys for the loupe.
 fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
     let Keys::KeyPressed {
         key,
@@ -413,7 +418,19 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
             }
             return None;
         }
-        if modifiers.shift() || *repeat {
+        if *repeat {
+            return None;
+        }
+        // Library undo and redo: in Select, `Cmd+Z` and `Shift+Cmd+Z` are the journal's, never
+        // the photograph's history (the design's P10).
+        if character(key, "z") {
+            return Some(Message::Select(if modifiers.shift() {
+                SelectMessage::Redo
+            } else {
+                SelectMessage::Undo
+            }));
+        }
+        if modifiers.shift() {
             return None;
         }
         if character(key, "a") {
@@ -421,6 +438,11 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
         }
         if character(key, "d") {
             return Some(Message::Select(SelectMessage::SelectNone));
+        }
+        if character(key, "f") {
+            return Some(Message::Select(SelectMessage::Catalog(
+                CatalogMessage::Act(CatalogAction::FocusSearch),
+            )));
         }
         return None;
     }
@@ -448,6 +470,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     }
     if character(key, "s") {
         return Some(Message::Select(SelectMessage::Collapse));
+    }
+    // `P` picks or clears the selection over the grid; the loupe's `P` is the loupe's own.
+    if !context.loupe_open && character(key, "p") {
+        return Some(Message::Select(SelectMessage::Pick));
     }
     // `Space` or `E` shows the active frame in the loupe.
     if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {

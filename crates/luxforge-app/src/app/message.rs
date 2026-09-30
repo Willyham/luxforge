@@ -24,6 +24,8 @@ pub(crate) mod pointer;
 pub(crate) mod preset;
 pub(crate) mod preview;
 pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
 pub(crate) mod sync;
 pub(crate) mod view;
 

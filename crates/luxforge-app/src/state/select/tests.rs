@@ -6,7 +6,7 @@ use luxforge_core::{
     AssetId,
     catalog_types::{
         BrowseSession, CameraGroup, DayGroup, Dimensions, EventId, ExifOrientation, FacetValue,
-        FileId, GroupLayout, LibraryChangeSeq, MomentRef, MonthCount, PositionRange, Thresholds,
+        GroupLayout, LibraryChangeSeq, MomentRef, MonthCount, PositionRange, Thresholds,
         ViewFilter, ViewSelection, ViewSort,
     },
 };
@@ -44,6 +44,7 @@ fn burst(start: u32, len: u32, span_ms: u64) -> Moment {
         span_ms,
         start,
         len,
+        picked: 0,
     }
 }
 
@@ -55,11 +56,13 @@ fn bracket(start: u32, steps: Vec<f32>, evidence: BracketEvidence) -> Moment {
         steps_ev: steps,
         span_ms: 600,
         start,
+        picked: 0,
     }
 }
 
 /// Twenty frames over two days: the first with two cameras, a burst under the first and a bracket
-/// from the metadata under the second; the second day with one camera and a burst.
+/// from the metadata under the second; the second day with one camera and a burst. Three frames
+/// are picked: one of the first burst and a single on the first day, one of the second burst.
 fn trip() -> ViewSummary {
     summary(
         20,
@@ -69,11 +72,13 @@ fn trip() -> ViewSummary {
                     day: Some(day(2026, 9, 12)),
                     start: 0,
                     len: 12,
+                    picked: 2,
                 },
                 DayGroup {
                     day: Some(day(2026, 9, 13)),
                     start: 12,
                     len: 8,
+                    picked: 1,
                 },
             ],
             cameras: vec![
@@ -91,14 +96,21 @@ fn trip() -> ViewSummary {
                 },
             ],
             moments: vec![
-                burst(1, 3, 1400),
+                Moment {
+                    picked: 1,
+                    ..burst(1, 3, 1400)
+                },
                 bracket(7, vec![-2.0, 0.0, 2.0], BracketEvidence::Metadata),
-                burst(14, 2, 300),
+                Moment {
+                    picked: 1,
+                    ..burst(14, 2, 300)
+                },
             ],
         },
     )
 }
 
+/// A moment block, the summary's first, with no pick: a bracket of files offers Pick all.
 fn moment(
     bracket: bool,
     title: &str,
@@ -108,12 +120,42 @@ fn moment(
     collapsed: bool,
 ) -> Block {
     Block::Moment {
+        index: 0,
         bracket,
         title: title.into(),
         detail: detail.into(),
         evidence: evidence.map(Into::into),
+        picked: None,
+        action: bracket.then(|| format!("Pick all {frames}")),
         frames,
         collapsed,
+    }
+}
+
+/// `block`, the summary's moment `number`, with `picked` in its header.
+fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
+    match block {
+        Block::Moment {
+            bracket,
+            title,
+            detail,
+            evidence,
+            action,
+            frames,
+            collapsed,
+            ..
+        } => Block::Moment {
+            index: number,
+            bracket,
+            title,
+            detail,
+            evidence,
+            picked: picked.map(Into::into),
+            action,
+            frames,
+            collapsed,
+        },
+        other => other,
     }
 }
 
@@ -140,28 +182,73 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
     assert_eq!(
         content.blocks,
         vec![
-            heading(true, "Saturday 12 September 2026", "12 photographs"),
+            heading(
+                true,
+                "Saturday 12 September 2026",
+                "12 photographs \u{b7} 2 picked"
+            ),
             heading(false, "Leica Q2", "7"),
             Block::Singles(1),
-            moment(false, "Burst", "3 frames in 1.4 s", None, 3, false),
+            numbered(
+                moment(false, "Burst", "3 frames in 1.4 s", None, 3, false),
+                0,
+                Some("1 picked")
+            ),
             Block::Singles(3),
             heading(false, "Nikon Z 8", "5"),
-            moment(
-                true,
-                "Bracket",
-                "3 exposures \u{b7} \u{2212}2 \u{b7} 0 \u{b7} +2 EV",
-                Some("from metadata"),
-                3,
-                false
+            numbered(
+                moment(
+                    true,
+                    "Bracket",
+                    "3 exposures \u{b7} \u{2212}2 \u{b7} 0 \u{b7} +2 EV",
+                    Some("from metadata"),
+                    3,
+                    false
+                ),
+                1,
+                None
             ),
             Block::Singles(2),
-            heading(true, "Sunday 13 September 2026", "8 photographs"),
+            heading(
+                true,
+                "Sunday 13 September 2026",
+                "8 photographs \u{b7} 1 picked"
+            ),
             Block::Singles(2),
-            moment(false, "Burst", "2 frames in 0.3 s", None, 2, true),
+            numbered(
+                moment(false, "Burst", "2 frames in 0.3 s", None, 2, true),
+                2,
+                Some("1 picked")
+            ),
             Block::Singles(4),
         ]
     );
     assert_eq!(content.items(), trip.count);
+    // The grid names a header's action by the moment's place among its moments.
+    assert_eq!(content.moment(1), Some(1));
+    assert_eq!(content.moment(3), None);
+    // A bracket with every frame picked offers no Pick all, and says so; over the catalog no
+    // bracket does.
+    let mut all = trip.clone();
+    all.groups.moments[1].picked = 3;
+    assert!(grid_content(&all, &BTreeSet::new()).blocks.iter().any(|block| matches!(
+        block,
+        Block::Moment { index: 1, action: None, picked: Some(picked), .. } if picked == "3 picked"
+    )));
+    let mut photos = trip.clone();
+    photos.query = ViewQuery::of(ViewSource::AllPhotographs);
+    assert!(
+        grid_content(&photos, &BTreeSet::new())
+            .blocks
+            .iter()
+            .all(|block| !matches!(
+                block,
+                Block::Moment {
+                    action: Some(_),
+                    ..
+                }
+            ))
+    );
     // The bracket's frames carry their steps as footers; nothing else has one.
     assert_eq!(content.label(7), Some("\u{2212}2 EV"));
     assert_eq!(content.label(8), Some("0 EV"));
@@ -190,11 +277,13 @@ fn select_day_and_no_grouping_follow_the_layout_they_are_given() {
                     day: Some(day(2026, 9, 12)),
                     start: 0,
                     len: 3,
+                    picked: 0,
                 },
                 DayGroup {
                     day: None,
                     start: 3,
                     len: 2,
+                    picked: 0,
                 },
             ],
             ..GroupLayout::default()
@@ -321,11 +410,190 @@ fn select_words_for_days_spans_and_steps() {
     );
 }
 
+fn volume(label: &str, mount: &str) -> luxforge_core::catalog_types::Volume {
+    luxforge_core::catalog_types::Volume {
+        id: VolumeId::parse(format!("volume-{}", label.to_lowercase().replace(' ', "-"))).unwrap(),
+        mount_point: mount.into(),
+        label: label.into(),
+        removable: false,
+        platform_id: None,
+        last_seen_ms: 1,
+    }
+}
+
+fn subfolders(parent: &str, names: &[&str]) -> DiskFolders {
+    DiskFolders {
+        path: parent.into(),
+        folders: names
+            .iter()
+            .map(|name| luxforge_core::catalog_types::DiskFolder {
+                name: (*name).into(),
+                path: Path::new(parent).join(name),
+            })
+            .collect(),
+        truncated: false,
+    }
+}
+
+/// Cards list each mounted card, which reads it before viewing it; On disk lists the volumes but
+/// the cards, the startup disk first with its filled dot, an offline one hollow and inert, an open
+/// volume's folders under it and an open folder's under that, each read before it is viewed, and
+/// Browse a folder… last; Catalog carries `catalog.info`'s counts, Missing originals' in the red.
+#[test]
+fn the_select_sources_panel_lists_cards_volumes_folders_and_counts() {
+    use luxforge_core::catalog_types::{Card, VolumeState};
+    let card = volume("NIKON Z 8", "/Volumes/NIKON Z 8");
+    let startup = volume("Macintosh HD", "/");
+    let offline = volume("Photos SSD", "/Volumes/Photos SSD");
+    let state = SelectState {
+        shown: Shown::Select,
+        cards: Some(Cards {
+            cards: vec![Card {
+                volume: card.clone(),
+                dcim: "/Volumes/NIKON Z 8/DCIM".into(),
+                files: Some(612),
+                cameras: vec!["NIKON Z 8".into()],
+                events: None,
+            }],
+        }),
+        volumes: Some(Volumes {
+            volumes: vec![
+                VolumeState {
+                    volume: startup.clone(),
+                    offline: false,
+                    card: false,
+                    startup: true,
+                },
+                VolumeState {
+                    volume: card.clone(),
+                    offline: false,
+                    card: true,
+                    startup: false,
+                },
+                VolumeState {
+                    volume: offline.clone(),
+                    offline: true,
+                    card: false,
+                    startup: false,
+                },
+            ],
+        }),
+        disk: BTreeMap::from([
+            ("/".into(), subfolders("/", &["Users"])),
+            ("/Users".into(), subfolders("/Users", &["w", "Shared"])),
+        ]),
+        open: BTreeSet::from(["/".into(), "/Users".into()]),
+        counts: Some(CatalogCounts {
+            photographs: 842,
+            recently_developed: 6,
+            removed: 4,
+            unavailable: 212,
+            folders: 3,
+            collections: 1,
+            picks: 18,
+            indexed_folders: 1,
+            library_changes: 40,
+        }),
+        query: Some(ViewQuery::of(ViewSource::Folder {
+            path: "/Users/w".into(),
+            subfolders: true,
+        })),
+        ..SelectState::default()
+    };
+    let model = sources(&state);
+    // The card, named by its volume, its camera the same name, with its listed files.
+    assert_eq!(model.cards.len(), 1);
+    assert_eq!(model.cards[0].name, "NIKON Z 8");
+    assert_eq!(model.cards[0].secondary, None);
+    assert_eq!(model.cards[0].count, Count::Total("612".into()));
+    assert_eq!(
+        model.cards[0].press,
+        Some(SourcePress::Read(ReadSource::Card {
+            volume_id: card.id.clone(),
+            name: "NIKON Z 8".into()
+        }))
+    );
+    let shape: Vec<(String, u8, Option<bool>, Option<Dot>)> = model
+        .on_disk
+        .iter()
+        .map(|row| {
+            (
+                row.name.clone(),
+                row.indent,
+                row.disclosure.as_ref().map(|(open, _)| *open),
+                row.dot,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            ("Macintosh HD".into(), 0, Some(true), Some(Dot::Mounted)),
+            ("Users".into(), 1, Some(true), None),
+            ("w".into(), 2, Some(false), None),
+            ("Shared".into(), 2, Some(false), None),
+            ("Photos SSD".into(), 0, None, Some(Dot::Offline)),
+            ("Browse a folder\u{2026}".into(), 0, None, None),
+        ]
+    );
+    assert_eq!(
+        model.on_disk[0].press,
+        Some(SourcePress::Toggle("/".into()))
+    );
+    assert_eq!(
+        model.on_disk[2].press,
+        Some(SourcePress::Read(ReadSource::Folder("/Users/w".into())))
+    );
+    assert!(model.on_disk[2].selected, "the folder being viewed");
+    assert!(model.on_disk[4].dimmed && model.on_disk[4].press.is_none());
+    assert_eq!(
+        model
+            .catalog
+            .iter()
+            .map(|row| row.count.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            Count::Total("842".into()),
+            Count::Total("6".into()),
+            Count::Unavailable("212".into()),
+            Count::Total("4".into()),
+        ]
+    );
+    // What reading a source asks the index lane for, and what the status bar calls it.
+    assert_eq!(
+        ReadSource::Folder("/Users/w/Card dumps".into()).refresh_params(),
+        json!({"source": {"kind": "folder", "path": "/Users/w/Card dumps"}})
+    );
+    let reading = ReadSource::Card {
+        volume_id: card.id.clone(),
+        name: "NIKON Z 8".into(),
+    };
+    assert_eq!(
+        reading.refresh_params(),
+        json!({"source": {"kind": "card", "volume_id": card.id}})
+    );
+    assert_eq!(reading.name(None), "the NIKON Z 8 card");
+    // No missing original: no count on Missing originals.
+    let none_missing = SelectState {
+        counts: state.counts.clone().map(|counts| CatalogCounts {
+            unavailable: 0,
+            ..counts
+        }),
+        ..state.clone()
+    };
+    assert_eq!(sources(&none_missing).catalog[2].count, Count::None);
+}
+
 fn listed(name: &str, months: Vec<Month>, count: u32, picked: u32, offline: u32) -> Event {
     Event {
         id: EventId::new(),
         name: name.into(),
-        label: name.into(),
+        // As the core labels it: the name without its dates, or the whole of an Undated one.
+        label: if months.is_empty() {
+            name.into()
+        } else {
+            name.split(" \u{b7} ").next().unwrap_or(name).into()
+        },
         place: None,
         first_day: months.first().map(|month| day(month.year, month.month, 12)),
         last_day: months.last().map(|month| day(month.year, month.month, 13)),
@@ -395,7 +663,7 @@ fn the_select_sources_panel_lists_events_by_month() {
         ]
     );
     let first = &model.months[0].rows[0];
-    assert!(first.selected && !first.offline);
+    assert!(first.selected && first.dot.is_none());
     assert_eq!(first.secondary.as_deref(), Some("12\u{2013}13 Sep"));
     assert_eq!(
         first.count,
@@ -406,20 +674,22 @@ fn the_select_sources_panel_lists_events_by_month() {
     );
     assert_eq!(
         first.press,
-        SourcePress::View(ViewSource::Event {
+        Some(SourcePress::View(ViewSource::Event {
             event_id: konstanz.id.clone()
-        })
+        }))
     );
     let second = &model.months[0].rows[1];
-    assert!(second.offline && !second.selected);
+    assert!(second.dot == Some(Dot::Offline) && !second.selected);
     assert_eq!(second.count, Count::Total("212".into()));
     assert_eq!(model.events_note, None);
-    // On disk offers the folder dialog; Catalog its four views, Removed dimmed, counts blank.
+    // Before the volumes are read On disk offers the folder dialog alone; Catalog its four views,
+    // Removed dimmed, counts blank until `catalog.info` answers; no Cards heading without a card.
+    assert!(model.cards.is_empty());
     assert_eq!(
         names(&model.on_disk),
         vec!["Browse a folder\u{2026}".to_owned()]
     );
-    assert_eq!(model.on_disk[0].press, SourcePress::BrowseFolder);
+    assert_eq!(model.on_disk[0].press, Some(SourcePress::BrowseFolder));
     assert_eq!(
         names(&model.catalog),
         vec![
@@ -448,8 +718,8 @@ fn the_select_sources_panel_lists_events_by_month() {
         ..state.clone()
     };
     let model = sources(&folder);
-    assert_eq!(model.on_disk[1].name, "Dumps");
-    assert!(model.on_disk[1].selected);
+    assert_eq!(model.on_disk[0].name, "Dumps");
+    assert!(model.on_disk[0].selected);
     assert!(
         model
             .months
@@ -587,12 +857,16 @@ fn every_select_filter_and_sort_changes_its_own_part_of_the_query() {
     }
     assert_eq!(source_query(event_source()), ViewQuery::of(event_source()));
     assert_eq!(pick_filter(&base), PickFilter::Picked);
-    // The facets asked for: the chips' and, over files, the pick counts.
+    // The facets asked for: the chips' and, over files, the pick counts; over the catalog, the
+    // Metadata browser's columns and Kind.
     assert_eq!(
         facets_params(&base),
         json!({"source": base.source, "filter": base.filter, "facets": ["camera", "kind", "pick"]})
     );
-    assert_eq!(facets_params(&catalog)["facets"], json!(["camera", "kind"]));
+    assert_eq!(
+        facets_params(&catalog)["facets"],
+        json!(["date", "place", "camera", "lens", "kind"])
+    );
 }
 
 fn facet(value: &str, label: Option<&str>, count: u32) -> FacetValue {
@@ -729,6 +1003,8 @@ fn row(position: u32) -> ViewRow {
         picked: false,
         developed_as: None,
         edited: false,
+        folder_id: None,
+        collections: Vec::new(),
         availability: FileAvailability::Available,
         preview: PreviewState::Pending,
     }
@@ -941,6 +1217,7 @@ fn the_select_info_panel_describes_the_active_item() {
     rows[2].exposure.bias_ev = Some(0.0);
     rows[8].moment = Some(MomentRef { index: 1, frame: 1 });
     rows[5].developed_as = Some(AssetId::new());
+    rows[2].picked = true;
     assert!(state.rows.answered(7, request.from, rows, 0..20));
 
     let one = |state: &SelectState, active: u32| {
@@ -954,6 +1231,17 @@ fn the_select_info_panel_describes_the_active_item() {
     };
     assert_eq!(frame.name, "DSC_0002.NEF");
     assert_eq!(frame.aspect, Some(4024.0 / 6048.0), "turned upright");
+    // A picked file's Pick band says it is picked for Develop and what that means, with the view's
+    // picks in Develop N.
+    assert_eq!(
+        frame.pick,
+        Some(PickBand {
+            picked: true,
+            note: Some(
+                "Joins the catalog when you press Develop 3. The file stays where it is.".into()
+            ),
+        })
+    );
     assert_eq!(
         frame.moment,
         vec![
@@ -988,6 +1276,13 @@ fn the_select_info_panel_describes_the_active_item() {
         panic!("one item");
     };
     assert!(single.moment.is_empty());
+    assert_eq!(
+        single.pick,
+        Some(PickBand {
+            picked: false,
+            note: None
+        })
+    );
     assert_eq!(
         single.metadata.last().unwrap(),
         &("Catalog".to_owned(), "In the catalog".to_owned())
@@ -1113,33 +1408,155 @@ fn select_bursts_and_cell_widths() {
     assert_eq!(clamp_cell_width(f32::NAN), FILES_CELL_WIDTH);
 }
 
-/// An event's row and title name it without the dates its name ends with, which they show beside
-/// it, and an Undated event by its folder under the Undated heading; any other name stays whole.
+/// An event's row and title name it by the core's label, the name without its dates, which they
+/// show beside it; an Undated event by its folder under the Undated heading; and one whose name is
+/// its dates alone by that name.
 #[test]
 fn a_select_event_is_labelled_without_the_dates_it_is_shown_with() {
-    let named = |name: &str, first: Option<LocalDay>, last: Option<LocalDay>| Event {
+    let labelled = |name: &str, label: &str, first: Option<LocalDay>| Event {
         name: name.into(),
+        label: label.into(),
         first_day: first,
-        last_day: last,
+        last_day: first,
         undated: first.is_none(),
         ..listed(name, Vec::new(), 1, 0, 0)
     };
-    let (twelve, thirteen) = (Some(day(2026, 9, 12)), Some(day(2026, 9, 13)));
+    let twelve = Some(day(2026, 9, 12));
     assert_eq!(
-        event_label(&named("Konstanz \u{b7} 12\u{2013}13 Sep", twelve, thirteen)),
+        event_label(&labelled(
+            "Konstanz \u{b7} 12\u{2013}13 Sep",
+            "Konstanz",
+            twelve
+        )),
         "Konstanz"
     );
     assert_eq!(
-        event_label(&named("Lake \u{b7} 12 Sep", twelve, twelve)),
-        "Lake"
-    );
-    assert_eq!(
-        event_label(&named("Undated \u{b7} From Anna", None, None)),
+        event_label(&labelled(
+            "Undated \u{b7} From Anna",
+            "Undated \u{b7} From Anna",
+            None
+        )),
         "From Anna"
     );
-    assert_eq!(
-        event_label(&named("Konstanz \u{b7} 4 Sep", twelve, thirteen)),
-        "Konstanz \u{b7} 4 Sep",
-        "a name whose dates are not the event's own is kept whole"
+    assert_eq!(event_label(&labelled("12 Sep", "", twelve)), "12 Sep");
+}
+
+/// `P` clears only a selection the desktop has read whole and every one picked, and otherwise
+/// picks; each library gesture sends exactly what an agent would; a change says its label with the
+/// key that takes it back; a refused undo names the first item that changed; the loupe moves on to
+/// the next moment; a collapsed burst shows its pick; Pick all names its frames' files.
+#[test]
+fn select_picking_decides_sends_and_says_what_an_agent_sees() {
+    let mut rows = RowCache::default();
+    rows.reset(7, 20);
+    let request = rows.next_request(0..20).unwrap();
+    let mut read = block(0, 20);
+    read[3].picked = true;
+    read[4].picked = true;
+    read[15].picked = true;
+    assert!(rows.answered(7, request.from, read, 0..20));
+    let selecting = |ranges: &[(u32, u32)]| {
+        SelectionModel::of(&session(7, ranges, ranges.first().map(|r| r.0)), Some(7))
+    };
+    assert!(
+        !pick_value(&selecting(&[(3, 2)]), &rows),
+        "both picked: clear"
     );
+    assert!(
+        pick_value(&selecting(&[(3, 3)]), &rows),
+        "one not picked: pick"
+    );
+    assert!(pick_value(&selecting(&[(0, 1)]), &rows));
+    assert!(pick_value(&SelectionModel::default(), &rows));
+    assert!(
+        pick_value(&selecting(&[(15, 1), (40, 1)]), &rows),
+        "an unread row may not be picked: pick"
+    );
+
+    let mutation = MutationRequest {
+        request_id: "desktop-1-7".into(),
+        actor: "desktop".into(),
+    };
+    assert_eq!(
+        pick_params(&Targets::Selection, true, &mutation),
+        json!({
+            "targets": {"kind": "selection"},
+            "picked": true,
+            "mutation": {"request_id": "desktop-1-7", "actor": "desktop"},
+        })
+    );
+    assert_eq!(
+        pick_params(
+            &Targets::Files {
+                file_ids: frame_files(&rows, 7, 3).unwrap()
+            },
+            true,
+            &mutation
+        ),
+        json!({
+            "targets": {"kind": "files", "file_ids": [7, 8, 9]},
+            "picked": true,
+            "mutation": {"request_id": "desktop-1-7", "actor": "desktop"},
+        })
+    );
+    assert_eq!(frame_files(&rows, 18, 4), None, "a frame not read yet");
+    assert_eq!(
+        library_params(&mutation),
+        json!({"mutation": {"request_id": "desktop-1-7", "actor": "desktop"}})
+    );
+    assert_eq!(journal_params(12), json!({"after": 11, "limit": 1}));
+
+    let change = |label: &str, undoes: Option<u64>, redoes: Option<u64>| LibraryChange {
+        sequence: LibraryChangeSeq(12),
+        actor: "desktop".into(),
+        request_id: "desktop-1-7".into(),
+        method: "pick.set".into(),
+        label: label.into(),
+        time_ms: 1,
+        item_count: 1,
+        undoes: undoes.map(LibraryChangeSeq),
+        redoes: redoes.map(LibraryChangeSeq),
+        undone_by: None,
+    };
+    assert_eq!(
+        change_text(&change("Picked DSC_0412.NEF", None, None)),
+        "Picked DSC_0412.NEF \u{b7} Undo \u{2318}Z"
+    );
+    assert_eq!(
+        change_text(&change("Undo Picked DSC_0412.NEF", Some(11), None)),
+        "Undid Picked DSC_0412.NEF \u{b7} Redo \u{21e7}\u{2318}Z"
+    );
+    assert_eq!(
+        change_text(&change("Redo Picked DSC_0412.NEF", None, Some(11))),
+        "Redid Picked DSC_0412.NEF \u{b7} Undo \u{2318}Z"
+    );
+    assert_eq!(
+        refusal_text(
+            LibraryGesture::Undo,
+            Some(&json!({
+                "items": [{"kind": "pick", "path": "/Volumes/NIKON Z 8/DCIM/DSC_0412.NEF"}],
+                "count": 3,
+            }))
+        )
+        .as_deref(),
+        Some("Could not undo: DSC_0412.NEF and 2 other items changed since")
+    );
+    assert_eq!(refusal_text(LibraryGesture::Redo, None), None);
+    assert_eq!(LibraryGesture::Undo.nothing(), "Nothing to undo");
+    assert_eq!(LibraryGesture::Redo.method(), "library.redo");
+
+    // P7: after a frame of the burst 1..4 the loupe moves to 4, after a single to the next frame,
+    // after the bracket 7..10 to 10; past the view's end, nowhere.
+    let trip = trip();
+    assert_eq!(next_moment(&trip, 2), Some(4));
+    assert_eq!(next_moment(&trip, 0), Some(1));
+    assert_eq!(next_moment(&trip, 8), Some(10));
+    assert_eq!(next_moment(&trip, 15), Some(16));
+    assert_eq!(next_moment(&trip, 19), None);
+
+    // A collapsed burst shows its first pick; one with no pick read shows its first frame.
+    assert_eq!(rows.shown(14, 2), 15);
+    assert_eq!(rows.shown(2, 3), 3);
+    assert_eq!(rows.shown(0, 3), 0);
+    assert_eq!(rows.shown(3, 1), 3);
 }

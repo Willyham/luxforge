@@ -315,6 +315,12 @@ pub struct ViewRow {
     pub developed_as: Option<AssetId>,
     /// A photograph with history beyond its Original; false for a file.
     pub edited: bool,
+    /// A photograph's catalog folder, the one it lives in; absent for a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<CatalogFolderId>,
+    /// The plain collections a photograph is a member of, by identity; empty for a file.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collections: Vec<CollectionId>,
     pub availability: FileAvailability,
     pub preview: PreviewState,
 }
@@ -531,6 +537,8 @@ mod tests {
             picked: true,
             developed_as: None,
             edited: false,
+            folder_id: None,
+            collections: Vec::new(),
             availability: FileAvailability::Available,
             preview: PreviewState::Thumbnail,
         };

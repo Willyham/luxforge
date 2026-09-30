@@ -196,9 +196,9 @@ pub(crate) fn photographs(
         return many(rows.len());
     };
     let asset = match &row.item {
-        LibraryItem::AssetFolder { asset_id } | LibraryItem::Membership { asset_id, .. } => {
-            asset_id
-        }
+        LibraryItem::AssetFolder { asset_id }
+        | LibraryItem::Membership { asset_id, .. }
+        | LibraryItem::AssetRemoval { asset_id } => asset_id,
         other => return other.key(),
     };
     connection

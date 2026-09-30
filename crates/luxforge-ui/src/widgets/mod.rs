@@ -61,6 +61,14 @@ mod source_list;
 mod title_actions;
 // -- end Select: chrome.
 
+// -- Select: resolving missing originals.
+mod resolve;
+// -- end Select: resolving missing originals.
+
+// -- Select: the catalog.
+mod catalog;
+// -- end Select: the catalog.
+
 pub use badge::{BadgeModel, badge};
 pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, equal_button_row,
@@ -152,6 +160,20 @@ pub use source_list::{
 };
 pub use title_actions::{DevelopButtonModel, WorkspaceTab, develop_button, workspace_switch};
 // -- end Select: chrome's exports.
+
+// -- Select: resolving missing originals' exports.
+pub use resolve::{
+    ResolveBarModel, ResolveGroupModel, ResolveResultModel, ResolveRowModel, ResolveTone,
+    resolve_action, resolve_bar, resolve_group, resolve_row,
+};
+// -- end Select: resolving missing originals' exports.
+
+// -- Select: the catalog's exports.
+pub use catalog::{
+    FacetColumnModel, FacetRowModel, OrganizeChipModel, OrganizeTone, facet_column,
+    metadata_browser, organize_chip, organize_chips,
+};
+// -- end Select: the catalog's exports.
 
 // Used only inside the crate: by its composed widgets and the components board.
 pub(crate) use coverage_thumbnail::coverage_thumbnail;

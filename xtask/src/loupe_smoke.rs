@@ -9,8 +9,9 @@
 //! Its frames, in [`plan`] order: `G` showing Select; the folder browsed; the burst's first frame
 //! clicked; `E` opening the loupe on it; `→` twice; `1` back to the moment's first frame; `↓` to
 //! the next moment and `↑` back; `Esc` to the grid; the bracket's first frame clicked and `E`;
-//! `→`; `Z`, the 100% focus check at the middle of the frame; `C`, the bracket side by side; `P`;
-//! and `Esc` back to the grid.
+//! `→`; `Z`, the 100% focus check at the middle of the frame; `C`, the bracket side by side; `P`,
+//! picking the bracket's frame where it stands; `Esc` back to the grid; and the burst's second
+//! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7).
 //!
 //! Each loupe frame's `select.loupe` block is checked against the core's answers: the active frame
 //! is the row at the position the step moved to, and the picture drawn is that frame's own (draw
@@ -18,9 +19,9 @@
 //! preview · 640 × 427", not a stand-in), settled, with the decoded frames and the plan within the
 //! budget. What the capture shows is read back: the picture's centre against the frame's own file
 //! decoded independently, and on the bracket, nearer its own exposure than its siblings'; the
-//! focus check's inset against the same rectangle of the file at 100%. `P` is lane D's pick
-//! (TASK-019), which is not on this branch: the step is recorded as pending, with the status the
-//! hook shows and nothing moved, never as a pass. Everything compared is written to
+//! focus check's inset against the same rectangle of the file at 100%. Each `P` is Select's own
+//! pick: one `pick.set` recorded as this desktop, the view's pick count one higher, its label in
+//! the status bar. Everything compared is written to
 //! `app/loupe-checks.json`; the core's answers from before the run are kept in
 //! `loupe-expected.json`, so a replay checks the same frames against them.
 use crate::{
@@ -46,8 +47,6 @@ const SEED: u64 = 1;
 const IMAGES: u32 = 120;
 /// What the loupe says a generated JPEG's picture is: the file itself, its own full-size preview.
 const SOURCE: &str = "Camera preview \u{b7} 640 \u{d7} 427";
-/// What `P` says while lane D's pick is not on this branch.
-const PICK_PENDING: &str = "Picking from the loupe comes with picks (not yet available)";
 /// How far a patch of the drawn picture may be from the same patch of its file, in 8-bit codes
 /// of luminance: the decoders differ in rounding and the picture is resampled to the screen.
 const DRAWN_TOLERANCE: f64 = 10.0;
@@ -61,6 +60,15 @@ pub fn plan(expected: &Value) -> Result<Plan> {
             .ok_or_else(|| format!("The expected answers name no {key}"))
     };
     let (burst, bracket) = (at("burst")?, at("bracket")?);
+    let named = |position: u32| {
+        expected["rows"][position as usize]["file_name"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("The expected answers hold no row at {position}"))
+    };
+    let picked = |position: u32| -> Result<String> {
+        Ok(format!("Picked {} \u{b7} Undo \u{2318}Z", named(position)?))
+    };
     let folder = expected["folder"]["path"]
         .as_str()
         .ok_or("The expected answers name no folder")?;
@@ -106,8 +114,11 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         arrow("bracket-2", ArrowKey::Right),
         key("focus", "z"),
         key("compare", "c"),
-        key("pick", "p").status(PICK_PENDING),
+        key("pick", "p").status(picked(bracket + 1)?),
         key("back", script::KEY_ESCAPE),
+        click("burst-again", burst + 1),
+        key("burst-loupe", "e"),
+        key("burst-pick", "p").status(picked(burst + 1)?),
     ]))
 }
 
@@ -632,35 +643,101 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         format!("Compare's frames are at different zooms: {widths:?}"),
     )?;
 
-    // P: lane D's pick is not on this branch. Pending, never a pass: the hook says so and moves
-    // nothing.
+    // P on the bracket's frame: Select's own pick of it, and the loupe stays where it is.
     let pick = launch.at("pick")?;
+    pick_frame(&mut checks, &expected, compare, pick, "pick", bracket + 1)?;
     ensure(
-        select(pick)["selection"]["active"] == bracket + 1
-            && select(pick)["picked"] == select(compare)["picked"],
-        "P moved or picked something while picks are not on this branch",
+        loupe(pick)["open"] == true
+            && loupe(pick)["compare"] == true
+            && loupe(pick)["subject"]["position"] == bracket + 1
+            && select(pick)["selection"]["active"] == bracket + 1,
+        format!(
+            "pick: a bracket's pick moved the loupe or left compare: {}",
+            loupe(pick)["subject"]
+        ),
     )?;
-    let pending = "pick: lane D's pick request (TASK-019) is not on this branch; P shows its \
-                   not-yet-available status and picks nothing, and P7 (a burst pick moving on) is \
-                   covered by the desktop's tests only";
-    checks.note(
-        pick,
-        "PENDING: the pick step",
-        json!({"pending": pending, "status": pick.status()?}),
-    );
-    run.record("pending", json!([pending]));
 
     let back = launch.at("back")?;
     ensure(
         loupe(back)["open"] == false && select(back)["selection"]["active"] == bracket + 1,
         "Esc did not return to the grid on the loupe's frame",
     )?;
+
+    // P on a burst's frame picks it and moves on to the next moment's first frame (P7).
+    loupe_frame(
+        &mut checks,
+        &expected,
+        launch.at("burst-loupe")?,
+        "burst-loupe",
+        burst + 1,
+    )?;
+    let burst_pick = launch.at("burst-pick")?;
+    pick_frame(
+        &mut checks,
+        &expected,
+        launch.at("burst-loupe")?,
+        burst_pick,
+        "burst-pick",
+        burst + 1,
+    )?;
+    loupe_frame(
+        &mut checks,
+        &expected,
+        burst_pick,
+        "burst-pick",
+        burst + burst_len,
+    )?;
     checks.write(
         &launch.evidence,
         "loupe",
         json!({"expected": {"burst": expected["burst"], "bracket": expected["bracket"],
-            "folder": expected["folder"]}, "tolerance": DRAWN_TOLERANCE, "pending": [pending]}),
+            "folder": expected["folder"]}, "tolerance": DRAWN_TOLERANCE}),
     )
+}
+
+/// A `P` in the loupe: the last library request is one `pick.set` of the file at `position`, as
+/// this desktop, recorded as a change, and the view's pick count is one higher than `before`'s.
+fn pick_frame(
+    checks: &mut Checks,
+    expected: &Value,
+    before: &Frame,
+    frame: &Frame,
+    name: &str,
+    position: u64,
+) -> Result {
+    let library = &select(frame)["library"];
+    ensure(
+        library["method"] == "pick.set"
+            && library["params"]["picked"] == true
+            && library["error"].is_null()
+            && !library["answer"]["change"].is_null(),
+        format!("{name}: the pick sent {library}"),
+    )?;
+    let files = library["params"]["targets"]["file_ids"]
+        .as_array()
+        .map_or(0, Vec::len);
+    ensure(
+        files == 1,
+        format!("{name}: the pick named {files} files: {library}"),
+    )?;
+    let count = |frame: &Frame| select(frame)["picked"].as_u64().unwrap_or(0);
+    ensure(
+        count(frame) == count(before) + 1,
+        format!(
+            "{name}: the view holds {} picks, {} before",
+            count(frame),
+            count(before)
+        ),
+    )?;
+    checks.note(
+        frame,
+        &format!(
+            "{name}: P picked {} (position {position})",
+            row(expected, position)?["file_name"]
+        ),
+        json!({"library": library, "picked": count(frame), "status": frame.status()?}),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -673,10 +750,13 @@ mod tests {
             "folder": {"path": "/generated/images", "count": 120},
             "burst": {"start": 3, "len": 4},
             "bracket": {"start": 20, "len": 3},
+            "rows": (0..120)
+                .map(|at| json!({"position": at, "file_name": format!("IMG_{at:04}.JPG")}))
+                .collect::<Vec<_>>(),
         });
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 18);
+        assert_eq!(plan.len(), 21);
         assert!(plan.scripted());
     }
 }

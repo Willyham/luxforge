@@ -14,7 +14,10 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// A scratch path no other test uses, and the JPEG fixture: the workspace's one pair, from
 /// `luxforge-testbase`.
@@ -22,6 +25,26 @@ pub(super) use luxforge_testbase::paths::{jpeg as fixture, temp_path as temp};
 
 /// The crate's one test mutation envelope: `request` at `revision`, by the actor `test`. Every core
 /// test module that sends a mutation takes it from here, through `crate::editor`.
+/// Write the JPEG at `fixture` to `to`, making its folder, with a comment segment naming `to`
+/// after its start marker, and answer its canonical path: the fixture's pixels in bytes no other
+/// copy has, every copy of one fixture the same length. A Develop links a file whose bytes a
+/// photograph already has, so a test that wants several photographs of one fixture writes them
+/// this way.
+pub(crate) fn distinct_jpeg(fixture: &Path, to: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(fixture).expect("the fixture");
+    assert!(bytes.starts_with(&[0xff, 0xd8]), "a JPEG fixture");
+    let tag = format!("{:x}", Sha256::digest(to.as_os_str().as_encoded_bytes()));
+    let mut copy = bytes[..2].to_vec();
+    copy.extend([0xff, 0xfe]);
+    copy.extend(u16::try_from(tag.len() + 2).unwrap().to_be_bytes());
+    copy.extend(tag.as_bytes());
+    copy.extend(&bytes[2..]);
+    std::fs::create_dir_all(to.parent().expect("a folder")).unwrap();
+    std::fs::write(to, copy).unwrap();
+    to.canonicalize().unwrap()
+}
+
 pub(crate) fn mutation(revision: u64, request: &str) -> Mutation {
     Mutation {
         expected_revision: revision,

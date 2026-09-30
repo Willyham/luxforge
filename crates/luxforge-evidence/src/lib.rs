@@ -16,6 +16,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 mod build;
+mod catalog;
+mod missing;
+
+pub use catalog::{CatalogStep, FacetColumn};
+pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
 /// unnoticed.
@@ -182,6 +187,11 @@ pub enum Step {
     Export(ExportStep),
     /// One gesture on the Select workspace, or an agent's pick beside it.
     Select(SelectStep),
+    /// One gesture on Select's Missing originals.
+    Missing(MissingStep),
+    /// One gesture on the catalog in Select: its folders and collections, filter bar, Metadata
+    /// browser and Info panel.
+    Catalog(CatalogStep),
 }
 
 impl Step {
@@ -314,6 +324,8 @@ impl Step {
             Self::Mask(step) => step.validate(),
             Self::Export(step) => step.validate(),
             Self::Select(step) => step.validate(),
+            Self::Missing(step) => step.validate(),
+            Self::Catalog(step) => step.validate(),
         }
     }
 }
@@ -1661,7 +1673,11 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// view positions with `pick.set` (`"picked": false` clears them); the step waits until the
 /// desktop has evaluated its view again, which it learns of only through its own event sync.
 /// `{"folder": "/path"}` browses that folder on disk as Browse a folder… does, bypassing only the
-/// native dialog: the index lane reads it and the step waits until it is viewed.
+/// native dialog: the index lane reads it and the step waits until it is viewed. `{"library":
+/// "undo"}` presses `Cmd+Z` (`"redo"`: `Shift+Cmd+Z`) through the key table: library undo or redo
+/// of the desktop's own changes. `{"pick_all": {"position": 12}}` presses the Pick all action of
+/// the bracket holding that view position. `P` itself is a `key` step. Each waits until the view
+/// the change made stale has been evaluated again.
 ///
 /// Long-running work: `{"first_look": "/path"}` browses that folder the same way and waits, while
 /// its first look is still being read, until the view shows its progress sheet. `"continue_in_background"`
@@ -1697,9 +1713,21 @@ pub enum SelectStep {
         #[serde(default = "yes", skip_serializing_if = "is_true")]
         picked: bool,
     },
+    Library(LibraryKey),
+    PickAll {
+        position: u32,
+    },
     FirstLook(String),
     ContinueInBackground,
     CancelWork,
+}
+
+/// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryKey {
+    Undo,
+    Redo,
 }
 
 /// A workspace the switch shows.
@@ -1750,6 +1778,8 @@ impl SelectStep {
             Self::Switch(_)
             | Self::Arrow { .. }
             | Self::Click { .. }
+            | Self::Library(_)
+            | Self::PickAll { .. }
             | Self::ContinueInBackground
             | Self::CancelWork => Ok(()),
         }

@@ -331,6 +331,8 @@ impl RawPreparation {
 }
 
 impl PreparedSource {
+    /// Its upright size: a JPEG's decoded frame, a RAW's default crop turned by its orientation.
+    #[cfg(test)]
     pub(crate) fn dimensions(&self) -> (u32, u32) {
         match self {
             Self::Jpeg(image) => (image.width, image.height),
