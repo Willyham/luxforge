@@ -14,7 +14,7 @@ use crate::{
     catalog_types::{
         EmbeddedFormat, EmbeddedImage, ExifOrientation, FileId, FileRecord, FileSignature,
         HeaderMetadata, HeaderState, LOUPE_MAX_SIDE, PreviewOrigin, PreviewPriority, PreviewState,
-        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, VolumeId,
+        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, ViewItem, VolumeId,
     },
     index::{IndexDb, upsert_file},
     jobs::JobControl,
@@ -176,12 +176,14 @@ pub(crate) fn camera_jpeg(
     (bytes, offset as u64, thumbnail.len() as u32)
 }
 
-fn task(key: TaskKey) -> Task {
+fn task((file, tier): (FileId, PreviewTier)) -> Task {
+    let key: TaskKey = (ViewItem::File(file), tier);
     Task {
         key,
         control: JobControl::new(),
         budget: SHARED_PREVIEW_BUDGET_BYTES,
         develops: true,
+        camera: None,
         develop: None,
         hold: None,
         stage_hold: None,

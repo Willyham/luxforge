@@ -731,11 +731,4 @@ mod tests {
             crate::ErrorKind::Validation
         );
     }
-
-    /// Every item of `client`'s current view, in its order, whose picks `pick.plan` and
-    /// `pick.develop` take when they name no targets: `validation` when the client has no view.
-    /// Lane D owns the body; lane C calls it.
-    pub(super) fn items(&self, _: ClientId) -> Result<Vec<ViewItem>, Error> {
-        Err(Error::validation("this client has no view"))
-    }
 }

@@ -1650,6 +1650,8 @@ impl Owner {
         if !announced.is_empty() {
             views::changed(self);
         }
+        // Lane B: a developed photograph whose history moved has its grid tier rendered again.
+        previews::follow_changes(self, &announced);
     }
 
     /// A preview job for the requesting client. A draft is session state, so the owner looks it up
