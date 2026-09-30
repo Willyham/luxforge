@@ -157,6 +157,9 @@ pub(crate) struct SelectState {
     /// Missing originals, drawn in place of the grid while it is the source
     /// ([`super::select_missing`]).
     pub(crate) missing: super::select_missing::MissingState,
+    /// The catalog's folders and collections, its filter bar and Metadata browser, and the Info
+    /// panel over photographs ([`super::select_catalog`]).
+    pub(crate) catalog: super::select_catalog::CatalogState,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
     pub(crate) catalog_cell_width: f32,
@@ -197,6 +200,7 @@ impl Default for SelectState {
             menu: None,
             loupe: super::loupe::LoupeState::default(),
             missing: super::select_missing::MissingState::default(),
+            catalog: super::select_catalog::CatalogState::default(),
             files_cell_width: FILES_CELL_WIDTH,
             catalog_cell_width: CATALOG_CELL_WIDTH,
             home: None,
@@ -349,6 +353,10 @@ pub(crate) fn view_params(query: &ViewQuery) -> Value {
 /// `browse.facets`' parameters for the chips' menus: the query's source and filter, and the Camera,
 /// Kind and (over files) Pick counts.
 pub(crate) fn facets_params(query: &ViewQuery) -> Value {
+    // Over the catalog, the Metadata browser's columns too.
+    if !query.source.over_files() {
+        return super::select_catalog::facets_params(query);
+    }
     let mut facets = vec![Facet::Camera, Facet::Kind];
     if query.source.over_files() {
         facets.push(Facet::Pick);
@@ -435,6 +443,8 @@ pub(crate) enum LibraryGesture {
     Undo,
     /// `Shift+Cmd+Z` or the title bar's Redo.
     Redo,
+    /// Organizing the catalog: a folder, a collection or the selected photographs.
+    Catalog(super::select_catalog::CatalogGesture),
 }
 
 impl LibraryGesture {
@@ -444,12 +454,14 @@ impl LibraryGesture {
             Self::Pick { .. } | Self::PickAll => "pick.set",
             Self::Undo => "library.undo",
             Self::Redo => "library.redo",
+            Self::Catalog(gesture) => gesture.method(),
         }
     }
 
     /// What the status bar says when the owner changed nothing.
     pub(crate) fn nothing(self) -> &'static str {
         match self {
+            Self::Catalog(gesture) => gesture.nothing(),
             Self::Pick { picked: true } | Self::PickAll => "Already picked",
             Self::Pick { picked: false } => "Nothing to clear",
             Self::Undo => "Nothing to undo",
@@ -460,6 +472,7 @@ impl LibraryGesture {
     /// What the status bar says of a recorded change whose label could not be read.
     pub(crate) fn done(self) -> &'static str {
         match self {
+            Self::Catalog(gesture) => gesture.done(),
             Self::Pick { picked: true } => "Picked \u{b7} Undo \u{2318}Z",
             Self::Pick { picked: false } => "Cleared the picks \u{b7} Undo \u{2318}Z",
             Self::PickAll => "Picked the frames \u{b7} Undo \u{2318}Z",
@@ -471,6 +484,7 @@ impl LibraryGesture {
     /// What a refusal is prefixed with.
     pub(crate) fn refused(self) -> &'static str {
         match self {
+            Self::Catalog(gesture) => gesture.refused(),
             Self::Pick { picked: true } | Self::PickAll => "Could not pick",
             Self::Pick { picked: false } => "Could not clear",
             Self::Undo => "Could not undo",
@@ -1381,6 +1395,9 @@ pub(crate) struct SelectModel {
     pub(crate) loupe: super::loupe::LoupeModel,
     /// Missing originals, drawn in place of the grid while it is the source.
     pub(crate) missing: super::select_missing::MissingModel,
+    /// The catalog's folders and collections, and over the catalog its filter bar, Metadata
+    /// browser and Info panel.
+    pub(crate) catalog: super::select_catalog::CatalogModel,
 }
 
 /// The Select workspace's model, derived from the inputs.
@@ -1406,6 +1423,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
+    let catalog = super::select_catalog::derive(state, &selection);
     let mut model = SelectModel {
         shown: state.shown,
         title: SelectTitle {
@@ -1427,6 +1445,7 @@ pub(crate) fn model(
         catalog_cells: state.over_catalog(),
         loupe: super::loupe::derive(state, browse),
         missing: super::select_missing::derive(state),
+        catalog,
     };
     // The loupe says what it shows and whether its next frames are ready.
     if model.loupe.open && !model.loupe.status.is_empty() {
@@ -1530,7 +1549,9 @@ pub(crate) fn title(state: &SelectState) -> SelectTitle {
                     format!("{} developed photographs", thousands(count))
                 }
             }));
-            catalog_name(other).to_owned()
+            // A catalog folder or collection by its own name, once its list is read.
+            super::select_catalog::source_name(&state.catalog, other)
+                .unwrap_or_else(|| catalog_name(other).to_owned())
         }
     };
     panels(SelectTitle {

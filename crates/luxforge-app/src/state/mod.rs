@@ -16,6 +16,7 @@ pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
 pub(crate) mod select;
+pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
 pub(crate) mod status;
 #[cfg(test)]

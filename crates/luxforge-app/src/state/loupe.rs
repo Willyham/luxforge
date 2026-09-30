@@ -1053,6 +1053,8 @@ mod tests {
             picked: false,
             developed_as: None,
             edited: false,
+            folder_id: None,
+            collections: Vec::new(),
             availability: FileAvailability::Available,
             preview: PreviewState::Ready,
         }
