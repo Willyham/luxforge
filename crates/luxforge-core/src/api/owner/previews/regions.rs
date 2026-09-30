@@ -17,6 +17,8 @@
 //!   the owner each). An answer written for a job cancelled meanwhile is removed at once.
 //! - **Progress.** While a region runs it is a "Checking focus" row on the activity board with its
 //!   job, so the Performance section shows it and can cancel it.
+//! - **Waking.** A client watching previews (`OwnerHandle::watch_previews`) is woken when its
+//!   latest region ends.
 use super::{CatalogMessage, ClientId, Owner, PreviewsMessage, finish_cancelled};
 use crate::{
     AssetId, Error, JobId, JobStatus,
@@ -304,16 +306,19 @@ fn dispatch(owner: &mut Owner) {
     }
 }
 
-/// The worker finished a job: the job records its result, and its answer becomes the client's,
-/// replacing the one before, unless the job was cancelled meanwhile or its client has gone, when
-/// the answer is removed; then the next region is handed out.
+/// The worker finished a job: the job records its result, its client is woken while the region
+/// was still its latest, and its answer becomes the client's, replacing the one before, unless the
+/// job was cancelled meanwhile or its client has gone, when the answer is removed; then the next
+/// region is handed out.
 pub(super) fn finished(owner: &mut Owner, done: RegionDone) {
     let RegionDone { job_id, result } = done;
     let regions = &mut owner.catalog.previews.regions;
     let Some(running) = regions.running.take_if(|running| running.job_id == job_id) else {
         return;
     };
-    if regions.latest.get(&running.client) == Some(&job_id) {
+    // Still the client's latest region, so the client waits on it.
+    let awaited = regions.latest.get(&running.client) == Some(&job_id);
+    if awaited {
         regions.latest.remove(&running.client);
     }
     let output = result.clone().and_then(|answer| {
@@ -325,6 +330,9 @@ pub(super) fn finished(owner: &mut Owner, done: RegionDone) {
         .jobs
         .finish(&job_id, output)
         .is_some_and(|finished| finished.record.status == JobStatus::Ready);
+    if awaited && !running.gone {
+        owner.catalog.previews.wake(std::iter::once(running.client));
+    }
     let regions = &mut owner.catalog.previews.regions;
     if let Ok(answer) = result {
         if answered && !running.gone {
