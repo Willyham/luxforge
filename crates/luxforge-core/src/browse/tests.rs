@@ -1096,6 +1096,9 @@ fn browse_rows_read_windows_by_position() {
         assert_eq!(row.edited, photo.edited_ms.is_some());
         assert_eq!(row.availability, photo.seed.availability);
         assert_eq!(row.place, photo.seed.place);
+        // Its catalog folder and its plain collections, for the Info panel's Organize band.
+        assert_eq!(row.folder_id.as_ref(), Some(&photo.seed.catalog_folder_id));
+        assert_eq!(row.collections, photo.collections);
         assert!(!row.picked && row.developed_as.is_none());
         let ready = photo.seed.id == fx.photos[1].seed.id;
         assert_eq!(
