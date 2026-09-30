@@ -10,7 +10,8 @@
 //! shape its header gives, or 3:2.
 use crate::{
     app::{
-        message::{Message, select::SelectMessage, view::ViewMessage},
+        loupe::LoupeImages,
+        message::{Message, loupe::LoupeMessage, select::SelectMessage, view::ViewMessage},
         select_previews::GridImages,
     },
     layout::{
@@ -52,7 +53,8 @@ pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
 const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
 const NOT_YET_UNDO: &str = "Library undo and redo come with picks (not yet available)";
 const NOT_YET_DEVELOP: &str = "Developing picks is not yet available";
-const NOT_YET_LOUPE: &str = "not yet available";
+/// Why the strip's Loupe cannot be entered without a view.
+const NO_LOUPE: &str = "choose a source first";
 
 /// The width of an Info panel row's label.
 const INFO_LABEL_WIDTH: f32 = 96.0;
@@ -70,6 +72,8 @@ pub(crate) struct Grid<'a> {
     pub(crate) content: &'a GridContent,
     /// Each cell's decoded preview, borrowed so its handle keeps its id and uploads once.
     pub(crate) images: GridImages<'a>,
+    /// The loupe's decoded frames and region, borrowed likewise.
+    pub(crate) loupe: LoupeImages<'a>,
 }
 
 /// The workspace switch at a title bar's leading edge, `current` raised. Either segment sends the
@@ -371,7 +375,7 @@ fn centre<'a>(
     work: &'a LongWorkModel,
 ) -> Element<'a, Message> {
     if model.loupe.open {
-        return crate::view::loupe::loupe(&model.loupe);
+        return crate::view::loupe::loupe(&model.loupe, grid.loupe);
     }
     let Grid {
         layout,
@@ -380,6 +384,7 @@ fn centre<'a>(
         rows,
         content,
         images,
+        ..
     } = grid;
     let selection = &model.selection;
     let widget = thumbnail_grid(layout, scroll, move |cell: GridCell| {
@@ -535,19 +540,21 @@ fn menu_view(choices: &[MenuChoice]) -> Element<'_, Message> {
     )
 }
 
-/// The floating strip: Grid, the Loupe (not yet), the sort and the size slider.
+/// The floating strip: Grid, the Loupe, the sort and the size slider.
 fn strip(model: &StripModel) -> Element<'_, Message> {
     let open = model.sort_menu.is_some();
     select_strip(
         &SelectStripModel {
-            loupe_unavailable: Some(NOT_YET_LOUPE.into()),
+            loupe_unavailable: (!model.enabled).then(|| NO_LOUPE.into()),
             sort: model.sort.clone(),
             sort_enabled: model.enabled,
             cell_width: model.cell_width,
             cell_range: (CELL_WIDTH_MIN, CELL_WIDTH_MAX),
             cell_step: CELL_WIDTH_STEP,
         },
-        None,
+        model
+            .enabled
+            .then_some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open))),
         Some(Message::Select(SelectMessage::Menu(
             (!open).then_some(SelectMenu::Sort),
         ))),
@@ -752,6 +759,7 @@ mod tests {
         };
         let layout = GridLayout::new(Vec::new(), luxforge_ui::GridMetrics::default(), 0.0);
         let previews = crate::app::select_previews::SelectPreviews::default();
+        let loupe = crate::app::loupe::Loupe::default();
         let _ = screen(
             &workspace,
             Grid {
@@ -761,6 +769,7 @@ mod tests {
                 rows: &state.rows,
                 content: &state.content,
                 images: previews.grid(&state.rows),
+                loupe: loupe.images(&previews),
             },
         );
         let _ = switch(Shown::Develop);

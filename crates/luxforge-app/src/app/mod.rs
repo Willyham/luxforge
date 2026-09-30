@@ -96,6 +96,8 @@ pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
 pub(crate) mod long_work;
 pub(crate) mod loupe;
+pub(crate) mod loupe_frames;
+pub(crate) mod loupe_region;
 pub(crate) mod select;
 #[cfg(test)]
 mod select_owner_tests;
@@ -778,6 +780,7 @@ impl Editor {
                     rows: &self.select.state.rows,
                     content: &self.select.state.content,
                     images: self.select.previews.grid(&self.select.state.rows),
+                    loupe: self.loupe_images(),
                 },
             ),
             // ── end lane D ──
