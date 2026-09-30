@@ -222,6 +222,35 @@ fn loupe_frames_draw_the_stand_in_until_the_tier_lands() {
     assert_accounted(&frames);
 }
 
+/// Warm: every wanted frame, on screen and ahead, decoded at its size; a frame is ready only with
+/// its own tier held, never with the stand-in drawn meanwhile.
+#[test]
+fn loupe_frames_are_warm_once_the_look_ahead_is_decoded() {
+    let mut frames = paused(DECODED_BUDGET_BYTES);
+    let wanted = wanting(5, &[6, 7]);
+    let batch = frames.want(wanted.clone()).unwrap();
+    let job = JobId::new();
+    frames.answered(answer(&batch, |id| {
+        if id == 7 { queued(id, &job) } else { ready(id) }
+    }));
+    assert!(!frames.all_settled(&wanted) && !frames.ready(&wanted[0]));
+    for id in [5, 6] {
+        frames.adopt(decoded(&planned(&frames, id).unwrap()));
+    }
+    let stand_in = planned(&frames, 7).expect("frame 7's stand-in");
+    frames.adopt(decoded(&stand_in));
+    assert!(frames.settled(&wanted), "the frame on screen is settled");
+    assert!(frames.ready(&wanted[0]) && frames.ready(&wanted[1]));
+    assert!(
+        !frames.ready(&wanted[2]) && !frames.all_settled(&wanted),
+        "frame 7 draws its stand-in while its tier is made: not warm"
+    );
+    let again = frames.woken(true).unwrap();
+    frames.answered(answer(&again, ready));
+    frames.adopt(decoded(&planned(&frames, 7).unwrap()));
+    assert!(frames.ready(&wanted[2]) && frames.all_settled(&wanted));
+}
+
 /// Identity: a decode that lands for a frame no longer on screen is kept as that frame's own while
 /// the look-ahead still wants it, and dropped once nothing does — never lent under the frame now
 /// shown; a decode of a preview its frame's newest answer no longer names is dropped.

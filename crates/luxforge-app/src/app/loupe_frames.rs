@@ -596,6 +596,27 @@ impl LoupeFrames {
             .all(|want| self.frame_settled(want))
     }
 
+    /// Every frame of `wanted`, on screen and ahead, has what it will draw: the look-ahead is warm
+    /// as well as the screen settled.
+    pub(crate) fn all_settled(&self, wanted: &[Want]) -> bool {
+        wanted.iter().all(|want| self.frame_settled(want))
+    }
+
+    /// `want`'s own picture — the tier its newest answer names, not a stand-in — is held at the
+    /// size it is drawn at.
+    pub(crate) fn ready(&self, want: &Want) -> bool {
+        self.frame_settled(want)
+            && self.entries.get(&want.item).is_some_and(|entry| {
+                entry.held.as_ref().is_some_and(|held| {
+                    !held.picture.stand_in
+                        && entry
+                            .source
+                            .as_ref()
+                            .is_some_and(|source| source.key == held.picture.key)
+                })
+            })
+    }
+
     fn frame_settled(&self, want: &Want) -> bool {
         let Some(entry) = self.entries.get(&want.item) else {
             return false;

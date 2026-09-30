@@ -796,6 +796,22 @@ Each step is an object with exactly one key.
   `session.state` `browse` block for the desktop's client, so a frame's selection can be checked
   against what the owner holds. A source row that opens the native folder dialog, a menu item that
   does not exist and a position whose row is not read fail the step.
+- `loupe` is one gesture on the open loupe that its timing needs: `{"arrows": {"direction":
+  "right", "count": 30, "interval_ms": 30}}` waits until the look-ahead is warm — every frame the
+  loupe wants, on screen and ahead, decoded at its size or with nothing more to wait for — records
+  `loupe_warm`, then presses the arrow `count` times (1 to 240) through the key table,
+  `interval_ms` apart (1 to 1000; a single press takes none), the first a press and the rest the
+  key's repeats, and is captured once Select has nothing in flight after the last;
+  `{"pointer": [0.3, 0.3]}` moves the pointer over the picture to those fractions of it, recorded
+  as `loupe_pointer_sent`, and is captured once Select has settled, with the focus check on once
+  the region under the pointer has landed. A closed loupe fails the step. Wherever events are
+  written the loupe records what a timing harness pairs: each key that moves the active frame
+  (`loupe_key`, with `pressed_ms` from the start of its handling, where it moved from and to and
+  whether that frame was already `ready`), `Z` (`loupe_focus`), each region asked for
+  (`loupe_region_asked`), and, from the model just derived, each picture the active frame presents
+  (`loupe_presented`, under its own item and preview key, a stand-in said so) and each region the
+  inset presents (`loupe_region_presented`). Presented means the update whose redraw draws it, as
+  for `preview_displayed`, not scanout.
 - `wait` (`{"ms": N}`, 1 to 10000) asks nothing of the editor for at least that long and then
   captures. The evidence run's own 250 ms tick keeps rebuilding the view meanwhile, so the frame
   shows what repeated rebuilds with nothing new to show did.
