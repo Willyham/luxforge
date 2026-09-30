@@ -2,6 +2,7 @@
 
 | Capability | Status | Notes |
 | --- | --- | --- |
+| Detail: capture sharpening and noise reduction | Planned; not implemented | Delegated defaults: pre-tone restoration, denoise then sharpen, zero strengths on RAW/JPEG, shared masks/presets/history, approximate motion and exact-derived settled Fit. Numerical, photographic and native performance qualification remain open; output sharpening is separate export scope ([design](design/detail.md), [plan](../tasks/detail.json)) |
 | Repository checks, fixtures, smoke evidence, packaging | Implemented | macOS test launches run in background bundles without desktop activation; smoke and hardening use the editor; the tiered `verify` command runs a whole quick, rendered, timing or full check with one summary; [development](engineering/development.md) |
 | JPEG open, automatic EXIF orientation, Fit, failed-replacement retention | Implemented (S0) | 8-bit sRGB and greyscale subset, baseline, extended-sequential and progressive, decoded by libjpeg-turbo; truncated or corrupt image data is refused rather than filled with grey, while harmless irregularities (stray bytes between header segments, an unknown JFIF version) open with the same pixels; broad ICC conversion and display calibration are not established |
 | Windows/Linux automated builds and packages | Hosted baseline verified; refresh open | Native desktop checks deferred |
