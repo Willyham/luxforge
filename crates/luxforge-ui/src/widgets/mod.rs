@@ -47,6 +47,12 @@ mod text;
 mod toggle;
 mod truncated_text;
 
+// -- Select: the thumbnail grid.
+// -- end Select: the thumbnail grid.
+
+// -- Select: chrome.
+// -- end Select: chrome.
+
 pub use badge::{BadgeModel, badge};
 pub use button_row::{
     ButtonSize, ButtonTone, LabelledButtonModel, RowPlacement, button_row, equal_button_row,
@@ -106,6 +112,12 @@ pub use tab_row::{Tab, TabRowModel, tab_row};
 pub use text::{caption, error_caption, label, section_label, title};
 pub use toggle::{ToggleModel, compact_toggle, toggle};
 pub use truncated_text::truncated_text;
+
+// -- Select: the thumbnail grid's exports.
+// -- end Select: the thumbnail grid's exports.
+
+// -- Select: chrome's exports.
+// -- end Select: chrome's exports.
 
 // Used only inside the crate: by its composed widgets and the components board.
 pub(crate) use coverage_thumbnail::coverage_thumbnail;
