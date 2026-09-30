@@ -39,9 +39,8 @@ pub(crate) enum SelectMessage {
     Read(ReadSource),
     /// `index.refresh` of the source being read answered with its job, or refused.
     Reading(Result<String, String>),
-    /// The job of the source being read is read again: the timer that exists while the job runs.
-    ReadPoll,
-    /// `job.read` for the job of the source being read answered.
+    /// `job.read` for the reading folder's job answered: read when the activity board no longer
+    /// lists it running.
     ReadAnswered(Result<serde_json::Value, String>),
     /// A volume's or a folder's chevron On disk: open it, reading its subfolders, or close it.
     Toggle(PathBuf),

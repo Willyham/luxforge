@@ -588,6 +588,7 @@ fn listed(name: &str, months: Vec<Month>, count: u32, picked: u32, offline: u32)
     Event {
         id: EventId::new(),
         name: name.into(),
+        label: name.into(),
         place: None,
         first_day: months.first().map(|month| day(month.year, month.month, 12)),
         last_day: months.last().map(|month| day(month.year, month.month, 13)),
