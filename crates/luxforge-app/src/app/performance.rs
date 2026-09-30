@@ -93,10 +93,6 @@ impl Editor {
     pub(super) fn performance_update(&mut self, message: PerformanceMessage) -> Task<Message> {
         match message {
             PerformanceMessage::Toggle => {
-                if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape()) {
-                    self.status.text = reason;
-                    return Task::none();
-                }
                 self.performance.expanded = !self.performance.expanded;
             }
             PerformanceMessage::Tick => return self.performance_tick(),

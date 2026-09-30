@@ -1,6 +1,6 @@
 //! The preview queue and its worker, end to end.
 
-use super::worker::mask_overlay_for;
+use super::coverage::{MaskOverlayRequest, mask_overlay_for};
 use super::*;
 use crate::{
     ActivityBoard, AssetId, BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, EntryId,
@@ -335,28 +335,18 @@ fn settled_viewport_delivers_exact_region_then_whole_report() {
     );
 }
 
+/// The live overlay's coverage over a visible rectangle is the core's region reduction of that
+/// rectangle, and over the whole stage the whole-stage reduction, each at its own cells.
 #[test]
-fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
+fn mask_overlay_coverage_fills_a_visible_region_or_the_whole_stage() {
     let mask = gradient_mask(0.6);
-    let mut job = stacked_with_masks(128, 96, masked_basic(&mask), vec![mask.clone()], None);
-    job.viewport = Some(crate::Region {
+    let job = stacked_with_masks(128, 96, masked_basic(&mask), vec![mask.clone()], None);
+    let visible = crate::Region {
         x0: 23,
         y0: 11,
         width: 41,
         height: 29,
-    });
-    job.intent = PreviewIntent::Settle;
-    job.analyse = true;
-    job = job
-        .with_mask_overlay(MaskOverlayRequest {
-            mask: mask.id.clone(),
-            component: None,
-            cells_w: 15,
-            cells_h: 11,
-            whole_cells_w: 61,
-            whole_cells_h: 43,
-        })
-        .unwrap();
+    };
     let transform = render(
         job.evaluation.registry(),
         job.evaluation.source().input(),
@@ -389,7 +379,7 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
         .unwrap()
         .unwrap()
     };
-    let expected_region = expected_grid(job.viewport.unwrap(), 15, 11);
+    let expected_region = expected_grid(visible, 15, 11);
     let expected_whole = expected_grid(
         crate::Region {
             x0: 0,
@@ -400,20 +390,21 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
         61,
         43,
     );
-    let mut queue = PreviewQueue::default();
-    queue.request(job);
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2);
-    let region = results[0]
-        .mask_overlay()
-        .grid
-        .as_ref()
-        .expect("visible coverage");
-    let whole = results[1]
-        .mask_overlay()
-        .grid
-        .as_ref()
-        .expect("whole-stage coverage");
+    let target = MaskCoverageTarget::Existing {
+        mask: mask.id.clone(),
+        component: None,
+    };
+    let coverage = |cells, region| {
+        job.evaluation
+            .mask_overlay_coverage(&target, cells, region, None, &Cancel::never())
+            .unwrap()
+            .outcome
+            .expect("no cached key was offered")
+            .grid
+            .expect("a geometric mask has a grid")
+    };
+    let region = &coverage((15, 11), Some(visible));
+    let whole = &coverage((61, 43), None);
     assert_eq!((region.cells_w, region.cells_h), (15, 11));
     assert_eq!((whole.cells_w, whole.cells_h), (61, 43));
     assert_eq!(region.coverage.len(), 15 * 11);
@@ -422,7 +413,7 @@ fn settled_viewport_carries_region_then_whole_stage_mask_coverage() {
     assert_eq!(whole.coverage, expected_whole);
     assert_ne!(
         region.coverage, whole.coverage,
-        "the second grid samples the whole output stage for a settled pan"
+        "the whole-stage grid samples the whole output stage"
     );
 }
 
@@ -536,8 +527,8 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
 }
 
 /// A job's stack is compiled once at each stage it renders at: once at the exact stage, by its
-/// evaluation when the job is built, whose compilation plans the proxy, renders the exact frame and
-/// gives the coverage grid its geometry, and once at the proxy stage, by the plan that walks the
+/// evaluation when the job is built, whose compilation plans the proxy and renders the exact frame,
+/// and once at the proxy stage, by the plan that walks the
 /// window its output reads, whose compilation renders the proxy frame and says whether it is
 /// approximate. The count sees every compile the entry point makes, the proxy plan's included, over
 /// a whole-stage proxy and a tight crop's windowed one. A job without a proxy phase is compiled
@@ -545,14 +536,6 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
 #[test]
 fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     let mask = gradient_mask(0.5);
-    let request = MaskOverlayRequest {
-        mask: mask.id.clone(),
-        component: None,
-        cells_w: 8,
-        cells_h: 6,
-        whole_cells_w: 8,
-        whole_cells_h: 6,
-    };
     let mut cropped = masked_basic(&mask);
     cropped.push(Layer::crop(crate::CropPayload {
         angle: 3.0,
@@ -568,7 +551,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             48,
             masked_basic(&mask),
             Some(bounds(40, 40)),
-            3,
+            2,
             2,
         ),
         (
@@ -577,7 +560,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             300,
             cropped,
             Some(bounds(40, 30)),
-            3,
+            2,
             2,
         ),
         ("no proxy", 64, 48, masked_basic(&mask), None, 1, 1),
@@ -588,9 +571,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         let job = rebuilt(
             stacked_with_masks(width, height, layers, vec![mask.clone()], proxy),
             |parts| parts.context = context.clone(),
-        )
-        .with_mask_overlay(request.clone())
-        .expect("the stack holds the mask");
+        );
         let source = job.evaluation.source().clone();
         let recipe = job.evaluation.recipe().clone();
         let registry = job.evaluation.registry().clone();
@@ -600,9 +581,6 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         let exact = results.last().expect("an exact phase");
         assert!(exact.raster().is_ok(), "{name}");
         let first = results.first().expect("a first phase");
-        // The grid follows a proxy frame in its own phase, and rides a job's one frame otherwise.
-        let carrier = if proxy.is_some() { &results[1] } else { first };
-        assert!(carrier.mask_overlay().grid.is_some(), "{name}");
         if let Some(display) = proxy {
             let plan = source
                 .proxy_plan(&registry, &recipe, display)
@@ -616,15 +594,12 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     }
 }
 
-/// A job's coverage grid follows its proxy frame when it has one: the proxy is handed over first,
-/// carrying no grid, the grid comes next in an overlay phase of its own under the same generation,
-/// and the exact phase behind them carries none. A job without a proxy carries it on its one exact
-/// phase — including a job that offered bounds and had its proxy declined. Whichever phase carries
-/// it, it is byte for byte the grid a job without a proxy carries, because it reads no pixel of the
-/// exact frame: over a geometric mask and over a value-based one, through a straightening crop, and
-/// as the same refusal where a value-based mask sits behind a spatial layer.
+/// A mask's coverage is answered over each stack: a grid over a geometric mask and over a value-based
+/// one, through a straightening crop, and the host's refusal where a value-based mask sits behind a
+/// spatial layer. It reads no pixel of any rendered frame, so display bounds on the job that holds
+/// the evaluation change nothing about it.
 #[test]
-fn the_coverage_grid_follows_the_proxy_frame_and_is_the_same_grid_on_either_phase() {
+fn the_coverage_grid_answers_each_stack_whatever_the_display_bounds() {
     let presence = |mask: Option<&Mask>| Layer {
         id: LayerId::new(),
         effect_id: crate::PRESENCE_EFFECT.into(),
@@ -652,80 +627,28 @@ fn the_coverage_grid_follows_the_proxy_frame_and_is_the_same_grid_on_either_phas
         ),
     ];
     for (name, mask, layers) in stacks {
-        let request = MaskOverlayRequest {
+        let target = MaskCoverageTarget::Existing {
             mask: mask.id.clone(),
             component: None,
-            cells_w: 13,
-            cells_h: 9,
-            whole_cells_w: 13,
-            whole_cells_h: 9,
         };
-        let run = |proxy: Option<ProxyBounds>| {
-            let job = stacked_with_masks(64, 48, layers.clone(), vec![mask.clone()], proxy)
-                .with_mask_overlay(request.clone())
-                .expect("the stack holds the mask");
-            let mut queue = PreviewQueue::default();
-            queue.request(job);
-            drain_all(&mut queue)
+        let coverage = |proxy: Option<ProxyBounds>| {
+            stacked_with_masks(64, 48, layers.clone(), vec![mask.clone()], proxy)
+                .evaluation
+                .mask_overlay_coverage(&target, (13, 9), None, None, &Cancel::never())
+                .expect("the stack holds the mask")
+                .outcome
+                .expect("no cached key was offered")
         };
-        let alone = run(None);
-        assert_eq!(alone.len(), 1, "{name}");
-        let expected = alone[0].mask_overlay().clone();
+        let expected = coverage(None);
         let refused = name == "band behind a spatial layer";
         assert_eq!(
             (expected.grid.is_some(), expected.absent.is_some()),
             (!refused, refused),
-            "{name}: the job's one phase answers the overlay it asked for"
+            "{name}: a grid, or the host's reason there is none"
         );
-
-        let phases = run(Some(bounds(40, 40)));
-        assert_eq!(
-            phases.iter().map(PreviewResult::phase).collect::<Vec<_>>(),
-            [
-                PreviewPhase::Proxy,
-                PreviewPhase::Overlay,
-                PreviewPhase::Exact
-            ],
-            "{name}: the proxy frame, then its grid, then the exact frame"
-        );
-        assert!(
-            phases
-                .iter()
-                .all(|phase| phase.generation == phases[0].generation),
-            "{name}: one generation keys the frame and its grid"
-        );
-        assert!(phases[0].raster().is_ok(), "{name}");
-        assert_eq!(
-            phases[0].mask_overlay(),
-            &MaskOverlayOutcome::default(),
-            "{name}: the proxy frame is handed over before its grid is filled"
-        );
-        assert_eq!(
-            phases[1].mask_overlay(),
-            &expected,
-            "{name}: the grid that follows is the very grid the exact-only job carries"
-        );
-        assert!(
-            phases[1].raster().is_err(),
-            "{name}: an overlay phase carries no frame"
-        );
-        assert!(phases[2].raster().is_ok(), "{name}");
-        assert_eq!(
-            phases[2].mask_overlay(),
-            &MaskOverlayOutcome::default(),
-            "{name}: the exact phase behind a proxy carries no second grid"
-        );
-
-        // Bounds the stage already fits: the proxy is declined, and the one phase carries it.
-        let declined = run(Some(bounds(4000, 4000)));
-        assert_eq!(declined.len(), 1, "{name}");
-        assert!(
-            declined[0]
-                .exact()
-                .is_some_and(|exact| exact.proxy_declined.is_some()),
-            "{name}"
-        );
-        assert_eq!(declined[0].mask_overlay(), &expected, "{name}");
+        for display in [bounds(40, 40), bounds(4000, 4000)] {
+            assert_eq!(coverage(Some(display)), expected, "{name}");
+        }
     }
 }
 
@@ -1970,8 +1893,6 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
             component: None,
             cells_w: 8,
             cells_h: 6,
-            whole_cells_w: 8,
-            whole_cells_h: 6,
         };
         let frame = render(
             job.evaluation.registry(),
@@ -1995,7 +1916,7 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
         );
         if absent {
             assert!(grid.is_none(), "a value-based mask behind a spatial layer");
-            let reason = reason.expect("the host's own reason travels with the frame");
+            let reason = reason.expect("the host's own reason travels with the outcome");
             assert!(
                 reason.contains("depends on the pixel it reads")
                     && reason.contains("tile per grid cell")
@@ -2012,15 +1933,13 @@ fn a_value_based_mask_behind_a_spatial_layer_has_no_grid_and_says_what_it_would_
     }
 }
 
-/// What the coverage overlay costs the preview phase that carries it, on 24 MP and 60 MP, before
-/// and after a value-based component is in the mask — the measurement proposal P16 of
-/// `docs/design/range-study.md` was decided against. At Fit that phase is the proxy, and at 100%
-/// the job's one exact phase; the figures are stated against the exact render either way.
+/// What one coverage grid costs, on 24 MP and 60 MP, before and after a value-based component is in
+/// the mask — the measurement proposal P16 of `docs/design/range-study.md` was decided against. The
+/// figures are stated against the exact render of the same frame.
 ///
 /// The "before" figure for a value-based mask is nothing at all, because such a mask was refused a
 /// grid; the geometric rows are the delivered cost of a grid and must not have moved. So the added
-/// cost is the band and mixed rows, and it is stated against the exact render of the same frame,
-/// which is the phase the grid is filled beside.
+/// cost is the band and mixed rows.
 ///
 /// The two grid sizes are the two a person actually asks for, from
 /// `state::histogram::overlay_cells`: at Fit one cell per physical pixel of the drawn photograph,
@@ -2057,7 +1976,7 @@ fn the_cost_of_a_coverage_grid() {
             let source = job.evaluation.source().clone();
             let recipe = job.evaluation.recipe().clone();
             let snapshot = job.evaluation.entry().snapshot.id.clone();
-            // The phase the grid is filled beside, for the figures to be stated against.
+            // The exact render, for the figures to be stated against.
             let started = Instant::now();
             let raster = source
                 .render(&registry, snapshot, &recipe)
@@ -2070,8 +1989,6 @@ fn the_cost_of_a_coverage_grid() {
                     component: None,
                     cells_w,
                     cells_h,
-                    whole_cells_w: cells_w,
-                    whole_cells_h: cells_h,
                 };
                 let context = RenderContext::new();
                 let frame = crate::render(

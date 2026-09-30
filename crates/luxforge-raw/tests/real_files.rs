@@ -1,5 +1,6 @@
-//! Local authentic-mode qualification. Set LUXFORGE_RAW_OWNER_DIR and
-//! LUXFORGE_RAW_PUBLIC_DIR, then run with --ignored; no fixture is committed.
+//! Local authentic-mode qualification. Set LUXFORGE_RAW_OWNER_DIR,
+//! LUXFORGE_RAW_PUBLIC_DIR and LUXFORGE_RAW_POPULAR_DIR, then run with --ignored; no fixture is
+//! committed.
 use luxforge_raw::{RawError, RawSource};
 use sha2::{Digest, Sha256};
 use std::{
@@ -370,4 +371,90 @@ fn malformed_or_unknown_dji_opcode_fails_explicitly() {
         Err(RawError::UnsupportedMode(_))
     ));
     unchanged(&path, &hash);
+}
+
+/// Nikon High Efficiency is refused before unpack on every body, including the Z50II and Z5II that
+/// LibRaw misreads as lossless; lossless controls from the same bodies still decode to their
+/// recorded mosaics. Set LUXFORGE_RAW_POPULAR_DIR to the directory of
+/// raw.pixls.us samples named `<id>.<EXT>`.
+#[test]
+#[ignore = "requires explicit local authentic popular-camera RAW samples"]
+fn nikon_high_efficiency_is_refused_and_lossless_controls_decode() {
+    let dir = env::var("LUXFORGE_RAW_POPULAR_DIR").expect("popular sample directory");
+    let cancel = AtomicBool::new(false);
+    for (id, body, sha256) in [
+        (
+            "5147",
+            "Z 9",
+            "e113deb305d84153b26251ce259d1f839be1f36b048cbe83a4548cbda806c0f5",
+        ),
+        (
+            "6618",
+            "Z 8",
+            "ea8b093cd11c946c5eeb501b775859e8e617ce1d79577abc41b233c339e4004c",
+        ),
+        (
+            "6886",
+            "Z f",
+            "c888f109dc420e359853a2ce768d8a6274b8ba0109b2f5cb6e0c982981d5a624",
+        ),
+        (
+            "7815",
+            "Z6_3",
+            "10eea35531eb5427c171ab5158d064b79844a9fe039f8ca971b20c4f3be36cfd",
+        ),
+        (
+            "7763",
+            "Z50_2",
+            "0add1dad5776669a4896640de31b128032f893e13418f6569da7a4744a05ed42",
+        ),
+        (
+            "7743",
+            "Z5_2",
+            "b44bb31787098631a396b553454a8ebf960766d9b538521ce9852896bd6df3a8",
+        ),
+    ] {
+        let path = Path::new(&dir).join(format!("{id}.NEF"));
+        let (bytes, hash) = read_with_hash(&path);
+        assert_eq!(hash, sha256, "{id} sample identity");
+        let error = RawSource::decode(bytes, &cancel).expect_err("High Efficiency is refused");
+        assert!(
+            matches!(error, RawError::UnsupportedCompression(_)),
+            "{id} {body}: {error:?}"
+        );
+        assert!(error.to_string().contains("Nikon High Efficiency"));
+        println!("{id} {body}: {error}");
+        unchanged(&path, &hash);
+    }
+
+    let evidence: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/modern-camera-evidence.json"
+    ))
+    .unwrap();
+    // The Z 9, Z f and Z 6II, and the Z6III and Z50II whose lossless modes require maker-note
+    // compression 3: the same bodies' High Efficiency files above never reach their modes.
+    for id in ["5146", "6885", "4160", "7819", "7762"] {
+        let entry = evidence["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["sample_id"] == id)
+            .unwrap_or_else(|| panic!("{id} evidence"));
+        let path = Path::new(&dir).join(format!("{id}.NEF"));
+        let (bytes, hash) = read_with_hash(&path);
+        assert_eq!(hash, entry["source_sha256"], "{id} sample identity");
+        let raw = RawSource::decode(bytes, &cancel).unwrap_or_else(|e| panic!("{id}: {e}"));
+        assert_eq!(raw.metadata().mode.id(), entry["mode"]);
+        assert_eq!(
+            mosaic_hash(raw.mosaic()),
+            entry["mosaic_sha256"],
+            "{id} full sensor pixels"
+        );
+        println!(
+            "{id} {}: lossless admitted as {}, mosaic unchanged",
+            entry["model"],
+            raw.metadata().mode.id()
+        );
+        unchanged(&path, &hash);
+    }
 }

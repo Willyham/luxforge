@@ -2,17 +2,13 @@
 //! phase, from one compilation of the job's stack at each stage it renders at.
 
 use super::{
-    ExactOutcome, MaskOverlayOutcome, MaskOverlayRequest, PhaseOutcome, PreviewIntent, PreviewJob,
-    PreviewResult, ProxyOutcome, RegionOutcome, job::one_component, queue::PreviewTask,
+    ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult, ProxyOutcome,
+    RegionOutcome, queue::PreviewTask,
 };
 use crate::{
-    Cancel, Error, ErrorKind, ModuleRegistry, ProxyCache, ProxyKey, Recipe, Region,
-    RegionRenderOutcome, Render, RenderContext, RenderOptions,
+    Error, ErrorKind, ProxyCache, ProxyKey, Recipe, RegionRenderOutcome, Render, RenderOptions,
     activity::{ActivitySpec, Outcome},
-    analysis::{MaskOverlay, MaskPixels},
     latest::Running,
-    mask::CompiledMask,
-    modules::Stage,
     render,
     render::ProxyStage,
 };
@@ -79,8 +75,7 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
 }
 
 /// One preview job, on the preview worker: the proxy phase when the job has one, handed over as
-/// soon as it is rendered, then its coverage grid when it asked for one, then the exact phase,
-/// returned as the job's last result.
+/// soon as it is rendered, then the exact phase, returned as the job's last result.
 ///
 /// The proxy phase reads the job's `abandoned` token and the exact phase its `superseded` one, so
 /// a drag keeps presenting proxy frames while the full-resolution renders behind them are
@@ -140,17 +135,8 @@ pub(super) fn run(
 
     // The job's one compilation at the exact stage: the one its evaluation made on the catalog
     // owner, which the whole stack renders from, or the layer prefix's own for a truncated job.
-    // The proxy plan reads its output stage, the exact phase renders it and the coverage grid
-    // composes its geometry tail, so none of them compiles the stack again. It is charged to the
-    // first phase that hands over a frame.
-    //
-    // The coverage grid reads no pixel of the exact frame — the geometry tail of this compilation,
-    // and for a mask that reads pixels, point queries into the input of its first bound layer — so
-    // it never waits for the exact render. When the job has a proxy frame, the grid is filled after
-    // that frame is handed over, under the superseded token, and follows it in an overlay phase of
-    // its own; otherwise it rides the exact frame, as the job's one phase. Either way it is this
-    // one function over this one compilation, so the grid is the same bytes whichever phase
-    // carries it.
+    // The proxy plan reads its output stage and the exact phase renders it, so neither compiles
+    // the stack again. It is charged to the first phase that hands over a frame.
     let compile_started = Instant::now();
     let exact = match &prefix {
         Some(prefix) => render(
@@ -169,9 +155,6 @@ pub(super) fn run(
     // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
     // The proxy phase's own clock: the plan, the build when this job builds, then the render.
     let started = Instant::now();
-    // Whether an overlay phase has already followed the proxy frame with the job's coverage grid,
-    // so the exact phase does not fill it a second time.
-    let mut overlay_delivered = false;
     let declined = match plan_proxy(&job, recipe, &exact) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
@@ -245,44 +228,6 @@ pub(super) fn run(
                             if !running.send(proxy) {
                                 return None;
                             }
-                            // The frame is on its way to the screen; the coverage grid follows it
-                            // in a second message under the same generation, so the frame never
-                            // waits for the grid. The grid is not a number the exact phase owns:
-                            // it is a function of position over the exact output stage, which
-                            // this job's exact compilation already knows, so it needs no exact
-                            // render. It reads the superseded token, as the exact phase does: a
-                            // newer request will replace the frame it describes, and brings a grid
-                            // of its own, so it must not wait behind this one. A stopped grid is
-                            // still delivered, carrying nothing, so a client waiting for this
-                            // frame's grid stops waiting.
-                            if let (Ok(exact), Some(request)) = (&exact, &job.mask_overlay) {
-                                overlay_delivered = true;
-                                let started = Instant::now();
-                                let mask_overlay = mask_overlay_for(
-                                    evaluation.registry(),
-                                    exact,
-                                    recipe,
-                                    request,
-                                    None,
-                                    exact_cancel,
-                                    evaluation.context(),
-                                );
-                                let overlay = PreviewResult {
-                                    generation,
-                                    entry_id: entry_id.clone(),
-                                    identity: job.identity.clone(),
-                                    draft_revision,
-                                    intent: job.intent,
-                                    viewport_declined: job.viewport_declined.clone(),
-                                    outcome: PhaseOutcome::Overlay(mask_overlay),
-                                    approximate_white_balance,
-                                    render_ms: milliseconds_since(started),
-                                    queue_wait_ms,
-                                };
-                                if !running.send(overlay) {
-                                    return None;
-                                }
-                            }
                             if job.intent == PreviewIntent::Interactive {
                                 if let Some(activity) = activity {
                                     activity.finish(Outcome::Completed);
@@ -321,22 +266,6 @@ pub(super) fn run(
         }
         rendered => (rendered, None),
     };
-    // A job with no proxy frame fills its coverage grid here, beside the frame it describes, so the
-    // two travel together under one generation. It reads no pixel of that frame and allocates one
-    // byte per display cell; a mask that reads pixels reads them from the input of its own first
-    // bound layer instead, one point query per cell.
-    let mask_overlay = match (&result, &exact, &job.mask_overlay) {
-        (Ok(_), Ok(exact), Some(request)) if !overlay_delivered => mask_overlay_for(
-            evaluation.registry(),
-            exact,
-            recipe,
-            request,
-            None,
-            full_cancel,
-            evaluation.context(),
-        ),
-        _ => MaskOverlayOutcome::default(),
-    };
     let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
     drop(exact);
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
@@ -353,7 +282,6 @@ pub(super) fn run(
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
             result,
             report,
-            mask_overlay,
             proxy_declined: declined,
         })),
         approximate_white_balance,
@@ -458,18 +386,6 @@ fn run_viewport(
     };
     match region {
         Ok(RegionRenderOutcome::Rendered(frame)) => {
-            let overlay = match (compiled.as_ref(), job.mask_overlay.as_ref()) {
-                (Ok(exact), Some(request)) => mask_overlay_for(
-                    evaluation.registry(),
-                    exact,
-                    evaluation.recipe(),
-                    request,
-                    Some(frame.full_rect),
-                    cancel,
-                    evaluation.context(),
-                ),
-                _ => MaskOverlayOutcome::default(),
-            };
             let result = PreviewResult {
                 generation,
                 entry_id: evaluation.entry().id.clone(),
@@ -477,10 +393,7 @@ fn run_viewport(
                 draft_revision: evaluation.draft_revision(),
                 intent: job.intent,
                 viewport_declined,
-                outcome: PhaseOutcome::Region(RegionOutcome {
-                    frame,
-                    mask_overlay: overlay,
-                }),
+                outcome: PhaseOutcome::Region(RegionOutcome { frame }),
                 approximate_white_balance: evaluation.source().approximate_white_balance(),
                 render_ms: milliseconds_since(started),
                 queue_wait_ms,
@@ -533,7 +446,6 @@ fn run_viewport(
                     outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
                         result: Err(error),
                         report: None,
-                        mask_overlay: MaskOverlayOutcome::default(),
                         proxy_declined: None,
                     })),
                     approximate_white_balance: evaluation.source().approximate_white_balance(),
@@ -586,20 +498,6 @@ fn run_viewport(
         }
         other => (other, None),
     };
-    // The exact whole-frame publication replaces the region slot. Give it a whole-stage
-    // coverage grid too, so a settled pan retains the mask without asking for another render.
-    let mask_overlay = match (&result, compiled.as_ref(), job.mask_overlay.as_ref()) {
-        (Ok(_), Ok(exact), Some(request)) => mask_overlay_for(
-            evaluation.registry(),
-            exact,
-            evaluation.recipe(),
-            request,
-            None,
-            cancel,
-            evaluation.context(),
-        ),
-        _ => MaskOverlayOutcome::default(),
-    };
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
     }
@@ -613,152 +511,12 @@ fn run_viewport(
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
             result,
             report,
-            mask_overlay,
             proxy_declined: None,
         })),
         approximate_white_balance,
         render_ms: milliseconds_since(exact_started),
         queue_wait_ms,
     })
-}
-
-/// One mask's coverage grid over the exact output stage of `frame`, the job's one compilation of
-/// `recipe` at the exact stage.
-///
-/// `recipe` is the stack that is rendered — a truncated job's prefix, when it had one — because the
-/// grid describes the frame it arrives with and a prefix has its own geometry tail. The mask table
-/// travels with a prefix, so a mask is still found there. It reads no pixel of the exact frame, so
-/// it is the same grid whether the proxy phase carries it or the exact one does.
-///
-/// Every reason there is no grid is a reason there is none to draw, never a silently empty one, and
-/// the reason travels with the frame in [`MaskOverlayOutcome::absent`] — the host's own words, for a
-/// client that asked for an overlay and would otherwise wait for a texture nothing will fill. The
-/// mask or component the request named was validated against this stack when the job was planned,
-/// and the stack compiled and rendered a frame, so compiling it cannot fail here for a reason the
-/// frame did not already fail for. Two absences carry **no** reason on purpose: a mask with nothing
-/// to describe, which [`crate::analysis::coverage_grid`] decides in closed form and which a grid of
-/// zeros would misreport, and a cancel, where a newer request is already on its way with its own
-/// grid and waiting for it is correct.
-pub(super) fn mask_overlay_for(
-    registry: &ModuleRegistry,
-    frame: &Render<'_>,
-    recipe: &Recipe,
-    request: &MaskOverlayRequest,
-    region: Option<Region>,
-    cancel: &Cancel,
-    context: &RenderContext,
-) -> MaskOverlayOutcome {
-    let refused = |error: Error| MaskOverlayOutcome {
-        grid: None,
-        absent: match error.kind {
-            ErrorKind::Cancelled => None,
-            _ => Some(error.detail),
-        },
-    };
-    let absent = |reason: String| MaskOverlayOutcome {
-        grid: None,
-        absent: Some(reason),
-    };
-    let Some(held) = recipe.masks.iter().find(|mask| mask.id == request.mask) else {
-        return absent(format!(
-            "mask {} is not in the stack this frame was rendered from",
-            request.mask
-        ));
-    };
-    let derived;
-    let mask = match &request.component {
-        None => held,
-        Some(component) => match one_component(held, component) {
-            Some(one) => {
-                derived = one;
-                &derived
-            }
-            None => {
-                return absent(format!("mask {} holds no component {component}", held.name));
-            }
-        },
-    };
-    // `O(layers)`: it composes the geometry tail of the stack already compiled for this frame and
-    // reads no pixel.
-    let transform = match frame.transform() {
-        Ok(transform) => transform,
-        Err(error) => return refused(error),
-    };
-    let stage = Stage {
-        width: transform.content.width,
-        height: transform.content.height,
-    };
-    let compiled = match CompiledMask::new(mask, stage, &recipe.strokes) {
-        Ok(compiled) => compiled,
-        Err(error) => return refused(error),
-    };
-    // A value-based component is answered on the pixel the masked operation receives, which is the
-    // input of the mask's **first bound layer** — the rule `mask::commands::input_layer_index`
-    // states once for everything that reads a pixel through a mask, and which the colour-constrained
-    // brush's seed and `mask.sample-input` already read, so the overlay and the seed cannot disagree
-    // about which pixel a mask reads. The prefix is compiled once and asked once per cell.
-    let input;
-    let unavailable;
-    let pixels = if !compiled.reads_pixels() {
-        // Position-only: no operation is needed and none is looked for, so a geometric grid costs
-        // exactly what it did before a value-based component existed.
-        MaskPixels::Unavailable("this mask reads no pixel")
-    } else {
-        match crate::mask::commands::input_layer_index(recipe, &request.mask).and_then(|layer| {
-            crate::render::layer_input(registry, frame.source(), recipe, layer, context)
-        }) {
-            // Two different stages would be two different coverage fields, and `coverage_grid`
-            // refuses that mismatch for the frame; it is refused here for the operation, in the same
-            // voice, rather than read at coordinates of another stage.
-            Ok((received, _)) if received != stage => {
-                unavailable = format!(
-                    "the masked operation receives a {}x{} stage and this mask is compiled against \
-                     {}x{}",
-                    received.width, received.height, stage.width, stage.height
-                );
-                MaskPixels::Unavailable(&unavailable)
-            }
-            Ok((_, prefix)) => {
-                input = prefix;
-                MaskPixels::Input(&*input)
-            }
-            // No layer is bound to this mask, or its prefix holds a spatial layer, or it does not
-            // compile: in every case there is no operation whose input this grid can read, and the
-            // refusal's own sentence says which and what to do about it.
-            Err(error) => {
-                unavailable = error.detail;
-                MaskPixels::Unavailable(&unavailable)
-            }
-        }
-    };
-    let (cells_w, cells_h) = if region.is_some() {
-        (request.cells_w, request.cells_h)
-    } else {
-        (request.whole_cells_w, request.whole_cells_h)
-    };
-    let region = region.unwrap_or(Region {
-        x0: 0,
-        y0: 0,
-        width: transform.output.width,
-        height: transform.output.height,
-    });
-    let coverage = match crate::analysis::coverage_grid_region(
-        &compiled, &transform, region, cells_w, cells_h, pixels, cancel,
-    ) {
-        Ok(Some(coverage)) => coverage,
-        Ok(None) => return MaskOverlayOutcome::default(),
-        Err(error) => return refused(error),
-    };
-    MaskOverlayOutcome {
-        grid: Some(MaskOverlay {
-            mask: request.mask.clone(),
-            component: request.component.clone(),
-            cells_w,
-            cells_h,
-            coverage,
-        }),
-        absent: None,
-    }
 }
 
 /// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.

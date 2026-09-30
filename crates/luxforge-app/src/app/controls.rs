@@ -73,12 +73,6 @@ pub(crate) struct CurveSampling {
 impl Editor {
     /// One generated-control or tools-panel section message.
     pub(super) fn control_update(&mut self, message: ControlMessage) -> Task<Message> {
-        if !matches!(message, ControlMessage::CurveSampled { .. })
-            && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
-        {
-            self.status.text = reason;
-            return Task::none();
-        }
         // The crop frame's fields are the open frame's, not a request of their own: the crop
         // driver turns what their control sends into a change of that frame.
         if message
@@ -1061,6 +1055,13 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
     if editor.displayed_entry() != before.entry {
         editor.controls.ui.clear_curve_samples();
         editor.curve_sampling.requested_source.clear();
+    }
+    // A value typed but not submitted belongs to the mask or component it was typed for. When the
+    // fields address another one, the edit is dropped and the fields show the new target's own
+    // values, so a later Enter cannot land it there.
+    if editor.field_target() != before.field_target && editor.controls.editing.take().is_some() {
+        editor.seed_values();
+        editor.seed_mask_fields();
     }
     Task::none()
 }

@@ -323,6 +323,8 @@ pub(crate) struct Before {
     pub(crate) workers_busy: bool,
     /// The entry the canvas was showing ([`Editor::displayed_entry`]).
     pub(crate) entry: Option<luxforge_core::EntryId>,
+    /// The mask and component the generated fields addressed ([`Editor::field_target`]).
+    pub(crate) field_target: masks::FieldTarget,
 }
 
 impl Before {
@@ -333,6 +335,7 @@ impl Before {
             view_epoch: editor.view_plan.epoch,
             workers_busy: editor.workers_busy(),
             entry: editor.displayed_entry(),
+            field_target: editor.field_target(),
         }
     }
 }
@@ -588,7 +591,7 @@ impl Editor {
                 &self.session,
                 self.busy,
             )
-            .or_else(|| state::masks::interaction_refusal(self.mask_shape())),
+            .or_else(|| self.mask_tool_refusal()),
             draft: self.crop(),
             mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
@@ -601,9 +604,7 @@ impl Editor {
             session: &self.session,
             status: &self.status.text,
             busy: self.busy,
-            can_open: !self.busy
-                && self.evidence.is_none()
-                && self.mask_creation_refusal().is_none(),
+            can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
             can_export: self.can_export(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
@@ -632,6 +633,15 @@ impl Editor {
     /// Hand one message to the seam that owns it. Routing only: each seam's own update function
     /// decides what its message does.
     fn dispatch(&mut self, message: Message) -> Task<Message> {
+        if message.yields_to_mask_tool()
+            && let Some(reason) = self.mask_tool_refusal()
+        {
+            if matches!(message, Message::Preset(_)) {
+                return self.preset_refused(reason);
+            }
+            self.status.text = reason;
+            return Task::none();
+        }
         match message {
             Message::Key(event, status) => {
                 // The whole keyboard table is one pure function; only its result reaches the state.

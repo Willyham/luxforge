@@ -755,8 +755,7 @@ pub(crate) fn create_mode_reason(mode: ComponentMode) -> Option<String> {
 /// A mask creation or a held gradient owns editing until its deliberate completion. Idle painting
 /// on an existing brush remains compatible with adjustment controls between strokes.
 pub(crate) fn interaction_refusal(draft: Option<&MaskDraft>) -> Option<String> {
-    let draft = draft?;
-    (draft.owns_creation() || !draft.paints()).then(|| {
+    draft.filter(|draft| draft.owns_controls()).map(|draft| {
         format!(
             "Apply or Cancel the {} gesture before using other controls",
             draft.op.label().to_lowercase()
@@ -806,10 +805,8 @@ pub(crate) fn effective_overlay(
 
 /// The Masks panel for the displayed entry.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
-    let disabled_reason = inputs
-        .edit_refusal
-        .clone()
-        .or_else(|| interaction_refusal(inputs.mask_draft));
+    // The model inputs' editability already carries the held tool's refusal.
+    let disabled_reason = inputs.edit_refusal.clone();
     let enabled = disabled_reason.is_none();
     // The creation lock disables unrelated edits, not the fields needed to finish the tool.
     let tool_enabled = super::editable_refusal(inputs.document.state.as_ref(), inputs.session)

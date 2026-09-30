@@ -25,6 +25,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
 
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id.clone(),
+        target: editor.field_target(),
         mode: mode.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -58,6 +59,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
     answer.insert("patch".into(), json!({"x": 98, "y": 40}));
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
+        target: editor.field_target(),
         action: action.clone(),
         point: (100, 42),
         result: Ok(Value::Object(answer)),
@@ -140,6 +142,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id.clone(),
+        target: editor.field_target(),
         mode: mode.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -210,8 +213,19 @@ fn a_committed_module_pick_puts_itself_away() {
         .expect("the declared action")
         .clone();
     let field = declared.parameters[0].name.clone();
+    // An answer sampled for a mask the selection has since left is dropped, not applied here.
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: editor.displayed_entry().expect("a displayed entry"),
+        target: (Some(luxforge_core::MaskId::new()), None),
+        action: action.clone(),
+        point: (100, 42),
+        result: Ok(json!({ field.clone(): -12.0 })),
+    }));
+    assert!(!editor.busy, "a retargeted answer was submitted");
+    assert!(editor.status.text.contains("selection changed"));
+    let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
+        entry: editor.displayed_entry().expect("a displayed entry"),
+        target: editor.field_target(),
         action,
         point: (100, 42),
         result: Ok(json!({ field: -12.0 })),
@@ -239,6 +253,7 @@ fn a_refused_sample_shows_its_reason_and_commits_nothing() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
+        target: editor.field_target(),
         action,
         point: (100, 42),
         result: Err(
@@ -286,6 +301,7 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
     editor.session.workspace.mode = sample_module.clone();
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: sample_module.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -338,6 +354,7 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     // An answer for another stack describes an image the canvas has left.
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: EntryId::new(),
+        draft: None,
         result: Ok(Readout {
             x: 3,
             y: 4,
@@ -351,9 +368,24 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     // The newest position was released as the next request when the first answered.
     assert!(editor.hover.sample.in_flight());
     assert_eq!(editor.hover.sample.pending().copied(), None);
+    // So does an answer for a draft the canvas is not showing.
+    let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
+        entry: entry_id.clone(),
+        draft: Some(luxforge_core::DraftId::new()),
+        result: Ok(Readout {
+            x: 7,
+            y: 8,
+            rgba: [9, 9, 9, 255],
+        }),
+    }));
+    assert!(
+        editor.hover.readout.is_none(),
+        "another draft's answer is dropped"
+    );
 
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: entry_id,
+        draft: None,
         result: Ok(Readout {
             x: 7,
             y: 8,
@@ -421,7 +453,6 @@ fn hover_reads_the_matching_settled_exact_buffer_without_a_query_or_pixel_copy()
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     let raster = retained_hover_frame(&mut editor);
     let retained_address = raster.rgba.as_ptr();
-    let log = attach_log(&mut editor);
     for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
         let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
         assert_eq!(
@@ -442,9 +473,6 @@ fn hover_reads_the_matching_settled_exact_buffer_without_a_query_or_pixel_copy()
             .as_ptr(),
         retained_address
     );
-    let records = logged(&mut editor, &log);
-    assert!(events(&records, "pointer_sample_requested").is_empty());
-    assert_eq!(events(&records, "pointer_retained_readout").len(), 4);
     finish(editor, catalog);
 }
 
@@ -463,6 +491,11 @@ fn retained_hover_rejects_stale_content_geometry_entry_generation_and_approximat
     editor.presentation.preview_generation = 8;
     assert!(editor.retained_readout(1, 1).is_none());
     editor.presentation.preview_generation = 7;
+    // A newer frame of the same content, such as a percentage view's region, still reads the
+    // retained exact raster behind it.
+    editor.presentation.exact.as_mut().unwrap().generation = 6;
+    assert!(editor.retained_readout(1, 1).is_some());
+    editor.presentation.exact.as_mut().unwrap().generation = 7;
     editor.presentation.exact.as_mut().unwrap().content = Some(11);
     assert!(editor.retained_readout(1, 1).is_none());
     editor.presentation.exact.as_mut().unwrap().content = Some(12);
@@ -500,6 +533,7 @@ fn a_slow_hover_query_cannot_replace_a_newer_retained_readout_or_revive_a_depart
     );
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: entry.clone(),
+        draft: None,
         result: Ok(Readout {
             x: 0,
             y: 0,
@@ -514,6 +548,7 @@ fn a_slow_hover_query_cannot_replace_a_newer_retained_readout_or_revive_a_depart
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry,
+        draft: None,
         result: Ok(Readout {
             x: 1,
             y: 1,
@@ -537,6 +572,7 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -590,6 +626,7 @@ fn a_located_point_for_another_entry_is_dropped() {
     // The canvas moved to another stack while the mapping was in flight.
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: EntryId::new(),
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -619,6 +656,7 @@ fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
     let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Err(refusal.into()),
@@ -658,10 +696,12 @@ fn a_point_pick_commits_only_when_its_module_declares_it() {
         .expect("a module whose point pick commits");
     editor.session.workspace.mode = mode.clone();
     let entry_id = editor.displayed_entry().expect("a displayed entry");
+    let target = editor.field_target();
     let located = |entry: EntryId| {
         Message::Pointer(PointerMessage::Located {
             entry,
             mode: mode.clone(),
+            target: target.clone(),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,

@@ -122,6 +122,8 @@ pub struct ProofAnswer {
 
 impl ProofEndpoint {
     /// Listen on a free loopback port and answer requests authorized with `api_key`.
+    // `..Options::default()` fills the `tls` feature's fields; without that feature it is empty.
+    #[allow(clippy::needless_update)]
     pub fn start(api_key: &str, protocol: ProofProtocol) -> io::Result<Self> {
         let mut endpoint = Self::in_process(api_key, protocol);
         let answering = endpoint.shared.clone();

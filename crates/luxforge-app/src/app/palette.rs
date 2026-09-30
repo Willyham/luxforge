@@ -16,10 +16,6 @@ impl Editor {
     pub(super) fn palette_update(&mut self, message: PaletteMessage) -> Task<Message> {
         match message {
             PaletteMessage::Open => {
-                if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape()) {
-                    self.status.text = reason;
-                    return Task::none();
-                }
                 self.palette.open = true;
                 self.palette.query.clear();
                 self.palette.selected = 0;

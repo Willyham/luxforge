@@ -316,14 +316,11 @@ impl Editor {
     ///
     /// A slider, mask or crop gesture's release is answered by [`Editor::release_refusal`] instead.
     pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
-        if self.core_gesture().is_none()
+        // A held mask tool owns every other start. Export takes no one-draft half, so it asks
+        // even while the tool's own core draft is open.
+        if (self.core_gesture().is_none() || starting == Starting::Export)
             && !matches!(starting, Starting::Mask | Starting::Refit)
-            && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
-        {
-            return Some(reason);
-        }
-        if starting == Starting::Export
-            && let Some(reason) = self.mask_creation_refusal()
+            && let Some(reason) = self.mask_tool_refusal()
         {
             return Some(reason);
         }
@@ -813,7 +810,7 @@ impl Editor {
             Kind::Mask(mask) => {
                 // `positions` is the path's length and not the path: a measurement needs to know
                 // how much geometry the frame carries, and a log is not where a stroke is stored.
-                let positions = mask.shape.brush().map(|stroke| stroke.captured().len());
+                let positions = mask.shape.brush().map(|stroke| stroke.captured());
                 self.event("mask_draft_preview", || {
                     let mut detail = json!({
                         "generation":generation,
@@ -946,6 +943,7 @@ impl Editor {
         let Some(open) = self.gesture.take() else {
             return Task::none();
         };
+        let cancelled = open.draft.cancel_requested();
         self.session.draft = None;
         self.presentation.displayed_draft_id = None;
         self.presentation.displayed_draft_revision = None;
@@ -968,10 +966,12 @@ impl Editor {
                     }
                 }
             }
-            (Kind::Mask(mask), Some(refresh)) => self.mask_committed(mask.shape, refresh),
+            (Kind::Mask(mask), Some(refresh)) => {
+                self.mask_committed(mask.shape, refresh, cancelled)
+            }
             (Kind::Mask(_), None) => {
                 self.status.text = "The mask gesture changed nothing; nothing was committed".into();
-                self.refresh_mask_overlay()
+                self.refresh_mask_coverage()
             }
             (Kind::Crop(crop), outcome) => self.crop_committed(&crop, &open.draft, outcome),
         }

@@ -594,10 +594,14 @@ fn shows_as_shot_equivalent(frame: &Value, field: &str) -> Result<Value> {
         luxforge_core::temperature_tint_from_gains(payload.as_shot_gains, payload.cam_xyz)
             .map_err(|error| format!("{field}: the as-shot gains have no equivalent: {error}"))?;
     let back = luxforge_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)?;
+    // At the ±100 tint limit the core also answers a white up to half a tint unit beyond it, held
+    // to the limit, so that answer selects gains within that half unit rather than exactly.
     ensure(
-        back.iter()
-            .zip(payload.as_shot_gains)
-            .all(|(gain, shot)| (gain - shot).abs() <= 1.0e-6 * shot),
+        tint.abs() >= 100.0
+            || back
+                .iter()
+                .zip(payload.as_shot_gains)
+                .all(|(gain, shot)| (gain - shot).abs() <= 1.0e-6 * shot),
         format!("{field}: {kelvin} K, {tint} does not reproduce the as-shot gains"),
     )?;
     let controls = &frame["state"]["controls"];

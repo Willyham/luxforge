@@ -123,7 +123,6 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
                 full_stage: stage,
                 approximation: luxforge_core::ProxyApproximation::default(),
             },
-            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
         }),
         approximate_white_balance: false,
         render_ms: 1.0,
@@ -154,7 +153,6 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
                 full_stage: stage,
                 approximation: luxforge_core::ProxyApproximation::default(),
             },
-            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
         }),
         approximate_white_balance: false,
         render_ms: 1.0,
@@ -220,7 +218,6 @@ fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
                 full_stage: stage,
                 approximation: luxforge_core::ProxyApproximation::default(),
             },
-            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
         }),
         approximate_white_balance: false,
         render_ms: 1.0,
@@ -300,7 +297,6 @@ fn an_interactive_region_does_not_settle_a_history_preview_step() {
                 full_stage: stage,
                 approximation: luxforge_core::ProxyApproximation::default(),
             },
-            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
         }),
         approximate_white_balance: false,
         render_ms: 1.0,
@@ -423,142 +419,6 @@ fn a_report_from_an_older_generation_is_ignored() {
         editor.snapshot()["histogram"]["status"],
         json!("pending"),
         "the plot says pending rather than showing another frame's counts"
-    );
-    finish(editor, catalog);
-}
-
-/// A proxy frame is handed over before its job's coverage grid is filled, so the grid arrives
-/// second, as an overlay phase under the frame's generation. The frame is presented without a grid
-/// and a captured frame waits for that frame's own; a grid is taken up only over the frame of its
-/// own generation, so one from an older job, or from a job whose frame is not on screen, is
-/// dropped; and a frame whose job asked for no grid waits for none.
-#[test]
-fn a_coverage_grid_arriving_after_its_frame_is_drawn_over_that_frame_and_no_other() {
-    use luxforge_core::{MaskOverlayOutcome, PhaseOutcome, ProxyOutcome, analysis::MaskOverlay};
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-    editor.session.workspace.mask_overlay = luxforge_core::MaskOverlayMode::Tint;
-    let log = attach_log(&mut editor);
-    let (analysis, raster) = analysed(&editor, 8, &[[40, 50, 60, 255]], 1, 1);
-    let identity = analysis.identity;
-    let result = |generation, outcome| luxforge_core::PreviewResult {
-        generation,
-        entry_id: identity.entry_id.clone(),
-        identity: identity.clone(),
-        draft_revision: None,
-        intent: luxforge_core::PreviewIntent::Immediate,
-        viewport_declined: None,
-        outcome,
-        approximate_white_balance: false,
-        render_ms: 1.0,
-        queue_wait_ms: None,
-    };
-    let proxy = |generation| {
-        result(
-            generation,
-            PhaseOutcome::Proxy(ProxyOutcome {
-                raster: raster.as_ref().clone(),
-                dimensions: (1, 1),
-                built: false,
-                approximation: luxforge_core::ProxyApproximation::default(),
-            }),
-        )
-    };
-    // Each grid's one cell names the generation it was filled for.
-    let overlay = |generation: u64| {
-        result(
-            generation,
-            PhaseOutcome::Overlay(MaskOverlayOutcome {
-                grid: Some(MaskOverlay {
-                    mask: luxforge_core::MaskId::new(),
-                    component: None,
-                    cells_w: 1,
-                    cells_h: 1,
-                    coverage: vec![generation as u8],
-                }),
-                absent: None,
-            }),
-        )
-    };
-    // A grid taken up is laid over the photograph under its own generation.
-    let taken =
-        |editor: &Editor, generation| editor.presentation.presenter.coverage(generation).is_some();
-
-    editor.presentation.preview_generation = 8;
-    ticket(&mut editor, 8, 1);
-    editor.presentation.pending_overlay.insert(8);
-    let (_, shown) = editor.preview_ready(proxy(8));
-    assert!(
-        shown,
-        "the frame reaches the screen without waiting for its grid"
-    );
-    assert_eq!(editor.presentation.presented_generation, 8);
-    assert!(!taken(&editor, 8), "a proxy frame carries no grid");
-    assert_eq!(
-        editor.presentation.overlay_awaited,
-        Some(8),
-        "its own grid is still to come"
-    );
-
-    // An older job's grid describes other pixels.
-    let (_, shown) = editor.preview_ready(overlay(7));
-    assert!(!shown);
-    assert!(!taken(&editor, 7) && !taken(&editor, 8));
-    // So does a grid whose frame is not the one on screen.
-    let (_, shown) = editor.preview_ready(overlay(9));
-    assert!(!shown);
-    assert!(!taken(&editor, 9) && !taken(&editor, 8));
-    assert_eq!(
-        editor.presentation.overlay_awaited,
-        Some(8),
-        "still waiting for the frame's own"
-    );
-
-    // The frame's own grid is taken up over it, and nothing is awaited any more.
-    let (_, shown) = editor.preview_ready(overlay(8));
-    assert!(!shown, "a grid is not a frame");
-    assert!(taken(&editor, 8));
-    assert_eq!(editor.presentation.overlay_awaited, None);
-
-    // A grid a newer request stopped arrives with neither a grid nor a reason: the wait for it
-    // ends, and nothing is taken up or cleared.
-    editor.presentation.preview_generation = 11;
-    ticket(&mut editor, 11, 1);
-    editor.presentation.pending_overlay.insert(11);
-    let (_, shown) = editor.preview_ready(proxy(11));
-    assert!(shown);
-    assert_eq!(editor.presentation.overlay_awaited, Some(11));
-    let (_, shown) = editor.preview_ready(result(
-        11,
-        PhaseOutcome::Overlay(MaskOverlayOutcome::default()),
-    ));
-    assert!(!shown);
-    assert_eq!(
-        editor.presentation.overlay_awaited, None,
-        "a stopped grid ends the wait"
-    );
-    assert!(
-        taken(&editor, 8) && !taken(&editor, 11),
-        "and takes nothing up"
-    );
-
-    // A frame whose job asked for no grid waits for none.
-    editor.presentation.presenter.clear_coverage();
-    editor.presentation.preview_generation = 12;
-    ticket(&mut editor, 12, 1);
-    let (_, shown) = editor.preview_ready(proxy(12));
-    assert!(shown);
-    assert_eq!(editor.presentation.overlay_awaited, None);
-    assert!(!taken(&editor, 12));
-    let records = logged(&mut editor, &log);
-    let dropped: Vec<_> = records
-        .iter()
-        .filter(|record| record["event"] == "mask_overlay_dropped")
-        .map(|record| record["detail"]["generation"].clone())
-        .collect();
-    assert_eq!(
-        dropped,
-        vec![json!(9)],
-        "the older grid never reached the handler"
     );
     finish(editor, catalog);
 }
@@ -1415,7 +1275,6 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             result: Ok((*raster).clone()),
             report: None,
-            mask_overlay: luxforge_core::MaskOverlayOutcome::default(),
             proxy_declined: None,
         })),
         approximate_white_balance: false,

@@ -321,6 +321,14 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance: &'a performance::PerformanceHistory,
 }
 
+impl Inputs<'_> {
+    /// A mask creation or held gradient owns the other controls until Apply or Cancel.
+    pub(crate) fn mask_tool_owns_controls(&self) -> bool {
+        self.mask_draft
+            .is_some_and(crate::mask_draft::MaskDraft::owns_controls)
+    }
+}
+
 /// The whole screen as plain data, derived again after every message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Workspace {

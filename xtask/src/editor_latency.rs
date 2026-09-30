@@ -1830,10 +1830,10 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
                 && trace["input_to_cursor_geometry_ms"].as_f64().is_some()
                 && trace["editor_update_ms"].as_f64().is_some(),
                 format!("Hover {} has no real mask cursor and readout route: {trace}",index+1))?;
-            let shown = frame_at(frames, hovers[0], "hover")?;
-            ensure(shown["state"]["masks"]["masks"].as_array().is_some_and(|masks| masks.len()==1),
-                "Hover committed an extra mask without a press")?;
         }
+        let shown = frame_at(frames, hovers[0], "hover")?;
+        ensure(shown["state"]["masks"]["masks"].as_array().is_some_and(|masks| masks.len()==1),
+            "Hover committed an extra mask without a press")?;
         let sent = events.iter().position(|event| event["event"] == "script_step"
             && event["detail"]["step"] == json!(hovers[0])).ok_or("No hover was sent")?;
         let hover_events = &events[sent..];
@@ -1842,6 +1842,12 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         ensure(photo_jobs == 0 && draft_sets == 0, "Hover queued photograph work or altered a mask")?;
         let point_queries = hover_events.iter().filter(|event| event["event"] == "pointer_sample_requested").count();
         let retained_reads = hover_events.iter().filter(|event| event["event"] == "pointer_retained_readout").count();
+        // At Fit over a settled frame every readout comes from the retained exact raster, so a
+        // regression back to per-move point queries cannot pass.
+        if options.zoom.is_none() {
+            ensure(point_queries == 0 && retained_reads > 0,
+                format!("Hover asked {point_queries} point queries and read {retained_reads} retained pixels at Fit"))?;
+        }
         let mut rows = Vec::new();
         for (metric,field) in [("input_to_cursor_geometry","input_to_cursor_geometry_ms"),
             ("native_widget_update","widget_update_ms"),("cursor_geometry","cursor_geometry_ms"),

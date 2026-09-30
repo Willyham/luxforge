@@ -261,12 +261,13 @@ fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogue
                 "DNG sensor, active area or default crop differs from manifest",
             )?;
             let calibration = &corrections.calibration;
+            // Each applied opcode carries provenance; a profile that requires none, such as a
+            // lossless DNG without opcode lists, applies none. The required set is the adapter's.
             ensure(
-                !corrections.applied.is_empty()
-                    && corrections
-                        .applied
-                        .iter()
-                        .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
+                corrections
+                    .applied
+                    .iter()
+                    .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
                     && is_sha256(&calibration.color_matrix1_sha256)
                     && is_sha256(&calibration.color_matrix2_sha256),
                 "DNG correction or calibration provenance is incomplete",
@@ -345,8 +346,11 @@ fn ready_raw_frame(frame: &Frame) -> Result {
     // The core's own answer for the displayed development: a custom temperature and tint, or
     // under As shot the temperature and tint whose gains are the camera's as-shot gains, which
     // the forward map must reproduce.
+    // At the ±100 tint limit the core also answers a white up to half a tint unit beyond it, held
+    // to the limit, so that answer selects gains within that half unit rather than exactly.
     let [kelvin, tint] = payload.white_balance_controls();
     if payload.wb_mode == luxforge_core::WhiteBalanceMode::AsShot
+        && tint.abs() < 100.0
         && let Ok(gains) = luxforge_core::gains_from_temperature_tint(kelvin, tint, payload.cam_xyz)
     {
         ensure(

@@ -555,13 +555,13 @@ mod tests {
             "a position identical to the last one is dropped rather than posted"
         );
         let stroke = draft.brush().expect("a painted gesture");
-        assert_eq!(stroke.captured(), [[0.5, 0.5], [0.6, 0.55]]);
+        assert_eq!(stroke.captured(), 2);
         draft.paint_end();
         assert!(!draft.dragging());
     }
 
     /// The cursor's circles are the brush's own size through the geometry tail, so they are right at
-    /// Fit, at 100% and under a rotated crop — and the painted line is drawn as wide as they say.
+    /// Fit, at 100% and under a rotated crop.
     #[test]
     fn the_brush_cursor_is_its_own_size_at_every_zoom_and_under_a_rotated_crop() {
         let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
