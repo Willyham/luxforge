@@ -1231,12 +1231,13 @@ fn owner_loop(
         catalog,
         ..
     } = owner;
-    catalog.shutdown();
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it. Every live job is asked to
-    // stop, the source worker's included, and the lanes are joined; a running export stops at its
-    // next row or block and removes its temporary file.
+    // left waiting on a full channel while the owner waits for it, and the catalog lanes, whose
+    // workers post into it too, stop after it. Every live job is asked to stop, the source
+    // worker's included, and the lanes are joined; a running export stops at its next row or block
+    // and removes its temporary file.
     drop(receiver);
+    catalog.shutdown();
     jobs.shutdown();
     // The source worker sees its stop on the memory gate, and its channel closes behind it.
     sources.gate.wake();
@@ -1267,6 +1268,7 @@ impl EventLog {
             asset_id: origin.asset_id.clone(),
             revision: origin.revision,
             library_sequence: origin.library_sequence,
+            index_revision: origin.index_revision,
         });
     }
 

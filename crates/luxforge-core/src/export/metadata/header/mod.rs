@@ -30,7 +30,7 @@ mod tiff;
 #[cfg(test)]
 mod authentic;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::catalog_types::{
     self, CameraBody, EmbeddedFormat, EmbeddedImage, ExifOrientation, Exposure, GeoPosition,
@@ -219,12 +219,15 @@ pub struct FileHeader {
 }
 
 impl FileHeader {
-    /// The header of a whole file in memory: the same parsers as [`read_header`], unbounded.
+    /// The header of a whole file in memory: the same parsers as [`read_header`], unbounded, the
+    /// reference the bounded read is tested against.
+    #[cfg(test)]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         container::read(&mut source::Whole(bytes))
     }
 
     /// The exposure time in seconds.
+    #[cfg(test)]
     pub fn exposure_seconds(&self) -> Option<f64> {
         self.exposure_time.map(Rational::value)
     }

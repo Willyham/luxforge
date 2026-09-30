@@ -49,6 +49,47 @@ pub struct Cards {
     pub cards: Vec<Card>,
 }
 
+/// A volume as `volume.list` answers it: mounted now, or known to the catalog (a pick or a
+/// photograph lives on it) and not mounted, which is offline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeState {
+    pub volume: Volume,
+    /// Not mounted now; its `last_seen_ms` says when it last was.
+    pub offline: bool,
+    /// Mounted with a `DCIM` folder: a camera card, listed by `card.list` too.
+    pub card: bool,
+    /// The startup disk.
+    pub startup: bool,
+}
+
+/// What `volume.list` answers: the mounted volumes in the platform's order, the startup disk
+/// first, then the known volumes that are offline.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Volumes {
+    pub volumes: Vec<VolumeState>,
+}
+
+/// One subfolder, as `disk.folders` answers it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiskFolder {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// What `disk.folders` answers: a folder's immediate subfolders in name order, without what
+/// indexing skips, and whether the listing stopped at its bound.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiskFolders {
+    pub path: PathBuf,
+    pub folders: Vec<DiskFolder>,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// A folder on disk the person added for events (`indexed_folders`), with its subfolders.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,8 +114,8 @@ pub struct IndexedFolderState {
     pub listed_ms: Option<i64>,
 }
 
-/// What `index.add-folder` answers: the library change, the folder, and the `index.refresh` job
-/// that lists it.
+/// What `index.add-folder` answers: the library change, the folder, the `index.refresh` job that
+/// lists it, and whether this is a retry's answer (as `change.deduplicated` says too).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexFolderAnswer {
@@ -82,6 +123,8 @@ pub struct IndexFolderAnswer {
     pub folder: IndexedFolderState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<crate::JobId>,
+    #[serde(default)]
+    pub deduplicated: bool,
 }
 
 /// What `index.folders` answers.
@@ -107,6 +150,19 @@ pub struct IndexReport {
     pub moved: u32,
     pub removed: u32,
     pub unreadable: u32,
+    /// Headers read: the new and changed files' (an unchanged file's header is never read again).
+    #[serde(default)]
+    pub headers_read: u32,
+    /// Subfolders that could not be read (no permission) and were skipped.
+    #[serde(default)]
+    pub unreadable_folders: u32,
+    /// Roots not listed because their volume is not mounted; their rows stay, offline.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub offline: Vec<PathBuf>,
+    /// Roots not listed because they are gone from a mounted volume; their rows stay until they
+    /// are listed again or removed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<PathBuf>,
 }
 
 /// What `index.refresh` lists again: one indexed folder, a card, any folder being browsed, or every
@@ -164,7 +220,8 @@ pub struct FileRecord {
     pub signature: FileSignature,
     pub kind: SourceTag,
     pub header: HeaderState,
-    /// When a listing last found it.
+    /// When a listing last wrote its row: found it new, changed or moved. An unchanged file's row
+    /// is not written again.
     pub last_seen_ms: i64,
 }
 
