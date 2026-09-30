@@ -17,7 +17,7 @@ use std::{
 /// collections and their members, and the append-only journal of library changes. An asset's
 /// `row_id` is an `INTEGER PRIMARY KEY`, the stable 8-byte key views hold ([`crate::AssetRowId`]).
 /// Format 11 stored each asset's source kind tag in a column of its own beside the interpretation,
-/// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
+/// so a list of photographs reads columns only and decodes no interpretation. Format 10 stored each
 /// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
 /// result — so a retry answers with the identities the first attempt created. Format 9 kept each
