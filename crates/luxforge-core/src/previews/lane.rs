@@ -15,10 +15,15 @@
 //! file and its row through its own connection, evicts, and posts its outcome back into the
 //! owner's channel, where the owner records it and hands out the next task. The owner itself does
 //! only SQL and bookkeeping (rule 5). The lane never touches the editor's source cache.
+//!
+//! **Developments.** A RAW with no usable preview is developed at the seam (`develop_instead`)
+//! when its task was handed out at visible or look-ahead priority ([`Task::develops`]), through
+//! the process's one development slot; a background task ends deferred instead
+//! ([`Outcome::deferred`]), neither a tier nor a failure.
 use super::{
     FILE_GRID_SIDE,
     cache::Store,
-    extract::{FileImages, Found, develop_instead},
+    extract::{DEVELOP, FileImages, Found, develop_instead},
 };
 use crate::{
     Error, ErrorKind,
@@ -43,6 +48,11 @@ use std::{
 pub(crate) const PREVIEW_QUEUE_CAPACITY: usize = 20_000;
 /// Worker threads, started on the first task.
 pub(crate) const PREVIEW_WORKERS: usize = 2;
+
+// While one of the lane's threads (these workers and the region worker) develops, every other one
+// may wait for it: the development's waiting bound admits them all, so none is ever refused.
+const _: () = assert!(PREVIEW_WORKERS <= super::region::MAX_DEVELOPMENT_WAITERS);
+
 /// The most failures remembered, one per (file, tier), the oldest forgotten first: enough for a
 /// view of files none of which carries a usable preview.
 pub(crate) const REMEMBERED_FAILURES: usize = PREVIEW_QUEUE_CAPACITY;
@@ -167,9 +177,10 @@ impl Queue {
     }
 }
 
-/// Failures the lane remembers, per (file, tier), with the signature the file had: a file with no
-/// usable preview is not read again until it changes. Bounded, the oldest forgotten first, and
-/// never stored: a restart tries again.
+/// What the lane remembers of a (file, tier), with the signature the file had and the error it
+/// answers: a failure, so a file that cannot give the tier is not read again until it changes,
+/// or, in a second instance, a deferral, so a RAW that needs a development is not read again in
+/// the background. Bounded, the oldest forgotten first, and never stored: a restart tries again.
 #[derive(Debug)]
 pub(crate) struct Failures {
     entries: HashMap<TaskKey, (FileSignature, Error)>,
@@ -215,6 +226,19 @@ impl Failures {
     }
 }
 
+/// A development a test runs in place of [`DEVELOP`], to count developments without a RAW.
+#[cfg(test)]
+pub(crate) type DevelopHook = Arc<
+    dyn Fn(
+            &std::path::Path,
+            &FileSignature,
+            u32,
+            &crate::Cancel,
+        ) -> Result<super::region::DevelopedPreview, Error>
+        + Send
+        + Sync,
+>;
+
 /// One task handed to a worker.
 pub(crate) struct Task {
     pub key: TaskKey,
@@ -223,6 +247,12 @@ pub(crate) struct Task {
     pub control: Arc<JobControl>,
     /// The bytes the loupe and large tiers may take together.
     pub budget: u64,
+    /// Whether a RAW with no usable preview is developed: a visible or look-ahead task's is, a
+    /// background task's is deferred (the design's "done lazily for what is on screen").
+    pub develops: bool,
+    /// Where a test develops instead of [`DEVELOP`].
+    #[cfg(test)]
+    pub develop: Option<DevelopHook>,
     /// Where a test holds the worker before it starts the task.
     #[cfg(test)]
     pub hold: Option<Arc<luxforge_testbase::Gate>>,
@@ -237,9 +267,13 @@ pub(crate) struct Outcome {
     pub result: Result<PreviewInfo, Error>,
     /// The index row's signature the task worked from, once it read it.
     pub signature: Option<FileSignature>,
-    /// The failure says the file has no usable preview at this signature, so the lane remembers it;
-    /// a file that was unavailable or changed, a cancellation or a failed write is tried again.
+    /// The failure holds until the file changes — no usable preview Luxforge can develop, a
+    /// corrupt file, one past a limit — so the lane remembers it; a file that was unavailable or
+    /// changed, a cancellation or a failed write is tried again.
     pub permanent: bool,
+    /// A background task found a RAW with no usable preview and did not develop it: its result is
+    /// `not-ready`, it is no failure, and a visible or look-ahead task develops it.
+    pub deferred: bool,
 }
 
 /// What a worker posts back to the owner.
@@ -322,6 +356,7 @@ fn work(index: usize, mut store: Store, tasks: Receiver<Task>, post: Post) {
                 result: Err(Error::internal("the preview worker failed")),
                 signature: None,
                 permanent: false,
+                deferred: false,
             });
         post(WorkerEvent::Finished {
             worker: index,
@@ -367,13 +402,38 @@ fn check_unchanged(
 /// stage once it is written.
 pub(crate) fn run(store: &mut Store, task: &Task, stage: &dyn Fn()) -> Outcome {
     let mut signature = None;
-    let mut permanent = false;
-    let result = make(store, task, stage, &mut signature, &mut permanent);
+    let mut ended = Ended::default();
+    let result = make(store, task, stage, &mut signature, &mut ended);
     Outcome {
-        permanent: permanent && result.is_err(),
+        permanent: ended.permanent && result.is_err(),
+        deferred: ended.deferred && result.is_err(),
         result,
         signature,
     }
+}
+
+/// What a task's failure means beyond its error.
+#[derive(Default)]
+struct Ended {
+    permanent: bool,
+    deferred: bool,
+}
+
+/// Whether a failure of this kind holds until the file changes, so the lane remembers it: the
+/// file's own content refused it (no usable preview Luxforge can develop, a corrupt file, a colour
+/// or profile it cannot read) or a size limit did. A file that is gone, changed or unreadable, a
+/// cancellation or a failed write may go another way next time. A development's `resource-limit`
+/// is a size limit too: the lane's threads — these workers and the region worker — are the only
+/// callers of the one development, so no more of them wait than the development admits.
+fn lasting(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::UnsupportedInput
+            | ErrorKind::UnsupportedColor
+            | ErrorKind::UnsupportedProfile
+            | ErrorKind::Decode
+            | ErrorKind::ResourceLimit
+    )
 }
 
 fn make(
@@ -381,7 +441,7 @@ fn make(
     task: &Task,
     stage: &dyn Fn(),
     signature: &mut Option<FileSignature>,
-    permanent: &mut bool,
+    ended: &mut Ended,
 ) -> Result<PreviewInfo, Error> {
     let (file, tier) = task.key;
     let control = &task.control;
@@ -398,7 +458,7 @@ fn make(
     }
     check_unchanged(&record.path, &record.signature, "since it was indexed")?;
     let mut images = FileImages::open(&record, control).inspect_err(|error| {
-        *permanent = error.kind == ErrorKind::UnsupportedInput;
+        ended.permanent = lasting(error.kind);
     })?;
     if tier == PreviewTier::Grid
         && cached.is_none()
@@ -426,13 +486,27 @@ fn make(
     drop(images);
     let made = match found {
         Ok(Found::Made(made)) => made,
-        Ok(Found::Unusable(why)) => develop_instead(&record, side, &why, control)
-            .inspect_err(|error| *permanent = error.kind == ErrorKind::UnsupportedInput)?,
+        Ok(Found::Unusable(why)) if !task.develops => {
+            ended.deferred = true;
+            return Err(Error::not_ready(format!(
+                "{} has no usable preview ({why}); a Luxforge development is made only for a \
+                 visible or look-ahead request",
+                record.name
+            )));
+        }
+        Ok(Found::Unusable(why)) => {
+            #[cfg(test)]
+            let develop = match &task.develop {
+                Some(hook) => &**hook,
+                None => DEVELOP,
+            };
+            #[cfg(not(test))]
+            let develop = DEVELOP;
+            develop_instead(&record, side, &why, control, develop)
+                .inspect_err(|error| ended.permanent = lasting(error.kind))?
+        }
         Err(error) => {
-            *permanent = matches!(
-                error.kind,
-                ErrorKind::ResourceLimit | ErrorKind::UnsupportedInput
-            );
+            ended.permanent = lasting(error.kind);
             return Err(error);
         }
     };
