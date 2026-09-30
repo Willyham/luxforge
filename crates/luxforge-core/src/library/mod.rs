@@ -33,3 +33,4 @@ pub(crate) mod targets;
 // Availability and Locate (TASK-016).
 pub(crate) mod availability;
 pub(crate) mod locate;
+pub(crate) mod worker;
