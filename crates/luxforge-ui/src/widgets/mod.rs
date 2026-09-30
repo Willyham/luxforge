@@ -52,6 +52,12 @@ mod thumbnail_grid;
 // -- end Select: the thumbnail grid.
 
 // -- Select: chrome.
+mod filmstrip;
+mod filter_bar;
+mod long_work;
+mod loupe;
+mod source_list;
+mod title_actions;
 // -- end Select: chrome.
 
 pub use badge::{BadgeModel, badge};
@@ -125,6 +131,23 @@ pub use thumbnail_grid::{
 // -- end Select: the thumbnail grid's exports.
 
 // -- Select: chrome's exports.
+pub use filmstrip::{FilmstripModel, filmstrip, filmstrip_capacity};
+pub use filter_bar::{
+    ChipEnd, FilterChipModel, FilterOption, FilterSegmentsModel, SearchFieldModel, filter_action,
+    filter_bar, filter_chip, filter_segments, search_field,
+};
+pub use job_row::{WorkRowModel, work_row};
+pub use long_work::{ProgressSheetModel, StatusJobModel, WorkProgress, progress_sheet, status_job};
+pub use loupe::{
+    FocusInsetModel, FrameStripModel, InsetSource, KeyHint, LoupeInfoModel, MomentFrame, focus_box,
+    focus_inset, frame_strip, key_hints, loupe_info_bar, region_box, visible_window,
+};
+pub use segmented::{filter_segment, filter_segment_track, keyed_segment};
+pub use source_list::{
+    SourceCount, SourceHeadingModel, SourceRowModel, Volume, source_heading, source_month,
+    source_row, source_tag,
+};
+pub use title_actions::{DevelopButtonModel, WorkspaceTab, develop_button, workspace_switch};
 // -- end Select: chrome's exports.
 
 // Used only inside the crate: by its composed widgets and the components board.
