@@ -288,7 +288,7 @@ fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
     // The rows for the visible window, which here is the whole view.
     read_rows(&mut editor);
     assert_eq!(editor.select.state.rows.len(), 12);
-    assert!(editor.select_quiet());
+    assert!(editor.select_reads_quiet());
 
     // A click selects through the session; the arrows move the active item and Shift extends.
     let press = |item: u32| {
@@ -397,7 +397,10 @@ fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
         folder.clone(),
     ))));
     assert!(editor.select.reading.is_some());
-    assert!(!editor.select_quiet(), "a folder being read is in flight");
+    assert!(
+        !editor.select_reads_quiet(),
+        "a folder being read is in flight"
+    );
     assert!(
         editor.status.text.starts_with("Reading "),
         "{}",

@@ -309,6 +309,56 @@ fn select_previews_a_wake_during_a_read_is_not_lost() {
     assert!(previews.woken().is_none());
 }
 
+/// A file the lane is still reading is answered with the same job and waits for the next wake; one
+/// answered with another job after a wake had its read end without a preview (the file is gone or
+/// its volume is not connected): it is not asked again under the revision, so a missing file is not
+/// read, queued and woken for in a loop, and the screen settles on its placeholder.
+#[test]
+fn select_previews_a_read_that_ended_without_a_preview_is_not_asked_again() {
+    let mut previews = paused(DECODED_BUDGET_BYTES);
+    let want = wanted(REVISION, &[1], &[]);
+    let job = luxforge_core::JobId::new();
+    let same = |job: &luxforge_core::JobId| {
+        let job = job.clone();
+        move |_| {
+            Ok(PreviewAnswer::Queued {
+                job_id: job.clone(),
+                fallback: None,
+            })
+        }
+    };
+    let batch = previews.plan_for(want.clone()).expect("a batch");
+    previews.answered(answer(&batch, same(&job)));
+    assert!(!previews.settled(), "the cell on screen is loading");
+    // Woken for another file's preview while this one's read runs on: the same job answers.
+    previews.woken.store(true, Ordering::Release);
+    let batch = previews.woken().expect("read again after the wake");
+    previews.answered(answer(&batch, same(&job)));
+    assert_eq!(previews.entries[&file(1)].read, Read::Queued);
+    // Its read ended without a preview: read again, the lane starts another job.
+    previews.woken.store(true, Ordering::Release);
+    let batch = previews.woken().expect("read again after the wake");
+    previews.answered(answer(&batch, same(&luxforge_core::JobId::new())));
+    assert!(matches!(
+        &previews.entries[&file(1)].read,
+        Read::Refused(refusal) if refusal.code == "not-read"
+    ));
+    assert!(previews.settled(), "nothing on screen is still loading");
+    previews.woken.store(true, Ordering::Release);
+    assert!(
+        previews.woken().is_none(),
+        "not asked again under the revision"
+    );
+    assert!(
+        !previews.unreadable(file(1)),
+        "a placeholder, not Unreadable"
+    );
+    assert!(
+        previews.plan_for(wanted(REVISION + 1, &[1], &[])).is_some(),
+        "a new revision asks again"
+    );
+}
+
 /// The thumbnail stage is drawn while the lane reads the embedded preview; the embedded preview,
 /// once decoded, replaces it in place — the cell is never blank in between — and a late decode of
 /// the stage it replaced changes nothing. The handle keeps its id while it is held. An answer that

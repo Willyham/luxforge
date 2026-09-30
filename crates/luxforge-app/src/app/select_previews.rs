@@ -260,6 +260,11 @@ struct Entry {
     unavailable: bool,
     /// The last plan that wanted it; the current one is [`SelectPreviews::tick`].
     wanted_at: u64,
+    /// The job the lane answered it `queued` with. A later read answered with another job means
+    /// that one ended without the tier: the lane could not read the file (it is gone, or its
+    /// volume is not connected), so it is not asked again under this revision, rather than read,
+    /// queued and woken for in a loop.
+    job: Option<String>,
 }
 
 impl Default for Entry {
@@ -272,6 +277,7 @@ impl Default for Entry {
             over_budget: None,
             unavailable: false,
             wanted_at: 0,
+            job: None,
         }
     }
 }
@@ -521,6 +527,20 @@ impl SelectPreviews {
         })
     }
 
+    /// Every file on screen has what it will draw for now: a decoded preview, or nothing to wait for
+    /// (refused, reported unavailable, or its decode failed). An evidence run waits for it before a
+    /// capture, so a frame shows the previews of the cells it captures rather than whichever
+    /// decodes happened to land first.
+    pub(crate) fn settled(&self) -> bool {
+        self.on_screen.iter().all(|file| {
+            !self.loading(*file)
+                || self
+                    .entries
+                    .get(file)
+                    .is_some_and(|entry| entry.failed.is_some())
+        })
+    }
+
     /// `file` has nothing to draw and never will as it is: its row reported it `unavailable`, or
     /// the owner found no usable preview in it. Its cell is Unreadable.
     pub(crate) fn unreadable(&self, file: FileId) -> bool {
@@ -629,8 +649,26 @@ impl SelectPreviews {
                 continue;
             }
             let (read, source) = match answer {
-                Ok(PreviewAnswer::Ready { preview }) => (Read::Ready, Some(preview)),
-                Ok(PreviewAnswer::Queued { fallback, .. }) => (queued.clone(), fallback),
+                Ok(PreviewAnswer::Ready { preview }) => {
+                    entry.job = None;
+                    (Read::Ready, Some(preview))
+                }
+                Ok(PreviewAnswer::Queued { job_id, fallback }) => {
+                    let job = job_id.as_str().to_owned();
+                    let ended = entry.job.as_ref().is_some_and(|earlier| *earlier != job);
+                    entry.job = Some(job);
+                    if ended {
+                        let refusal = Refusal {
+                            code: "not-read".into(),
+                            message:
+                                "the preview lane ended its read of this file without a preview"
+                                    .into(),
+                        };
+                        (Read::Refused(refusal), fallback)
+                    } else {
+                        (queued.clone(), fallback)
+                    }
+                }
                 // The lane's queue is full: asked again once it has written something.
                 Err(refusal) if refusal.code == "resource-limit" => {
                     entry.read = queued.clone();
