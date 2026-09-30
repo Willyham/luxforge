@@ -1,15 +1,15 @@
-//! **Lane C (catalog)** on the owner: the develop lane's handle (its worker, started on the first
-//! Develop), the source search and batch jobs, what they post back (a committed batch, a finished
-//! file, progress), and the handlers of `pick.*`, `folder.*`, `asset.move`, `asset.send-back`,
-//! `asset.remove`, `asset.restore`, `collection.*`, `library.*`, `catalog.empty-removed`,
-//! `source.check`, `source.missing`, `source.find`, `source.locate`, `source.relink`, `batch.*` and
-//! `catalog.info` (`crate::catalog_types::api`). The library itself is `crate::library`.
+//! **Lane C (catalog)** on the owner: the lane's worker ([`LibraryLane`], its thread started on
+//! the lane's first job), the jobs it runs and what they post back, and the handlers of `pick.*`,
+//! `folder.*`, `asset.move`, `asset.send-back`, `asset.remove`, `asset.restore`, `collection.*`,
+//! `library.*`, `catalog.empty-removed`, `source.check`, `source.missing`, `source.find`,
+//! `source.locate`, `source.relink`, `batch.*` and `catalog.info` (`crate::catalog_types::api`).
+//! The library itself is `crate::library`.
 //!
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
-//! (`library.*`) and `info.rs` (`catalog.info`). Every method that changes the library records it
-//! through [`change`], which runs the journal in one catalog transaction and announces the change
-//! it recorded as one event.
-#![allow(dead_code, reason = "catalog contracts: lane C fills this as it lands")]
+//! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
+//! (`source.check`, `source.locate`) and `info.rs` (`catalog.info`). Every method that changes the
+//! library records it through [`change`], which runs the journal in one catalog transaction and
+//! announces the change it recorded as one event.
 
 mod info;
 mod journal;
@@ -336,8 +336,10 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
 /// Record one library change and announce it: `change` runs the journal in one catalog
 /// transaction ([`EditorService::library_write`](crate::EditorService::library_write)), and a
 /// change it recorded now is one event naming its sequence, however many items it covered, and is
-/// handed to the lanes that follow its items ([`CatalogLanes::library_changed`]). A retry the
-/// journal answered announces nothing and hands over nothing, as its first attempt did.
+/// handed to the lanes that follow its items ([`CatalogLanes::library_changed`]). A change that
+/// moved exactly one photograph's original (a Locate, or its undo) also names that photograph, as
+/// every change to one photograph does, so a client showing it reads it again. A retry the journal
+/// answered announces nothing and hands over nothing, as its first attempt did.
 ///
 /// [`CatalogLanes::library_changed`]: super::catalog::CatalogLanes::library_changed
 ///
@@ -353,7 +355,12 @@ pub(super) fn change(
 ) -> Result<LibraryAnswer, Error> {
     let outcome = owner.service.library_write(change)?;
     if let Some(sequence) = outcome.announced() {
-        announce_once(&mut owner.announced, &origin.clone().library(sequence));
+        let mut announced = origin.clone().library(sequence);
+        let mut sources = outcome.sources();
+        if let (Some(asset), None) = (sources.next(), sources.next()) {
+            announced = announced.changed(asset.clone(), None);
+        }
+        announce_once(&mut owner.announced, &announced);
         owner.catalog.library_changed(outcome.items());
     }
     Ok(outcome.answer())
