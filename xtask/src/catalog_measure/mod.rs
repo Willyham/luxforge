@@ -12,12 +12,13 @@
 //! 1. `browse-generated`: `browse.view` over the generated index's files and catalog's
 //!    photographs, `browse.rows` of 200 over each, and what the owner grows by for the view.
 //! 2. `bracket`: the preview bracket check per run, through the core's ignored bench.
-//! 3. `first-browse`, `return` and `develop-picks` over the RAW trip: its first browse (the first
-//!    screen, every file, event and moment, every grid preview), returning to it, and developing
-//!    RAW picks of it; skipped when the corpus is absent. `first-browse-card` does the first browse
-//!    over a card's folder (`--card`), and is skipped without one.
+//! 3. `first-browse`, `return` and `develop-picks` over the RAW trip: its first browse as an
+//!    indexed folder (the first screen, every file, event and moment, every grid preview),
+//!    returning to it, and developing RAW picks of it; skipped when the corpus is absent.
+//!    `first-browse-card` does the first browse of the mounted card `--card` is on, as a card, and
+//!    is skipped without one.
 //! 4. `idle-watchers`: idle CPU with the index lane watching two indexed folders, in the core and
-//!    in the editor.
+//!    in the editor, and the editor's own idle over a catalog with none beside them.
 //! 5. `drag-baseline`, `first-index` (a first index of the tree with owner round trips sampled
 //!    throughout), `drag-during-indexing` and `drag-during-preview-backlog`: a Basic drag through
 //!    `editor-latency`, alone and under the catalog's background work.
@@ -99,9 +100,13 @@ fn git(root: &Path) -> Value {
     let sha = output(root, "git", &["rev-parse", "HEAD"])
         .ok()
         .map(|sha| sha.trim().to_owned());
-    let dirty = output(root, "git", &["status", "--porcelain", "--untracked-files=no"])
-        .ok()
-        .map(|status| !status.trim().is_empty());
+    let dirty = output(
+        root,
+        "git",
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .ok()
+    .map(|status| !status.trim().is_empty());
     json!({"sha": sha, "dirty": dirty})
 }
 
@@ -167,7 +172,7 @@ fn header(root: &Path, options: &Options, journeys: usize) -> Value {
 /// else the baseline drag's.
 fn editor_profile(out: &Path) -> Value {
     [
-        out.join("idle-editor/result.json"),
+        out.join("idle-editor-baseline/result.json"),
         out.join("drag-baseline/latency.json"),
     ]
     .iter()
@@ -234,7 +239,12 @@ pub fn run(root: &Path, out: &Path, options: &Options) -> Result {
         Ok(trip) => {
             let mut kept = None;
             report.step(root, "first-browse", || {
-                measures::first_browse(&cx, "first_browse", &trip.dir, &mut kept)
+                measures::first_browse(
+                    &cx,
+                    "first_browse",
+                    measures::Browsed::Folder(&trip.dir),
+                    &mut kept,
+                )
             });
             report.step(root, "return", || {
                 let core = kept.as_ref().ok_or("no first browse to return to")?;
@@ -270,7 +280,12 @@ pub fn run(root: &Path, out: &Path, options: &Options) -> Result {
         Some(card) => {
             let mut kept = None;
             report.step(root, "first-browse-card", || {
-                measures::first_browse(&cx, "first_browse_card", card, &mut kept)
+                measures::first_browse(
+                    &cx,
+                    "first_browse_card",
+                    measures::Browsed::Card(card),
+                    &mut kept,
+                )
             });
             if let Some(core) = kept {
                 let _ = core.close();

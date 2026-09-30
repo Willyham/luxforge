@@ -6,8 +6,7 @@ use super::{desktop::DesktopContext, report::Row};
 use crate::*;
 
 pub const METRIC: &str = "desktop.develop_switch.key_to_presented";
-pub const TARGET: &str =
-    "Switching photographs in Develop with a cached large preview: presented in the frame after the key";
+pub const TARGET: &str = "Switching photographs in Develop with a cached large preview: presented in the frame after the key";
 
 /// The Develop switch's rows.
 pub fn develop_switch(context: &DesktopContext) -> Result<Vec<Row>> {

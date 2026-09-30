@@ -247,7 +247,10 @@ pub fn corpus(dir: Option<&Path>) -> std::result::Result<Vec<PathBuf>, String> {
         "corpus absent: no --raw-corpus given and LUXFORGE_RAW_CORPUS_DIR is not set".to_owned(),
     )?;
     if !dir.is_dir() {
-        return Err(format!("corpus absent: {} is not a directory", dir.display()));
+        return Err(format!(
+            "corpus absent: {} is not a directory",
+            dir.display()
+        ));
     }
     let mut found: Vec<PathBuf> = files(dir)
         .map_err(|error| format!("corpus unreadable: {}: {error}", dir.display()))?
@@ -326,8 +329,7 @@ pub fn capture_time(index: usize) -> String {
     let burst = index / BURST;
     let day = burst / BURSTS_A_DAY;
     let seconds = 8 * 3600 + 30 * 60 + (burst % BURSTS_A_DAY) * BURST_EVERY_S + index % BURST;
-    let date = time::Date::from_calendar_date(2026, time::Month::June, 1)
-        .expect("a calendar date")
+    let date = time::Date::from_calendar_date(2026, time::Month::June, 1).expect("a calendar date")
         + time::Duration::days(day as i64);
     format!(
         "{:04}:{:02}:{:02} {:02}:{:02}:{:02}",
@@ -428,6 +430,13 @@ fn is_datetime(text: &[u8]) -> bool {
             number(14..16),
             number(17..19)
         ),
-        (Some(1900..=2099), Some(1..=12), Some(1..=31), Some(0..=23), Some(0..=59), Some(0..=60))
+        (
+            Some(1900..=2099),
+            Some(1..=12),
+            Some(1..=31),
+            Some(0..=23),
+            Some(0..=59),
+            Some(0..=60)
+        )
     )
 }

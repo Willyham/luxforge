@@ -52,7 +52,8 @@ impl BracketProbe for Timed<'_> {
 #[ignore = "a timing bench: cargo xtask catalog-measure runs it over a catalog it prepares"]
 fn bracket_probe_per_run() {
     let var = |name: &str| {
-        std::env::var(name).unwrap_or_else(|_| panic!("{name} is set by cargo xtask catalog-measure"))
+        std::env::var(name)
+            .unwrap_or_else(|_| panic!("{name} is set by cargo xtask catalog-measure"))
     };
     let catalog = PathBuf::from(var(CATALOG));
     let out = PathBuf::from(var(OUT));

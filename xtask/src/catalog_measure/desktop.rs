@@ -26,7 +26,8 @@ pub struct DesktopContext {
 }
 
 /// Lane B's reason, until each probe is built.
-const PENDING: &str = "lane B's desktop frame-time probe (xtask/src/catalog_measure/desktop.rs) is not built yet";
+const PENDING: &str =
+    "lane B's desktop frame-time probe (xtask/src/catalog_measure/desktop.rs) is not built yet";
 
 /// Each desktop probe: its metric, unit and the design's provisional target.
 pub const PROBES: [(&str, &str, &str); 6] = [
