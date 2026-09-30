@@ -102,7 +102,7 @@ fn located_signature(path: &Path) -> Result<(PathBuf, Metadata, SourceSignature)
 
 /// The signature an asset's original has now, refused when the file is gone or is no longer the
 /// file that was imported.
-fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
+pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
     let metadata = asset
         .locator
         .metadata()
@@ -127,7 +127,7 @@ pub(crate) struct FilePreparation {
 impl FilePreparation {
     /// The preparation of `recipe`, a stack of `asset` its caller already admitted as one
     /// ([`EditorService::saved_entry`]).
-    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
+    pub(crate) fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -377,7 +377,7 @@ impl EditorService {
     /// source kind ([`validate_source_recipe`]). What every question about a saved stack starts
     /// from, an evaluation of it included ([`Self::evaluation`]): a cached head and entry read,
     /// nothing copied but the asset record, and `O(layers)` checks.
-    pub(super) fn saved_entry(
+    pub(crate) fn saved_entry(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
