@@ -1,28 +1,40 @@
 //! The index: what Luxforge has read from the files it browses, so browsing is instant the second
 //! time. **Lane A (files)** owns this module (`docs/design/catalog.md`, "Delivery plan").
 //!
-//! It will hold the index lane: a bounded, cancellable walk that lists the supported files of an
-//! indexed folder, a card or a browsed folder, following no symbolic link out of its roots, crossing
-//! no volume and skipping packages, other applications' caches, hidden and system folders and
-//! Luxforge's own directories; header reads bounded in bytes that fill a
-//! [`HeaderMetadata`](crate::HeaderMetadata) and never read image data; reconciliation by signature
-//! (unchanged rows kept, changed ones read again, new ones added, vanished ones dropped, moves
-//! within a volume carried by file identity); the platform's change notifications for indexed
-//! folders and mount notifications for cards; and progress on the activity board. Two workers on
-//! different files write the index database; the catalog owner is not involved.
+//! - `database.rs`: the index database — schema, format marker, open, create and discard, its
+//!   revision, and the file and root rows ([`IndexDb`], [`INDEX_FORMAT`], [`index_dir`]).
+//! - `volumes.rs`: the mounted volumes, which volume a path is on, camera cards and offline folders,
+//!   from the platform's mount table or a fixed one a test stands in with.
+//! - `exclude.rs`: what indexing lists (supported files by extension) and skips (packages, other
+//!   applications' caches, hidden and system folders, Luxforge's own directories).
+//! - `walk.rs`: the bounded, cancellable listing of one root, a folder at a time, following no link
+//!   and crossing no volume.
+//! - `read.rs`: one file's header read, bounded in bytes, never image data.
+//! - `reconcile.rs`: reconciliation by signature — unchanged rows kept, changed ones read again,
+//!   new ones added, vanished ones dropped, moves within a volume carried by file identity.
+//! - `lane.rs`: the index lane — a coordinator thread that walks, reconciles and writes in batches
+//!   (each advancing the revision and announced as one event), and two header workers on different
+//!   files — with progress on the activity board. The catalog owner only schedules it
+//!   (`api/owner/files.rs`).
+//! - `disk.rs`: a folder's immediate subfolders for `disk.folders`, with the same exclusions.
 //!
-//! Landed with the contracts:
-//! - `database.rs`: the index database — schema, format marker, open, create and discard, and the
-//!   file and root row writers ([`IndexDb`], [`INDEX_FORMAT`], [`index_dir`]).
-//! - `volume.rs`: which volume a path is on, a placeholder until the platform's volume identity.
-//!
-//! Planned: `walk.rs` (listing and exclusions), `header.rs` (bounded header reads, with
-//! `export/metadata`'s typed accessors), `lane.rs` (the workers, reconciliation and progress),
-//! `watch.rs` (FSEvents, inotify and Windows notifications) and `cards.rs` (mounted cards).
-mod database;
-mod volume;
+//! Not built yet: the platform's change notifications for indexed folders and mount notifications
+//! for cards (TASK-005). They feed this lane what the owner already hands it: a root to list again
+//! ([`lane::Work::Refresh`]) when paths under it change or a card mounts.
+pub(crate) mod database;
+pub(crate) mod disk;
+pub(crate) mod exclude;
+pub(crate) mod lane;
+mod read;
+pub(crate) mod reconcile;
+pub(crate) mod volumes;
+pub(crate) mod walk;
 
+#[allow(
+    unused_imports,
+    reason = "the preview and views lanes read file rows through it"
+)]
+pub(crate) use database::file;
 pub use database::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};
-#[allow(unused_imports, reason = "catalog contracts: used as the lanes land")]
-pub(crate) use database::{file, upsert_file, upsert_root};
-pub(crate) use volume::volume_of;
+pub(crate) use database::{upsert_file, upsert_root};
+pub(crate) use volumes::volume_of;
