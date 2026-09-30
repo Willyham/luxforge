@@ -579,6 +579,8 @@ Provisional targets, measured once on the owner's M4 when the feature is complet
 | `browse.view` over 10,000 files or 100,000 photographs | p95 under 50 ms; `browse.rows` of 200 under 2 ms |
 | Memory | Decoded grid and loupe previews in the desktop under byte budgets (provisionally 192 MiB and 256 MiB) whatever the view's size; the owner grows by the view's id list |
 
+`cargo xtask catalog-measure` takes every target above in one run and one report, each row with its scope and the load it was taken at, and a reason for any row it does not take ([development](../engineering/development.md#commands)).
+
 The performance-rules checklist is answered in the implementation tasks: browsing decodes only embedded previews, never an original's image data; the only new development is the 100% fallback and the rendered catalog previews, each bounded to one RAW at a time off the editor's cache; the owner's new work is SQL and bookkeeping; the only new timers are the availability and card checks, gated on an open catalog, and long-running work's throttle and refresh, gated on a read being due after a wake and on a catalog job running.
 
 ## Scope
