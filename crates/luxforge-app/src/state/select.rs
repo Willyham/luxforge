@@ -1533,7 +1533,9 @@ pub(crate) fn title(state: &SelectState) -> SelectTitle {
                     format!("{} developed photographs", thousands(count))
                 }
             }));
-            catalog_name(other).to_owned()
+            // A catalog folder or collection by its own name, once its list is read.
+            super::select_catalog::source_name(&state.catalog, other)
+                .unwrap_or_else(|| catalog_name(other).to_owned())
         }
     };
     panels(SelectTitle {

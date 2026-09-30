@@ -16,8 +16,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
 
 mod build;
+mod catalog;
 mod missing;
 
+pub use catalog::{CatalogStep, FacetColumn};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -187,6 +189,9 @@ pub enum Step {
     Select(SelectStep),
     /// One gesture on Select's Missing originals.
     Missing(MissingStep),
+    /// One gesture on the catalog in Select: its folders and collections, filter bar, Metadata
+    /// browser and Info panel.
+    Catalog(CatalogStep),
 }
 
 impl Step {
@@ -320,6 +325,7 @@ impl Step {
             Self::Export(step) => step.validate(),
             Self::Select(step) => step.validate(),
             Self::Missing(step) => step.validate(),
+            Self::Catalog(step) => step.validate(),
         }
     }
 }

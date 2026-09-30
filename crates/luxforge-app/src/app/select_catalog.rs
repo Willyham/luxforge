@@ -620,6 +620,9 @@ impl Editor {
         let state = &self.select.state.catalog;
         json!({
             "shown": model.shown,
+            // The whole query of the view on screen, as the owner evaluated it: what Save as smart
+            // collection… stores.
+            "query": self.shown_query(),
             "folders": rows(&model.sources.folders),
             "collections": rows(&model.sources.collections),
             "listed": {
@@ -634,6 +637,11 @@ impl Editor {
                 "save": bar.save_refused,
                 "count": bar.count,
             })),
+            // The owner's facets behind the Metadata browser, over the catalog.
+            "facets": model
+                .shown
+                .then_some(self.select.state.facets.as_ref())
+                .flatten(),
             "total": state.total.as_ref().map(|total| json!({
                 "source": total.source,
                 "sequence": total.sequence,
