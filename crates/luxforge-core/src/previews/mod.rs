@@ -22,14 +22,17 @@
 //! - `region.rs`: the 100% region's domain functions, from the embedded full-size preview for that
 //!   region alone or from a neutral development, one RAW at a time, off the editor's cache
 //!   (TASK-009); the lane wires them to `preview.region`.
+//! - `rendered.rs`: developed photographs' grid and large tiers, planned on the owner and rendered
+//!   through the Fit preview's proxy path off the editor's cache (TASK-010); the lane wires them to
+//!   `preview.read` of a photograph.
 //!
-//! To come in this lane: `rendered.rs` (previews of developed photographs, TASK-010) and
-//! `bracket.rs` (the brightness check, a [`BracketProbe`](crate::catalog_types::BracketProbe) over
-//! decoded grid previews).
+//! To come in this lane: `bracket.rs` (the brightness check, a
+//! [`BracketProbe`](crate::catalog_types::BracketProbe) over decoded grid previews).
 mod cache;
 mod extract;
 mod lane;
 pub(crate) mod region;
+pub(crate) mod rendered;
 
 #[allow(
     unused_imports,
