@@ -18,11 +18,26 @@
 //!   owner reports them.
 //! - The owner's wake for another client's change asks for `session.state` while Select is shown;
 //!   a view the session reports stale — a library change or an index revision since it was
-//!   evaluated — is evaluated again, the scroll kept near the active item.
+//!   evaluated — is evaluated again, keeping its scroll, moved as little as keeps the active item
+//!   in view when it was on screen.
+//! - A library change — `P` and the Info panel's Pick (`pick.set` of the selection), a bracket's
+//!   Pick all (`pick.set` of its files), and `Cmd+Z` and `Shift+Cmd+Z` (`library.undo` and
+//!   `library.redo`) — is sent synchronously in the update of its key or press, as this desktop's
+//!   actor: the journal records the gestures in the order they were made, and a pick of the
+//!   selection names the selection on screen, which the next arrow key's synchronous
+//!   `browse.select` would otherwise overtake. The owner's work is one catalog transaction. What
+//!   the change leaves is read as another client's change is: the view evaluated again, the
+//!   events and the catalog's counts read again, and the change's label from the journal said in
+//!   the status bar, as owner tasks.
+//! - The sources panel reads the cards and volumes (`card.list`, `volume.list`) and the catalog's
+//!   counts (`catalog.info`) each time Select is shown, the counts again after a library change,
+//!   and a volume's or folder's subfolders (`disk.folders`) when it is opened On disk. A card or a
+//!   folder is read by the index lane (`index.refresh`) before it is viewed.
 //!
 //! Which workspace is shown, the panels, the collapsed bursts, the size slider and the selection's
 //! anchor are this desktop's own view state, like the developer gallery page: no other client sees
 //! them.
+use crate::app::select_catalog::SelectCatalog;
 use crate::app::select_previews::{GridWindow, SelectPreviewMessage, SelectPreviews};
 use crate::app::{
     Before, Editor,
@@ -32,24 +47,28 @@ use crate::app::{
         select::{SelectMessage, Step},
     },
     outcome::Outcome,
-    tasks::{call, owner_task},
+    tasks::{CallError, call, call_detailed, owner_task, request},
 };
 use crate::coalesce::Coalesce;
 use crate::state::select::{
-    self as model, Block, GridContent, RowsRequest, SelectGesture, SelectPanel, SelectState,
-    SelectionModel, Shown,
+    self as model, Block, GridContent, LibraryGesture, ReadSource, RowsRequest, SelectGesture,
+    SelectPanel, SelectState, SelectionModel, Shown,
 };
 use iced::{Size, Task};
 use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
-    catalog_types::{EventList, Facets, ViewQuery, ViewRows, ViewSummary},
+    catalog_types::{
+        Cards, CatalogCounts, CatalogInfo, DiskFolders, EventList, Facets, LibraryAnswer,
+        LibraryChange, LibraryJournal, RowItem, Targets, ViewQuery, ViewRows, ViewSource,
+        ViewSummary, Volumes,
+    },
 };
 use luxforge_ui::{
     GridBlock, GridDirection, GridHeading, GridLayout, GridMetrics, GridPress, MomentHeader,
     MomentKind,
 };
 use serde_json::{Value, json};
-use std::{ops::Range, path::PathBuf};
+use std::{collections::BTreeSet, ops::Range, path::PathBuf};
 
 /// The Select workspace's own state in the editor: its view-model state, the grid's layout, scroll
 /// and viewport, and what is in flight.
@@ -80,12 +99,32 @@ pub(crate) struct Select {
     pub(crate) facets_answered: u64,
     /// An evidence step that waits for the view to be evaluated again: the revision it must pass.
     pub(crate) evidence_after: Option<u64>,
-    /// The evaluation in flight reads a stale view again, which the status bar says when it lands.
-    pub(crate) rereading: bool,
-    /// The folder being read before it is viewed: `index.refresh` lists it and reads its headers.
+    /// Why the evaluation in flight was asked for, which the status bar says when it lands.
+    pub(crate) reread: Reread,
+    /// The card or folder being read before it is viewed: `index.refresh` lists it and reads its
+    /// headers.
     pub(crate) reading: Option<Reading>,
-    /// A `job.read` of the reading folder's job is in flight.
+    /// A `job.read` of the reading source's job is in flight.
     pub(crate) read_in_flight: bool,
+    /// The view on screen went stale while the card or folder being read waited to replace it: it
+    /// is read again, quietly, only if the reading ends without replacing it.
+    pub(crate) stale_while_reading: bool,
+    /// `card.list` and `volume.list`: one read in flight, one waiting.
+    pub(crate) disks: Coalesce<()>,
+    /// `catalog.info`: one read in flight, one waiting.
+    pub(crate) counts: Coalesce<()>,
+    /// The volumes and folders On disk whose `disk.folders` is in flight.
+    pub(crate) listing: BTreeSet<PathBuf>,
+    /// This desktop's newest library change and the gesture that made it: its label is read from
+    /// the journal for the status bar.
+    pub(crate) change: Option<(u64, LibraryGesture)>,
+    /// The newest library change this desktop recorded, by any gesture — a pick, an undo, a
+    /// relink, a Locate: a view read again at that change was not changed elsewhere.
+    pub(crate) own_change: Option<u64>,
+    /// The change whose label is being read.
+    pub(crate) label: Option<u64>,
+    /// The last library request this desktop sent and what the owner answered, for evidence.
+    pub(crate) library: Option<Value>,
     /// The board changed while that read was in flight, so a `queued` or `running` answer is read
     /// again once.
     pub(crate) read_again: bool,
@@ -93,14 +132,32 @@ pub(crate) struct Select {
     pub(crate) previews: SelectPreviews,
     /// The loupe's decoded frames and focus check (`app/loupe.rs`).
     pub(crate) loupe: crate::app::loupe::Loupe,
+    /// The catalog's reads in flight: its folders and collections, a total and a selection's rows.
+    pub(crate) catalog: SelectCatalog,
 }
 
-/// A folder browsed on disk whose listing and headers the index lane is reading.
+/// A card or a folder on disk whose listing and headers the index lane is reading.
 #[derive(Clone, Debug)]
 pub(crate) struct Reading {
-    pub(crate) path: PathBuf,
+    pub(crate) source: ReadSource,
     /// The `index.refresh` job, once the owner has answered with it.
     pub(crate) job: Option<String>,
+}
+
+/// Why a view is being evaluated, which the status bar says once it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Reread {
+    /// A source, filter, sort or grouping was chosen: the status bar names the view.
+    #[default]
+    Asked,
+    /// A wake's staleness check found it stale: another client's library change, which the status
+    /// bar says, or the index alone moving, which it does not.
+    Elsewhere,
+    /// This desktop's own library change made it stale; the status bar says that change.
+    Own,
+    /// It went stale while the index lane read a card or folder for this desktop, whose batches
+    /// are the likeliest change: the status bar keeps saying how far the reading has got.
+    Quiet,
 }
 
 impl Default for Select {
@@ -123,12 +180,21 @@ impl Default for Select {
             check_on_show: false,
             facets_answered: 0,
             evidence_after: None,
-            rereading: false,
+            reread: Reread::Asked,
             reading: None,
             read_in_flight: false,
+            stale_while_reading: false,
+            disks: Coalesce::default(),
+            counts: Coalesce::default(),
+            listing: BTreeSet::new(),
+            change: None,
+            own_change: None,
+            label: None,
+            library: None,
             read_again: false,
             previews: SelectPreviews::default(),
             loupe: crate::app::loupe::Loupe::default(),
+            catalog: SelectCatalog::default(),
         }
     }
 }
@@ -161,8 +227,11 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                 title,
                 detail,
                 evidence,
+                picked,
+                action,
                 frames,
                 collapsed,
+                ..
             } => GridBlock::Moment {
                 header: MomentHeader {
                     kind: if *bracket {
@@ -173,9 +242,8 @@ pub(crate) fn grid_blocks(content: &GridContent) -> Vec<GridBlock> {
                     title: title.clone(),
                     detail: detail.clone(),
                     evidence: evidence.clone(),
-                    // Per-moment pick counts and Pick all come with picks.
-                    picked: None,
-                    action: None,
+                    picked: picked.clone(),
+                    action: action.clone(),
                 },
                 frames: *frames,
                 collapsed: *collapsed,
@@ -249,18 +317,13 @@ pub(crate) fn session_now(owner: &OwnerHandle, client: ClientId) -> Result<Clien
     parse(session)
 }
 
-/// `index.refresh` of a folder on disk with its subfolders: the job that lists it.
+/// `index.refresh` of a card, or of a folder on disk with its subfolders: the job that lists it.
 pub(crate) fn refresh_now(
     owner: &OwnerHandle,
     client: ClientId,
-    path: &std::path::Path,
+    source: &ReadSource,
 ) -> Result<String, String> {
-    let (started, _) = call(
-        owner,
-        client,
-        "index.refresh",
-        json!({"source": {"kind": "folder", "path": path}}),
-    )?;
+    let (started, _) = call(owner, client, "index.refresh", source.refresh_params())?;
     started["job_id"]
         .as_str()
         .map(str::to_owned)
@@ -276,6 +339,68 @@ pub(crate) fn job_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Resul
         json!({ "job_id": job }),
     )?;
     Ok(record)
+}
+
+/// `card.list` and `volume.list`, for the sources panel's Cards and On disk.
+pub(crate) fn disks_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+) -> Result<Box<(Cards, Volumes)>, String> {
+    let (cards, _) = call(owner, client, "card.list", json!({}))?;
+    let (volumes, _) = call(owner, client, "volume.list", json!({}))?;
+    Ok(Box::new((parse(cards)?, parse(volumes)?)))
+}
+
+/// `disk.folders` for a volume or folder opened On disk.
+pub(crate) fn folders_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &std::path::Path,
+) -> Result<DiskFolders, String> {
+    let (folders, _) = call(owner, client, "disk.folders", json!({ "path": path }))?;
+    parse(folders)
+}
+
+/// `catalog.info`'s counts, behind the Catalog sources.
+pub(crate) fn counts_now(owner: &OwnerHandle, client: ClientId) -> Result<CatalogCounts, String> {
+    let (info, _) = call(owner, client, "catalog.info", json!({}))?;
+    parse::<CatalogInfo>(info).map(|info| info.counts)
+}
+
+/// `library.journal` for the one change `sequence`, whose label the status bar says.
+pub(crate) fn label_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    sequence: u64,
+) -> Result<Option<LibraryChange>, String> {
+    let (page, _) = call(
+        owner,
+        client,
+        "library.journal",
+        model::journal_params(sequence),
+    )?;
+    let page = parse::<LibraryJournal>(page)?;
+    Ok(page
+        .changes
+        .into_iter()
+        .find(|change| change.sequence.0 == sequence))
+}
+
+/// One library change of this desktop's — `pick.set`, `library.undo` or `library.redo` — sent
+/// synchronously, answered with what it recorded or its refusal with its data.
+pub(crate) fn library_call(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<LibraryAnswer, CallError> {
+    let answer = call_detailed(owner, client, method, params)?;
+    serde_json::from_value(answer).map_err(|error| CallError {
+        code: "internal".into(),
+        message: format!("{method} answered unexpectedly: {error}"),
+        data: None,
+        job_id: None,
+    })
 }
 
 /// `browse.select`, answered with the session.
@@ -314,6 +439,11 @@ impl Editor {
             }
             SelectMessage::Source(source) => {
                 self.select.state.menu = None;
+                self.select.state.catalog.close();
+                // Another view chosen while a card or folder is being read: the reading goes on
+                // as the status bar's job, and its end no longer replaces the view.
+                self.select.reading = None;
+                self.select.stale_while_reading = false;
                 return self.evaluate(model::source_query(source));
             }
             SelectMessage::BrowseFolder => {
@@ -334,9 +464,10 @@ impl Editor {
             SelectMessage::FolderPicked(path) => {
                 self.view_state.picker_open = false;
                 if let Some(path) = path {
-                    return self.read_folder(path);
+                    return self.read_source(ReadSource::Folder(path));
                 }
             }
+            SelectMessage::Read(source) => return self.read_source(source),
             SelectMessage::Reading(result) => match result {
                 Ok(job) => {
                     if let Some(reading) = &mut self.select.reading {
@@ -344,15 +475,61 @@ impl Editor {
                     }
                 }
                 Err(error) => {
-                    if let Some(reading) = self.select.reading.take() {
+                    if let Some(reading) = &self.select.reading {
                         self.status.text = format!(
                             "Could not read {}: {error}",
-                            model::shown_path(&reading.path, self.select.state.home.as_deref())
+                            reading.source.name(self.select.state.home.as_deref())
                         );
+                        return self.reading_ended();
                     }
                 }
             },
             SelectMessage::ReadAnswered(result) => return self.reading_answered(result),
+            SelectMessage::Toggle(path) => return self.toggle_disk(path),
+            SelectMessage::Listed { path, result } => {
+                self.select.listing.remove(&path);
+                match result {
+                    Ok(folders) => {
+                        self.select.state.disk.insert(path, folders);
+                    }
+                    Err(error) => {
+                        self.status.text = format!(
+                            "Could not list {}: {error}",
+                            model::shown_path(&path, self.select.state.home.as_deref())
+                        );
+                        self.select.state.open.remove(&path);
+                    }
+                }
+            }
+            SelectMessage::Disks(result) => {
+                self.select.disks.answered();
+                match result {
+                    Ok(answer) => {
+                        let (cards, volumes) = *answer;
+                        self.select.state.cards = Some(cards);
+                        self.select.state.volumes = Some(volumes);
+                    }
+                    Err(error) => self.status.text = format!("Volumes unavailable: {error}"),
+                }
+                return self.start_disks();
+            }
+            SelectMessage::Counted(result) => {
+                self.select.counts.answered();
+                match result {
+                    Ok(counts) => self.select.state.counts = Some(counts),
+                    Err(error) => self.status.text = format!("Catalog counts unavailable: {error}"),
+                }
+                return self.start_counts();
+            }
+            SelectMessage::Pick => return self.pick_selection(),
+            SelectMessage::PickAll(number) => return self.pick_all(number),
+            SelectMessage::Undo => {
+                return self.library_now(LibraryGesture::Undo, model::library_params(&request()));
+            }
+            SelectMessage::Redo => {
+                return self.library_now(LibraryGesture::Redo, model::library_params(&request()));
+            }
+            SelectMessage::Labelled { sequence, result } => self.labelled(sequence, result),
             SelectMessage::Change(change) => {
                 self.select.state.menu = None;
                 if let Some(query) = &self.select.state.query {
@@ -360,7 +537,10 @@ impl Editor {
                     return self.evaluate(query);
                 }
             }
-            SelectMessage::Menu(menu) => self.select.state.menu = menu,
+            SelectMessage::Menu(menu) => {
+                self.select.state.menu = menu;
+                self.select.state.catalog.close();
+            }
             SelectMessage::Viewed { serial, result } => self.viewed(serial, result),
             SelectMessage::Faceted { serial, result } => {
                 if serial == self.select.serial {
@@ -441,6 +621,8 @@ impl Editor {
             }
             SelectMessage::Checked(result) => return self.checked(result),
             SelectMessage::Loupe(message) => return self.loupe_update(message),
+            SelectMessage::Missing(message) => return self.missing_update(message),
+            SelectMessage::Catalog(message) => return self.catalog_update(message),
             SelectMessage::Previews(message) => {
                 return self
                     .select
@@ -464,13 +646,17 @@ impl Editor {
         let select = &self.select;
         select.reading.is_none()
             && !select.state.loading
-            && !select.events.in_flight()
-            && select.events.pending().is_none()
-            && !select.check.in_flight()
-            && select.check.pending().is_none()
+            && select.events.idle()
+            && select.check.idle()
+            && select.disks.idle()
+            && select.counts.idle()
+            && select.listing.is_empty()
+            && select.label.is_none()
             && (select.state.query.is_none() || select.facets_answered == select.serial)
             && select.state.rows.in_flight().is_none()
             && (select.state.summary.is_none() || !select.state.rows.wants(self.wanted_items()))
+            && self.missing_quiet()
+            && self.catalog_quiet()
     }
 
     /// The Select workspace is on screen.
@@ -506,6 +692,7 @@ impl Editor {
         }
         if shown == Shown::Develop {
             self.select.state.menu = None;
+            self.select.state.catalog.close();
             self.select.state.shown = Shown::Develop;
             self.select.previews.release();
             return self.loupe_leave();
@@ -521,37 +708,96 @@ impl Editor {
         if std::mem::take(&mut self.select.check_on_show) {
             self.select.check.offer(());
         }
+        // The cards and volumes, and the catalog's counts, as they are now.
+        let mut tasks = vec![self.read_disks(), self.read_counts()];
         if !std::mem::replace(&mut self.select.events_read, true) {
-            return self.read_events();
+            tasks.push(self.read_events());
         }
-        Task::none()
+        Task::batch(tasks)
     }
 
-    /// Browse a folder on disk: the index lane lists it with its subfolders and reads each file's
-    /// header (`index.refresh`, a job), and the folder is viewed once the job has ended. The status
-    /// bar says it is reading until then, and a first look that takes a while shows its progress
-    /// sheet (long-running work). The job's progress and end reach the desktop through the
-    /// activity board ([`Editor::reading_followed`]): nothing polls it.
-    pub(crate) fn read_folder(&mut self, path: PathBuf) -> Task<Message> {
-        self.select.state.folder = Some(path.clone());
+    /// Browse a card or a folder on disk: the index lane lists it, a folder with its subfolders,
+    /// and reads each file's header (`index.refresh`, a job), and it is viewed once the job has
+    /// ended. The status bar says it is reading until then, and a first look that takes a while
+    /// shows its progress sheet (long-running work). The job's progress and end reach the desktop
+    /// through the activity board ([`Editor::reading_followed`]): nothing polls it.
+    pub(crate) fn read_source(&mut self, source: ReadSource) -> Task<Message> {
+        if let ReadSource::Folder(path) = &source {
+            self.select.state.folder = Some(path.clone());
+        }
         self.select.state.menu = None;
         self.status.text = format!(
             "Reading {}\u{2026}",
-            model::shown_path(&path, self.select.state.home.as_deref())
+            source.name(self.select.state.home.as_deref())
         );
         self.select.reading = Some(Reading {
-            path: path.clone(),
+            source: source.clone(),
             job: None,
         });
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || refresh_now(&owner, client, &path),
+            move || refresh_now(&owner, client, &source),
             |result| Message::Select(SelectMessage::Reading(result)),
         )
     }
 
+    /// Open a volume or folder On disk, reading its subfolders (`disk.folders`), or close it.
+    fn toggle_disk(&mut self, path: PathBuf) -> Task<Message> {
+        if self.select.state.open.remove(&path) {
+            return Task::none();
+        }
+        self.select.state.open.insert(path.clone());
+        if !self.select.listing.insert(path.clone()) {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || {
+                let result = folders_now(&owner, client, &path);
+                (path, result)
+            },
+            |(path, result)| Message::Select(SelectMessage::Listed { path, result }),
+        )
+    }
+
+    /// Ask `card.list` and `volume.list` again.
+    fn read_disks(&mut self) -> Task<Message> {
+        self.select.disks.offer(());
+        self.start_disks()
+    }
+
+    fn start_disks(&mut self) -> Task<Message> {
+        if self.select.disks.start().is_none() {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || disks_now(&owner, client),
+            |result| Message::Select(SelectMessage::Disks(result)),
+        )
+    }
+
+    /// Ask `catalog.info` again for the Catalog sources' counts, and the catalog's folders and
+    /// collections with them ([`crate::app::select_catalog`]).
+    fn read_counts(&mut self) -> Task<Message> {
+        self.select.counts.offer(());
+        self.select.catalog.lists.offer(());
+        self.start_counts()
+    }
+
+    fn start_counts(&mut self) -> Task<Message> {
+        if self.select.counts.start().is_none() {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || counts_now(&owner, client),
+            |result| Message::Select(SelectMessage::Counted(result)),
+        )
+    }
+
     /// Long-running work has read the activity board, which wakes the desktop whenever catalog work
-    /// begins, reports progress or ends. While the reading folder's job runs on it, its progress is
+    /// begins, reports progress or ends. While the reading source's job runs on it, its progress is
     /// the status line. When it does not, and it was just named or the catalog jobs running have
     /// changed since the last read — this one ended, or another ended ahead of it — its record is
     /// read once, which says how it ended or that it is still queued. So the job's end is heard as
@@ -569,7 +815,7 @@ impl Editor {
                 if self.long_work.state.background.as_deref() == Some(job) {
                     return Task::none();
                 }
-                let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
+                let name = reading.source.name(self.select.state.home.as_deref());
                 if let Some(progress) = running
                     .entry
                     .progress
@@ -585,7 +831,7 @@ impl Editor {
         }
     }
 
-    /// Read the reading folder's job, one read at a time; asked again while one is in flight, it is
+    /// Read the reading source's job, one read at a time; asked again while one is in flight, it is
     /// read once more when that answers.
     fn poll_reading(&mut self) -> Task<Message> {
         let Some(job) = self
@@ -607,21 +853,20 @@ impl Editor {
         )
     }
 
-    /// The reading folder's job answered: still running, it says how far it has got; ended, the
-    /// folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
+    /// The reading source's job answered: still running, it says how far it has got; ended, the
+    /// card or folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
     fn reading_answered(&mut self, result: Result<Value, String>) -> Task<Message> {
         self.select.read_in_flight = false;
         let again = std::mem::take(&mut self.select.read_again);
         let Some(reading) = self.select.reading.clone() else {
             return Task::none();
         };
-        let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
+        let name = reading.source.name(self.select.state.home.as_deref());
         let record = match result {
             Ok(record) => record,
             Err(error) => {
-                self.select.reading = None;
                 self.status.text = format!("Could not read {name}: {error}");
-                return Task::none();
+                return self.reading_ended();
             }
         };
         match record["status"].as_str() {
@@ -637,32 +882,41 @@ impl Editor {
             }
             Some("ready") => {
                 self.select.reading = None;
-                // The folder as the index listed it — its canonical path, which a symbolic link in
-                // the chosen one resolves to — is the one its files are indexed under.
-                let path = record["result"]["roots"][0]
-                    .as_str()
-                    .map_or(reading.path, PathBuf::from);
-                self.select.state.folder = Some(path.clone());
-                self.evaluate(model::source_query(
-                    luxforge_core::catalog_types::ViewSource::Folder {
-                        path,
-                        subfolders: true,
-                    },
-                ))
+                self.select.stale_while_reading = false;
+                let source = match reading.source {
+                    // The folder as the index listed it — its canonical path, which a symbolic
+                    // link in the chosen one resolves to — is the one its files are indexed under.
+                    ReadSource::Folder(chosen) => {
+                        let path = record["result"]["roots"][0]
+                            .as_str()
+                            .map_or(chosen, PathBuf::from);
+                        self.select.state.folder = Some(path.clone());
+                        ViewSource::Folder {
+                            path,
+                            subfolders: true,
+                        }
+                    }
+                    ReadSource::Card { volume_id, .. } => ViewSource::Card { volume_id },
+                };
+                // A listed card now says how many files it holds.
+                let disks = if matches!(source, ViewSource::Card { .. }) {
+                    self.read_disks()
+                } else {
+                    Task::none()
+                };
+                Task::batch([disks, self.evaluate(model::source_query(source))])
             }
             Some("cancelled") => {
-                self.select.reading = None;
                 self.status.text = format!("Cancelled reading {name}");
-                Task::none()
+                self.reading_ended()
             }
             other => {
-                self.select.reading = None;
                 let reason = record["error"]["message"]
                     .as_str()
                     .map(str::to_owned)
                     .unwrap_or_else(|| format!("the listing ended {}", other.unwrap_or("unknown")));
                 self.status.text = format!("Could not read {name}: {reason}");
-                Task::none()
+                self.reading_ended()
             }
         }
     }
@@ -686,7 +940,7 @@ impl Editor {
 
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
     /// else, then the session it left, in one owner task; and the chips' `browse.facets` beside it.
-    fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
+    pub(crate) fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
         let state = &mut self.select.state;
         if state
             .query
@@ -696,7 +950,9 @@ impl Editor {
             state.facets = None;
         }
         self.select.serial += 1;
-        self.select.rereading = false;
+        self.select.reread = Reread::Asked;
+        // Whatever made the view stale, it is being read now.
+        self.select.stale_while_reading = false;
         let serial = self.select.serial;
         state.query = Some(query.clone());
         state.loading = true;
@@ -726,12 +982,21 @@ impl Editor {
         match result {
             Ok(answer) => {
                 let (summary, session) = *answer;
+                // Whether the active item was on screen, which decides whether the scroll follows
+                // it or stays where the person left it.
+                let active_shown = self.active_on_screen();
                 self.adopt(session);
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
                 let same_source = previous
                     .as_ref()
                     .is_some_and(|held| held.query.source == summary.query.source);
+                // Whether a library change was recorded since the view on screen was read, and
+                // was not this desktop's own newest: only that is a change made elsewhere.
+                let library_moved = previous
+                    .as_ref()
+                    .is_none_or(|held| held.library_sequence != summary.library_sequence)
+                    && self.select.own_change != Some(summary.library_sequence.0);
                 if previous
                     .as_ref()
                     .is_none_or(|held| held.query != summary.query)
@@ -749,14 +1014,30 @@ impl Editor {
                 state.summary = Some(summary);
                 state.view_error = None;
                 let name = model::title(state).name;
-                self.status.text = if std::mem::take(&mut self.select.rereading) {
-                    format!("{name} changed elsewhere and was read again \u{b7} {count} in view")
-                } else {
-                    format!("{name} \u{b7} {count} in view")
-                };
+                match std::mem::take(&mut self.select.reread) {
+                    Reread::Asked => self.status.text = format!("{name} \u{b7} {count} in view"),
+                    Reread::Elsewhere if library_moved => {
+                        self.status.text = format!(
+                            "{name} changed elsewhere and was read again \u{b7} {count} in view"
+                        );
+                    }
+                    // The status bar says the change itself, from its label, or the reading's
+                    // progress; and the index alone moving — a card or folder being read, grid
+                    // previews' fingerprints landing, a folder's files changing on disk — reads
+                    // the view again without a word.
+                    Reread::Elsewhere | Reread::Own | Reread::Quiet => {}
+                }
                 self.rebuild_grid();
                 if same_source {
-                    self.select.scroll = self.near_active(self.select.scroll);
+                    // The same source read again keeps its scroll, moved as little as keeps the
+                    // active item in view when it was: scrolled away from it, to a bracket's Pick
+                    // all say, the grid stays where it is.
+                    self.select.scroll = if active_shown {
+                        self.near_active(self.select.scroll)
+                    } else {
+                        let height = self.select.viewport.height;
+                        self.select.layout.clamp_scroll(self.select.scroll, height)
+                    };
                 } else {
                     self.select.scroll = 0.0;
                     self.select.anchor = None;
@@ -802,6 +1083,21 @@ impl Editor {
             Some(active) => self.select.layout.reveal(active, scroll, height),
             None => self.select.layout.clamp_scroll(scroll, height),
         }
+    }
+
+    /// Whether the active item's cell is on screen in the grid as it is laid out now.
+    fn active_on_screen(&self) -> bool {
+        let layout = &self.select.layout;
+        let Some(cell) = self
+            .selection()
+            .active
+            .and_then(|active| layout.cell_of_item(active))
+        else {
+            return false;
+        };
+        layout
+            .visible_cells(self.select.scroll, self.select.viewport.height, 0.0)
+            .contains(&cell)
     }
 
     /// The items of the cells on and one screen either side of the grid's viewport: what the rows
@@ -964,6 +1260,7 @@ impl Editor {
         let mut tasks = Vec::new();
         if stale || self.select.state.summary.is_none() {
             tasks.push(self.read_events());
+            tasks.push(self.read_counts());
         }
         if stale
             && !self.select.state.loading
@@ -974,10 +1271,259 @@ impl Editor {
                 .as_ref()
                 .map(|summary| summary.query.clone())
         {
-            tasks.push(self.evaluate(query));
-            self.select.rereading = true;
+            match self.reading_waits() {
+                // The card or folder being read is about to replace the view, and its batches are
+                // what make it stale: it is read again only if the reading ends without replacing
+                // it.
+                Some(true) => self.select.stale_while_reading = true,
+                // Sent to the background, the reading goes on while the person browses: the view
+                // is read again, without calling the reading's batches a change made elsewhere.
+                Some(false) => {
+                    tasks.push(self.evaluate(query));
+                    self.select.reread = Reread::Quiet;
+                }
+                None => {
+                    tasks.push(self.evaluate(query));
+                    self.select.reread = Reread::Elsewhere;
+                }
+            }
         }
         Task::batch(tasks)
+    }
+
+    /// Whether a card or folder is being read for this desktop, and if so whether it still waits to
+    /// replace the view (`true`) or was sent to the background (`false`).
+    fn reading_waits(&self) -> Option<bool> {
+        let reading = self.select.reading.as_ref()?;
+        let background = self.long_work.state.background.as_deref();
+        Some(reading.job.is_none() || reading.job.as_deref() != background)
+    }
+
+    /// The card or folder being read, while it waits to replace the view: the title names it.
+    fn waiting_source(&self) -> Option<ReadSource> {
+        if self.reading_waits() != Some(true) {
+            return None;
+        }
+        self.select
+            .reading
+            .as_ref()
+            .map(|reading| reading.source.clone())
+    }
+
+    /// The reading ended without replacing the view: failed, refused or cancelled. A view that went
+    /// stale meanwhile is read again now, quietly, so the status bar keeps what the ending said.
+    fn reading_ended(&mut self) -> Task<Message> {
+        self.select.reading = None;
+        if !std::mem::take(&mut self.select.stale_while_reading) || self.select.state.loading {
+            return Task::none();
+        }
+        let Some(query) = self
+            .select
+            .state
+            .summary
+            .as_ref()
+            .map(|summary| summary.query.clone())
+        else {
+            return Task::none();
+        };
+        let task = self.evaluate(query);
+        self.select.reread = Reread::Quiet;
+        task
+    }
+
+    // -- Picking and library undo ------------------------------------------------------------------
+
+    /// `P` or the Info panel's Pick: `pick.set` of the selection, picking it or, when the desktop
+    /// has read every selected row and each is picked, clearing it ([`model::pick_value`]).
+    fn pick_selection(&mut self) -> Task<Message> {
+        if self.select.state.summary.is_none() {
+            return Task::none();
+        }
+        if self.select.state.over_catalog() {
+            self.status.text =
+                "Only files are picked: a developed photograph is already in the catalog".into();
+            return Task::none();
+        }
+        let selection = self.selection();
+        if selection.count == 0 {
+            self.status.text = "Select a photograph to pick".into();
+            return Task::none();
+        }
+        let picked = model::pick_value(&selection, &self.select.state.rows);
+        let params = model::pick_params(&Targets::Selection, picked, &request());
+        self.library_now(LibraryGesture::Pick { picked }, params)
+    }
+
+    /// A bracket header's Pick all: `pick.set` of its frames' files, as an agent names them.
+    fn pick_all(&mut self, number: u32) -> Task<Message> {
+        let state = &self.select.state;
+        let Some(moment) = state.summary.as_ref().and_then(|summary| {
+            let index = state.content.moment(number)?;
+            summary.groups.moments.get(index as usize)
+        }) else {
+            return Task::none();
+        };
+        let Some(files) = model::frame_files(&state.rows, moment.start, moment.len) else {
+            self.status.text = "Reading the frames\u{2026}".into();
+            return Task::none();
+        };
+        let params = model::pick_params(&Targets::Files { file_ids: files }, true, &request());
+        self.library_now(LibraryGesture::PickAll, params)
+    }
+
+    /// Pick the active frame alone, or clear it when it is picked, through [`Self::select_pick`].
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "the loupe (TASK-020) picks through select_pick")
+    )]
+    pub(crate) fn pick_active(&mut self) -> Task<Message> {
+        let Some(active) = self.selection().active else {
+            return Task::none();
+        };
+        let Some(row) = self.select.state.rows.row(active) else {
+            self.status.text = "Reading the frame\u{2026}".into();
+            return Task::none();
+        };
+        let picked = !row.picked;
+        self.select_pick(&[active], picked)
+    }
+
+    /// Pick or clear the files at `positions` of the view: one journaled `pick.set` naming their
+    /// files, as this desktop's actor — the request an agent sends, and the one the grid's Pick all
+    /// sends. The loupe's `P` (TASK-020) calls it with its active frame. It is answered in this
+    /// update, like every library gesture here, and [`Self::loupe_picked`] hears the outcome at
+    /// once, which is where the loupe moves on to the next moment after a burst's pick (the
+    /// design's P7; [`model::next_moment`] is that position). The view is then evaluated again as
+    /// after any pick. A position whose row is not read yet, or a developed photograph, refuses
+    /// the whole pick with its reason and sends nothing.
+    pub(crate) fn select_pick(&mut self, positions: &[u32], picked: bool) -> Task<Message> {
+        let mut file_ids = Vec::with_capacity(positions.len());
+        for &position in positions {
+            let Some(row) = self.select.state.rows.row(position) else {
+                self.status.text = "Reading the frame\u{2026}".into();
+                self.loupe_picked(positions, picked, false);
+                return Task::none();
+            };
+            let RowItem::File { file_id } = row.item else {
+                self.status.text =
+                    "Only files are picked: a developed photograph is already in the catalog"
+                        .into();
+                self.loupe_picked(positions, picked, false);
+                return Task::none();
+            };
+            file_ids.push(file_id);
+        }
+        if file_ids.is_empty() {
+            return Task::none();
+        }
+        let params = model::pick_params(&Targets::Files { file_ids }, picked, &request());
+        let task = self.library_now(LibraryGesture::Pick { picked }, params);
+        let succeeded = self
+            .select
+            .library
+            .as_ref()
+            .is_some_and(|last| last["error"].is_null());
+        self.loupe_picked(positions, picked, succeeded);
+        task
+    }
+
+    /// Send one library change synchronously, in this update, as this desktop's actor, and follow
+    /// what it recorded. The request and the owner's answer are kept for evidence.
+    fn library_now(&mut self, gesture: LibraryGesture, params: Value) -> Task<Message> {
+        let method = gesture.method();
+        let result = library_call(&self.owner, self.client, method, params.clone());
+        self.select.library = Some(json!({
+            "method": method,
+            "params": params,
+            "answer": result.as_ref().ok(),
+            "error": result.as_ref().err().map(|error| json!({
+                "code": error.code,
+                "message": error.message,
+                "data": error.data,
+            })),
+        }));
+        match result {
+            Ok(answer) => self.library_answered(gesture, &answer),
+            Err(error) => {
+                self.library_refused(gesture, &error);
+                Task::none()
+            }
+        }
+    }
+
+    /// A library change answered. Nothing changed: the status bar says so and nothing is read.
+    /// Otherwise the view it made stale is evaluated again (keeping the scroll and the active item),
+    /// the events and the catalog's counts are read again, and the change's label is read for the
+    /// status bar.
+    pub(crate) fn library_answered(
+        &mut self,
+        gesture: LibraryGesture,
+        answer: &LibraryAnswer,
+    ) -> Task<Message> {
+        let Some(sequence) = answer.change.map(|change| change.0) else {
+            self.status.text = gesture.nothing().into();
+            return Task::none();
+        };
+        self.select.change = Some((sequence, gesture));
+        self.select.own_change = Some(sequence);
+        self.select.label = Some(sequence);
+        let (owner, client) = (self.owner.clone(), self.client);
+        let mut tasks = vec![
+            owner_task(
+                move || label_now(&owner, client, sequence),
+                move |result| Message::Select(SelectMessage::Labelled { sequence, result }),
+            ),
+            self.read_events(),
+            self.read_counts(),
+        ];
+        if let Some(query) = self
+            .select
+            .state
+            .summary
+            .as_ref()
+            .map(|summary| summary.query.clone())
+        {
+            tasks.push(self.evaluate(query));
+            self.select.reread = Reread::Own;
+        }
+        Task::batch(tasks)
+    }
+
+    /// A library change refused: the status bar says why, naming the first item a refused undo or
+    /// redo found changed since. A pick refused because the view went stale reads it again, so the
+    /// next `P` acts on what is shown.
+    pub(crate) fn library_refused(&mut self, gesture: LibraryGesture, error: &CallError) {
+        let conflict = error.code == "conflict";
+        self.status.text = conflict
+            .then(|| model::refusal_text(gesture, error.data.as_ref()))
+            .flatten()
+            .unwrap_or_else(|| format!("{}: {}", gesture.refused(), error.message));
+        if conflict
+            && matches!(
+                gesture,
+                LibraryGesture::Pick { .. } | LibraryGesture::PickAll
+            )
+        {
+            self.select.check.offer(());
+        }
+    }
+
+    /// The label of a change this desktop made, read from the journal: the status bar says it with
+    /// the key that takes it back, while it is still the newest.
+    fn labelled(&mut self, sequence: u64, result: Result<Option<LibraryChange>, String>) {
+        if self.select.label == Some(sequence) {
+            self.select.label = None;
+        }
+        let Some((newest, gesture)) = self.select.change else {
+            return;
+        };
+        if newest != sequence {
+            return;
+        }
+        self.status.text = match result {
+            Ok(Some(change)) => model::change_text(&change),
+            _ => gesture.done().into(),
+        };
     }
 
     /// Read the next block of rows near the screen, while Select is shown.
@@ -1061,6 +1607,10 @@ impl Editor {
             model::InfoModel::One(item) => json!({
                 "kind": "one",
                 "name": item.name,
+                "pick": item.pick.as_ref().map(|band| json!({
+                    "picked": band.picked,
+                    "note": band.note,
+                })),
                 "moment": item.moment,
                 "metadata": item.metadata.iter().map(|(label, _)| label).collect::<Vec<_>>(),
             }),
@@ -1079,6 +1629,60 @@ impl Editor {
                 })
             })
             .collect();
+        // The sources panel's cards, volumes and catalog counts, as drawn.
+        let row = |row: &model::SourceRow| {
+            json!({
+                "name": row.name,
+                "count": match &row.count {
+                    model::Count::None => Value::Null,
+                    model::Count::Total(total) => json!(total),
+                    model::Count::Picks { picked, total } => json!(format!("{picked}/{total}")),
+                    model::Count::Unavailable(count) => json!({"unavailable": count}),
+                },
+                "dot": row.dot.map(|dot| match dot {
+                    model::Dot::Mounted => "mounted",
+                    model::Dot::Offline => "offline",
+                }),
+                "indent": row.indent,
+                "open": row.disclosure.as_ref().map(|(open, _)| open),
+                "selected": row.selected,
+            })
+        };
+        let panel = &model.sources;
+        let sources = json!({
+            "cards": panel.cards.iter().map(row).collect::<Vec<_>>(),
+            "on_disk": panel.on_disk.iter().map(row).collect::<Vec<_>>(),
+            "catalog": panel.catalog.iter().map(row).collect::<Vec<_>>(),
+        });
+        // Each day's and moment's picks as the owner counted them, and as the grid's headings and
+        // moment headers say them.
+        let groups_picked = summary.map(|summary| {
+            json!({
+                "days": summary.groups.days.iter().map(|day| day.picked).collect::<Vec<_>>(),
+                "moments": summary
+                    .groups
+                    .moments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, moment)| moment.picked > 0)
+                    .map(|(index, moment)| json!([index, moment.picked]))
+                    .collect::<Vec<_>>(),
+            })
+        });
+        let headers = json!({
+            "days": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Day { detail, .. } => Some(detail),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "moments": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Moment { index, picked: Some(picked), .. } => Some(json!([index, picked])),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            "pick_all": state.content.blocks.iter().filter_map(|block| match block {
+                Block::Moment { index, action: Some(action), .. } => Some(json!([index, action])),
+                _ => None,
+            }).collect::<Vec<_>>(),
+        });
         let facets = state.facets.as_ref().map(|facets| {
             facets
                 .counts
@@ -1138,6 +1742,11 @@ impl Editor {
             "status_line": model.status.line,
             "note": model.note,
             "info": info,
+            "source_rows": sources,
+            "groups_picked": groups_picked,
+            "headers": headers,
+            "library": self.select.library,
+            "catalog": self.catalog_summary(),
         })
     }
 }
@@ -1145,6 +1754,10 @@ impl Editor {
 /// After every message: read the rows near the screen and start a staleness check a wake asked for.
 /// An evidence run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    let waiting = editor.waiting_source();
+    if editor.select.state.reading != waiting {
+        editor.select.state.reading = waiting;
+    }
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
@@ -1159,7 +1772,7 @@ fn previews_message(message: SelectPreviewMessage) -> Message {
 }
 
 /// The grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits for
-/// it. The reading folder's job needs no timer: long-running work's watch on the activity board
+/// it. The reading source's job needs no timer: long-running work's watch on the activity board
 /// hears it end.
 pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
     if editor.select_shown() {

@@ -1076,15 +1076,11 @@ fn a_rendered_backlog_never_delays_an_open_develop_preview() {
         ],
         true,
     );
-    // The open photograph, imported through the API: its source is in the editor's cache.
+    // The open photograph, opened through the API as a client opens a file (a Develop, its
+    // preparation and its adoption): its source is in the editor's cache.
     let open_path = setup.root.join("open.jpg");
     fs::copy(paths::fixture("s0/orientation-6.jpg"), &open_path).unwrap();
-    let imported = setup.ok(
-        "catalog.import",
-        json!({"path": open_path, "mutation": {"request_id": "open", "actor": "test"}}),
-    );
-    assert_eq!(setup.settled(&imported["job_id"])["status"], "ready");
-    let state = setup.ok("job.adopt", json!({"job_id": imported["job_id"]}))["asset"].clone();
+    let state = crate::api::owner::library::opening::open(&setup.owner, setup.client, &open_path);
     let open = AssetId::parse(state["asset"]["id"].as_str().unwrap()).unwrap();
     let open_photo = Photo {
         asset: open.clone(),

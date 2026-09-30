@@ -1,7 +1,7 @@
 //! The Basic and histogram chapter of `cargo xtask editor-acceptance`.
 //!
 //! Everything here is driven through the JSON method table with [`OwnerHandle::call`], exactly as
-//! an independent client reaches it: `catalog.import`, `edit.set-basic`, `draft.*`, `render.sample`,
+//! an independent client reaches it: `pick.develop`, `source.prepare`, `edit.set-basic`, `draft.*`, `render.sample`,
 //! `analysis.*`, `history.*` and `recipe.describe`. No desktop, no window and no pointer.
 //!
 //! The oracle is the independent f64 reference crate `luxforge-reference`, the one the core's own
@@ -45,9 +45,10 @@ pub(crate) fn mutation(revision: u64, request: &str) -> Value {
     client::mutation(revision, request, ACTOR)
 }
 
-/// Import one file through the source job an independent client waits on, answering the asset.
-pub(crate) fn import(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
-    Ok(client::import(owner, client, path, ACTOR)?)
+/// Open one file as an independent client does — develop it, prepare its photograph — answering
+/// the photograph's state.
+pub(crate) fn open(owner: &OwnerHandle, client: ClientId, path: &Path) -> Result<Value> {
+    Ok(client::open(owner, client, path, ACTOR)?)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -498,7 +499,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         let editor = owner.register();
 
         // 1. Import.
-        let imported = import(&owner, editor, &fixture)?;
+        let imported = open(&owner, editor, &fixture)?;
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
         let described = call(

@@ -93,18 +93,18 @@ impl Harness {
             .unwrap_or_else(|| panic!("{method} was expected to be refused"))
     }
 
-    /// Copy the fixture into this harness's directory and import it; answers the asset state.
+    /// Copy the fixture into this harness's directory, develop it and prepare its photograph, as a
+    /// client opens a file; answers the photograph's state.
     fn import(&self, name: &str) -> Value {
         let path = self.dir.join(name);
         fs::copy(fixture(), &path).unwrap();
-        let queued = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": request_envelope()}),
-        );
-        let job = queued["job_id"].clone();
-        let status = self.settle_source(&job);
-        assert_eq!(status["status"], "ready", "{status}");
-        status["result"].clone()
+        self.opened(&path)
+    }
+
+    /// Develop the file at `path` and prepare its photograph; answers the photograph's state.
+    fn opened(&self, path: &std::path::Path) -> Value {
+        let asset = super::library::opening::import(&self.owner, self.client, path);
+        self.ok("asset.state", json!({"asset_id": asset}))
     }
 
     fn settle_source(&self, job: &Value) -> Value {
@@ -553,13 +553,7 @@ fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     let harness = Harness::start("metadata");
     let original = harness.dir.join("camera.jpg");
     fs::write(&original, camera_jpeg()).unwrap();
-    let queued = harness.ok(
-        "catalog.import",
-        json!({"path": original, "mutation": request_envelope()}),
-    );
-    let status = harness.settle_source(&queued["job_id"]);
-    assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
+    let asset = harness.opened(&original)["asset"]["id"].clone();
     let out = destinations(&harness);
     let stripped =
         harness.export(json!({"asset_id": asset, "destination": out.join("stripped.jpg")}));
@@ -898,8 +892,24 @@ fn stopping_the_owner_cancels_a_running_export_and_leaves_no_file() {
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     assert_eq!(listing(&out).len(), 1, "staged");
     harness.owner.stop();
-    // The owner is now joining the lane, which is held; letting it go stops the job at its next
-    // check.
+    // A call after the stop is dropped unanswered once the owner has asked every live job to stop
+    // and closed its channel, so the export is cancelled before it is let go; it then stops at its
+    // next check.
+    assert!(
+        harness
+            .owner
+            .call(
+                harness.client,
+                ApiRequest {
+                    id: "after-stop".into(),
+                    method: "catalog.info".into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .is_err(),
+        "the stopped owner answers nothing"
+    );
     release.send(()).unwrap();
     harness.join.take().unwrap().join().unwrap();
     assert!(listing(&out).is_empty(), "{:?}", listing(&out));
@@ -914,13 +924,7 @@ fn a_raw_export_matches_the_exact_render() {
     let raw = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"));
     let original = fs::read(&raw).unwrap();
     let mut harness = Harness::start("raw");
-    let queued = harness.ok(
-        "catalog.import",
-        json!({"path": raw, "mutation": request_envelope()}),
-    );
-    let status = harness.settle_source(&queued["job_id"]);
-    assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
+    let asset = harness.opened(&raw)["asset"]["id"].clone();
     let entry = harness.expose(&asset, 0.4);
     let out = destinations(&harness);
     let params = with_envelope(json!({

@@ -115,7 +115,12 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
         let _ = editor.update(Message::LongWork(LongWorkMessage::Woken));
     };
     let folder = files(&catalog, "agree", 3_000);
-    let job = refresh_now(&editor.owner, editor.client, &folder).unwrap();
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    )
+    .unwrap();
     let mut shown = false;
     let record = luxforge_testbase::wait_for("the listing to end", || {
         wake(&mut editor);
@@ -209,7 +214,12 @@ fn a_wake_inside_the_throttle_is_read_when_its_interval_passes() {
 fn cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
     let (mut editor, catalog) = boot();
     let folder = files(&catalog, "cancel", 3_000);
-    let job = refresh_now(&editor.owner, editor.client, &folder).unwrap();
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    )
+    .unwrap();
     // Long enough to be kept as recent work once it ends (the board keeps work of 250 ms or more).
     luxforge_testbase::wait_for("the listing to run on the board", || {
         tick(&mut editor);
@@ -290,7 +300,11 @@ fn a_first_look_is_followed_to_its_end_through_the_board() {
     let _ = editor.update(Message::Select(SelectMessage::FolderPicked(Some(
         folder.clone(),
     ))));
-    let job = refresh_now(&editor.owner, editor.client, &folder);
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    );
     let _ = editor.update(Message::Select(SelectMessage::Reading(job.clone())));
     let job = job.unwrap();
     let waiting = editor.long_work.state.waiting.clone().unwrap();
@@ -321,7 +335,7 @@ fn continue_in_background_sends_the_waiting_job_to_the_background() {
     let _ = editor.update(Message::LongWork(LongWorkMessage::ContinueInBackground));
     assert_eq!(editor.long_work.state.background, None, "nothing waits");
     editor.select.reading = Some(Reading {
-        path: PathBuf::from("/Volumes/NIKON Z 8/DCIM"),
+        source: ReadSource::Folder(PathBuf::from("/Volumes/NIKON Z 8/DCIM")),
         job: Some("job-7".into()),
     });
     tick(&mut editor);

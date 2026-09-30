@@ -717,7 +717,14 @@ fn import_now(
         Some(result) => result?,
         None => queue_import(owner, client, path)?,
     };
-    // An older import still preparing is no longer wanted: leaving its job ends its task's wait.
+    // The Develop brings the file in (or finds the photograph that has its bytes); then its
+    // photograph's original is prepared.
+    let asset = developed_photograph(owner, client, &job_id)?;
+    if open_guard.superseded(generation) {
+        return Err("superseded open".into());
+    }
+    let job_id = prepare_photograph(owner, client, &asset)?;
+    // An older open still preparing is no longer wanted: leaving its job ends its task's wait.
     if let Some(older) = open_guard.claim(generation, &job_id) {
         let _ = call(owner, client, JOB_CANCEL, json!({"job_id":older}));
     }
@@ -735,7 +742,7 @@ fn import_now(
     if open_guard.superseded(generation) {
         return Err("superseded open".into());
     }
-    // An import is announced under the `catalog.import` request that asked for it.
+    // An open is announced under the `pick.develop` request that brought the file in.
     refreshed.request = Some(request);
     Ok(refreshed)
 }
@@ -746,6 +753,14 @@ fn import_now(
 pub(crate) struct QueuedImport {
     job_id: String,
     request: String,
+}
+
+#[cfg(test)]
+impl QueuedImport {
+    /// The Develop's job.
+    pub(crate) fn job_id(&self) -> &str {
+        &self.job_id
+    }
 }
 
 pub(crate) struct StartupImport {
@@ -759,7 +774,10 @@ pub(crate) fn start_import(owner: &OwnerHandle, client: ClientId, path: &Path) -
     StartupImport { started, result }
 }
 
-fn queue_import(
+/// Start opening the file at `path`: it is picked and developed at once (`pick.develop` of its path
+/// into the folder the plan proposes), and, since the person chose it, a file on a card is
+/// developed where it is (`confirm_removable`).
+pub(crate) fn queue_import(
     owner: &OwnerHandle,
     client: ClientId,
     path: &Path,
@@ -767,14 +785,54 @@ fn queue_import(
     let (result, request) = call_own(
         owner,
         client,
-        "catalog.import",
-        json!({"path":path,"mutation":request()}),
+        "pick.develop",
+        json!({
+            "targets": {"kind": "paths", "paths": [path]},
+            "into": [],
+            "confirm_removable": true,
+            "mutation": request(),
+        }),
     )?;
     let job_id = result["job_id"]
         .as_str()
-        .ok_or("catalog.import did not return a source job")?
+        .ok_or("pick.develop did not return a job")?
         .to_owned();
     Ok(QueuedImport { job_id, request })
+}
+
+/// The photograph a Develop of one file brought in — created, linked to the photograph that
+/// already has its bytes, or relinked — once its job ends, or why it brought none.
+pub(crate) fn developed_photograph(
+    owner: &OwnerHandle,
+    client: ClientId,
+    job_id: &str,
+) -> Result<AssetId, String> {
+    let mut ended = wait_source_job(owner, client, job_id).map_err(|error| error.to_string())?;
+    let report = ended["result"].take();
+    if let Some(failed) = report["failed"]
+        .as_array()
+        .and_then(|failed| failed.first())
+    {
+        return Err(failed["message"]
+            .as_str()
+            .unwrap_or("the file was not developed")
+            .to_owned());
+    }
+    parse(report["developed"][0]["asset_id"].clone())
+}
+
+/// Prepare a photograph's original to open it (`source.prepare`), answering the source job that
+/// [`wait_source_job`] waits on and `job.adopt` takes.
+pub(crate) fn prepare_photograph(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset: &AssetId,
+) -> Result<String, String> {
+    let (prepared, _) = call(owner, client, "source.prepare", json!({"asset_id": asset}))?;
+    prepared["job_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "source.prepare did not return a source job".to_owned())
 }
 
 /// One command and the refresh its answer calls for, as the plain calls [`state_task`] runs: an
@@ -1921,17 +1979,7 @@ mod tests {
             let client = owner.register();
             let fixture =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-1.jpg");
-            let (queued, _) = call(
-                &owner,
-                client,
-                "catalog.import",
-                json!({"path": fixture, "mutation": request()}),
-            )
-            .unwrap();
-            let job = queued["job_id"].as_str().unwrap().to_owned();
-            let ready = wait_source_job(&owner, client, &job).unwrap();
-            call(&owner, client, "job.adopt", json!({"job_id": job})).unwrap();
-            let asset: AssetId = parse(ready["result"]["asset"]["id"].clone()).unwrap();
+            let asset = crate::app::testing::import_and_adopt(&owner, client, &fixture);
             owner_calls::take();
             let refresh = refresh(&owner, client, asset.clone(), Scope::Open, None).unwrap();
             let calls = owner_calls::take();
@@ -2055,16 +2103,11 @@ mod tests {
     fn the_event_sync_reads_back_only_the_open_photographs_changes_it_does_not_hold() {
         let (opened, _) = Opened::new();
         let agent = opened.owner.register();
-        let (queued, _) = call(
+        let other = crate::app::testing::import_and_adopt(
             &opened.owner,
             agent,
-            "catalog.import",
-            json!({"path": Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg"), "mutation": request()}),
-        )
-        .unwrap();
-        let job = queued["job_id"].as_str().unwrap().to_owned();
-        let ready = wait_source_job(&opened.owner, agent, &job).unwrap();
-        let other: AssetId = parse(ready["result"]["asset"]["id"].clone()).unwrap();
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg"),
+        );
         assert_ne!(other, opened.asset);
         call(
             &opened.owner,
@@ -2231,8 +2274,9 @@ mod tests {
         };
         assert_eq!(
             poll(&mut editor),
-            (false, 1),
-            "the desktop's own import is read and costs nothing"
+            (false, 2),
+            "the desktop's own import, its Develop's change and its job's end, is read and costs \
+             nothing"
         );
         let caught_up = editor.sync.sequence;
 

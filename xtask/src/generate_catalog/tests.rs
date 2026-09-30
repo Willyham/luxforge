@@ -698,12 +698,12 @@ fn a_generated_catalog_index_and_image_folder_open_with_the_core() {
     );
     assert!(seeded.root.join("out/images/manifest.json").is_file());
     let service = luxforge_core::EditorService::open(&seeded.catalog()).unwrap();
-    let page = service.assets(None, 10).unwrap();
-    assert_eq!(page.assets.len(), 10);
-    for asset in &page.assets {
-        let state = service.state(&asset.id).unwrap();
+    let assets = service.asset_ids(10).unwrap();
+    assert_eq!(assets.len(), 10);
+    for asset in &assets {
+        let state = service.state(asset).unwrap();
         assert_eq!(state.current_entry.label, "Original");
-        assert_eq!(state.asset.locator, asset.locator);
+        assert_eq!(&state.asset.id, asset);
     }
     let files: i64 = service
         .index()

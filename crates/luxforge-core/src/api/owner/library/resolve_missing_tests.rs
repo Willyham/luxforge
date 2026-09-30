@@ -100,15 +100,9 @@ impl Harness {
         path.canonicalize().unwrap()
     }
 
+    /// Develop the file at `path` and prepare its photograph, as a client opens a file.
     fn import(&self, path: &Path) -> AssetId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let started = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": envelope(&format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)))}),
-        );
-        let settled = self.settle(&started["job_id"]);
-        assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        serde_json::from_value(super::opening::import(&self.owner, self.client, path)).unwrap()
     }
 
     fn state(&self, asset: &AssetId) -> Value {
@@ -173,6 +167,19 @@ impl Harness {
             .as_array()
             .unwrap()
             .clone()
+    }
+
+    /// The events after `after` that changed something, leaving out a job's end: an event that
+    /// names a job and nothing it changed.
+    fn changes_after(&self, after: u64) -> Vec<Value> {
+        self.events_after(after)
+            .into_iter()
+            .filter(|event| {
+                event.get("job_id").is_none()
+                    || event.get("library_sequence").is_some()
+                    || event.get("asset_id").is_some()
+            })
+            .collect()
     }
 
     fn journal(&self) -> Value {
@@ -292,6 +299,8 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
     assert_eq!(groups[0]["source_folder"], json!(card));
     assert_eq!(groups[0]["count"], 3);
     assert_eq!(groups[0]["reason"], json!({"kind": "folder-gone"}));
+    // An opened file the index does not list is an undated frame of its folder, and its Develop
+    // makes a catalog folder named after that folder on disk.
     assert_eq!(groups[0]["catalog_folders"][0]["name"], "2026-09-12");
     assert_eq!(
         harness.ok("source.missing", json!({"grouping": "source-folder"})),
@@ -309,7 +318,11 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
         assert_eq!(row(&rows, index), ("found".into(), json!(now[index])));
     }
     assert_eq!(harness.journal(), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
+    let ended = harness.events_after(sequence);
+    assert_eq!(ended.len(), 1, "the search's end: {ended:?}");
+    assert_eq!(ended[0]["method"], "source.find");
+    assert!(ended[0]["job_id"].is_string(), "{ended:?}");
     assert_eq!(harness.locator(&assets[0]), originals[0]);
 
     // Relinked, all three in one change.
@@ -356,7 +369,7 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
             json!(now[index].parent().unwrap())
         );
     }
-    let events = harness.events_after(sequence);
+    let events = harness.changes_after(sequence);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["method"], "source.relink");
     assert_eq!(events[0]["library_sequence"], change);
@@ -440,10 +453,13 @@ fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
         ),
     ];
     fs::remove_file(&originals[4]).unwrap();
-    // A copy of the original that another photograph was developed from.
-    let taken = harness.copy("orientation-6.jpg", &search.join("e").join("claimed.jpg"));
-    fs::remove_file(&originals[5]).unwrap();
+    // A file with the original's bytes that another photograph names: that photograph's own
+    // file, since overwritten with a copy of the original (a Develop never makes two photographs
+    // of one file's bytes).
+    let taken = harness.copy("greyscale.jpg", &search.join("e").join("claimed.jpg"));
     let other = harness.import(&taken);
+    fs::write(&taken, fs::read(&originals[5]).unwrap()).unwrap();
+    fs::remove_file(&originals[5]).unwrap();
 
     let refs: Vec<&AssetId> = assets.iter().collect();
     assert_eq!(harness.check(&refs), ["missing"; 6]);
@@ -474,7 +490,7 @@ fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
     let sequence = harness.sequence();
     let unchanged = |harness: &Harness| {
         assert_eq!(harness.journal(), journal);
-        assert!(harness.events_after(sequence).is_empty());
+        assert!(harness.changes_after(sequence).is_empty());
         assert_eq!(harness.locator(moved), originals[0]);
     };
     // A file of other bytes was never verified: the whole request is refused, naming it.
@@ -763,7 +779,7 @@ fn a_cancelled_search_shows_its_progress_and_changes_nothing() {
         assert_eq!(harness.state(asset), before[index]);
     }
     assert_eq!(harness.journal(), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 
     // Searched again to its end, it is relinked.
     let rows = harness
@@ -936,70 +952,7 @@ fn a_search_names_one_readable_folder_and_what_to_look_for() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_detached_disk_image_is_volume_offline_and_a_search_on_it_fails_cleanly() {
-    use std::process::Command;
-
-    /// A 16 MB HFS+ disk image in a scratch directory, mounted at a folder beside it, never shown
-    /// in the Finder.
-    struct DiskImage {
-        image: PathBuf,
-        mount: PathBuf,
-        attached: bool,
-    }
-
-    impl DiskImage {
-        fn create(dir: &Path, label: &str) -> Self {
-            let image = dir.join(format!("{label}.dmg"));
-            let status = Command::new("hdiutil")
-                .args([
-                    "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", label,
-                ])
-                .arg(&image)
-                .status()
-                .expect("hdiutil runs; this test needs it");
-            assert!(status.success(), "hdiutil create: {status}");
-            let mount = dir.join(label);
-            fs::create_dir_all(&mount).unwrap();
-            let mut disk = Self {
-                image,
-                mount,
-                attached: false,
-            };
-            disk.attach();
-            disk
-        }
-
-        fn attach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
-                .arg(&self.mount)
-                .arg(&self.image)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil attach: {status}");
-            self.attached = true;
-        }
-
-        fn detach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["detach", "-quiet", "-force"])
-                .arg(&self.mount)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil detach: {status}");
-            self.attached = false;
-        }
-    }
-
-    impl Drop for DiskImage {
-        fn drop(&mut self) {
-            if self.attached {
-                let _ = Command::new("hdiutil")
-                    .args(["detach", "-quiet", "-force"])
-                    .arg(&self.mount)
-                    .status();
-            }
-        }
-    }
+    use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");
     let mut disk = DiskImage::create(&harness.dir, "LuxforgeFind");
