@@ -340,29 +340,33 @@ pub(crate) fn newest_entry_params(asset: &AssetId) -> Value {
 /// are listed. A search that has not finished verified nothing the owner remembers yet, and a
 /// stopped or failed one nothing at all, so neither contributes.
 pub(crate) fn relink_pairs(state: &MissingState) -> Vec<RelinkPair> {
-    let mut pairs = Vec::new();
-    for search in state.searches.values() {
-        if search.status != SearchStatus::Ended {
-            continue;
-        }
-        for row in &search.rows {
-            let path = match &row.result {
-                FindResult::Found { path } => Some(path),
-                FindResult::SeveralIdentical { paths } => search
-                    .chosen
-                    .get(&row.asset_id)
-                    .filter(|chosen| paths.contains(chosen)),
-                _ => None,
-            };
-            if let Some(path) = path {
-                pairs.push(RelinkPair {
-                    asset_id: row.asset_id.clone(),
-                    path: path.clone(),
-                });
-            }
-        }
-    }
-    pairs
+    verified(state)
+        .map(|(asset_id, path)| RelinkPair {
+            asset_id: asset_id.clone(),
+            path: path.clone(),
+        })
+        .collect()
+}
+
+/// Each photograph Relink would point at a file, and the file, without copying either.
+fn verified(state: &MissingState) -> impl Iterator<Item = (&AssetId, &PathBuf)> {
+    state
+        .searches
+        .values()
+        .filter(|search| search.status == SearchStatus::Ended)
+        .flat_map(|search| {
+            search.rows.iter().filter_map(move |row| {
+                let path = match &row.result {
+                    FindResult::Found { path } => Some(path),
+                    FindResult::SeveralIdentical { paths } => search
+                        .chosen
+                        .get(&row.asset_id)
+                        .filter(|chosen| paths.contains(chosen)),
+                    _ => None,
+                };
+                path.map(|path| (&row.asset_id, path))
+            })
+        })
 }
 
 // -- The model. --
@@ -422,8 +426,16 @@ pub(crate) struct GroupModel {
     pub(crate) detail: String,
     pub(crate) status: Option<String>,
     pub(crate) find: Option<ActionModel>,
+    /// The first [`MAX_GROUP_ROWS`] rows under the filter.
     pub(crate) rows: Vec<RowModel>,
+    /// What the rows leave out past [`MAX_GROUP_ROWS`]: "1,200 more: narrow them with the filters".
+    pub(crate) more: Option<String>,
 }
+
+/// The most rows a group draws. A search may answer for tens of thousands of photographs, and the
+/// view draws every row it is given, so a group draws its first rows and says how many more there
+/// are; Relink still sends every verified pair, and the filters narrow what is drawn.
+pub(crate) const MAX_GROUP_ROWS: usize = 500;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BarModel {
@@ -749,20 +761,26 @@ fn group_model(
         }),
     };
     let folder = (names.len() == 1).then(|| names[0].clone());
-    let rows = search
-        .map(|search| {
-            search
-                .rows
-                .iter()
-                .filter(|row| {
-                    state
-                        .filter
-                        .admits(kind(&row.result, search.chosen.contains_key(&row.asset_id)))
-                })
-                .map(|row| row_model(state, search, row, folder.clone(), home))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut rows = Vec::new();
+    let mut admitted = 0_usize;
+    if let Some(search) = search {
+        for row in &search.rows {
+            let chosen = search.chosen.contains_key(&row.asset_id);
+            if !state.filter.admits(kind(&row.result, chosen)) {
+                continue;
+            }
+            admitted += 1;
+            if rows.len() < MAX_GROUP_ROWS {
+                rows.push(row_model(state, search, row, folder.clone(), home));
+            }
+        }
+    }
+    let more = (admitted > rows.len()).then(|| {
+        format!(
+            "{} more: narrow them with the filters",
+            thousands((admitted - rows.len()) as u32)
+        )
+    });
     GroupModel {
         folder: group.source_folder.clone(),
         path: shown_path(&group.source_folder, home),
@@ -770,6 +788,7 @@ fn group_model(
         status,
         find,
         rows,
+        more,
     }
 }
 
@@ -881,7 +900,7 @@ fn bar(state: &MissingState, counts: &Counts) -> Option<BarModel> {
     if !counts.any() && live.is_none() {
         return None;
     }
-    let pairs = relink_pairs(state).len();
+    let pairs = verified(state).count();
     let mut detail = Vec::new();
     let mut part = |count: usize, words: &str| {
         if count > 0 {

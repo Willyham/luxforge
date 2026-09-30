@@ -667,3 +667,29 @@ fn resolve_missing_derives_nothing_unless_shown() {
         Some("Missing originals unavailable: catalog: busy")
     );
 }
+
+/// A group draws at most its first rows under the filter and says how many more there are, while
+/// Relink still sends every verified pair.
+#[test]
+fn resolve_missing_draws_a_bounded_window_of_rows() {
+    let (mut state, _) = searched(SearchStatus::Ended);
+    let search = state.missing.searches.get_mut(Path::new(LAKE)).unwrap();
+    search.rows = (0..MAX_GROUP_ROWS + 250)
+        .map(|index| FindRow {
+            asset_id: AssetId::new(),
+            file_name: format!("DSC_{index:05}.NEF"),
+            result: FindResult::Found {
+                path: under(&format!("{index}.NEF")),
+            },
+        })
+        .collect();
+    let model = derive(&state);
+    let group = lake(&model);
+    assert_eq!(group.rows.len(), MAX_GROUP_ROWS);
+    assert_eq!(
+        group.more.as_deref(),
+        Some("250 more: narrow them with the filters")
+    );
+    assert_eq!(relink_pairs(&state.missing).len(), MAX_GROUP_ROWS + 250);
+    assert_eq!(model.bar.unwrap().pairs, MAX_GROUP_ROWS + 250);
+}
