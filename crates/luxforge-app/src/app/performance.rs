@@ -1,5 +1,5 @@
-//! The Performance section's sampler: the one-second read of `resources.read` and `activity.list`
-//! behind the state panel's last block, and the gate that keeps it asleep.
+//! The Performance section's sampler: the one-second read of `resources.read` and the activity
+//! board behind the state panel's last block, and the gate that keeps it asleep.
 //!
 //! The section samples only while it is expanded **and** the state panel is on screen. Collapsed,
 //! with the panel hidden or with the component gallery in its place, it sets no timer and makes no
@@ -9,6 +9,13 @@
 //! lands instead of being drawn into a window it does not belong to. At most one read is in flight:
 //! a tick that finds one still out does nothing, so a slow owner stretches the interval rather than
 //! queueing reads behind itself.
+//!
+//! **One board.** The section's job rows are drawn from the board long-running work holds
+//! (`app/long_work.rs`), the snapshot the status bar's job comes from: the sampler reads it at each
+//! tick, on the update loop through long work's watch (what `activity.list` answers, without an
+//! owner round trip), and every read long work takes when the board wakes it refreshes the rows
+//! too. So the rows follow a catalog job's begin, progress and end between samples, and they and
+//! the status bar never show two reads of the board.
 use crate::app::Before;
 use crate::coalesce::Coalesce;
 use crate::{
@@ -21,7 +28,7 @@ use crate::{
     state::performance::PerformanceHistory,
 };
 use iced::{Subscription, Task};
-use luxforge_core::{ActivitySnapshot, resources::ResourceReport};
+use luxforge_core::resources::ResourceReport;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -74,15 +81,13 @@ impl Sampler {
         self.error = None;
     }
 
-    /// Take up one read: parse both answers into the core's own report types, the way any Rust
-    /// API client would, and add them to the window. An answer that does not parse changes nothing
-    /// but the error it leaves. The answers are read in place: nothing of them is kept.
+    /// Take up one read: parse the answer into the core's own report type, the way any Rust API
+    /// client would, and add it to the window. An answer that does not parse changes nothing but
+    /// the error it leaves. The answer is read in place: nothing of it is kept.
     fn adopt(&mut self, read: &PerformanceRead) -> Result<(), String> {
         let sample = ResourceReport::deserialize(&read.resources)
             .map_err(|error| format!("resources.read: {error}"))?;
-        let activity = ActivitySnapshot::deserialize(&read.activity)
-            .map_err(|error| format!("activity.list: {error}"))?;
-        self.history.push(sample, activity);
+        self.history.push(sample);
         self.error = None;
         Ok(())
     }
@@ -133,16 +138,21 @@ impl Editor {
         self.performance_read()
     }
 
-    /// Ask the owner for one read, unless one is already out. A read still in flight from an
-    /// earlier epoch is not duplicated: it is dropped when it lands, and that is when the new
-    /// epoch's first read goes out.
+    /// Read the board and ask the owner for the counters, unless a read is already out. A read
+    /// still in flight from an earlier epoch is not duplicated: it is dropped when it lands, and
+    /// that is when the new epoch's first read goes out. The board is long work's, read here on
+    /// the update loop, so the job rows age with the section's own cadence while nothing wakes
+    /// long work.
     fn performance_read(&mut self) -> Task<Message> {
         self.performance.read.offer(());
         if self.performance.read.start().is_none() {
             return Task::none();
         }
         self.performance.requested += 1;
-        performance_task(self.owner.clone(), self.client, self.performance.epoch)
+        Task::batch([
+            self.section_reads_board(),
+            performance_task(self.owner.clone(), self.client, self.performance.epoch),
+        ])
     }
 
     /// One tick of the sampler's timer. The timer exists only while the section samples, so the
@@ -183,9 +193,10 @@ impl Editor {
         Task::none()
     }
 
-    /// The section as a captured frame records it: the flag, the reads asked for, the raw answers
-    /// the figures came from, which the evidence driver keeps ([`Recorded`]), and the rows exactly
-    /// as the model gave them to the view, so a runner can re-derive every figure from the
+    /// The section as a captured frame records it: the flag, the reads asked for, the raw counter
+    /// answers the figures came from, which the evidence driver keeps ([`Recorded`]), the board
+    /// the job rows came from (long work's, as `activity.list` would answer it), and the rows
+    /// exactly as the model gave them to the view, so a runner can re-derive every figure from the
     /// recorded answers and compare.
     ///
     /// [`Recorded`]: crate::app::evidence::Recorded
@@ -205,7 +216,7 @@ impl Editor {
             "resources": raw.and_then(|raw| raw.back()).map(|(_, resources)| resources),
             "previous_wall_ms": previous.map(|(wall_ms, _)| wall_ms),
             "previous_resources": previous.map(|(_, resources)| resources),
-            "activity": recorded.and_then(|recorded| recorded.activity.as_ref()),
+            "activity": self.long_work.state.board,
             "error": self.performance.error,
             "caption": model.caption,
             "rows": model.metrics.iter().map(|row| json!({
@@ -272,10 +283,8 @@ mod tests {
     fn read(editor: &Editor) -> Box<PerformanceRead> {
         let (resources, _) =
             call(&editor.owner, editor.client, "resources.read", json!({})).unwrap();
-        let (activity, _) = call(&editor.owner, editor.client, "activity.list", json!({})).unwrap();
         Box::new(PerformanceRead {
             resources,
-            activity,
             wall_ms: 1_758_600_000_000,
         })
     }
@@ -330,10 +339,12 @@ mod tests {
     #[test]
     fn expanding_clears_the_history_and_reads_at_once() {
         let (mut editor, catalog) = boot_collapsed();
-        editor.performance.history.push(
-            luxforge_core::resources::read(&luxforge_core::RenderContext::new()),
-            ActivitySnapshot::default(),
-        );
+        editor
+            .performance
+            .history
+            .push(luxforge_core::resources::read(
+                &luxforge_core::RenderContext::new(),
+            ));
         let _ = editor.update(Message::Performance(PerformanceMessage::Toggle));
         assert!(editor.performance.expanded);
         assert_eq!(editor.performance.history.len(), 0, "a fresh window");

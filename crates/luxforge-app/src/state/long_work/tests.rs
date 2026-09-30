@@ -488,11 +488,11 @@ fn a_performance_row_of_catalog_work_names_its_job_count_and_estimate() {
         0,
         running(7, "source.develop", Some("DSC_0412.NEF"), 3_000, None),
     );
-    let work = Work {
+    let listed = jobs(Work {
+        board: Some(&snapshot),
         rates: &state.rates,
         home: home(),
-    };
-    let listed = jobs(Some(&snapshot), work);
+    });
     assert_eq!(listed.caption.as_deref(), Some("2 jobs"));
     let [plain, indexing] = listed.rows.as_slice() else {
         panic!("two rows: {:?}", listed.rows);
@@ -527,13 +527,11 @@ fn a_cancelled_catalog_job_reads_cancelled_in_the_section() {
         recent: vec![cancelled],
         ..ActivitySnapshot::default()
     };
-    let listed = jobs(
-        Some(&snapshot),
-        Work {
-            rates: &Rates::EMPTY,
-            home: home(),
-        },
-    );
+    let listed = jobs(Work {
+        board: Some(&snapshot),
+        rates: &Rates::EMPTY,
+        home: home(),
+    });
     let [row] = listed.rows.as_slice() else {
         panic!("one row: {:?}", listed.rows);
     };

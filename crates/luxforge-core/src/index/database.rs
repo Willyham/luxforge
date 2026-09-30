@@ -28,13 +28,14 @@ use std::{
     time::Duration,
 };
 
-/// Format 4: files with their signatures and header columns, the roots listed with where each
-/// watched root's change notifications resume (`cursor_volume`, `cursor_event`), the preview records
-/// of files and developed photographs — a photograph's rendered tier with whether it is
+/// Format 5: files with their signatures and header columns, the roots listed with where each
+/// watched root's change notifications resume (`cursor_volume`, `cursor_event`) and whether a
+/// listing the index lane ran on its own stopped before it ended (`stale`), the preview records of
+/// files and developed photographs — a photograph's rendered tier with whether it is
 /// approximate — and the brightness fingerprints of files' complete grid tiers
 /// (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database SQLite
 /// cannot read, and an index of another catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 4;
+pub const INDEX_FORMAT: i64 = 5;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
@@ -64,6 +65,7 @@ const SCHEMA: &str = "
         offline INTEGER NOT NULL DEFAULT 0 CHECK (offline IN (0, 1)),
         cursor_volume BLOB CHECK (cursor_volume IS NULL OR length(cursor_volume) = 16),
         cursor_event INTEGER,
+        stale INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
         CHECK ((cursor_volume IS NULL) = (cursor_event IS NULL))
     );
     CREATE TABLE files (
@@ -877,6 +879,25 @@ pub(crate) fn set_root_cursor(
             cursor.map(|cursor| cursor.volume.to_vec()),
             cursor.map(|cursor| cursor.event_id as i64),
         ])?;
+    Ok(())
+}
+
+/// Whether the root at `path` is stale: a listing of it that the index lane ran on its own was
+/// cancelled or failed, so its rows may miss what changed until a listing of it completes. False
+/// when the index lists no root there.
+pub(crate) fn root_stale(connection: &Connection, path: &Path) -> Result<bool, Error> {
+    Ok(connection
+        .prepare_cached("SELECT stale FROM roots WHERE path = ?1")?
+        .query_row([path.to_string_lossy()], |row| row.get(0))
+        .optional()?
+        .unwrap_or(false))
+}
+
+/// Mark the root at `path` stale, or current again once a listing of it completed. A root the
+/// index does not list is left alone.
+pub(crate) fn set_root_stale(tx: &Transaction<'_>, path: &Path, stale: bool) -> Result<(), Error> {
+    tx.prepare_cached("UPDATE roots SET stale = ?2 WHERE path = ?1")?
+        .execute(params![path.to_string_lossy(), stale])?;
     Ok(())
 }
 
