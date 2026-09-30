@@ -301,6 +301,7 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
     put(&other.join("b.jpg"), &camera_jpeg());
     add_watched(owner, client, &photos, "add-photos");
     add_watched(owner, client, &other, "add-other");
+    let start = sequence(owner, client);
     ok(
         owner,
         client,
@@ -309,6 +310,15 @@ fn a_folder_no_longer_indexed_is_no_longer_watched() {
     );
     wait_for("the removed folder's rows to go", || {
         read_rows(&fixture, &photos).is_empty().then_some(())
+    });
+    // Forgetting its rows is announced under the request that removed it.
+    wait_for("the forgotten rows' event", || {
+        events_after(owner, client, start)
+            .iter()
+            .any(|event| {
+                event["method"] == "index.remove-folder" && event["index_revision"].is_u64()
+            })
+            .then_some(())
     });
     arrive(&staging, &photos.join("late.jpg"), &camera_jpeg());
     arrive(&staging, &other.join("sentinel.jpg"), &camera_jpeg());

@@ -149,9 +149,8 @@ pub(crate) enum LaneEvent {
     Started { watcher: Result<(), String> },
     /// The lane opened the index; this connection is the owner's, for its reads.
     Opened(IndexDb),
-    /// A batch committed and left the index at `revision`: a batch of the job `job`, or, with no
-    /// job, one the watcher's notifications made.
-    Committed { revision: u64, job: Option<JobId> },
+    /// A batch committed and left the index at `revision`, made as `by` says.
+    Committed { revision: u64, by: Maker },
     /// A refresh ended, leaving the index at `revision` when the index could be read.
     Refreshed {
         job_id: JobId,
@@ -169,6 +168,18 @@ pub(crate) enum LaneEvent {
     },
     /// A volume was mounted or taken out.
     Volume(VolumeEvent),
+}
+
+/// What made a batch, which decides under which request it is announced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Maker {
+    /// The `index.refresh` job listing.
+    Job(JobId),
+    /// The owner's other work: forgetting a folder no longer indexed.
+    Owner,
+    /// What the watcher reported, which no request asked for.
+    #[default]
+    Watcher,
 }
 
 /// What reaches the coordinator on its one channel.
@@ -436,7 +447,7 @@ impl Coordinator {
                             connection,
                             (tasks, answers),
                             &refresh.control,
-                            Some(refresh.job_id.clone()),
+                            Maker::Job(refresh.job_id.clone()),
                             stamp,
                         );
                         // A panic ends the job `internal`, never the lane: the owner still hears
@@ -526,7 +537,7 @@ impl Coordinator {
             connection,
             (tasks, answers),
             keeping,
-            None,
+            Maker::Watcher,
             stamp,
         );
         let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), Error> {
@@ -617,8 +628,8 @@ struct Batch {
     since: Option<Instant>,
     /// Whether a header it holds carries a position.
     positions: bool,
-    /// The job whose batches these are; none for the watcher's.
-    job: Option<JobId>,
+    /// What makes the batches.
+    by: Maker,
 }
 
 impl Batch {
@@ -694,7 +705,7 @@ impl Batch {
         if let Some(revision) = revision {
             post(LaneEvent::Committed {
                 revision,
-                job: self.job.clone(),
+                by: self.by.clone(),
             });
         }
         if std::mem::take(&mut self.positions) {
@@ -804,7 +815,7 @@ impl<'r> Run<'r> {
         connection: &'r mut Connection,
         (tasks, answers): (&'r SyncSender<Task>, &'r Receiver<Answer>),
         control: &'r Arc<JobControl>,
-        job: Option<JobId>,
+        by: Maker,
         stamp: i64,
     ) -> Self {
         Self {
@@ -816,7 +827,7 @@ impl<'r> Run<'r> {
             answers,
             control,
             batch: Batch {
-                job,
+                by,
                 ..Batch::default()
             },
             in_flight: 0,
@@ -1179,7 +1190,7 @@ fn forget(connection: &mut Connection, path: &Path, post: &Post) -> Result<(), E
     tx.commit()?;
     post(LaneEvent::Committed {
         revision,
-        job: None,
+        by: Maker::Owner,
     });
     Ok(())
 }
