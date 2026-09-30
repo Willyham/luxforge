@@ -348,7 +348,7 @@
   {
    "id": "TASK-006",
    "description": "Route the qualifying catalog modes to RawSpeed and prove each one exact.",
-   "status": "in_progress",
+   "status": "completed",
    "dependencies": [
     "TASK-003",
     "TASK-005"
@@ -409,7 +409,7 @@
   {
    "id": "TASK-007",
    "description": "Measure routed opens in the editor and bring the RAW documentation current.",
-   "status": "pending",
+   "status": "in_progress",
    "dependencies": [
     "TASK-006"
    ],
