@@ -23,7 +23,7 @@ Evidence: [Lightroom storage](../lightroom/storage-and-history.md), [rendering](
 | --- | --- | --- |
 | Compact settings are prepared into per-pipe execution data | Keep durable intent separate from LUTs, kernels and scratch resources | Core owns transactions/history; modules own validation and processing |
 | ROI and color conversions are host/module contracts | Describe each operation's input domain, region needs and coordinate transforms | Do not introduce a speculative generalized node graph |
-| Cache identity follows upstream state, profiles and ROI | Include source/revision, processing identity, geometry, color and quality in reuse rules | Start with measured needs; avoid speculative cache layers |
+| Cache identity follows upstream state, profiles and ROI | Include source/revision, processing identity, geometry, color and quality in reuse rules | Add a cache where measurement shows repeated work, keyed and bounded under [performance rule 14](../../engineering/performance-rules.md#rules) |
 | Fast rendering can omit an expensive effect | Expose draft/final readiness and ensure stale/draft output cannot masquerade as final | Responsiveness and observable state are requirements |
 | Global analysis can be shared from a preview | Treat analysis dependencies separately from a local output rectangle | Validate ROI consistency and scale-dependent approximations |
 | CPU/GPU fallback changes execution and may restart | Track failures and recovery; make correctness independent of a particular accelerator | Native M4 evidence and portable functional checks remain distinct |
