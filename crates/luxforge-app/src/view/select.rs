@@ -10,7 +10,8 @@
 //! shape its header gives, or 3:2.
 use crate::{
     app::{
-        message::{Message, select::SelectMessage, view::ViewMessage},
+        loupe::LoupeImages,
+        message::{Message, loupe::LoupeMessage, select::SelectMessage, view::ViewMessage},
         select_previews::GridImages,
     },
     layout::{
@@ -51,7 +52,8 @@ pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
 /// What is not built yet, as the controls waiting for it say on hover.
 const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
 const NOT_YET_DEVELOP: &str = "Developing picks is not yet available";
-const NOT_YET_LOUPE: &str = "not yet available";
+/// Why the strip's Loupe cannot be entered without a view.
+const NO_LOUPE: &str = "choose a source first";
 
 /// The width of an Info panel row's label.
 const INFO_LABEL_WIDTH: f32 = 96.0;
@@ -69,6 +71,8 @@ pub(crate) struct Grid<'a> {
     pub(crate) content: &'a GridContent,
     /// Each cell's decoded preview, borrowed so its handle keeps its id and uploads once.
     pub(crate) images: GridImages<'a>,
+    /// The loupe's decoded frames and region, borrowed likewise.
+    pub(crate) loupe: LoupeImages<'a>,
 }
 
 /// The workspace switch at a title bar's leading edge, `current` raised. Either segment sends the
@@ -397,7 +401,7 @@ fn centre<'a>(
     work: &'a LongWorkModel,
 ) -> Element<'a, Message> {
     if model.loupe.open {
-        return crate::view::loupe::loupe(&model.loupe);
+        return crate::view::loupe::loupe(&model.loupe, grid.loupe);
     }
     if model.missing.shown {
         return crate::view::select_missing::centre(&model.missing);
@@ -409,28 +413,37 @@ fn centre<'a>(
         rows,
         content,
         images,
+        ..
     } = grid;
-    let selection = &model.selection;
-    let widget = thumbnail_grid(layout, scroll, move |cell: GridCell| {
-        cell_view(cell, rows, content, selection, images)
-    })
-    .on_press(|press| Message::Select(SelectMessage::Press(press)))
-    .on_moment_action(|moment| Message::Select(SelectMessage::PickAll(moment)))
-    .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
-    .viewport(viewport)
-    .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)));
+    // The progress sheet of a view with nothing to show yet, in this view only: over the empty
+    // canvas of the view that waits, never over the view it is replacing.
+    let sheet = crate::view::long_work::sheet(work);
+    let canvas: Element<'a, Message> = if sheet.is_some() {
+        Space::new().width(Length::Fill).height(Length::Fill).into()
+    } else {
+        let selection = &model.selection;
+        thumbnail_grid(layout, scroll, move |cell: GridCell| {
+            cell_view(cell, rows, content, selection, images)
+        })
+        .on_press(|press| Message::Select(SelectMessage::Press(press)))
+        .on_moment_action(|moment| Message::Select(SelectMessage::PickAll(moment)))
+        .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
+        .viewport(viewport)
+        .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)))
+        .into()
+    };
     let mut layers = stack![
-        container(widget)
+        container(canvas)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::canvas_surface)
     ];
-    if let Some(note) = &model.note {
-        layers = layers.push(container(caption(note.clone())).center(Length::Fill));
-    }
-    // The progress sheet of a view with nothing to show yet: in this view only.
-    if let Some(sheet) = crate::view::long_work::sheet(work) {
-        layers = layers.push(container(sheet).center(Length::Fill));
+    match (sheet, &model.note) {
+        (Some(sheet), _) => layers = layers.push(container(sheet).center(Length::Fill)),
+        (None, Some(note)) => {
+            layers = layers.push(container(caption(note.clone())).center(Length::Fill));
+        }
+        (None, None) => {}
     }
     layers = layers.push(
         container(strip(&model.strip))
@@ -567,19 +580,21 @@ fn menu_view(choices: &[MenuChoice]) -> Element<'_, Message> {
     )
 }
 
-/// The floating strip: Grid, the Loupe (not yet), the sort and the size slider.
+/// The floating strip: Grid, the Loupe, the sort and the size slider.
 fn strip(model: &StripModel) -> Element<'_, Message> {
     let open = model.sort_menu.is_some();
     select_strip(
         &SelectStripModel {
-            loupe_unavailable: Some(NOT_YET_LOUPE.into()),
+            loupe_unavailable: (!model.enabled).then(|| NO_LOUPE.into()),
             sort: model.sort.clone(),
             sort_enabled: model.enabled,
             cell_width: model.cell_width,
             cell_range: (CELL_WIDTH_MIN, CELL_WIDTH_MAX),
             cell_step: CELL_WIDTH_STEP,
         },
-        None,
+        model
+            .enabled
+            .then_some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open))),
         Some(Message::Select(SelectMessage::Menu(
             (!open).then_some(SelectMenu::Sort),
         ))),
@@ -818,6 +833,7 @@ mod tests {
         };
         let layout = GridLayout::new(Vec::new(), luxforge_ui::GridMetrics::default(), 0.0);
         let previews = crate::app::select_previews::SelectPreviews::default();
+        let loupe = crate::app::loupe::Loupe::default();
         let _ = screen(
             &workspace,
             Grid {
@@ -827,6 +843,7 @@ mod tests {
                 rows: &state.rows,
                 content: &state.content,
                 images: previews.grid(&state.rows),
+                loupe: loupe.images(&previews),
             },
         );
         let _ = switch(Shown::Develop);

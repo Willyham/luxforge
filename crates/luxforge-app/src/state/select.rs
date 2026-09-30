@@ -1166,6 +1166,17 @@ impl ReadSource {
             Self::Card { name, .. } => format!("the {name} card"),
         }
     }
+
+    /// What the first look's progress sheet calls it: a folder's own name, or the card's.
+    pub(crate) fn sheet_name(&self) -> String {
+        match self {
+            Self::Folder(path) => path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            Self::Card { name, .. } => name.clone(),
+        }
+    }
 }
 
 /// What pressing a source row does.
@@ -1391,7 +1402,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
-    super::select_missing::over(SelectModel {
+    let mut model = SelectModel {
         shown: state.shown,
         title: SelectTitle {
             fullscreen,
@@ -1410,9 +1421,14 @@ pub(crate) fn model(
         selection,
         note: note(state),
         catalog_cells: state.over_catalog(),
-        loupe: super::loupe::derive(state.summary.as_ref(), browse, &state.loupe),
+        loupe: super::loupe::derive(state, browse),
         missing: super::select_missing::derive(state),
-    })
+    };
+    // The loupe says what it shows and whether its next frames are ready.
+    if model.loupe.open && !model.loupe.status.is_empty() {
+        model.status.line = model.loupe.status.clone();
+    }
+    super::select_missing::over(model)
 }
 
 /// The source being viewed, or asked for.

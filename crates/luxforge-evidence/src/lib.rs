@@ -1672,6 +1672,14 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// of the desktop's own changes. `{"pick_all": {"position": 12}}` presses the Pick all action of
 /// the bracket holding that view position. `P` itself is a `key` step. Each waits until the view
 /// the change made stale has been evaluated again.
+///
+/// Long-running work: `{"first_look": "/path"}` browses that folder the same way and waits, while
+/// its first look is still being read, until the view shows its progress sheet. `"continue_in_background"`
+/// presses the sheet's Continue in background and waits until the sheet is gone with its job still
+/// in the status bar and in the Performance section as a row that can be cancelled.
+/// `"cancel_work"` presses Cancel on the Performance section's first such row and waits until the
+/// job has ended on the activity board, the view that waited on it has heard, and the section has
+/// read the board again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -1703,6 +1711,9 @@ pub enum SelectStep {
     PickAll {
         position: u32,
     },
+    FirstLook(String),
+    ContinueInBackground,
+    CancelWork,
 }
 
 /// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
@@ -1748,6 +1759,7 @@ impl SelectStep {
         match self {
             Self::Source(name) => text(name, "select source"),
             Self::Folder(path) => text(path, "select folder"),
+            Self::FirstLook(path) => text(path, "select first_look"),
             Self::Choose { item, .. } => text(item, "select choose item"),
             Self::AgentPick { positions, .. } => {
                 if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {
@@ -1761,7 +1773,9 @@ impl SelectStep {
             | Self::Arrow { .. }
             | Self::Click { .. }
             | Self::Library(_)
-            | Self::PickAll { .. } => Ok(()),
+            | Self::PickAll { .. }
+            | Self::ContinueInBackground
+            | Self::CancelWork => Ok(()),
         }
     }
 }

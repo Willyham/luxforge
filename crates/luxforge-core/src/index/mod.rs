@@ -14,19 +14,24 @@
 //!   new ones added, vanished ones dropped, moves within a volume carried by file identity.
 //! - `lane.rs`: the index lane — a coordinator thread that walks, reconciles and writes in batches
 //!   (each advancing the revision and announced as one event), and two header workers on different
-//!   files — with progress on the activity board. The catalog owner only schedules it
-//!   (`api/owner/files.rs`).
+//!   files — with progress on the activity board; and, in `lane/keep.rs`, the platform's change
+//!   notifications for the indexed folders and the volumes, which the coordinator applies by
+//!   signature as they arrive, each watched folder's cursor kept on its root row. The catalog owner
+//!   only schedules it (`api/owner/files.rs`).
 //! - `disk.rs`: a folder's immediate subfolders for `disk.folders`, with the same exclusions.
-//!
-//! Not built yet: the platform's change notifications for indexed folders and mount notifications
-//! for cards (TASK-005). They feed this lane what the owner already hands it: a root to list again
-//! ([`lane::Work::Refresh`]) when paths under it change or a card mounts.
+//! - `query.rs`: the lane's query and survey threads, which ask the file system what the owner must
+//!   not wait on (a folder's subfolders, a path to add or refresh, a card), one question at a time.
+//! - `survey.rs`: what the owner answers the volume and card lists and the indexed folders' offline
+//!   state from, learned on the survey thread, local volumes before network ones.
+
 pub(crate) mod database;
 pub(crate) mod disk;
 pub(crate) mod exclude;
 pub(crate) mod lane;
+pub(crate) mod query;
 mod read;
 pub(crate) mod reconcile;
+pub(crate) mod survey;
 pub(crate) mod volumes;
 pub(crate) mod walk;
 
