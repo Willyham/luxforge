@@ -11,8 +11,9 @@ use crate::{
     EditorService, ErrorKind, SourceTag,
     catalog_types::{
         BodyKey, BrowseSession, DateRange, Facet, FileAvailability, Grouping, ItemRef, LocalDay,
-        MAX_VIEW_ITEMS, Month, NoProbe, PositionRange, PreviewState, RowItem, SelectionMode,
-        SortKey, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort, ViewSource,
+        MAX_VIEW_ITEMS, MomentRef, Month, NoProbe, PositionRange, PreviewState, RowItem,
+        SelectionMode, SortKey, ViewFilter, ViewItem, ViewQuery, ViewSelection, ViewSort,
+        ViewSource,
     },
 };
 use rusqlite::Connection;
@@ -951,7 +952,19 @@ fn browse_rows_read_windows_by_position() {
             );
             assert_eq!(row.lens, header.and_then(|header| header.lens.clone()));
             assert_eq!(row.dimensions, header.and_then(|header| header.dimensions));
-            assert_eq!(row.moment, None, "no moment in the layout covers it");
+            let moment = want
+                .layout
+                .moments
+                .iter()
+                .enumerate()
+                .find(|(_, moment)| {
+                    (moment.start..moment.start + moment.len).contains(&row.position)
+                })
+                .map(|(index, moment)| MomentRef {
+                    index: index as u32,
+                    frame: row.position - moment.start,
+                });
+            assert_eq!(row.moment, moment, "the model's moment covering it");
             let preview = match &file.record.header {
                 _ if file.record.name == "DSC_0001.NEF" => PreviewState::Ready,
                 crate::catalog_types::HeaderState::Ok(header) if header.thumbnail.is_some() => {

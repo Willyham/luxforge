@@ -15,7 +15,7 @@ use crate::{
         AssetRowId, BodyKey, CameraBody, CaptureTime, CatalogFolder, CatalogFolderId, Collection,
         CollectionId, CollectionKind, EmbeddedFormat, EmbeddedImage, Exposure, FileAvailability,
         FileId, FileRecord, FileSignature, FrameFacts, FrameTables, GeoPosition, GroupLayout,
-        HeaderMetadata, HeaderState, IndexRoot, LocalDay, NoPlaces, NoProbe, Pick, RootKind,
+        HeaderMetadata, HeaderState, IndexRoot, LocalDay, NoProbe, Pick, PlaceNames, RootKind,
         SortKey, Thresholds, ViewFilter, ViewItem, ViewQuery, ViewSource, Volume, VolumeId,
     },
     organize,
@@ -1112,6 +1112,12 @@ impl Fixture {
             .iter()
             .map(|file| {
                 let header = file.record.header.header().cloned().unwrap_or_default();
+                // A file's place is the bundled gazetteer's nearest to its position, as a row and
+                // a facet read it.
+                let place = header
+                    .position
+                    .as_ref()
+                    .and_then(|position| crate::organize::Gazetteer.nearest(position));
                 Item {
                     item: ViewItem::File(file.id),
                     folder: file.record.folder.to_str().unwrap().into(),
@@ -1119,7 +1125,7 @@ impl Fixture {
                     path: file.path().into(),
                     header,
                     kind: file.record.kind,
-                    place: None,
+                    place,
                     picked: file.picked,
                     in_catalog: file.developed_as.is_some(),
                     edited: false,
@@ -1186,7 +1192,12 @@ impl Fixture {
     pub fn events(&self) -> Vec<(crate::catalog_types::EventGroup, Vec<FileId>)> {
         let items = self.event_items();
         let (frames, tables) = frames(&items, &items);
-        let set = organize::events(&frames, &tables, &Thresholds::default(), &NoPlaces);
+        let set = organize::events(
+            &frames,
+            &tables,
+            &Thresholds::default(),
+            &crate::organize::Gazetteer,
+        );
         set.events
             .iter()
             .map(|group| {

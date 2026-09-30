@@ -52,15 +52,17 @@ pub(crate) use view::{Context, View, evaluate};
 
 use crate::{
     EditorService, Error,
-    catalog_types::{BrowseSession, FileId, LocalDay, NoPlaces, PlaceNames, ViewSource, ViewStamp},
+    catalog_types::{BrowseSession, FileId, LocalDay, PlaceNames, ViewSource, ViewStamp},
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::cmp::Ordering;
 
-/// The gazetteer file places and event names come from. None is bundled yet (lane A's P4), so no
-/// file has a place; a developed photograph's place is the one its capture row records.
+/// The gazetteer file places and event names come from: the bundled offline one (P4). Its index is
+/// built by the first lookup, which the index lane makes from a worker after committing positioned
+/// files, so the owner normally finds it built. A developed photograph's place is the one its
+/// capture row records.
 pub(crate) fn places() -> &'static dyn PlaceNames {
-    &NoPlaces
+    &crate::organize::Gazetteer
 }
 
 /// The index's revision: the integer under `index_meta`'s `revision` key, which the index lane
