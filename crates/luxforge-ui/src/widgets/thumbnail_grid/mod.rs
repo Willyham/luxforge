@@ -18,6 +18,7 @@ mod input;
 mod layout;
 mod paint;
 
+pub(crate) use layout::LineKind;
 pub use layout::{
     GridBlock, GridCell, GridDirection, GridHeading, GridHit, GridLayout, GridMetrics,
     MomentHeader, MomentKind,

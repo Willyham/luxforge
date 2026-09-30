@@ -121,6 +121,7 @@ pub use toggle::{ToggleModel, compact_toggle, toggle};
 pub use truncated_text::truncated_text;
 
 // -- Select: the thumbnail grid's exports.
+pub(crate) use thumbnail_grid::LineKind as GridLineKind;
 #[cfg(test)]
 pub(crate) use thumbnail_grid::paint_for_tests;
 pub use thumbnail_grid::{

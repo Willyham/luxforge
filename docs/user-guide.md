@@ -57,7 +57,7 @@ The Controls proof in developer mode demonstrates this vocabulary without changi
 ### Developer components gallery
 
 Debug builds show a **Developer** button in the title bar. For the optimized development build,
-start with `cargo xtask develop --developer`. Click Developer to browse the thirteen pages of shared
+start with `cargo xtask develop --developer`. Click Developer to browse the eighteen pages of shared
 UI components, including their disabled, editing and dragging states. Use the page chooser or
 Previous/Next, then **Back to editor** or Escape to return. A photo is not required; an open photo
 and its edits are preserved. Finish an active draft before opening the gallery.

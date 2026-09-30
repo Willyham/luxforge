@@ -1154,17 +1154,7 @@ pub const FRAME_NUMBER_INSET: Padding = Padding {
     bottom: 4.0,
     left: 6.0,
 };
-/// A pick's check (`.tk`): an 18 pt accent disc holding a 10 pt check in [`PRIMARY_INK`], ringed
-/// 2 pt in near-black at 60% so it reads over any photograph; 5 pt in from the frame's corner.
-pub const PICK_CHECK_SIZE: f32 = 18.0;
-pub const PICK_CHECK_GLYPH: f32 = 10.0;
-pub const PICK_CHECK_RING_WIDTH: f32 = 2.0;
-pub const PICK_CHECK_RING: Color = Color {
-    r: 20.0 / 255.0,
-    g: 20.0 / 255.0,
-    b: 22.0 / 255.0,
-    a: 0.6,
-};
+/// A frame's pick check is the grid cell's (`CELL_PICK_*`), 5 pt in from the frame's corner.
 pub const PICK_CHECK_INSET: f32 = 5.0;
 /// The loupe's info bar: the draft bar's 34 pt floating surface, 12 pt in from either end.
 pub const LOUPE_INFO_PADDING: f32 = 12.0;
@@ -2800,9 +2790,7 @@ mod tests {
         assert_eq!(code(TEXT_FAINT), [0x55, 0x55, 0x5c], "a count's ` / `");
         assert_eq!(code(AGENT_CONNECTED), [0x57, 0xb5, 0x6b], "`.src .vd`");
         assert_eq!(code(RAIL), [0x3a, 0x3a, 0x40], "`.bar`");
-        // The pick check's ring and the region box keep their alpha: they sit over a photograph.
-        assert_eq!(code(PICK_CHECK_RING), [20, 20, 22]);
-        assert!((PICK_CHECK_RING.a - 0.6).abs() < f32::EPSILON);
+        // The region box keeps its alpha: it sits over a photograph.
         assert_eq!((REGION_BOX.a, REGION_BOX_RING.a), (0.9, 0.5));
     }
 
@@ -2904,7 +2892,7 @@ mod tests {
         // `.mstrip .fr`, `.tk`, the inset and the filmstrip.
         assert_eq!((MOMENT_FRAME_WIDTH, MOMENT_FRAME_HEIGHT), (124.0, 84.0));
         assert_eq!((MOMENT_IMAGE_WIDTH, MOMENT_IMAGE_HEIGHT), (116.0, 76.0));
-        assert_eq!(PICK_CHECK_SIZE, 18.0);
+        assert_eq!(PICK_CHECK_INSET, 5.0);
         assert_eq!(
             (FOCUS_INSET_WIDTH, FOCUS_REGION_HEIGHT, FOCUS_FOOTER_HEIGHT),
             (308.0, 209.0, 24.0)

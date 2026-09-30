@@ -114,7 +114,7 @@ The components board gains a row per new widget and state, `gallery_states()` bu
 ## Developer gallery
 
 The title bar exposes **Developer** in debug builds and in optimized builds started with
-`--developer`. It opens 99 named widget states on thirteen named pages, built with the same widget
+`--developer`. It opens 124 named widget states on eighteen named pages, built with the same widget
 constructors as the editor. The board holds widget states only, as the owner decided: no composed
 module section or panel, and no copy of an app constant such as a panel width or the performance
 sampler's window. The real panels are proven where the app composes them, by the `workspace`,
