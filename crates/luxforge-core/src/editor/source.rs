@@ -1,13 +1,15 @@
 use super::{
     AssetRecord, CachedSource, EditorService, EditorState, MutationOutcome, PreparedFile,
     RawDevelopment, SourceKind, SourceSignature,
-    catalog::{encode, insert_entry, now_ms, write},
+    catalog::{insert_entry, now_ms, write},
+    catalog_rows::{NewAsset, insert_asset, insert_capture, top_level_folder, upsert_volume},
 };
 use crate::{
     AssetId, EntryId, Error, ErrorKind, HistoryEntry, LayerId, Preparation, PreparationNeeds,
     Snapshot,
     artifacts::{self, ArtifactRead, VerifiedArtifact},
     atomic_file::file_error,
+    catalog_types::{Dimensions, ExifOrientation, HeaderMetadata},
     open_source_bytes, read_bounded_file,
     source::{PreparedSource, RawPreparation, RawPrepared, SecondDevelopment},
 };
@@ -696,11 +698,25 @@ impl EditorService {
         if asset == head.asset {
             return Ok(MutationOutcome::NoOp);
         }
+        let volume = crate::index::volume_of(&canonical, now_ms())?;
+        let file_name = canonical
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         write(&mut self.connection, |tx| {
+            upsert_volume(tx, &volume)?;
             let changed = tx.execute(
-                "UPDATE assets SET source_root=?1,locator=?2,canonical_locator=?2,file_identity=?3
-                 WHERE id=?4",
-                params![source_root, locator, asset.file_identity, asset_id.as_str()],
+                "UPDATE assets SET source_root=?1,locator=?2,canonical_locator=?2,file_identity=?3,
+                     source_folder=?1,file_name=?4,volume_id=?5
+                 WHERE id=?6",
+                params![
+                    source_root,
+                    locator,
+                    asset.file_identity,
+                    file_name,
+                    volume.id.as_str(),
+                    asset_id.as_str()
+                ],
             )?;
             if changed != 1 {
                 return Err(Error::validation("unknown asset"));
@@ -835,26 +851,43 @@ impl EditorService {
         // An import is its own write, because it creates the asset a head would name, but it admits
         // its Original exactly as a commit admits the stack it writes.
         self.admit(&asset, &mut entry.snapshot.recipe)?;
-        let byte_len = i64::try_from(asset.byte_len)
-            .map_err(|_| Error::resource_limit("source length exceeds catalog range"))?;
+        // Until picks are developed into the folders a person chooses (`pick.develop`, which
+        // replaces this import), one imported file goes into the top-level catalog folder named
+        // after its folder on disk, made when there is none, and records the volume it is on and
+        // what the import knows of its capture: its stored size and orientation.
+        let now = entry.timestamp_ms;
+        let volume = crate::index::volume_of(&canonical, now)?;
+        let source_folder = asset.source_root.clone();
+        let folder_name = source_folder.file_name().map_or_else(
+            || "Imported".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let file_name = canonical
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let header = imported_header(&source, width, height);
         let artifact_root = &self.artifact_root;
         write(&mut self.connection, |tx| {
-            tx.execute(
-                "INSERT INTO assets VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                params![
-                    asset.id.as_str(),
-                    asset.source_root.to_string_lossy(),
-                    asset.locator.to_string_lossy(),
-                    canonical_text,
-                    asset.file_identity,
-                    asset.fingerprint,
-                    byte_len,
-                    i64::from(asset.width),
-                    i64::from(asset.height),
-                    encode(&asset.source)?,
-                    asset.source.tag().as_str(),
-                ],
+            upsert_volume(tx, &volume)?;
+            let catalog_folder_id = top_level_folder(tx, &folder_name, now)?;
+            let row = insert_asset(
+                tx,
+                &NewAsset {
+                    record: &asset,
+                    canonical_locator: &canonical_text,
+                    catalog_folder_id: &catalog_folder_id,
+                    source_folder: &source_folder,
+                    volume_id: &volume.id,
+                    file_name: &file_name,
+                    developed_ms: now,
+                    removed_ms: None,
+                    availability: crate::catalog_types::FileAvailability::Available,
+                    checked_ms: now,
+                    develop_moment: None,
+                },
             )?;
+            insert_capture(tx, row, &header, None)?;
             insert_entry(tx, artifact_root, &entry)?;
             tx.execute(
                 "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
@@ -917,6 +950,31 @@ impl EditorService {
             return Ok(cached.source.clone());
         }
         Err(Error::preparation_required("source preparation required"))
+    }
+}
+
+/// What the single-file import knows of a file's header: the original's stored size (its decoded
+/// size, turned back by its orientation) and its EXIF orientation. The typed header read replaces
+/// this with everything a header says.
+fn imported_header(source: &PreparedSource, width: u32, height: u32) -> HeaderMetadata {
+    let orientation = match source {
+        PreparedSource::Jpeg(image) => ExifOrientation::new(image.orientation),
+        PreparedSource::Raw(_) => source
+            .metadata()
+            .and_then(|metadata| ExifOrientation::new(metadata.exif_orientation)),
+    };
+    let transposed = orientation.is_some_and(ExifOrientation::transposes);
+    HeaderMetadata {
+        dimensions: Some(if transposed {
+            Dimensions {
+                width: height,
+                height: width,
+            }
+        } else {
+            Dimensions { width, height }
+        }),
+        orientation,
+        ..HeaderMetadata::default()
     }
 }
 
