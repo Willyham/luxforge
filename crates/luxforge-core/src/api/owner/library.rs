@@ -47,14 +47,13 @@ use crate::{
     api::Origin,
     catalog_types::{JobStarted, jobs::CatalogJob},
     jobs::{CatalogOpened, JobControl, Jobs, LANE_QUEUE, Output},
-    library::locate::Phase,
+    library::{locate::Phase, worker},
 };
 use serde_json::Value;
 use std::{
     collections::VecDeque,
     panic::{self, AssertUnwindSafe},
-    sync::mpsc::{Receiver, SyncSender, sync_channel},
-    thread,
+    sync::mpsc::SyncSender,
 };
 
 /// What the lane's worker runs for one job, off the owner: everything the job needs, moved to the
@@ -248,14 +247,8 @@ impl LibraryLane {
         if let Some(sender) = &self.worker {
             return Ok(sender.clone());
         }
-        let (sender, receiver) = sync_channel(1);
         let poster = self.poster.clone();
-        thread::Builder::new()
-            .name("luxforge-library".into())
-            .spawn(move || serve(receiver, poster))
-            .map_err(|error| {
-                Error::resource_limit(format!("cannot start the library lane: {error}"))
-            })?;
+        let sender = worker::start("luxforge-library", move |dispatch| run(dispatch, &poster))?;
         self.worker = Some(sender.clone());
         Ok(sender)
     }
@@ -280,34 +273,31 @@ impl LibraryLane {
     }
 }
 
-/// The worker: block for the next job, run its work unless it was cancelled on the way, and post
-/// the owner's half back. A job whose work panics fails with `internal` and the worker goes on.
-fn serve(receiver: Receiver<Dispatch>, poster: Poster) {
-    while let Ok(Dispatch {
+/// One job on the worker ([`worker::start`]): run its work unless it was cancelled on the way, and
+/// post the owner's half back. A job whose work panics fails with `internal` and the worker goes on.
+fn run(dispatch: Dispatch, poster: &Poster) {
+    let Dispatch {
         job_id,
         control,
         work,
         hold,
-    }) = receiver.recv()
-    {
-        let pause = |phase: Phase| {
-            if let Some(hold) = &hold {
-                hold(phase);
-            }
-        };
-        let commit: Commit = if control.is_cancelled() {
-            let error = control.cancelled_error();
-            Box::new(move |_| Err(error))
-        } else {
-            panic::catch_unwind(AssertUnwindSafe(|| work(&control, &pause))).unwrap_or_else(|_| {
-                Box::new(|_| Err(Error::internal("the job stopped unexpectedly")))
-            })
-        };
-        poster.post(CatalogMessage::Library(LibraryMessage::Done {
-            job_id,
-            commit,
-        }));
-    }
+    } = dispatch;
+    let pause = |phase: Phase| {
+        if let Some(hold) = &hold {
+            hold(phase);
+        }
+    };
+    let commit: Commit = if control.is_cancelled() {
+        let error = control.cancelled_error();
+        Box::new(move |_| Err(error))
+    } else {
+        panic::catch_unwind(AssertUnwindSafe(|| work(&control, &pause)))
+            .unwrap_or_else(|_| Box::new(|_| Err(Error::internal("the job stopped unexpectedly"))))
+    };
+    poster.post(CatalogMessage::Library(LibraryMessage::Done {
+        job_id,
+        commit,
+    }));
 }
 
 /// Handle what the worker posted: commit a finished job's result unless it was cancelled first,
