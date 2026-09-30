@@ -11,7 +11,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 11 stores each asset's source kind tag in a column of its own beside the interpretation,
+/// Format 12 is the catalog of developed picks (`docs/design/catalog.md`): the volumes picks and
+/// photographs live on, picks, indexed folders, catalog folders, each asset's catalog folder, source
+/// folder, volume, file name, develop time, removal and availability with its capture row,
+/// collections and their members, and the append-only journal of library changes. An asset's
+/// `row_id` is an `INTEGER PRIMARY KEY`, the stable 8-byte key views hold ([`crate::AssetRowId`]).
+/// Format 11 stored each asset's source kind tag in a column of its own beside the interpretation,
 /// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
 /// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
@@ -24,7 +29,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(super) const CATALOG_FORMAT: i64 = 11;
+pub(crate) const CATALOG_FORMAT: i64 = 12;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -92,7 +97,15 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 impl EditorService {
-    pub(super) fn create_schema(connection: &mut Connection) -> Result<(), Error> {
+    /// Initialize an empty, unmarked database as a catalog of the current format identified as
+    /// `catalog_id`; a database that holds anything is refused and left as it is.
+    pub(crate) fn create_schema(
+        connection: &mut Connection,
+        catalog_id: &str,
+    ) -> Result<(), Error> {
+        if catalog_id.is_empty() {
+            return Err(Error::validation("a catalog needs an identity"));
+        }
         write(connection, |tx| {
             let occupied: bool =
                 tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema)", [], |row| {
@@ -103,20 +116,8 @@ impl EditorService {
                     "unmarked catalog is not empty; choose a new catalog path",
                 ));
             }
-            Ok(tx.execute_batch(&format!(
-                "CREATE TABLE assets (
-                    id TEXT PRIMARY KEY,
-                    source_root TEXT NOT NULL,
-                    locator TEXT NOT NULL,
-                    canonical_locator TEXT NOT NULL UNIQUE,
-                    file_identity TEXT NOT NULL UNIQUE,
-                    fingerprint TEXT NOT NULL,
-                    byte_len INTEGER NOT NULL,
-                    width INTEGER NOT NULL,
-                    height INTEGER NOT NULL,
-                    source_json TEXT NOT NULL,
-                    source_kind TEXT NOT NULL
-                 );
+            tx.execute_batch(&format!(
+                "{LIBRARY_SCHEMA}
                  CREATE TABLE entries (
                     id TEXT PRIMARY KEY,
                     asset_id TEXT NOT NULL REFERENCES assets(id),
@@ -193,13 +194,235 @@ impl EditorService {
                  CREATE TRIGGER artifact_refs_are_permanent BEFORE DELETE ON artifact_refs BEGIN
                     SELECT RAISE(ABORT, 'artifact references are permanent');
                  END;
-                 INSERT INTO catalog_meta VALUES ('catalog_id', '{catalog_id}');
-                 PRAGMA user_version={CATALOG_FORMAT};",
-                catalog_id = uuid::Uuid::new_v4()
-            ))?)
+                 PRAGMA user_version={CATALOG_FORMAT};"
+            ))?;
+            tx.execute(
+                "INSERT INTO catalog_meta (key, value) VALUES ('catalog_id', ?1)",
+                [catalog_id],
+            )?;
+            Ok(())
         })
     }
 }
+
+/// The format-12 tables beside history: volumes, catalog folders, the assets themselves with their
+/// catalog columns and capture rows, collections, picks, indexed folders and the library journal
+/// (`docs/design/versions-and-lineage.md#storage-catalog-format-12`).
+///
+/// - An asset's `row_id` is its `INTEGER PRIMARY KEY`: stable for the catalog's life, the 8-byte key
+///   a view holds, and what `capture` and `collection_members` key on, so a view over a million
+///   photographs joins on integers. Its `id` stays the key every other table and every answer uses.
+/// - Every asset is in exactly one catalog folder, on one recorded volume; a folder that holds a
+///   photograph, or a subfolder, cannot be deleted (the foreign keys refuse it). Folder and
+///   collection names are unique among their siblings ignoring case, the top level counting as one
+///   parent.
+/// - Only a group holds collections, only a plain collection holds members, a smart collection
+///   holds its query and nothing else holds one, and a collection's kind never changes.
+/// - The journal is append-only: a change and its rows are never updated or deleted, a change is
+///   undone at most once and an undo redone at most once, and each refers only to earlier changes.
+const LIBRARY_SCHEMA: &str = "
+    CREATE TABLE volumes (
+        id TEXT PRIMARY KEY,
+        mount_point TEXT NOT NULL,
+        label TEXT NOT NULL,
+        removable INTEGER NOT NULL CHECK (removable IN (0, 1)),
+        platform_id TEXT,
+        last_seen_ms INTEGER NOT NULL
+    );
+    CREATE TABLE catalog_folders (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        parent_id TEXT REFERENCES catalog_folders(id),
+        created_ms INTEGER NOT NULL,
+        event_start_ms INTEGER,
+        event_end_ms INTEGER,
+        event_key TEXT,
+        CHECK (parent_id IS NULL OR parent_id <> id),
+        CHECK ((event_start_ms IS NULL) = (event_end_ms IS NULL)),
+        CHECK (event_start_ms IS NULL OR event_start_ms <= event_end_ms),
+        CHECK (event_key IS NULL OR event_start_ms IS NOT NULL)
+    );
+    CREATE UNIQUE INDEX catalog_folder_names
+        ON catalog_folders(ifnull(parent_id, ''), name COLLATE NOCASE);
+    CREATE INDEX catalog_folders_by_parent ON catalog_folders(parent_id);
+    CREATE INDEX catalog_folders_by_event ON catalog_folders(event_start_ms, event_end_ms);
+    CREATE TABLE assets (
+        row_id INTEGER PRIMARY KEY,
+        id TEXT NOT NULL UNIQUE,
+        source_root TEXT NOT NULL,
+        locator TEXT NOT NULL,
+        canonical_locator TEXT NOT NULL UNIQUE,
+        file_identity TEXT NOT NULL UNIQUE,
+        fingerprint TEXT NOT NULL,
+        byte_len INTEGER NOT NULL,
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        source_json TEXT NOT NULL,
+        source_kind TEXT NOT NULL CHECK (source_kind IN ('jpeg', 'raw')),
+        catalog_folder_id TEXT NOT NULL REFERENCES catalog_folders(id),
+        source_folder TEXT NOT NULL,
+        volume_id TEXT NOT NULL REFERENCES volumes(id),
+        file_name TEXT NOT NULL,
+        developed_ms INTEGER NOT NULL,
+        removed_ms INTEGER,
+        availability TEXT NOT NULL
+            CHECK (availability IN ('available', 'offline', 'missing', 'changed')),
+        checked_ms INTEGER NOT NULL,
+        develop_moment TEXT
+    );
+    CREATE INDEX assets_by_folder ON assets(catalog_folder_id);
+    CREATE INDEX assets_by_removed ON assets(removed_ms);
+    CREATE INDEX assets_by_availability ON assets(availability, source_folder);
+    CREATE INDEX assets_by_developed ON assets(developed_ms);
+    CREATE INDEX assets_by_volume ON assets(volume_id);
+    CREATE INDEX assets_by_file_name ON assets(file_name COLLATE NOCASE);
+    CREATE INDEX assets_by_moment ON assets(develop_moment) WHERE develop_moment IS NOT NULL;
+    CREATE TABLE capture (
+        asset_row INTEGER PRIMARY KEY REFERENCES assets(row_id),
+        capture_ms INTEGER,
+        local_text TEXT,
+        local_day TEXT,
+        offset_minutes INTEGER,
+        latitude REAL,
+        longitude REAL,
+        altitude_m REAL,
+        place TEXT,
+        make TEXT,
+        model TEXT,
+        body_serial TEXT,
+        lens TEXT,
+        exposure_time_s REAL,
+        f_number REAL,
+        iso INTEGER,
+        exposure_bias_ev REAL,
+        focal_mm REAL,
+        focal_35mm_mm REAL,
+        width INTEGER,
+        height INTEGER,
+        orientation INTEGER,
+        CHECK ((capture_ms IS NULL) = (local_text IS NULL)),
+        CHECK ((capture_ms IS NULL) = (local_day IS NULL)),
+        CHECK (offset_minutes IS NULL OR capture_ms IS NOT NULL),
+        CHECK ((latitude IS NULL) = (longitude IS NULL)),
+        CHECK (altitude_m IS NULL OR latitude IS NOT NULL),
+        CHECK ((make IS NULL) = (model IS NULL)),
+        CHECK (body_serial IS NULL OR make IS NOT NULL),
+        CHECK ((width IS NULL) = (height IS NULL)),
+        CHECK (orientation IS NULL OR orientation BETWEEN 1 AND 8)
+    );
+    CREATE INDEX capture_by_time ON capture(capture_ms);
+    CREATE INDEX capture_by_day ON capture(local_day);
+    CREATE INDEX capture_by_place ON capture(place);
+    CREATE INDEX capture_by_camera ON capture(make, model, body_serial);
+    CREATE INDEX capture_by_lens ON capture(lens);
+    CREATE TABLE collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        parent_id TEXT REFERENCES collections(id),
+        kind TEXT NOT NULL CHECK (kind IN ('collection', 'smart', 'group')),
+        query_json TEXT,
+        created_ms INTEGER NOT NULL,
+        CHECK (parent_id IS NULL OR parent_id <> id),
+        CHECK ((kind = 'smart') = (query_json IS NOT NULL))
+    );
+    CREATE UNIQUE INDEX collection_names
+        ON collections(ifnull(parent_id, ''), name COLLATE NOCASE);
+    CREATE INDEX collections_by_parent ON collections(parent_id);
+    CREATE TRIGGER collections_nest_in_groups BEFORE INSERT ON collections
+        WHEN NEW.parent_id IS NOT NULL
+            AND (SELECT kind FROM collections WHERE id = NEW.parent_id) IS NOT 'group'
+    BEGIN
+        SELECT RAISE(ABORT, 'only a collection group holds collections');
+    END;
+    CREATE TRIGGER collections_move_into_groups BEFORE UPDATE OF parent_id ON collections
+        WHEN NEW.parent_id IS NOT NULL
+            AND (SELECT kind FROM collections WHERE id = NEW.parent_id) IS NOT 'group'
+    BEGIN
+        SELECT RAISE(ABORT, 'only a collection group holds collections');
+    END;
+    CREATE TRIGGER collections_keep_their_kind BEFORE UPDATE OF kind ON collections
+        WHEN NEW.kind IS NOT OLD.kind
+    BEGIN
+        SELECT RAISE(ABORT, 'a collection keeps its kind');
+    END;
+    CREATE TABLE collection_members (
+        collection_id TEXT NOT NULL REFERENCES collections(id),
+        asset_row INTEGER NOT NULL REFERENCES assets(row_id),
+        added_ms INTEGER NOT NULL,
+        PRIMARY KEY (collection_id, asset_row)
+    ) WITHOUT ROWID;
+    CREATE INDEX collection_members_by_asset ON collection_members(asset_row);
+    CREATE TRIGGER members_join_plain_collections BEFORE INSERT ON collection_members
+        WHEN (SELECT kind FROM collections WHERE id = NEW.collection_id) IS NOT 'collection'
+    BEGIN
+        SELECT RAISE(ABORT, 'only a plain collection has members');
+    END;
+    CREATE TABLE picks (
+        path TEXT PRIMARY KEY,
+        byte_len INTEGER NOT NULL CHECK (byte_len >= 0),
+        modified_ns INTEGER NOT NULL,
+        device INTEGER,
+        inode INTEGER,
+        volume_id TEXT NOT NULL REFERENCES volumes(id),
+        actor TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        picked_ms INTEGER NOT NULL,
+        CHECK ((device IS NULL) = (inode IS NULL))
+    ) WITHOUT ROWID;
+    CREATE INDEX picks_by_identity ON picks(device, inode) WHERE device IS NOT NULL;
+    CREATE INDEX picks_by_volume ON picks(volume_id);
+    CREATE TABLE indexed_folders (
+        path TEXT PRIMARY KEY,
+        volume_id TEXT NOT NULL REFERENCES volumes(id),
+        added_ms INTEGER NOT NULL,
+        actor TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE TABLE library_changes (
+        sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+        actor TEXT NOT NULL,
+        client_key TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        method TEXT NOT NULL,
+        label TEXT NOT NULL,
+        time_ms INTEGER NOT NULL,
+        item_count INTEGER NOT NULL CHECK (item_count >= 0),
+        undoes INTEGER REFERENCES library_changes(sequence),
+        redoes INTEGER REFERENCES library_changes(sequence),
+        CHECK (undoes IS NULL OR redoes IS NULL),
+        CHECK (undoes IS NULL OR undoes < sequence),
+        CHECK (redoes IS NULL OR redoes < sequence)
+    );
+    CREATE INDEX library_changes_by_client ON library_changes(client_key, sequence);
+    CREATE INDEX library_changes_by_request ON library_changes(request_id);
+    CREATE UNIQUE INDEX library_changes_undone ON library_changes(undoes)
+        WHERE undoes IS NOT NULL;
+    CREATE UNIQUE INDEX library_changes_redone ON library_changes(redoes)
+        WHERE redoes IS NOT NULL;
+    CREATE TABLE library_change_rows (
+        change_seq INTEGER NOT NULL REFERENCES library_changes(sequence),
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        item_kind TEXT NOT NULL CHECK (item_kind IN ('pick', 'asset-folder', 'asset-removal',
+            'asset-source', 'catalog-folder', 'collection', 'membership', 'indexed-folder',
+            'developed-asset')),
+        item_key TEXT NOT NULL,
+        before_json TEXT,
+        after_json TEXT,
+        PRIMARY KEY (change_seq, ordinal)
+    ) WITHOUT ROWID;
+    CREATE INDEX library_change_rows_by_item
+        ON library_change_rows(item_kind, item_key, change_seq);
+    CREATE TRIGGER library_changes_are_immutable BEFORE UPDATE ON library_changes BEGIN
+        SELECT RAISE(ABORT, 'library changes are immutable');
+    END;
+    CREATE TRIGGER library_changes_are_permanent BEFORE DELETE ON library_changes BEGIN
+        SELECT RAISE(ABORT, 'library changes are permanent');
+    END;
+    CREATE TRIGGER library_change_rows_are_immutable BEFORE UPDATE ON library_change_rows BEGIN
+        SELECT RAISE(ABORT, 'library changes are immutable');
+    END;
+    CREATE TRIGGER library_change_rows_are_permanent BEFORE DELETE ON library_change_rows BEGIN
+        SELECT RAISE(ABORT, 'library changes are permanent');
+    END;";
 
 pub(super) fn input_hash(input: &Value) -> Result<String, Error> {
     Ok(format!(
@@ -240,7 +463,7 @@ pub(super) fn insert_request(
 /// The artifact directory a catalog uses: `<stem>.artifacts` beside the catalog file. One rule, so
 /// anything writing an entry without an open service — a test on the production write path —
 /// names the same directory the service would.
-pub(super) fn default_artifact_root(catalog: &Path) -> PathBuf {
+pub(crate) fn default_artifact_root(catalog: &Path) -> PathBuf {
     let canonical = catalog
         .canonicalize()
         .unwrap_or_else(|_| catalog.to_path_buf());
@@ -264,7 +487,7 @@ pub(super) fn default_artifact_root(catalog: &Path) -> PathBuf {
 ///
 /// It writes and does not validate. The caller [admitted](EditorService::admit) the stack before it
 /// opened the transaction, and that is the one validation a commit makes.
-pub(super) fn insert_entry(
+pub(crate) fn insert_entry(
     tx: &Transaction<'_>,
     artifact_root: &Path,
     entry: &HistoryEntry,
@@ -567,9 +790,124 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
+    /// The names of one kind of schema object, without SQLite's own automatic indexes.
+    fn schema_names(connection: &Connection, kind: &str) -> Vec<String> {
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type = ?1 AND name NOT LIKE 'sqlite_%'
+                 ORDER BY name",
+            )
+            .unwrap();
+        statement
+            .query_map([kind], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    /// An empty database initializes as format 12 with every table, index and trigger of the
+    /// design's storage, and makes no index directory until the index is first used.
     #[test]
-    fn unsupported_catalog_formats_are_rejected_without_rewriting_data() {
-        for marker in [0, CATALOG_FORMAT - 1, CATALOG_FORMAT + 1] {
+    fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
+        let catalog = temp("format-12.sqlite");
+        let service = EditorService::open(&catalog).unwrap();
+        let connection = &service.connection;
+        let format: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(format, 12);
+        assert_eq!(CATALOG_FORMAT, 12);
+        assert_eq!(
+            schema_names(connection, "table"),
+            [
+                "artifact_refs",
+                "artifacts",
+                "asset_state",
+                "assets",
+                "capture",
+                "catalog_folders",
+                "catalog_meta",
+                "collection_members",
+                "collections",
+                "entries",
+                "indexed_folders",
+                "library_change_rows",
+                "library_changes",
+                "picks",
+                "presets",
+                "requests",
+                "strokes",
+                "versions",
+                "volumes",
+            ]
+        );
+        assert_eq!(
+            schema_names(connection, "index"),
+            [
+                "artifact_refs_by_artifact",
+                "assets_by_availability",
+                "assets_by_developed",
+                "assets_by_file_name",
+                "assets_by_folder",
+                "assets_by_moment",
+                "assets_by_removed",
+                "assets_by_volume",
+                "capture_by_camera",
+                "capture_by_day",
+                "capture_by_lens",
+                "capture_by_place",
+                "capture_by_time",
+                "catalog_folder_names",
+                "catalog_folders_by_event",
+                "catalog_folders_by_parent",
+                "collection_members_by_asset",
+                "collection_names",
+                "collections_by_parent",
+                "library_change_rows_by_item",
+                "library_changes_by_client",
+                "library_changes_by_request",
+                "library_changes_redone",
+                "library_changes_undone",
+                "picks_by_identity",
+                "picks_by_volume",
+            ]
+        );
+        assert_eq!(
+            schema_names(connection, "trigger"),
+            [
+                "artifact_refs_are_permanent",
+                "collections_keep_their_kind",
+                "collections_move_into_groups",
+                "collections_nest_in_groups",
+                "entries_are_immutable",
+                "library_change_rows_are_immutable",
+                "library_change_rows_are_permanent",
+                "library_changes_are_immutable",
+                "library_changes_are_permanent",
+                "members_join_plain_collections",
+                "strokes_are_immutable",
+            ]
+        );
+        let foreign_keys: bool = connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .unwrap();
+        assert!(foreign_keys, "the catalog enforces its foreign keys");
+        assert!(!service.index_dir().exists(), "no index until one is used");
+        let index = service.index().unwrap();
+        assert_eq!(index.dir(), service.index_dir());
+        drop(index);
+        assert!(service.index_dir().join(crate::INDEX_FILE).exists());
+        let index_dir = service.index_dir().to_path_buf();
+        drop(service);
+        std::fs::remove_dir_all(index_dir).unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Format 11, every earlier marker and a future one are refused by name and left exactly as
+    /// they are, with no artifact or index directory made for them.
+    #[test]
+    fn catalog_format_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
+        for marker in [0, 11, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
@@ -583,8 +921,8 @@ mod tests {
             let error = EditorService::open(&catalog).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Incompatible);
             assert!(error.detail.contains("choose a new catalog path"));
-            // The predecessor format is refused by name like any other: its stacks carry no mask
-            // table, and a marker that is only one behind is not a reason to guess at one.
+            // The predecessor format is refused by name like any other: a marker that is only one
+            // behind is not a reason to guess at the tables it lacks.
             if marker != 0 {
                 assert_eq!(
                     error.detail,
@@ -603,8 +941,226 @@ mod tests {
                 !default_artifact_root(&catalog).exists(),
                 "a refused catalog gets no artifact directory"
             );
+            assert!(
+                !crate::index::index_dir(&catalog).exists(),
+                "a refused catalog gets no index directory"
+            );
             std::fs::remove_file(catalog).unwrap();
         }
+    }
+
+    /// The single-file import puts its photograph into the top-level catalog folder named after
+    /// its folder on disk, on its volume, available, with a capture row of what it knows.
+    #[test]
+    fn catalog_format_an_import_fills_the_catalog_columns() {
+        let catalog = temp("format-import.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let first = service.import(&fixture()).unwrap().asset;
+        let (folder, source_folder, file_name, availability, row): (
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ) = service
+            .connection
+            .query_row(
+                "SELECT f.name, a.source_folder, a.file_name, a.availability, a.row_id
+                 FROM assets a JOIN catalog_folders f ON f.id = a.catalog_folder_id
+                 WHERE a.id = ?1",
+                [first.id.as_str()],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(folder, "s0");
+        assert_eq!(source_folder, first.source_root.to_string_lossy());
+        assert_eq!(file_name, "orientation-1.jpg");
+        assert_eq!(availability, "available");
+        let (header, place) =
+            super::super::capture_of(&service.connection, crate::catalog_types::AssetRowId(row))
+                .unwrap()
+                .expect("every imported photograph has a capture row");
+        assert_eq!(place, None);
+        assert_eq!(
+            header.dimensions,
+            Some(crate::catalog_types::Dimensions {
+                width: first.width,
+                height: first.height,
+            })
+        );
+        assert_eq!(header.orientation.map(|value| value.get()), Some(1));
+        // A second file of the same folder joins the same catalog folder.
+        let dir = luxforge_testbase::paths::temp_dir("format-import");
+        let copy = dir.join("copy.jpg");
+        std::fs::copy(fixture(), &copy).unwrap();
+        service.import(&copy).unwrap();
+        let folders: i64 = service
+            .connection
+            .query_row("SELECT COUNT(*) FROM catalog_folders", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(folders, 2, "s0 and the scratch folder, one each");
+        drop(service);
+        std::fs::remove_dir_all(dir).unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The constraints the lanes rely on hold in the schema itself: a folder holding a photograph
+    /// cannot be deleted, sibling names are unique ignoring case, collections nest only in groups
+    /// and only plain collections have members, once each, a collection keeps its kind, and the
+    /// journal is append-only, each change undone and each undo redone at most once.
+    #[test]
+    fn catalog_format_constraints_hold() {
+        let catalog = temp("format-constraints.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset;
+        let connection = &service.connection;
+        let refused = |sql: &str, expected: &str| {
+            let error = connection.execute_batch(sql).unwrap_err().to_string();
+            assert!(error.contains(expected), "{sql}: {error}");
+        };
+        let (folder, row): (String, i64) = connection
+            .query_row(
+                "SELECT catalog_folder_id, row_id FROM assets WHERE id = ?1",
+                [asset.id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        refused(
+            &format!("DELETE FROM catalog_folders WHERE id = '{folder}'"),
+            "FOREIGN KEY constraint failed",
+        );
+        refused(
+            "INSERT INTO catalog_folders (id, name, created_ms) VALUES ('folder-other-000001', 'S0', 1)",
+            "UNIQUE constraint failed",
+        );
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO catalog_folders (id, name, parent_id, created_ms)
+                 VALUES ('folder-nested-000001', 'S0', '{folder}', 1)"
+            ))
+            .expect("the same name under another parent");
+        refused(
+            &format!(
+                "UPDATE assets SET availability = 'gone' WHERE id = '{}'",
+                asset.id
+            ),
+            "CHECK constraint failed",
+        );
+        refused(
+            &format!(
+                "UPDATE assets SET catalog_folder_id = 'folder-absent-00001' WHERE row_id = {row}"
+            ),
+            "FOREIGN KEY constraint failed",
+        );
+        refused(
+            &format!("UPDATE capture SET latitude = 47.0 WHERE asset_row = {row}"),
+            "CHECK constraint failed",
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO collections (id, name, kind, created_ms)
+                     VALUES ('collection-portfolio-1', 'Portfolio', 'group', 1);
+                 INSERT INTO collections (id, name, parent_id, kind, created_ms)
+                     VALUES ('collection-landscapes', 'Landscapes', 'collection-portfolio-1',
+                         'collection', 1);
+                 INSERT INTO collections (id, name, kind, query_json, created_ms)
+                     VALUES ('collection-smart-0001', 'Recent', 'smart', '{}', 1);",
+            )
+            .unwrap();
+        refused(
+            "INSERT INTO collections (id, name, parent_id, kind, created_ms)
+                 VALUES ('collection-inner-0001', 'Inner', 'collection-landscapes', 'collection', 1)",
+            "only a collection group holds collections",
+        );
+        refused(
+            "UPDATE collections SET parent_id = 'collection-smart-0001'
+                 WHERE id = 'collection-landscapes'",
+            "only a collection group holds collections",
+        );
+        refused(
+            "INSERT INTO collections (id, name, kind, created_ms)
+                 VALUES ('collection-smartless1', 'No query', 'smart', 1)",
+            "CHECK constraint failed",
+        );
+        refused(
+            "UPDATE collections SET kind = 'group' WHERE id = 'collection-landscapes'",
+            "a collection keeps its kind",
+        );
+        refused(
+            "INSERT INTO collections (id, name, parent_id, kind, created_ms)
+                 VALUES ('collection-landscap2', 'LANDSCAPES', 'collection-portfolio-1',
+                     'collection', 1)",
+            "UNIQUE constraint failed",
+        );
+        let member = format!(
+            "INSERT INTO collection_members (collection_id, asset_row, added_ms)
+                 VALUES ('collection-landscapes', {row}, 1)"
+        );
+        connection.execute_batch(&member).unwrap();
+        refused(&member, "UNIQUE constraint failed");
+        refused(
+            &format!(
+                "INSERT INTO collection_members (collection_id, asset_row, added_ms)
+                     VALUES ('collection-smart-0001', {row}, 1)"
+            ),
+            "only a plain collection has members",
+        );
+        connection
+            .execute_batch(
+                "INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
+                     label, time_ms, item_count)
+                     VALUES (1, 'desktop', 'desktop', 'r1', 'pick.set', 'Picked a.jpg', 1, 1);
+                 INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key,
+                     before_json, after_json)
+                     VALUES (1, 0, 'pick', '/a.jpg', NULL, '{}');
+                 INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
+                     label, time_ms, item_count, undoes)
+                     VALUES (2, 'desktop', 'desktop', 'r2', 'library.undo', 'Undo', 2, 1, 1);",
+            )
+            .unwrap();
+        refused(
+            "UPDATE library_changes SET label = 'x' WHERE sequence = 1",
+            "library changes are immutable",
+        );
+        refused(
+            "DELETE FROM library_changes WHERE sequence = 1",
+            "library changes are permanent",
+        );
+        refused(
+            "UPDATE library_change_rows SET after_json = NULL WHERE change_seq = 1",
+            "library changes are immutable",
+        );
+        refused(
+            "DELETE FROM library_change_rows WHERE change_seq = 1",
+            "library changes are permanent",
+        );
+        refused(
+            "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
+                 time_ms, item_count, undoes)
+                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1)",
+            "UNIQUE constraint failed",
+        );
+        refused(
+            "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
+                 time_ms, item_count, undoes)
+                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 4)",
+            "CHECK constraint failed",
+        );
+        refused(
+            "INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key)
+                 VALUES (2, 0, 'rating', 'x')",
+            "CHECK constraint failed",
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 
     fn stored_strokes(catalog: &Path) -> i64 {
