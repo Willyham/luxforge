@@ -96,6 +96,8 @@ pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
 pub(crate) mod select;
 #[cfg(test)]
+mod select_owner_tests;
+#[cfg(test)]
 mod select_tests;
 // ── end lane D ──
 
@@ -389,7 +391,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -398,6 +400,9 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
     evidence::subscription,
     capabilities::subscription,
     export::subscription,
+    // ── catalog lane D: views and desktop ──
+    select::subscription,
+    // ── end lane D ──
 ];
 
 impl Editor {
