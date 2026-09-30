@@ -692,7 +692,7 @@ fn reference_moments(
     );
     let metadata_same = 0.13f32.min(thresholds.metadata_bracket_step_ev / 2.0);
     let metadata_apart = thresholds.metadata_bracket_step_ev - metadata_same;
-    let preview_same = (1.0f32 / 6.0).min(thresholds.preview_bracket_step_ev / 2.0);
+    let preview_same = 0.25f32.min(thresholds.preview_bracket_step_ev / 2.0);
     let preview_apart = thresholds.preview_bracket_step_ev - preview_same;
     let span = |run: &[&FrameFacts]| {
         (run[0].instant_ms.unwrap() - run[run.len() - 1].instant_ms.unwrap()).unsigned_abs()

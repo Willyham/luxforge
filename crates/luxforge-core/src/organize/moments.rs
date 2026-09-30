@@ -31,10 +31,15 @@ use crate::catalog_types::{
 /// 0.20 EV), while a sixth of a stop (0.17 EV) still does not count. Never more than half the step.
 pub(super) const NOMINAL_TOLERANCE_EV: f32 = 0.13;
 /// How far below the preview step a measured step may fall and still count: a preview's brightness
-/// is measured through the camera's tone curve and clipping, which compress a bracket's outer
-/// steps, so the default ⅔ EV means "about ⅔": at least 0.5 EV measured. Never more than half the
-/// step. To be confirmed with lane B's measurements on a labelled corpus.
-pub(super) const PREVIEW_TOLERANCE_EV: f32 = 1.0 / 6.0;
+/// is measured through the camera's tone curve, so the default ⅔ EV means "about ⅔": at least
+/// 0.42 EV measured. Lane B's calibration (`previews/bracket.rs`, brackets within ±2 EV of six
+/// synthetic scenes): without a tone curve, as the generated folders render, every link measures
+/// 0.97 to 1.01 times its step; through three camera-like curves 0.56 to 1.50 times, a shoulder
+/// compressing the brighter links and a contrasty toe expanding the darker ones, so a ⅔ EV link
+/// measured 0.45 to 0.95 EV. ⅙ EV below (0.5) kept 25 of those 36 ⅔ EV brackets, ¼ all 36, and
+/// still none of the 48 ⅓ EV ones (links of 0.24 to 0.45 EV). Never more than half the step. To
+/// be confirmed on a labelled corpus of real brackets.
+pub(super) const PREVIEW_TOLERANCE_EV: f32 = 0.25;
 
 /// Finds moments, reusing its buffers from one run to the next.
 pub(super) struct Finder<'a> {
