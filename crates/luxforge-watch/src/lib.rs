@@ -27,11 +27,13 @@
 //!
 //! On macOS, FSEvents keeps each volume's history, so a root can resume from a [`Resume`]: the
 //! volume's history identifier and an event ID. Events carry the cursor after them once the
-//! replay has caught up. The caller persists a cursor only after it has durably applied the event
-//! it came with and every event before it, and passes it back in [`WatchRoot::resume`] on the next
-//! start. A cursor from another history (the volume's history was discarded, or it is another
-//! volume) cannot replay: the root gets [`RescanReason::NoReplay`], as it does on Linux and Windows,
-//! which keep no history, and whenever no cursor is given.
+//! replay has caught up; a change made just before the replay began may arrive live just after
+//! it rather than in it. A root's events arrive in order and are applied in order. The caller
+//! persists a cursor only after it has durably applied the event it came with and every event
+//! before it, and passes it back in [`WatchRoot::resume`] on the next start. A cursor from another
+//! history (the volume's history was discarded, or it is another volume) cannot replay: the root
+//! gets [`RescanReason::NoReplay`], as it does on Linux and Windows, which keep no history, and
+//! whenever no cursor is given.
 //!
 //! A new root is either added first and listed on the [`RescanReason::NoReplay`] that follows, on
 //! every platform; or, on macOS, listed after reading [`current_cursor`] and added with that
@@ -40,12 +42,14 @@
 //! # Delivery and memory
 //!
 //! Platform callbacks only copy paths and try to send; they never wait on the channel. When it is
-//! full, the root's events are withheld and replaced by one [`RescanReason::Overflow`] rescan of
-//! the whole root (and the [`WatchEvent::CaughtUp`] it was owed, after it), and the mount table's
-//! difference is sent again from the table then current. What is owed is retried every
-//! [`RETRY`] until it is delivered: the one timer, armed only while something is owed. A
-//! `Changed` holds at most [`MAX_PATHS`] paths; a larger batch is split, with its cursor on the
-//! last part. So what the watcher holds is bounded by the channel's capacity.
+//! full, the root's events are withheld and replaced by one rescan of the whole root
+//! ([`RescanReason::Overflow`], or the reason of the refused event when it was itself a rescan)
+//! and the [`WatchEvent::CaughtUp`] it was owed, after it; and the mount table's difference is
+//! sent again from the table then current. What is owed is retried every [`RETRY`] until it is
+//! delivered, a timer armed only while something is owed; the only other is Windows' few reads
+//! of the drive letters after a volume notification. A `Changed` holds at most [`MAX_PATHS`]
+//! paths; a larger batch is split, with its cursor on the last part. So what the watcher holds is
+//! bounded by the channel's capacity.
 //!
 //! # Threads
 //!
