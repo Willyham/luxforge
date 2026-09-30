@@ -577,7 +577,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // (`EditorService::import`, `EditorService::prepare`) share. No service mode reads inline on a
     // cache miss, test code included: a test prepares through the helpers, never by hand. The
     // bounded read and the verified read are defined in `source.rs` and `artifacts/`, and `lib.rs`
-    // re-exports the first.
+    // re-exports the first. The one other reader is the catalog's 100% region, whose design has
+    // it read a browsed file off the editor's source cache, on the preview lane's worker, one RAW
+    // development at a time (`docs/design/catalog.md`, "The 100% region").
     SourceRule {
         name: "one-source-preparation",
         tokens: &[
@@ -593,13 +595,16 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/artifacts",
             "crates/luxforge-core/src/lib.rs",
+            "crates/luxforge-core/src/previews/region.rs",
         ],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "only the source work (SourceWork::run in crates/luxforge-core/src/editor/source.rs) \
-                 reads an original or an artifact, for the source worker and the blocking helpers \
-                 alike; prepare through EditorService::prepare or import, never inline",
+                 reads an original or an artifact for the editor, for the source worker and the \
+                 blocking helpers alike, and only the catalog's 100% region \
+                 (crates/luxforge-core/src/previews/region.rs) reads a browsed file off the \
+                 editor's cache; prepare through EditorService::prepare or import, never inline",
     },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
@@ -789,10 +794,12 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             // The core's production blocking points: the source worker's plane gate, the
-            // latest-job worker and the point-query worker.
+            // latest-job worker, the point-query worker and the 100% region's one RAW
+            // development at a time.
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/api/owner/point.rs",
+            "crates/luxforge-core/src/previews/region.rs",
         ],
         mode: Match::Whole,
         tests: true,

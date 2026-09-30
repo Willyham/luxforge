@@ -273,6 +273,13 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Display bounds | 4096 px per side and 8 megapixels | `ProxyBounds::MAX_SIDE` and `ProxyBounds::MAX_PIXELS`, `crates/luxforge-core/src/proxy.rs` |
 | A proxy without a crop | 64 MiB for a JPEG, 96 MiB of RAW planes | No single constant: follows from the display bounds and the fit rule, `ProxyPlan::fit` in `crates/luxforge-core/src/proxy.rs` |
 | Finished results waiting for their consumer, per latest-job worker | 2 | `WAITING_RESULTS`, `crates/luxforge-core/src/latest.rs` |
+| A 100% region's pixels | 32 MiB of RGBA8 | `MAX_REGION_BYTES`, `crates/luxforge-core/src/previews/region.rs` |
+| Bytes a 100% region reads from a RAW to list its previews and extract one | 64 MiB | `REGION_READ_BUDGET`, as above |
+| The embedded JPEG a 100% region extracts, LibRaw's buffer and the copy each | 48 MiB | `REGION_PREVIEW_BYTES`, as above |
+| A turned region's decode strip | 16 rows of the stored rectangle | `REGION_STRIP_ROWS`, as above |
+| RAW developments for the 100% region and the developed tiers, process-wide | 1 running, 4 callers waiting | The one slot `DEVELOPMENTS` and `MAX_DEVELOPMENT_WAITERS`, as above |
+| Developed frames kept | 1, upright RGBA8 within the evaluated-frame limit, released before another is developed | The one slot `DEVELOPMENTS`, as above |
+| A developed preview's long edge | 2560 px | `MAX_DEVELOPED_PREVIEW_SIDE`, as above |
 
 **Catalog and API**
 
