@@ -1,0 +1,17 @@
+# Bundled place names
+
+Luxforge names events after the populated place nearest to their photographs, offline. The table it looks them up in is compiled into the binary with `include_str!` from `assets/gazetteer/places.tsv` (see `src/organize/gazetteer.rs`) and indexed the first time a place is looked up. The core makes no network request and reads no file for it.
+
+**Attribution.** This product contains data from [GeoNames](https://www.geonames.org), licensed under the [Creative Commons Attribution 4.0 License](https://creativecommons.org/licenses/by/4.0/). GeoNames provides the data as is, without warranty or any representation of accuracy, timeliness or completeness, and it may contain errors.
+
+**Indication of changes.** `places.tsv` is a modified extract of GeoNames' file, not the file itself: of the 19 columns of each row it keeps five (`name`, `country code`, `latitude`, `longitude`, `population`) and drops the rest (ids, ASCII and alternate names, feature class and code, administrative codes, elevation, time zone, modification date), it adds a header line and sorts the rows by country code, name, latitude, longitude and population. Every row is validated (19 columns, feature class P, a two-letter country code, coordinates within range, a whole population); no row, name or coordinate is dropped or altered, and a row that fails validation stops the conversion rather than being skipped.
+
+| Component | Exact upstream | Bundled file | License / notices |
+| --- | --- | --- | --- |
+| GeoNames gazetteer extract `cities15000` (populated places with a population over 15,000, and capitals) | Downloaded on 2026-09-30 from `https://download.geonames.org/export/dump/cities15000.zip`, 3,359,659 bytes, SHA-256 `44347468d5656101a999ba0cbb64b0cbdc7c2b48de83c8f6e129b50e697dd05d`; it holds `cities15000.txt`, 8,534,357 bytes, SHA-256 `5db14f4826ba451b779cbf25ad363f04d6dce20d334d61dfafdd3a5ff64a40e7`, 34,152 rows, the newest modification date in its rows 2026-09-29. Column layout and licence statement: `https://download.geonames.org/export/dump/readme.txt` as downloaded the same day, SHA-256 `b1957379b6c1242c700c98ac9a8aa0a09f56c3c0a50ee72175527005f48ef2c5` | `assets/gazetteer/places.tsv`, derived as above | CC BY 4.0, `https://creativecommons.org/licenses/by/4.0/`; the attribution above must be kept |
+
+| File | Rows (after the header line) | Bytes | SHA-256 |
+| --- | --- | --- | --- |
+| `assets/gazetteer/places.tsv` | 34152 | 1282270 | `a76a283dacc131ae8ac3f84e8c295321d521b58597e4b6efb8a4a1a59a630ffa` |
+
+`cargo xtask gazetteer --source PATH/TO/cities15000.txt --output NEW_FILE` writes the file from the extracted `cities15000.txt` with no network access, and refuses an output that already exists. Run on the pinned source above it writes exactly the committed file: the regenerated file's SHA-256 is the one in the table, and a separate Python conversion of the same source produced the same bytes. To update the data, download a newer extract, regenerate into a new path, review the diff, replace the file, and update the hashes, dates and row count here and in `src/organize/gazetteer/tests.rs` (`ASSET_ROWS`) and [the dependency policy](../../docs/engineering/dependencies.md#bundled-place-names). The extract's rows include GeoNames' sections of a populated place (feature code PPLX, 2,391 of the 34,152 rows), which this file does not distinguish. The hashes are provenance evidence, not a completed manual license or asset review.

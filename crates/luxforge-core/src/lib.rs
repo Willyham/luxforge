@@ -23,6 +23,7 @@ pub mod mask;
 mod mask_field;
 mod model;
 mod modules;
+mod organize;
 /// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
 /// action captures, and the content-addressed store those strokes live in.
 pub mod path;
