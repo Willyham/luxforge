@@ -46,8 +46,8 @@ use std::{
 
 /// Jobs that may wait on one lane behind the running one.
 pub(crate) const LANE_QUEUE: usize = 4;
-/// Finished capability, export and analysis records the table keeps of each of those families; the
-/// oldest of a family is forgotten first.
+/// Finished capability, export and analysis records the table keeps of each of those families, and
+/// of each catalog kind; the oldest of a family (or catalog kind) is forgotten first.
 pub(crate) const FINISHED_RECORDS: usize = 32;
 /// Finished source records the table keeps.
 pub(crate) const FINISHED_SOURCE_RECORDS: usize = 64;
@@ -155,7 +155,9 @@ pub(crate) enum Family {
 }
 
 impl Family {
-    /// How many finished records of this family the table keeps.
+    /// How many finished records of this family the table keeps: of the catalog family, of each of
+    /// its kinds, so the many short `preview-extract` records never push out an `index-refresh`
+    /// or a `develop-picks` record its client has still to read.
     fn retained(self) -> usize {
         match self {
             Self::Source => FINISHED_SOURCE_RECORDS,
@@ -474,10 +476,6 @@ pub(crate) struct Opened {
 
 /// A job a catalog lane is about to run on its own workers ([`Family::Catalog`]). Its identity is
 /// chosen by the lane, so the work it queues can carry it before it is recorded.
-#[allow(
-    dead_code,
-    reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
-)]
 pub(crate) struct CatalogOpened {
     pub job_id: JobId,
     pub kind: JobKind,
@@ -835,10 +833,6 @@ impl Jobs {
     /// the lane starts it ([`Self::start`]), then finished through [`Self::finish`]. Like a lane
     /// job it belongs to no client: any client reads it, a cancel stops it for everyone
     /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
-    #[allow(
-        dead_code,
-        reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
-    )]
     pub(crate) fn open_catalog(&mut self, opened: CatalogOpened) {
         let CatalogOpened {
             job_id,
@@ -1068,6 +1062,7 @@ impl Jobs {
             return;
         };
         let family = entry.family();
+        let kind = entry.record.kind;
         if let Some(key) = &entry.key
             && !key.kept_after(entry.record.status)
             && self.keys.get(key) == Some(job_id)
@@ -1083,8 +1078,13 @@ impl Jobs {
                 self.forget_oldest(|entry| entry.family() == Family::Analysis && report(entry));
             }
         }
-        while self.count(|entry| entry.family() == family) > family.retained() {
-            self.forget_oldest(|entry| entry.family() == family);
+        // A catalog lane's kinds each keep their own share ([`Family::retained`]).
+        let share = move |entry: &Entry| match family {
+            Family::Catalog => entry.record.kind == kind,
+            _ => entry.family() == family,
+        };
+        while self.count(share) > family.retained() {
+            self.forget_oldest(share);
         }
     }
 
@@ -1926,6 +1926,49 @@ mod tests {
         assert_eq!(
             jobs.read_for(&ready, two).unwrap().result,
             Some(json!({"done": true}))
+        );
+        jobs.shutdown();
+    }
+
+    /// The catalog family keeps its finished records per kind: a flood of short preview reads
+    /// never pushes out another catalog kind's record its client has still to read.
+    #[test]
+    fn each_catalog_kind_keeps_its_own_finished_records() {
+        let (mut jobs, _) = jobs();
+        let finished = |jobs: &mut Jobs, kind: JobKind| {
+            let job_id = JobId::new();
+            jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind,
+                asset_id: None,
+                origin: None,
+                control: JobControl::new(),
+            });
+            jobs.start(&job_id);
+            jobs.finish(&job_id, Ok(Output::Value(json!({}))));
+            job_id
+        };
+        let refresh = finished(&mut jobs, JobKind::IndexRefresh);
+        let reads: Vec<JobId> = (0..FINISHED_RECORDS + 5)
+            .map(|_| finished(&mut jobs, JobKind::PreviewExtract))
+            .collect();
+        let one = ClientId::testing(1);
+        assert_eq!(
+            jobs.read_for(&refresh, one).unwrap().status,
+            JobStatus::Ready,
+            "another kind's record is kept"
+        );
+        assert!(
+            jobs.read_for(&reads[0], one).is_err(),
+            "the oldest read is forgotten"
+        );
+        assert!(jobs.read_for(&reads[5], one).is_ok());
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|id| jobs.read_for(id, one).is_ok())
+                .count(),
+            FINISHED_RECORDS
         );
         jobs.shutdown();
     }
