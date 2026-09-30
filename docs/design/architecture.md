@@ -51,10 +51,10 @@ Paths are under `crates/luxforge-core/src`.
 | `lib.rs` | The public surface, listed by name: what the desktop, `luxforge-json`, `luxforge-net`, the test kit, xtask and the core's integration tests use through the crate root, every type a public item's signature carries so a consumer can name whatever it receives, and the modules consumers name items through (`activity`, `analysis`, `capabilities`, `catalog_types`, `colour`, `jobs`, `latest`, `mask`, `path`, `resources` and `seed`). It keeps one marked section per lane of the catalog work for that lane's exports. Every other item is `pub(crate)` or narrower, so the compiler reports what nothing uses |
 | `editor.rs` | The editor service: the `EditorService` struct, opening a catalog, and the types its API speaks |
 | `editor/catalog.rs` | The schema, the format marker, row mapping, and the entry, stroke and request rows |
-| `editor/catalog_rows.rs` | The format-12 catalog tables' row writers and readers, which the import, the seeder and the catalog lanes share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
+| `editor/catalog_rows.rs` | The format-12 catalog tables' row writers and readers, which a Develop, the seeder and the catalog lanes share: volumes, catalog folders, an asset's catalog columns and capture row, collections and members, picks and indexed folders |
 | `editor/entries.rs` | The cache of hydrated history entries and each asset's head, and the one `mutate` every write that moves a head goes through |
 | `editor/history.rs` | Admission, commits, undo, redo, restore, versions, lineage and request deduplication |
-| `editor/source.rs` | Source preparation and cache, import, file identity and RAW settings |
+| `editor/source.rs` | Source preparation and cache, the one writer of a new photograph a Develop uses, file identity and RAW settings |
 | `editor/evaluate.rs` | Preview and analysis jobs, render, sample, locate and transform |
 | `editor/plan.rs` | Actions, the stage context, queries, drafts and composites |
 | `editor/masks.rs` | The `mask.*` commands and mask targets |
@@ -290,7 +290,6 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
 | History rows per page | 100 | `MAX_HISTORY_PAGE`, `crates/luxforge-core/src/editor/history.rs` |
-| Assets per `catalog.list` page | 500, 100 when the request names no `limit`; a page reads its rows' own columns and decodes no source interpretation | `MAX_ASSET_PAGE` and `DEFAULT_ASSET_PAGE`, `crates/luxforge-core/src/editor/catalog.rs` |
 | Assets one client previews the history of at once | 16 | `MAX_SELECTIONS`, `crates/luxforge-core/src/preview.rs` |
 | Hydrated entries the owner caches | 8 | `CACHED_ENTRIES`, `crates/luxforge-core/src/editor/entries.rs` |
 | Asset heads the owner caches | 16 | `CACHED_HEADS`, `crates/luxforge-core/src/editor/entries.rs` |
