@@ -2,6 +2,8 @@
 
 Status: planned, not implemented. The owner delegated scope and approach selection for this plan; the choices below are planning decisions, not claims of delivered or verified behavior. Implementation is tracked in [the task plan](../../tasks/lens-and-perspective.json). No owner-review gate is required by this plan.
 
+The planned sections are drawn on the [lens and perspective board](develop-workspace/lens-and-perspective.png) (a Perspective drag over a selected profile) and in their states on the [planned module panels](develop-workspace/planned-module-panels.png), with renders of [Lens correction](develop-workspace/modules/lens-correction.png) and [Perspective](develop-workspace/modules/perspective.png). Camera, lens and profile names on them are illustrative, not claims about the pinned database. The boards are design references, not evidence of anything built.
+
 ## Scope and decisions
 
 | Decision | Rationale |

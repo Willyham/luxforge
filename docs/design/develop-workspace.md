@@ -15,12 +15,16 @@ Rendered at 1440 × 900 logical points, 2× scale, from the design artboards, re
 | [Mask mode](develop-workspace/mask-mode.png) | Mask mode with a radial handle drag open: the tint overlay, handles, draft bar, the Masks panel and the maskable sections carrying the mask's scope chip ([design](masking-workspace.md)) |
 | [Mask panels](develop-workspace/mask-panels.png) | The Masks panel's rows and states, the New mask menu, Brush section, model-selection states and the range and polygon kinds proposed next ([design](masking-workspace.md)) |
 | [Components](develop-workspace/components.png) | Slider states, the module and group hierarchy, history rows, canvas modes, buttons and chips, notices and the command palette |
+| [Tone curve](develop-workspace/tone-curve.png) (planned) | A point drag in the planned Tone curve section: the curve editor over the histogram, the point list and the draft bar, with every planned section in its panel place ([design](tone-curve.md)) |
+| [Detail](develop-workspace/detail.png) (planned) | The planned Detail section at 100%: its 100% hint, Sharpening and Noise reduction groups ([design](detail.md)) |
+| [Lens and perspective](develop-workspace/lens-and-perspective.png) (planned) | A Perspective drag over a selected lens profile on a JPEG: profile choices with match reasons, Assume uncorrected, cover scales and the thirds overlay ([design](lens-and-perspective.md)) |
+| [Planned module panels](develop-workspace/planned-module-panels.png) | Tone curve, Detail, Lens correction and Perspective in their neutral, adjusted, masked and refused states, and the planned panel order |
 
 ![Develop workspace, default state](develop-workspace/default.png)
 
-Every board is also kept as a standalone HTML page, at its design size and with the photograph beside it, under [develop-workspace/html](develop-workspace/html/index.html): open `index.html` for all seven boards laid out as the design canvas arranges them, and any board's own page to inspect it at full scale in a browser. The pages are exported from the design canvas, so they change only when the boards do.
+Every board is also kept as a standalone HTML page, at its design size and with the photograph beside it, under [develop-workspace/html](develop-workspace/html/index.html): open `index.html` for all eleven boards laid out as the design canvas arranges them, and any board's own page to inspect it at full scale in a browser. The pages are exported from the design canvas, so they change only when the boards do.
 
-One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (drafting, and an idle state the built section does not match), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design.
+One render per module, cropped to its panel at 300 pt, is kept under [develop-workspace/modules](develop-workspace/modules): `raw`, `basic`, `presence`, `colour-mixer` (all three tabs), `transforms`, `crop-and-straighten` (drafting, and an idle state the built section does not match), `vignette`, `developer-pixel` and `states` (collapsed, unavailable and later bands). They are the per-section references for the [Module panels](#module-panels) design. The planned modules have their own: `tone-curve`, `detail`, `lens-correction` and `perspective`, references for their designs rather than for anything built.
 
 ## Principles
 
@@ -58,9 +62,10 @@ Where each tool lives, what kind of thing it is and whether it exists. Kinds: **
 | Neutral picker (`W`) | Tools panel, White balance group | mode | Implemented: on a JPEG and on any mask, a click samples the photograph and commits the relative white balance that neutralises it, once; on a RAW photo's global target, a click commits the sensor white balance that neutralises that pixel. A pick entered from the Masks panel stays on that mask and returns to it. A committed pick leaves the mode | JPEG or mask: `workspace.set` for Basic's mode, then `query.neutral-sample` (with `mask` on a mask) at the located content pixel and `edit.set-basic`. RAW global: `workspace.set` for the RAW development's mode, then `edit.pick-raw-neutral` at the located content pixel |
 | Transform: Rotate left/right, Mirror, Flip | Tools panel | module | Implemented (M2, M3) | `edit.transform` |
 | Crop and straighten: free handles, ratio presets, lock and swap, angle, straighten guide, reset | Mode strip, `R`; the Crop section's Ratio and Angle controls, idle (a change opens the draft with it) or drafting | mode | Implemented (M4) | `edit.crop`, `edit.crop-fit`, `edit.crop-reset` |
-| Tone curve | Tools panel, collapsed | module | Later | Its own design |
+| Tone curve | Tools panel, collapsed, after Basic | module | Planned ([design](tone-curve.md), [board](develop-workspace/tone-curve.png)) | `edit.set-curve`, `edit.reset-curve`, `query.sample-curve` (proposed) |
 | Colour mixer: Hue, Saturation and Luminance for eight colour ranges | Tools panel, collapsed, after Presence | module | Implemented ([design](presence-mixer-vignette.md)); B&W mix is later | `edit.set-mixer`, `edit.reset-mixer` and the draft lifecycle |
-| Detail: sharpening, noise reduction | Tools panel, collapsed | module | Later | Its own design |
+| Detail: sharpening, noise reduction | Tools panel, collapsed, after Tone curve and before Presence | module | Planned ([design](detail.md), [board](develop-workspace/detail.png)) | `edit.set-detail`, `edit.reset-detail` (proposed) |
+| Lens correction and Perspective | Tools panel, collapsed, after Transforms and before Crop | module | Planned ([design](lens-and-perspective.md), [board](develop-workspace/lens-and-perspective.png)) | `query.lens-profiles`, `edit.select-lens-profile`, `edit.reset-lens-profile`, `edit.set-perspective` (proposed) |
 | Presence: Texture, Clarity, Dehaze | Tools panel, collapsed, after Basic | module | Implemented ([design](presence-mixer-vignette.md)) | `edit.set-presence`, `edit.reset-presence` and the draft lifecycle |
 | Vignette: Amount, Midpoint, Roundness, Feather | Tools panel, collapsed, after Crop | module | Implemented ([design](presence-mixer-vignette.md)) | `edit.set-vignette`, `edit.reset-vignette` and the draft lifecycle |
 | Heal, Mask | Mode strip | mode | Later | Their own designs |
@@ -123,7 +128,7 @@ Order and content are the registry's. "Patch" means the group's sliders are fiel
 | **Vignette** (`luxforge.vignette`) | Always; collapsed | One group, drawn without a header (patch): Amount −100..+100 zero 0; Midpoint 0..100 default 50, unipolar; Roundness −100..+100 zero 0; Feather 0..100 default 50, unipolar | Module `reset-vignette`; the group's preset reset restates it and has no header to sit in | None | `Vignette amount −35` · `−35 · 50 · 0 · 50` |
 | **Developer · Pixel** (`luxforge.pixel`) | Only with `--developer` | One group, drawn without a header (request): X and Y as labelled fields in px (no rail: a coordinate has no useful one), RGB as three fields with a swatch, Pick pixel (`point-pick`, fills X and Y) and Apply pixel | None | The picker sits beside the fields it fills | `Pixel 12, 34` · `Pixel 12, 34` |
 
-Sections for modules that do not exist (Tone curve, Detail, Lens profile, Heal, Mask) are not drawn in the default board. The Module panels board shows one unavailable band and one later band under Developer only to fix how those states look.
+Sections for modules that do not exist are not drawn on the default board. The Module panels board shows one unavailable band and one later band under Developer only to fix how those states look. The planned Tone curve, Detail, Lens correction and Perspective sections are drawn only on their own boards, in the order Presets · Basic · Tone curve · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop and straighten · Vignette that their designs place them in.
 
 ### What is not matched
 
