@@ -17,6 +17,10 @@ mod journal;
 mod journal_tests;
 mod picks;
 
+// Catalog folders and collections (TASK-012): `folder.*`, `asset.move`, `collection.*`.
+
+// Availability and Locate (TASK-016): `source.check`, `source.locate`.
+
 pub(in crate::api) use info::catalog_info;
 pub(in crate::api) use journal::{library_inspect, library_journal, library_redo, library_undo};
 pub(in crate::api) use picks::{pick_list, pick_set};
