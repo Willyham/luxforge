@@ -76,8 +76,8 @@ fn pinned_padding() -> Padding {
 /// The Performance section in the panel's own padding, its heading at the same left edge as
 /// Versions and History. Collapsed it is the heading alone. Expanded: the three metric rows under
 /// the heading, then, one grid unit further down, the job rows and the caption counting any long
-/// jobs past the fourth.
-fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> {
+/// jobs past the fourth. The Select workspace pins the same section under its sources panel.
+pub(crate) fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> {
     let heading = disclosure_heading(
         "Performance",
         model.caption.clone(),

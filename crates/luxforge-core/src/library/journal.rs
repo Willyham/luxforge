@@ -350,10 +350,6 @@ pub(crate) fn inspect(
 }
 
 /// The newest change's sequence, or 0 before the first: what a view evaluated now has seen.
-#[allow(
-    dead_code,
-    reason = "the views lane's ViewSummary::library_sequence reads it"
-)]
 pub(crate) fn latest(connection: &Connection) -> Result<LibraryChangeSeq, Error> {
     let sequence: i64 = connection
         .prepare_cached("SELECT ifnull(max(sequence), 0) FROM library_changes")?

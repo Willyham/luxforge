@@ -123,6 +123,8 @@ pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, in
 // ── catalog lane C: catalog ──
 // ── end lane C ──
 // ── catalog lane D: views ──
+/// The desktop's Select grid decodes the cached previews `preview.read` names (lane B's cache).
+pub use previews::{DecodedPreview, decode_preview};
 // ── end lane D ──
 
 // The crate root paths the core itself uses.

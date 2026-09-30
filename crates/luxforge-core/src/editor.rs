@@ -64,8 +64,7 @@ pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::{
     FilePreparation, NewPhotograph, Prepared, Preparing, SourceWork, insert_photograph,
-    original_signature, source_signature,
-    source_signature_for_handle,
+    original_signature, source_signature, source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

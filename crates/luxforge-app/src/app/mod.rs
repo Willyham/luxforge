@@ -95,6 +95,11 @@ mod view_state_tests;
 pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
 pub(crate) mod select;
+#[cfg(test)]
+mod select_owner_tests;
+pub(crate) mod select_previews;
+#[cfg(test)]
+mod select_tests;
 // ── end lane D ──
 
 pub(crate) use lifecycle::{Boot, run};
@@ -310,11 +315,8 @@ pub(crate) struct Editor {
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
     // ── catalog lane D: views and desktop ──
-    /// The Select workspace: what it last read and what is in flight.
-    #[allow(
-        dead_code,
-        reason = "catalog contracts: lane D reads it as the seam lands"
-    )]
+    /// The Select workspace: which workspace is shown, what Select last read, its grid and what is
+    /// in flight.
     pub(crate) select: select::Select,
     // ── end lane D ──
     /// The whole screen as plain data, derived again after every message.
@@ -365,7 +367,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 12] = [
+const AFTER_MESSAGE: [AfterMessage; 13] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -378,6 +380,9 @@ const AFTER_MESSAGE: [AfterMessage; 12] = [
     overlay::after_message,
     thumbnails::after_message,
     mask_coverage::after_message,
+    // ── catalog lane D: views and desktop ──
+    select::after_message,
+    // ── end lane D ──
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -387,7 +392,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -396,6 +401,9 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
     evidence::subscription,
     capabilities::subscription,
     export::subscription,
+    // ── catalog lane D: views and desktop ──
+    select::subscription,
+    // ── end lane D ──
 ];
 
 impl Editor {
@@ -639,6 +647,9 @@ impl Editor {
             preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
+            // ── catalog lane D: views and desktop ──
+            select: &self.select.state,
+            // ── end lane D ──
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -682,7 +693,7 @@ impl Editor {
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
             // ── catalog lane D: views and desktop ──
-            // `Message::Select(message) => self.select_update(message)`.
+            Message::Select(message) => self.select_update(message),
             // ── end lane D ──
             Message::Close => self.close(),
         }
@@ -725,7 +736,7 @@ impl Editor {
     /// title bar shows open, the zoom and the scroll offset. `None` while a gallery page or no
     /// photograph is drawn.
     pub(crate) fn drawn_photo(&self) -> Option<iced::Rectangle> {
-        if self.gallery_page().is_some() {
+        if self.gallery_page().is_some() || self.select_shown() {
             return None;
         }
         let title = &self.workspace.title;
@@ -750,6 +761,19 @@ impl Editor {
         let started = Instant::now();
         let element = match self.gallery_page() {
             Some(page) => view::gallery(page),
+            // ── catalog lane D: views and desktop ──
+            None if self.select_shown() => view::select::screen(
+                &self.workspace,
+                view::select::Grid {
+                    layout: &self.select.layout,
+                    scroll: self.select.scroll,
+                    viewport: self.select.viewport,
+                    rows: &self.select.state.rows,
+                    content: &self.select.state.content,
+                    images: self.select.previews.grid(&self.select.state.rows),
+                },
+            ),
+            // ── end lane D ──
             None => view::workspace(&self.workspace, self.surfaces()),
         };
         let mut timing = self.log.loop_timing.get();
@@ -805,6 +829,10 @@ impl Editor {
                 && self
                     .mask_shape()
                     .is_none_or(|shape| shape.brush().is_some()),
+            // ── catalog lane D: views and desktop ──
+            select: self.select_shown(),
+            select_menu_open: self.select.state.menu.is_some(),
+            // ── end lane D ──
         }
     }
 
