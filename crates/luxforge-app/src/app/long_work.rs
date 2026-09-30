@@ -21,6 +21,13 @@
 //!   half a second, an estimate withdrawn when a job stalls — can only see time pass. It stops with
 //!   the last job.
 //!
+//! **One board for the status bar and the section.** The Performance section's job rows are drawn
+//! from the board read here, and its own sampler reads the board through this watch at each of its
+//! ticks ([`Editor::section_reads_board`]) rather than asking the owner for `activity.list`, so the
+//! status bar's job and the section's rows always come from the same read. That read is the
+//! section's, on its own timer that exists only while it samples: it adds no timer here and counts
+//! in the section's reads, not in [`LongWork::reads`].
+//!
 //! **The view waiting on a job.** Select's first look at a folder waits for its `index.refresh`
 //! job. That job's end reaches the desktop as a board change like any other, so Select reads its
 //! record then ([`Editor::reading_followed`]) and no timer asks after it.
@@ -70,8 +77,9 @@ pub(crate) struct LongWork {
     ended: Vec<u64>,
     /// The followed jobs the last read listed running, so a read tells whether any began or ended.
     running: Vec<u64>,
-    /// Reads and wakes since launch, for evidence: a run proves long work asleep by these staying
-    /// put while nothing runs.
+    /// Reads long work took and wakes since launch, for evidence: a run proves long work asleep by
+    /// these staying put while nothing runs. The Performance section's reads of the board are its
+    /// own and not counted here.
     pub(crate) reads: u64,
     pub(crate) wakes: u64,
     /// The jobs a Cancel was sent for, newest last.
@@ -202,10 +210,26 @@ impl Editor {
         Task::none()
     }
 
-    /// Read the board and take in what changed: the model's state and each job's rate, the sentence
-    /// of each job that just ended, and the view waiting on a job. `first` says the waiting job was
-    /// just named, so its record is read whatever the board says.
+    /// Read the board as long work: a wake, a tick, or the waiting view just named. `first` says the
+    /// waiting job was just named, so its record is read whatever the board says.
     fn read_board(&mut self, first: bool) -> Task<Message> {
+        if self.long_work.watch.is_some() {
+            self.long_work.reads += 1;
+        }
+        self.take_in_board(first)
+    }
+
+    /// The Performance section's read of the board at its sampler's tick: the board its job rows
+    /// show is the one the status bar's job comes from, so the section reads it here, through long
+    /// work's watch, and what it finds is taken in exactly as long work's own reads are. With no
+    /// watch there is no board to read, and the section lists no work, as long work shows none.
+    pub(crate) fn section_reads_board(&mut self) -> Task<Message> {
+        self.take_in_board(false)
+    }
+
+    /// Read the board and take in what changed: the model's state and each job's rate, the sentence
+    /// of each job that just ended, and the view waiting on a job.
+    fn take_in_board(&mut self, first: bool) -> Task<Message> {
         let Some(read) = self.take_board() else {
             return Task::none();
         };
@@ -244,7 +268,6 @@ impl Editor {
         let board = work.watch.as_ref()?.read();
         work.read_at = Some(Instant::now());
         work.due = false;
-        work.reads += 1;
         let ended = board
             .recent
             .iter()

@@ -120,6 +120,11 @@ pub struct IndexedFolderState {
     /// platform limit reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unwatched: Option<String>,
+    /// A listing the index lane ran on its own was cancelled or failed, so the folder's rows may
+    /// miss what changed: it is listed again on its next change or as the catalog next opens, and
+    /// is current once a listing of it completes. Omitted while it is current.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 /// What `index.add-folder` answers: the library change, the folder, the `index.refresh` job that

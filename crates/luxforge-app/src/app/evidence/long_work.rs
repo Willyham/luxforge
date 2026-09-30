@@ -21,8 +21,8 @@ pub(crate) enum LongWorkWait {
     /// The sheet is gone while the job runs on, in the status bar and as a Performance row that can
     /// be cancelled.
     Background { job_id: String },
-    /// The job has ended on the board, the view that waited on it has heard, and the Performance
-    /// section has read the board since.
+    /// The job has ended on the board, which the Performance section's rows are drawn from too, and
+    /// the view that waited on it has heard.
     Ended { job_id: String },
 }
 
@@ -110,13 +110,11 @@ impl Editor {
     fn long_work_reached(&self, wait: &LongWorkWait) -> Reached {
         let work = &self.long_work.state;
         let model = long_work::model(work, self.select_shown(), self.select.state.home.as_deref());
-        let sampled = self.performance.history.activity();
-        let sampled_running = |job_id: &str| {
-            sampled.is_some_and(|board| {
-                board.active.iter().any(|job| {
-                    job.entry.job_id.as_deref() == Some(job_id) && job.elapsed_ms >= LONG_JOB_MS
-                })
-            })
+        // Long enough on the board to be the Performance section's row, which is drawn from the
+        // same read as the status bar.
+        let shown = |job_id: &str| {
+            work.job(job_id)
+                .is_some_and(|job| job.elapsed_ms >= LONG_JOB_MS)
         };
         match wait {
             LongWorkWait::Sheet => {
@@ -140,7 +138,7 @@ impl Editor {
                         .busiest
                         .as_ref()
                         .is_some_and(|busiest| &busiest.job_id == job_id)
-                    && sampled_running(job_id)
+                    && shown(job_id)
                 {
                     Reached::Yes
                 } else {
@@ -156,17 +154,7 @@ impl Editor {
                             .any(|job| job.entry.job_id.as_deref() == Some(job_id.as_str()))
                     });
                 let heard = self.select.reading.is_none() && self.select_reads_quiet();
-                let section = sampled.is_some_and(|board| {
-                    board
-                        .recent
-                        .iter()
-                        .any(|job| job.entry.job_id.as_deref() == Some(job_id.as_str()))
-                        && !board
-                            .active
-                            .iter()
-                            .any(|job| job.entry.job_id.as_deref() == Some(job_id.as_str()))
-                });
-                if ended && heard && section {
+                if ended && heard {
                     Reached::Yes
                 } else {
                     Reached::Not
