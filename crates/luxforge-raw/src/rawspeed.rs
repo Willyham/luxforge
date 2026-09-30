@@ -97,7 +97,7 @@ pub(crate) fn decode_mosaic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NativeHandle, RawSource, cancelled, lf_raw_open, native_result};
+    use crate::{NativeHandle, NativeUnpacker, RawSource, native_result};
     use sha2::{Digest, Sha256};
     use std::{
         ffi::c_void,
@@ -176,29 +176,15 @@ mod tests {
 
     /// LibRaw's linearization table for `bytes` after unpack.
     fn libraw_curve(bytes: &[u8]) -> Vec<u16> {
-        let mut native = RawSource::blank_native();
-        let mut handle = std::ptr::null_mut();
-        let mut error = [0 as c_char; 256];
         let cancel = AtomicBool::new(false);
-        // SAFETY: bytes, metadata, error and the cancel token outlive the synchronous open; the
-        // handle is closed by its guard.
-        let code = unsafe {
-            lf_raw_open(
-                bytes.as_ptr(),
-                bytes.len(),
-                cancelled,
-                (&cancel as *const AtomicBool).cast_mut().cast(),
-                &mut handle,
-                &mut native,
-                error.as_mut_ptr(),
-                error.len(),
-            )
-        };
-        native_result(code, &error).expect("LibRaw open");
-        let guard = NativeHandle(handle);
+        let (mut handle, _) = NativeHandle::open(bytes, &cancel).expect("LibRaw open");
+        handle
+            .unpack(NativeUnpacker::Libraw, &cancel)
+            .expect("LibRaw unpack");
         let mut curve = vec![0u16; 0x10000];
-        // SAFETY: the guard holds the live handle; curve has the table's 65536 slots.
-        let code = unsafe { lf_raw_curve(guard.0, curve.as_mut_ptr(), curve.len()) };
+        let error = [0 as c_char; 256];
+        // SAFETY: the guard holds the live, unpacked handle; curve has the table's 65536 slots.
+        let code = unsafe { lf_raw_curve(handle.handle, curve.as_mut_ptr(), curve.len()) };
         native_result(code, &error).expect("LibRaw curve");
         curve
     }

@@ -484,7 +484,7 @@ mod tests {
         data["cameras"][1]["modes"][0]["id"] = json!("ExampleUncompressed");
         data["cameras"][1]["modes"][0]["compression"]["value"] = json!(7);
         let profiles = parse(&data).unwrap();
-        let mut native = crate::RawSource::blank_native();
+        let mut native = crate::NativeIdentity::blank();
         native.width = 600;
         native.height = 400;
         native.cfa_width = 6;
@@ -494,7 +494,7 @@ mod tests {
         let mut bytes = vec![0; 0x70];
         bytes[..8].copy_from_slice(b"FUJIFILM");
         bytes[0x6c..0x70].copy_from_slice(&7_u32.to_be_bytes());
-        let classify = |n: &crate::NativeMetadata, b: &[u8], make: &str| {
+        let classify = |n: &crate::NativeIdentity, b: &[u8], make: &str| {
             crate::format::classify_mode(
                 &profiles,
                 n,
@@ -528,7 +528,7 @@ mod tests {
         let mut data = catalog();
         data["cameras"][1]["modes"][0]["raw_count"] = json!(2);
         let profiles = parse(&data).unwrap();
-        let mut native = crate::RawSource::blank_native();
+        let mut native = crate::NativeIdentity::blank();
         native.width = 7872;
         native.height = 5196;
         native.cfa_width = 6;
@@ -648,7 +648,7 @@ mod tests {
             ),
         ];
         for (make, model, width, height, cfa, bits, version, decoder, bytes, id) in cases {
-            let mut n = crate::RawSource::blank_native();
+            let mut n = crate::NativeIdentity::blank();
             n.width = width;
             n.height = height;
             n.cfa_width = cfa;
@@ -656,7 +656,7 @@ mod tests {
             n.raw_bps = bits;
             n.raw_count = 1;
             n.dng_version = version;
-            let classify = |n: &crate::NativeMetadata, decoder: &str| {
+            let classify = |n: &crate::NativeIdentity, decoder: &str| {
                 crate::format::classify_mode(
                     crate::camera_catalog(),
                     n,

@@ -242,6 +242,90 @@ impl PlanarRgb {
     }
 }
 
+/// What LibRaw's identify decides, before any unpack work: everything mode classification reads
+/// from the decoder. The native `LfIdentity` has the same layout.
+///
+/// Every field is final at identify for every catalogued decoder. In the pinned LibRaw 0.22.2,
+/// make, model, `raw_count`, `dng_version`, the decoder (`load_raw`, which also gives the flags)
+/// and `color.raw_bps` are written only by `open_buffer`'s identify. `unpack` rewrites
+/// `raw_width`, `raw_height` and the margins only on paths a catalogued mode never takes (the
+/// legacy four-colour path, and RawSpeed builds, which are not compiled). No catalogued decoder,
+/// and not `crop_masked_pixels`, writes `filters`, `xtrans_abs` or the margins the CFA phase
+/// reads; the decoders read `tiff_bps` but write neither it nor `raw_bps`. Unpack does change the
+/// white level (`crxLoadRaw`) and black levels (`crop_masked_pixels`), which classification does
+/// not read. [`NativeIdentity::unchanged_in`] still re-validates every field against the
+/// unpacked metadata and fails explicitly on any difference, so a classified mode stays true
+/// if a later LibRaw or decoder changes one.
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq)]
+struct NativeIdentity {
+    make: [c_char; 64],
+    model: [c_char; 64],
+    decoder: [c_char; 80],
+    width: u32,
+    height: u32,
+    raw_bps: u32,
+    dng_version: u32,
+    decoder_flags: u32,
+    raw_count: u32,
+    cfa_width: u32,
+    cfa_height: u32,
+    cfa: [u8; 36],
+    black_cfa: [u8; 36],
+}
+const _: () = assert!(std::mem::size_of::<NativeIdentity>() == 312);
+
+impl NativeIdentity {
+    fn blank() -> Self {
+        // SAFETY: this repr(C) POD contains only integers and arrays; all-zero is a valid
+        // initialized value for every field.
+        unsafe { std::mem::zeroed() }
+    }
+
+    /// The identify-time fields that differ in the unpacked metadata, as an explicit native
+    /// failure: a mode classified before unpack must still describe what was unpacked.
+    fn unchanged_in(&self, native: &NativeMetadata) -> Result<(), RawError> {
+        let changed = [
+            ("make", self.make[..] != native.make[..]),
+            ("model", self.model[..] != native.model[..]),
+            ("decoder", self.decoder[..] != native.decoder[..]),
+            ("width", self.width != native.width),
+            ("height", self.height != native.height),
+            ("bit depth", self.raw_bps != native.raw_bps),
+            ("DNG version", self.dng_version != native.dng_version),
+            ("decoder flags", self.decoder_flags != native.decoder_flags),
+            ("frame count", self.raw_count != native.raw_count),
+            (
+                "CFA",
+                self.cfa_width != native.cfa_width
+                    || self.cfa_height != native.cfa_height
+                    || self.cfa != native.cfa
+                    || self.black_cfa != native.black_cfa,
+            ),
+        ]
+        .into_iter()
+        .filter(|(_, changed)| *changed)
+        .map(|(field, _)| field)
+        .collect::<Vec<_>>();
+        if changed.is_empty() {
+            Ok(())
+        } else {
+            Err(RawError::Native(format!(
+                "LibRaw changed the identified {} during unpack",
+                changed.join(", ")
+            )))
+        }
+    }
+}
+
+/// The decoder that fills the mosaic in `lf_raw_unpack`. The native `LfUnpacker` has the same
+/// values and refuses any other before unpack.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum NativeUnpacker {
+    Libraw = 0,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone)]
 struct NativeMetadata {
@@ -287,6 +371,15 @@ unsafe extern "C" {
         cancel: CancelCallback,
         cancel_context: *mut c_void,
         handle_out: *mut *mut c_void,
+        identity: *mut NativeIdentity,
+        err: *mut c_char,
+        err_len: usize,
+    ) -> c_int;
+    fn lf_raw_unpack(
+        handle: *mut c_void,
+        unpacker: u32,
+        cancel: CancelCallback,
+        cancel_context: *mut c_void,
         meta: *mut NativeMetadata,
         err: *mut c_char,
         err_len: usize,
@@ -308,13 +401,112 @@ extern "C" fn cancelled(context: *mut c_void) -> c_int {
     c_int::from(token.load(Ordering::Relaxed))
 }
 
-struct NativeHandle(*mut c_void);
-impl Drop for NativeHandle {
+/// The native decoder handle, which borrows the encoded bytes it was opened on until it drops.
+/// Dropping it closes the handle, so every return path releases it.
+struct NativeHandle<'a> {
+    handle: *mut c_void,
+    _bytes: std::marker::PhantomData<&'a [u8]>,
+}
+impl Drop for NativeHandle<'_> {
     fn drop(&mut self) {
-        // SAFETY: the pointer is the unique handle returned by lf_raw_open;
-        // close accepts null and is called exactly once by this guard.
-        unsafe { lf_raw_close(self.0) };
+        // SAFETY: the pointer is null or the unique handle returned by lf_raw_open; close
+        // accepts null and is called exactly once, by this guard.
+        unsafe { lf_raw_close(self.handle) };
     }
+}
+
+impl<'a> NativeHandle<'a> {
+    /// Identify `bytes` without unpacking them, with the caller's cancel callback.
+    fn open_with(
+        bytes: &'a [u8],
+        cancel: CancelCallback,
+        context: *mut c_void,
+    ) -> Result<(Self, NativeIdentity), RawError> {
+        let mut identity = NativeIdentity::blank();
+        let mut handle = std::ptr::null_mut();
+        let mut error = [0 as c_char; 256];
+        // SAFETY: bytes outlive the returned guard through its lifetime, identity, handle and
+        // error are writable for the synchronous call, and the context lives for the call.
+        let code = unsafe {
+            lf_raw_open(
+                bytes.as_ptr(),
+                bytes.len(),
+                cancel,
+                context,
+                &mut handle,
+                &mut identity,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        // Owned before the status is read, so a handle is closed whatever the code.
+        let guard = Self {
+            handle,
+            _bytes: std::marker::PhantomData,
+        };
+        native_result(code, &error)?;
+        Ok((guard, identity))
+    }
+
+    fn open(bytes: &'a [u8], cancel: &AtomicBool) -> Result<(Self, NativeIdentity), RawError> {
+        Self::open_with(bytes, cancelled, token(cancel))
+    }
+
+    /// Unpack once with `unpacker`, returning the complete metadata.
+    fn unpack_with(
+        &mut self,
+        unpacker: u32,
+        cancel: CancelCallback,
+        context: *mut c_void,
+    ) -> Result<Box<NativeMetadata>, RawError> {
+        let mut native = Box::new(RawSource::blank_native());
+        let mut error = [0 as c_char; 256];
+        // SAFETY: the guard owns the live handle and its borrowed bytes; metadata and error are
+        // writable for the synchronous call, and the context lives for the call.
+        let code = unsafe {
+            lf_raw_unpack(
+                self.handle,
+                unpacker,
+                cancel,
+                context,
+                &mut *native,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        native_result(code, &error)?;
+        Ok(native)
+    }
+
+    fn unpack(
+        &mut self,
+        unpacker: NativeUnpacker,
+        cancel: &AtomicBool,
+    ) -> Result<Box<NativeMetadata>, RawError> {
+        self.unpack_with(unpacker as u32, cancelled, token(cancel))
+    }
+
+    /// Copy the unpacked mosaic, `samples.len()` values, without row padding.
+    fn copy(&self, samples: &mut [u16]) -> Result<(), RawError> {
+        let mut error = [0 as c_char; 256];
+        // SAFETY: the guard owns the live handle; samples has exactly len initialized u16 slots
+        // and the native copy validates the length against the unpacked dimensions.
+        let code = unsafe {
+            lf_raw_copy(
+                self.handle,
+                samples.as_mut_ptr(),
+                samples.len(),
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        native_result(code, &error)
+    }
+}
+
+/// The context pointer the `cancelled` callback reads.
+fn token(cancel: &AtomicBool) -> *mut c_void {
+    (cancel as *const AtomicBool).cast_mut().cast()
 }
 
 fn c_text(chars: &[c_char]) -> String {
@@ -426,30 +618,13 @@ impl RawSource {
         // No decoder here reads Nikon High Efficiency, and LibRaw misreads it on some bodies as
         // lossless: refuse it from the container before the native open and unpack.
         format::reject_nikon_high_efficiency(bytes)?;
-        let mut native = Box::new(Self::blank_native());
-        let mut handle = std::ptr::null_mut();
-        let mut error = [0 as c_char; 256];
-        // SAFETY: this function owns `encoded`, so bytes stay alive and unmoved
-        // until the handle is closed below. Metadata and error are writable,
-        // and the token lives for the call.
-        let code = unsafe {
-            lf_raw_open(
-                bytes.as_ptr(),
-                bytes.len(),
-                cancelled,
-                (cancel as *const AtomicBool).cast_mut().cast(),
-                &mut handle,
-                &mut *native,
-                error.as_mut_ptr(),
-                error.len(),
-            )
-        };
-        native_result(code, &error)?;
-        let guard = NativeHandle(handle);
-        let n = Self::checked_len(&native)?;
+        // Identify, then classify from what identify decided and the container, so an
+        // unsupported mode or DNG opcode is refused before any unpack work.
+        let (mut handle, identity) = NativeHandle::open(bytes, cancel)?;
+        let n = Self::checked_len(identity.width, identity.height)?;
         // Only a DNG carries opcode lists; LibRaw reports its version. Every required operation
         // must be one the corrections implement, whatever the camera.
-        let opcodes = if native.dng_version != 0 {
+        let opcodes = if identity.dng_version != 0 {
             let found = format::dng_opcodes(bytes)?;
             let unknown = format::required_ids(
                 found
@@ -463,25 +638,27 @@ impl RawSource {
         } else {
             Vec::new()
         };
-        let (mut metadata, dng_correction) = Self::interpret(&native, bytes, &opcodes)?;
+        let (profile, recording) = classify_mode(
+            camera_catalog(),
+            &identity,
+            &c_text(&identity.make),
+            &c_text(&identity.model),
+            &c_text(&identity.decoder),
+            bytes,
+        )?;
+        reject_unhandled_required_opcodes(profile.dng.is_some(), &opcodes)?;
+        // Every catalogued mode unpacks with LibRaw's own decoder.
+        let native = handle.unpack(NativeUnpacker::Libraw, cancel)?;
+        identity.unchanged_in(&native)?;
+        let (mut metadata, dng_correction) =
+            Self::interpret(&native, profile, RawMode(recording), bytes, &opcodes)?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(n)
             .map_err(|_| RawError::ResourceLimit("sensor mosaic allocation"))?;
         samples.resize(n, 0);
-        // SAFETY: guard owns the live LibRaw handle; samples has exactly n
-        // initialized u16 slots and native copy validates dimensions.
-        let code = unsafe {
-            lf_raw_copy(
-                guard.0,
-                samples.as_mut_ptr(),
-                n,
-                error.as_mut_ptr(),
-                error.len(),
-            )
-        };
-        native_result(code, &error)?;
-        drop(guard);
+        handle.copy(&mut samples)?;
+        drop(handle);
         drop(encoded);
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
@@ -583,16 +760,12 @@ impl RawSource {
         unsafe { std::mem::zeroed() }
     }
 
-    fn checked_len(native: &NativeMetadata) -> Result<usize, RawError> {
-        if native.width == 0
-            || native.height == 0
-            || native.width > MAX_SIDE
-            || native.height > MAX_SIDE
-        {
+    fn checked_len(width: u32, height: u32) -> Result<usize, RawError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(RawError::ResourceLimit("sensor dimension"));
         }
-        let n = (native.width as usize)
-            .checked_mul(native.height as usize)
+        let n = (width as usize)
+            .checked_mul(height as usize)
             .ok_or(RawError::ResourceLimit("sensor area overflow"))?;
         if n > MAX_PIXELS {
             return Err(RawError::ResourceLimit("sensor exceeds 128 MP"));
@@ -600,18 +773,18 @@ impl RawSource {
         Ok(n)
     }
 
+    /// The published metadata of an unpacked `native` frame in the classified `mode` of
+    /// `profile`.
     fn interpret(
         native: &NativeMetadata,
+        profile: &profiles::Camera,
+        mode: RawMode,
         bytes: &[u8],
         opcodes: &[format::DngOpcode],
     ) -> Result<(RawMetadata, Option<dng::DngCorrection>), RawError> {
         let make = c_text(&native.make);
         let model = c_text(&native.model);
         let decoder = c_text(&native.decoder);
-        let (profile, recording) =
-            classify_mode(camera_catalog(), native, &make, &model, &decoder, bytes)?;
-        let mode = RawMode(recording);
-        reject_unhandled_required_opcodes(profile.dng.is_some(), opcodes)?;
         let rect = |x, y, width, height| RawRect {
             x,
             y,
@@ -2383,26 +2556,19 @@ mod tests {
             ("7743", NativeStatus::UnsupportedMode),
         ] {
             let bytes = std::fs::read(format!("{dir}/{id}.NEF")).expect("read sample");
-            let mut native = Box::new(RawSource::blank_native());
-            let mut handle = std::ptr::null_mut();
-            let mut error = [0 as c_char; 256];
-            // SAFETY: bytes, metadata, handle and error outlive this synchronous call, and the
-            // guard closes any handle it returns.
-            let code = unsafe {
-                lf_raw_open(
-                    bytes.as_ptr(),
-                    bytes.len(),
-                    cancelled,
-                    (&cancel as *const AtomicBool).cast_mut().cast(),
-                    &mut handle,
-                    &mut *native,
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            drop(NativeHandle(handle));
-            println!("{id}: status {code}, {}", c_text(&error));
-            assert_eq!(code, expected as c_int, "{id}");
+            let unpacks = native_counters::unpack_calls();
+            let refused = NativeHandle::open(&bytes, &cancel).map(|_| ()).unwrap_err();
+            println!("{id}: {refused}");
+            match expected {
+                NativeStatus::NikonHighEfficiency => assert_eq!(
+                    refused,
+                    RawError::UnsupportedCompression(format::NIKON_HIGH_EFFICIENCY),
+                    "{id}"
+                ),
+                _ => assert!(matches!(refused, RawError::UnsupportedMode(_)), "{id}"),
+            }
+            assert_eq!(native_counters::unpack_calls(), unpacks, "{id}");
+            assert_eq!(native_counters::live_handles(), 0, "{id}");
         }
         // No other sample, of any brand or Nikon mode, is refused by the container check.
         let mut others = 0;
@@ -2424,6 +2590,370 @@ mod tests {
             others += 1;
         }
         println!("{others} other samples pass the High Efficiency check");
+    }
+
+    /// The adapter's per-thread test counters: each decode runs synchronously on its caller's
+    /// thread, so a test observes only its own handles and unpacks.
+    mod native_counters {
+        use std::ffi::{c_long, c_ulonglong};
+        unsafe extern "C" {
+            fn lf_raw_live_handles() -> c_long;
+            fn lf_raw_unpack_calls() -> c_ulonglong;
+        }
+        pub(super) fn live_handles() -> i64 {
+            // c_long is 32 bits on Windows, so this conversion is not a no-op everywhere.
+            #[allow(clippy::useless_conversion)]
+            // SAFETY: reads this thread's counter; no arguments.
+            i64::from(unsafe { lf_raw_live_handles() })
+        }
+        pub(super) fn unpack_calls() -> u64 {
+            // SAFETY: reads this thread's counter; no arguments.
+            unsafe { lf_raw_unpack_calls() }
+        }
+    }
+
+    /// A minimal uncompressed 16-bit RGGB DNG that LibRaw identifies as `make` `model` with its
+    /// packed DNG decoder, and its samples in raster order.
+    fn synthetic_dng(make: &str, model: &str, width: u32, height: u32) -> (Vec<u8>, Vec<u16>) {
+        let samples: Vec<u16> = (0..width * height)
+            .map(|i| (i * 37 % 60_000) as u16)
+            .collect();
+        let text = |value: &str| {
+            let mut bytes = value.as_bytes().to_vec();
+            bytes.push(0);
+            bytes
+        };
+        let (make, model) = (text(make), text(model));
+        // Tag, type, count, inline value or payload.
+        let entries: Vec<(u16, u16, u32, Vec<u8>)> = vec![
+            (254, 4, 1, 0_u32.to_le_bytes().to_vec()),
+            (256, 4, 1, width.to_le_bytes().to_vec()),
+            (257, 4, 1, height.to_le_bytes().to_vec()),
+            (258, 3, 1, 16_u32.to_le_bytes().to_vec()),
+            (259, 3, 1, 1_u32.to_le_bytes().to_vec()),
+            (262, 3, 1, 32_803_u32.to_le_bytes().to_vec()),
+            (271, 2, make.len() as u32, make),
+            (272, 2, model.len() as u32, model),
+            (273, 4, 1, Vec::new()),
+            (277, 3, 1, 1_u32.to_le_bytes().to_vec()),
+            (278, 4, 1, height.to_le_bytes().to_vec()),
+            (279, 4, 1, (width * height * 2).to_le_bytes().to_vec()),
+            (284, 3, 1, 1_u32.to_le_bytes().to_vec()),
+            (33_421, 3, 2, vec![2, 0, 2, 0]),
+            (33_422, 1, 4, vec![0, 1, 1, 2]),
+            (50_706, 1, 4, vec![1, 4, 0, 0]),
+            (50_717, 4, 1, 65_535_u32.to_le_bytes().to_vec()),
+        ];
+        let ifd = 8_usize;
+        let mut payload = ifd + 2 + entries.len() * 12 + 4;
+        let mut out = b"II*\0\x08\0\0\0".to_vec();
+        out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        let mut tail = Vec::new();
+        let data_offset = {
+            let strings: usize = entries
+                .iter()
+                .filter(|entry| entry.3.len() > 4)
+                .map(|entry| entry.3.len())
+                .sum();
+            (payload + strings).next_multiple_of(2) as u32
+        };
+        for (tag, kind, count, value) in &entries {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
+            if *tag == 273 {
+                out.extend_from_slice(&data_offset.to_le_bytes());
+            } else if value.len() > 4 {
+                out.extend_from_slice(&(payload as u32).to_le_bytes());
+                payload += value.len();
+                tail.extend_from_slice(value);
+            } else {
+                let mut inline = [0_u8; 4];
+                inline[..value.len()].copy_from_slice(value);
+                out.extend_from_slice(&inline);
+            }
+        }
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(&tail);
+        out.resize(data_offset as usize, 0);
+        for sample in &samples {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+        (out, samples)
+    }
+
+    /// A cancel callback that asks to stop from its `at`-th call on, counting every call.
+    struct CancelAt {
+        calls: std::sync::atomic::AtomicU32,
+        at: u32,
+    }
+    extern "C" fn cancel_at(context: *mut c_void) -> c_int {
+        // SAFETY: the tests pass a pointer to a live CancelAt for each synchronous call.
+        let state = unsafe { &*(context.cast::<CancelAt>()) };
+        c_int::from(state.calls.fetch_add(1, Ordering::Relaxed) + 1 >= state.at)
+    }
+    fn cancel_context(state: &CancelAt) -> *mut c_void {
+        (state as *const CancelAt).cast_mut().cast()
+    }
+
+    /// Unpack through the raw ABI into metadata prefilled with non-zero values, so a test sees
+    /// exactly what a call publishes.
+    fn raw_unpack(
+        handle: &mut NativeHandle<'_>,
+        unpacker: u32,
+        cancel: CancelCallback,
+        context: *mut c_void,
+    ) -> (Result<(), RawError>, Box<NativeMetadata>) {
+        let mut native = Box::new(RawSource::blank_native());
+        native.width = 7;
+        native.white = 7.0;
+        native.black_repeat[4095] = 7.0;
+        let mut error = [0 as c_char; 256];
+        // SAFETY: the guard owns the live handle; metadata and error are writable and the
+        // context lives for this synchronous call.
+        let code = unsafe {
+            lf_raw_unpack(
+                handle.handle,
+                unpacker,
+                cancel,
+                context,
+                &mut *native,
+                error.as_mut_ptr(),
+                error.len(),
+            )
+        };
+        (native_result(code, &error), native)
+    }
+
+    fn is_blank(native: &NativeMetadata) -> bool {
+        // SAFETY: NativeMetadata is a repr(C) POD with no padding-sensitive invariants; reading
+        // its bytes is sound.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (native as *const NativeMetadata).cast::<u8>(),
+                std::mem::size_of::<NativeMetadata>(),
+            )
+        };
+        bytes.iter().all(|&byte| byte == 0)
+    }
+
+    /// The split native open identifies a file without unpacking it, and the one unpack on its
+    /// handle fills the metadata and mosaic identify described.
+    #[test]
+    fn native_open_identifies_and_unpack_fills_the_same_frame() {
+        let (bytes, samples) = synthetic_dng("DJI", "FC3411", 64, 48);
+        let cancel = AtomicBool::new(false);
+        let unpacks = native_counters::unpack_calls();
+        let (mut handle, identity) = NativeHandle::open(&bytes, &cancel).unwrap();
+        assert_eq!(native_counters::live_handles(), 1);
+        assert_eq!(native_counters::unpack_calls(), unpacks);
+        assert_eq!(c_text(&identity.make), "DJI");
+        assert_eq!(c_text(&identity.model), "FC3411");
+        assert_eq!(c_text(&identity.decoder), "packed_dng_load_raw()");
+        assert_eq!((identity.width, identity.height), (64, 48));
+        assert_eq!(
+            (identity.raw_bps, identity.raw_count, identity.dng_version),
+            (16, 1, 0x0104_0000)
+        );
+        assert_eq!((identity.cfa_width, identity.cfa_height), (2, 2));
+        assert_eq!(identity.cfa[..4], [0, 1, 1, 2]);
+        assert_eq!(identity.black_cfa[..4], [0, 1, 3, 2]);
+        let native = handle.unpack(NativeUnpacker::Libraw, &cancel).unwrap();
+        assert_eq!(native_counters::unpack_calls(), unpacks + 1);
+        identity.unchanged_in(&native).unwrap();
+        assert_eq!(native.raw_pitch, 128);
+        let mut copied = vec![0_u16; samples.len()];
+        handle.copy(&mut copied).unwrap();
+        assert_eq!(copied, samples);
+        // One unpack per handle.
+        assert!(matches!(
+            handle.unpack(NativeUnpacker::Libraw, &cancel),
+            Err(RawError::Native(text)) if text.contains("already unpacked")
+        ));
+        assert_eq!(native_counters::unpack_calls(), unpacks + 1);
+        drop(handle);
+        assert_eq!(native_counters::live_handles(), 0);
+    }
+
+    /// A camera outside the catalog stops at the native open and a catalogued camera in an
+    /// unknown mode stops at classification: neither starts an unpack, and both release the
+    /// handle.
+    #[test]
+    fn unsupported_modes_are_refused_before_unpack() {
+        let cancel = AtomicBool::new(false);
+        let unpacks = native_counters::unpack_calls();
+        // The Air 2S's catalogued camera, at a sensor size none of its modes has.
+        let (catalogued, _) = synthetic_dng("DJI", "FC3411", 64, 48);
+        assert!(matches!(
+            RawSource::decode(&catalogued[..], &cancel),
+            Err(RawError::UnsupportedMode(text)) if text.contains("DJI FC3411")
+        ));
+        let (unknown, _) = synthetic_dng("Example", "Sensor", 64, 48);
+        assert!(matches!(
+            RawSource::decode(&unknown[..], &cancel),
+            Err(RawError::UnsupportedMode(text)) if text.contains("outside the RAW catalog")
+        ));
+        assert!(matches!(
+            RawSource::decode(&b"not a raw file at all"[..], &cancel),
+            Err(RawError::Native(_))
+        ));
+        assert_eq!(native_counters::unpack_calls(), unpacks);
+        assert_eq!(native_counters::live_handles(), 0);
+    }
+
+    /// Only the LibRaw unpacker exists: any other selector is refused before unpack work and
+    /// leaves the handle usable.
+    #[test]
+    fn unpack_selector_rejects_unknown_values() {
+        assert_eq!(NativeUnpacker::Libraw as u32, 0);
+        let (bytes, _) = synthetic_dng("DJI", "FC3411", 64, 48);
+        let cancel = AtomicBool::new(false);
+        let unpacks = native_counters::unpack_calls();
+        let (mut handle, _) = NativeHandle::open(&bytes, &cancel).unwrap();
+        for unknown in [1, 2, u32::MAX] {
+            let (result, native) = raw_unpack(&mut handle, unknown, cancelled, token(&cancel));
+            assert!(
+                matches!(&result, Err(RawError::Native(text)) if text == "unknown RAW unpacker"),
+                "{unknown}: {result:?}"
+            );
+            assert!(is_blank(&native));
+        }
+        assert_eq!(native_counters::unpack_calls(), unpacks);
+        let (result, native) = raw_unpack(
+            &mut handle,
+            NativeUnpacker::Libraw as u32,
+            cancelled,
+            token(&cancel),
+        );
+        result.unwrap();
+        assert_eq!(native.width, 64);
+        assert_eq!(native_counters::unpack_calls(), unpacks + 1);
+        drop(handle);
+        assert_eq!(native_counters::live_handles(), 0);
+    }
+
+    /// Cancellation before identify, during identify, before unpack, during LibRaw's unpack and
+    /// after it returns: each fails as cancelled, publishes no metadata and releases the handle.
+    #[test]
+    fn cancellation_around_unpack_publishes_nothing() {
+        let (bytes, _) = synthetic_dng("DJI", "FC3411", 64, 48);
+        let unpacks = native_counters::unpack_calls();
+        // The calls one open and one unpack make, uncancelled.
+        let count = CancelAt {
+            calls: 0.into(),
+            at: u32::MAX,
+        };
+        let (mut handle, _) =
+            NativeHandle::open_with(&bytes, cancel_at, cancel_context(&count)).unwrap();
+        let opened = count.calls.load(Ordering::Relaxed);
+        let (result, _) = raw_unpack(
+            &mut handle,
+            NativeUnpacker::Libraw as u32,
+            cancel_at,
+            cancel_context(&count),
+        );
+        result.unwrap();
+        drop(handle);
+        let total = count.calls.load(Ordering::Relaxed);
+        // The adapter's own check before identify, LibRaw's identify progress, then the check
+        // before unpack, LibRaw's unpack progress and the check after it.
+        println!("open calls {opened}, open and unpack calls {total}");
+        assert!(opened >= 2, "{opened}");
+        assert!(total >= opened + 3, "{opened} {total}");
+        assert_eq!(native_counters::unpack_calls(), unpacks + 1);
+        for at in 1..=opened {
+            let state = CancelAt {
+                calls: 0.into(),
+                at,
+            };
+            assert!(matches!(
+                NativeHandle::open_with(&bytes, cancel_at, cancel_context(&state)),
+                Err(RawError::Cancelled)
+            ));
+            assert_eq!(native_counters::live_handles(), 0, "{at}");
+        }
+        for at in opened + 1..=total {
+            let state = CancelAt {
+                calls: 0.into(),
+                at,
+            };
+            let (mut handle, _) =
+                NativeHandle::open_with(&bytes, cancel_at, cancel_context(&state)).unwrap();
+            let before = native_counters::unpack_calls();
+            let (result, native) = raw_unpack(
+                &mut handle,
+                NativeUnpacker::Libraw as u32,
+                cancel_at,
+                cancel_context(&state),
+            );
+            assert_eq!(result, Err(RawError::Cancelled), "{at}");
+            assert!(is_blank(&native), "{at}");
+            // Only the check before unpack stops it from starting.
+            let started = u64::from(at != opened + 1);
+            assert_eq!(native_counters::unpack_calls(), before + started, "{at}");
+            drop(handle);
+            assert_eq!(native_counters::live_handles(), 0, "{at}");
+        }
+        let cancelled_token = AtomicBool::new(true);
+        let active = AtomicBool::new(false);
+        let (mut handle, _) = NativeHandle::open(&bytes, &active).unwrap();
+        let before = native_counters::unpack_calls();
+        assert!(matches!(
+            handle.unpack(NativeUnpacker::Libraw, &cancelled_token),
+            Err(RawError::Cancelled)
+        ));
+        assert_eq!(native_counters::unpack_calls(), before);
+        drop(handle);
+        assert_eq!(native_counters::live_handles(), 0);
+    }
+
+    /// Every field classification read at identify is compared with the unpacked metadata, and
+    /// any difference fails explicitly, naming the field.
+    #[test]
+    fn identity_changes_during_unpack_fail_explicitly() {
+        let mut native = RawSource::blank_native();
+        native.make[..3].copy_from_slice(&[b'D' as c_char, b'J' as c_char, b'I' as c_char]);
+        native.width = 64;
+        native.height = 48;
+        native.raw_bps = 16;
+        native.raw_count = 1;
+        native.cfa_width = 2;
+        native.cfa_height = 2;
+        native.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
+        let mut identity = NativeIdentity::blank();
+        identity.make = native.make;
+        identity.width = 64;
+        identity.height = 48;
+        identity.raw_bps = 16;
+        identity.raw_count = 1;
+        identity.cfa_width = 2;
+        identity.cfa_height = 2;
+        identity.cfa = native.cfa;
+        identity.unchanged_in(&native).unwrap();
+        type Change = (&'static str, fn(&mut NativeMetadata));
+        let changes: [Change; 10] = [
+            ("make", |n| n.make[0] = b'X' as c_char),
+            ("model", |n| n.model[0] = b'X' as c_char),
+            ("decoder", |n| n.decoder[0] = b'X' as c_char),
+            ("width", |n| n.width += 1),
+            ("height", |n| n.height += 1),
+            ("bit depth", |n| n.raw_bps = 14),
+            ("DNG version", |n| n.dng_version = 1),
+            ("decoder flags", |n| n.decoder_flags = 1),
+            ("frame count", |n| n.raw_count = 2),
+            ("CFA", |n| n.black_cfa[2] = 3),
+        ];
+        for (field, change) in changes {
+            let mut changed = native.clone();
+            change(&mut changed);
+            assert_eq!(
+                identity.unchanged_in(&changed),
+                Err(RawError::Native(format!(
+                    "LibRaw changed the identified {field} during unpack"
+                ))),
+                "{field}"
+            );
+        }
     }
 
     #[test]
@@ -2461,23 +2991,23 @@ mod tests {
         n.width = 16_385;
         n.height = 1;
         assert!(matches!(
-            RawSource::checked_len(&n),
+            RawSource::checked_len(n.width, n.height),
             Err(RawError::ResourceLimit(_))
         ));
         n.width = 16_384;
         n.height = 16_384;
         assert!(matches!(
-            RawSource::checked_len(&n),
+            RawSource::checked_len(n.width, n.height),
             Err(RawError::ResourceLimit(_))
         ));
         n.width = 16_000;
         n.height = 8_000;
-        let admitted = RawSource::checked_len(&n).unwrap();
+        let admitted = RawSource::checked_len(n.width, n.height).unwrap();
         assert_eq!(admitted, MAX_PIXELS);
         assert!(admitted * 3 * std::mem::size_of::<f32>() <= MAX_RGB_BYTES);
         n.height += 1;
         assert!(matches!(
-            RawSource::checked_len(&n),
+            RawSource::checked_len(n.width, n.height),
             Err(RawError::ResourceLimit(_))
         ));
         assert_eq!(exif_orientation(5), Ok(8));
