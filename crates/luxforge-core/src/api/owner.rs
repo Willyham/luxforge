@@ -2898,7 +2898,11 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
         let since = ok(&owner, client, "since", "events.since", json!({"after": 0}));
         assert_eq!(ready, since);
-        assert_eq!(ready["events"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            ready["events"].as_array().unwrap().len(),
+            2,
+            "the Develop's change and its end"
+        );
         // A cursor beyond the log is a gap, answered at once as events.since answers it.
         let ahead = wait(json!({"after": 99, "timeout_ms": 30_000}))
             .result
@@ -2997,7 +3001,9 @@ mod tests {
         );
         let job = JobId::parse(queued["job_id"].as_str().unwrap()).unwrap();
         owner.wait_source(agent, Some(&job)).unwrap();
-        assert_eq!(woken(), 1, "another client's import wakes the watcher");
+        // Once for each message that recorded something: the Develop's change, then its job's end.
+        let imported = woken();
+        assert!(imported >= 1, "another client's import wakes the watcher");
         let asset =
             ok(&owner, agent, "adopt", "job.adopt", json!({"job_id": job}))["asset"]["asset"]["id"]
                 .clone();
@@ -3012,9 +3018,13 @@ mod tests {
             );
         };
         version(desktop, "Mine");
-        assert_eq!(woken(), 1, "the desktop's own change does not wake it");
+        assert_eq!(
+            woken(),
+            imported,
+            "the desktop's own change does not wake it"
+        );
         version(agent, "Theirs");
-        assert_eq!(woken(), 2, "another client's change does");
+        assert_eq!(woken(), imported + 1, "another client's change does");
         ok(
             &owner,
             agent,
@@ -3022,11 +3032,15 @@ mod tests {
             "asset.state",
             json!({"asset_id": asset}),
         );
-        assert_eq!(woken(), 2, "a read changes nothing and wakes nobody");
+        assert_eq!(
+            woken(),
+            imported + 1,
+            "a read changes nothing and wakes nobody"
+        );
 
         owner.disconnect(desktop);
         version(agent, "After");
-        assert_eq!(woken(), 2, "a disconnected client is not woken");
+        assert_eq!(woken(), imported + 1, "a disconnected client is not woken");
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -5135,8 +5149,11 @@ mod tests {
             [
                 ("pick.develop".to_owned(), Value::Null, Value::Null),
                 ("pick.develop".to_owned(), Value::Null, Value::Null),
+                ("pick.develop".to_owned(), Value::Null, Value::Null),
+                ("pick.develop".to_owned(), Value::Null, Value::Null),
             ],
-            "a Develop is announced as the library change it recorded, and a preparation not at all"
+            "a Develop is announced as the library change it recorded, then its job's end, and a \
+             preparation not at all"
         );
         let (_, before) = events_after(&owner, desktop, 0);
 
@@ -5236,8 +5253,9 @@ mod tests {
                 json!({"after": after}),
             )
         };
-        assert_eq!(read(1)["gap"], json!(false));
-        assert_eq!(read(2)["gap"], json!(true));
+        // The Develop's change and its job's end.
+        assert_eq!(read(2)["gap"], json!(false));
+        assert_eq!(read(3)["gap"], json!(true));
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -5290,8 +5308,8 @@ mod tests {
         };
         let request = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
 
-        // catalog: a Develop commits its photograph, and its event, once. The event is recorded
-        // when its batch commits, so the retry is sent after the job ends.
+        // catalog: a Develop commits its photograph, and its events, once: its batch's and its
+        // end's, recorded as the job runs and ends, so the retry is sent after the job ends.
         let develop = json!({
             "targets": {"kind": "paths", "paths": [photo]},
             "into": [],
@@ -5304,7 +5322,14 @@ mod tests {
         assert_eq!(ready["status"], "ready");
         let asset = ready["result"]["developed"][0]["asset_id"].clone();
         let (events, developed_at) = events_after(&owner, client, 0);
-        assert_eq!(events, [("pick.develop".to_owned(), "develop".to_owned())]);
+        assert_eq!(
+            events,
+            [
+                ("pick.develop".to_owned(), "develop".to_owned()),
+                ("pick.develop".to_owned(), "develop".to_owned())
+            ],
+            "the batch and the job's end"
+        );
         let retried = ok(&owner, client, "develop", "pick.develop", develop);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], json!(job_id));

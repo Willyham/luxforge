@@ -367,10 +367,12 @@ fn a_batch_preset_writes_each_photograph_the_entry_a_single_call_writes() {
         .into_iter()
         .map(|event| (event["asset_id"].clone(), event["revision"].clone()))
         .collect();
-    let expected: Vec<(Value, Value)> = batch
+    let mut expected: Vec<(Value, Value)> = batch
         .iter()
         .map(|asset| (json!(asset), json!(harness.revision(asset))))
         .collect();
+    // Then the job's end, naming no photograph.
+    expected.push((Value::Null, Value::Null));
     assert_eq!(events, expected);
 }
 
@@ -576,7 +578,11 @@ fn a_retried_batch_is_answered_once() {
         [1, 1],
         "applied once"
     );
-    assert_eq!(harness.sequence(), sequence, "nothing is announced again");
+    assert_eq!(
+        harness.sequence(),
+        sequence + 1,
+        "nothing is announced again but the retry's job ending"
+    );
 
     let out = harness.dir.join("out");
     fs::create_dir_all(&out).unwrap();
@@ -636,7 +642,11 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
         ],
         "no temporary file is left"
     );
-    assert_eq!(harness.events(before, "batch.export").len(), 3);
+    assert_eq!(
+        harness.events(before, "batch.export").len(),
+        4,
+        "one event a file written, then the job's end"
+    );
 
     let singles = harness.dir.join("singles");
     fs::create_dir_all(&singles).unwrap();

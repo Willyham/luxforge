@@ -101,7 +101,7 @@ impl Owner {
             JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
                 self.catalog.previews.cancelled(job_id, &mut self.jobs)
             }
-            _ => self.catalog.library.cancelled(job_id),
+            _ => super::library::cancelled(self, job_id),
         }
     }
 

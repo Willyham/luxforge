@@ -129,3 +129,87 @@ fn a_library_job_commits_its_parts_in_order_and_a_cancel_between_parts_keeps_the
     join.join().unwrap();
     let _ = std::fs::remove_file(catalog);
 }
+
+fn events_after(owner: &OwnerHandle, client: ClientId, after: u64) -> Value {
+    call(owner, client, "events.since", json!({"after": after}))
+}
+
+fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Value {
+    let response = owner
+        .call(
+            client,
+            ApiRequest {
+                id: method.into(),
+                method: method.into(),
+                params,
+                token: None,
+            },
+        )
+        .unwrap();
+    response.result.expect("an answer")
+}
+
+/// Every job records one event as it ends, however it ends, under the request that started it and
+/// naming the job: a waiting job cancelled ends with its cancel, a running one when its worker
+/// posts back.
+#[test]
+fn a_library_job_records_its_end_naming_the_job_however_it_ends() {
+    let catalog = luxforge_testbase::paths::temp_catalog("library-job-end");
+    let (owner, join) =
+        OwnerHandle::start_with(&catalog, Arc::new(ModuleRegistry::builtin())).unwrap();
+    let client = owner.register();
+    let ends = |after: u64| -> Vec<(Value, Value, Value, Option<Value>)> {
+        events_after(&owner, client, after)["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| {
+                (
+                    event["method"].clone(),
+                    event["request_id"].clone(),
+                    event["job_id"].clone(),
+                    event.get("library_sequence").cloned(),
+                )
+            })
+            .collect()
+    };
+    let start = events_after(&owner, client, 0)["current_sequence"]
+        .as_u64()
+        .unwrap();
+
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    let committed = Arc::new(Mutex::new(Vec::new()));
+    let running = queue(&owner, 2, gate.clone(), committed.clone());
+    luxforge_testbase::wait_until("the first part", || committed.lock().unwrap().len() == 1);
+    let waiting = queue(
+        &owner,
+        1,
+        Arc::new(Gate::new()),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    assert_eq!(job(&owner, client, &waiting)["status"], "queued");
+    assert!(ends(start).is_empty(), "a part that announces nothing");
+
+    call(&owner, client, "job.cancel", json!({"job_id": waiting}));
+    assert_eq!(
+        ends(start),
+        [(json!("test.parts"), json!("parts"), json!(waiting), None)],
+        "the waiting job ends with its cancel"
+    );
+
+    gate.open();
+    assert_eq!(settled(&owner, client, &running)["status"], "ready");
+    assert_eq!(
+        ends(start),
+        [
+            (json!("test.parts"), json!("parts"), json!(waiting), None),
+            (json!("test.parts"), json!("parts"), json!(running), None),
+        ],
+        "the running job ends as its worker posts back"
+    );
+
+    owner.stop();
+    join.join().unwrap();
+    let _ = std::fs::remove_file(catalog);
+}

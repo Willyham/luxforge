@@ -169,6 +169,19 @@ impl Harness {
             .clone()
     }
 
+    /// The events after `after` that changed something, leaving out a job's end: an event that
+    /// names a job and nothing it changed.
+    fn changes_after(&self, after: u64) -> Vec<Value> {
+        self.events_after(after)
+            .into_iter()
+            .filter(|event| {
+                event.get("job_id").is_none()
+                    || event.get("library_sequence").is_some()
+                    || event.get("asset_id").is_some()
+            })
+            .collect()
+    }
+
     fn journal(&self) -> Value {
         self.ok("library.journal", json!({"limit": 500}))
     }
@@ -305,7 +318,11 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
         assert_eq!(row(&rows, index), ("found".into(), json!(now[index])));
     }
     assert_eq!(harness.journal(), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
+    let ended = harness.events_after(sequence);
+    assert_eq!(ended.len(), 1, "the search's end: {ended:?}");
+    assert_eq!(ended[0]["method"], "source.find");
+    assert!(ended[0]["job_id"].is_string(), "{ended:?}");
     assert_eq!(harness.locator(&assets[0]), originals[0]);
 
     // Relinked, all three in one change.
@@ -352,7 +369,7 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
             json!(now[index].parent().unwrap())
         );
     }
-    let events = harness.events_after(sequence);
+    let events = harness.changes_after(sequence);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["method"], "source.relink");
     assert_eq!(events[0]["library_sequence"], change);
@@ -473,7 +490,7 @@ fn each_photograph_gets_its_own_result_and_only_what_was_verified_relinks() {
     let sequence = harness.sequence();
     let unchanged = |harness: &Harness| {
         assert_eq!(harness.journal(), journal);
-        assert!(harness.events_after(sequence).is_empty());
+        assert!(harness.changes_after(sequence).is_empty());
         assert_eq!(harness.locator(moved), originals[0]);
     };
     // A file of other bytes was never verified: the whole request is refused, naming it.
@@ -762,7 +779,7 @@ fn a_cancelled_search_shows_its_progress_and_changes_nothing() {
         assert_eq!(harness.state(asset), before[index]);
     }
     assert_eq!(harness.journal(), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 
     // Searched again to its end, it is relinked.
     let rows = harness
