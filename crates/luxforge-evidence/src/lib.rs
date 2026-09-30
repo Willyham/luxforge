@@ -1660,11 +1660,14 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// {"positions": [5]}}` has a second client registered on the same owner pick the files at those
 /// view positions with `pick.set` (`"picked": false` clears them); the step waits until the
 /// desktop has evaluated its view again, which it learns of only through its own event sync.
+/// `{"folder": "/path"}` browses that folder on disk as Browse a folder… does, bypassing only the
+/// native dialog: the index lane reads it and the step waits until it is viewed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
     Switch(SelectWorkspace),
     Source(String),
+    Folder(String),
     Arrow {
         direction: ArrowKey,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -1722,6 +1725,7 @@ impl SelectStep {
     fn validate(&self) -> Result<(), String> {
         match self {
             Self::Source(name) => text(name, "select source"),
+            Self::Folder(path) => text(path, "select folder"),
             Self::Choose { item, .. } => text(item, "select choose item"),
             Self::AgentPick { positions, .. } => {
                 if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {

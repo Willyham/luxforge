@@ -12,7 +12,9 @@ use crate::{
             select::{SelectMessage, Step},
             sync::SyncMessage,
         },
-        select::{evaluate_now, events_now, facets_now, rows_now, session_now},
+        select::{
+            evaluate_now, events_now, facets_now, job_now, refresh_now, rows_now, session_now,
+        },
         tasks::call,
     },
     state::select::{Block, InfoModel, Shown, SourcePress},
@@ -372,5 +374,78 @@ fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
         editor.status.text
     );
     assert!(editor.document.state.is_none(), "nothing reloaded Develop");
+    finish(editor, catalog);
+}
+
+/// Browse a folder…: the index lane reads the folder (`index.refresh`, a job the desktop reads until
+/// it ends, the status bar saying so meanwhile), and then the folder is viewed with its
+/// subfolders.
+#[test]
+fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
+    let (mut editor, catalog) = selecting();
+    let folder = catalog.parent().unwrap().join("Card dump");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0");
+    for (name, into) in [
+        ("orientation-1.jpg", "a.jpg"),
+        ("orientation-6.jpg", "b.jpg"),
+        ("greyscale.jpg", "sub/c.jpg"),
+    ] {
+        std::fs::copy(fixtures.join(name), folder.join(into)).unwrap();
+    }
+    let _ = editor.update(Message::Select(SelectMessage::FolderPicked(Some(
+        folder.clone(),
+    ))));
+    assert!(editor.select.reading.is_some());
+    assert!(!editor.select_quiet(), "a folder being read is in flight");
+    assert!(
+        editor.status.text.starts_with("Reading "),
+        "{}",
+        editor.status.text
+    );
+    assert_eq!(editor.workspace.select.sources.on_disk[1].name, "Card dump");
+    let job = refresh_now(&editor.owner, editor.client, &folder);
+    let _ = editor.update(Message::Select(SelectMessage::Reading(job.clone())));
+    let job = job.unwrap();
+    let record = luxforge_testbase::wait_for("the folder's index.refresh to end", || {
+        let record = job_now(&editor.owner, editor.client, &job).unwrap();
+        (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+    });
+    assert_eq!(record["status"], "ready", "{record}");
+    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(record))));
+    assert!(editor.select.reading.is_none());
+    assert!(
+        editor.select.state.loading,
+        "the folder is viewed once it is read"
+    );
+    evaluate(&mut editor);
+    let summary = editor.select.state.summary.as_ref().unwrap();
+    assert_eq!(summary.count, 3, "the folder with its subfolder");
+    let listed = folder.canonicalize().unwrap();
+    assert!(
+        matches!(
+            &summary.query.source,
+            ViewSource::Folder { path, subfolders: true } if path == &listed
+        ),
+        "the folder as the index listed it: {:?}",
+        summary.query.source
+    );
+    assert!(editor.workspace.select.sources.on_disk[1].selected);
+    assert_eq!(editor.workspace.select.title.name, "Card dump");
+    // A failed read says why and views nothing.
+    let _ = editor.update(Message::Select(SelectMessage::FolderPicked(Some(
+        folder.join("missing"),
+    ))));
+    let refused = refresh_now(&editor.owner, editor.client, &folder.join("missing"));
+    let failed = refused.is_err();
+    let _ = editor.update(Message::Select(SelectMessage::Reading(refused)));
+    if failed {
+        assert!(editor.select.reading.is_none());
+        assert!(
+            editor.status.text.starts_with("Could not read"),
+            "{}",
+            editor.status.text
+        );
+    }
     finish(editor, catalog);
 }

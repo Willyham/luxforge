@@ -909,6 +909,7 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
     let steps = round_trip(json!([
         {"select": {"switch": "select"}},
         {"select": {"source": "Konstanz \u{b7} 12\u{2013}13 Sep"}},
+        {"select": {"folder": "/Volumes/SSD/Pictures"}},
         {"select": {"arrow": {"direction": "right"}}},
         {"select": {"arrow": {"direction": "up", "extend": true}}},
         {"select": {"choose": {"menu": "group", "item": "Day"}}},
@@ -920,20 +921,21 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": {"switch": "develop"}},
     ]));
     assert_eq!(
-        steps[2],
+        steps[3],
         Step::Select(SelectStep::Arrow {
             direction: ArrowKey::Right,
             extend: false
         })
     );
     assert_eq!(
-        steps[8],
+        steps[9],
         Step::Select(SelectStep::AgentPick {
             positions: vec![5, 6],
             picked: true
         })
     );
     refused(json!([{"select": {"source": " "}}]), "select source");
+    refused(json!([{"select": {"folder": ""}}]), "select folder");
     refused(
         json!([{"select": {"agent_pick": {"positions": []}}}]),
         "1 to 64 positions",

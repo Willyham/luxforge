@@ -3,7 +3,8 @@
 //! flight. An agent's pick is sent through the run's second client and captured once the desktop
 //! has evaluated its view again, which it learns of only through its own event sync. Each settled
 //! step records the owner's own answer for this client's session (`session.state`'s `browse`), so
-//! a frame's selection can be checked against what the owner holds.
+//! a frame's selection can be checked against what the owner holds. A folder is browsed as Browse a
+//! folder… does, bypassing only the native dialog.
 use super::{AGENT_ACTOR, Settle};
 use crate::app::{
     Editor,
@@ -38,6 +39,15 @@ impl Editor {
                 task
             }
             SelectStep::Source(name) => self.source_step(&name),
+            SelectStep::Folder(path) => {
+                if !self.select_shown() {
+                    return self.fail_step("Select is not shown");
+                }
+                let task = self.update(Message::Select(SelectMessage::FolderPicked(Some(
+                    path.into(),
+                ))));
+                self.await_select(task)
+            }
             SelectStep::Arrow { direction, extend } => self.arrow_step(direction, extend),
             SelectStep::Choose { menu, item } => self.choose_step(menu, &item),
             SelectStep::Click {

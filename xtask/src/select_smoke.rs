@@ -1,17 +1,21 @@
 //! The `select` smoke scenario: the Select workspace's shell over a generated catalog, in the real
 //! editor at 1440 × 900.
 //!
-//! The run generates its catalog and index first (`generate-catalog --files 2000 --assets 3000`,
-//! seed 1: no image files, so every cell is the placeholder at its photograph's shape) into
-//! `generated/`, and asks the core for its own answers over a pristine copy before the editor
-//! touches it: the event list, the event "Konstanz · 12–13 Sep" viewed as the desktop first shows
-//! it and grouped by Day, and the rows of both. The editor then opens that catalog with nothing
+//! The run generates its catalog and index first (`generate-catalog --files 2000 --assets 3000
+//! --images 120`, seed 1) into `generated/`: an index of files with no image data behind them,
+//! and a folder of real JPEGs. The desktop draws no previews yet, so every cell is the placeholder
+//! at its photograph's shape. The run asks the core for its own answers over a pristine copy
+//! before the editor touches it: the event list, the event "Konstanz · 12–13 Sep" viewed as the
+//! desktop first shows it and grouped by Day, the rows of both, and the folder of real images read
+//! and viewed. The editor then opens that catalog with nothing
 //! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, its events
 //! listed; the event opened from the sources panel (the grouped grid, the Info panel, the status
 //! line); the first cell made active with `→`, then the next, then the selection extended with
 //! Shift+`→`; the Group chip set to Day; an agent's `pick.set` through a second client, which the
-//! desktop reads through its own event sync and answers by evaluating its view again; and back to
-//! Develop through the switch.
+//! desktop reads through its own event sync and answers by evaluating its view again; a folder of
+//! real generated JPEGs (`--images 120`, with EXIF and thumbnails and their ground truth in
+//! `images/manifest.json`) browsed on disk, which the index lane reads before it is viewed; and
+//! back to Develop through the switch.
 //!
 //! Each frame's `select` block is checked against the core's own answers: the view's size, picks
 //! and group layout as `browse.view` answered the runner's client, and the selection as the owner
@@ -31,7 +35,7 @@ use luxforge_evidence::{self as script, ArrowKey, SelectMenu, SelectStep, Select
 pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates its catalog and index into `generated/` with \
-    `cargo xtask generate-catalog --files 2000 --assets 3000 --seed 1`, asks the core for the \
+    `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, asks the core for the \
     answers the frames are checked against over a pristine copy (`select-expected.json`), and \
     launches the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and index.
@@ -41,6 +45,9 @@ pub const EXPECTED: &str = "select-expected.json";
 const SEED: u64 = 1;
 const FILES: u32 = 2000;
 const ASSETS: u32 = 3000;
+/// Real generated JPEGs, with EXIF and embedded thumbnails, and their ground truth in
+/// `images/manifest.json`: the folder browsed on disk.
+const IMAGES: u32 = 120;
 /// The event the run opens, as `event.list` names it, and as the sources panel and the title bar
 /// label it.
 const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
@@ -50,7 +57,7 @@ const AGENT: &str = "evidence-agent";
 
 /// Every frame, in order. The agent picks `pick`, a file of the Day-grouped view the core said
 /// was not picked, on the first screen.
-pub fn plan(pick: u32, count: u64) -> Plan {
+pub fn plan(pick: u32, count: u64, folder: &str, images: u64) -> Plan {
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let arrow = |direction, extend| SelectStep::Arrow { direction, extend };
     Plan::new(vec![
@@ -78,6 +85,8 @@ pub fn plan(pick: u32, count: u64) -> Plan {
         .status(format!(
             "{EVENT_LABEL} changed elsewhere and was read again \u{b7} {count} in view"
         )),
+        select("folder", SelectStep::Folder(folder.into()))
+            .status(format!("images \u{b7} {images} in view")),
         select("develop", SelectStep::Switch(SelectWorkspace::Develop)),
     ])
 }
@@ -148,9 +157,20 @@ fn view_record(summary: &Value) -> Value {
 }
 
 /// The core's answers before the run: the events, the event as the desktop first views it and
-/// grouped by Day, where the items the arrows select move to under Day, and the file the agent
-/// picks.
+/// grouped by Day, where the items the arrows select move to under Day, the file the agent picks,
+/// and the folder of real images as the index lane reads it and the view it gives, beside the
+/// moments its manifest records.
 fn expect(generated: &Path) -> Result<Value> {
+    let images = generated.join("images");
+    let manifest = read_json(&images.join("manifest.json"))?;
+    let files = manifest["files"]
+        .as_array()
+        .ok_or("The image manifest lists no files")?;
+    let moments: std::collections::BTreeSet<&str> = files
+        .iter()
+        .filter(|file| file["kind"] != "single")
+        .filter_map(|file| file["moment"].as_str())
+        .collect();
     over_copy(generated, "expected", |owner, client| {
         let list = ask(owner, client, "event.list", json!({}))?;
         let events = list["events"]
@@ -206,7 +226,39 @@ fn expect(generated: &Path) -> Result<Value> {
             })
             .ok_or("the Day view's first screen has no unpicked file")?;
         let undated = events.iter().any(|event| event["undated"] == true);
+        // The folder of real images, read as the desktop reads it and viewed with its subfolders.
+        let started = ask(
+            owner,
+            client,
+            "index.refresh",
+            json!({"source": {"kind": "folder", "path": images}}),
+        )?;
+        let job = json!({"job_id": started["job_id"]});
+        let read = loop {
+            let read = ask(owner, client, "job.read", job.clone())?;
+            if !matches!(read["status"].as_str(), Some("queued" | "running")) {
+                break read;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        ensure(
+            read["status"] == "ready",
+            format!("the core could not read the images: {read}"),
+        )?;
+        let listed = read["result"]["roots"][0].clone();
+        let folder = ask(
+            owner,
+            client,
+            "browse.view",
+            json!({"source": {"kind": "folder", "path": listed, "subfolders": true}}),
+        )?;
         Ok(json!({
+            "folder": {
+                "path": images,
+                "listed": listed,
+                "view": view_record(&folder),
+                "manifest": {"images": files.len(), "moments": moments.len()},
+            },
             "event": {"id": event["id"], "name": event["name"], "count": event["count"]},
             "events": events.len(),
             "months": list["months"].as_array().map_or(0, Vec::len) + usize::from(undated),
@@ -238,7 +290,7 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
                     seed: SEED,
                     files: Some(FILES),
                     assets: Some(ASSETS),
-                    images: None,
+                    images: Some(IMAGES),
                 },
             )?;
             write_json(&expected_file, &expect(&generated)?)?;
@@ -250,7 +302,13 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         let count = expected["first"]["count"]
             .as_u64()
             .ok_or("The expected answers hold no view")?;
-        let plan = plan(pick, count);
+        let folder = expected["folder"]["path"]
+            .as_str()
+            .ok_or("The expected answers name no folder")?;
+        let images = expected["folder"]["view"]["count"]
+            .as_u64()
+            .ok_or("The expected answers hold no folder view")?;
+        let plan = plan(pick, count, folder, images);
         let mut launch = Launch::app()
             .catalog(&generated.join(generate_catalog::CATALOG))
             .script("script.json", plan.script());
@@ -609,6 +667,33 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"selection": recorded, "catalog": after, "status": picked_frame.state()["status"]}),
     );
 
+    // A folder of real images browsed on disk: read by the index lane, then viewed with its
+    // subfolders, its days, cameras and moments the core's own and its moments the manifest's.
+    let folder = launch.at("folder")?;
+    let block = select(folder);
+    ensure(
+        block["source"]["kind"] == "folder" && block["source"]["subfolders"] == true,
+        format!("The folder is viewed as {}", block["source"]),
+    )?;
+    let view = view_is(folder, "folder", &expected["folder"]["view"])?;
+    let manifest = &expected["folder"]["manifest"];
+    ensure(
+        block["count"] == manifest["images"] && block["groups"]["moments"] == manifest["moments"],
+        format!(
+            "The folder shows {} photographs and {} moments, its manifest {} and {}",
+            block["count"], block["groups"]["moments"], manifest["images"], manifest["moments"]
+        ),
+    )?;
+    ensure(
+        block["title"]["name"] == "images" && block["reading_folder"] == false,
+        format!("The folder's title or reading state: {}", block["title"]),
+    )?;
+    checks.note(
+        folder,
+        "a folder of real images read and viewed",
+        json!({"view": view, "manifest": manifest, "grid": grid_drawn(folder)?}),
+    );
+
     // Back to Develop: Select keeps its view for when it is shown again.
     let develop = launch.at("develop")?;
     let block = select(develop);
@@ -618,7 +703,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     for key in ["revision", "count", "picked", "selection", "grouping"] {
         ensure(
-            block[key] == select(picked_frame)[key],
+            block[key] == select(folder)[key],
             format!("Switching to Develop changed Select's {key}"),
         )?;
     }
@@ -636,9 +721,9 @@ mod tests {
 
     #[test]
     fn the_select_plan_is_well_formed() {
-        let plan = plan(7, 205);
+        let plan = plan(7, 205, "/generated/images", 120);
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 9);
+        assert_eq!(plan.len(), 10);
         assert!(plan.scripted());
     }
 }
