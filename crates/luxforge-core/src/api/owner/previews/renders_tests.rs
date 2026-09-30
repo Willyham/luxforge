@@ -59,26 +59,43 @@ impl Setup {
     /// The setup with `photos` — each a file of `fixtures/s0`, copied in under its own name and
     /// developed into the catalog, with a Basic edit when `edited` — before the owner starts.
     fn new(name: &str, photos: &[&str], edited: bool) -> (Self, Vec<Photo>) {
+        let sources: Vec<PathBuf> = photos
+            .iter()
+            .map(|photo| paths::fixture(&format!("s0/{photo}")))
+            .collect();
+        Self::of(name, &sources, |service, asset, _| {
+            if edited {
+                service
+                    .apply_action(
+                        asset,
+                        mutation(0, "basic"),
+                        "set-basic",
+                        json!({"exposure": 0.4, "contrast": 25}),
+                    )
+                    .unwrap();
+            }
+        })
+    }
+
+    /// The setup with each of `sources` copied in under its own name and developed into the
+    /// catalog, then edited by `edit` (given its position), before the owner starts.
+    fn of(
+        name: &str,
+        sources: &[PathBuf],
+        edit: impl Fn(&mut EditorService, &AssetId, usize),
+    ) -> (Self, Vec<Photo>) {
         let root = paths::temp_dir(name);
         let catalog = root.join("catalog.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
-        let photos = photos
+        let photos = sources
             .iter()
             .enumerate()
-            .map(|(index, photo)| {
-                let path = root.join(format!("{index}-{photo}"));
-                fs::copy(paths::fixture(&format!("s0/{photo}")), &path).unwrap();
+            .map(|(index, source)| {
+                let file_name = source.file_name().unwrap().to_string_lossy();
+                let path = root.join(format!("{index}-{file_name}"));
+                fs::copy(source, &path).unwrap();
                 let asset = service.import(&path).unwrap().asset.id;
-                if edited {
-                    service
-                        .apply_action(
-                            &asset,
-                            mutation(0, "basic"),
-                            "set-basic",
-                            json!({"exposure": 0.4, "contrast": 25}),
-                        )
-                        .unwrap();
-                }
+                edit(&mut service, &asset, index);
                 let row: i64 = service
                     .connection
                     .query_row(
@@ -303,6 +320,111 @@ fn path_of(preview: &Value) -> PathBuf {
 
 fn sha256(path: &Path) -> String {
     format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+}
+
+/// A `width` × `height` JPEG of gradients and fine texture in a scratch directory of its own:
+/// larger than the grid tier, so its grid tier is rendered through the proxy.
+fn generated_jpeg(label: &str, width: u32, height: u32) -> PathBuf {
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            rgba.extend_from_slice(&[
+                (x * 255 / width) as u8,
+                (y * 255 / height) as u8,
+                ((x * 7 + y * 13) % 256) as u8,
+                255,
+            ]);
+        }
+    }
+    let mut jpeg = Vec::new();
+    let settings = luxforge_jpeg::Settings {
+        quality: 92,
+        chroma: (1, 1),
+        segments: &[],
+        icc: None,
+    };
+    luxforge_jpeg::encode(&mut jpeg, width, height, &rgba, &settings, &mut |_| {
+        Ok::<(), crate::Error>(())
+    })
+    .unwrap();
+    let path = paths::temp_dir(label).join(format!("{label}.jpg"));
+    fs::write(&path, jpeg).unwrap();
+    path
+}
+
+/// Every preview says whether it approximates its entry, and a tier read back from the cache says
+/// what its render said. A Basic edit's tiers are exact; a Clarity edit's grid tier is rendered
+/// through the proxy, whose spatial neighbourhoods scale with the tier, and is approximate, while
+/// its large tier, whose stage already fits, is the exact render and is not. The camera preview
+/// shown until the first render is never approximate.
+#[test]
+fn a_rendered_tier_says_whether_it_is_approximate() {
+    let sources = [
+        generated_jpeg("rendered-owner-approximate-basic", 1200, 800),
+        generated_jpeg("rendered-owner-approximate-clarity", 1000, 800),
+    ];
+    let (setup, photos) = Setup::of(
+        "rendered-owner-approximate",
+        &sources,
+        |service, asset, at| {
+            let (action, fields) = match at {
+                0 => ("set-basic", json!({"exposure": 0.4, "contrast": 25})),
+                _ => ("set-presence", json!({"clarity": 40})),
+            };
+            service
+                .apply_action(asset, mutation(0, "edit"), action, fields)
+                .unwrap();
+        },
+    );
+    let [basic, clarity] = &photos[..] else {
+        unreachable!()
+    };
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_renders(Some(gate.clone()));
+    let queued = setup.read(clarity, GRID, "visible");
+    wait_until("the camera preview is written", || {
+        setup.has_row(clarity, &clarity.entry, GRID, "embedded")
+    });
+    let fallback = setup.read(clarity, GRID, "visible")["fallback"].clone();
+    assert_eq!(fallback["origin"], "embedded");
+    assert_eq!(fallback["approximate"], false, "a camera preview is exact");
+    gate.open();
+    assert_eq!(setup.settled(&queued["job_id"])["status"], "ready");
+
+    let approximate = |photo: &Photo, tier: PreviewTier| {
+        let preview = setup.ready(photo, tier);
+        assert_eq!(preview["origin"], "rendered");
+        let stored: bool = setup
+            .index
+            .connection()
+            .query_row(
+                "SELECT approximate FROM photo_previews WHERE asset_id = ?1 AND entry_id = ?2
+                   AND tier = ?3",
+                params![photo.asset.as_str(), photo.entry.as_str(), tier.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            preview["approximate"],
+            json!(stored),
+            "the row keeps the label"
+        );
+        stored
+    };
+    assert!(
+        !approximate(basic, GRID),
+        "a Basic edit is exact at any size"
+    );
+    assert!(!approximate(basic, LARGE));
+    assert!(
+        approximate(clarity, GRID),
+        "Clarity is approximated at 512 px"
+    );
+    assert!(
+        !approximate(clarity, LARGE),
+        "the stage fits: the exact render"
+    );
 }
 
 /// A photograph's grid read queues a `preview-render` job naming the photograph, which answers the
@@ -678,7 +800,7 @@ fn another_generations_rows_are_discarded() {
                 .index
                 .connection()
                 .execute(
-                    "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     params![
                         asset.as_str(),
                         entry.as_str(),
@@ -689,7 +811,8 @@ fn another_generations_rows_are_discarded() {
                         341,
                         4,
                         origin,
-                        0
+                        0,
+                        false
                     ],
                 )
                 .unwrap();
@@ -796,7 +919,7 @@ fn views_over_photographs_make_camera_previews_only() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 3, "read": 3, "deferred": 0, "failed": 0})
+        json!({"items": 3, "read": 3, "deferred": 0, "failed": 0})
     );
     assert!(setup.owner.renders_dispatched().is_empty(), "no render");
     assert_eq!(setup.owner.cameras_dispatched().len(), 3);
@@ -1141,3 +1264,6 @@ fn a_supplied_raw_shows_its_camera_preview_then_renders_both_tiers() {
     assert_eq!(sha256(&original), before, "nikon_z6.NEF changed");
     let _ = fs::remove_dir_all(&root);
 }
+
+#[path = "forget_tests.rs"]
+mod preview_forget;
