@@ -2,6 +2,8 @@
 
 Status: **planned, not implemented or photographically qualified.** The owner delegated the choices in this planning request on 2026-09-30; these are the selected design defaults, with no owner-review gate. This request does not authorize implementation. [Task plan](../../tasks/detail.json) · [decisions](../decisions.md#detail).
 
+The planned panel is drawn on the [Detail board](develop-workspace/detail.png) (at 100%) and in its neutral, masked and Fit states on the [planned module panels](develop-workspace/planned-module-panels.png); [its own render](develop-workspace/modules/detail.png) shows the adjusted section. The boards are design references, not evidence of anything built.
+
 ## Outcome and scope
 
 One small Detail module supplies manual capture sharpening and luminance/colour noise reduction on every supported JPEG and developed RAW source, globally or through existing masks. It keeps source bytes, continuous RAW editing, immutable history and UI/API parity. Lightroom informs familiar controls and 100% inspection, not equations or value equivalence ([Adobe's Detail guidance](https://helpx.adobe.com/in/lightroom-classic/desktop/process-and-develop-photos/retouch-photos.html)); the repository's [Lightroom](../research/lightroom/detail-and-local-contrast.md) and [darktable](../research/darktable/raw-and-denoise.md) research inform the alternatives.
