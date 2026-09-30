@@ -18,10 +18,9 @@ use crate::{
     EditorService, Error,
     api::ClientSession,
     api::methods::session_value,
-    browse::{self, Context, EventCache, SelectRequest, View},
+    browse::{self, Context, EventCache, Probe, SelectRequest, View},
     catalog_types::{
-        BracketProbe, BrowseSession, FileId, MAX_VIEW_ITEMS, NoProbe, ViewItem, ViewQuery,
-        ViewRows, ViewSummary,
+        BrowseSession, FileId, MAX_VIEW_ITEMS, ViewItem, ViewQuery, ViewRows, ViewSummary,
         api::{BrowseFacets, BrowseRows, BrowseSelect, BrowseView, EventListParams},
     },
 };
@@ -73,12 +72,6 @@ impl ViewsLane {
 
 fn no_view() -> Error {
     Error::validation("this client holds no view; evaluate one with browse.view")
-}
-
-/// The preview-brightness bracket check views group with: none until lane B's lands, so a run the
-/// metadata cannot classify is a burst.
-fn probe(_: &Owner) -> &'static dyn BracketProbe {
-    &NoProbe
 }
 
 /// Ask the preview lane for a view's missing grid previews, as one background job per client that
@@ -177,12 +170,11 @@ pub(in crate::api) fn browse_view(
         grouping: p.grouping.unwrap_or_default(),
         thresholds: p.thresholds.unwrap_or_default(),
     };
-    let probe = probe(owner);
     let evaluation = browse::evaluate(
         Context {
             service: &owner.service,
             events: &mut owner.catalog.views.events,
-            probe,
+            probe: Probe::Previews,
             limit: MAX_VIEW_ITEMS,
         },
         &query,
@@ -274,12 +266,11 @@ pub(in crate::api) fn browse_facets(
     _: &Call<'_>,
     p: BrowseFacets,
 ) -> Result<Value, Error> {
-    let probe = probe(owner);
     value(browse::facets(
         Context {
             service: &owner.service,
             events: &mut owner.catalog.views.events,
-            probe,
+            probe: Probe::Previews,
             limit: MAX_VIEW_ITEMS,
         },
         &p.source,
