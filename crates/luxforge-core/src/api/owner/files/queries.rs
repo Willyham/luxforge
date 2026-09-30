@@ -20,7 +20,9 @@
 //!   lane, whose watcher reports every volume mounted or taken out ([`volume`]), which asks for
 //!   the next survey. Where the platform offers no watcher, a call that reads what an earlier
 //!   call read asks for a survey instead ([`learned`]). A card mounted while the lane watches is
-//!   listed once a survey has found its `DCIM` folder.
+//!   listed once a survey has found its `DCIM` folder, and so is every card already mounted as a
+//!   catalog with indexed folders opens and starts the lane, once the first survey that begins
+//!   after its watcher has found it ([`lane_started`]).
 //! - **The index.** Lane A's reads use the service's index only once it is open: the survey opens
 //!   an index that is there, and the index lane hands over the one it creates, so neither opening
 //!   nor recreating it happens on the owner.
@@ -39,7 +41,7 @@ use crate::{
     },
 };
 use crate::{
-    catalog_types::{IndexSource, RootKind},
+    catalog_types::{IndexSource, RootKind, Volume, VolumeId},
     index::lane::{RootPlan, VolumeEvent},
 };
 use serde_json::Value;
@@ -129,6 +131,28 @@ pub(super) fn volume(owner: &mut Owner, event: VolumeEvent) {
     request_survey(owner);
 }
 
+/// The index lane started, its watcher reporting every volume mounted from now on. When it started
+/// as the catalog opened, the cards already mounted are listed as if they mounted now, as
+/// `index.refresh` jobs no request made, once the next survey — which begins after the watcher did,
+/// so no card falls between them — has found them. A test's lane lists only the cards of the mount
+/// table the test stands in with, never this machine's own.
+pub(super) fn lane_started(owner: &mut Owner) {
+    let surveys = &mut owner.catalog.files.surveys;
+    if !std::mem::take(&mut surveys.opening) {
+        return;
+    }
+    #[cfg(test)]
+    if matches!(
+        owner.catalog.files.mounts,
+        crate::index::volumes::MountSource::Platform
+    ) {
+        return;
+    }
+    let surveys = &mut owner.catalog.files.surveys;
+    surveys.at_start = Some(surveys.started + 1);
+    request_survey(owner);
+}
+
 /// Ask for a survey: now when none is running, else once the running one ends. The mount
 /// notifications call this when a volume is mounted or taken out.
 pub(super) fn request_survey(owner: &mut Owner) {
@@ -196,6 +220,12 @@ pub(super) struct Surveys {
     /// Volumes the watcher reported mounted, each with the first survey that learns it: once that
     /// survey has, one with a `DCIM` folder is listed as a card.
     mounted: Vec<(PathBuf, u64)>,
+    /// The lane is starting as the catalog opens: once its watcher runs, the cards mounted are
+    /// listed.
+    pub(super) opening: bool,
+    /// The first survey after the lane started as the catalog opened, while it has still to post
+    /// its last: each card it learns is listed, as a card mounted then would be.
+    at_start: Option<u64>,
 }
 
 /// A call waiting for its question to be answered.
@@ -432,7 +462,14 @@ pub(super) fn surveyed(owner: &mut Owner, post: SurveyPost) {
     }
     let surveys = &mut owner.catalog.files.surveys;
     let current = generation == surveys.generation;
+    // The cards this post learned, which the first survey after the lane started lists.
+    let mut cards = Vec::new();
     if current && let Some(survey) = survey {
+        cards.extend(survey.learned.iter().filter_map(|mounted| {
+            mounted
+                .card_folder()
+                .map(|dcim| (mounted.volume.clone(), dcim))
+        }));
         surveys.known.merge(survey);
         surveys.surveyed = true;
         surveys.consumed = false;
@@ -456,6 +493,7 @@ pub(super) fn surveyed(owner: &mut Owner, post: SurveyPost) {
         }
     }
     cards_mounted(owner, number, last);
+    cards_at_start(owner, number, last, cards);
     // A call answered again above may have started a survey already, which serves the one asked
     // for meanwhile.
     let surveys = &mut owner.catalog.files.surveys;
@@ -496,23 +534,58 @@ fn cards_mounted(owner: &mut Owner, number: u64, last: bool) {
     }
     owner.catalog.files.surveys.mounted = kept;
     for (volume, dcim) in cards {
-        let source = IndexSource::Card {
-            volume_id: volume.id.clone(),
-        };
-        let roots = vec![RootPlan {
-            path: dcim,
-            kind: RootKind::Card,
-            volume_id: Some(volume.id),
-        }];
-        // A full queue leaves the card unlisted until a client refreshes it.
-        let _ = super::start_refresh(
-            owner,
-            source,
-            roots,
-            format!("the {} card", volume.label),
-            &super::unrequested(),
-        );
+        list_card(owner, volume, dcim);
     }
+}
+
+/// List each card post `cards` of survey `number` learned, when that survey is the first since the
+/// lane started as the catalog opened (or a later one, should that one have ended without posting):
+/// the cards mounted as it started, each still mounted now, listed as a card mounted then would be.
+fn cards_at_start(owner: &mut Owner, number: u64, last: bool, cards: Vec<(Volume, PathBuf)>) {
+    let files = &mut owner.catalog.files;
+    let Some(first) = files.surveys.at_start else {
+        return;
+    };
+    if number < first {
+        return;
+    }
+    if last {
+        files.surveys.at_start = None;
+    }
+    let listed = files.mounts.list();
+    let mounted: Vec<VolumeId> = files
+        .surveys
+        .known
+        .now(&listed)
+        .volumes()
+        .map(|mounted| mounted.volume.id.clone())
+        .collect();
+    for (volume, dcim) in cards {
+        if mounted.contains(&volume.id) {
+            list_card(owner, volume, dcim);
+        }
+    }
+}
+
+/// List the card `volume`, whose `DCIM` folder is `dcim`, as an `index.refresh` job no request
+/// made, or join the one listing it.
+fn list_card(owner: &mut Owner, volume: Volume, dcim: PathBuf) {
+    let source = IndexSource::Card {
+        volume_id: volume.id.clone(),
+    };
+    let roots = vec![RootPlan {
+        path: dcim,
+        kind: RootKind::Card,
+        volume_id: Some(volume.id),
+    }];
+    // A full queue leaves the card unlisted until a client refreshes it.
+    let _ = super::start_refresh(
+        owner,
+        source,
+        roots,
+        format!("the {} card", volume.label),
+        &super::unrequested(),
+    );
 }
 
 /// Answer a call that waited for the survey as if it had just been asked. A panic while answering

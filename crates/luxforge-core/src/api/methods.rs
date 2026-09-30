@@ -844,7 +844,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "index.folders",
         params::NoParams,
         owner::files::index_folders,
-        "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?, watching, unwatched?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing; watching when the platform's change notifications keep its rows current, else unwatched says why (not yet listed, offline, on a network volume, a platform limit)"
+        "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?, watching, unwatched?, stale?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing; watching when the platform's change notifications keep its rows current, else unwatched says why (not yet listed, offline, on a network volume, a platform limit); stale (omitted while false) when a listing the index lane ran on its own, an index-refresh job no request started, was cancelled or failed: the folder is listed again before its next change is applied and as the catalog next opens, and is current once a listing of it completes"
     ),
     owner!(
         "index.refresh",

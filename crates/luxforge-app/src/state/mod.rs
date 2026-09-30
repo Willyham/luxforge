@@ -802,9 +802,7 @@ mod tests {
             "budgets": {"colour_scratch": budget, "spatial": budget}
         }))
         .unwrap();
-        scene
-            .performance
-            .push(sample, luxforge_core::ActivitySnapshot::default());
+        scene.performance.push(sample);
         workspace.derive(&scene.inputs());
         assert_ne!(workspace.performance.version, version);
         assert_eq!(workspace.performance.metrics[0].value, "1.42");
@@ -812,6 +810,89 @@ mod tests {
         scene.performance_expanded = false;
         workspace.derive(&scene.inputs());
         assert!(workspace.performance.metrics.is_empty(), "collapsed");
+    }
+
+    /// The Performance section's job rows and the status bar's job come from the one board read:
+    /// after the read a wake asks for, both show the job that began, and after the read that finds
+    /// it ended, neither shows it running — with no sample of the section's in between. A read
+    /// rebuilds the open section's rows but not its sparklines, and nothing of the collapsed one.
+    #[test]
+    fn the_section_and_the_status_bar_show_the_same_board_read() {
+        use luxforge_core::activity::{ActiveActivity, ActivityEntry, Outcome, RecentActivity};
+        let indexing = ActivityEntry {
+            id: 4,
+            kind: "index.refresh".into(),
+            label: "Indexing".into(),
+            detail: Some("/Volumes/Archive/2026".into()),
+            job_id: Some("job-4".into()),
+            ..ActivityEntry::default()
+        };
+        let board = |active: Vec<ActiveActivity>, recent: Vec<RecentActivity>| {
+            luxforge_core::ActivitySnapshot {
+                active,
+                recent,
+                ..luxforge_core::ActivitySnapshot::default()
+            }
+        };
+        let mut scene = Scene::new(descriptors());
+        scene.performance_expanded = true;
+        let mut workspace = scene.derive();
+        let version = workspace.performance.version;
+        assert_eq!(workspace.performance.jobs[0].label, "No background work");
+        assert_eq!(workspace.long_work.busiest, None);
+
+        // The read a wake asks for: the job has run long enough to show.
+        scene.long_work.observe(board(
+            vec![ActiveActivity {
+                entry: indexing.clone(),
+                elapsed_ms: 1_200,
+            }],
+            Vec::new(),
+        ));
+        workspace.derive(&scene.inputs());
+        let busiest = workspace
+            .long_work
+            .busiest
+            .clone()
+            .expect("the status bar's job");
+        let row = &workspace.performance.jobs[0];
+        assert_eq!(
+            (busiest.job_id.as_str(), busiest.label.as_str()),
+            (
+                row.work.as_ref().map_or("", |work| work.job_id.as_str()),
+                row.label.as_str()
+            ),
+            "{row:?}"
+        );
+        assert_eq!(workspace.performance.caption.as_deref(), Some("1 job"));
+        assert_eq!(
+            workspace.performance.version, version,
+            "the sparklines are left as they were"
+        );
+
+        // The read that finds it ended: neither shows it running.
+        scene.long_work.observe(board(
+            Vec::new(),
+            vec![RecentActivity {
+                entry: indexing,
+                outcome: Outcome::Cancelled,
+                duration_ms: 1_400,
+                ended_ms_ago: 10,
+            }],
+        ));
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.long_work.busiest, None);
+        let row = &workspace.performance.jobs[0];
+        assert!(!row.running && row.work.is_none(), "{row:?}");
+        assert_eq!(row.detail.as_deref(), Some("Cancelled 1 s ago"));
+
+        // Collapsed, a read changes nothing of the section.
+        scene.performance_expanded = false;
+        workspace.derive(&scene.inputs());
+        let collapsed = workspace.performance.clone();
+        scene.long_work.observe(board(Vec::new(), Vec::new()));
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.performance, collapsed);
     }
 
     #[test]
