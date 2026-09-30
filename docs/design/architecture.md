@@ -180,6 +180,8 @@ The rectangle a resample reads is one rule, `Resample::reads`, for the colour ba
 
 ### Geometry beyond an exact orientation
 
+The [lens and perspective design](lens-and-perspective.md) plans the nonlinear mapping primitive and its consumers; it is not implemented.
+
 The geometry tail is the exact orientation, then the crop, whose straightening is the one resample. The `ToolModule::carry` hook ([module trait](modules-and-api.md#module-trait)) lets a transform reposition a later geometry layer through an exact quarter turn or reflection, and nothing more: it rewrites a stored payload, it does not change how the host evaluates a stage. A geometry effect that is not affine over the whole stage, such as a perspective or lens warp, is a new host primitive, not a use of the hook, and a module must not fake one through it. That primitive would have to be carried through every place that today knows only exact mappings and the resample:
 
 - `modules/processing.rs`, the `Processing` primitives a module compiles to;

@@ -1,0 +1,883 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "lens-and-perspective",
+  "title": "Lens and perspective correction",
+  "objective": "Deliver offline rectilinear profile distortion and manual two-axis perspective through shared bounded geometry, preserving content coordinates, immutable history and exact export while preventing duplicate embedded DNG correction.",
+  "context_summary": "Planning only: no feature is implemented by this file. The owner requested scope/approach decisions without an owner-review gate. docs/design/lens-and-perspective.md selects a pinned Lensfun v0.3.4 database subset, explicit profile selection, two-axis perspective and fixed-canvas automatic coverage. Existing affine crop/mask contracts need a nonlinear host primitive and one sampling boundary. Required DNG optics remain in source development, with shared per-operation eligibility refusing a second distortion. Early numerical work must qualify conservative coverage and bilinear minification limits; missing camera/lens photographic evidence stays untested. Existing module/API, history, export, cancellation and resource contracts remain authoritative.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Freeze and prove the numerical geometry, coverage and sampling contract.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implement independent f64 studies in luxforge-reference before production kernels. This is implementation work for a later execution of this plan, not work completed by creating the plan.",
+        "Keep the selected scope: rectilinear poly3/poly5/ptlens, two manual perspective axes, fixed canvas and at most 4x cover scale. No broader profile or projection system."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Geometry and sampling contract"
+        },
+        {
+          "kind": "file",
+          "label": "Independent references",
+          "target": "crates/luxforge-reference/src/lib.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Crop contract",
+          "target": "docs/specs/single-image.md",
+          "relevance": "Defines the current integration contract.",
+          "locator": "Sampling"
+        },
+        {
+          "kind": "file",
+          "label": "DNG numerical contract",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Reference fixtures freeze pixel-center/calibration normalization, profile inverse and forward mappings, perspective signs/ranges, orientation conjugation, cover scale and crop rounding.",
+        "Prove conservative coverage for whole rectangles and reads bounds with radial extrema; prove monotonic cover search for admitted maps. A corner/grid heuristic is not a proof. Certification stays within 4096 cells/256 KiB and 32 scale-search steps or refuses explicitly.",
+        "Freeze a usable, numeric local-footprint/minification bound for bilinear from synthetic and photographic quality evidence; no unqualified maps are enabled. If the selected scope cannot meet quality, record the limitation rather than silently changing the kernel.",
+        "Identity and integer cases are exact; nontrivial JPEG results agree with the independent f64 reference within one byte/channel. Declare and justify a float absolute/relative tolerance for signed RAW and highlights. Inverse residual is at most 1e-4 source pixel within 32 iterations.",
+        "Include off-center and extreme aspect ratios, all orientations, folds, poles, boundary/interior extrema, non-finite inputs and explicit refusal at work caps.",
+        "Each warp stage owns a deterministic covered map independent of downstream layers; prefix rendering and later composition agree. Individual cover scales compose to at most 4x, with explicit refusal beyond it."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add geometry studies with frozen analytic cases and independent vectors from pinned Lensfun behavior; keep the reference crate independent of product crates.",
+          "Use impulses, grids, edges and checkerboards to test composition, aliasing and edge behavior; record the qualified coefficient and footprint domain in the design."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies"
+        ],
+        "expected_results": [
+          "Reference fixtures freeze pixel-center/calibration normalization, profile inverse and forward mappings, perspective signs/ranges, orientation conjugation, cover scale and crop rounding.",
+          "Prove conservative coverage for whole rectangles and reads bounds with radial extrema; prove monotonic cover search for admitted maps. A corner/grid heuristic is not a proof. Certification stays within 4096 cells/256 KiB and 32 scale-search steps or refuses explicitly.",
+          "Freeze a usable, numeric local-footprint/minification bound for bilinear from synthetic and photographic quality evidence; no unqualified maps are enabled. If the selected scope cannot meet quality, record the limitation rather than silently changing the kernel.",
+          "Identity and integer cases are exact; nontrivial JPEG results agree with the independent f64 reference within one byte/channel. Declare and justify a float absolute/relative tolerance for signed RAW and highlights. Inverse residual is at most 1e-4 source pixel within 32 iterations.",
+          "Include off-center and extreme aspect ratios, all orientations, folds, poles, boundary/interior extrema, non-finite inputs and explicit refusal at work caps.",
+          "Each warp stage owns a deterministic covered map independent of downstream layers; prefix rendering and later composition agree. Individual cover scales compose to at most 4x, with explicit refusal beyond it."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Bundle the pinned Lensfun subset and resolve source optical provenance and profile eligibility.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Use the v0.3.4 version-1 database baseline, recording its resolved commit and hashes; do not download or match at render time.",
+        "Rust build tooling produces a deterministic bounded index; no native Lensfun runtime, custom profile import or automatic network updater. Profile selection defaults off."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Source interpretation and profile selection"
+        },
+        {
+          "kind": "file",
+          "label": "RAW adapter and provenance",
+          "target": "crates/luxforge-raw/src/lib.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Prepared source metadata",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "RAW interpretation",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Resource boundaries",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "url",
+          "label": "Pinned Lensfun baseline",
+          "target": "https://github.com/lensfun/lensfun/tree/v0.3.4",
+          "relevance": "Calibration source, upstream interpolation behavior and license notices."
+        }
+      ],
+      "acceptance_criteria": [
+        "Pinned import records license, attribution, modification notices, source commit, file and index hashes; manual review remains deferred. No camera coverage is inferred from decoder support.",
+        "Index construction/loading respects 16 MiB input/output, 10000 records and 256 calibrations per record, rejects malformed/unsupported records explicitly and loads lazily on a worker.",
+        "Resolve only compatible rectilinear supported models at in-range focal lengths; missing/ambiguous identity, unsupported crops/aspects and calibration gaps have explicit reasons. Focal overrides and unknown-status acknowledgements are recorded.",
+        "Common correction status derives from immutable source interpretation; applied DNG distortion refuses profile selection even with an acknowledgement. Unknown is distinct from known-unapplied. GainMap and per-channel WarpRectilinear provenance retain stage/order and interpretation.",
+        "Resolved selections of at most 16 KiB include coefficients, physical normalization/crop geometry and data provenance; they remain sufficient without the index. Test pinned upstream normalization/interpolation vectors."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use bounded metadata from the verified source snapshot; test no extra original reads/hashes on profile queries and edits.",
+          "Exercise absent/ambiguous metadata, missing/unsupported index, truncated data, incorrect hashes, focal boundaries and profiles not available for supported RAW cameras.",
+          "Test the supplied DNG interpretation plus synthetic gain-only, warp-only, unknown-mandatory and already-corrected cases without expanding generic DNG support."
+        ],
+        "commands": [
+          "cargo test -p luxforge-raw --lib",
+          "cargo test -p luxforge-core --lib source"
+        ],
+        "expected_results": [
+          "Pinned import records license, attribution, modification notices, source commit, file and index hashes; manual review remains deferred. No camera coverage is inferred from decoder support.",
+          "Index construction/loading respects 16 MiB input/output, 10000 records and 256 calibrations per record, rejects malformed/unsupported records explicitly and loads lazily on a worker.",
+          "Resolve only compatible rectilinear supported models at in-range focal lengths; missing/ambiguous identity, unsupported crops/aspects and calibration gaps have explicit reasons. Focal overrides and unknown-status acknowledgements are recorded.",
+          "Common correction status derives from immutable source interpretation; applied DNG distortion refuses profile selection even with an acknowledgement. Unknown is distinct from known-unapplied. GainMap and per-channel WarpRectilinear provenance retain stage/order and interpretation.",
+          "Resolved selections of at most 16 KiB include coefficients, physical normalization/crop geometry and data provenance; they remain sufficient without the index. Test pinned upstream normalization/interpolation vectors."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add the shared nonlinear mapping primitive and bounded asynchronous certification.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "This changes the host processing boundary; ToolModule::carry only re-expresses exact orientations.",
+        "Preserve existing affine/exact paths. Cache immutable certificates by source interpretation, resolved mapping and dimensions; owner/UI threads never run expensive certificate construction."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Geometry and sampling contract"
+        },
+        {
+          "kind": "file",
+          "label": "Processing primitives",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Registry stage compilation",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Compiled boundaries",
+          "target": "crates/luxforge-core/src/render/compiled.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Current affine transform",
+          "target": "crates/luxforge-core/src/render/locate.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Preparation and evaluation",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Defines the current integration contract.",
+          "locator": "Preparation"
+        }
+      ],
+      "acceptance_criteria": [
+        "Bounded exact/affine/radial/projective steps expose dimensions, forward/inverse, domain and conservative read rectangle through one core evaluator.",
+        "Compile canonical geometry and its one sampling boundary, preserve crop-only bytes and exact bypasses, and reject unsupported new-warp interleavings or invalid maps without data mutation.",
+        "Extend typed preparation needs, job completion and admission so certificate misses prepare off-owner, cancellation is bounded, and stale source/entry/draft generations never adopt.",
+        "Certificate storage is capped at 16 entries/4 MiB with live-job pins bounded and charged; exhausted numerical work refuses explicitly. Identity needs no expensive preparation.",
+        "recipe.describe and stage/dimension/locate queries read compiled contracts without pixels or frames. Unsupported providers and interpretations report explicit errors; update current markers if semantics require them.",
+        "Per-stage coverage is part of each mapping before composition, never a downstream-dependent refit of an earlier stage; enforce the combined 4x scale cap."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare every mapping and read bound with TASK-001 fixtures, including dense adversarial probes supplementary to the analytic certificate.",
+          "Use ordered worker gates to test cancellation, cache eviction, simultaneous clients, stale adoption, resource limits and owner responsiveness without timing-dependent unit tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib render",
+          "cargo test -p luxforge-core --lib modules"
+        ],
+        "expected_results": [
+          "Bounded exact/affine/radial/projective steps expose dimensions, forward/inverse, domain and conservative read rectangle through one core evaluator.",
+          "Compile canonical geometry and its one sampling boundary, preserve crop-only bytes and exact bypasses, and reject unsupported new-warp interleavings or invalid maps without data mutation.",
+          "Extend typed preparation needs, job completion and admission so certificate misses prepare off-owner, cancellation is bounded, and stale source/entry/draft generations never adopt.",
+          "Certificate storage is capped at 16 entries/4 MiB with live-job pins bounded and charged; exhausted numerical work refuses explicitly. Identity needs no expensive preparation.",
+          "recipe.describe and stage/dimension/locate queries read compiled contracts without pixels or frames. Unsupported providers and interpretations report explicit errors; update current markers if semantics require them.",
+          "Per-stage coverage is part of each mapping before composition, never a downstream-dependent refit of an earlier stage; enforce the combined 4x scale cap."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Render composed lens, perspective and crop mappings in both domains and viewport phases.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Use one linear-light bilinear interpolation for the composed new geometry tail; do not create one frame per warp or a displacement image.",
+        "Keep the numerical limits qualified in TASK-001, including minification restrictions. Timing waits until the integrated feature is complete."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Geometry and sampling contract"
+        },
+        {
+          "kind": "file",
+          "label": "Geometry sampling",
+          "target": "crates/luxforge-core/src/render/geometry.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Shared point pipeline",
+          "target": "crates/luxforge-core/src/render/pipeline.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Byte driver",
+          "target": "crates/luxforge-core/src/render/byte.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Linear driver",
+          "target": "crates/luxforge-core/src/render/linear.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Region/proxy path",
+          "target": "crates/luxforge-core/src/render/window.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Byte and linear full-frame, sample, grid, analysis, proxy and region paths share the map/kernel and obey the TASK-001 numerical tolerances; source buffers remain immutable.",
+        "Exact identity/integer paths preserve bytes and sharing. RAW negatives/headroom survive until terminal quantization; DNG source correction remains a separate, once-only stage.",
+        "Exact region output equals the full-render slice, including nonlinear extrema and spatial halos. reads(rect) cannot underestimate; budget-checked full-stage fallback is reported explicitly.",
+        "No image-sized mapping or extra RGB intermediate; at most two live segment frames, each under existing 512 MiB RGBA/1.5 GiB RAW limits, and at most 1 MiB charged tap scratch per worker.",
+        "Cancellation is checked per row/chunk; pending latest jobs replace only pending jobs, generation adoption stays coherent and no partial frame is published. Nontrivial filtered point work uses the bounded point worker."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Test synthetic JPEG and signed linear sources through colour/spatial prefixes, every geometry combination and finish vignette.",
+          "Test full/slice/sample equality, proxy normalization, buffer identity, peak allocations, bounds/refusals and cancellation with deterministic gates.",
+          "Extend existing rendered evidence coverage for geometry at the integration checkpoint, without introducing a foreground app launch."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib render"
+        ],
+        "expected_results": [
+          "Byte and linear full-frame, sample, grid, analysis, proxy and region paths share the map/kernel and obey the TASK-001 numerical tolerances; source buffers remain immutable.",
+          "Exact identity/integer paths preserve bytes and sharing. RAW negatives/headroom survive until terminal quantization; DNG source correction remains a separate, once-only stage.",
+          "Exact region output equals the full-render slice, including nonlinear extrema and spatial halos. reads(rect) cannot underestimate; budget-checked full-stage fallback is reported explicitly.",
+          "No image-sized mapping or extra RGB intermediate; at most two live segment frames, each under existing 512 MiB RGBA/1.5 GiB RAW limits, and at most 1 MiB charged tap scratch per worker.",
+          "Cancellation is checked per row/chunk; pending latest jobs replace only pending jobs, generation adoption stays coherent and no partial frame is published. Nontrivial filtered point work uses the bounded point worker."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Expose lens and perspective modules, selection preparation and atomic commands through the registry.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Proposed methods are query.lens-profiles, edit.select-lens-profile, edit.reset-lens-profile and edit.set-perspective; publish only implemented methods.",
+        "Lens selection is a semantic non-presettable action; perspective is a field patch. Module source kinds alone are insufficient for embedded-correction eligibility."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Modules, API and history"
+        },
+        {
+          "kind": "file",
+          "label": "Module/action/draft contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Shared action plans",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Source preparation",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Registry and built-ins",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Declare two single non-maskable geometry effects with order 2/4 between orientation and crop, bounded parameters, controls, labels, reset/no-op semantics and generated schemas.",
+        "Read-only profile search pages at most 100 records, with bounded query input, candidate/eligibility reasons, calibration ranges and optical status; parsing and resolution prepare off-owner.",
+        "Selection freezes resolved profile data and overrides, then commits through host revision/deduplication and admission. Perspective fields draft/commit through the same plan; stale prepared results cannot commit.",
+        "Every admission/evaluation path refuses an enabled profile over applied embedded distortion, including forged payloads, composites, Restore and export; neutral/off stays legal and required DNG correction cannot be disabled.",
+        "recipe.describe/module.list/schema.list expose the same values/reasons as controls, including read-only scale and preparation status. Reset preserves IDs and repeated identical requests/no-ops add no history.",
+        "Add a reusable bounded query-choice descriptor/control binding for profile search and selection; validate its query/action parameter relationships and keep matching/eligibility in the module service, not the UI."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run generic descriptor/field-patch conformance and JSON tests comparing direct service and external API actions, resets, invalid fields and schema discovery.",
+          "Exercise preparation cancellation/retry, expected-revision conflicts and request deduplication across restart."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib modules",
+          "cargo test -p luxforge-core --test modules",
+          "cargo test -p luxforge-cli --test json_cli"
+        ],
+        "expected_results": [
+          "Declare two single non-maskable geometry effects with order 2/4 between orientation and crop, bounded parameters, controls, labels, reset/no-op semantics and generated schemas.",
+          "Read-only profile search pages at most 100 records, with bounded query input, candidate/eligibility reasons, calibration ranges and optical status; parsing and resolution prepare off-owner.",
+          "Selection freezes resolved profile data and overrides, then commits through host revision/deduplication and admission. Perspective fields draft/commit through the same plan; stale prepared results cannot commit.",
+          "Every admission/evaluation path refuses an enabled profile over applied embedded distortion, including forged payloads, composites, Restore and export; neutral/off stays legal and required DNG correction cannot be disabled.",
+          "recipe.describe/module.list/schema.list expose the same values/reasons as controls, including read-only scale and preparation status. Reset preserves IDs and repeated identical requests/no-ops add no history.",
+          "Add a reusable bounded query-choice descriptor/control binding for profile search and selection; validate its query/action parameter relationships and keep matching/eligibility in the module service, not the UI."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Carry nonlinear mappings through masks, pixel picks, overlays and RAW neutral sampling.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Replace the affine-only transform response with a current-shape tagged mapping descriptor; no legacy compatibility shim.",
+        "Stored content positions, height-normalized sizes and quantized brush paths do not change when geometry changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Crop, masks and picking"
+        },
+        {
+          "kind": "file",
+          "label": "Mask coordinate and gesture contract",
+          "target": "docs/design/masking.md",
+          "relevance": "Defines the current integration contract.",
+          "locator": "Mask space"
+        },
+        {
+          "kind": "file",
+          "label": "Content-space edits",
+          "target": "docs/design/content-space-edits.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Gesture draft",
+          "target": "crates/luxforge-app/src/mask_draft.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Coverage overlays",
+          "target": "crates/luxforge-core/src/analysis/mask_overlay.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Mapping queries",
+          "target": "crates/luxforge-core/src/render/locate.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Sensor-neutral mapping",
+          "target": "docs/design/air2s-dng.md",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "render.transform and render.locate use the core map, report revision/dimensions/domain and reject outside points; locate uses floor at the mapped center and sample still evaluates its full footprint.",
+        "Desktop gestures acquire one map per relevant revision and evaluate locally without owner calls per pointer move; core/UI/API pick positions agree at Fit/100%/pan/DPI and all orientations.",
+        "Gradient/radial/brush outlines and coverage use the photo map/generation, with 1024-segment display caps and an explicit coarse approximation on exhaustion; content coverage itself is unchanged.",
+        "Pixel replacements, range-mask input reads and RAW neutral picking remain anchored to content; recipe inverse precedes the existing DNG sensor query without applying the optical warp twice.",
+        "Active-stroke conflicts, held-brush refresh, Discard/Reapply, erase and path caps survive external geometry changes and history selection."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend geometry_survival and point/overlay tests using visible content landmarks and independent mapping fixtures.",
+          "Compare stored masks/strokes before/after geometry, overlay sample locations and neutral picks, including DNG with required optical operations."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test mask",
+          "cargo test -p luxforge-app --lib mask"
+        ],
+        "expected_results": [
+          "render.transform and render.locate use the core map, report revision/dimensions/domain and reject outside points; locate uses floor at the mapped center and sample still evaluates its full footprint.",
+          "Desktop gestures acquire one map per relevant revision and evaluate locally without owner calls per pointer move; core/UI/API pick positions agree at Fit/100%/pan/DPI and all orientations.",
+          "Gradient/radial/brush outlines and coverage use the photo map/generation, with 1024-segment display caps and an explicit coarse approximation on exhaustion; content coverage itself is unchanged.",
+          "Pixel replacements, range-mask input reads and RAW neutral picking remain anchored to content; recipe inverse precedes the existing DNG sensor query without applying the optical warp twice.",
+          "Active-stroke conflicts, held-brush refresh, Discard/Reapply, erase and path caps survive external geometry changes and history selection."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Integrate fixed-canvas correction with crop drafts, orientation carry and comparison.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Cover the full pre-crop canvas before crop; an existing crop cannot be used to evade cover-scale limits.",
+        "Changing lens/perspective keeps crop payload and ID. Exact rotations carry all geometry in one action through module hooks."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Crop, masks and picking"
+        },
+        {
+          "kind": "file",
+          "label": "Crop contract",
+          "target": "docs/specs/single-image.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Orientation carry",
+          "target": "docs/design/orientation-layer.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Crop module",
+          "target": "crates/luxforge-core/src/modules/crop/mod.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Crop draft",
+          "target": "crates/luxforge-app/src/crop_draft.rs",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Crop canvas",
+          "target": "crates/luxforge-app/src/view/crop_canvas.rs",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Crop input previews include lens/perspective, existing no-empty-corner validation and rotated-box rounding stay valid, and reset restores the fully covered corrected stage.",
+        "Lens/perspective sweeps return to identical base output without accumulated trim; current crop fields/ID stay fixed unless an explicit crop/rotation action changes them.",
+        "All eight orientations conjugate profile calibration and perspective and carry crop atomically with existing subpixel crop limits; dimensions and Original ratio stay correct.",
+        "Crop conflicts/Reapply after an external geometry edit rebind the corrected stage and mapping; failed/superseded preparation ends explicitly without stale pixels.",
+        "keep_geometry comparison includes resolved lens/perspective; uncropped Original excludes optional geometry but retains required source corrections. Finish vignette uses final output coordinates."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Test portrait/landscape/off-center crops, reset ordering, zero/nonzero straighten, rotate/reflection round trips and exact return-to-base sweeps.",
+          "Exercise draft Apply/Cancel/Reapply with native evidence added at the integrated UI checkpoint."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib crop",
+          "cargo test -p luxforge-app --lib crop"
+        ],
+        "expected_results": [
+          "Crop input previews include lens/perspective, existing no-empty-corner validation and rotated-box rounding stay valid, and reset restores the fully covered corrected stage.",
+          "Lens/perspective sweeps return to identical base output without accumulated trim; current crop fields/ID stay fixed unless an explicit crop/rotation action changes them.",
+          "All eight orientations conjugate profile calibration and perspective and carry crop atomically with existing subpixel crop limits; dimensions and Original ratio stay correct.",
+          "Crop conflicts/Reapply after an external geometry edit rebind the corrected stage and mapping; failed/superseded preparation ends explicitly without stale pixels.",
+          "keep_geometry comparison includes resolved lens/perspective; uncropped Original excludes optional geometry but retains required source corrections. Finish vignette uses final output coordinates."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Prove snapshot persistence, recovery and exact export for corrected recipes.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Export uses the existing committed-entry Evaluation and job lane, not a new exporter or profile lookup.",
+        "Keep unsupported current-shape data and unavailable effects readable; never migrate, drop corrections or label skipped evidence as passed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Modules, API and history"
+        },
+        {
+          "kind": "file",
+          "label": "History invariants",
+          "target": "docs/specs/edit-history.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Snapshots and versions",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG export",
+          "target": "docs/design/export.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Export jobs",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "History/undo/redo/versions/Restore/reopen preserve layer IDs and resolved profile provenance; one selection/gesture is one entry and originals retain exact hashes.",
+        "Index removal or a newer bundled index does not alter existing recipe output; unavailable evaluators or changed source interpretation fail explicitly while preserving all snapshots.",
+        "Frozen export remains identical at the lossless render stage under concurrent edits/profile selection; export.plan dimensions match exact output and finish effects.",
+        "Duplicate DNG correction is refused on reopen/Restore/evaluation/export, and repeated WB development applies required corrections once from sensor data. Unknown mandatory opcodes remain errors.",
+        "Cancellation, changed/missing source, unavailable provider, allocation refusal, disk/catalog failure and destination alias cases preserve originals/history and publish no partial or overwriting JPEG."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use lossless pre-encode buffer oracles plus decoded-JPEG tolerance checks and export dimension/metadata assertions.",
+          "Test two clients, job cancellation at rendering/encoding/publication boundaries, process reopen and database-index removal."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib export",
+          "cargo test -p luxforge-cli --test json_cli"
+        ],
+        "expected_results": [
+          "History/undo/redo/versions/Restore/reopen preserve layer IDs and resolved profile provenance; one selection/gesture is one entry and originals retain exact hashes.",
+          "Index removal or a newer bundled index does not alter existing recipe output; unavailable evaluators or changed source interpretation fail explicitly while preserving all snapshots.",
+          "Frozen export remains identical at the lossless render stage under concurrent edits/profile selection; export.plan dimensions match exact output and finish effects.",
+          "Duplicate DNG correction is refused on reopen/Restore/evaluation/export, and repeated WB development applies required corrections once from sensor data. Unknown mandatory opcodes remain errors.",
+          "Cancellation, changed/missing source, unavailable provider, allocation refusal, disk/catalog failure and destination alias cases preserve originals/history and publish no partial or overwriting JPEG."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Deliver generated Lens/Perspective controls and verify UI/API parity in the background editor.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Use descriptor controls and shared command refusals. Do not add future-feature placeholders or make the desktop an authoritative profile matcher.",
+        "Use background-only automated launches and isolated catalogs/evidence. No foreground activation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Modules, API and history"
+        },
+        {
+          "kind": "file",
+          "label": "Workspace controls",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Control vocabulary",
+          "target": "docs/design/ui-components.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Native evidence",
+          "target": "docs/engineering/development.md",
+          "relevance": "Defines the current integration contract.",
+          "locator": "Rendered evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop panels",
+          "target": "crates/luxforge-app/src/view/mod.rs",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Collapsed Lens correction and Perspective sections expose explicit profile selection, metadata/embedded status, focal override/acknowledgement, cover scale, two numeric fields and reset through declared methods.",
+        "Keyboard and pointer gestures create one draft/history entry, cancellation leaves none, same-value reset is a no-op and preparation/conflict/errors remain visible with the same API reason.",
+        "UI/API actions produce identical stacks, dimensions, masks, history and image buffers; optical eligibility is enforced by the host even when the UI is bypassed.",
+        "Background M4 captures correlate rendered photo, nonlinear overlays, crop, entry/revision and generation at Fit/100% with logs and unchanged source hashes; stale or missing captures fail.",
+        "Mutation completion follows narrow state refresh and one preview, map refresh is revision-driven, and no timer/poll/private worker is added."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend the existing evidence vocabulary/scenarios for lens selection, perspective, crop/masks and embedded-DNG refusals; run only focused scenarios during editing.",
+          "At the completed integration point run rendered once, inspect captures and record scope without claiming unrun platforms."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app --lib",
+          "cargo xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Collapsed Lens correction and Perspective sections expose explicit profile selection, metadata/embedded status, focal override/acknowledgement, cover scale, two numeric fields and reset through declared methods.",
+          "Keyboard and pointer gestures create one draft/history entry, cancellation leaves none, same-value reset is a no-op and preparation/conflict/errors remain visible with the same API reason.",
+          "UI/API actions produce identical stacks, dimensions, masks, history and image buffers; optical eligibility is enforced by the host even when the UI is bypassed.",
+          "Background M4 captures correlate rendered photo, nonlinear overlays, crop, entry/revision and generation at Fit/100% with logs and unchanged source hashes; stale or missing captures fail.",
+          "Mutation completion follows narrow state refresh and one preview, map refresh is revision-driven, and no timer/poll/private worker is added."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Complete integrated fault and photographic qualification and update current contracts.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "This task is functional qualification, not a timing loop. RAW decode support and lens calibration support are separate inventories.",
+        "No owner-review gate; unresolved numeric/coverage limitations are recorded as unsupported scope rather than silently broadened."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Bounded execution and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Architecture",
+          "target": "docs/design/architecture.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "API contracts",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Mask contracts",
+          "target": "docs/design/masking.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Crop contract",
+          "target": "docs/specs/single-image.md",
+          "relevance": "Defines the current integration contract."
+        }
+      ],
+      "acceptance_criteria": [
+        "Maintain a qualified camera/lens/focal-range matrix with synthetic exact fixtures and authentic rectilinear photos; unavailable photographs remain untested, never passed.",
+        "Integrated recipes cover colour/spatial edits, masks, lens, perspective, crop, orientation and finish effects in both domains, including required Air 2S corrections, history/compare and export.",
+        "Fault matrix proves worker cancellation, bounded queues, certificate/profile-cache eviction, stale generations, missing providers/index/source, malformed current payloads and failed durable writes preserve data.",
+        "Architecture, API/transform, crop, masks, RAW provenance, feature status and user guide describe only delivered behavior and limitations; no compatibility framework or future command is advertised as implemented."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Audit the independent image references and native UI/API evidence from prior tasks against every design acceptance clause.",
+          "Run finished-work quick, fixing only failed checks before rerunning it; keep timing for TASK-011."
+        ],
+        "commands": [
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Maintain a qualified camera/lens/focal-range matrix with synthetic exact fixtures and authentic rectilinear photos; unavailable photographs remain untested, never passed.",
+          "Integrated recipes cover colour/spatial edits, masks, lens, perspective, crop, orientation and finish effects in both domains, including required Air 2S corrections, history/compare and export.",
+          "Fault matrix proves worker cancellation, bounded queues, certificate/profile-cache eviction, stale generations, missing providers/index/source, malformed current payloads and failed durable writes preserve data.",
+          "Architecture, API/transform, crop, masks, RAW provenance, feature status and user guide describe only delivered behavior and limitations; no compatibility framework or future command is advertised as implemented."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Measure final photo-sized latency, cancellation and memory, then close the verification milestone.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Measure only after all feature work is complete, comparing a baseline build and the integrated build on the same host/workloads; record host load, build, cache state, sample counts and retained tails.",
+        "NEW_DIR, JPEG and FILE below are existing command placeholders to replace with fresh output paths, each generated 24/60 MP source and an authentic RAW manifest; do not run overlapping timing jobs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "Selected scope, numerical behavior and acceptance for this task.",
+          "locator": "Bounded execution and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "Required review checklist",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Budgets and evidence",
+          "target": "docs/specs/performance.md",
+          "relevance": "Defines the current integration contract."
+        },
+        {
+          "kind": "file",
+          "label": "Verification and measurement",
+          "target": "docs/engineering/development.md",
+          "relevance": "Defines the current integration contract.",
+          "locator": "When to verify"
+        }
+      ],
+      "acceptance_criteria": [
+        "Record 24/60 MP JPEG and qualified NEF/RAF/Air 2S release p50/p95 for profile preparation, Fit draft/commit, 100% pan/refinement, crop opening, mask/pick, export and cancellation, plus RSS, scratch/cache high-water, GPU residency and idle.",
+        "Measure serial versus shared-pool mapping/resample thresholds on 0.025 to 2 MP inputs; choose a measured named threshold for the new pass.",
+        "Demonstrate row/chunk cancellation latency, bounded active/pending work and owner responsiveness under simultaneous preview/export/analysis; report regressions against current budgets and qualify the measured support range.",
+        "Answer all eight performance-rule checklist questions with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
+        "Final full tier with authentic manifest and background native M4 evidence passes before a milestone claim; skipped/unavailable platform or RAW checks keep qualification incomplete. Record current results and limits, then remove the completed plan per repository convention."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend measurement workloads as needed to cover the delivered actions using existing xtask machinery, not invented command flags.",
+          "Generate photo-sized inputs, run serial baseline/final distributions and account for overlapping allocations and stale-job cleanup.",
+          "Run the final full tier once; avoid duplicating unchanged measured distributions already carried by that tier."
+        ],
+        "commands": [
+          "cargo xtask generate-fixtures --output fixtures/generated",
+          "cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR --action set-perspective --parameter horizontal --samples 30",
+          "cargo run --release --locked --package xtask -- verify --tier full --manifest FILE --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Record 24/60 MP JPEG and qualified NEF/RAF/Air 2S release p50/p95 for profile preparation, Fit draft/commit, 100% pan/refinement, crop opening, mask/pick, export and cancellation, plus RSS, scratch/cache high-water, GPU residency and idle.",
+          "Measure serial versus shared-pool mapping/resample thresholds on 0.025 to 2 MP inputs; choose a measured named threshold for the new pass.",
+          "Demonstrate row/chunk cancellation latency, bounded active/pending work and owner responsiveness under simultaneous preview/export/analysis; report regressions against current budgets and qualify the measured support range.",
+          "Answer all eight performance-rule checklist questions with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
+          "Final full tier with authentic manifest and background native M4 evidence passes before a milestone claim; skipped/unavailable platform or RAW checks keep qualification incomplete. Record current results and limits, then remove the completed plan per repository convention."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-011"
+      ]
+    }
+  ]
+}

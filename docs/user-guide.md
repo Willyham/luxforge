@@ -202,6 +202,8 @@ Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggle
 
 ### Crop and straighten
 
+Lens-profile distortion and perspective correction are [planned](design/lens-and-perspective.md), not available controls. Required embedded corrections for supported DNG sources are already part of RAW development.
+
 The crop editor appears in the tool panel as soon as a registered module declares a crop frame; the ratios, the angle range and the action it commits all come from that module's descriptor.
 
 The Crop and straighten section always shows the same controls: the **Ratio** group (the ratio presets, the custom ratio's W and H, Lock ratio and Swap) and the **Angle** group (the angle's rail between its −0.5° and +0.5° buttons, its box and Straighten guide). With no draft open they read the committed crop of the photograph you are looking at: its angle, and the preset its rectangle has, chosen with the ratio locked — Original when it keeps the input stage's own ratio, a `W:H` preset in either orientation, and Free when it matches none or there is no crop at all. The recipe stores the rectangle, not the preset you chose, so a rectangle reads as a preset when fitting that ratio would produce it on the crop's input stage, the size the rotations and any other geometry before the crop leave it; opening a draft on it starts with the same chip chosen and the same lock, so nothing in the section moves when the draft opens.
