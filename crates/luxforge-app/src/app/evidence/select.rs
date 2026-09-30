@@ -4,7 +4,9 @@
 //! has evaluated its view again, which it learns of only through its own event sync. Each settled
 //! step records the owner's own answer for this client's session (`session.state`'s `browse`), so
 //! a frame's selection can be checked against what the owner holds. A folder is browsed as Browse a
-//! folder… does, bypassing only the native dialog.
+//! folder… does, bypassing only the native dialog. Library undo and redo are pressed through the key
+//! table, and a bracket's Pick all through its header's message once the grid is scrolled to it;
+//! each is captured once the view it made stale has been evaluated again.
 use super::{AGENT_ACTOR, Settle};
 use crate::app::{
     Editor,
@@ -167,8 +169,15 @@ impl Editor {
             });
         match found {
             Some((number, (_, true))) => {
+                // Scrolled to the bracket first, as a person scrolls to the header they press.
+                let scroll = self.select.layout.reveal(
+                    position,
+                    self.select.scroll,
+                    self.select.viewport.height,
+                );
+                let scrolled = self.update(Message::Select(SelectMessage::Scrolled(scroll)));
                 let task = self.update(Message::Select(SelectMessage::PickAll(number as u32)));
-                self.await_select(task)
+                self.await_select(Task::batch([scrolled, task]))
             }
             Some(_) => self.fail_step(format!(
                 "the moment holding position {position} offers no Pick all"
