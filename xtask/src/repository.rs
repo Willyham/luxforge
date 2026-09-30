@@ -988,13 +988,18 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["Handle::from_rgba"],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &["crates/luxforge-ui/src/gallery_thumbnails.rs"],
+        allowed: &[
+            "crates/luxforge-ui/src/gallery_thumbnails.rs",
+            "crates/luxforge-app/src/app/select_previews.rs",
+        ],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "an image handle made from pixels uploads a new texture each time it is made; the \
-                 photo surface owns the photograph's GPU uploads, and the components gallery's \
-                 stand-in photographs are made once in gallery_thumbnails.rs",
+                 photo surface owns the photograph's GPU uploads, the components gallery's \
+                 stand-in photographs are made once in gallery_thumbnails.rs, and the Select \
+                 grid's decoded previews once each, when a decode lands, in \
+                 app/select_previews.rs, which holds each while its cell may be shown",
     },
     SourceRule {
         name: "project-name",
@@ -3051,8 +3056,9 @@ mod tests {
     fn no_image_handle_is_made_from_pixels() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // Another constructor may, the gallery's stand-ins made once may, and the rules file names
-        // the token without being read.
+        // Another constructor may, the gallery's stand-ins made once may, the Select grid's
+        // decoded previews made once each may, and the rules file names the token without being
+        // read.
         write_all(
             root,
             &[
@@ -3063,6 +3069,10 @@ mod tests {
                 (
                     "crates/luxforge-ui/src/gallery_thumbnails.rs",
                     "Handle::from_rgba(w, h, render(&scene, ev))\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/select_previews.rs",
+                    "handle: Handle::from_rgba(width, height, rgba),\n",
                 ),
                 (RULES_FILE, "tokens: &[\"Handle::from_rgba\"],\n"),
             ],
@@ -3076,6 +3086,10 @@ mod tests {
                 (
                     "crates/luxforge-app/src/view/canvas.rs",
                     "let h = image::Handle::from_rgba(w, h, pixels);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/view/select.rs",
+                    "image: Some(&Handle::from_rgba(w, h, pixels)),\n",
                 ),
                 (
                     "crates/luxforge-ui/src/photo_tests.rs",
