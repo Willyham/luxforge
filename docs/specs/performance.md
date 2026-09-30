@@ -599,8 +599,9 @@ and flow 100. The feather keeps the brush's ramp wider than two proxy pixels, so
 point samples the mask field, as a person's brush is; a hard edge would measure the 2 × 2
 supersample instead. The curve keeps positions along the decimated path's whole length (37 stored
 at the end of the stroke), so any cost proportional to the path already drawn grows along it.
-`--mask-overlay` turns the selected mask's tint on for the stroke, so every drafted job also fills
-the overlay's coverage grid. Besides the per-`draft.set` rows above, the report times each position
+`--mask-overlay` turns the selected mask's tint on for the stroke, so every accepted draft also asks
+the independent coverage worker for its grid (the figures below were recorded when that grid was
+filled by the drafted preview job itself). Besides the per-`draft.set` rows above, the report times each position
 from its own `mask_stroke_position` to the first presented frame whose `draft.set` carried it
 (`position_to_presented_frame`), splits the rows into the stroke's first and last quarters, and
 times each frame to its grid's `mask_overlay`.
