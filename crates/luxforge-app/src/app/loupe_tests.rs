@@ -2,7 +2,8 @@
 //! singles, a Leica bracket of three, and a second day of singles): opened over the grid, the keys
 //! the loupe answers, stepping frames and moments and jumping within a moment through the session's
 //! own selection, the look-ahead wanted in the direction of travel, compare and the focus check,
-//! `P`'s hook and P7, and back to the grid.
+//! `P`'s hook and P7, and back to the grid. And over a catalog of imported photographs: the strip
+//! reads and draws each photograph's grid tier, while a file's strip frame is the grid's preview.
 use super::*;
 use crate::app::select_owner_tests::{evaluate, finish, read_rows, selecting};
 use crate::state::select::SourcePress;
@@ -351,6 +352,7 @@ fn loupe_view_builds_in_every_state() {
                 .map(|position| StripFrame {
                     position,
                     item: None,
+                    thumbnail: None,
                     picked: position == 1,
                 })
                 .collect(),
@@ -406,4 +408,356 @@ fn loupe_view<'a>(
     images: LoupeImages<'a>,
 ) -> iced::Element<'a, Message> {
     crate::view::loupe::loupe(model, images)
+}
+
+/// Photograph `name`, at its current entry.
+fn photo(name: &str) -> PreviewItem {
+    PreviewItem::Photo {
+        asset_id: luxforge_core::AssetId::parse(format!("asset-photo-{name}-0000")).unwrap(),
+        entry_id: None,
+    }
+}
+
+/// A strip frame's picture: a file's is the Select grid's preview of it, a photograph's the loupe's
+/// own thumbnail, lent only under the photograph it was read for and only as the picture the model
+/// names for it.
+#[test]
+fn loupe_strip_borrows_the_grids_files_and_holds_its_own_photographs() {
+    use crate::app::select_previews::{self as grid_previews, SelectPreviews, Wanted};
+    use crate::state::loupe::StripFrame;
+    use luxforge_core::{
+        DecodedPreview,
+        catalog_types::{
+            FileId, PreviewAnswer, PreviewInfo, PreviewOrigin, PreviewState, PreviewTier,
+        },
+    };
+    let pixels = |width: u32, height: u32| DecodedPreview {
+        width,
+        height,
+        rgba: vec![0; (width * height * 4) as usize],
+    };
+    let info = |item: PreviewItem, key: &str| PreviewInfo {
+        item,
+        tier: PreviewTier::Grid,
+        path: PathBuf::from(format!("/c.index/previews/{key}.jpg")),
+        width: 512,
+        height: 341,
+        origin: PreviewOrigin::Embedded,
+        bytes: 40_000,
+        key: key.into(),
+        approximate: false,
+    };
+    // The grid holds file 7's preview, as it does for the files near the active frame.
+    let file = FileId(7);
+    let mut grid = SelectPreviews::default();
+    grid.paused = true;
+    let batch = grid
+        .plan_for(Wanted {
+            revision: 1,
+            visible: vec![(file, PreviewState::Ready)],
+            margin: Vec::new(),
+            side: 240,
+        })
+        .expect("the grid reads file 7");
+    grid.answered(grid_previews::ReadAnswers {
+        serial: batch.serial,
+        revision: 1,
+        answers: vec![(
+            file,
+            Ok(PreviewAnswer::Ready {
+                preview: info(PreviewItem::File { file_id: file }, "file-7-grid"),
+            }),
+        )],
+    });
+    let decode = grid.last_plan[0].clone();
+    grid.adopt(grid_previews::Decoded {
+        decode,
+        result: Ok(pixels(240, 160)),
+    });
+    // The loupe holds photograph a's thumbnail.
+    let (a, b) = (photo("a"), photo("b"));
+    let mut loupe = Loupe::default();
+    loupe.frames.paused = true;
+    let batch = loupe
+        .frames
+        .want(vec![Want {
+            slot: Slot::thumbnail(a.clone()),
+            pixels: (232, 152),
+            shown: true,
+        }])
+        .expect("the loupe reads photograph a's grid tier");
+    loupe.frames.answered(loupe_frames::ReadAnswers {
+        serial: batch.serial,
+        answers: vec![(
+            Slot::thumbnail(a.clone()),
+            Ok(PreviewAnswer::Ready {
+                preview: info(a.clone(), "photo-a-grid"),
+            }),
+        )],
+    });
+    let decode = loupe.frames.planned()[0].clone();
+    loupe.frames.adopt(loupe_frames::Decoded {
+        decode,
+        result: Ok(pixels(229, 152)),
+    });
+    let own = loupe
+        .frames
+        .held(&Slot::thumbnail(a.clone()))
+        .picture
+        .expect("held");
+    let images = loupe.images(&grid);
+    let strip = |item: Option<PreviewItem>, thumbnail: Option<&Picture>| StripFrame {
+        position: 0,
+        item,
+        thumbnail: thumbnail.cloned(),
+        picked: false,
+    };
+    let file_frame = |id| {
+        Some(PreviewItem::File {
+            file_id: FileId(id),
+        })
+    };
+    assert!(
+        images.thumbnail(&strip(file_frame(7), None)).is_some(),
+        "a file's is the grid's"
+    );
+    assert!(images.thumbnail(&strip(file_frame(8), None)).is_none());
+    assert!(
+        images
+            .thumbnail(&strip(file_frame(8), Some(&own)))
+            .is_none(),
+        "a file's frame never draws the loupe's"
+    );
+    assert!(
+        images
+            .thumbnail(&strip(Some(a.clone()), Some(&own)))
+            .is_some(),
+        "a photograph's own"
+    );
+    assert!(
+        images.thumbnail(&strip(Some(a.clone()), None)).is_none(),
+        "nothing while it is read"
+    );
+    assert!(
+        images
+            .thumbnail(&strip(Some(b.clone()), Some(&own)))
+            .is_none(),
+        "never under another photograph"
+    );
+    assert!(
+        images
+            .thumbnail(&strip(
+                Some(b.clone()),
+                Some(&Picture {
+                    item: b.clone(),
+                    ..own.clone()
+                })
+            ))
+            .is_none(),
+        "nor for another photograph named with its preview"
+    );
+    assert!(images.thumbnail(&strip(None, Some(&own))).is_none());
+    // The strip builds with both.
+    let model = crate::state::loupe::LoupeModel {
+        open: true,
+        strip: Some(crate::state::loupe::StripModel {
+            first: 0,
+            frames: vec![
+                strip(file_frame(7), None),
+                strip(Some(a.clone()), Some(&own)),
+            ],
+            active: 1,
+            start: 0,
+            previous: false,
+            next: false,
+        }),
+        ..crate::state::loupe::LoupeModel::default()
+    };
+    let _ = loupe_view(&model, images);
+}
+
+/// The editor over a new catalog of `count` photographs, each imported from a copy of the test
+/// JPEG, Select showing All photographs with every row read.
+fn developed(count: usize) -> (Editor, PathBuf) {
+    use crate::{
+        Config,
+        app::{Boot, tasks::call_detailed},
+        state::select::Shown,
+    };
+    use luxforge_core::{EditorService, OwnerHandle, catalog_types::ViewSource};
+    let dir = luxforge_testbase::paths::temp_dir("loupe-photographs")
+        .canonicalize()
+        .unwrap();
+    let catalog = dir.join("catalog.sqlite");
+    drop(EditorService::open(&catalog).unwrap());
+    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+    let client = owner.register();
+    let photos = dir.join("photos");
+    std::fs::create_dir_all(&photos).unwrap();
+    for at in 0..count {
+        let path = photos.join(format!("P{at:03}.jpg"));
+        std::fs::copy(luxforge_testbase::paths::jpeg(), &path).unwrap();
+        let started = call_detailed(
+            &owner,
+            client,
+            "catalog.import",
+            json!({
+                "path": path,
+                "mutation": {"request_id": format!("loupe-import-{at}"), "actor": "setup"},
+            }),
+        )
+        .unwrap();
+        let ended = luxforge_testbase::wait_for("an import to end", || {
+            let read = call_detailed(
+                &owner,
+                client,
+                "job.read",
+                json!({"job_id": started["job_id"]}),
+            )
+            .unwrap();
+            (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+        });
+        assert_eq!(ended["status"], "ready", "{ended}");
+    }
+    let (mut editor, _) = Editor::new(Boot {
+        owner,
+        join,
+        live_server: None,
+        config: Config::default(),
+        client: None,
+        initial_import: None,
+        window: (1440.0, 900.0),
+    });
+    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
+    let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
+        1000.0, 700.0,
+    ))));
+    let _ = editor.update(Message::Select(SelectMessage::Source(
+        ViewSource::AllPhotographs,
+    )));
+    evaluate(&mut editor);
+    read_rows(&mut editor);
+    (editor, catalog)
+}
+
+/// Over a view of developed photographs, a real owner and its preview lane: the loupe's strip asks
+/// for each of its photographs' grid tier at the visible cells' priority beside the frames' large
+/// tiers, and once the lane has rendered them and the worker decoded them, each strip frame draws
+/// its own photograph's rendered grid tier, which the evidence records; stepping on asks for the
+/// next frame's. The reads and decodes run as the loupe's tasks would, the owner's wake read from
+/// the client's one wake.
+#[test]
+fn loupe_strip_over_photographs_reads_and_draws_their_grid_tiers_on_a_real_owner() {
+    use luxforge_core::catalog_types::{PreviewOrigin, PreviewPriority, PreviewTier};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let (mut editor, catalog) = developed(3);
+    assert_eq!(
+        editor.select.state.summary.as_ref().map(|view| view.count),
+        Some(3)
+    );
+    // This test drives the loupe's reads itself; the owner wakes it through the client's one wake.
+    let woke = Arc::new(AtomicBool::new(false));
+    let flag = woke.clone();
+    editor.owner.watch_previews(
+        editor.client,
+        Arc::new(move || flag.store(true, Ordering::Release)),
+    );
+    send(&mut editor, LoupeMessage::Open);
+    assert!(editor.loupe_open());
+    for step in 0..2 {
+        assert_eq!(active(&editor), Some(step));
+        let wants = editor.loupe_wants();
+        let strip = editor
+            .workspace
+            .select
+            .loupe
+            .strip
+            .clone()
+            .expect("a strip");
+        let thumbnails: Vec<&Want> = wants
+            .iter()
+            .filter(|want| want.slot.role == Role::Thumbnail)
+            .collect();
+        assert!(
+            strip.frames.iter().any(|frame| frame.position == step),
+            "step {step}: the strip holds the active frame"
+        );
+        assert_eq!(
+            thumbnails
+                .iter()
+                .map(|want| Some(want.slot.item.clone()))
+                .collect::<Vec<_>>(),
+            strip
+                .frames
+                .iter()
+                .map(|frame| frame.item.clone())
+                .collect::<Vec<_>>(),
+            "step {step}: each strip frame's photograph"
+        );
+        assert!(thumbnails.iter().all(|want| {
+            want.shown
+                && want.slot.tier() == PreviewTier::Grid
+                && want.slot.priority() == PreviewPriority::Visible
+                && matches!(want.slot.item, PreviewItem::Photo { .. })
+        }));
+        assert!(
+            strip.frames.iter().all(|frame| frame.thumbnail.is_none()),
+            "step {step}: nothing drawn before it is read"
+        );
+        // The loupe's tasks, run here: the batch the last message planned is not run, so the
+        // frames start again from what the loupe wants now.
+        editor.select.loupe.frames = LoupeFrames::default();
+        let mut batch = editor.select.loupe.frames.want(wants.clone());
+        luxforge_testbase::wait_until("the strip's grid tiers rendered and decoded", || {
+            while let Some(sent) = batch.take() {
+                assert!(
+                    sent.reads
+                        .iter()
+                        .filter(|slot| slot.role == Role::Thumbnail)
+                        .all(|slot| slot.tier() == PreviewTier::Grid)
+                );
+                let answers = loupe_frames::read(&editor.owner, editor.client, sent);
+                batch = editor.select.loupe.frames.answered(answers);
+            }
+            batch = editor
+                .select
+                .loupe
+                .frames
+                .woken(woke.swap(false, Ordering::AcqRel));
+            batch.is_none() && editor.select.loupe.frames.settled(&wants)
+        });
+        // The next message mirrors what the loupe holds, and the model draws it.
+        send(&mut editor, LoupeMessage::Pointer(None));
+        assert!(editor.loupe_settled());
+        let strip = editor.workspace.select.loupe.strip.clone().unwrap();
+        for frame in &strip.frames {
+            let picture = frame.thumbnail.as_ref().expect("drawn once decoded");
+            assert_eq!(Some(&picture.item), frame.item.as_ref(), "its own");
+            assert!(
+                picture.origin == PreviewOrigin::Rendered
+                    && !picture.stand_in
+                    && picture.key.contains(":grid:"),
+                "{picture:?}"
+            );
+            assert!(editor.loupe_images().thumbnail(frame).is_some());
+        }
+        let summary = editor.loupe_summary();
+        let recorded = &summary["strip"]["thumbnails"];
+        assert_eq!(recorded.as_array().map(Vec::len), Some(strip.frames.len()));
+        for thumbnail in recorded.as_array().unwrap() {
+            assert_eq!(thumbnail["drawn"], true, "{thumbnail}");
+            assert_eq!(thumbnail["picture"]["item"], thumbnail["item"]);
+        }
+        assert_eq!(
+            summary["frames"]["thumbnails_held"],
+            summary["frames"]["thumbnails"]
+        );
+        send(&mut editor, LoupeMessage::Frame(Travel::Forward));
+    }
+    send(&mut editor, LoupeMessage::Close);
+    assert_eq!(editor.select.loupe.frames.summary()["handles"], 0);
+    finish(editor, catalog);
 }
