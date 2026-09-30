@@ -2428,6 +2428,130 @@
       {
         "actions": [
           {
+            "id": "set-curve",
+            "notes": "A monotone point curve over encoded luminance, placed after Basic and before the colour mixer by declared order",
+            "parameters": [
+              {
+                "default": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "kind": "curve",
+                "monotone": true,
+                "name": "luminance",
+                "notes": "",
+                "points_max": 16,
+                "points_min": 2,
+                "precision": 2,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              }
+            ],
+            "patch": true,
+            "title": "Set Tone curve"
+          },
+          {
+            "id": "reset-curve",
+            "notes": "returns the stack's one Tone curve layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Tone curve"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-curve",
+                "background": "histogram",
+                "channels": [
+                  {
+                    "label": "Luminance",
+                    "parameter": "luminance"
+                  }
+                ],
+                "kind": "curve",
+                "label": "Tone curve",
+                "sample_query": "sample-curve"
+              }
+            ],
+            "kind": "group",
+            "label": "Tone curve",
+            "reset": {
+              "action": "set-curve",
+              "preset": {
+                "luminance": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.curve.tone",
+            "maskable": true,
+            "order": 5,
+            "single": true,
+            "stage": "color"
+          }
+        ],
+        "hint": "A point curve over the photograph's tones",
+        "id": "luxforge.curve",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "sample-curve",
+            "notes": "257 samples of the curve through the submitted points",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "curve",
+                "monotone": true,
+                "name": "luminance",
+                "notes": "",
+                "points_max": 16,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Sample tone curve"
+          }
+        ],
+        "reset": {
+          "action": "reset-curve",
+          "preset": {}
+        },
+        "title": "Tone curve"
+      },
+      {
+        "actions": [
+          {
             "id": "set-presence",
             "notes": "merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
             "parameters": [
@@ -4312,6 +4436,31 @@
           "unit": null
         }
       },
+      "edit.reset-curve": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Tone curve layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
       "edit.reset-mixer": {
         "mutates": true,
         "mutation": "revision",
@@ -4522,6 +4671,55 @@
             "precision": 0,
             "required": false,
             "step": 1.0,
+            "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.set-curve": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "A monotone point curve over encoded luminance, placed after Basic and before the colour mixer by declared order",
+        "optional": {
+          "luminance": "",
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [
+          {
+            "default": [
+              [
+                0.0,
+                0.0
+              ],
+              [
+                1.0,
+                1.0
+              ]
+            ],
+            "kind": "curve",
+            "monotone": true,
+            "name": "luminance",
+            "notes": "",
+            "points_max": 16,
+            "points_min": 2,
+            "precision": 2,
+            "required": false,
+            "step": 0.01,
             "unit": null
           }
         ],
@@ -7115,6 +7313,44 @@
           "asset_id",
           "x",
           "y"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "query.sample-curve": {
+        "mutates": false,
+        "notes": "257 samples of the curve through the submitted points",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection",
+          "luminance": "",
+          "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "curve",
+            "monotone": true,
+            "name": "luminance",
+            "notes": "",
+            "points_max": 16,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
         ],
         "target": {
           "default": null,
