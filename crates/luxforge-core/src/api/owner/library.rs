@@ -18,6 +18,9 @@ mod journal_tests;
 mod picks;
 
 // Catalog folders and collections (TASK-012): `folder.*`, `asset.move`, `collection.*`.
+#[cfg(test)]
+mod catalog_folder_tests;
+pub(in crate::api) mod organize;
 
 // Availability and Locate (TASK-016): `source.check`, `source.locate`.
 
