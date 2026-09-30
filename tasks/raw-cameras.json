@@ -355,8 +355,9 @@
    ],
    "extra_context": [
     "Candidates: every catalog mode, including those TASK-003 adds, whose LibRaw decoder is in the replaceable table.",
-    "A mode is routed only when its authentic sample's routed mosaic hash equals its LibRaw-only hash in the evidence manifest, its metadata is identical, and the adapter's own release unpack measurement is at least 1.3x faster. Others stay on LibRaw with the reason recorded in modern camera support.",
-    "Keep the oracle honest: the LibRaw-only hashes come from evidence recorded before routing; never regenerate them from a routed decode."
+    "A mode is routed only when its authentic sample's routed mosaic hash equals its LibRaw-only hash in the evidence manifest, its metadata is identical, Others stay on LibRaw with the reason recorded in modern camera support.",
+    "Keep the oracle honest: the LibRaw-only hashes come from evidence recorded before routing; never regenerate them from a routed decode.",
+    "Owner instruction 2026-09-30: performance is measured only once every task is complete, so this task routes every exact candidate and the measurement task applies the 1.3x speed gate."
    ],
    "context_links": [
     {
@@ -385,7 +386,7 @@
     }
    ],
    "acceptance_criteria": [
-    "Every routed mode has passing exactness evidence and a recorded unpack speedup; every candidate left on LibRaw has a recorded reason.",
+    "Every routed mode has passing exactness evidence; every candidate left on LibRaw has a recorded reason.",
     "The owner originals and existing oracles (bayer_owner_mosaic_and_rgb_oracle, the DNG reference) pass.",
     "Background raw-editor verification passes for the owner Z6 and one routed public mode per family."
    ],
@@ -414,6 +415,7 @@
    ],
    "extra_context": [
     "Performance task: timing runs belong here. Measure adapter unpack per routed mode before and after, the owner Z6's cold saved-WB preparation p50/p95 against the 546 ms baseline, and peak process RSS for one open of the largest routed mode; alternate before/after runs on the shared host and record load.",
+    "Apply the design's routing speed gate here: any routed mode whose release unpack is not at least 1.3x faster than LibRaw's returns to LibRaw, with the measurement recorded as the reason.",
     "Update the performance spec, feature status, user guide, modern camera support and the adapter README; record current behaviour only; delete this plan when complete."
    ],
    "context_links": [
