@@ -373,9 +373,9 @@ fn malformed_or_unknown_dji_opcode_fails_explicitly() {
     unchanged(&path, &hash);
 }
 
-/// Nikon High Efficiency is refused before unpack on every body, catalogued or not, including the
-/// Z50II and Z5II that LibRaw misreads as lossless; the catalogued bodies' lossless controls still
-/// decode to their recorded mosaics. Set LUXFORGE_RAW_POPULAR_DIR to the directory of
+/// Nikon High Efficiency is refused before unpack on every body, including the Z50II and Z5II that
+/// LibRaw misreads as lossless; lossless controls from the same bodies still decode to their
+/// recorded mosaics. Set LUXFORGE_RAW_POPULAR_DIR to the directory of
 /// raw.pixls.us samples named `<id>.<EXT>`.
 #[test]
 #[ignore = "requires explicit local authentic popular-camera RAW samples"]
@@ -431,7 +431,9 @@ fn nikon_high_efficiency_is_refused_and_lossless_controls_decode() {
         "../../../fixtures/modern-camera-evidence.json"
     ))
     .unwrap();
-    for id in ["5146", "6885", "4160"] {
+    // The Z 9, Z f and Z 6II, and the Z6III and Z50II whose lossless modes require maker-note
+    // compression 3: the same bodies' High Efficiency files above never reach their modes.
+    for id in ["5146", "6885", "4160", "7819", "7762"] {
         let entry = evidence["entries"]
             .as_array()
             .unwrap()
@@ -455,17 +457,4 @@ fn nikon_high_efficiency_is_refused_and_lossless_controls_decode() {
         );
         unchanged(&path, &hash);
     }
-
-    // The Z6III is outside the catalog: its lossless sample is refused as an unsupported
-    // recording mode, never as High Efficiency.
-    let path = Path::new(&dir).join("7819.NEF");
-    let (bytes, hash) = read_with_hash(&path);
-    assert_eq!(
-        hash,
-        "17180e80555c149c5954a8a2f09459ede593b49731f1941f7094be105f3520e2"
-    );
-    let error = RawSource::decode(bytes, &cancel).expect_err("the Z6III is uncatalogued");
-    assert!(matches!(error, RawError::UnsupportedMode(_)), "{error:?}");
-    println!("7819 Z6_3 lossless: {error}");
-    unchanged(&path, &hash);
 }

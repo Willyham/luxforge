@@ -31,16 +31,87 @@ with guessed entries or bypass required corrections to admit a model.
 
 ## Current evidence
 
-The selection contains 100 configured model identities and 103 recording modes,
-including the original modes. The authentic adapter evidence covers one selected
-recording mode per model: 99 CC0 public sources and the existing owner Air 2S
-source. Each qualification checks source hashes before/after, full mosaic
-retention, usable calibration, and finite as-shot and perturbed-white-balance
-development. Per-source metadata and hashes are in
+The catalog contains 107 camera profiles and 126 recording modes, including the
+original modes and the [popular camera modes](popular-camera-support.md). The
+authentic adapter evidence has 130 samples covering 123 modes: 129 CC0 public
+sources and the existing owner Air 2S source. The three modes without an entry,
+the Z6's 12-bit and 14-bit lossless NEF and the X100VI's lossless RAF, are
+covered by the crate's authentic owner and public-fixture tests. Each
+qualification checks source hashes before/after, full mosaic retention, usable
+calibration, and finite as-shot and perturbed-white-balance development.
+Per-source metadata and hashes, including each full mosaic's SHA-256 from the
+LibRaw-only path, are in
 [the evidence manifest](../../fixtures/modern-camera-evidence.json);
-[the selection](../../fixtures/modern-camera-selection.json) records source URLs
-and licenses. Float hashes record this build's output; they are not independent
-color-reference ground truth.
+[the selection](../../fixtures/modern-camera-selection.json) lists each model's
+samples with the mode each evidences, its source URL, hash and license. Float
+hashes record this build's output; they are not independent color-reference
+ground truth.
+
+### Popular recording modes
+
+Each mode below was identified from what the adapter reads (decoder, bit depth,
+stored frame, frame count and container marker), not from the sample's label,
+and qualified from the listed raw.pixls.us sample. C-RAW samples on bodies whose
+RAW mode was already admitted share that mode: Canon RAW and C-RAW use one
+decoder, bit depth and size.
+
+| Camera | Sample | Mode | Selector | Mosaic SHA-256 |
+| --- | --- | --- | --- | --- |
+| Sony A7 III | 2414, 2415 | `SonyILCE7M3Compressed14` | `sony_arw2_load_raw()` 14-bit | `89ceacf8cfa2…`, `edf760740d0c…` |
+| Sony A7 IV | 6932 | `SonyILCE7M4Compressed14` | `sony_arw2_load_raw()` 14-bit | `76c01cc0e91d…` |
+| Sony A7 IV | 6929 | `SonyILCE7M4Lossless14` | `sony_ljpeg_load_raw()` 14-bit, 7168×5120 frame | `1ae99c2cf427…` |
+| Sony A7C II | 6868 | `SonyILCE7CM2Compressed14` | `sony_arw2_load_raw()` 14-bit | `d3bc1d9d7a5f…` |
+| Sony A7C II | 6867 | `SonyILCE7CM2Lossless14` | `sony_ljpeg_load_raw()` 14-bit, 7168×5120 frame | `f4c9f3858edd…` |
+| Sony A7R V | 6235 | `SonyILCE7RM5Compressed14` | `sony_arw2_load_raw()` 14-bit | `5a4e900224fd…` |
+| Sony A7R V | 6232 | `SonyILCE7RM5Lossless14` | `sony_ljpeg_load_raw()` 14-bit, 9728×6656 frame | `70d841fc2c5c…` |
+| Sony a6700 | 6736 | `SonyILCE6700Lossless14` | `sony_ljpeg_load_raw()` 14-bit, 6656×4608 frame | `ad5a4455d20d…` |
+| Sony ZV-E10 | 4855 | `SonyZVE10Compressed14` | `sony_arw2_load_raw()` 14-bit | `d708a48b3170…` |
+| Fujifilm X-T5 | 6124 | `FujifilmXT5Uncompressed14` | `unpacked_load_raw()` 14-bit, RAF header 0 | `7ee1af041d36…` |
+| Fujifilm X-T5 | 6123 | `FujifilmXT5Lossy14` | `fuji_compressed_load_raw()` 14-bit, RAF header 3 | `0b19a4f1fb56…` |
+| Fujifilm X-M5 | 7747 | `FujifilmXM5Uncompressed14` | `unpacked_load_raw()` 14-bit, RAF header 0 | `34e4347b54ab…` |
+| Fujifilm X-M5 | 7748 | `FujifilmXM5Lossless14` | `fuji_compressed_load_raw()` 14-bit, RAF header 2 | `809fbafb9c12…` |
+| Nikon D850 | 1840 | `NikonD850Lossless14` | `nikon_load_raw()` 14-bit, maker-note compression 3 | `614933e6f550…` |
+| Nikon D850 | 1841 | `NikonD850Lossy14` | `nikon_load_raw()` 14-bit, maker-note compression 4 | `bc9372e0e11e…` |
+| Nikon Z6III | 7819 | `NikonZ63Lossless14` | `nikon_load_raw()` 14-bit, maker-note compression 3 | `ddf95d32217f…` |
+| Nikon Z50II | 7762 | `NikonZ502Lossless14` | `nikon_load_raw()` 14-bit, maker-note compression 3 | `bd2399b51421…` |
+| Nikon Z5II | 7745 | `NikonZ52Lossless14` | `nikon_load_raw()` 14-bit, maker-note compression 3 | `202d872a9f11…` |
+| Canon EOS 5D Mark IV | 983 | `CanonEOS5DMarkIVRaw14` | `lossless_jpeg_load_raw()` 14-bit, one frame | `910c0aa81939…` |
+| Canon EOS 90D | 4649 (RAW), 4650 (C-RAW) | `CanonEOS90DRaw14` | `crxLoadRaw()` 14-bit | `184ac5daa56c…`, `3898269dc57d…` |
+| Canon EOS 5D Mark III | 771 | `CanonEOS5DMarkIIIRaw14` | `lossless_jpeg_load_raw()` 14-bit | `d4f894f5e341…` |
+| Canon EOS R6 Mark II | 6409 (C-RAW) | `CanonEOSR6MarkIIRaw14` | `crxLoadRaw()` 14-bit | `edb3745dec39…` |
+| Canon EOS R6 Mark II | 6405 (Dual Pixel RAW) | `CanonEOSR6MarkIIRaw14DualPixel` | `crxLoadRaw()` 14-bit, two frames | `caf3351c989d…` |
+| Canon EOS R6 | 4660 (C-RAW) | `CanonEOSR6Raw14` | `crxLoadRaw()` 14-bit | `d179b086225d…` |
+| Canon EOS R5 | 4698 (C-RAW) | `CanonEOSR5Raw14` | `crxLoadRaw()` 14-bit | `d9420d23104f…` |
+| Canon EOS R5 | 4697 (C-RAW Dual Pixel) | `CanonEOSR5Raw14DualPixel` | `crxLoadRaw()` 14-bit, two frames | `034083098e20…` |
+| Canon EOS R5 Mark II | 7882 (C-RAW) | `CanonEOSR5MarkIIRaw14` | `crxLoadRaw()` 14-bit | `3b7b168da7b7…` |
+| Canon EOS R7 | 5634 (C-RAW) | `CanonEOSR7Raw14` | `crxLoadRaw()` 14-bit | `600b934b935d…` |
+
+Sony's lossless compressed ARW is stored in 512-pixel tiles, so LibRaw reports a
+padded frame larger than the uncompressed sensor; the mode declares that frame
+(`frame_size`) and LibRaw's inset crops to the same visible area as the
+uncompressed mode. The new Nikon bodies' lossless modes require maker-note
+compression 3, so a High Efficiency file (compression 13 or 14) matches no mode
+even without the earlier High Efficiency refusal. The R6 Mark II 6405 and R5 4697
+samples are Dual Pixel RAW: a second full-size CRX track beside the primary one.
+The adapter decodes only the primary frame, as it does for the 5D Mark IV's Dual
+Pixel CR2; that frame averages about twice the second frame's signal, as the
+combined image should. The Z50II and Z5II use the model's own matrix from
+RawSpeed's camera data (below), since pinned LibRaw has none; the Z6III uses
+LibRaw's.
+
+The EOS R10 has no C-RAW sample in the raw.pixls.us index: its four samples
+(5871, 5873, 5907, 8185) all record Canon quality 4, RAW.
+
+### Refused recording modes
+
+These stay refused, each for a concrete reason:
+
+| Files | Refusal | Reason |
+| --- | --- | --- |
+| Nikon High Efficiency and High Efficiency★ NEF (Z9 5147, Z8 6618, Zf 6886, Z6III 7815, Z50II 7763, Z5II 7743) | Unsupported compression, before unpack | JPEG XS payload that neither LibRaw 0.22.2 nor RawSpeed decodes; the owner waits for upstream LibRaw support. The message says to record Lossless compressed RAW |
+| Sony A7 V compressed ARW (8846) | LibRaw open fails | A new compressed format neither library decodes |
+| APS-C crop sizes on full-frame bodies (R6 4661 at 3584×2386, R6 Mark II 6404 at 3936×2612, A7R V 6239 at 6304×4180, A7C II 6869 and A7 IV 6936 at 4736×3132) | Unsupported recording mode | The stored frame is smaller than the catalogued sensor. A mode's frame may only pad the sensor, never crop it, and no crop mode has its own qualified geometry |
+| Small and medium RAW sizes | Unsupported recording mode | As for crop sizes: they differ from the catalogued sensor and are not qualified |
 
 The high-resolution profiles use the approved RAW-only resource contract in
 [the resource ledger](modern-camera-resource-ledger.md). For DNGs whose decoder
@@ -57,7 +128,14 @@ rotation/crop/undo, historical previews and exact reopened displayed pixels.
 The final build additionally passed 27 edit/reopen trials across six larger/Leica
 models and the three owner originals. Full verification also passed 19 general
 rendered scenarios and the independent RAW numerical reference. The resource ledger records sampled process memory
-and its limits. Controlled
+and its limits. For the popular modes, the background `raw-editor` journey
+passed on Sony A7 IV compressed (6932), Fujifilm X-T5 uncompressed (6124),
+Nikon Z50II lossless (7762) and Canon 90D RAW (4649). The Z6III lossless sample
+(7819) qualifies but its journey fails on open: its As shot temperature and
+tint land on the +100 tint limit (4877 K, +100) and do not reproduce the
+camera's gains, an editor white-balance limit rather than a decoding one. The
+A7R V lossless mode's padded 9728×6656 frame has no editor or resource-ledger
+measurement yet. Controlled
 color/detail, other recording modes, and native Windows/Linux package
 qualification remain separate work.
 
@@ -91,8 +169,9 @@ returns failure if any source changes, metadata is unsupported, or development
 fails. Its maximum source read is the RAW adapter's [encoded-source bound](architecture.md#limits). Public
 fixture redistributions and source photographs are not committed.
 
-OM-3 calibration comes from the exact model entry in pinned RawSpeed camera
-data, with its attribution and data license in the RAW adapter's notices.
+OM-3, Nikon Z50II and Nikon Z5II calibration comes from each model's exact entry
+in pinned RawSpeed camera data, with its attribution and data license in the RAW
+adapter's notices.
 Unpacking with LibRaw's identity fallback is insufficient: the adapter rejects
 missing or singular XYZ-to-camera calibration before publishing the source.
 

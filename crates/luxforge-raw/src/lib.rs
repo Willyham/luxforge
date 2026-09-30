@@ -2540,7 +2540,9 @@ mod tests {
     /// The adapter's own High Efficiency check, behind the container check that `decode` runs
     /// first: opened directly, the bodies whose files LibRaw routes to its High Efficiency decoder
     /// are refused before unpack. LibRaw routes the Z50II and Z5II files to its lossless decoder,
-    /// so only the container check catches them; here they stop at the catalog. Set
+    /// so only the container check catches them: opened directly, past it, they unpack (to a
+    /// corrupt mosaic), and their catalog modes, which require maker-note compression 3, refuse
+    /// them only after unpack. Set
     /// LUXFORGE_RAW_POPULAR_DIR to the directory of raw.pixls.us samples named `<id>.<EXT>`.
     #[test]
     #[ignore = "requires explicit local authentic popular-camera RAW samples"]
@@ -2552,8 +2554,8 @@ mod tests {
             ("6618", NativeStatus::NikonHighEfficiency),
             ("6886", NativeStatus::NikonHighEfficiency),
             ("7815", NativeStatus::NikonHighEfficiency),
-            ("7763", NativeStatus::UnsupportedMode),
-            ("7743", NativeStatus::UnsupportedMode),
+            ("7763", NativeStatus::Ok),
+            ("7743", NativeStatus::Ok),
         ] {
             let bytes = std::fs::read(format!("{dir}/{id}.NEF")).expect("read sample");
             let unpacks = native_counters::unpack_calls();
