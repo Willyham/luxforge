@@ -52,7 +52,7 @@ use crate::{
     index::{
         database,
         exclude::OwnDirs,
-        lane::{Lane, LaneConfig, LaneEvent, Refresh, RootPlan, Work},
+        lane::{Lane, LaneConfig, LaneEvent, Maker, Refresh, RootPlan, Work},
         volumes::MountSource,
         walk::WalkLimits,
     },
@@ -495,18 +495,18 @@ pub(super) fn indexed_folders_changed(owner: &mut Owner, origin: &Origin, folder
 /// One message from the lane (or a test).
 pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
     match message {
-        FilesMessage::Lane(LaneEvent::Committed { revision, job }) => {
-            // A job's batch is announced under the request that started it; one the watcher's
-            // notifications made as work no request made.
-            let origin = owner
-                .catalog
-                .files
-                .running
-                .as_ref()
-                .filter(|running| {
-                    job.is_some() && running.job.as_ref().map(|(id, _)| id) == job.as_ref()
-                })
-                .map_or_else(unrequested, |running| running.origin.clone());
+        FilesMessage::Lane(LaneEvent::Committed { revision, by }) => {
+            // A batch of the owner's work is announced under the request that asked for it; one
+            // the watcher's notifications made as work no request made.
+            let running = owner.catalog.files.running.as_ref();
+            let origin = match by {
+                Maker::Job(job) => {
+                    running.filter(|running| running.job.as_ref().map(|(id, _)| id) == Some(&job))
+                }
+                Maker::Owner => running,
+                Maker::Watcher => None,
+            }
+            .map_or_else(unrequested, |running| running.origin.clone());
             announce_once(&mut owner.announced, &origin.index(revision));
             owner.record_announced();
         }
