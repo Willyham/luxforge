@@ -289,7 +289,20 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return Some(Message::View(ViewMessage::HundredPercent));
     }
     if character(key, "o") {
-        return Some(Message::View(ViewMessage::ToggleThirds));
+        return Some(
+            if context.mask_brush && !modifiers.alt() && !modifiers.control() && !modifiers.shift()
+            {
+                Message::Mask(MaskMessage::ToggleOverlay)
+            } else if !context.mask_brush
+                && !modifiers.alt()
+                && !modifiers.control()
+                && !modifiers.shift()
+            {
+                Message::View(ViewMessage::ToggleThirds)
+            } else {
+                return None;
+            },
+        );
     }
     // Both clipping overlays at once. The histogram's triangles toggle them one at a time; this
     // key and the title bar's Clipping button move the pair together.
@@ -299,14 +312,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if character(key, "v") {
         return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
     }
-    // M enters Mask mode; Shift+M toggles its overlay. Both are host keys, because a mask is a host
+    // M enters Mask mode. It is a host key, because a mask is a host
     // object: no module declares this mode, so no module's letter can claim them.
     if character(key, "m") {
-        return Some(if modifiers.shift() {
-            Message::Mask(MaskMessage::ToggleOverlay)
-        } else {
-            Message::View(ViewMessage::SetMode(MASK_MODE.into()))
-        });
+        return (!modifiers.shift() && !modifiers.alt() && !modifiers.control())
+            .then(|| Message::View(ViewMessage::SetMode(MASK_MODE.into())));
     }
     // Compare holds the Original framed as the displayed entry is framed; Shift holds the whole,
     // uncropped Original. A layout that shifts the backslash to `|` reports that character.
@@ -430,6 +440,51 @@ mod tests {
             kind_menu: None,
             mask_keys: false,
         }
+    }
+
+    #[test]
+    fn o_is_the_mask_visibility_key_and_respects_field_focus_and_repeat() {
+        let o = pressed(letter("o"), Modifiers::empty());
+        let mask = KeyContext {
+            mask_brush: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&o, Status::Ignored, &mask),
+            Some(Message::Mask(MaskMessage::ToggleOverlay))
+        ));
+        assert!(matches!(
+            keymap(&o, Status::Ignored, &context()),
+            Some(Message::View(ViewMessage::ToggleThirds))
+        ));
+        assert!(keymap(&o, Status::Captured, &mask).is_none());
+        assert!(
+            keymap(
+                &held(letter("o"), Modifiers::empty(), true),
+                Status::Ignored,
+                &mask
+            )
+            .is_none()
+        );
+        for modifier in [Modifiers::SHIFT, Modifiers::ALT] {
+            assert!(keymap(&pressed(letter("o"), modifier), Status::Ignored, &mask).is_none());
+        }
+        assert!(matches!(
+            keymap(
+                &pressed(letter("o"), Modifiers::COMMAND),
+                Status::Ignored,
+                &mask
+            ),
+            Some(Message::Sync(SyncMessage::Open))
+        ));
+        assert!(
+            keymap(
+                &pressed(letter("m"), Modifiers::SHIFT),
+                Status::Ignored,
+                &mask
+            )
+            .is_none()
+        );
     }
 
     /// The Masks panel's keys act only in their context: a kind menu's letters only while it is

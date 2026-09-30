@@ -7,7 +7,7 @@ use super::{
     outcome::Outcome,
     tasks::{locate_task, query_task, sample_task},
 };
-use crate::state::tools;
+use crate::state::{histogram::Readout, tools};
 use iced::Task;
 use luxforge_core::ModuleDescriptor;
 use serde_json::{Map, Value, json};
@@ -87,21 +87,52 @@ impl Editor {
         match message {
             PointerMessage::Sampled { entry, result } => {
                 self.hover.sample.answered();
-                // The answer is adopted only when it describes the stack still on screen.
-                self.hover.readout = (self.displayed_entry() == Some(entry))
-                    .then_some(result)
-                    .and_then(Result::ok);
-                self.outcome(Outcome::ReadoutAnswered);
+                // Both identities matter: a slow spatial sample may finish after the pointer has
+                // moved, or after the newest coordinate was answered from the retained raster.
+                // Such an answer must not replace the current readout with an older position.
+                let current_entry = self.displayed_entry() == Some(entry);
+                let answered = match result {
+                    Ok(readout)
+                        if current_entry && self.hover.pointer == Some((readout.x, readout.y)) =>
+                    {
+                        self.hover.readout = Some(readout);
+                        true
+                    }
+                    Err(_)
+                        if current_entry
+                            && self.hover.sample.pending().is_none()
+                            && self.hover.readout.is_none() =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                if answered {
+                    self.outcome(Outcome::ReadoutAnswered);
+                }
                 if let Some(&(x, y)) = self.hover.sample.pending() {
                     return self.sample(x, y);
                 }
             }
             PointerMessage::Moved(point) => {
+                let measured = self
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.sync.cursor.pointer_started(point));
                 if self.hover.pointer == point {
+                    if let Some(started) = measured
+                        && let Some(evidence) = &self.evidence
+                    {
+                        evidence
+                            .sync
+                            .cursor
+                            .pointer_updated(point, started.elapsed().as_secs_f64() * 1000.0);
+                    }
                     return Task::none();
                 }
                 self.hover.pointer = point;
-                return match point {
+                self.hover.readout = None;
+                let task = match point {
                     Some((x, y)) => self.sample(x, y),
                     None => {
                         // The pointer left the photograph: the readout is cleared rather than left
@@ -111,6 +142,15 @@ impl Editor {
                         Task::none()
                     }
                 };
+                if let Some(started) = measured
+                    && let Some(evidence) = &self.evidence
+                {
+                    evidence
+                        .sync
+                        .cursor
+                        .pointer_updated(point, started.elapsed().as_secs_f64() * 1000.0);
+                }
+                return task;
             }
             PointerMessage::Picked { x, y } => {
                 // The widget hands over a pixel of the raster on screen. Which content pixel that
@@ -433,10 +473,48 @@ impl Editor {
         Task::batch([command, leave])
     }
 
-    /// Ask for the pixel under the pointer, throttled to one request in flight with only the newest
-    /// position waiting. `render.sample` is a point query: it evaluates one coordinate of the
-    /// compiled recipe and rasterizes nothing.
+    /// Read one exact byte from the already retained settled output when its entry, content,
+    /// generation and coordinate domain match the displayed composition. This shares the same
+    /// raster used by the histogram and clipping; it allocates and processes no photograph.
+    pub(super) fn retained_readout(&self, x: u32, y: u32) -> Option<Readout> {
+        if self.core_gesture().is_some()
+            || self.crop_stage_owns_view()
+            || self.presentation.displayed_draft_id.is_some()
+            || self.presentation.displayed_draft_revision.is_some()
+            || self.presentation.preview_generation != self.presentation.presented_generation
+            || self.presentation.render_error.is_some()
+            || !self.presentation.has_picture()
+            || self.displayed_entry().as_ref() != self.presentation.presented_entry.as_ref()
+        {
+            return None;
+        }
+        let exact = self.presentation.exact()?;
+        if exact.approximate_white_balance
+            || self.presentation.presented_approximate_white_balance
+            || exact.content != Some(self.presentation.presented_content)
+            || self.presentation.dimensions != Some((exact.raster.width, exact.raster.height))
+        {
+            return None;
+        }
+        Some(Readout {
+            x,
+            y,
+            rgba: exact.raster.pixel(x, y)?,
+        })
+    }
+
+    /// Answer from the exact retained output when possible, otherwise ask `render.sample`, with
+    /// one request in flight and one newest position waiting. The API's exact point query remains
+    /// the fallback for missing/stale full frames, open drafts and approximate RAW previews.
     pub(super) fn sample(&mut self, x: u32, y: u32) -> Task<Message> {
+        if let Some(readout) = self.retained_readout(x, y) {
+            self.hover.sample.drop_pending();
+            self.hover.readout = Some(readout);
+            self.event("pointer_retained_readout", || json!({"x":x,"y":y,
+                "generation":self.presentation.presented_generation,"content":self.presentation.presented_content}));
+            self.outcome(Outcome::ReadoutAnswered);
+            return Task::none();
+        }
         self.hover.sample.offer((x, y));
         let Some(state) = &self.document.state else {
             return Task::none();
@@ -447,6 +525,10 @@ impl Editor {
         let Some((x, y)) = self.hover.sample.start() else {
             return Task::none();
         };
+        self.event(
+            "pointer_sample_requested",
+            || json!({"entry":entry,"x":x,"y":y}),
+        );
         sample_task(
             self.owner.clone(),
             self.client,

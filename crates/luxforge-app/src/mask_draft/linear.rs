@@ -69,6 +69,15 @@ impl LinearEditor {
 }
 
 impl ShapeEditor for LinearEditor {
+    fn placement_valid(&self, from: (f64, f64), to: (f64, f64), aspect: f64) -> bool {
+        finite(from)
+            && finite(to)
+            && [from.0, from.1, to.0, to.1]
+                .into_iter()
+                .all(|value| (POSITION_MIN..=POSITION_MAX).contains(&value))
+            && ((to.0 - from.0) * aspect).hypot(to.1 - from.1) >= MIN_AXIS
+    }
+
     fn kind(&self) -> &'static str {
         KIND
     }

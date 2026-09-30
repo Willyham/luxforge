@@ -73,6 +73,12 @@ pub(crate) struct CurveSampling {
 impl Editor {
     /// One generated-control or tools-panel section message.
     pub(super) fn control_update(&mut self, message: ControlMessage) -> Task<Message> {
+        if !matches!(message, ControlMessage::CurveSampled { .. })
+            && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
+        {
+            self.status.text = reason;
+            return Task::none();
+        }
         // The crop frame's fields are the open frame's, not a request of their own: the crop
         // driver turns what their control sends into a change of that frame.
         if message

@@ -391,6 +391,139 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     finish(editor, catalog);
 }
 
+fn retained_hover_frame(editor: &mut Editor) -> std::sync::Arc<luxforge_core::Raster> {
+    let (_, raster) = testing::analysed(
+        editor,
+        7,
+        &[
+            [1, 2, 3, 255],
+            [4, 5, 6, 255],
+            [7, 8, 9, 255],
+            [200, 100, 50, 255],
+        ],
+        2,
+        2,
+    );
+    let mut exact = testing::exact(7, raster.clone(), 1.0);
+    exact.content = Some(12);
+    editor.presentation.preview_generation = 7;
+    editor.presentation.presented_generation = 7;
+    editor.presentation.presented_content = 12;
+    editor.presentation.dimensions = Some((2, 2));
+    editor.presentation.presented_entry = editor.displayed_entry();
+    editor.presentation.exact = Some(exact);
+    assert!(editor.presentation.presenter.show_full(&raster, 12));
+    raster
+}
+
+#[test]
+fn hover_reads_the_matching_settled_exact_buffer_without_a_query_or_pixel_copy() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    let raster = retained_hover_frame(&mut editor);
+    let retained_address = raster.rgba.as_ptr();
+    let log = attach_log(&mut editor);
+    for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
+        assert_eq!(
+            editor.hover.readout.as_ref().unwrap().rgba,
+            raster.pixel(x, y).unwrap()
+        );
+        assert!(!editor.hover.sample.in_flight());
+        assert!(editor.hover.sample.pending().is_none());
+    }
+    assert_eq!(
+        editor
+            .presentation
+            .exact
+            .as_ref()
+            .unwrap()
+            .raster
+            .rgba
+            .as_ptr(),
+        retained_address
+    );
+    let records = logged(&mut editor, &log);
+    assert!(events(&records, "pointer_sample_requested").is_empty());
+    assert_eq!(events(&records, "pointer_retained_readout").len(), 4);
+    finish(editor, catalog);
+}
+
+#[test]
+fn retained_hover_rejects_stale_content_geometry_entry_generation_and_approximate_pixels() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    retained_hover_frame(&mut editor);
+    assert!(editor.retained_readout(1, 1).is_some());
+    assert!(editor.retained_readout(2, 1).is_none());
+    editor.presentation.dimensions = Some((3, 2));
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor.presentation.dimensions = Some((2, 2));
+    editor.presentation.presented_entry = Some(EntryId::new());
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor.presentation.presented_entry = editor.displayed_entry();
+    editor.presentation.preview_generation = 8;
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor.presentation.preview_generation = 7;
+    editor.presentation.exact.as_mut().unwrap().content = Some(11);
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor.presentation.exact.as_mut().unwrap().content = Some(12);
+    editor
+        .presentation
+        .exact
+        .as_mut()
+        .unwrap()
+        .approximate_white_balance = true;
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor
+        .presentation
+        .exact
+        .as_mut()
+        .unwrap()
+        .approximate_white_balance = false;
+    editor.presentation.displayed_draft_revision = Some(1);
+    assert!(editor.retained_readout(1, 1).is_none());
+    editor.presentation.displayed_draft_revision = None;
+    editor.presentation.presenter.withdraw_photo();
+    assert!(editor.retained_readout(1, 1).is_none());
+    finish(editor, catalog);
+}
+
+#[test]
+fn a_slow_hover_query_cannot_replace_a_newer_retained_readout_or_revive_a_departed_pointer() {
+    let (mut editor, catalog, _, entry) = opened(Vec::new(), 4);
+    let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((0, 0)))));
+    assert!(editor.hover.sample.in_flight());
+    let raster = retained_hover_frame(&mut editor);
+    let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((1, 1)))));
+    assert_eq!(
+        editor.hover.readout.as_ref().unwrap().rgba,
+        raster.pixel(1, 1).unwrap()
+    );
+    let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
+        entry: entry.clone(),
+        result: Ok(Readout {
+            x: 0,
+            y: 0,
+            rgba: [11, 22, 33, 255],
+        }),
+    }));
+    assert_eq!(
+        editor.hover.readout.as_ref().unwrap().rgba,
+        raster.pixel(1, 1).unwrap()
+    );
+    assert!(!editor.hover.sample.in_flight());
+    let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
+    let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
+        entry,
+        result: Ok(Readout {
+            x: 1,
+            y: 1,
+            rgba: [11, 22, 33, 255],
+        }),
+    }));
+    assert!(editor.hover.readout.is_none());
+    finish(editor, catalog);
+}
+
 #[test]
 fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     let (mut editor, catalog, entry_id) = picking();

@@ -7,10 +7,10 @@ use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
     histogram_smoke as histogram, mask_brush_smoke as mask_brush,
-    mask_combine_smoke as mask_combine, mask_panel_smoke as mask_panel,
-    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
-    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
-    raw_panel_smoke as raw_panel,
+    mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
+    mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
+    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
+    presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
     zoom_smoke as zoom, *,
@@ -600,6 +600,21 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: mask_interactions::SCENARIO,
+        about: "Unplaced creation, live coverage, explicit hiding and coherent brush selection",
+        launches: &[LaunchSpec {
+            name: "launch",
+            script: "script.json",
+            plan: mask_interactions::plan,
+            ..APP
+        }],
+        verify: mask_interactions::verify,
+        source: Source::Fixtures(&[mask_interactions::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(mask_interactions::NOTE),
+        own: None,
+    },
+    Scenario {
         name: performance::SCENARIO,
         about: "The Performance section while a heavy edit renders, against the runner's own readings",
         launches: &[LaunchSpec {
@@ -949,7 +964,8 @@ fn opens(sources: &[PathBuf]) -> Plan {
 
 /// The checks of the scenarios that only open files: each frame is the open it follows, ready or
 /// failed as its plan says, the photograph the fixture at its own orientation and size, displayed
-/// and uploaded; the photo-sized ones report the proxy's own render time.
+/// and drawn from a new upload or explicitly reused current pixels; the photo-sized ones report
+/// the proxy's own render time.
 fn plain(run: &mut Run, launches: &[Checked]) -> Result {
     plain_checks(run.scenario(), &launches[0])
 }
@@ -1015,12 +1031,32 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
                 },
                 ..Fixture::fit(orientation)
             })?;
-            ensure(
-                launch.events.iter().any(|e| {
-                    e["event"] == "render_ready" && e["generation"] == state["displayed_generation"]
-                }),
-                "Missing upload readiness",
-            )?;
+            let uploaded = launch.events.iter().any(|e| {
+                e["event"] == "render_ready" && e["generation"] == state["displayed_generation"]
+            });
+            let reused = scenario == "repeated"
+                && index > 0
+                && launch.events.iter().any(|e| {
+                    e["event"] == "preview_pixels_reused"
+                        && e["generation"] == state["displayed_generation"]
+                        && e["detail"]["generation"] == state["surface"]["generation"]
+                        && e["detail"]["identity"]["entry_id"]
+                            == state["histogram"]["identity"]["entry"]
+                });
+            ensure(uploaded || reused, "Missing current photograph readiness")?;
+            if reused {
+                let first = launch.frames[0].state();
+                ensure(
+                    state["surface"]["version"] == first["surface"]["version"]
+                        && state["surface"]["gpu"]["upload_bytes"]
+                            == first["surface"]["gpu"]["upload_bytes"]
+                        && state["surface"]["gpu"]["drawn_full_version"]
+                            == state["surface"]["version"]
+                        && state["surface"]["gpu"]["drawn_photo_blank"] == json!(false)
+                        && state["surface"]["gpu"]["drawn_stale_photo"] == json!(false),
+                    "Reopening reused pixels without the unchanged current photograph drawn",
+                )?;
+            }
         }
     }
     if scenario.starts_with("large") {

@@ -51,6 +51,7 @@ pub(crate) struct TitleBarModel {
     pub(crate) zoom_segment: usize,
     /// A photograph is open, so the view controls act on something.
     pub(crate) can_view: bool,
+    pub(crate) can_toggle_panels: bool,
     pub(crate) can_open: bool,
     /// The Export button is enabled.
     pub(crate) can_export: bool,
@@ -123,6 +124,7 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.edit_refusal.is_none();
+    let interacting = super::masks::interaction_refusal(inputs.mask_draft).is_none();
     // An open draft refuses Undo and Redo, so neither is offered while it is.
     let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;
@@ -141,7 +143,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         }),
         identity: identity(inputs),
         zoom_text: inputs.view_state.zoom.clone(),
-        zoom_editing: inputs.view_state.zoom_editing,
+        zoom_editing: inputs.view_state.zoom_editing && interacting,
         zoom_percent: effective_percent(inputs)
             .map(percent_text)
             .unwrap_or_else(|| "%".to_owned()),
@@ -150,7 +152,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
             Zoom::Percent { value } if *value == 100.0 => SEGMENT_HUNDRED,
             Zoom::Percent { .. } => SEGMENT_PERCENT,
         },
-        can_view: inputs.document.state.is_some(),
+        can_view: inputs.document.state.is_some() && interacting,
+        can_toggle_panels: interacting,
         can_open: inputs.can_open,
         can_export: inputs.can_export,
         export_menu_open: inputs.can_export

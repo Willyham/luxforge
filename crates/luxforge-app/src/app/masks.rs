@@ -42,6 +42,19 @@ pub(crate) struct ArmedBrush {
 }
 
 impl Editor {
+    /// New-mask creation owns the desktop even before a brush press or a gradient's valid extent
+    /// opens the core draft. The owner remains available to other clients.
+    pub(crate) fn mask_creation_refusal(&self) -> Option<String> {
+        self.mask_shape()
+            .filter(|shape| shape.owns_creation())
+            .map(|shape| {
+                format!(
+                    "Apply or Cancel the {} gesture before using other controls",
+                    shape.op.label().to_lowercase()
+                )
+            })
+    }
+
     /// Mask mode is the active canvas mode.
     pub(crate) fn mask_mode_active(&self) -> bool {
         self.session.workspace.mode == MASK_MODE
@@ -186,9 +199,11 @@ impl Editor {
         }
         // A component the open mask no longer holds is dropped for the same reason, and so is a
         // hover left pointing at a row that is gone.
+        let selected = self.mask_panel.selected_mask.clone();
         let held = |component: &ComponentId| {
             reports
                 .iter()
+                .filter(|report| Some(&report.id) == selected.as_ref())
                 .any(|report| report.components.iter().any(|known| &known.id == component))
         };
         if self
@@ -275,7 +290,9 @@ impl Editor {
     /// A brush is in hand between strokes, holding no core draft.
     #[cfg(test)]
     pub(crate) fn armed_brush(&self) -> bool {
-        self.armed.is_some()
+        self.armed
+            .as_ref()
+            .is_some_and(|armed| armed.mask.shape.paints())
     }
 
     /// The mask gesture the canvas draws and the panel reads: the open core mask gesture, or else
@@ -296,7 +313,12 @@ impl Editor {
     /// the frame on screen is already the committed one.
     pub(crate) fn put_brush_down(&mut self) {
         if let Some(armed) = self.armed.take() {
-            self.status.text = "Brush put down".into();
+            self.status.text = if armed.mask.shape.paints() {
+                "Brush put down"
+            } else {
+                "Mask creation cancelled"
+            }
+            .into();
             self.event(
                 "mask_brush_put_down",
                 || json!({"summary": armed.mask.shape.summary()}),
@@ -350,6 +372,7 @@ impl Editor {
             armed.id = id;
             armed.entry = entry.clone();
             armed.mask.map = None;
+            armed.mask.shape.interrupt();
         }
         crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry)
     }
@@ -424,6 +447,30 @@ impl Editor {
 
     /// One Masks-panel message.
     pub(crate) fn mask_message(&mut self, message: MaskMessage) -> Task<Message> {
+        if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
+            && !matches!(
+                message,
+                MaskMessage::Handle(_)
+                    | MaskMessage::Transform(..)
+                    | MaskMessage::Field { .. }
+                    | MaskMessage::Brush(_)
+                    | MaskMessage::Overlay(_)
+                    | MaskMessage::OverlayColour(_)
+                    | MaskMessage::ToggleOverlay
+                    | MaskMessage::Typing(
+                        crate::app::message::mask::TypingEdit::Text(_)
+                            | crate::app::message::mask::TypingEdit::Submit
+                            | crate::app::message::mask::TypingEdit::Cancel
+                            | crate::app::message::mask::TypingEdit::Begin(
+                                crate::state::masks::TypingTarget::DraftField(_)
+                                    | crate::state::masks::TypingTarget::Brush(_)
+                            )
+                    )
+            )
+        {
+            self.status.text = reason;
+            return Task::none();
+        }
         // A choice or an edit puts the panel's open menu away, as a native menu does; the pointer
         // moving, a gesture's own steps and the text being typed leave it where it is.
         if !matches!(
@@ -441,11 +488,19 @@ impl Editor {
             MaskMessage::Select(id) => {
                 let id = MaskId::parse(id).ok();
                 if self.mask_panel.selected_mask != id {
+                    if let Some(reason) = self.gesture_refusal(Starting::Mode) {
+                        self.status.text = reason;
+                        return Task::none();
+                    }
+                    self.put_brush_down();
                     self.mask_panel.selected_mask = id;
                     self.mask_panel.selected_component = None;
+                    self.mask_panel.hovered_component = None;
+                    self.presentation.presenter.clear_coverage();
                     // The sections below the list are bound to the newly opened mask, so their
                     // fields must show that mask's layers rather than the previous target's.
                     self.seed_values();
+                    return self.refresh_mask_overlay();
                 }
                 Task::none()
             }
@@ -454,6 +509,11 @@ impl Editor {
                 if self.mask_panel.selected_component == chosen {
                     return Task::none();
                 }
+                if let Some(reason) = self.gesture_refusal(Starting::Mode) {
+                    self.status.text = reason;
+                    return Task::none();
+                }
+                self.put_brush_down();
                 self.mask_panel.selected_component = chosen;
                 // The row's own number fields show that component's stored geometry, so opening a
                 // row re-seeds them from the component it opened. Nothing is rendered: a selection
@@ -479,7 +539,10 @@ impl Editor {
                 Task::none()
             }
             MaskMessage::Overlay(index) => match MaskOverlayMode::ALL.get(index).copied() {
-                Some(mode) => self.set_mask_overlay(Some(mode), None),
+                Some(mode) => {
+                    self.mask_panel.overlay_manual = true;
+                    self.set_mask_overlay(Some(mode), None)
+                }
                 None => Task::none(),
             },
             MaskMessage::OverlayColour(index) => match MaskOverlayColour::ALL.get(index).copied() {
@@ -487,10 +550,11 @@ impl Editor {
                 None => Task::none(),
             },
             MaskMessage::ToggleOverlay => {
-                let next = match self.session.workspace.mask_overlay {
+                let next = match self.effective_mask_overlay() {
                     MaskOverlayMode::Off => MaskOverlayMode::Tint,
                     _ => MaskOverlayMode::Off,
                 };
+                self.mask_panel.overlay_manual = true;
                 self.set_mask_overlay(Some(next), None)
             }
             MaskMessage::New(kind) => self.begin_shape(MaskDraftOp::Create, kind, None),
@@ -766,7 +830,14 @@ impl Editor {
     /// through the same predicate this reads, so a stroke never carries a limit the host would refuse
     /// and a person is never told one thing while the request says another.
     pub(crate) fn painting_brush(&self) -> crate::mask_draft::Brush {
-        let refused = crate::state::masks::limit_reason(self.open_mask()).is_some();
+        let refused = crate::state::masks::limit_reason(
+            if self.mask_shape().is_some_and(MaskDraft::owns_creation) {
+                None
+            } else {
+                self.open_mask()
+            },
+        )
+        .is_some();
         crate::mask_draft::Brush {
             erase: self.mask_panel.brush.erase || self.mask_panel.erase_held,
             limit_to_colour: self.mask_panel.brush.limit_to_colour && !refused,
@@ -800,37 +871,64 @@ impl Editor {
         ])
     }
 
-    /// Ask for the frame again when what the overlay should show has changed. The coverage grid is
-    /// filled beside the frame by the preview worker, so the overlay costs no second render — but a
-    /// grid for a different mask is a different request.
+    /// Refresh the exact bounded coverage without rerendering photograph pixels.
     pub(crate) fn refresh_mask_overlay(&mut self) -> Task<Message> {
-        let Some(state) = &self.document.state else {
-            return Task::none();
-        };
-        // A drafted frame is already in flight for an open gesture; it carries the overlay request of
-        // its own accord and must not be displaced by a second job for the same pixels. A brush in
-        // hand has no draft and asks for no drafted frame, so the overlay's own request is this one.
-        if self.gesture_refusal(Starting::Refit).is_some() {
-            return Task::none();
+        self.refresh_mask_coverage()
+    }
+
+    /// The exact candidate or selected target. An unplaced/newly armed tool must never show the
+    /// previously selected mask. Created identities are resolved inside the accepted evaluation.
+    pub(crate) fn mask_coverage_target(&self) -> Option<luxforge_core::MaskCoverageTarget> {
+        use luxforge_core::MaskCoverageTarget;
+        if self.effective_mask_overlay() == MaskOverlayMode::Off || !self.mask_mode_active() {
+            return None;
         }
-        let asset = state.asset.id.clone();
-        let entry = self.displayed_entry();
-        let proxy = self.proxy_bounds();
-        crate::app::tasks::current_preview_task(
-            self.owner.clone(),
-            self.client,
-            asset,
-            entry,
-            proxy,
-        )
+        if let Some(shape) = self.mask_shape() {
+            if shape.unplaced() {
+                return None;
+            }
+            if shape.owns_creation() {
+                return self
+                    .mask_gesture()
+                    .map(|_| MaskCoverageTarget::DraftCreated);
+            }
+            let mask = shape.mask.as_ref()?;
+            if self.mask_panel.hidden.contains(mask) && !self.mask_overlay_forced() {
+                return None;
+            }
+            return Some(MaskCoverageTarget::Existing {
+                mask: mask.clone(),
+                component: self
+                    .mask_gesture()
+                    .is_none()
+                    .then(|| self.mask_panel.hovered_component.clone())
+                    .flatten(),
+            });
+        }
+        let mask = self.mask_panel.selected_mask.as_ref()?;
+        if self.mask_panel.hidden.contains(mask) {
+            return None;
+        }
+        Some(MaskCoverageTarget::Existing {
+            mask: mask.clone(),
+            component: self.mask_panel.hovered_component.clone(),
+        })
     }
 
     /// Which mask's coverage the next preview job should fill, and for which component. `None`
     /// leaves the frame without a grid, which is what every request outside Mask mode asks for.
     /// It follows the overlay the canvas draws now, which an open shape gesture may show of its own
     /// accord ([`Editor::effective_mask_overlay`]).
+    #[cfg(test)]
     pub(crate) fn mask_overlay_request(&self) -> Option<luxforge_core::MaskOverlayRequest> {
-        self.overlay_request(self.effective_mask_overlay(), self.overlay_gesture_mask())
+        let luxforge_core::MaskCoverageTarget::Existing { mask, component } =
+            self.mask_coverage_target()?
+        else {
+            return None;
+        };
+        let mut request = self.overlay_request(self.effective_mask_overlay(), Some(&mask))?;
+        request.component = component;
+        Some(request)
     }
 
     /// The request the first frame after the open gesture ends will carry: the setting's own, with
@@ -872,34 +970,20 @@ impl Editor {
 
     // ---- what the canvas shows while a gesture is open -----------------------------------------
 
-    /// The overlay the canvas draws now. It is the person's setting, except that while a shape
-    /// gesture is open on a mask that exists an overlay set to `off` shows the tint, so no handle is
-    /// ever dragged blind; the setting returns when the gesture ends. This is view state only: the
-    /// stored setting is not changed and nothing is sent. A setting that already shows the mask —
-    /// the tint, or either view on black — is kept, because it is already what the person chose to
-    /// see. A brush is not a shape: the path it paints is its own indicator. A gesture creating a
-    /// mask is not either, for now: the mask it draws has no identity until it is committed, so
-    /// there is no mask to ask a grid of.
+    /// Tool starts make coverage visible over an Off setting until an explicit visibility choice.
+    /// This is local view state; choosing Off while drawing remains authoritative.
     pub(crate) fn effective_mask_overlay(&self) -> MaskOverlayMode {
-        if self.mask_overlay_forced() {
-            MaskOverlayMode::Tint
-        } else {
-            self.session.workspace.mask_overlay
-        }
+        crate::state::masks::effective_overlay(
+            self.mask_shape(),
+            &self.mask_panel,
+            self.session.workspace.mask_overlay,
+        )
     }
 
-    /// The open gesture is showing the tint over a setting of `off`.
     pub(crate) fn mask_overlay_forced(&self) -> bool {
         self.session.workspace.mask_overlay == MaskOverlayMode::Off
-            && self.overlay_gesture_mask().is_some()
-    }
-
-    /// The mask an open shape gesture edits, when it edits one that exists.
-    fn overlay_gesture_mask(&self) -> Option<&MaskId> {
-        self.mask_gesture()
-            .map(|gesture| &gesture.shape)
-            .filter(|shape| !shape.paints())
-            .and_then(|shape| shape.mask.as_ref())
+            && !self.mask_panel.overlay_manual
+            && self.mask_shape().is_some()
     }
 
     /// The overlay as a captured frame reports it: the setting, what the canvas draws, and whether
@@ -909,6 +993,7 @@ impl Editor {
             "setting": self.session.workspace.mask_overlay.as_str(),
             "effective": self.effective_mask_overlay().as_str(),
             "forced": self.mask_overlay_forced(),
+            "coverage": self.mask_coverage_summary(),
         })
     }
 
@@ -944,6 +1029,10 @@ impl Editor {
         kind: String,
         mask: Option<MaskId>,
     ) -> Task<Message> {
+        if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape()) {
+            self.status.text = reason;
+            return Task::none();
+        }
         if let Some(reason) = self.gesture_refusal(Starting::Mask) {
             self.status.text = reason;
             return Task::none();
@@ -969,6 +1058,7 @@ impl Editor {
             return self.create_typed(op, kind, mask);
         }
         let brush = self.painting_brush();
+        self.mask_panel.overlay_manual = false;
         let draft = match (op, mask) {
             (MaskDraftOp::Create, _) => MaskDraft::creating(&kind, brush),
             (MaskDraftOp::Add(mode), Some(mask)) => MaskDraft::adding(mask, &kind, mode, brush),
@@ -1064,13 +1154,13 @@ impl Editor {
             self.status.text = format!("{} has no handles in this build", found.name);
             return Task::none();
         };
+        self.mask_panel.overlay_manual = false;
         self.mask_panel.selected_component = Some(component_id);
         self.open_shape(draft)
     }
 
-    /// Start the gesture: read the geometry map once, then open the core draft the release commits.
-    /// A painted shape is a brush put in hand instead ([`ArmedBrush`]): it holds no draft until
-    /// its press. Either way it is the one mask tool in hand, so a brush already held is replaced.
+    /// Read the geometry map once for the held tool. A painted tool waits for its first press and
+    /// an unplaced gradient waits for a valid extent before opening a core draft.
     fn open_shape(&mut self, shape: MaskDraft) -> Task<Message> {
         let Some(method) = shape.method() else {
             self.status.text = format!("This build cannot draw a {} component", shape.kind());
@@ -1088,6 +1178,8 @@ impl Editor {
         self.event(
             if shape.paints() {
                 "mask_brush_armed"
+            } else if shape.unplaced() {
+                "mask_tool_armed"
             } else {
                 "mask_draft_begin"
             },
@@ -1107,7 +1199,7 @@ impl Editor {
             asset,
             entry.clone(),
         );
-        if mask.shape.paints() {
+        if mask.shape.paints() || mask.shape.unplaced() {
             self.armed = Some(ArmedBrush {
                 id: gesture,
                 mask,
@@ -1163,6 +1255,12 @@ impl Editor {
                 }
             }
         }
+        let available = self.held_mask().is_some_and(|mask| mask.map.is_some());
+        if !available && !self.status.text.starts_with("Handles unavailable:") {
+            self.status.text =
+                "Handles unavailable: render transform has no content stage".to_owned();
+        }
+        self.outcome(Outcome::MaskMap { available });
         Task::none()
     }
 
@@ -1170,9 +1268,38 @@ impl Editor {
     /// the canvas.
     fn mask_handle(&mut self, handle: crate::app::message::mask::MaskPointer) -> Task<Message> {
         use crate::app::message::mask::MaskPointer;
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|armed| armed.mask.map.is_none())
+        {
+            self.status.text = "Waiting for mask coordinates".into();
+            return Task::none();
+        }
         // A press with the brush in hand is the one pointer step that opens a draft.
         if let MaskPointer::PaintBegin { x, y } = handle {
             return self.paint_press((x, y));
+        }
+        if self
+            .armed
+            .as_ref()
+            .is_some_and(|armed| armed.mask.shape.unplaced())
+        {
+            let shape = &mut self.armed.as_mut().expect("the unplaced tool").mask.shape;
+            match handle {
+                MaskPointer::Begin { handle, x, y } => shape.begin(handle, (x, y)),
+                MaskPointer::Sweep { from, to } => shape.sweep(from, to),
+                MaskPointer::Drag { x, y } => shape.drag((x, y)),
+                MaskPointer::End => shape.end(),
+                _ => return Task::none(),
+            }
+            if shape.unplaced() {
+                return Task::none();
+            }
+            let armed = self.armed.take().expect("the newly placed tool");
+            self.event("mask_draft_begin", || json!({"method": armed.mask.shape.method(), "summary": armed.mask.shape.summary()}));
+            let fields = armed.mask.fields();
+            return self.open_core(armed.id, Kind::Mask(armed.mask), Some(fields));
         }
         let Some(mask) = self.mask_gesture_mut() else {
             return Task::none();
@@ -1232,6 +1359,11 @@ impl Editor {
         let mut stroke = armed.mask.clone();
         stroke.shape.set_brush(brush);
         stroke.shape.paint_begin(point);
+        if let Some(error) = stroke.shape.capture_error() {
+            self.status.text = error.to_string();
+            self.armed = Some(armed);
+            return Task::none();
+        }
         if !stroke
             .shape
             .brush()
@@ -1258,6 +1390,10 @@ impl Editor {
     /// trip is in flight. The coverage grid the overlay draws rides that job, attached by
     /// [`Editor::request_preview`] as it is to every job.
     pub(crate) fn offer_mask(&mut self) -> Task<Message> {
+        if let Some(error) = self.mask_shape().and_then(MaskDraft::capture_error) {
+            self.status.text = error.to_string();
+            return Task::none();
+        }
         match self.mask_gesture().map(MaskGesture::fields) {
             Some(fields) => self.drive(Event::Offer(fields)),
             None => Task::none(),
@@ -1281,6 +1417,7 @@ impl Editor {
         if was_create && let Some(id) = created {
             self.mask_panel.selected_mask = Some(id);
             self.mask_panel.selected_component = None;
+            self.mask_panel.hovered_component = None;
             self.seed_values();
         }
         self.status.text = "Mask committed".into();
@@ -1438,12 +1575,12 @@ impl Editor {
         &mut self,
         generation: u64,
         grid: luxforge_core::analysis::MaskOverlay,
-    ) {
+    ) -> bool {
         let workspace = &self.session.workspace;
         let mode = self.effective_mask_overlay();
         let Some(rgba) = mask_overlay::paint(&grid, mode, workspace.mask_overlay_colour) else {
             self.presentation.presenter.clear_coverage();
-            return;
+            return false;
         };
         let (width, height) = (grid.cells_w, grid.cells_h);
         self.event(
@@ -1475,6 +1612,7 @@ impl Editor {
         }
         // Reported either way: a grid the surface refused is an outcome too.
         self.outcome(Outcome::MaskGrid { shown });
+        shown
     }
 
     /// The frame asked for a coverage grid and arrived without one, for a reason the host named.

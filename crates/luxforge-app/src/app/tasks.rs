@@ -1179,6 +1179,33 @@ pub(crate) fn current_preview_task(
     )
 }
 
+/// Plan one entry or active draft for live coverage. Its source goes directly to the coverage
+/// worker, without queueing a photograph render or retaining the evaluation on the desktop.
+pub(crate) fn mask_coverage_source_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    draft: Option<DraftId>,
+    epoch: u64,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let mut request = PreviewRequest::new(client, asset_id).entry(entry_id);
+            if let Some(draft) = draft {
+                request = request.draft(draft);
+            }
+            ready_preview_job(&owner, request)
+        },
+        move |result| {
+            Message::Preview(PreviewMessage::MaskCoverageSource {
+                epoch,
+                result: result.map(Box::new),
+            })
+        },
+    )
+}
+
 /// Plan the stack of one displayed entry again for the Masks panel's thumbnails, as a preview is
 /// planned but rendering nothing: the job is handed to the thumbnail worker, never to the preview.
 pub(crate) fn thumbnail_source_task(

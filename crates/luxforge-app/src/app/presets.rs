@@ -40,6 +40,20 @@ pub(crate) struct Presets {
 impl Editor {
     /// Every Presets-section change goes through here.
     pub(crate) fn preset_update(&mut self, message: PresetMessage) -> Task<Message> {
+        if !matches!(
+            message,
+            PresetMessage::Listed(_)
+                | PresetMessage::Created(_)
+                | PresetMessage::Imported(_)
+                | PresetMessage::Deleted(_)
+                | PresetMessage::ReportRead(_)
+                | PresetMessage::Exported(_)
+                | PresetMessage::Cancel
+                | PresetMessage::ImportPicked(_)
+        ) && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
+        {
+            return self.preset_refused(reason);
+        }
         match message {
             PresetMessage::Listed(result) => match result {
                 Ok((presets, sequence)) => self.adopt_presets(presets, sequence),
@@ -114,6 +128,9 @@ impl Editor {
             }
             PresetMessage::ImportPicked(path) => {
                 self.view_state.picker_open = false;
+                if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape()) {
+                    return self.preset_refused(reason);
+                }
                 if let Some(path) = path {
                     return self.preset_import(path);
                 }

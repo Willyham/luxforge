@@ -225,9 +225,11 @@ Decided by the owner on 2026-09-27, who took every recommended default of the [s
 
 Decided on 2026-09-28. The owner delegated the behaviour choices of the [Masks panel design](design/masking-workspace.md#decisions) and asked for the panel to match its boards; current behaviour is described there and in the [user guide](user-guide.md#masks).
 
+The owner requests [interaction repairs](design/masking-interactions.md): unplaced click-drag creation, actual coverage while drawing/painting, `O` for mask visibility, exclusive creation, correct selection/brush targets and responsive hover. These revisions are implemented with exact live coverage and strict creation ownership. Extra modifier shortcuts, relaxed navigation during creation and a numeric cursor target remain proposals; hover uses settled exact bytes without deferring readout.
+
 - The panel is the design's: rows at the module-panel density, a Masks band, one overlay row, New mask and Add component as kind menus, the Brush section only while a brush is armed or selected, and an accent scope chip on each band bound to the open mask.
 - Each component row carries its own `+ − ∩` mode control; the first component's shows `+` alone, dimmed, with the host's reason.
-- An overlay set to off shows the tint while a shape gesture reshapes an existing mask and returns afterwards; the stored setting never changes. A brush and a gesture creating a mask are not forced.
+- Tool starts over Off show Tint automatically, including new gradients and brushes; explicit O/Off during the tool is honoured. Existing visible presentations are kept.
 - Renames happen in place, from the row's menu. A component rename is a host command, `mask.rename-component`, with `mask.rename`'s rules.
 - `mask.list` reports each stroke's settings so a stroke row can say what it painted.
 - The luminance range is drawn with a generic `range` control kind above its four fields.

@@ -2959,6 +2959,105 @@ orders: p50 about 3 ms and p95 7 to 14 ms lower. With two commits a run, the rel
 not a distribution. The committed frame read about 6 ms later after the move in both pairs, which
 is noted rather than claimed.
 
+### Native masking interaction qualification
+
+The [masking interaction repairs](../design/masking-interactions.md) are measured on native Apple
+M4 Pro/Metal, release, a 2880 × 1800 physical window at 2× scale, using background-only hidden
+launches and isolated catalogs. The qualified executable SHA-256 is
+`ea9f2813a5baf47513ffdc0edf827cc036624f6a91aec60964ecbe4bd7b8cbb9`; Cargo.lock is
+`aa36c2217e8802001d585da67e2569499d2b39f1e107a0848b8f5ab2311b6263`.
+Sources are the generated 6000 × 4000 and 10000 × 6000 JPEGs with hashes `b54c2a158a3d3846…`
+and `b9e0118ab69b5d88…`. Source hashes remain unchanged. Filesystem reads are warmed by hash
+verification; source preparation occurs at fresh-process open and is settled/warm during the
+measured hover or stroke. These measurements do not describe hovering before a photo is loaded.
+All final runs start below the existing load-8.0 threshold; maximum start load is 7.55.
+
+There are 18 paced hover runs, 30 emitted moves each, at 16 ms intervals: 540 inputs with zero
+coalescing. They route through the actual laid-out mask canvas and surrounding mouse area after
+New Mask is armed. Every move reads the retained exact raster: zero point-query requests, draft
+sets, photograph jobs, source decodes, photograph texture writes or photograph upload bytes.
+The table is **CPU input-to-cursor-geometry submission**, p50 / p95 / maximum milliseconds,
+n=30 per cell. Matched editor pointer updates and workspace derivation are recorded separately;
+CPU geometry may precede the queued editor update.
+
+| Hover workload | 24 MP | 60 MP |
+| --- | ---: | ---: |
+| Clarity +50, Tint, Fit | 4.01 / 8.58 / 8.66 | 3.46 / 7.81 / 8.49 |
+| Clarity +50, Tint, 100% | 3.66 / 8.60 / 8.72 | 3.46 / 7.93 / 8.15 |
+| Clarity +50, Tint, 200% | 4.08 / 8.14 / 8.64 | 3.47 / 7.32 / 8.50 |
+| Clarity +50, 7° crop, 100% | 3.82 / 8.22 / 9.21 | 3.48 / 7.30 / 8.71 |
+| Basic before Clarity, Tint, Fit | 3.89 / 7.83 / 9.00 | 3.58 / 8.14 / 8.69 |
+| Masked Exposure +0.5 EV, Tint, Fit | 3.29 / 7.15 / 8.29 | 4.54 / 8.96 / 9.91 |
+| Identity, Tint, Fit | 3.20 / 7.80 / 7.92 | 3.24 / 8.54 / 8.57 |
+| Identity, Off, Fit | 3.50 / 7.98 / 8.13 | 3.03 / 7.87 / 7.93 |
+| Clarity +50, Off, Fit | 3.75 / 8.14 / 8.41 | 4.04 / 10.34 / 11.99 |
+
+A separate pair of sequential cursor runs checks 30 native renderer readbacks per source. Every
+input epoch, coordinate and readout matches its captured state; both cursor rings pass independent
+PNG probes (at least 64/64 outer probes and 45/64 inner probes). These 60 frames prove rendered
+correspondence with capture overhead. They do not turn the paced CPU figures into GPU completion
+or display-scanout latency.
+
+The diagnostic before retained readout used 12 scheduled Fit moves over masked Clarity. At 24 MP,
+8 were emitted and 4 coalesced, with 8 exact point queries and CPU geometry p50/p95 22.52/59.16 ms;
+at 60 MP, 7 were emitted and 5 coalesced, with 7 queries and 52.85/81.18 ms. Start loads were 4.95
+and 3.62. Cursor geometry construction and workspace derivation were small; tile-based exact point
+sampling was the expensive path. These small diagnostic counts identify the mechanism. They are
+not a matched 30-input before/after comparison of the whole repair or a renderer-kernel speedup.
+
+Two new unbound-brush runs at 24/60 MP accept 30 positions each at 24 ms intervals, expose 29 live
+coverage results, and commit one stroke/history entry. They submit zero photograph work or uploads
+and preserve the photograph texture version. Seven bound-brush runs use one brush/component and a
+masked Basic Exposure +0.5 EV layer, with Tint: Fit/24 MP, 100%/60 MP and 200%/24 MP short strokes,
+and 240- and 400-position Fit/24 MP and 100%/60 MP holds. The short runs yield 29 draft feedback
+samples; their final position releases/commits, so they are functional diagnostics rather than
+30-sample timing claims. The longer runs qualify actual accepted-coverage readiness:
+
+| Bound stroke | Photo / coverage samples | Input to authoritative coverage p50 / p95 / maximum ms | Sampled peak RSS |
+| --- | ---: | ---: | ---: |
+| Fit, 24 MP, 240 positions | 239 / 239 | 8.42 / 9.41 / 17.60 | 643 MiB |
+| 100%, 60 MP, 240 positions | 239 / 239 | 7.91 / 9.26 / 27.17 | 1111 MiB |
+| Fit, 24 MP, 400 positions, 9.6 s | 399 / 397 | 8.62 / 17.85 / 45.24 | 656 MiB |
+| 100%, 60 MP, 400 positions, 9.6 s | 399 / 399 | 7.95 / 9.25 / 27.76 | 1195 MiB |
+
+Feedback continues during every long hold. Latest pending work may replace a coverage revision;
+the 24 MP 400-position count explicitly retains its two missing coverage pairs. Early/late
+`draft.set` p95 is 0.0346/0.1442 ms at Fit/24 MP and 0.0345/0.0378 ms at 100%/60 MP, for the first
+100 and last 99 accepted draft samples. Fit/24 MP late photo-adoption p95 rises to 32.78 ms, with a
+62.37 ms maximum; this tail is retained. Capture/controller-to-draft dispatch p95 is separately
+0.0163/0.0220 ms and 0.0129/0.0200 ms; that span includes preflight and payload setup, rather than
+isolating raw capture. Tests prove the 16,384-position live bound and explicit refusal/recovery;
+these 400-position measurements do not qualify worst-case native latency at that bound.
+
+Peak sampled process RSS reaches **1640 MiB** in the cropped 100%/60 MP hover workload; the
+bound-paint maximum is 1388 MiB in a short 100%/60 MP run. The 1 GiB provisional RSS reference is
+exceeded. These capture-heavy editor measurements include backend resources, captures and allocator
+retention; they do not establish the 600 MiB CPU-resident edit budget or qualify import/export
+memory. Total editor/GPU memory accounting and bounds remain incomplete.
+
+The 1000-position Fit stroke fails the existing 4096-event diagnostics ceiling (3979 events
+dropped); its final/late measurements remain unavailable. The limit is unchanged and this is not a
+passing stroke result. An initial 100% short-stroke report also failed because the timing parser
+classified a region completion as exact. The narrow parser correction has two regressions and its
+fresh native rerun passes on the same qualified product binary. Both failures remain in the evidence.
+
+The aggregate report is `/private/tmp/mask-final-20260930/summary.json`, including every per-run
+report path, quantile/sample count, load, RSS, counters and retained failure. Paced measurements use
+`editor-latency --binary PATH --source fixtures/generated/24mp.jpg --output NEW_DIR --mode hover
+--samples 30` and the corresponding 60 MP source, with `--zoom`, `--crop`, `--basic` or
+`--action set-basic --parameter exposure` for the stated rows. Bound painting uses `--mode paint
+--mask-overlay --samples 240` or `400`, with `--zoom 100` for the 60 MP viewport. Custom Off/identity,
+unbound creation and sequential cursor proof scripts use `develop --background`; their exact scripts
+and commands are retained alongside the reports.
+
+The final quick tier and all 36 rendered scenarios pass; `mask-interactions` contributes 44
+correlated frames and independent coverage probes. Separate supplied Z6 NEF, X100VI RAF and Air 2S
+DNG checks pass 30 captures and seven exact white-balance redevelopments each, with unchanged source
+hashes, correct history and zero black-mask probe drift. That establishes functional RAW liveness,
+not RAW latency qualification. Native Windows/Linux, GPU completion/scanout latency, the total
+memory budget and the failed 1000-position diagnostic remain unqualified. No full-tier or broader
+editor milestone is claimed.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

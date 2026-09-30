@@ -56,8 +56,8 @@ pub(crate) fn gallery_performance() -> Vec<Element<'static, ()>> {
         // at the row's right edge either way.
         narrow(
             column![
-                disclosure_heading("Performance", Some("2 jobs".into()), true, ()),
-                disclosure_heading("Performance", None, false, ()),
+                disclosure_heading("Performance", Some("2 jobs".into()), true, Some(())),
+                disclosure_heading("Performance", None, false, Some(())),
             ]
             .spacing(theme::SPACING)
             .into(),

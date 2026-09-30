@@ -22,7 +22,7 @@ mod result;
 mod tests;
 mod worker;
 
-pub use coverage::MaskCoverage;
+pub use coverage::{MaskCoverage, MaskCoverageTarget};
 pub use job::{MaskOverlayRequest, PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewQueue, Queued};
 pub use result::{

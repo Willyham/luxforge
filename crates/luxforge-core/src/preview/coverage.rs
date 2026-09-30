@@ -13,7 +13,9 @@
 //! stack applies through — so a caller holding the key of the grid it already has learns in
 //! `O(recipe)` and without filling a cell that nothing changed.
 use super::{MaskOverlayOutcome, MaskOverlayRequest, PreviewSource, worker::mask_overlay_for};
-use crate::{Cancel, Error, Evaluation, MaskId, mask::CompiledMask, modules::Stage};
+use crate::{
+    Cancel, ComponentId, Error, Evaluation, MaskId, Region, mask::CompiledMask, modules::Stage,
+};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -26,6 +28,17 @@ pub struct MaskCoverage {
     /// The grid, or the host's reason there is none, exactly as the overlay would carry it. `None`
     /// when the caller's key matched and nothing was filled.
     pub outcome: Option<MaskOverlayOutcome>,
+}
+
+/// The mask to inspect in an evaluation. A creation is resolved against this evaluation's own
+/// effective draft recipe, never against an identity minted by another planning call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MaskCoverageTarget {
+    Existing {
+        mask: MaskId,
+        component: Option<ComponentId>,
+    },
+    DraftCreated,
 }
 
 /// Serialized and formatted values written straight into a hasher, so a key allocates nothing.
@@ -63,6 +76,212 @@ fn hash_json(hasher: &mut DefaultHasher, value: &impl serde::Serialize) -> Resul
 }
 
 impl Evaluation {
+    /// Resolve one overlay target from this exact evaluation. A create must add exactly one mask
+    /// to its base entry. Missing, ambiguous or non-draft targets are explicit refusals.
+    pub fn mask_coverage_target(
+        &self,
+        target: &MaskCoverageTarget,
+    ) -> Result<MaskOverlayRequest, Error> {
+        let (mask, component) = match target {
+            MaskCoverageTarget::Existing { mask, component } => (mask.clone(), component.clone()),
+            MaskCoverageTarget::DraftCreated => {
+                if self.draft().is_none() {
+                    return Err(Error::validation(
+                        "a candidate mask overlay needs an evaluated draft",
+                    ));
+                }
+                let base = &self.entry().snapshot.recipe.masks;
+                let mut created = self
+                    .recipe()
+                    .masks
+                    .iter()
+                    .filter(|mask| !base.iter().any(|old| old.id == mask.id));
+                let mask = created
+                    .next()
+                    .ok_or_else(|| Error::validation("the evaluated draft created no mask"))?;
+                if created.next().is_some() {
+                    return Err(Error::validation(
+                        "the evaluated draft created more than one mask",
+                    ));
+                }
+                (mask.id.clone(), None)
+            }
+        };
+        Ok(MaskOverlayRequest {
+            mask,
+            component,
+            cells_w: 1,
+            cells_h: 1,
+            whole_cells_w: 1,
+            whole_cells_h: 1,
+        })
+    }
+
+    /// A process-local identity of the photograph's pixels. Unbound masks and draft/history
+    /// bookkeeping do not change pixels. Bound masks, source development and every layer do.
+    /// This reads no pixel and keeps no source alive; failures still prevent reuse.
+    pub fn pixel_content_key(&self) -> Result<u64, Error> {
+        self.compiled()?;
+        let mut hasher = DefaultHasher::new();
+        std::fmt::write(
+            &mut Sink(&mut hasher),
+            format_args!("{:?}", self.source().identity()),
+        )
+        .map_err(|_| Error::internal("a source identity could not be formatted"))?;
+        self.recipe().format.hash(&mut hasher);
+        hash_json(&mut hasher, &self.recipe().layers)?;
+        for mask in &self.recipe().masks {
+            if self
+                .recipe()
+                .layers
+                .iter()
+                .any(|layer| layer.mask.as_ref() == Some(&mask.id))
+            {
+                hash_json(&mut hasher, mask)?;
+            }
+        }
+        Ok(hasher.finish())
+    }
+
+    /// The exact dependencies that must stay fixed while accepted revisions of one edited mask
+    /// provide progressive feedback. Only that target's values may differ: source development,
+    /// all layers (including geometry and bindings), and every other mask remain in the key.
+    /// The caller also fences the base entry, draft, target and display choices. No pixels are
+    /// read and no evaluation is retained by the key.
+    pub fn mask_feedback_key(&self, target: &MaskCoverageTarget) -> Result<u64, Error> {
+        self.compiled()?;
+        let request = self.mask_coverage_target(target)?;
+        if !self
+            .recipe()
+            .masks
+            .iter()
+            .any(|mask| mask.id == request.mask)
+        {
+            return Err(Error::validation(
+                "the feedback target is absent from the evaluated recipe",
+            ));
+        }
+        let mut hasher = DefaultHasher::new();
+        std::fmt::write(
+            &mut Sink(&mut hasher),
+            format_args!("{:?}", self.source().identity()),
+        )
+        .map_err(|_| Error::internal("a source identity could not be formatted"))?;
+        self.recipe().format.hash(&mut hasher);
+        hash_json(&mut hasher, &self.recipe().layers)?;
+        for mask in &self.recipe().masks {
+            if mask.id != request.mask {
+                hash_json(&mut hasher, mask)?;
+            }
+        }
+        Ok(hasher.finish())
+    }
+
+    /// Exact composed or component coverage, independently of photograph rasterization, over a
+    /// whole stage or one visible rectangle. The grid and scratch are display-cell bounded.
+    /// Value-based masks retain the first-bound-layer input and its explicit refusal rules.
+    /// Unlike a thumbnail, a valid fully uncovered selection delivers a zero grid, so each
+    /// presentation mode and each completion wait has an honest, settled result.
+    pub fn mask_overlay_coverage(
+        &self,
+        target: &MaskCoverageTarget,
+        cells: (u32, u32),
+        region: Option<Region>,
+        cached: Option<u64>,
+        cancel: &Cancel,
+    ) -> Result<MaskCoverage, Error> {
+        cancel.check()?;
+        let mut request = self.mask_coverage_target(target)?;
+        let (cells_w, cells_h) = cells;
+        let limit = crate::analysis::MAX_OVERLAY_CELLS;
+        if cells_w == 0 || cells_h == 0 {
+            return Err(Error::validation(
+                "a mask overlay needs a non-empty cell grid",
+            ));
+        }
+        if cells_w > limit || cells_h > limit {
+            return Err(Error::resource_limit(format!(
+                "a mask overlay grid exceeds the {limit} cells a side the display overlay allows"
+            )));
+        }
+        request.cells_w = cells_w;
+        request.cells_h = cells_h;
+        request.whole_cells_w = cells_w;
+        request.whole_cells_h = cells_h;
+        // Validate the selected identities before keying. The exact coverage path checks the
+        // first bound input of any value-based component without rasterizing the photograph.
+        let recipe = self.recipe();
+        let held = recipe
+            .masks
+            .iter()
+            .find(|mask| mask.id == request.mask)
+            .ok_or_else(|| {
+                Error::validation(format!(
+                    "mask {} is not in the stack this evaluation holds",
+                    request.mask
+                ))
+            })?;
+        if let Some(component) = &request.component
+            && !held.components.iter().any(|held| &held.id == component)
+        {
+            return Err(Error::validation(format!(
+                "mask {} holds no component {component}",
+                held.name
+            )));
+        }
+        let mut hasher = DefaultHasher::new();
+        // Full recipe identity is intentionally conservative. No cached source/evaluation is kept;
+        // one grid is cached and may be reused only under all its exact dependencies.
+        self.identity()?.hash(&mut hasher);
+        std::fmt::write(
+            &mut Sink(&mut hasher),
+            format_args!("{:?}", self.source().identity()),
+        )
+        .map_err(|_| Error::internal("a source identity could not be formatted"))?;
+        request.component.hash(&mut hasher);
+        request.mask.hash(&mut hasher);
+        cells.hash(&mut hasher);
+        region
+            .map(|r| (r.x0, r.y0, r.width, r.height))
+            .hash(&mut hasher);
+        let key = hasher.finish();
+        if cached == Some(key) {
+            return Ok(MaskCoverage { key, outcome: None });
+        }
+        let frame = self.exact(cancel)?;
+        if let Some(region) = region {
+            let stage = frame.transform()?.output;
+            if region.is_empty() || region.x1() > stage.width || region.y1() > stage.height {
+                return Err(Error::validation(
+                    "mask overlay rectangle is outside the output stage",
+                ));
+            }
+        }
+        let mut outcome = mask_overlay_for(
+            self.registry(),
+            &frame,
+            recipe,
+            &request,
+            region,
+            cancel,
+            self.context(),
+        );
+        cancel.check()?;
+        if outcome.grid.is_none() && outcome.absent.is_none() {
+            outcome.grid = Some(crate::analysis::MaskOverlay {
+                mask: request.mask,
+                component: request.component,
+                cells_w,
+                cells_h,
+                coverage: vec![0; cells_w as usize * cells_h as usize],
+            });
+        }
+        Ok(MaskCoverage {
+            key,
+            outcome: Some(outcome),
+        })
+    }
+
     /// `mask`'s composed coverage over this evaluation's whole output stage, on a `cells_w ×
     /// cells_h` grid, unless `cached` is already the key of that grid.
     ///
@@ -169,5 +388,465 @@ impl Evaluation {
             key,
             outcome: Some(outcome),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AssetId, BASIC_EFFECT, Component, ComponentMode, DraftId, DraftStamp, EFFECT_FORMAT,
+        EntryId, HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Recipe, RenderContext,
+        Snapshot, SnapshotId, SourceImage,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn linear() -> Mask {
+        let mut mask = Mask::new("Sky");
+        mask.components.push(Component::new(
+            "Linear 1",
+            ComponentMode::Add,
+            "linear",
+            json!({"x0":0.5,"y0":0.1,"x1":0.5,"y1":0.9}),
+        ));
+        mask
+    }
+
+    fn evaluation(base: Recipe, recipe: Recipe, draft: Option<DraftStamp>) -> Evaluation {
+        let asset = AssetId::new();
+        let entry = HistoryEntry {
+            id: EntryId::new(),
+            asset_id: asset.clone(),
+            sequence: 0,
+            action_id: "test".into(),
+            label: "Test".into(),
+            parameters: json!({}),
+            actor: "test".into(),
+            timestamp_ms: 0,
+            request_id: None,
+            base_revision: 0,
+            result_revision: 0,
+            snapshot: Snapshot {
+                id: SnapshotId::new(),
+                asset_id: asset,
+                recipe: base,
+            },
+            undo_parent: None,
+            restore_target: None,
+        };
+        Evaluation::new(
+            Arc::new(ModuleRegistry::builtin()),
+            RenderContext::new(),
+            PreviewSource::Jpeg(SourceImage {
+                width: 60,
+                height: 40,
+                rgba: vec![128; 60 * 40 * 4].into(),
+                fingerprint: "sha256:mask-coverage-test".into(),
+                orientation: 1,
+                capture: Default::default(),
+            }),
+            entry,
+            recipe,
+            draft,
+        )
+    }
+
+    fn changed(held: &Evaluation, recipe: Recipe) -> Evaluation {
+        Evaluation::new(
+            held.registry().clone(),
+            held.context().clone(),
+            held.source().clone(),
+            held.entry().clone(),
+            recipe,
+            held.draft().cloned(),
+        )
+    }
+
+    fn target(mask: &Mask) -> MaskCoverageTarget {
+        MaskCoverageTarget::Existing {
+            mask: mask.id.clone(),
+            component: None,
+        }
+    }
+
+    #[test]
+    fn a_candidate_grid_uses_the_mask_created_in_this_evaluation() {
+        let base = Recipe::default();
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..base.clone()
+        };
+        let draft = DraftStamp {
+            draft_id: DraftId::new(),
+            draft_revision: 3,
+        };
+        let held = evaluation(base, recipe, Some(draft));
+        let candidate = held
+            .mask_overlay_coverage(
+                &MaskCoverageTarget::DraftCreated,
+                (28, 19),
+                None,
+                None,
+                &Cancel::never(),
+            )
+            .unwrap();
+        let existing = held
+            .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+            .unwrap();
+        assert_eq!(candidate.outcome, existing.outcome);
+        assert_eq!(candidate.outcome.unwrap().grid.unwrap().mask, mask.id);
+
+        // Another plan of the same create mints another mask. Cached identities never escape
+        // from one evaluation into the grid delivered for that other plan.
+        let other = linear();
+        let other = changed(
+            &held,
+            Recipe {
+                masks: vec![other.clone()],
+                ..Recipe::default()
+            },
+        );
+        let answer = other
+            .mask_overlay_coverage(
+                &MaskCoverageTarget::DraftCreated,
+                (28, 19),
+                None,
+                Some(candidate.key),
+                &Cancel::never(),
+            )
+            .unwrap();
+        assert_ne!(answer.key, candidate.key);
+        assert_eq!(
+            answer.outcome.unwrap().grid.unwrap().mask,
+            other.recipe().masks[0].id
+        );
+    }
+
+    #[test]
+    fn candidate_target_refuses_missing_ambiguous_and_saved_creations() {
+        let draft = Some(DraftStamp {
+            draft_id: DraftId::new(),
+            draft_revision: 1,
+        });
+        let empty = evaluation(Recipe::default(), Recipe::default(), draft.clone());
+        assert!(
+            empty
+                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .unwrap_err()
+                .detail
+                .contains("no mask")
+        );
+        let recipe = Recipe {
+            masks: vec![linear(), linear()],
+            ..Recipe::default()
+        };
+        let ambiguous = evaluation(Recipe::default(), recipe.clone(), draft);
+        assert!(
+            ambiguous
+                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .unwrap_err()
+                .detail
+                .contains("more than one")
+        );
+        let saved = evaluation(recipe.clone(), recipe, None);
+        assert!(
+            saved
+                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .unwrap_err()
+                .detail
+                .contains("evaluated draft")
+        );
+    }
+
+    #[test]
+    fn exact_overlay_reports_zero_component_region_and_bounded_refusals() {
+        let mut mask = linear();
+        mask.amount = 0.0;
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe, None);
+        let zero = held
+            .mask_overlay_coverage(&target(&mask), (28, 19), None, None, &Cancel::never())
+            .unwrap();
+        let grid = zero
+            .outcome
+            .unwrap()
+            .grid
+            .expect("zero coverage is a settled grid");
+        assert_eq!(grid.coverage, vec![0; 28 * 19]);
+        let component = MaskCoverageTarget::Existing {
+            mask: mask.id.clone(),
+            component: Some(mask.components[0].id.clone()),
+        };
+        let region = Some(Region {
+            x0: 10,
+            y0: 5,
+            width: 20,
+            height: 15,
+        });
+        let first = held
+            .mask_overlay_coverage(&component, (12, 8), region, None, &Cancel::never())
+            .unwrap();
+        let grid = first.outcome.unwrap().grid.unwrap();
+        assert_eq!(grid.component, Some(mask.components[0].id.clone()));
+        assert!(
+            grid.coverage.iter().any(|cell| *cell > 0),
+            "component excludes whole-mask amount"
+        );
+        let cached = held
+            .mask_overlay_coverage(
+                &component,
+                (12, 8),
+                region,
+                Some(first.key),
+                &Cancel::never(),
+            )
+            .unwrap();
+        assert_eq!(cached.outcome, None);
+        let moved = held
+            .mask_overlay_coverage(&component, (12, 8), None, Some(first.key), &Cancel::never())
+            .unwrap();
+        assert_ne!(moved.key, first.key);
+        assert!(
+            held.mask_overlay_coverage(&component, (0, 8), None, None, &Cancel::never())
+                .is_err()
+        );
+        assert_eq!(
+            held.mask_overlay_coverage(
+                &component,
+                (crate::analysis::MAX_OVERLAY_CELLS + 1, 8),
+                None,
+                None,
+                &Cancel::never()
+            )
+            .unwrap_err()
+            .kind,
+            crate::ErrorKind::ResourceLimit
+        );
+        assert!(
+            held.mask_overlay_coverage(
+                &component,
+                (12, 8),
+                Some(Region {
+                    x0: 59,
+                    y0: 0,
+                    width: 2,
+                    height: 1
+                }),
+                None,
+                &Cancel::never()
+            )
+            .is_err()
+        );
+        let missing = MaskCoverageTarget::Existing {
+            mask: mask.id.clone(),
+            component: Some(ComponentId::new()),
+        };
+        assert!(
+            held.mask_overlay_coverage(&missing, (12, 8), None, None, &Cancel::never())
+                .is_err()
+        );
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert_eq!(
+            held.mask_overlay_coverage(&component, (12, 8), region, Some(first.key), &cancel)
+                .unwrap_err()
+                .kind,
+            crate::ErrorKind::Cancelled
+        );
+    }
+
+    #[test]
+    fn value_based_overlay_preserves_the_exact_input_and_unbound_refusal() {
+        let mut mask = Mask::new("Shadows");
+        mask.components.push(Component::new(
+            "Range 1",
+            ComponentMode::Add,
+            "luminance-range",
+            json!({"low":20.0,"low_feather":10.0,"high":80.0,"high_feather":10.0}),
+        ));
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let absent = held
+            .mask_overlay_coverage(&target(&mask), (28, 19), None, None, &Cancel::never())
+            .unwrap()
+            .outcome
+            .unwrap();
+        assert!(absent.grid.is_none() && absent.absent.is_some());
+        let mut recipe = recipe;
+        recipe.layers.push(Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure":1.0}),
+            mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
+        });
+        let held = changed(&held, recipe);
+        let overlay = held
+            .mask_overlay_coverage(&target(&mask), (28, 19), None, None, &Cancel::never())
+            .unwrap();
+        let thumbnail = held
+            .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+            .unwrap();
+        assert_eq!(overlay.outcome, thumbnail.outcome);
+        let mut spatial = held.recipe().clone();
+        spatial.layers.insert(
+            0,
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::PRESENCE_EFFECT.into(),
+                effect_format: EFFECT_FORMAT,
+                payload: json!({"clarity":50.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        );
+        let refused = changed(&held, spatial)
+            .mask_overlay_coverage(&target(&mask), (28, 19), None, None, &Cancel::never())
+            .unwrap()
+            .outcome
+            .unwrap();
+        assert!(refused.grid.is_none());
+        assert!(
+            refused.absent.unwrap().contains("spatial"),
+            "value-based coverage never approximates a spatial prefix"
+        );
+    }
+
+    #[test]
+    fn progressive_feedback_fences_every_dependency_except_the_edited_target() {
+        let mask = linear();
+        let mut other = linear();
+        other.name = "Other".into();
+        let recipe = Recipe {
+            masks: vec![mask.clone(), other],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let initial = held.mask_feedback_key(&target(&mask)).unwrap();
+        let mut edited = recipe.clone();
+        edited.masks[0].amount = 25.0;
+        edited.masks[0].components[0].payload = json!({"x0":0.1,"y0":0.2,"x1":0.8,"y1":0.9});
+        assert_eq!(
+            changed(&held, edited.clone())
+                .mask_feedback_key(&target(&mask))
+                .unwrap(),
+            initial
+        );
+        edited.masks[1].amount = 50.0;
+        assert_ne!(
+            changed(&held, edited)
+                .mask_feedback_key(&target(&mask))
+                .unwrap(),
+            initial
+        );
+        let mut layered = recipe.clone();
+        layered.layers.push(Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure":1.0}),
+            mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
+        });
+        let bound = changed(&held, layered.clone())
+            .mask_feedback_key(&target(&mask))
+            .unwrap();
+        assert_ne!(bound, initial);
+        layered.layers[0].payload = json!({"exposure":2.0});
+        assert_ne!(
+            changed(&held, layered)
+                .mask_feedback_key(&target(&mask))
+                .unwrap(),
+            bound
+        );
+        let mut source = held.source().clone();
+        let PreviewSource::Jpeg(ref mut image) = source else {
+            unreachable!()
+        };
+        image.fingerprint = "a different source".into();
+        let other_source = Evaluation::new(
+            held.registry().clone(),
+            held.context().clone(),
+            source,
+            held.entry().clone(),
+            recipe,
+            None,
+        );
+        assert_ne!(
+            other_source.mask_feedback_key(&target(&mask)).unwrap(),
+            initial
+        );
+        assert!(held.mask_feedback_key(&target(&linear())).is_err());
+    }
+
+    #[test]
+    fn photograph_content_ignores_unbound_masks_and_history_but_tracks_bound_edits() {
+        let held = evaluation(Recipe::default(), Recipe::default(), None);
+        let initial = held.pixel_content_key().unwrap();
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let unbound = changed(&held, recipe.clone());
+        assert_eq!(unbound.pixel_content_key().unwrap(), initial);
+        let mut moved = recipe.clone();
+        moved.masks[0].components[0].payload = json!({"x0":0.1,"y0":0.1,"x1":0.9,"y1":0.9});
+        assert_eq!(
+            changed(&held, moved.clone()).pixel_content_key().unwrap(),
+            initial
+        );
+        let mut saved_entry = unbound.entry().clone();
+        saved_entry.id = EntryId::new();
+        saved_entry.snapshot.id = SnapshotId::new();
+        saved_entry.snapshot.recipe = recipe.clone();
+        let saved = Evaluation::new(
+            held.registry().clone(),
+            held.context().clone(),
+            held.source().clone(),
+            saved_entry,
+            recipe.clone(),
+            None,
+        );
+        assert_eq!(saved.pixel_content_key().unwrap(), initial);
+        let layer = Layer {
+            id: LayerId::new(),
+            effect_id: BASIC_EFFECT.into(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({"exposure":1.0}),
+            mask: Some(mask.id.clone()),
+            artifacts: Vec::new(),
+        };
+        let mut bound = recipe;
+        bound.layers.push(layer.clone());
+        let key = changed(&held, bound.clone()).pixel_content_key().unwrap();
+        assert_ne!(key, initial);
+        moved.layers.push(layer);
+        assert_ne!(changed(&held, moved).pixel_content_key().unwrap(), key);
+        bound.layers[0].payload = json!({"exposure":2.0});
+        assert_ne!(changed(&held, bound).pixel_content_key().unwrap(), key);
+        let mut source = held.source().clone();
+        let PreviewSource::Jpeg(ref mut image) = source else {
+            unreachable!()
+        };
+        image.fingerprint = "another source".into();
+        let changed_source = Evaluation::new(
+            held.registry().clone(),
+            held.context().clone(),
+            source,
+            held.entry().clone(),
+            Recipe::default(),
+            None,
+        );
+        assert_ne!(changed_source.pixel_content_key().unwrap(), initial);
     }
 }

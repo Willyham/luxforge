@@ -224,6 +224,40 @@ impl Presenter {
         self.region_coverage = None;
     }
 
+    /// Rebind an exact mask field only after the caller proves identical content and footprint.
+    /// Photo generation/quality are presentation metadata: changing them writes no texture.
+    pub(crate) fn restamp_coverage(
+        &mut self,
+        generation: u64,
+        region: Option<&super::preview::PresentedRegion>,
+    ) -> bool {
+        if let Some(region) = region {
+            let Some(overlay) = self.region_coverage.as_mut() else {
+                return false;
+            };
+            if overlay.content_id != region.content
+                || overlay.rect
+                    != [
+                        region.rect.x0,
+                        region.rect.y0,
+                        region.rect.x1(),
+                        region.rect.y1(),
+                    ]
+                || overlay.full_stage != (region.full_stage.width, region.full_stage.height)
+            {
+                return false;
+            }
+            overlay.generation = generation;
+            overlay.quality = region.quality;
+            true
+        } else if let Some((stamp, _)) = self.coverage.as_mut() {
+            *stamp = generation;
+            true
+        } else {
+            false
+        }
+    }
+
     /// The mask coverage, when it belongs to `generation`.
     pub(crate) fn coverage(&self, generation: u64) -> Option<&Frame> {
         of(&self.coverage, generation)

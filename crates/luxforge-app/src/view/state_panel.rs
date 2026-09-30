@@ -55,7 +55,7 @@ pub(crate) fn state_panel<'a>(
     column![
         scrollable(content).height(Length::Fill),
         rule,
-        performance(performance_model),
+        performance(performance_model, model.can_interact),
     ]
     .width(Length::Fill)
     .height(Length::Fill)
@@ -77,12 +77,12 @@ fn pinned_padding() -> Padding {
 /// Versions and History. Collapsed it is the heading alone. Expanded: the three metric rows under
 /// the heading, then, one grid unit further down, the job rows and the caption counting any long
 /// jobs past the fourth.
-fn performance(model: &PerformanceModel) -> Element<'_, Message> {
+fn performance(model: &PerformanceModel, enabled: bool) -> Element<'_, Message> {
     let heading = disclosure_heading(
         "Performance",
         model.caption.clone(),
         model.expanded,
-        Message::Performance(PerformanceMessage::Toggle),
+        enabled.then_some(Message::Performance(PerformanceMessage::Toggle)),
     );
     if !model.expanded {
         return container(heading)
@@ -169,10 +169,12 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
         &IconButtonModel {
             icon: Icon::Plus,
             tooltip: "Save the displayed state as a version".into(),
-            enabled: true,
+            enabled: model.can_interact,
             selected: model.version_form_open,
         },
-        Some(Message::History(HistoryMessage::ToggleVersionForm)),
+        model
+            .can_interact
+            .then_some(Message::History(HistoryMessage::ToggleVersionForm)),
     );
     // The heading's `+` ends where the rows' captions do: the row's inset less the button's own
     // clearance around its icon.
@@ -213,18 +215,19 @@ fn versions(model: &StatePanelModel) -> Element<'_, Message> {
     }
 
     if model.version_form_open {
+        let mut name = text_input("Name this version", &model.version_name)
+            .style(theme::text_input_style(false))
+            .size(theme::SIZE_CONTROL)
+            .width(Length::Fill);
+        if model.can_interact {
+            name = name
+                .on_input(|value| Message::History(HistoryMessage::VersionName(value)))
+                .on_submit(Message::History(HistoryMessage::SaveVersion));
+        }
         block = block.push(inset(
-            row![
-                text_input("Name this version", &model.version_name)
-                    .on_input(|value| Message::History(HistoryMessage::VersionName(value)))
-                    .on_submit(Message::History(HistoryMessage::SaveVersion))
-                    .style(theme::text_input_style(false))
-                    .size(theme::SIZE_CONTROL)
-                    .width(Length::Fill),
-                save_button(model.can_save),
-            ]
-            .spacing(theme::SPACING / 2.0)
-            .align_y(Alignment::Center),
+            row![name, save_button(model.can_save),]
+                .spacing(theme::SPACING / 2.0)
+                .align_y(Alignment::Center),
         ));
     }
 
@@ -400,6 +403,7 @@ mod tests {
             branch: false,
         };
         let panel = StatePanelModel {
+            can_interact: true,
             versions: vec![VersionChip {
                 name: "Warm".into(),
                 entry_sequence: 5,

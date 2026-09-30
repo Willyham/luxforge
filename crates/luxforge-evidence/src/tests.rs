@@ -3,6 +3,54 @@
 use super::*;
 
 #[test]
+fn native_canvas_hover_round_trips_and_bounds_both_fractions() {
+    let step = Step::canvas_hover(0.25, 0.75);
+    assert_eq!(
+        parse(&write(std::slice::from_ref(&step)).to_string()).unwrap(),
+        vec![step]
+    );
+    for (x, y) in [(-0.1, 0.5), (1.1, 0.5), (0.5, -0.1), (0.5, 1.1)] {
+        assert!(
+            parse(&json!([{"canvas_hover":{"x":x,"y":y}}]).to_string())
+                .unwrap_err()
+                .contains("canvas_hover")
+        );
+    }
+}
+
+#[test]
+fn native_hover_sweep_round_trips_and_bounds_its_work_and_duration() {
+    let step = Step::CanvasHoverSweep {
+        points: vec![[0.2, 0.3], [0.8, 0.7]],
+        interval_ms: 16,
+    };
+    assert_eq!(
+        parse(&write(std::slice::from_ref(&step)).to_string()).unwrap(),
+        vec![step]
+    );
+    for step in [
+        Step::CanvasHoverSweep {
+            points: vec![],
+            interval_ms: 16,
+        },
+        Step::CanvasHoverSweep {
+            points: vec![[0.5, 0.5]; 241],
+            interval_ms: 16,
+        },
+        Step::CanvasHoverSweep {
+            points: vec![[0.5, 0.5]; 240],
+            interval_ms: 1000,
+        },
+        Step::CanvasHoverSweep {
+            points: vec![[1.1, 0.5]],
+            interval_ms: 16,
+        },
+    ] {
+        assert!(parse(&write(&[step]).to_string()).is_err());
+    }
+}
+
+#[test]
 fn view_idle_step_round_trips_and_bounds_its_deadline() {
     let script = r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":1000}}]"#;
     let steps = parse(script).expect("a valid native idle probe");

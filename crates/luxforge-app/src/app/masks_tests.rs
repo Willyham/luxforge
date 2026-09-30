@@ -11,16 +11,17 @@ use super::{
     message::{
         Message, action::ActionMessage, control::ControlMessage, draft::DraftMessage,
         history::HistoryMessage, mask::DragEdit, mask::MaskMessage, mask::MaskPointer,
-        mask::PaintTarget, mask::RowEdit, mask::TypingEdit, preview::PreviewMessage,
-        sync::SyncMessage, view::ViewMessage,
+        mask::PaintTarget, mask::RowEdit, mask::TypingEdit, palette::PaletteMessage,
+        preview::PreviewMessage, sync::SyncMessage, view::ViewMessage,
     },
     tasks::{self, call},
     testing,
 };
-use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, MaskHandle, RADIAL};
+use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, MaskDraftOp, MaskHandle, RADIAL};
 use crate::state::MenuTarget;
 use crate::state::masks::DragItem;
 use crate::state::masks::TypingTarget;
+use crate::state::palette::Panel;
 use iced::keyboard::{Key, Modifiers};
 use luxforge_core::{
     AssetId, ClientId, ComponentMode, MASK_MODE, MaskOverlayMode, OwnerHandle, POINTER_MODE,
@@ -33,6 +34,254 @@ use std::{
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
+
+#[test]
+fn idle_brush_row_hover_shows_contribution_and_an_active_stroke_shows_composition() {
+    use luxforge_core::MaskCoverageTarget;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.message(MaskMessage::Overlay(1));
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    masking.open_gesture();
+    masking.paint(&[(0.3, 0.3), (0.5, 0.35)]);
+    masking.open_gesture();
+    let report = masking.listing().masks[0].clone();
+    let component = report.components[0].id.clone();
+    masking.message(MaskMessage::Hover(Some(component.to_string())));
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: report.id.clone(),
+            component: Some(component)
+        })
+    );
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.5,
+        y: 0.5,
+    }));
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: report.id,
+            component: None
+        })
+    );
+    masking.draft(DraftMessage::Cancel);
+}
+
+#[test]
+fn armed_tools_requery_maps_after_an_external_crop_and_reject_late_coordinates() {
+    for kind in [RADIAL, BRUSH] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.message(MaskMessage::New(kind.into()));
+        masking.open_gesture();
+        let old_id = masking.editor.armed.as_ref().unwrap().id;
+        let old_map = masking.editor.held_mask().unwrap().map.unwrap();
+        let (old_transform, _) = call(
+            &masking.owner(),
+            masking.editor.client,
+            "render.transform",
+            json!({"asset_id":masking.asset}),
+        )
+        .unwrap();
+        if kind == RADIAL {
+            masking.message(MaskMessage::Handle(MaskPointer::Begin {
+                handle: MaskHandle::Extent,
+                x: 0.4,
+                y: 0.4,
+            }));
+            assert!(masking.editor.mask_shape().unwrap().dragging());
+        }
+        let revision = masking.editor.document.state.as_ref().unwrap().revision;
+        call(&masking.owner(), masking.agent, "edit.crop", json!({"asset_id":masking.asset,"angle":0.0,"x":0.2,"y":0.2,"width":0.5,"height":0.5,
+            "mutation":{"expected_revision":revision,"request_id":format!("map-crop-{revision}"),"actor":"agent"}})).expect("the other client's geometry edit is accepted");
+        masking.refresh();
+        let new_id = masking.editor.armed.as_ref().unwrap().id;
+        assert_ne!(new_id, old_id);
+        assert!(masking.editor.held_mask().unwrap().map.is_none());
+        assert!(!masking.editor.mask_shape().unwrap().dragging());
+        masking.message(MaskMessage::Transform(
+            old_id,
+            Ok(serde_json::from_value(old_transform).unwrap()),
+        ));
+        assert!(
+            masking.editor.held_mask().unwrap().map.is_none(),
+            "the previous map cannot revive"
+        );
+        let pointer = if kind == BRUSH {
+            MaskPointer::PaintBegin { x: 0.5, y: 0.5 }
+        } else {
+            MaskPointer::Sweep {
+                from: (0.4, 0.4),
+                to: (0.6, 0.6),
+            }
+        };
+        masking.message(MaskMessage::Handle(pointer));
+        assert!(
+            masking.editor.core_gesture().is_none(),
+            "queued coordinates cannot begin against an unavailable current map"
+        );
+        assert_eq!(masking.editor.status.text, "Waiting for mask coordinates");
+        masking.open_gesture();
+        assert_ne!(masking.editor.held_mask().unwrap().map.unwrap(), old_map);
+        masking.message(MaskMessage::Handle(pointer));
+        assert!(
+            masking.editor.mask_gesture().is_some(),
+            "the new map admits a fresh gesture"
+        );
+        masking.draft(DraftMessage::Cancel);
+        assert!(masking.listing().masks.is_empty());
+    }
+}
+
+#[test]
+fn new_mask_tools_lock_history_versions_presets_and_local_panel_controls() {
+    use super::message::{performance::PerformanceMessage, preset::PresetMessage};
+    for kind in [LINEAR, BRUSH] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        let _ = masking
+            .editor
+            .update(Message::History(HistoryMessage::VersionName("Keep".into())));
+        let _ = masking
+            .editor
+            .update(Message::History(HistoryMessage::ToggleVersionForm));
+        let _ = masking
+            .editor
+            .update(Message::Preset(PresetMessage::ToggleForm));
+        let _ = masking
+            .editor
+            .update(Message::Preset(PresetMessage::Name("Keep preset".into())));
+        masking.message(MaskMessage::New(kind.to_owned()));
+        let entry = masking
+            .editor
+            .document
+            .state
+            .as_ref()
+            .unwrap()
+            .current_entry
+            .id
+            .clone();
+        let displayed = masking.editor.document.display_entry.clone();
+        let shape = masking.editor.mask_shape().cloned();
+        let form = masking.editor.presets.form.clone();
+        let controls = masking.editor.controls.ui.clone();
+        let expanded = masking.editor.controls.expanded.clone();
+        let performance = masking.editor.performance.expanded;
+        assert!(
+            !masking.editor.workspace.panel.can_interact
+                && !masking.editor.workspace.panel.can_select
+                && !masking.editor.workspace.panel.can_save
+        );
+        assert!(
+            !masking.editor.workspace.histogram.shadow.enabled
+                && !masking.editor.workspace.histogram.highlight.enabled
+        );
+        for message in [
+            Message::History(HistoryMessage::Select(entry)),
+            Message::History(HistoryMessage::ReturnCurrent),
+            Message::History(HistoryMessage::VersionName("Changed".into())),
+            Message::History(HistoryMessage::SaveVersion),
+            Message::History(HistoryMessage::DeleteVersion("Keep".into())),
+            Message::History(HistoryMessage::LoadOlder),
+            Message::Preset(PresetMessage::ToggleForm),
+            Message::Preset(PresetMessage::Name("Changed".into())),
+            Message::Preset(PresetMessage::Create),
+            Message::Preset(PresetMessage::Import),
+            Message::Preset(PresetMessage::Delete("irrelevant".into())),
+            Message::Control(ControlMessage::EditValue {
+                action: "set-basic".into(),
+                parameter: "exposure".into(),
+            }),
+            Message::Control(ControlMessage::ToggleSection("luxforge.basic".into())),
+            Message::Control(ControlMessage::SelectTab {
+                module_id: "luxforge.basic".into(),
+                index: 1,
+            }),
+            Message::Performance(PerformanceMessage::Toggle),
+        ] {
+            assert_eq!(masking.editor.update(message).units(), 0);
+            assert_eq!(masking.editor.document.display_entry, displayed);
+            assert_eq!(masking.editor.mask_shape().cloned(), shape);
+            assert_eq!(masking.editor.version_form.name, "Keep");
+            assert_eq!(masking.editor.presets.form, form);
+            assert_eq!(masking.editor.controls.ui, controls);
+            assert_eq!(masking.editor.controls.expanded, expanded);
+            assert_eq!(masking.editor.controls.editing, None);
+            assert_eq!(masking.editor.performance.expanded, performance);
+            assert!(
+                !masking.editor.busy
+                    && !masking.editor.view_state.picker_open
+                    && !masking.editor.presets.library.pending
+            );
+        }
+        // Read-only answers still land while the tool is held.
+        let _ = masking
+            .editor
+            .update(Message::Preset(PresetMessage::Listed(Err(
+                "library read failed".into(),
+            ))));
+        assert_eq!(
+            masking.editor.presets.library.error.as_deref(),
+            Some("library read failed")
+        );
+        assert_eq!(masking.editor.mask_shape().cloned(), shape);
+        masking.draft(DraftMessage::Cancel);
+        assert!(
+            masking.editor.workspace.panel.can_interact
+                && masking.editor.workspace.panel.can_select
+                && masking.editor.workspace.panel.can_save
+        );
+    }
+}
+
+#[test]
+fn new_mask_tools_refuse_unrelated_view_open_and_palette_actions() {
+    use super::message::mask::BrushEdit;
+    for kind in [LINEAR, BRUSH] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.message(MaskMessage::New(kind.to_owned()));
+        let workspace = masking.editor.session.workspace.clone();
+        let view = masking.editor.session.preview.view.clone();
+        let shape = masking.editor.mask_shape().cloned();
+        let title = &masking.editor.workspace.title;
+        assert!(
+            !title.can_open && !title.can_view && !title.can_toggle_panels && !title.can_export
+        );
+        for message in [
+            Message::View(ViewMessage::Fit),
+            Message::View(ViewMessage::TogglePanel(Panel::Tools)),
+            Message::Palette(PaletteMessage::Open),
+            Message::Sync(SyncMessage::Open),
+        ] {
+            assert_eq!(masking.editor.update(message).units(), 0);
+            assert_eq!(masking.editor.session.workspace, workspace);
+            assert_eq!(masking.editor.session.preview.view, view);
+            assert_eq!(masking.editor.mask_shape().cloned(), shape);
+            assert!(!masking.editor.palette.open);
+        }
+        masking.message(MaskMessage::OverlayColour(1));
+        assert_eq!(
+            masking.editor.workspace.masks.overlay.selected, 1,
+            "automatic Tint remains selected after a colour choice"
+        );
+        if kind == BRUSH {
+            masking.message(MaskMessage::Brush(BrushEdit::Set {
+                name: "size".to_owned(),
+                value: 0.25,
+            }));
+            assert_eq!(masking.editor.mask_panel.brush.size, 0.25);
+            assert!(masking.editor.workspace.masks.brush.enabled);
+        }
+        masking.key("o", Modifiers::empty());
+        assert_eq!(masking.editor.workspace.masks.overlay.selected, 0);
+        masking.draft(DraftMessage::Cancel);
+        assert!(masking.editor.workspace.title.can_open && masking.editor.workspace.title.can_view);
+    }
+}
 
 fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -940,10 +1189,10 @@ fn the_panel_shows_the_familys_refusals_instead_of_offering_them() {
     assert_eq!(row.down_reason.as_deref(), Some(crate::state::NOT_CURRENT));
 }
 
-/// The overlay is per-client view state: Shift+M toggles it, `O` keeps meaning thirds, and the
+/// The overlay is per-client view state: O toggles it in Mask mode, and the
 /// grid the canvas draws is asked for beside the frame rather than by a second render.
 #[test]
-fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
+fn o_toggles_the_overlay_without_changing_thirds_in_mask_mode() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.draw_mask();
@@ -952,7 +1201,7 @@ fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
         MaskOverlayMode::Off
     );
 
-    masking.message(MaskMessage::ToggleOverlay);
+    masking.key("o", Modifiers::empty());
     assert_eq!(
         masking.editor.session.workspace.mask_overlay,
         MaskOverlayMode::Tint
@@ -990,26 +1239,150 @@ fn shift_m_toggles_the_overlay_and_o_still_means_thirds() {
         "an overlay that is off asks for no grid at all"
     );
 
-    // `O` still means thirds, in Mask mode as everywhere else.
+    // The real O binding controls coverage without changing thirds.
     let thirds = masking.editor.session.workspace.thirds;
-    let _ = masking
-        .editor
-        .update(Message::View(ViewMessage::ToggleThirds));
-    let _ = call(
-        &masking.owner(),
-        masking.editor.client,
-        "workspace.set",
-        json!({ "thirds": !thirds }),
-    );
-    masking.adopt_session();
+    masking.key("o", Modifiers::empty());
     assert_eq!(
-        masking.editor.session.workspace.thirds, !thirds,
-        "O still means thirds in Mask mode"
+        masking.editor.session.workspace.thirds, thirds,
+        "O changes no thirds state in Mask mode"
     );
     assert!(
         masking.editor.mask_mode_active(),
-        "toggling thirds did not leave Mask mode"
+        "toggling coverage did not leave Mask mode"
     );
+}
+
+#[test]
+fn new_gradients_are_unplaced_and_cancel_without_a_draft_or_history() {
+    for kind in [LINEAR, RADIAL] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.message(MaskMessage::New(kind.to_owned()));
+        masking.open_gesture();
+        let shape = masking.editor.mask_shape().expect("the tool is armed");
+        assert!(shape.unplaced() && shape.handles().is_empty() && shape.fields().is_empty());
+        assert!(masking.editor.gesture.is_none() && masking.editor.session.draft.is_none());
+        assert!(
+            !masking
+                .editor
+                .workspace
+                .canvas
+                .draft_bar
+                .as_ref()
+                .expect("placement bar")
+                .can_apply
+        );
+        for (x, y) in [
+            (0.3, 0.3),
+            (0.3 + 1e-7, 0.3 + 1e-7),
+            (f64::NAN, 0.4),
+            (2.1, 0.4),
+        ] {
+            masking.message(MaskMessage::Handle(MaskPointer::Begin {
+                handle: MaskHandle::Extent,
+                x: 0.3,
+                y: 0.3,
+            }));
+            masking.message(MaskMessage::Handle(MaskPointer::Drag { x, y }));
+            masking.message(MaskMessage::Handle(MaskPointer::End));
+            masking.draft(DraftMessage::Commit);
+            assert!(masking.editor.gesture.is_none());
+            assert!(masking.editor.session.draft.is_none());
+            let shape = masking
+                .editor
+                .mask_shape()
+                .expect("invalid extent retains the tool");
+            assert!(shape.unplaced() && shape.handles().is_empty() && shape.fields().is_empty());
+        }
+        masking.draft(DraftMessage::Cancel);
+        assert!(masking.editor.mask_shape().is_none());
+        assert!(masking.labels().is_empty() && masking.listing().masks.is_empty());
+    }
+}
+
+#[test]
+fn creating_a_mask_locks_unrelated_controls_and_unlocks_after_first_stroke() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let previous = masking.editor.mask_panel.selected_mask.clone();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    assert!(!masking.editor.workspace.masks.enabled);
+    assert!(
+        masking.editor.workspace.masks.brush.enabled,
+        "brush settings finish the tool"
+    );
+    masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+        ComponentMode::Subtract,
+    )));
+    assert_eq!(masking.editor.mask_panel.mode, ComponentMode::Add);
+    masking.message(MaskMessage::SelectComponent(
+        masking.listing().masks[0].components[0].id.to_string(),
+    ));
+    assert!(masking.editor.mask_panel.selected_component.is_none());
+    let _ = masking
+        .editor
+        .control_moved("set-basic".into(), "exposure".into(), json!(1.0));
+    assert!(masking.editor.slider_gesture().is_none());
+    assert_eq!(masking.editor.mask_panel.selected_mask, previous);
+    masking.paint(&[(0.3, 0.3), (0.7, 0.6)]);
+    assert!(masking.editor.mask_creation_refusal().is_none());
+    assert!(masking.editor.workspace.masks.enabled);
+    assert_eq!(masking.listing().masks.len(), 2);
+}
+
+#[test]
+fn selecting_another_mask_puts_down_the_old_brush_and_clears_hover() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.2, 0.2), (0.4, 0.3)]);
+    masking.open_gesture();
+    let first = masking.listing().masks[0].clone();
+    masking.create_mask_through_the_api();
+    let second = masking.listing().masks[1].id.clone();
+    masking.message(MaskMessage::Select(first.id.to_string()));
+    masking.message(MaskMessage::EditShape(first.components[0].id.to_string()));
+    masking.open_gesture();
+    masking.editor.mask_panel.hovered_component = Some(first.components[0].id.clone());
+    masking.message(MaskMessage::Select(second.to_string()));
+    assert!(!masking.editor.armed_brush());
+    assert!(masking.editor.mask_panel.hovered_component.is_none());
+    assert_eq!(masking.editor.mask_panel.selected_mask, Some(second));
+    let before = masking.labels();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.6,
+        y: 0.6,
+    }));
+    assert_eq!(masking.labels(), before);
+    assert!(masking.editor.gesture.is_none());
+}
+
+#[test]
+fn an_active_stroke_refuses_mask_selection_until_cancelled() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.paint(&[(0.2, 0.2), (0.4, 0.3)]);
+    let first = masking.listing().masks[0].clone();
+    masking.create_mask_through_the_api();
+    let second = masking.listing().masks[1].id.clone();
+    masking.message(MaskMessage::Select(first.id.to_string()));
+    masking.message(MaskMessage::EditShape(first.components[0].id.to_string()));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    masking.message(MaskMessage::Select(second.to_string()));
+    assert_eq!(masking.editor.mask_panel.selected_mask, Some(first.id));
+    assert!(masking.editor.status.text.contains("Apply or Cancel"));
+    masking.draft(DraftMessage::Cancel);
+    masking.message(MaskMessage::Select(second.to_string()));
+    assert_eq!(masking.editor.mask_panel.selected_mask, Some(second));
 }
 
 /// Every generated mask control's message produces the request an independent JSON client sends,
@@ -1733,13 +2106,10 @@ fn the_add_row_chooses_the_mode_before_the_gesture() {
             "the panel shows the mode the next gesture will use"
         );
         masking.message(MaskMessage::Add(kind.to_owned()));
-        // The gesture already knows its mode: it is in the request the release will send.
-        let fields = masking
-            .editor
-            .mask_shape()
-            .expect("a gesture is open")
-            .fields();
-        assert_eq!(fields["mode"], json!(mode.as_str()));
+        // The unplaced tool knows its mode but posts no default geometry.
+        let shape = masking.editor.mask_shape().expect("a gesture is open");
+        assert_eq!(shape.op, MaskDraftOp::Add(mode));
+        assert!(shape.fields().is_empty());
         masking.open_gesture();
         masking.sweep((0.3, 0.3), (0.7, 0.7));
         masking.apply();
@@ -2563,8 +2933,8 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     }));
     masking.assert_geometry_sent();
     assert!(
-        masking.editor.presentation.queue.is_busy(),
-        "the drag's drafted frames are queued"
+        masking.editor.presentation.queue.is_busy() || masking.editor.mask_coverage_pending(),
+        "the drag's photo or coverage work is queued"
     );
     let draft_id = masking
         .editor
@@ -2613,11 +2983,10 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
     );
     assert_eq!(masking.editor.snapshot()["draft"], json!(null));
 
-    // The drag's drafted jobs run to their end through the editor's real queue and worker, and not
-    // one of their frames is presented: the next frame on screen is the committed one the discard
-    // read back after its cancel.
+    // The unbound new mask leaves the photograph reusable; stale work may finish but cannot make
+    // a draft frame current after cancellation.
     drain_queue(&mut masking);
-    assert!(masking.editor.presentation.presented_generation > presented);
+    assert!(masking.editor.presentation.presented_generation >= presented);
     assert_eq!(
         masking.editor.presentation.presented_generation, asked,
         "the committed frame read back after the cancel is on screen"
@@ -2673,11 +3042,17 @@ fn a_mask_gesture_whose_begin_is_refused_opens_nothing() {
     testing::stand_in(&mut masking.editor)
         .begins
         .push_back(refusal.into());
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    assert!(masking.editor.gesture.is_none(), "arming opens no draft");
+    masking.open_gesture();
     let task = masking
         .editor
-        .update(Message::Mask(MaskMessage::New(LINEAR.to_owned())));
+        .update(Message::Mask(MaskMessage::Handle(MaskPointer::Sweep {
+            from: (0.3, 0.3),
+            to: (0.7, 0.7),
+        })));
     masking.editor.stand_in = None;
-    assert_eq!(task.units(), 0, "no transform is asked for");
+    assert_eq!(task.units(), 0, "a refused begin starts no preview");
     assert!(masking.editor.gesture.is_none());
     assert_eq!(masking.editor.status.text, refusal);
     let (session, _) = call(
@@ -2761,6 +3136,7 @@ fn every_other_start_goes_ahead_with_the_brush_in_hand() {
         masking.editor.armed_brush(),
         "the command left the brush in hand"
     );
+    masking.open_gesture();
     masking.paint(&[(0.5, 0.6), (0.65, 0.65)]);
     assert_eq!(
         masking.labels(),
@@ -2897,6 +3273,224 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     );
 }
 
+/// A cancelled local adjustment restores the committed masked pixels, recipe/history and overlay
+/// target for both a colour and a spatial action. The owner accepted a set before cancellation;
+/// delivering that answer afterwards cannot resurrect its draft or queued photograph.
+#[test]
+fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() {
+    use crate::app::testing::{attach_log, logged};
+    use luxforge_core::MaskCoverageTarget;
+    for (action, method, parameter, committed, candidate) in [
+        ("set-basic", "edit.set-basic", "exposure", 0.3, 0.9),
+        ("set-presence", "edit.set-presence", "dehaze", 20.0, 55.0),
+    ] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.draw_mask();
+        let mask = masking.listing().masks[0].id.clone();
+        let revision = masking.editor.document.state.as_ref().unwrap().revision;
+        let mut params = json!({"asset_id":masking.asset,"mask":mask,
+            "mutation":tasks::mutation(revision)});
+        params
+            .as_object_mut()
+            .unwrap()
+            .insert(parameter.into(), json!(committed));
+        call(&masking.owner(), masking.agent, method, params)
+            .expect("the initial masked edit commits");
+        call(
+            &masking.owner(),
+            masking.editor.client,
+            "workspace.set",
+            json!({"mask_overlay":"tint"}),
+        )
+        .expect("the overlay setting persists at the owner");
+        masking.refresh();
+        let settle = |masking: &mut Masking| {
+            luxforge_testbase::wait_until("the masked photo and coverage settle", || {
+                let _ = masking
+                    .editor
+                    .update(Message::Preview(PreviewMessage::Poll));
+                !masking.editor.presentation.queue.is_busy()
+                    && !masking.editor.mask_coverage_pending()
+            });
+        };
+        settle(&mut masking);
+        let before = masking
+            .editor
+            .presentation
+            .exact()
+            .expect("the committed exact raster")
+            .raster
+            .clone();
+        let entry = masking
+            .editor
+            .displayed_entry()
+            .expect("the committed entry");
+        let snapshot = masking
+            .editor
+            .document
+            .state
+            .as_ref()
+            .unwrap()
+            .current_entry
+            .snapshot
+            .clone();
+        let revision = masking.editor.document.state.as_ref().unwrap().revision;
+        let history = call(
+            &masking.owner(),
+            masking.editor.client,
+            "history.list",
+            json!({"asset_id":masking.asset,"limit":100}),
+        )
+        .expect("the committed history")
+        .0;
+        assert!(
+            masking.editor.presentation.coverage().is_some(),
+            "the committed mask coverage is displayed"
+        );
+        let probe = (before.width / 4, before.height * 3 / 4);
+        let sampled = call(
+            &masking.owner(),
+            masking.editor.client,
+            "render.sample",
+            json!({"asset_id":masking.asset,"x":probe.0,"y":probe.1}),
+        )
+        .expect("the exact public committed sample")
+        .0;
+        assert_eq!(
+            sampled["rgba"],
+            json!(before.pixel(probe.0, probe.1).unwrap())
+        );
+
+        let _ = testing::slide(&mut masking.editor, action, parameter, candidate);
+        let held = masking
+            .editor
+            .session
+            .draft
+            .as_ref()
+            .expect("the masked adjustment draft")
+            .clone();
+        assert_eq!(
+            held.target.get("mask").map(String::as_str),
+            Some(mask.as_str())
+        );
+        assert!(
+            masking.editor.presentation.queue.is_busy(),
+            "the candidate photograph is queued"
+        );
+        let drafted = call(
+            &masking.owner(),
+            masking.editor.client,
+            "render.sample",
+            json!({"asset_id":masking.asset,"draft_id":held.draft_id,"x":probe.0,"y":probe.1}),
+        )
+        .expect("the exact public candidate sample")
+        .0;
+        assert_ne!(
+            drafted["rgba"], sampled["rgba"],
+            "{action} changes the covered probe before Cancel"
+        );
+        let late_set = tasks::draft_set_now(
+            &masking.owner(),
+            masking.editor.client,
+            held.draft_id,
+            Value::Object(held.fields),
+            Some((masking.asset.clone(), None)),
+        );
+        assert!(
+            late_set.is_ok(),
+            "the owner accepted a response that can arrive late"
+        );
+        let log = attach_log(&mut masking.editor);
+        masking.draft(DraftMessage::Cancel);
+        let asked = masking.editor.presentation.preview_generation;
+        let _ = masking.editor.draft_set(late_set);
+        assert_eq!(
+            masking.editor.presentation.preview_generation, asked,
+            "late Set queues no frame"
+        );
+        settle(&mut masking);
+
+        assert!(masking.editor.gesture.is_none() && masking.editor.session.draft.is_none());
+        assert_eq!(masking.editor.presentation.displayed_draft_revision, None);
+        assert_eq!(masking.editor.displayed_entry(), Some(entry));
+        assert_eq!(
+            masking.editor.document.state.as_ref().unwrap().revision,
+            revision
+        );
+        assert_eq!(
+            masking
+                .editor
+                .document
+                .state
+                .as_ref()
+                .unwrap()
+                .current_entry
+                .snapshot,
+            snapshot
+        );
+        let restored = &masking
+            .editor
+            .presentation
+            .exact()
+            .expect("the restored exact raster")
+            .raster;
+        assert_eq!(
+            restored.rgba, before.rgba,
+            "every committed masked pixel is restored for {action}"
+        );
+        assert_eq!(restored.source_fingerprint, before.source_fingerprint);
+        assert_eq!(
+            masking.editor.mask_coverage_target(),
+            Some(MaskCoverageTarget::Existing {
+                mask: mask.clone(),
+                component: None
+            })
+        );
+        assert!(
+            masking.editor.presentation.coverage().is_some(),
+            "the restored mask coverage is displayed"
+        );
+        let coverage = masking.editor.mask_overlay_summary();
+        assert_eq!(coverage["coverage"]["adopted"]["mask"], json!(mask));
+        assert!(
+            coverage["coverage"]["adopted"]["request"]["identity"]["draft"].is_null(),
+            "coverage is from the committed recipe: {coverage}"
+        );
+        assert_eq!(
+            call(
+                &masking.owner(),
+                masking.editor.client,
+                "history.list",
+                json!({"asset_id":masking.asset,"limit":100})
+            )
+            .unwrap()
+            .0,
+            history
+        );
+        assert_eq!(
+            call(
+                &masking.owner(),
+                masking.editor.client,
+                "render.sample",
+                json!({"asset_id":masking.asset,"x":probe.0,"y":probe.1})
+            )
+            .unwrap()
+            .0["rgba"],
+            sampled["rgba"]
+        );
+        let records = logged(&mut masking.editor, &log);
+        assert_eq!(testing::events(&records, "draft_set_dropped").len(), 1);
+        assert!(
+            records
+                .iter()
+                .filter(|record| record["event"] == "preview_displayed")
+                .all(|record| record["detail"]["draft_revision"].is_null()),
+            "no cancelled candidate is presented for {action}"
+        );
+    }
+}
+
 /// (g) The proxy refit waits for a mask gesture exactly as it waits for a slider gesture: the one
 /// refusal answers for both.
 #[test]
@@ -2955,7 +3549,7 @@ fn every_start_answers_to_the_one_refusal() {
     )));
     assert_eq!(
         masking.editor.status.text,
-        "Apply or Cancel the new mask gesture before leaving Mask mode"
+        "Apply or Cancel the new mask gesture before using other controls"
     );
     let _ = masking
         .editor
@@ -3022,6 +3616,9 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
         to: (0.5, 0.7),
     }));
     masking.assert_geometry_sent();
+    // This checks geometry-only release. Coverage that was still arriving would correctly keep
+    // the evidence step waiting for its evaluated grid instead of capturing before it is drawn.
+    masking.message(MaskMessage::Overlay(0));
     let asked = masking.editor.presentation.preview_generation;
 
     attach_script(&mut masking.editor, r#"[{"mask":{"release":true}}]"#);
@@ -3353,103 +3950,365 @@ fn overlay_state(masking: &Masking) -> (String, String, bool) {
     )
 }
 
-/// While a shape gesture is open on a mask the tint is shown whatever the overlay setting, so no
-/// handle is dragged blind, and the setting returns when the gesture ends — after Apply and after
-/// Cancel alike. It is view state only: the stored setting never moves and no `workspace.set` is
-/// sent. A brush is not forced, and neither is a create, which has no mask to ask a grid of yet.
+/// A tool initially shows its actual candidate coverage, and a deliberate O choice can hide it
+/// throughout that gesture. Automatic visibility does not mutate the stored setting.
 #[test]
-fn a_shape_gesture_shows_the_tint_whatever_the_setting_and_the_setting_returns() {
+fn a_mask_tool_shows_candidate_coverage_and_honours_explicit_o() {
+    use luxforge_core::MaskCoverageTarget;
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
-    assert_eq!(
-        masking.editor.session.workspace.mask_overlay,
-        MaskOverlayMode::Off
-    );
-    let off = |masking: &Masking| {
-        assert_eq!(
-            overlay_state(masking),
-            ("off".into(), "off".into(), false),
-            "the overlay follows the setting"
-        );
-        assert!(masking.editor.mask_overlay_request().is_none());
-    };
-
-    // A create has no mask yet: nothing to tint.
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
-    off(&masking);
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+    assert!(
+        masking.editor.mask_coverage_target().is_none(),
+        "an unplaced tool has no coverage"
+    );
     masking.sweep((0.5, 0.2), (0.5, 0.8));
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::DraftCreated)
+    );
     masking.apply();
+    assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
     let mask = masking.listing().masks[0].id.clone();
-    off(&masking);
-
-    // Adding a radial to it: the tint, of that mask, over a setting that still says off.
-    for end in [DraftMessage::Commit, DraftMessage::Cancel] {
-        masking.message(MaskMessage::Add(RADIAL.to_owned()));
-        masking.open_gesture();
-        assert_eq!(
-            overlay_state(&masking),
-            ("off".into(), "tint".into(), true),
-            "{end:?}: a shape gesture shows the tint"
-        );
-        let request = masking
-            .editor
-            .mask_overlay_request()
-            .expect("the drafted frame asks for the gesture's mask");
-        assert_eq!(request.mask, mask);
-        assert_eq!(
-            masking.editor.settled_mask_overlay_request(),
-            None,
-            "the frame after the gesture carries what the setting asks"
-        );
-        masking.sweep((0.3, 0.3), (0.6, 0.6));
-        assert!(
-            masking.editor.mask_overlay_forced(),
-            "{end:?}: through the drag"
-        );
-        // The captured state reports the two apart.
-        let state = masking.editor.snapshot();
-        assert_eq!(state["mask_overlay"]["effective"], json!("tint"));
-        assert_eq!(state["workspace"]["mask_overlay"], json!("off"));
-        match end {
-            DraftMessage::Commit => masking.apply(),
-            _ => {
-                masking.draft(DraftMessage::Cancel);
-                assert!(
-                    !masking.editor.mask_overlay_forced(),
-                    "at once, not on the answer"
-                );
-            }
-        }
-        assert!(masking.editor.mask_shape().is_none());
-        off(&masking);
-        assert_eq!(
-            masking.editor.session.workspace.mask_overlay,
-            MaskOverlayMode::Off,
-            "{end:?}: the setting itself never moved"
-        );
-    }
-
-    // A setting that already shows the mask is what the person chose to see, and is kept.
-    masking.editor.session.workspace.mask_overlay = MaskOverlayMode::MaskOnBlack;
-    masking.message(MaskMessage::Add(RADIAL.to_owned()));
+    let component = masking.listing().masks[0].components[0]
+        .id
+        .as_str()
+        .to_owned();
+    masking.message(MaskMessage::EditShape(component));
     masking.open_gesture();
     assert_eq!(
-        overlay_state(&masking),
-        ("mask-on-black".into(), "mask-on-black".into(), false)
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: mask.clone(),
+            component: None
+        })
     );
+    masking.key("o", Modifiers::empty());
+    assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+    assert!(masking.editor.mask_coverage_target().is_none());
+    masking.key("o", Modifiers::empty());
+    assert_eq!(
+        overlay_state(&masking),
+        ("tint".into(), "tint".into(), false)
+    );
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "workspace.set",
+        json!({"mask_overlay":"tint"}),
+    )
+    .expect("the visibility task persists its setting");
     masking.draft(DraftMessage::Cancel);
-    masking.editor.session.workspace.mask_overlay = MaskOverlayMode::Off;
+    assert_eq!(
+        overlay_state(&masking),
+        ("tint".into(), "tint".into(), false),
+        "an explicit setting persists"
+    );
 
-    // A brush paints its own indicator: armed or painting, the setting stands.
-    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    // A newly armed brush cannot show the old mask; its actual stroke is the created target.
+    masking.message(MaskMessage::Overlay(0));
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
     masking.open_gesture();
-    off(&masking);
+    assert!(masking.editor.mask_coverage_target().is_none());
     masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
         x: 0.4,
         y: 0.4,
     }));
-    off(&masking);
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::DraftCreated)
+    );
+    masking.key("o", Modifiers::empty());
+    assert!(masking.editor.mask_coverage_target().is_none());
+    masking.draft(DraftMessage::Cancel);
+    assert_eq!(
+        masking.labels(),
+        ["Add linear"],
+        "cancelled painting writes no stroke"
+    );
+}
+
+/// Editing a hidden eye initially shows the shape over an Off setting. The choice is automatic
+/// only: both O and the UI's Off choice stay hidden through subsequent field edits, and neither
+/// choice changes the eye or loses the existing component identity.
+#[test]
+fn editing_a_hidden_shape_shows_automatic_coverage_until_explicitly_hidden() {
+    use luxforge_core::MaskCoverageTarget;
+    for kind in [LINEAR, RADIAL] {
+        let mut masking = Masking::opened();
+        masking.enter_mask_mode();
+        masking.message(MaskMessage::New(kind.to_owned()));
+        masking.open_gesture();
+        masking.sweep((0.4, 0.4), (0.7, 0.7));
+        masking.apply();
+        let report = masking.listing().masks[0].clone();
+        let component = report.components[0].id.clone();
+        masking.message(MaskMessage::ToggleVisible(report.id.to_string()));
+        assert!(masking.editor.mask_panel.hidden.contains(&report.id));
+        let before = masking.labels();
+
+        for use_key in [true, false] {
+            masking.message(MaskMessage::EditShape(component.to_string()));
+            masking.open_gesture();
+            assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+            assert_eq!(masking.editor.workspace.masks.overlay.selected, 1);
+            assert_eq!(
+                masking.editor.mask_coverage_target(),
+                Some(MaskCoverageTarget::Existing {
+                    mask: report.id.clone(),
+                    component: None,
+                }),
+                "automatic coverage shows the hidden {kind} being edited"
+            );
+            if use_key {
+                masking.key("o", Modifiers::empty());
+            } else {
+                masking.message(MaskMessage::Overlay(0));
+            }
+            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+            assert_eq!(masking.editor.workspace.masks.overlay.selected, 0);
+            assert!(masking.editor.mask_coverage_target().is_none());
+            masking.message(MaskMessage::Field {
+                name: if kind == LINEAR { "x0" } else { "x" }.into(),
+                value: 0.45,
+            });
+            assert!(masking.editor.mask_coverage_target().is_none());
+            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+            assert!(masking.editor.mask_panel.hidden.contains(&report.id));
+            assert_eq!(
+                masking.editor.mask_shape().unwrap().component,
+                Some(component.clone())
+            );
+            if use_key {
+                masking.draft(DraftMessage::Cancel);
+                assert_eq!(masking.labels(), before);
+            } else {
+                masking.apply();
+                assert_eq!(masking.labels().len(), before.len() + 1);
+            }
+            assert!(masking.editor.mask_panel.hidden.contains(&report.id));
+            assert!(masking.editor.mask_coverage_target().is_none());
+            assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+        }
+        assert_eq!(masking.listing().masks[0].components[0].id, component);
+    }
+}
+
+/// Evidence's workspace colour fields are the UI's swatches: they preserve automatic Tint even
+/// when the stored mode is Off, and an actual change waits for candidate coverage before capture.
+#[test]
+fn an_evidence_tint_colour_choice_preserves_automatic_coverage() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+    use luxforge_core::MaskCoverageTarget;
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.3, 0.3), (0.7, 0.7));
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+    attach_script(
+        &mut masking.editor,
+        r#"[{"workspace":{"mask_overlay_colour":"white"}},{"workspace":{"mask_overlay_colour":"white"}},{"workspace":{"mask_overlay":"off"}}]"#,
+    );
+
+    let task = masking.editor.next_step();
+    assert!(
+        task.units() > 0,
+        "the colour change sends the session request"
+    );
+    assert!(!masking.editor.mask_panel.overlay_manual);
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+    assert_eq!(
+        evidence(&masking.editor).awaiting,
+        Some(Settle::MaskOverlay)
+    );
+    assert_eq!(
+        masking
+            .editor
+            .session
+            .workspace
+            .mask_overlay_colour
+            .as_str(),
+        "white",
+        "the coverage request already uses the chosen colour before the session answers"
+    );
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::DraftCreated)
+    );
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "workspace.set",
+        json!({"mask_overlay_colour":"white"}),
+    )
+    .expect("the same colour request is accepted by the owner");
+    masking.adopt_session();
+    assert_eq!(
+        masking
+            .editor
+            .session
+            .workspace
+            .mask_overlay_colour
+            .as_str(),
+        "white"
+    );
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+
+    let _ = masking.editor.next_step();
+    assert!(
+        !masking.editor.mask_panel.overlay_manual,
+        "same-colour is not a visibility choice"
+    );
+    assert_eq!(overlay_state(&masking), ("off".into(), "tint".into(), true));
+    assert_eq!(evidence(&masking.editor).awaiting, None);
+    assert!(evidence(&masking.editor).capture_pending);
+
+    let _ = masking.editor.next_step();
+    assert!(masking.editor.mask_panel.overlay_manual);
+    assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
+    assert!(masking.editor.mask_coverage_target().is_none());
+    masking.draft(DraftMessage::Cancel);
+    assert!(masking.labels().is_empty() && masking.listing().masks.is_empty());
+}
+
+/// A source/coverage completion may beat workspace.set. Evidence changes the local presentation
+/// choice first, exactly as the UI does, so a held old-colour/mode grid cannot settle that step.
+#[test]
+fn an_evidence_overlay_choice_rejects_a_grid_that_beats_its_session_answer() {
+    use crate::app::{
+        evidence::Settle,
+        testing::{attach_script, evidence},
+    };
+    for (patch, mode, colour, grid_expected) in [
+        (
+            json!({"mask_overlay_colour":"white"}),
+            "tint",
+            "white",
+            true,
+        ),
+        (
+            json!({"mask_overlay":"mask-on-black"}),
+            "mask-on-black",
+            "green",
+            true,
+        ),
+        (json!({"mask_overlay":"off"}), "off", "green", false),
+    ] {
+        let mut masking = Masking::opened();
+        drain_queue(&mut masking);
+        masking.enter_mask_mode();
+        masking.draw_mask();
+        call(
+            &masking.owner(),
+            masking.editor.client,
+            "workspace.set",
+            json!({"mask_overlay":"tint"}),
+        )
+        .expect("the initial green Tint persists at the owner");
+        masking.refresh();
+        luxforge_testbase::wait_until("the old green coverage completes", || {
+            masking.editor.coverage_worker.queue.ready()
+        });
+        let old = masking
+            .editor
+            .coverage_worker
+            .queue
+            .poll()
+            .expect("a completed old green grid is held outside the editor");
+        assert_eq!(
+            masking.editor.mask_coverage_summary()["requested"]["colour"],
+            json!("green")
+        );
+        let photo_version = masking.editor.presentation.presenter.photo_version();
+        attach_script(
+            &mut masking.editor,
+            &json!([{"workspace":patch}]).to_string(),
+        );
+        let _ = masking.editor.next_step();
+        assert_eq!(masking.editor.session.workspace.mask_overlay.as_str(), mode);
+        assert_eq!(
+            masking
+                .editor
+                .session
+                .workspace
+                .mask_overlay_colour
+                .as_str(),
+            colour
+        );
+        let wanted = if grid_expected {
+            Settle::MaskOverlay
+        } else {
+            Settle::Session
+        };
+        assert_eq!(evidence(&masking.editor).awaiting, Some(wanted));
+        masking.editor.mask_coverage_ready(old);
+        assert_eq!(
+            evidence(&masking.editor).awaiting,
+            Some(wanted),
+            "the late old green Tint cannot settle the new {mode}/{colour} step"
+        );
+        assert!(!evidence(&masking.editor).capture_pending);
+        assert!(masking.editor.mask_coverage_summary()["adopted"].is_null());
+
+        if grid_expected {
+            // The coverage task wins the workspace.set race: its source is a real owner plan,
+            // while the owner's still-green session has not yet reached the desktop.
+            let job = tasks::refresh(
+                &masking.owner(),
+                masking.editor.client,
+                masking.asset.clone(),
+                tasks::Scope::Open,
+                None,
+            )
+            .unwrap()
+            .job;
+            let content = masking.editor.presentation.content_serial;
+            masking.editor.request_mask_coverage(&job, content);
+            luxforge_testbase::wait_until("the chosen coverage completes", || {
+                masking.editor.coverage_worker.queue.ready()
+            });
+            let new = masking.editor.coverage_worker.queue.poll().unwrap();
+            masking.editor.mask_coverage_ready(new);
+            assert_eq!(evidence(&masking.editor).awaiting, None);
+            assert!(evidence(&masking.editor).capture_pending);
+            let shown = masking.editor.mask_coverage_summary();
+            assert_eq!(shown["adopted"]["request"]["mode"], json!(mode));
+            assert_eq!(shown["adopted"]["request"]["colour"], json!(colour));
+        } else {
+            assert!(masking.editor.presentation.coverage().is_none());
+        }
+        call(
+            &masking.owner(),
+            masking.editor.client,
+            "workspace.set",
+            patch,
+        )
+        .expect("the same presentation choice persists at the owner");
+        masking.adopt_session();
+        assert_eq!(evidence(&masking.editor).awaiting, None);
+        assert!(evidence(&masking.editor).capture_pending);
+        assert_eq!(masking.editor.session.workspace.mask_overlay.as_str(), mode);
+        assert_eq!(
+            masking
+                .editor
+                .session
+                .workspace
+                .mask_overlay_colour
+                .as_str(),
+            colour
+        );
+        assert_eq!(
+            masking.editor.presentation.presenter.photo_version(),
+            photo_version,
+            "a presentation-only choice never rerenders the photograph"
+        );
+    }
 }
 
 /// While a mask gesture is open in Mask mode the status line names the mode, the mask, the

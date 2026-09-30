@@ -21,4 +21,9 @@ pub(crate) enum PreviewMessage {
     /// The stack on screen planned again for the Masks panel's thumbnails, on entering Mask mode.
     /// Handled in `app/thumbnails.rs`: its evaluation goes to the thumbnail worker or is dropped.
     ThumbnailSource(Result<Box<luxforge_core::PreviewJob>, String>),
+    /// A source planned for exact mask feedback only; it never enters the photograph queue.
+    MaskCoverageSource {
+        epoch: u64,
+        result: Result<Box<luxforge_core::PreviewJob>, String>,
+    },
 }

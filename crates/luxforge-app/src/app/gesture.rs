@@ -316,6 +316,17 @@ impl Editor {
     ///
     /// A slider, mask or crop gesture's release is answered by [`Editor::release_refusal`] instead.
     pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
+        if self.core_gesture().is_none()
+            && !matches!(starting, Starting::Mask | Starting::Refit)
+            && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
+        {
+            return Some(reason);
+        }
+        if starting == Starting::Export
+            && let Some(reason) = self.mask_creation_refusal()
+        {
+            return Some(reason);
+        }
         let halves = starting.halves();
         if halves.one_draft
             && let Some(reason) = self.draft_refusal(starting)
@@ -473,6 +484,12 @@ impl Editor {
     /// commits no valid output. A slider or mask gesture released while another request is in
     /// flight commits, so its pointer never comes up on a draft left open.
     pub(crate) fn release_refusal(&self) -> Option<String> {
+        if let Some(error) = self.mask_shape().and_then(MaskDraft::capture_error) {
+            return Some(error.to_string());
+        }
+        if let Some(reason) = self.mask_shape().and_then(MaskDraft::placement_refusal) {
+            return Some(reason);
+        }
         let gesture = self.core_gesture()?;
         if self.gesture_conflicted() {
             return Some(format!(
@@ -538,6 +555,13 @@ impl Editor {
     /// open, Done, Enter, Cancel and Escape put the brush down ([`Editor::put_brush_down`]).
     pub(crate) fn draft_message(&mut self, message: DraftMessage) -> Task<Message> {
         match message {
+            DraftMessage::Commit if self.mask_shape().is_some_and(MaskDraft::unplaced) => {
+                self.status.text = self
+                    .mask_shape()
+                    .and_then(MaskDraft::placement_refusal)
+                    .expect("unplaced reason");
+                Task::none()
+            }
             DraftMessage::Commit | DraftMessage::Cancel
                 if self.gesture.is_none() && self.armed.is_some() =>
             {
