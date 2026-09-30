@@ -15,18 +15,7 @@ use std::{
 /// photograph already has, so a test that wants several photographs of one fixture writes them
 /// this way.
 pub(in crate::api) fn distinct_copy(fixture: &Path, to: &Path) -> std::path::PathBuf {
-    use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(fixture).expect("the fixture");
-    assert!(bytes.starts_with(&[0xff, 0xd8]), "a JPEG fixture");
-    let tag = format!("{:x}", Sha256::digest(to.as_os_str().as_encoded_bytes()));
-    let mut copy = bytes[..2].to_vec();
-    copy.extend([0xff, 0xfe]);
-    copy.extend(u16::try_from(tag.len() + 2).unwrap().to_be_bytes());
-    copy.extend(tag.as_bytes());
-    copy.extend(&bytes[2..]);
-    std::fs::create_dir_all(to.parent().expect("a folder")).unwrap();
-    std::fs::write(to, copy).unwrap();
-    to.canonicalize().unwrap()
+    crate::editor::distinct_jpeg(fixture, to)
 }
 
 /// A request identity no other test call repeats.

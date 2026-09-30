@@ -40,7 +40,7 @@ mod source;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
+pub(crate) use test_support::{distinct_jpeg, mutation, mutation_json, recast_as_raw};
 
 pub(crate) use catalog::{
     CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
