@@ -652,6 +652,41 @@ pub(crate) mod library_rows {
             .execute([id])
     }
 
+    /// Delete the whole catalog record of each of `assets` — its entries' artifact references,
+    /// versions, state row, request log, collection memberships, capture row, entries and asset
+    /// row — one statement per table for them all, answering how many asset rows went. Only
+    /// emptying Removed calls it, with the artifact references' permanence lifted for it
+    /// (`crate::library::remove::empty`); nothing on disk is touched, and the journal keeps what it
+    /// recorded of them.
+    pub(crate) fn delete_photographs(
+        tx: &Transaction<'_>,
+        assets: &[AssetId],
+    ) -> Result<usize, Error> {
+        let ids = serde_json::to_string(assets)
+            .map_err(|error| Error::internal(format!("cannot encode photographs: {error}")))?;
+        const THESE: &str = "(SELECT value FROM json_each(?1))";
+        tx.prepare_cached(&format!(
+            "DELETE FROM artifact_refs
+             WHERE entry_id IN (SELECT id FROM entries WHERE asset_id IN {THESE})"
+        ))?
+        .execute([&ids])?;
+        for table in ["versions", "asset_state", "requests"] {
+            tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
+                .execute([&ids])?;
+        }
+        for table in ["collection_members", "capture"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table} WHERE asset_row IN (SELECT row_id FROM assets WHERE id IN {THESE})"
+            ))?
+            .execute([&ids])?;
+        }
+        tx.prepare_cached(&format!("DELETE FROM entries WHERE asset_id IN {THESE}"))?
+            .execute([&ids])?;
+        Ok(tx
+            .prepare_cached(&format!("DELETE FROM assets WHERE id IN {THESE}"))?
+            .execute([&ids])?)
+    }
+
     /// Whether the catalog holds the photograph `asset`.
     pub(crate) fn has_asset(connection: &Connection, asset: &AssetId) -> Result<bool, Error> {
         Ok(connection

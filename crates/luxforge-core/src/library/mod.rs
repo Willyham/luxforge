@@ -29,8 +29,7 @@
 //!   file once off the owner and commits in batches, linking and relinking, card copies, and
 //!   sending back.
 //! - `batch.rs`: applying a preset to, and exporting, many photographs as one job.
-//!
-//! Planned: `remove.rs`.
+//! - `remove.rs`: removing photographs to Removed, putting them back, and emptying Removed.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
@@ -63,6 +62,10 @@ pub(crate) mod develop;
 pub(crate) mod missing;
 
 // Removing (TASK-014).
+/// Removing photographs, putting them back, and emptying Removed.
+pub(crate) mod remove;
+#[cfg(test)]
+mod remove_tests;
 
 // Batch preset and export (TASK-015).
 /// Batch preset and export: what both share, the naming, and the report as it grows.
