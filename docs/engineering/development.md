@@ -802,6 +802,30 @@ Each step is an object with exactly one key.
   `session.state` `browse` block for the desktop's client, so a frame's selection can be checked
   against what the owner holds. A source row that opens the native folder dialog, a menu item that
   does not exist and a position whose row is not read fail the step.
+- `loupe` is one gesture on the open loupe that its timing needs: `{"arrows": {"direction":
+  "right", "count": 30, "interval_ms": 30}}` waits until the look-ahead is warm — every frame the
+  loupe wants, on screen and ahead, decoded at its size or with nothing more to wait for — records
+  `loupe_warm`, then presses the arrow `count` times (1 to 240) through the key table,
+  `interval_ms` apart (1 to 1000; a single press takes none), the first a press and the rest the
+  key's repeats, and is captured once Select has nothing in flight after the last;
+  `{"pointer": [0.3, 0.3]}` moves the pointer over the picture to those fractions of it, recorded
+  as `loupe_pointer_sent`, and is captured once Select has settled, with the focus check on once
+  the region under the pointer has landed. A closed loupe fails the step. Wherever events are
+  written the loupe records what a timing harness pairs: each key that moves the active frame
+  (`loupe_key`, with `pressed_ms` from the start of its handling, where it moved from and to and
+  whether that frame was already `ready`), `Z` (`loupe_focus`), each region asked for
+  (`loupe_region_asked`), and, from the model just derived, each picture the active frame presents
+  (`loupe_presented`, under its own item and preview key, a stand-in said so) and each region the
+  inset presents (`loupe_region_presented`). Presented means the update whose redraw draws it, as
+  for `preview_displayed`, not scanout.
+- `grid_scroll` (`{"px_per_frame": 60, "frames": 240}`, 1 to 2000 logical pixels on each of 1 to
+  1000 frames) scrolls the Select grid down on each frame of the window's own frame clock, which it
+  subscribes to only while it scrolls, sending the offset the grid's scrollable publishes, as a
+  steady trackpad scroll does. Each frame is recorded as `grid_scroll_frame` (the frame's time, the
+  offset, and the cells on screen drawing a decoded preview, the placeholder while one loads, or
+  nothing ever), and the grid records `select_scrolled` in the update that adopts an offset, the
+  one whose redraw draws it. It is captured once Select has nothing in flight after its last frame,
+  or after the frame that reached the end of the grid; a grid that is not shown fails the step.
 - `missing` is one gesture on Select's Missing originals, sent through the message its control
   sends: `{"find": {"group": "2026-09 Konstanz", "folder": "/path"}}` presses Find in a folder… on
   the group developed from the folder of that name and answers the folder dialog with `folder`,

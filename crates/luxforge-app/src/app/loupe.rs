@@ -21,6 +21,14 @@
 //! - **Picking.** `P` is lane D's pick (TASK-019), not yet on this branch: [`Editor::loupe_pick`]
 //!   is the one hook that calls it, and [`Editor::loupe_picked`] is P7, which the pick's answer
 //!   calls to move on from a picked burst frame to the next moment.
+//! - **Timing evidence.** Where a run writes events, the loupe records what a timing harness pairs:
+//!   each key that moves the active frame (`loupe_key`, stamped `pressed_ms` from the start of its
+//!   handling, with whether the frame it moved to was already held at its size), `Z` (`loupe_focus`)
+//!   and each region asked for (`loupe_region_asked`), and, from the model just derived — the
+//!   view's source, drawn by the redraw that update requests — each picture the active frame
+//!   presents (`loupe_presented`, under its own item and preview key, a stand-in said so) and each
+//!   region the inset presents (`loupe_region_presented`). Presented means that update, as it
+//!   does for the photograph's `preview_displayed`: not display scanout.
 use crate::app::{
     Before, Editor,
     loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Want},
@@ -54,6 +62,19 @@ use std::sync::{
 pub(crate) struct Loupe {
     pub(crate) frames: LoupeFrames,
     pub(crate) focus: FocusCheck,
+    trace: Trace,
+}
+
+/// What the loupe has reported to the evidence log: how many keys moved it, and the picture and
+/// the region it presented last, so each is reported once, when it changes. Kept whether or not a
+/// log is written; nothing else reads it.
+#[derive(Debug, Default)]
+struct Trace {
+    keys: u64,
+    /// The active frame's picture: its view position, item and preview key.
+    picture: Option<(u32, PreviewItem, String)>,
+    /// The inset's region, by its request's number.
+    region: Option<u64>,
 }
 
 impl Loupe {
@@ -143,13 +164,14 @@ impl Editor {
         match message {
             LoupeMessage::Open => return self.loupe_show(),
             LoupeMessage::Close => return self.loupe_close(),
-            LoupeMessage::Frame(travel) => self.loupe_goto(Goto::Frame(travel), travel),
-            LoupeMessage::Moment(travel) => self.loupe_goto(Goto::Moment(travel), travel),
+            LoupeMessage::Frame(travel) => self.loupe_key(Goto::Frame(travel), travel),
+            LoupeMessage::Moment(travel) => self.loupe_key(Goto::Moment(travel), travel),
             LoupeMessage::Jump(index) => {
                 let travel = self.select.state.loupe.travel;
-                self.loupe_goto(Goto::Frame0(index), travel);
+                self.loupe_key(Goto::Frame0(index), travel);
             }
             LoupeMessage::ToggleFocus => {
+                let pressed_ms = self.log_ms();
                 let loupe = &mut self.select.state.loupe;
                 if loupe.open {
                     loupe.focus = !loupe.focus;
@@ -157,6 +179,12 @@ impl Editor {
                     if !loupe.focus {
                         self.select.loupe.focus.release();
                     }
+                    let on = loupe.focus;
+                    let position = self.loupe_position();
+                    self.event(
+                        "loupe_focus",
+                        || json!({"on": on, "position": position, "pressed_ms": pressed_ms}),
+                    );
                 }
             }
             LoupeMessage::ToggleCompare => self.loupe_compare(),
@@ -171,16 +199,13 @@ impl Editor {
             }
             LoupeMessage::Region(message) => {
                 let next = self.select.loupe.focus.update(message);
-                return loupe_region::task(&self.owner, self.client, next, region_message);
+                return self.region_task(next);
             }
             LoupeMessage::Woken => {
                 let owner = OWNER_WOKE.swap(false, Ordering::AcqRel);
                 let batch = self.select.loupe.frames.woken(owner);
                 let next = self.select.loupe.focus.woken(owner);
-                return Task::batch([
-                    self.frames_task(batch),
-                    loupe_region::task(&self.owner, self.client, next, region_message),
-                ]);
+                return Task::batch([self.frames_task(batch), self.region_task(next)]);
             }
         }
         Task::none()
@@ -262,6 +287,99 @@ impl Editor {
             self.status.text =
                 "Compare shows a burst's or a bracket's frames: this is a single frame".into();
         }
+    }
+
+    /// A key that moves the active frame as `goto` says: moved, and recorded for the evidence log
+    /// with the moment its handling started, where it moved from and to, and whether the frame it
+    /// moved to was already held at the size it is drawn at, so this update presents it.
+    fn loupe_key(&mut self, goto: Goto, travel: Travel) {
+        let pressed_ms = self.log_ms();
+        let from = self.loupe_position();
+        self.loupe_goto(goto, travel);
+        self.select.loupe.trace.keys += 1;
+        let key = self.select.loupe.trace.keys;
+        self.event("loupe_key", || {
+            let (kind, index) = match goto {
+                Goto::Frame(_) => ("frame", None),
+                Goto::Moment(_) => ("moment", None),
+                Goto::Frame0(index) => ("jump", Some(index)),
+            };
+            json!({
+                "key": key,
+                "kind": kind,
+                "index": index,
+                "travel": format!("{travel:?}").to_lowercase(),
+                "from": from,
+                "to": self.loupe_position(),
+                "ready": self.loupe_active_ready(),
+                "pressed_ms": pressed_ms,
+            })
+        });
+    }
+
+    /// The milliseconds since the run started that every event is stamped with.
+    fn log_ms(&self) -> f64 {
+        self.log.started.elapsed().as_secs_f64() * 1000.0
+    }
+
+    /// The view position of the active frame, when the loupe has one.
+    fn loupe_position(&self) -> Option<u32> {
+        subject(self.select.state.summary.as_ref(), &self.session.browse)
+            .map(|subject| subject.position)
+    }
+
+    /// The active frame's own picture, not a stand-in, is held at the size it is drawn at.
+    fn loupe_active_ready(&self) -> bool {
+        self.loupe_wants()
+            .first()
+            .is_some_and(|want| want.shown && self.select.loupe.frames.ready(want))
+    }
+
+    /// The look-ahead is warm: the loupe has settled, the rows of every frame ahead in the direction
+    /// of travel are read, and every frame it wants — on screen and ahead — is decoded at the size
+    /// it is drawn at, or has nothing more to wait for. A key that moves to the next frame then
+    /// presents it in its own update. An evidence step that times the loupe presses once it is.
+    pub(crate) fn loupe_warm(&self) -> bool {
+        let state = &self.select.state;
+        let (Some(summary), Some(subject)) = (
+            state.summary.as_ref(),
+            subject(state.summary.as_ref(), &self.session.browse),
+        ) else {
+            return false;
+        };
+        self.loupe_open()
+            && self.loupe_settled()
+            && model::look_ahead(summary, subject.position, state.loupe.travel)
+                .iter()
+                .all(|position| state.rows.row(*position).is_some())
+            && self.select.loupe.frames.all_settled(&self.loupe_wants())
+    }
+
+    /// The frames the look-ahead wants now and how many of them are ready, for the evidence log.
+    pub(crate) fn loupe_ahead(&self) -> (usize, usize) {
+        let wants = self.loupe_wants();
+        let ahead: Vec<&Want> = wants.iter().filter(|want| !want.shown).collect();
+        let ready = ahead
+            .iter()
+            .filter(|want| self.select.loupe.frames.ready(want))
+            .count();
+        (ahead.len(), ready)
+    }
+
+    /// The owner task the focus check's `next` is, with a region asked for recorded for the
+    /// evidence log.
+    fn region_task(&self, next: Option<loupe_region::Next>) -> Task<Message> {
+        if let Some(loupe_region::Next::Start(serial, request)) = &next {
+            self.event("loupe_region_asked", || {
+                json!({
+                    "serial": serial,
+                    "item": request.item,
+                    "rect": request.rect,
+                    "frame": request.frame,
+                })
+            });
+        }
+        loupe_region::task(&self.owner, self.client, next, region_message)
     }
 
     /// Move the active frame as `goto` says, travelling `travel`.
@@ -525,9 +643,75 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.loupe_mirror(&wants);
     let request = editor.loupe_region();
     let next = editor.select.loupe.focus.want(request);
-    let region = loupe_region::task(&editor.owner, editor.client, next, region_message);
+    let region = editor.region_task(next);
     editor.loupe_mirror(&wants);
     Task::batch([frames, region])
+}
+
+/// After the screen is derived: what the loupe's model now draws — the active frame's picture and
+/// the inset's region — reported to the evidence log when it changes. The model is the view's
+/// source, so this is the update whose redraw draws them. Compare draws its cells instead of the
+/// one picture, so nothing is presented for the active frame while it is on.
+pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
+    let open = editor.loupe_open();
+    let model = &editor.workspace.select.loupe;
+    let picture = (open && !editor.select.state.loupe.compare)
+        .then_some(model.frame.as_ref())
+        .flatten()
+        .and_then(|frame| Some((frame.position, frame.picture.as_ref()?)));
+    let region = open
+        .then_some(model.focus.as_ref())
+        .flatten()
+        .and_then(|focus| focus.region.as_ref());
+    let trace = &editor.select.loupe.trace;
+    let picture_changed = trace
+        .picture
+        .as_ref()
+        .map(|(at, item, key)| (*at, item, key.as_str()))
+        != picture.map(|(at, picture)| (at, &picture.item, picture.key.as_str()));
+    let region_changed = trace.region != region.map(|region| region.serial);
+    if !picture_changed && !region_changed {
+        return Task::none();
+    }
+    let picture = picture.map(|(at, picture)| (at, picture.clone()));
+    let region = region.cloned();
+    let trace = &mut editor.select.loupe.trace;
+    let key = trace.keys;
+    if picture_changed {
+        trace.picture = picture
+            .as_ref()
+            .map(|(at, picture)| (*at, picture.item.clone(), picture.key.clone()));
+    }
+    if region_changed {
+        trace.region = region.as_ref().map(|region| region.serial);
+    }
+    if picture_changed && let Some((position, picture)) = picture {
+        editor.event("loupe_presented", || {
+            json!({
+                "key": key,
+                "position": position,
+                "item": picture.item,
+                "preview_key": picture.key,
+                "origin": picture.origin.as_str(),
+                "stand_in": picture.stand_in,
+                "approximate": picture.approximate,
+                "width": picture.width,
+                "height": picture.height,
+            })
+        });
+    }
+    if region_changed && let Some(region) = region {
+        editor.event("loupe_region_presented", || {
+            json!({
+                "serial": region.serial,
+                "item": region.item,
+                "rect": region.rect,
+                "frame": region.frame,
+                "origin": region.origin.as_str(),
+            })
+        });
+    }
+    Task::none()
 }
 
 /// The loupe's signal while it is open. A signal posted while it is closed waits for it.

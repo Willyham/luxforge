@@ -1,6 +1,7 @@
 mod basic_acceptance;
 mod basic_smoke;
 mod capabilities_smoke;
+mod catalog_probes;
 mod check;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.

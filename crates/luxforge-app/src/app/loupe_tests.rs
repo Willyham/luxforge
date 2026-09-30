@@ -305,6 +305,174 @@ fn loupe_compares_checks_focus_and_moves_on_after_a_burst_pick() {
     finish(editor, catalog);
 }
 
+/// Hold every frame the loupe wants — on screen and ahead — at its own tier, decoded at its size,
+/// as the lane and the decode worker would: the look-ahead warm.
+fn warm_up(editor: &mut Editor) {
+    use crate::app::loupe_frames::{DECODED_BUDGET_BYTES, Decoded, ReadAnswers};
+    use luxforge_core::{
+        DecodedPreview,
+        catalog_types::{PreviewAnswer, PreviewInfo, PreviewOrigin, PreviewTier},
+    };
+    let mut frames = LoupeFrames::with_budget(DECODED_BUDGET_BYTES);
+    frames.paused = true;
+    let batch = frames.want(editor.loupe_wants()).expect("reads");
+    let answers = batch
+        .reads
+        .iter()
+        .map(|item| {
+            let preview = PreviewInfo {
+                item: item.clone(),
+                tier: PreviewTier::Loupe,
+                path: PathBuf::from("/c.index/previews/loupe.jpg"),
+                width: 2560,
+                height: 1707,
+                origin: PreviewOrigin::Embedded,
+                bytes: 400_000,
+                key: format!("{item:?}:loupe"),
+                approximate: false,
+            };
+            (item.clone(), Ok(PreviewAnswer::Ready { preview }))
+        })
+        .collect();
+    let _ = frames.answered(ReadAnswers {
+        serial: batch.serial,
+        answers,
+    });
+    for decode in frames.planned().to_vec() {
+        let (width, height) = (decode.side, decode.side * 2 / 3);
+        frames.adopt(Decoded {
+            decode,
+            result: Ok(DecodedPreview {
+                width,
+                height,
+                rgba: vec![0; (width * height * 4) as usize],
+            }),
+        });
+    }
+    editor.select.loupe.frames = frames;
+    // Any message mirrors what the loupe now holds and derives the screen again.
+    send(editor, LoupeMessage::Pointer(None));
+}
+
+/// The timing evidence: a key that moves to a frame the look-ahead holds records itself with the
+/// moment its handling started and that frame ready, and the same update presents that frame's own
+/// picture; `Z` records itself and the region it asks for, and the region presents once it lands.
+#[test]
+fn a_warm_key_presents_its_frame_in_its_own_update_and_the_region_follows_z() {
+    use crate::app::loupe_region::{RegionMessage, RegionRead};
+    use crate::app::testing::{attach_log, events, logged};
+    use luxforge_core::{DecodedPreview, catalog_types::RegionAnswer};
+    let (mut editor, catalog) = viewing();
+    let log = attach_log(&mut editor);
+    send(&mut editor, LoupeMessage::Open);
+    warm_up(&mut editor);
+    assert!(editor.loupe_warm(), "{}", editor.loupe_summary()["frames"]);
+    send(&mut editor, LoupeMessage::Frame(Travel::Forward));
+    assert_eq!(active(&editor), Some(1));
+    // Z at the new frame: the region under the middle is asked for, and lands.
+    send(&mut editor, LoupeMessage::ToggleFocus);
+    let request = editor.loupe_region().expect("a rectangle");
+    send(
+        &mut editor,
+        LoupeMessage::Region(RegionMessage::Started {
+            serial: 1,
+            result: Ok("region-job".into()),
+        }),
+    );
+    let answer = RegionAnswer {
+        item: request.item.clone(),
+        rect: request.rect,
+        frame: request.frame,
+        path: PathBuf::from("/c.index/regions/1.jpg"),
+        width: request.rect.width,
+        height: request.rect.height,
+        origin: luxforge_core::catalog_types::PreviewOrigin::Developed,
+    };
+    let decoded = DecodedPreview {
+        width: request.rect.width,
+        height: request.rect.height,
+        rgba: vec![0; (request.rect.width * request.rect.height * 4) as usize],
+    };
+    send(
+        &mut editor,
+        LoupeMessage::Region(RegionMessage::Read {
+            serial: 1,
+            result: Ok(Box::new(RegionRead::Ended(Ok((answer, decoded))))),
+        }),
+    );
+    let records = logged(&mut editor, &log);
+    let at = |event: &str, test: &dyn Fn(&Value) -> bool| {
+        records
+            .iter()
+            .position(|record| record["event"] == event && test(&record["detail"]))
+            .unwrap_or_else(|| panic!("no {event}: {records:#?}"))
+    };
+    let key = at("loupe_key", &|detail| detail["key"] == 1);
+    assert_eq!(
+        records[key]["detail"],
+        json!({"key": 1, "kind": "frame", "index": null, "travel": "forward", "from": 0,
+            "to": 1, "ready": true, "pressed_ms": records[key]["detail"]["pressed_ms"]})
+    );
+    let presented = at("loupe_presented", &|detail| detail["position"] == 1);
+    let detail = &records[presented]["detail"];
+    assert!(presented > key && detail["key"] == 1 && detail["stand_in"] == false);
+    assert!(
+        records[presented]["elapsed_ms"].as_f64() >= records[key]["detail"]["pressed_ms"].as_f64()
+    );
+    assert_eq!(
+        events(&records, "loupe_presented")
+            .iter()
+            .filter(|detail| detail["key"] == 1)
+            .count(),
+        1,
+        "presented once, under its own frame"
+    );
+    let focus = at("loupe_focus", &|detail| detail["on"] == true);
+    let asked = at("loupe_region_asked", &|detail| detail["serial"] == 1);
+    let region = at("loupe_region_presented", &|detail| detail["serial"] == 1);
+    assert!(focus < asked && asked < region);
+    assert_eq!(records[focus]["detail"]["position"], 1);
+    assert_eq!(records[region]["detail"]["origin"], "developed");
+    finish(editor, catalog);
+}
+
+/// A loupe `arrows` step waits for the look-ahead to be warm, records it, then presses its arrow:
+/// the first a press, each later one the key's repeat; the step is over with its last press.
+#[test]
+fn a_loupe_arrows_step_presses_once_the_look_ahead_is_warm() {
+    use crate::app::message::evidence::EvidenceMessage;
+    use crate::app::testing::{attach_log, attach_script, events, logged};
+    let (mut editor, catalog) = viewing();
+    send(&mut editor, LoupeMessage::Open);
+    let _ = attach_script(
+        &mut editor,
+        r#"[{"loupe":{"arrows":{"direction":"right","count":2,"interval_ms":30}}}]"#,
+    );
+    let log = attach_log(&mut editor);
+    let _ = editor.next_step();
+    // Not warm: nothing is decoded, so no press goes.
+    send(&mut editor, LoupeMessage::Pointer(None));
+    let arrows = |editor: &Editor| editor.evidence.as_ref().unwrap().loupe_arrows.clone();
+    assert!(arrows(&editor).is_some());
+    let _ = editor.update(Message::Evidence(EvidenceMessage::LoupeArrow));
+    assert_eq!(active(&editor), Some(0), "no press while warming");
+    warm_up(&mut editor);
+    for _ in 0..2 {
+        let _ = editor.update(Message::Evidence(EvidenceMessage::LoupeArrow));
+    }
+    assert_eq!(active(&editor), Some(2));
+    assert!(arrows(&editor).is_none(), "every press sent");
+    let records = logged(&mut editor, &log);
+    assert_eq!(events(&records, "loupe_warm").len(), 1);
+    let keys = events(&records, "loupe_key");
+    assert_eq!(
+        keys.iter().map(|key| key["to"].clone()).collect::<Vec<_>>(),
+        vec![json!(1), json!(2)]
+    );
+    assert!(keys.iter().all(|key| key["ready"] == true));
+    finish(editor, catalog);
+}
+
 /// The loupe builds in each of its states: nothing to show, a frame reading, a frame with the
 /// focus check, and compare.
 #[test]
