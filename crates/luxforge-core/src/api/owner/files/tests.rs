@@ -9,8 +9,8 @@ use crate::{
     export::metadata::header::tests::camera_jpeg,
     index::{database, volumes::MountSource, walk::WalkLimits},
 };
-use luxforge_process::Mount;
 use luxforge_testbase::{Gate, wait_for};
+use luxforge_watch::Mount;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1212,7 +1212,7 @@ fn hdiutil(args: &[&std::ffi::OsStr]) {
 /// meant for browsing, so the test lists it as a card would be.
 #[cfg(target_os = "macos")]
 fn image_mount(mount: &Path) -> Mount {
-    let mut entry = luxforge_process::mounts()
+    let mut entry = luxforge_watch::mounts()
         .unwrap()
         .into_iter()
         .find(|entry| entry.mount_point == mount)
