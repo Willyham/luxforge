@@ -287,11 +287,8 @@ fn a_moved_folder_is_found_and_relinked_in_one_change_and_undone() {
     assert_eq!(groups[0]["count"], 3);
     assert_eq!(groups[0]["reason"], json!({"kind": "folder-gone"}));
     // An opened file the index does not list is an undated frame of its folder, and its Develop
-    // makes that folder's Undated event's catalog folder.
-    assert_eq!(
-        groups[0]["catalog_folders"][0]["name"],
-        "Undated · 2026-09-12"
-    );
+    // makes a catalog folder named after that folder on disk.
+    assert_eq!(groups[0]["catalog_folders"][0]["name"], "2026-09-12");
     assert_eq!(
         harness.ok("source.missing", json!({"grouping": "source-folder"})),
         missing
@@ -633,25 +630,25 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
             "changed".to_owned(),
             2,
             json!({"kind": "changed"}),
-            vec!["Undated · changed".to_owned()],
+            vec!["changed".to_owned()],
         ),
         (
             "gone".to_owned(),
             2,
             json!({"kind": "folder-gone"}),
-            vec!["Konstanz".to_owned(), "Undated · gone".to_owned()],
+            vec!["gone".to_owned(), "Konstanz".to_owned()],
         ),
         (
             "mixed".to_owned(),
             2,
             json!({"kind": "files-gone"}),
-            vec!["Undated · mixed".to_owned()],
+            vec!["mixed".to_owned()],
         ),
         (
             "thinned".to_owned(),
             1,
             json!({"kind": "files-gone"}),
-            vec!["Undated · thinned".to_owned()],
+            vec!["thinned".to_owned()],
         ),
     ];
     assert_eq!(summary(&missing), expected, "{missing}");
@@ -663,7 +660,7 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
         "{missing}"
     );
     assert_eq!(
-        missing["groups"][1]["catalog_folders"][0]["id"], konstanz,
+        missing["groups"][1]["catalog_folders"][1]["id"], konstanz,
         "{missing}"
     );
 
@@ -677,7 +674,7 @@ fn missing_originals_are_grouped_by_source_folder_with_each_reason() {
         "unchecked".to_owned(),
         1,
         json!({"kind": "files-gone"}),
-        vec!["Undated · unchecked".to_owned()],
+        vec!["unchecked".to_owned()],
     ));
     assert_eq!(summary(&missing), with_unchecked);
 }

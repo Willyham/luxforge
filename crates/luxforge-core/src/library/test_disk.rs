@@ -1,11 +1,13 @@
 //! A disk image for the library's tests of offline volumes (macOS): a 16 MB HFS+ image in a scratch
-//! directory, attached at a folder beside it with `-nobrowse`, so the Finder never shows it.
+//! directory, attached at a folder beside it.
 //!
-//! A `-nobrowse` volume is not one a person browses, so its identity is its device number
-//! (`index::volume_of`), which the kernel may hand to another image attached in the meantime. So
-//! one image is attached at a time in this test binary: a [`DiskImage`] holds a process-wide lock
-//! from its creation until it is dropped, and a test that detaches and attaches its image again
-//! finds it as the same volume.
+//! It is attached as a volume a person browses (no `-nobrowse`, which marks a mount one nobody
+//! browses and leaves it identified only by its device number), so it is identified by its volume
+//! UUID, which stays the same however often it is attached and whatever else is attached
+//! meanwhile — by other tests or other processes on the host. `-noautoopen` keeps the Finder from
+//! opening a window on it. Attaching and detaching each wait, bounded, until the kernel shows the
+//! volume mounted or gone at its mount point, and one image is attached at a time in this test
+//! binary (a [`DiskImage`] holds a process-wide lock until it is dropped).
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -51,17 +53,21 @@ impl DiskImage {
         disk
     }
 
+    /// Attach the image at its mount point, and wait until the volume is mounted there.
     pub(crate) fn attach(&mut self) {
         let status = Command::new("hdiutil")
-            .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
+            .args(["attach", "-quiet", "-noautoopen", "-mountpoint"])
             .arg(&self.mount)
             .arg(&self.image)
             .status()
             .unwrap();
         assert!(status.success(), "hdiutil attach: {status}");
         self.attached = true;
+        let mount = self.mount.clone();
+        luxforge_testbase::wait_until("the disk image to be mounted", || mounted(&mount));
     }
 
+    /// Detach the image, and wait until its volume is gone from the mount point.
     pub(crate) fn detach(&mut self) {
         let status = Command::new("hdiutil")
             .args(["detach", "-quiet", "-force"])
@@ -70,6 +76,18 @@ impl DiskImage {
             .unwrap();
         assert!(status.success(), "hdiutil detach: {status}");
         self.attached = false;
+        let mount = self.mount.clone();
+        luxforge_testbase::wait_until("the disk image to be detached", || !mounted(&mount));
+    }
+}
+
+/// Whether a volume is mounted at `mount`: the folder is on another device than its parent.
+fn mounted(mount: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &Path| path.metadata().ok().map(|metadata| metadata.dev());
+    match (device(mount), mount.parent().and_then(device)) {
+        (Some(mounted), Some(parent)) => mounted != parent,
+        _ => false,
     }
 }
 

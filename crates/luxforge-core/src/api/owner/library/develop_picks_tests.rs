@@ -515,10 +515,7 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
         events[3].get("removable").is_none(),
         "an offline file is not developable"
     );
-    assert_eq!(
-        events[4]["folder"],
-        json!({"kind": "new", "name": "Undated · loose"})
-    );
+    assert_eq!(events[4]["folder"], json!({"kind": "new", "name": "loose"}));
 
     // Without targets a plan takes the view's picks, and there is no view yet.
     let refused = harness.refused("pick.plan", json!({}));
