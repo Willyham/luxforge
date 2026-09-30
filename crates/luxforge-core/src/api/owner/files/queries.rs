@@ -142,12 +142,10 @@ pub(super) struct Queries {
     waiting: VecDeque<Queued>,
     /// The call whose question the thread is answering; `None` inside once its client has left.
     running: Option<Option<Parked>>,
-    /// Held before each question from the next one on, for a test that acts while one waits.
+    /// Held before each question from the next one on, as a volume that does not answer would
+    /// hold it, for a test that acts meanwhile.
     #[cfg(test)]
     pub(super) hold: Option<std::sync::Arc<luxforge_testbase::Gate>>,
-    /// Set as the owner stops, so a held question gives up its hold.
-    #[cfg(test)]
-    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The survey thread, what the surveys have learned, and the calls waiting for the first.
@@ -263,11 +261,11 @@ fn dispatch(owner: &mut Owner) {
 fn question(files: &FilesLane, ask: Ask) -> Job {
     let poster = files.poster.clone();
     #[cfg(test)]
-    let (hold, stopping) = (files.queries.hold.clone(), files.queries.stopping.clone());
+    let hold = files.queries.hold.clone();
     Box::new(move || {
         #[cfg(test)]
         if let Some(hold) = &hold {
-            hold.pass_unless(|| stopping.load(std::sync::atomic::Ordering::SeqCst));
+            hold.pass();
         }
         let resume = catch_unwind(AssertUnwindSafe(ask)).unwrap_or_else(|_| {
             Box::new(|_| Err(Error::internal("reading the disk failed unexpectedly")))
@@ -484,10 +482,6 @@ impl FilesLane {
     /// call is when the owner stops. An idle thread is joined; one still answering a question is
     /// not waited for, since the volume it reads may never answer ([`Worker::stop`]).
     pub(super) fn stop_threads(&mut self) {
-        #[cfg(test)]
-        self.queries
-            .stopping
-            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.queries.waiting.clear();
         self.surveys.waiting.clear();
         if let Some(worker) = self.queries.worker.take() {

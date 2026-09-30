@@ -56,15 +56,20 @@ pub(crate) enum MountSource {
 impl MountSource {
     /// The mounted file systems now, in the platform's order, read without waiting on any of them:
     /// `getfsstat` with `MNT_NOWAIT` on macOS (reading a volume's name and UUID only when it is
-    /// local), `/proc/self/mountinfo` on Linux. So the catalog owner may read it. A platform that
-    /// cannot read its table gives an empty one, in which every path's volume is found by its
-    /// device ([`MountTable::volume_of`]).
+    /// local), `/proc/self/mountinfo` on Linux. So the catalog owner may read it. The system's own
+    /// mounts are left out, but for the macOS data volume, which names the startup disk: none is a
+    /// person's volume, and an automounter's trigger among them can mount, and wait on a network,
+    /// when it is looked at. A platform that cannot read its table gives an empty one, in which
+    /// every path's volume is found by its device ([`MountTable::volume_of`]).
     pub(crate) fn list(&self) -> Vec<Mount> {
         let mounts = match self {
             Self::Platform => luxforge_process::mounts().unwrap_or_default(),
             Self::Fixed(mounts) => mounts.lock().expect("a fixed mount table").clone(),
         };
         mounts
+            .into_iter()
+            .filter(|mount| mount.browsable || mount.mount_point == Path::new(MACOS_DATA_VOLUME))
+            .collect()
     }
 
     /// The mount table now, with every mounted volume's identity: a stat of each mount point.
