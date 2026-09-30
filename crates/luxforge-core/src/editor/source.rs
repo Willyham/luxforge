@@ -1915,11 +1915,12 @@ mod tests {
     /// plan](../../../../docs/specs/performance.md#native-development-and-saved-white-balance-preparation)
     /// measures it. One catalog is made first, holding the RAW with a saved custom red gain of
     /// 1.1 × as-shot. Every observation then starts a new owner on it, so the source cache is
-    /// empty while the filesystem cache stays warm, and times from immediately before
-    /// `catalog.import` until a strict exact-source `PreviewJob` for the current entry is
-    /// available: reading, hashing, decoding and developing the original at the saved gains, and
-    /// waiting for and adopting that one job. Starting the owner and opening the catalog,
-    /// hashing the planes and stopping the owner are outside the clock, and nothing is rendered.
+    /// empty while the filesystem cache stays warm, and times from immediately before the
+    /// photograph's `source.prepare` until a strict exact-source `PreviewJob` for the current
+    /// entry is available: reading, hashing, decoding and developing the original at the saved
+    /// gains, and waiting for and adopting that one job. Starting the owner and opening the
+    /// catalog, hashing the planes and stopping the owner are outside the clock, and nothing is
+    /// rendered.
     /// Every observation's planes must hash the same. A measurement, not a gate; the one-minute
     /// load average is read before the first and after the last observation:
     ///
@@ -1993,18 +1994,11 @@ mod tests {
         }
         let (mut times, mut digest, mut backend) = (Vec::new(), None, None);
         let load_start = load();
-        for observation in 0..samples {
+        for _ in 0..samples {
             let (owner, join) = OwnerHandle::start(&catalog).unwrap();
             let client = owner.register();
             let started = Instant::now();
-            let queued = call(
-                &owner,
-                client,
-                "catalog.import",
-                json!({"path": path, "mutation": {
-                    "request_id": format!("cold-import-{observation}"), "actor": "timing",
-                }}),
-            );
+            let queued = call(&owner, client, "source.prepare", json!({"asset_id": asset}));
             let job = queued["job_id"].clone();
             owner.wait_source(client, None).unwrap();
             let adopted = call(&owner, client, "job.adopt", json!({"job_id": job}));
