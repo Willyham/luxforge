@@ -40,7 +40,9 @@
 //! the Fit preview presents its exact phase. A stack that is not proxy-eligible (a pixel-stage
 //! layer), or whose proxy fails, takes the exact path and says why ([`TierPath::Exact`]): the entry
 //! is rendered exactly once and area-averaged to each tier. Both tiers come from one preparation;
-//! the exact frame, when one is needed, is rendered once for both.
+//! the exact frame, when one is needed, is rendered once for both. A tier is labelled
+//! `approximate` exactly when its proxy render is ([`RenderedTier::approximate`]); the lane stores
+//! the label in its row, so a tier read from the cache says the same.
 //!
 //! A tier is upright sRGB display bytes, encoded as a baseline JPEG at [`RENDERED_JPEG_QUALITY`]
 //! with 4:2:0 chroma and no metadata or profile.
@@ -213,7 +215,8 @@ pub(crate) fn is_current(
     RenderedKey::new(asset_id, entry_id, tier).is_ok_and(|key| key.preview_key() == preview_key)
 }
 
-/// How one tier was rendered, which the lane reports beside it.
+/// How one tier was rendered, which its `approximate` label is read from
+/// ([`RenderedTier::approximate`]) and the lane stores with its row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TierPath {
     /// Against a proxy source fitted to the tier: the Fit preview's proxy frame at the tier's
@@ -233,15 +236,17 @@ pub(crate) struct RenderedTier {
     pub height: u32,
     /// Baseline JPEG, upright sRGB, [`RENDERED_JPEG_QUALITY`], 4:2:0, no metadata.
     pub jpeg: Vec<u8>,
-    #[allow(
-        dead_code,
-        reason = "the tests that prove each tier is the Fit preview's frame read it; no answer \
-                  carries a tier's approximation yet"
-    )]
     pub path: TierPath,
 }
 
 impl RenderedTier {
+    /// Whether the tier approximates its entry: rendered through a proxy whose render is
+    /// approximate ([`ProxyApproximation::is_approximate`]: a spatial layer, a thin mask), as the
+    /// Fit preview labels the same frame. An exact render, area-averaged to the tier, is not.
+    pub(crate) fn approximate(&self) -> bool {
+        matches!(self.path, TierPath::Proxy { approximation } if approximation.is_approximate())
+    }
+
     /// The preview this tier is once the lane has written it at `path`, under
     /// `<catalog>.index/previews/`.
     pub(crate) fn info(&self, path: PathBuf) -> PreviewInfo {
@@ -252,6 +257,7 @@ impl RenderedTier {
             width: self.width,
             height: self.height,
             origin: PreviewOrigin::Rendered,
+            approximate: self.approximate(),
             bytes: self.jpeg.len() as u64,
             key: self.key.preview_key(),
         }

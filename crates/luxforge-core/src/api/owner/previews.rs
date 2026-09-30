@@ -43,6 +43,10 @@
 //!   released when a client's view is replaced, when the last client that asked for a region or
 //!   was served a developed tier disconnects, and when the lane stops; every cancel of running
 //!   work wakes the callers waiting for the development, so a cancelled one returns at once.
+//! - **Leaving the catalog.** [`forget_photographs`], for lane C's `asset.send-back` and
+//!   `catalog.empty-removed` once they commit: the photographs' waiting and running renders and
+//!   camera previews are cancelled, what the lane remembers of them forgotten, their rows deleted
+//!   on the owner and their files removed on a short-lived thread.
 use super::{
     Call, ClientId, EventWake, Owner, OwnerHandle, OwnerMessage,
     catalog::{CatalogMessage, Poster},
@@ -76,6 +80,8 @@ const REPLACED: &str = "replaced by a newer view";
 const DISCONNECTED: &str = "the client disconnected";
 /// The reason a task stops when nobody wants it any more.
 const UNWANTED: &str = "no request or view wants this preview any more";
+/// The reason a photograph's preview work ends when the photograph leaves the catalog.
+const LEFT_THE_CATALOG: &str = "the photograph left the catalog";
 
 mod regions;
 mod renders;
@@ -134,6 +140,10 @@ struct Wanted {
     /// For a photograph's camera preview, its original as the catalog records it.
     camera: Option<Arc<CameraSource>>,
     running: bool,
+    /// Its photograph left the catalog while it ran ([`forget_photographs`]): whatever it answers
+    /// is nobody's. It runs again only for a request that joined it since — a later photograph
+    /// given the same row — whose original is then its `camera`.
+    forgotten: bool,
 }
 
 impl Wanted {
@@ -147,6 +157,7 @@ impl Wanted {
             for_render: false,
             camera: None,
             running: false,
+            forgotten: false,
         }
     }
 
@@ -165,6 +176,8 @@ impl Wanted {
 struct View {
     job_id: JobId,
     control: Arc<JobControl>,
+    /// The items' tiers it reads: files' and photographs' camera previews alike, less those of
+    /// photographs that left the catalog while it ran.
     total: usize,
     failed: usize,
     /// Tiers of RAWs with no usable preview, left for a visible request to develop: done, not
@@ -185,6 +198,17 @@ impl View {
             Some(done as f64 / self.total as f64),
             &format!("{done} of {}", self.total),
         );
+    }
+
+    /// The job's result once nothing is pending: `{items, read, deferred, failed}`, `items`
+    /// counting every tier it read, a file's or a photograph's.
+    fn result(&self) -> Output {
+        Output::Value(json!({
+            "items": self.total,
+            "read": self.total - self.failed - self.deferred,
+            "deferred": self.deferred,
+            "failed": self.failed,
+        }))
     }
 }
 
@@ -248,6 +272,13 @@ pub(super) enum PreviewsMessage {
     ViewGridStates {
         items: Vec<ViewItem>,
         reply: std::sync::mpsc::SyncSender<Result<Vec<PreviewState>, Error>>,
+    },
+    /// Call [`forget_photographs`] for these photographs, as lane C's handlers do after they
+    /// commit.
+    #[cfg(test)]
+    Forget {
+        assets: Vec<crate::AssetId>,
+        reply: std::sync::mpsc::SyncSender<()>,
     },
 }
 
@@ -932,6 +963,11 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
             let _ = reply.send(states);
         }
         #[cfg(test)]
+        PreviewsMessage::Forget { assets, reply } => {
+            forget_photographs(owner, &assets);
+            let _ = reply.send(());
+        }
+        #[cfg(test)]
         PreviewsMessage::GridStates { files, reply } => {
             let states = owner.service.index().and_then(|index| {
                 owner
@@ -953,21 +989,29 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         workers.finished(worker);
     }
     let Outcome {
-        result,
+        mut result,
         signature,
-        permanent,
-        deferred,
+        mut permanent,
+        mut deferred,
     } = outcome;
+    if lane.tasks.get(&key).is_some_and(|wanted| wanted.forgotten) {
+        // Its photograph left the catalog while it ran: it answers nobody and is remembered for
+        // nothing, as a task stopped.
+        result = Err(Error::cancelled(LEFT_THE_CATALOG));
+        (permanent, deferred) = (false, false);
+    }
     match (&result, signature) {
         (Ok(_), _) => {
             lane.failures.forget(&key);
             lane.deferred.forget(&key);
         }
         (Err(error), Some(signature)) if permanent => {
-            lane.failures.remember(key, signature, error.clone());
+            let photo = photo_of(&lane.tasks, &key);
+            lane.failures.remember(key, signature, error.clone(), photo);
         }
         (Err(error), Some(signature)) if deferred => {
-            lane.deferred.remember(key, signature, error.clone());
+            let photo = photo_of(&lane.tasks, &key);
+            lane.deferred.remember(key, signature, error.clone(), photo);
         }
         _ => {}
     }
@@ -976,13 +1020,15 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         return;
     };
     let stopped = matches!(&result, Err(error) if error.kind == ErrorKind::Cancelled);
-    // Stopped while something still wanted it (a cancel that raced a new request), or deferred
-    // while a visible or look-ahead request joined it: it runs again, with a fresh flag when it
-    // was stopped, and develops if it needs to.
+    // Stopped while something still wanted it (a cancel that raced a new request, or a request
+    // that joined a forgotten photograph's task), or deferred while a visible or look-ahead
+    // request joined it: it runs again, with a fresh flag when it was stopped, and develops if it
+    // needs to.
     let raised = deferred && wanted.job.is_some() && wanted.priority >= PreviewPriority::Visible;
     if (stopped && wanted.wanted()) || raised {
         if stopped {
             wanted.control = JobControl::new();
+            wanted.forgotten = false;
         }
         wanted.running = false;
         if lane.queue.push(key, wanted.priority).is_ok() {
@@ -1030,15 +1076,7 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         if view.pending.is_empty() {
             let view = lane.views.remove(client).expect("the view is held");
             advance |= view.fingerprinted;
-            owner.jobs.finish(
-                &view.job_id,
-                Ok(Output::Value(json!({
-                    "files": view.total,
-                    "read": view.total - view.failed - view.deferred,
-                    "deferred": view.deferred,
-                    "failed": view.failed,
-                }))),
-            );
+            owner.jobs.finish(&view.job_id, Ok(view.result()));
         }
     }
     if advance {
@@ -1068,6 +1106,139 @@ fn fingerprints_written(owner: &mut Owner) {
             &Origin::new(PREVIEW_EXTRACT.job_kind, "").index(revision),
         );
         owner.record_announced();
+    }
+}
+
+/// The photograph a task's camera preview is of, which its remembered failure or deferral names.
+fn photo_of(tasks: &HashMap<TaskKey, Wanted>, key: &TaskKey) -> Option<crate::AssetId> {
+    tasks
+        .get(key)
+        .and_then(|wanted| wanted.camera.as_ref())
+        .map(|camera| camera.asset_id.clone())
+}
+
+/// Forget `assets`, photographs that have left the catalog, in the preview lane: lane C calls it
+/// from `asset.send-back` and `catalog.empty-removed` once their change has committed, with the
+/// photographs of that one library change (at most
+/// [`MAX_LIBRARY_BATCH`](crate::catalog_types::MAX_LIBRARY_BATCH), 50,000).
+///
+/// - **Work first.** Every queued render of them (a commit's background re-render among them)
+///   leaves the queue and the running one stops at its next checkpoint, and every queued camera
+///   preview of them leaves the extraction queue and a running one stops, each cancelled with the
+///   reason "the photograph left the catalog"; each render tier's job ends `cancelled` naming it,
+///   whoever waited is woken, and a view job counts their camera previews no more (ending when
+///   nothing else is pending). The lane forgets what it remembered of them: failures, deferrals
+///   and wanted tasks.
+/// - **Then rows, on the owner.** Every `photo_previews` row of them — every entry, tier,
+///   renderer generation and origin — is deleted, 1,000 photographs to a short transaction, each
+///   found by the table's key ([`previews::forget_photos`]). A worker's write checks its cancel
+///   while it holds the write lock, so a render or camera preview that was running writes no row
+///   after this.
+/// - **Then files, off the owner.** The files those rows named — a photograph's two tiers, its
+///   camera previews and any earlier entry's not yet collected, so a batch may name tens of
+///   thousands — are removed on a short-lived thread ([`previews::remove_files`]); the owner
+///   removes none.
+///
+/// It answers nothing: the change it follows has committed, and the index is a cache. Rows that
+/// could not be deleted (the index cannot be opened, or a worker held its write lock past the
+/// wait) are never served, since their photographs are gone, and cost only their bytes. A second
+/// call for the same photographs does nothing.
+#[allow(
+    dead_code,
+    reason = "lane C's asset.send-back and catalog.empty-removed call it after they commit"
+)]
+pub(super) fn forget_photographs(owner: &mut Owner, assets: &[crate::AssetId]) {
+    if assets.is_empty() {
+        return;
+    }
+    let forgotten: HashSet<crate::AssetId> = assets.iter().cloned().collect();
+    let lane = &mut owner.catalog.previews;
+    let (mut woken, advance) = lane.forget_tasks(&forgotten, &mut owner.jobs);
+    woken.extend(lane.renders.forget(&forgotten, &mut owner.jobs));
+    lane.wake(woken.into_iter());
+    let files = owner
+        .service
+        .index()
+        .and_then(|mut index| previews::forget_photos(index.connection_mut(), assets));
+    if let Ok(files) = files {
+        previews::remove_files(files);
+    }
+    if advance {
+        fingerprints_written(owner);
+    }
+    dispatch(owner);
+    renders::dispatch(owner);
+}
+
+impl PreviewsLane {
+    /// Forget the camera-preview tasks of `assets` on the extraction lane, and what the lane
+    /// remembers of them: a waiting task leaves the queue; a running one is cancelled and kept,
+    /// forgotten, until its worker answers, so the worker is not handed a second task of its key.
+    /// Answers the clients to wake, and whether a view job that ended wrote fingerprints.
+    fn forget_tasks(
+        &mut self,
+        assets: &HashSet<crate::AssetId>,
+        jobs: &mut Jobs,
+    ) -> (Vec<ClientId>, bool) {
+        let keys: Vec<TaskKey> = self
+            .tasks
+            .iter()
+            .filter(|(_, wanted)| {
+                wanted
+                    .camera
+                    .as_ref()
+                    .is_some_and(|camera| assets.contains(&camera.asset_id))
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        let mut woken = Vec::new();
+        let mut advance = false;
+        for key in keys {
+            let wanted = self.tasks.get_mut(&key).expect("the task is held");
+            wanted.control.cancel(LEFT_THE_CATALOG);
+            if let Some(job_id) = wanted.job.take() {
+                self.jobs.remove(&job_id);
+                jobs.finish(&job_id, Err(Error::cancelled(LEFT_THE_CATALOG)));
+            }
+            woken.extend(std::mem::take(&mut wanted.waiters));
+            let views = std::mem::take(&mut wanted.views);
+            wanted.for_render = false;
+            if wanted.running {
+                wanted.forgotten = true;
+                wanted.camera = None;
+            } else {
+                self.queue.remove(&key);
+                self.tasks.remove(&key);
+            }
+            for client in views {
+                advance |= self.unpend(client, key, jobs);
+            }
+        }
+        self.failures.forget_photographs(assets);
+        self.deferred.forget_photographs(assets);
+        (woken, advance)
+    }
+
+    /// `client`'s view job no longer reads `key`, whose photograph left the catalog: it counts it
+    /// no more, and ends when nothing else is pending. Whether it ended having written
+    /// fingerprints.
+    fn unpend(&mut self, client: ClientId, key: TaskKey, jobs: &mut Jobs) -> bool {
+        let Some(view) = self.views.get_mut(&client) else {
+            return false;
+        };
+        if !view.pending.remove(&key) {
+            return false;
+        }
+        view.total -= 1;
+        if view.total > 0 {
+            view.progress();
+        }
+        if !view.pending.is_empty() {
+            return false;
+        }
+        let view = self.views.remove(&client).expect("the view is held");
+        jobs.finish(&view.job_id, Ok(view.result()));
+        view.fingerprinted
     }
 }
 
@@ -1186,6 +1357,14 @@ impl OwnerHandle {
             .recv()
             .expect("the owner answered")
             .expect("the grid states")
+    }
+
+    /// [`forget_photographs`] on the owner, as lane C's `asset.send-back` and
+    /// `catalog.empty-removed` call it after they commit; answers once it has returned.
+    pub(crate) fn forget_photographs(&self, assets: Vec<crate::AssetId>) {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.previews(PreviewsMessage::Forget { assets, reply });
+        answer.recv().expect("the owner answered");
     }
 
     /// The owner's grid states for `files`.

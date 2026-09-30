@@ -77,7 +77,8 @@ impl CachedPreview {
         self.origin != PreviewOrigin::ExifThumbnail
     }
 
-    /// The preview as `preview.read` answers it.
+    /// The preview as `preview.read` answers it. A file's tier is its camera's image or a neutral
+    /// development, never an approximation of an edit.
     pub(crate) fn info(&self) -> PreviewInfo {
         PreviewInfo {
             item: PreviewItem::File { file_id: self.file },
@@ -86,6 +87,7 @@ impl CachedPreview {
             width: self.width,
             height: self.height,
             origin: self.origin,
+            approximate: false,
             bytes: self.bytes,
             key: key(self.file, &self.signature, self.tier, self.origin),
         }
