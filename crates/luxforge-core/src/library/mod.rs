@@ -25,8 +25,12 @@
 //! - `missing.rs` (with `missing/search.rs`): missing originals by source folder, the bounded
 //!   search, and relinking what it verified.
 //!
-//! Planned: `develop.rs` (the develop lane: fingerprint, RAW interpretation without developing,
-//! linking, relinking, card copies, sending back), `remove.rs` and `batch.rs`.
+//! - `develop.rs` (with `develop/`): planning a Develop by event, the develop lane that reads each
+//!   file once off the owner and commits in batches, linking and relinking, card copies, and
+//!   sending back.
+//! - `batch.rs`: applying a preset to, and exporting, many photographs as one job.
+//!
+//! Planned: `remove.rs`.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;

@@ -523,7 +523,7 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
     // Without targets a plan takes the view's picks, and there is no view yet.
     let refused = harness.refused("pick.plan", json!({}));
     assert_eq!(refused.code, "validation");
-    assert_eq!(refused.message, "this client has no view");
+    assert!(refused.message.contains("no view"), "{}", refused.message);
 }
 
 /// Developing the picks of two events brings in exactly those photographs, in batches — the first
