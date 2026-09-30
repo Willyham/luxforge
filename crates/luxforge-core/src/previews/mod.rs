@@ -28,8 +28,9 @@
 //!   photograph at a time, writes its tiers, collects its stale rows and keeps the large tier's
 //!   budget; and the discard of other renderer generations' rows.
 //! - `photos.rs`: developed photographs' rows in the index's `photo_previews` and their files —
-//!   rendered tiers and camera previews — what is served and what stands in meanwhile, writes,
-//!   collection and the grid's states.
+//!   rendered tiers, labelled approximate as their proxy renders are, and camera previews — what is
+//!   served and what stands in meanwhile, writes, collection, forgetting the photographs that
+//!   leave the catalog, and the grid's states.
 //! - `camera.rs`: a developed photograph's camera preview, which it shows until its first render,
 //!   extracted from its original as a browsed file's tiers are, on an extraction worker.
 //! - `bracket.rs`: the brightness check for brackets the metadata cannot show (TASK-008): a
@@ -74,7 +75,8 @@ pub(crate) use lane::{
     Failures, Outcome, PREVIEW_WORKERS, Post, Queue, Task, TaskKey, WorkerEvent, Workers,
 };
 pub(crate) use photos::{
-    fallbacks, grid_rows as photo_grid_rows, rows as photo_rows, touch as touch_photo,
+    fallbacks, forget as forget_photos, grid_rows as photo_grid_rows, remove_files,
+    rows as photo_rows, touch as touch_photo,
 };
 pub(crate) use regions::{
     RegionDone, RegionPost, RegionSource, RegionWork, RegionWorker, answer_path,
