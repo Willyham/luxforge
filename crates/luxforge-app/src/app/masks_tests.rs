@@ -1327,9 +1327,69 @@ fn creating_a_mask_locks_unrelated_controls_and_unlocks_after_first_stroke() {
     assert!(masking.editor.slider_gesture().is_none());
     assert_eq!(masking.editor.mask_panel.selected_mask, previous);
     masking.paint(&[(0.3, 0.3), (0.7, 0.6)]);
-    assert!(masking.editor.mask_creation_refusal().is_none());
+    assert!(masking.editor.mask_tool_refusal().is_none());
     assert!(masking.editor.workspace.masks.enabled);
     assert_eq!(masking.listing().masks.len(), 2);
+}
+
+/// A stroke whose capture failed is dropped on release, never committed, and the brush stays in
+/// hand on the same target so the next press is the new stroke; creation still owns the controls.
+#[test]
+fn a_failed_capture_is_dropped_on_release_and_the_next_press_starts_again() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    let before = masking.labels();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    assert!(masking.editor.core_gesture().is_some());
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 2.5, y: 0.3 }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    assert!(
+        masking.editor.core_gesture().is_none(),
+        "the stroke's draft is gone"
+    );
+    assert!(masking.editor.session.draft.is_none());
+    assert!(masking.editor.armed_brush(), "the brush stays in hand");
+    assert!(masking.editor.status.text.contains("path position 1"));
+    assert!(
+        masking.editor.mask_tool_refusal().is_some(),
+        "creation still owns"
+    );
+    assert_eq!(masking.labels(), before, "nothing was committed");
+    masking.paint(&[(0.3, 0.3), (0.7, 0.6)]);
+    assert_eq!(masking.listing().masks.len(), 1);
+    assert!(masking.editor.mask_tool_refusal().is_none());
+}
+
+/// A value typed but not submitted belongs to the mask it was typed for: selecting another mask
+/// drops the edit and shows that mask's own value, so a later Enter cannot land it there.
+#[test]
+fn an_unsubmitted_field_does_not_follow_the_selection_to_another_mask() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let first = masking.listing().masks[0].id.clone();
+    masking.create_mask_through_the_api();
+    let second = masking.listing().masks[1].id.clone();
+    masking.message(MaskMessage::Select(first.to_string()));
+    let (action, parameter) = ("mask.set-amount".to_owned(), "amount".to_owned());
+    masking.editor.controls.editing = Some((action.clone(), parameter.clone()));
+    masking
+        .editor
+        .controls
+        .fields
+        .set(&action, &parameter, "40".into());
+    masking.message(MaskMessage::Select(second.to_string()));
+    assert!(masking.editor.controls.editing.is_none());
+    assert_ne!(
+        masking.editor.controls.fields.get(&action, &parameter),
+        Some("40"),
+        "the second mask shows its own amount"
+    );
 }
 
 #[test]
@@ -4070,6 +4130,17 @@ fn editing_a_hidden_shape_shows_automatic_coverage_until_explicitly_hidden() {
             assert_eq!(overlay_state(&masking), ("off".into(), "off".into(), false));
             assert_eq!(masking.editor.workspace.masks.overlay.selected, 0);
             assert!(masking.editor.mask_coverage_target().is_none());
+            if use_key {
+                // `O` again shows the held tool's own mask, whatever its eye says.
+                masking.key("o", Modifiers::empty());
+                assert_eq!(
+                    overlay_state(&masking),
+                    ("tint".into(), "tint".into(), false)
+                );
+                assert!(masking.editor.mask_coverage_target().is_some());
+                masking.key("o", Modifiers::empty());
+                assert!(masking.editor.mask_coverage_target().is_none());
+            }
             masking.message(MaskMessage::Field {
                 name: if kind == LINEAR { "x0" } else { "x" }.into(),
                 value: 0.45,

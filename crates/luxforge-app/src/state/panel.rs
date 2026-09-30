@@ -78,7 +78,7 @@ pub(crate) fn actor_caption(actor: &str) -> Option<String> {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
-    let can_interact = super::masks::interaction_refusal(inputs.mask_draft).is_none();
+    let can_interact = !inputs.mask_tool_owns_controls();
     let current = inputs
         .document
         .state

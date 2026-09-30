@@ -118,25 +118,24 @@ impl Brush {
 /// One stroke as it is being painted: the path the pointer has drawn so far, and the brush it is
 /// being drawn with.
 ///
-/// The path is kept twice, as it arrives: raw, for evidence of what the pointer did, and on
-/// the host's own grid through [`luxforge_core::path::PathCapture`], which checks and snaps each
-/// position once, when it is painted. It is **decimated only when it is posted**, at the host's
-/// own tolerance, which is idempotent — so what the desktop sends and what an agent would send
-/// arrive at the same stored stroke. Both captures stop at the host's posted-input bound and refuse
-/// the whole gesture explicitly. Coverage is drawn by the production evaluator; the canvas draws
-/// only the cursor. One decimation is cached per accepted capture/brush size, so fields and evidence
-/// summaries never repeat that work for the same input.
+/// The path is held on the host's own grid through [`luxforge_core::path::PathCapture`], which
+/// checks and snaps each position once, when it is painted, and refuses the whole gesture at its
+/// bound. It is **decimated only when it is posted**, at the host's own tolerance, which is
+/// idempotent — so what the desktop sends and what an agent would send arrive at the same stored
+/// stroke. Coverage is drawn by the production evaluator; the canvas draws only the cursor. One
+/// decimation is cached per capture/brush size, so fields and evidence summaries never repeat that
+/// work for the same input.
 #[derive(Clone, Debug)]
 pub(crate) struct BrushStroke {
     /// The brush this stroke was begun with. `erase` is frozen for the stroke's whole life, which is
     /// what "holding the modifier erases while the stroke lasts" means.
     pub(crate) brush: Brush,
-    /// The captured path in normalized content coordinates, in drawn order.
-    path: Vec<[f64; 2]>,
-    /// The same path on the stored grid, snapped one position at a time as it is painted.
+    /// The path on the stored grid, snapped one position at a time as it is painted.
     grid: luxforge_core::path::PathCapture,
-    /// The raw path reached its bound. Never post its retained prefix as a successful stroke.
-    raw_limit: bool,
+    /// The last position painted and how many were, for evidence of what the pointer did. Positions
+    /// in one grid cell cost only this count.
+    last: Option<[f64; 2]>,
+    captured: usize,
     /// One whole-path reduction per capture/size, shared by fields and summaries. At most the
     /// capture's own bounded number of positions; no pixels or source are retained.
     points: RefCell<Option<CachedPoints>>,
@@ -147,9 +146,9 @@ pub(crate) struct BrushStroke {
 impl PartialEq for BrushStroke {
     fn eq(&self, other: &Self) -> bool {
         self.brush == other.brush
-            && self.path == other.path
             && self.grid == other.grid
-            && self.raw_limit == other.raw_limit
+            && self.last == other.last
+            && self.captured == other.captured
             && self.painting == other.painting
     }
 }
@@ -164,9 +163,9 @@ impl BrushStroke {
     pub(crate) fn new(brush: Brush) -> Self {
         Self {
             brush,
-            path: Vec::new(),
             grid: luxforge_core::path::PathCapture::default(),
-            raw_limit: false,
+            last: None,
+            captured: 0,
             points: RefCell::new(None),
             painting: false,
         }
@@ -174,34 +173,30 @@ impl BrushStroke {
 
     /// The pointer went down: this stroke starts here, at the brush it is holding now.
     pub(super) fn press(&mut self, point: (f64, f64)) {
-        self.path = vec![[point.0, point.1]];
         self.grid = luxforge_core::path::PathCapture::default();
-        self.grid.push([point.0, point.1]);
-        self.raw_limit = false;
-        *self.points.get_mut() = None;
+        self.last = None;
+        self.captured = 0;
         self.painting = true;
+        self.push([point.0, point.1]);
     }
 
     /// The pointer moved with the button down. A position identical to the last one is dropped here
-    /// rather than posted: the stored grid would drop it anyway, and a still pointer must not grow
-    /// the path without bound.
+    /// rather than posted, and a failed capture takes nothing more: it stays failed until the next
+    /// press.
     pub(super) fn paint(&mut self, point: (f64, f64)) -> bool {
-        if !self.painting {
-            return false;
-        }
         let point = [point.0, point.1];
-        if self.raw_limit || self.grid.capture_error().is_some() || self.path.last() == Some(&point)
-        {
+        if !self.painting || self.grid.capture_error().is_some() || self.last == Some(point) {
             return false;
         }
-        if self.path.len() == luxforge_core::path::CAPTURED_POINTS_PER_STROKE {
-            self.raw_limit = true;
-            return true;
-        }
-        self.path.push(point);
-        self.grid.push(point);
-        *self.points.get_mut() = None;
+        self.push(point);
         true
+    }
+
+    fn push(&mut self, point: [f64; 2]) {
+        self.grid.push(point);
+        self.last = Some(point);
+        self.captured = self.captured.saturating_add(1);
+        *self.points.get_mut() = None;
     }
 
     /// The pointer came up. The path it drew stays; committing it is a separate decision.
@@ -209,20 +204,19 @@ impl BrushStroke {
         self.painting = false;
     }
 
-    /// The path as it was captured, for bounded evidence and diagnostics of the stroke.
-    pub(crate) fn captured(&self) -> &[[f64; 2]] {
-        &self.path
+    /// How many positions the pointer painted, for bounded evidence and diagnostics of the stroke.
+    pub(crate) fn captured(&self) -> usize {
+        self.captured
     }
 
     pub(crate) fn painting(&self) -> bool {
         self.painting
     }
 
-    /// The path this stroke posts: decimated by the host's own contract, on its grid, at the
-    /// tolerance this stroke's own size takes. Deterministic, so the same captured path at the same
-    /// size is always the same stored stroke and therefore the same content address. It is exactly
-    /// `path::decimate` of the captured path, reduced from the grid path held as the stroke was
-    /// painted rather than snapping every position again.
+    /// The path this stroke posts: the host's own stored stroke of the captured path at this
+    /// stroke's size ([`luxforge_core::path::PathCapture::stroke`]). Deterministic, so the same
+    /// captured path at the same size is always the same stored stroke and therefore the same
+    /// content address.
     pub(crate) fn points(&self) -> Result<Vec<[f64; 2]>, luxforge_core::Error> {
         self.prepare_points()?;
         Ok(self
@@ -234,18 +228,9 @@ impl BrushStroke {
             .clone())
     }
 
-    /// Reduce only after a capture/size change. Error checks inspect the cached count without
-    /// cloning it; a request clones its at-most-1024 posted positions once.
+    /// Reduce only after a capture/size change. A request clones its at-most-1024 posted
+    /// positions once.
     fn prepare_points(&self) -> Result<(), luxforge_core::Error> {
-        if self.raw_limit {
-            return Err(luxforge_core::Error::resource_limit(format!(
-                "live stroke exceeds {} captured positions; cancel this stroke and start a new one",
-                luxforge_core::path::CAPTURED_POINTS_PER_STROKE,
-            )));
-        }
-        if let Some(error) = self.grid.capture_error() {
-            return Err(error);
-        }
         let mut cached = self.points.borrow_mut();
         if cached
             .as_ref()
@@ -253,16 +238,8 @@ impl BrushStroke {
         {
             *cached = Some(CachedPoints {
                 size: self.brush.size.to_bits(),
-                points: self.grid.decimated(self.brush.size)?,
+                points: self.grid.stroke(self.brush.size)?,
             });
-        }
-        let points = &cached.as_ref().expect("the reduction was cached").points;
-        if points.len() > luxforge_core::path::POINTS_PER_STROKE {
-            return Err(luxforge_core::Error::resource_limit(format!(
-                "stroke has {} positions after decimation; the limit is {} points per stroke",
-                points.len(),
-                luxforge_core::path::POINTS_PER_STROKE,
-            )));
         }
         Ok(())
     }
@@ -283,7 +260,7 @@ impl BrushStroke {
     /// Something was drawn. An empty stroke commits nothing: a click that painted no position is not
     /// an edit, and a commit of one would be a history entry nobody made.
     pub(crate) fn drawn(&self) -> bool {
-        !self.path.is_empty()
+        self.captured > 0
     }
 }
 
@@ -404,27 +381,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn live_raw_capture_is_bounded_even_inside_one_grid_cell_and_failure_is_sticky() {
+    fn live_capture_is_bounded_by_the_grid_and_failure_is_sticky_until_a_new_press() {
+        use luxforge_core::path::{CAPTURED_POINTS_PER_STROKE, COORDINATE_STEPS_PER_UNIT};
         let mut stroke = BrushStroke::new(NEUTRAL_BRUSH);
-        stroke.press((0.2, 0.3));
-        for index in 1..luxforge_core::path::CAPTURED_POINTS_PER_STROKE {
-            assert!(stroke.paint((0.2 + index as f64 * 1e-10, 0.3)));
+        stroke.press((0.0, 0.3));
+        // Positions inside one grid cell store nothing and consume no bound.
+        for index in 1..1000 {
+            assert!(stroke.paint((index as f64 * 1e-9, 0.3)));
         }
-        assert_eq!(
-            stroke.captured().len(),
-            luxforge_core::path::CAPTURED_POINTS_PER_STROKE
-        );
-        assert_eq!(stroke.points().unwrap().len(), 1);
-        assert!(stroke.paint((0.201, 0.3)));
+        assert!(stroke.capture_error().is_none());
+        for index in 1..CAPTURED_POINTS_PER_STROKE {
+            assert!(stroke.paint((index as f64 / COORDINATE_STEPS_PER_UNIT, 0.3)));
+        }
+        assert_eq!(stroke.points().unwrap().len(), 2);
+        assert!(stroke.paint((0.5, 0.5)));
         let error = stroke.points().unwrap_err();
         assert_eq!(error.kind, luxforge_core::ErrorKind::ResourceLimit);
         assert!(error.detail.contains("16384 captured positions"));
+        let captured = stroke.captured();
         for _ in 0..100 {
-            assert!(!stroke.paint((0.5, 0.5)));
+            assert!(!stroke.paint((0.6, 0.6)));
         }
         assert_eq!(
-            stroke.captured().len(),
-            luxforge_core::path::CAPTURED_POINTS_PER_STROKE
+            stroke.captured(),
+            captured,
+            "a failed capture takes nothing more"
         );
         assert_eq!(stroke.capture_error().unwrap().detail, error.detail);
         stroke.press((0.4, 0.5));
@@ -457,16 +438,19 @@ mod tests {
     #[test]
     fn posted_path_is_the_core_path_and_reduces_only_once_until_input_or_size_changes() {
         let mut stroke = BrushStroke::new(NEUTRAL_BRUSH);
+        let mut path = vec![[0.2, 0.3]];
         stroke.press((0.2, 0.3));
         for index in 1..200 {
-            stroke.paint((
+            let point = (
                 0.2 + index as f64 * 0.002,
                 0.3 + (index as f64 * 0.1).sin() * 0.04,
-            ));
+            );
+            stroke.paint(point);
+            path.push([point.0, point.1]);
         }
         assert_eq!(stroke.posted_count(), None);
         let untouched = stroke.clone();
-        let expected = luxforge_core::path::decimate(stroke.captured(), stroke.brush.size).unwrap();
+        let expected = luxforge_core::path::decimate(&path, stroke.brush.size).unwrap();
         assert_eq!(stroke.points().unwrap(), expected);
         let allocation = stroke.points.borrow().as_ref().unwrap().points.as_ptr();
         assert_eq!(stroke.points().unwrap(), expected);
@@ -478,15 +462,16 @@ mod tests {
         );
         assert_eq!(stroke, untouched, "memoizing does not change editing state");
         stroke.paint((0.8, 0.4));
+        path.push([0.8, 0.4]);
         assert_eq!(stroke.posted_count(), None);
         assert_eq!(
             stroke.points().unwrap(),
-            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size).unwrap()
+            luxforge_core::path::decimate(&path, stroke.brush.size).unwrap()
         );
         stroke.brush.size = 0.01;
         assert_eq!(
             stroke.points().unwrap(),
-            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size).unwrap()
+            luxforge_core::path::decimate(&path, stroke.brush.size).unwrap()
         );
     }
 

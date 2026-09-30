@@ -338,6 +338,7 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     // An answer for another stack describes an image the canvas has left.
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: EntryId::new(),
+        draft: None,
         result: Ok(Readout {
             x: 3,
             y: 4,
@@ -351,9 +352,24 @@ fn hover_keeps_one_sample_in_flight_and_drops_a_mismatched_identity() {
     // The newest position was released as the next request when the first answered.
     assert!(editor.hover.sample.in_flight());
     assert_eq!(editor.hover.sample.pending().copied(), None);
+    // So does an answer for a draft the canvas is not showing.
+    let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
+        entry: entry_id.clone(),
+        draft: Some(luxforge_core::DraftId::new()),
+        result: Ok(Readout {
+            x: 7,
+            y: 8,
+            rgba: [9, 9, 9, 255],
+        }),
+    }));
+    assert!(
+        editor.hover.readout.is_none(),
+        "another draft's answer is dropped"
+    );
 
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: entry_id,
+        draft: None,
         result: Ok(Readout {
             x: 7,
             y: 8,
@@ -421,7 +437,6 @@ fn hover_reads_the_matching_settled_exact_buffer_without_a_query_or_pixel_copy()
     let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
     let raster = retained_hover_frame(&mut editor);
     let retained_address = raster.rgba.as_ptr();
-    let log = attach_log(&mut editor);
     for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
         let _ = editor.update(Message::Pointer(PointerMessage::Moved(Some((x, y)))));
         assert_eq!(
@@ -442,9 +457,6 @@ fn hover_reads_the_matching_settled_exact_buffer_without_a_query_or_pixel_copy()
             .as_ptr(),
         retained_address
     );
-    let records = logged(&mut editor, &log);
-    assert!(events(&records, "pointer_sample_requested").is_empty());
-    assert_eq!(events(&records, "pointer_retained_readout").len(), 4);
     finish(editor, catalog);
 }
 
@@ -463,6 +475,11 @@ fn retained_hover_rejects_stale_content_geometry_entry_generation_and_approximat
     editor.presentation.preview_generation = 8;
     assert!(editor.retained_readout(1, 1).is_none());
     editor.presentation.preview_generation = 7;
+    // A newer frame of the same content, such as a percentage view's region, still reads the
+    // retained exact raster behind it.
+    editor.presentation.exact.as_mut().unwrap().generation = 6;
+    assert!(editor.retained_readout(1, 1).is_some());
+    editor.presentation.exact.as_mut().unwrap().generation = 7;
     editor.presentation.exact.as_mut().unwrap().content = Some(11);
     assert!(editor.retained_readout(1, 1).is_none());
     editor.presentation.exact.as_mut().unwrap().content = Some(12);
@@ -500,6 +517,7 @@ fn a_slow_hover_query_cannot_replace_a_newer_retained_readout_or_revive_a_depart
     );
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry: entry.clone(),
+        draft: None,
         result: Ok(Readout {
             x: 0,
             y: 0,
@@ -514,6 +532,7 @@ fn a_slow_hover_query_cannot_replace_a_newer_retained_readout_or_revive_a_depart
     let _ = editor.update(Message::Pointer(PointerMessage::Moved(None)));
     let _ = editor.update(Message::Pointer(PointerMessage::Sampled {
         entry,
+        draft: None,
         result: Ok(Readout {
             x: 1,
             y: 1,

@@ -124,7 +124,7 @@ fn identity(inputs: &Inputs<'_>) -> Option<String> {
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     let editable = inputs.edit_refusal.is_none();
-    let interacting = super::masks::interaction_refusal(inputs.mask_draft).is_none();
+    let interacting = !inputs.mask_tool_owns_controls();
     // An open draft refuses Undo and Redo, so neither is offered while it is.
     let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;

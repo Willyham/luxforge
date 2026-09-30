@@ -435,7 +435,7 @@ pub(crate) fn presets_model(
     enabled: bool,
     reason: Option<&str>,
 ) -> PresetsModel {
-    let can_manage = super::masks::interaction_refusal(inputs.mask_draft).is_none();
+    let can_manage = !inputs.mask_tool_owns_controls();
     let library = inputs.presets;
     let declared = crate::state::tools::declared_action(inputs.modules, action);
     // One draft per client: a preset is a commit, so it waits for an open gesture or crop draft to

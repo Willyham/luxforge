@@ -283,6 +283,19 @@ impl MaskDraft {
         self.op == MaskDraftOp::Create
     }
 
+    /// A creation, or a held gradient, owns the other controls until Apply or Cancel. A brush on
+    /// an existing mask leaves them available between strokes.
+    pub(crate) fn owns_controls(&self) -> bool {
+        self.owns_creation() || !self.paints()
+    }
+
+    /// Take a placed tool back to unplaced, as a start that could not open its draft leaves it.
+    pub(crate) fn unplace(&mut self) {
+        self.placed = false;
+        self.placement_origin = None;
+        self.shape.release();
+    }
+
     pub(crate) fn placement_refusal(&self) -> Option<String> {
         self.unplaced()
             .then(|| "Click and drag to place the mask before applying".to_owned())
@@ -510,7 +523,7 @@ impl MaskDraft {
             // posted after decimation, and the one setting that is not a number. A frame captured
             // mid-stroke is evidence of this, so the two counts are both here.
             "stroke": self.brush().map(|stroke| json!({
-                "captured": stroke.captured().len(),
+                "captured": stroke.captured(),
                 "posted": stroke.posted_count(),
                 "error": stroke.capture_error().map(|error| error.to_string()),
                 "erase": stroke.brush.erase,
@@ -1162,10 +1175,10 @@ mod tests {
         draft.paint_begin((0.5, 0.5));
         assert!(draft.paint_to((0.6, 0.55)), "a move extends the path");
         let stroke = draft.brush().expect("a painted gesture");
-        assert_eq!(stroke.captured(), [[0.5, 0.5], [0.6, 0.55]]);
+        assert_eq!(stroke.captured(), 2);
         assert_eq!(
             stroke.points().expect("accepted capture"),
-            luxforge_core::path::decimate(stroke.captured(), stroke.brush.size)
+            luxforge_core::path::decimate(&[[0.5, 0.5], [0.6, 0.55]], stroke.brush.size)
                 .expect("a decimated path")
         );
     }

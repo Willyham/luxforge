@@ -56,3 +56,86 @@ pub(crate) enum Message {
     Evidence(evidence::EvidenceMessage),
     Close,
 }
+
+impl Message {
+    /// Whether this is a person's step outside a held mask tool: refused, with the tool's reason,
+    /// while a mask creation or a held gradient owns the controls
+    /// ([`crate::state::masks::interaction_refusal`]). Owner answers, window facts, passive
+    /// hovering, focus, native scrolling and the tool's own controls never are. A starting gesture
+    /// answers the same rule through `Editor::gesture_refusal`.
+    pub(crate) fn yields_to_mask_tool(&self) -> bool {
+        use control::ControlMessage as C;
+        use history::HistoryMessage as H;
+        use mask::{MaskMessage as M, TypingEdit as T};
+        use preset::PresetMessage as P;
+        use view::ViewMessage as V;
+        match self {
+            Self::Sync(message) => matches!(message, sync::SyncMessage::Open),
+            Self::History(message) => matches!(
+                message,
+                H::Select(_)
+                    | H::ReturnCurrent
+                    | H::LoadOlder
+                    | H::VersionName(_)
+                    | H::ToggleVersionForm
+                    | H::SaveVersion
+                    | H::DeleteVersion(_)
+            ),
+            Self::View(message) => matches!(
+                message,
+                V::TogglePanel(_)
+                    | V::ToggleThirds
+                    | V::SetMode(_)
+                    | V::Gallery(_)
+                    | V::OpenMenu(_)
+                    | V::OpenControlMenu { .. }
+                    | V::Zoom(_)
+                    | V::Fit
+                    | V::HundredPercent
+                    | V::ApplyZoom
+                    | V::EditZoom
+            ),
+            Self::Palette(message) => matches!(message, palette::PaletteMessage::Open),
+            Self::Control(message) => !matches!(message, C::CurveSampled { .. }),
+            Self::Overlay(message) => {
+                matches!(message, overlay::OverlayMessage::ToggleClipping(_))
+            }
+            Self::Performance(message) => {
+                matches!(message, performance::PerformanceMessage::Toggle)
+            }
+            Self::Preset(message) => matches!(
+                message,
+                P::ToggleForm
+                    | P::Name(_)
+                    | P::Group(_)
+                    | P::Check { .. }
+                    | P::Create
+                    | P::Import
+                    | P::Delete(_)
+                    | P::CopyReport(_)
+                    | P::Export(_)
+            ),
+            Self::Mask(message) => !matches!(
+                message,
+                M::Handle(_)
+                    | M::Transform(..)
+                    | M::Field { .. }
+                    | M::Brush(_)
+                    | M::Overlay(_)
+                    | M::OverlayColour(_)
+                    | M::ToggleOverlay
+                    | M::Hover(_)
+                    | M::Typing(
+                        T::Text(_)
+                            | T::Submit
+                            | T::Cancel
+                            | T::Begin(
+                                crate::state::masks::TypingTarget::DraftField(_)
+                                    | crate::state::masks::TypingTarget::Brush(_)
+                            )
+                    )
+            ),
+            _ => false,
+        }
+    }
+}

@@ -361,7 +361,11 @@ pub(crate) trait StrokeCarrier {
 /// stored positions, and — with the consumer's own settings, which it checks before it calls this —
 /// the same [`StrokeId`]. Every coordinate is checked finite and in range by name.
 pub(crate) fn capture_grid(points: &[[f64; 2]], radius_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
-    let grid = decimate_to_grid(points, radius_steps)?;
+    stored_bound(decimate_to_grid(points, radius_steps)?)
+}
+
+/// A decimated grid path held to [`POINTS_PER_STROKE`], the one bound a stored stroke meets.
+fn stored_bound(grid: Vec<[i32; 2]>) -> Result<Vec<[i32; 2]>, Error> {
     if grid.len() > POINTS_PER_STROKE {
         return Err(Error::resource_limit(format!(
             "stroke has {} positions after decimation; the limit is {POINTS_PER_STROKE} \
@@ -521,6 +525,15 @@ impl PathCapture {
             return Err(illegal_radius());
         }
         Ok(from_grid(&self.grid_decimated(quantize(size))?).collect())
+    }
+
+    /// The stroke this capture stores at radius `size`: [`Self::decimated`] and held to
+    /// [`POINTS_PER_STROKE`], exactly as the host captures the same posted path.
+    pub fn stroke(&self, size: f64) -> Result<Vec<[f64; 2]>, Error> {
+        if !radius_is_decimable(size) {
+            return Err(illegal_radius());
+        }
+        Ok(from_grid(&stored_bound(self.grid_decimated(quantize(size))?)?).collect())
     }
 
     fn grid_decimated(&self, size_steps: i32) -> Result<Vec<[i32; 2]>, Error> {
