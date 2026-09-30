@@ -10,7 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022, ubuntu-24.04]
+        # Windows CI is disabled for now; Windows support will come later.
+        os: [macos-14, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -30,16 +31,6 @@ jobs:
       - name: Linux runtime imports
         if: runner.os == 'Linux'
         run: ldd artifacts/package/Luxforge/luxforge | tee artifacts/package/runtime-imports.txt
-      - name: Windows runtime imports
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
-          $vsRoot = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $dumpbin = Get-ChildItem "$vsRoot/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $dumpbin) { throw "MSVC dumpbin unavailable" }
-          & $dumpbin.FullName /DEPENDENTS artifacts/package/Luxforge/luxforge.exe | Tee-Object artifacts/package/runtime-imports.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Headless Linux renderer smoke (software Vulkan, not native acceptance)
         if: runner.os == 'Linux'
         run: |

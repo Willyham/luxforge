@@ -10,6 +10,8 @@ RAW profiles cover selected modes from Nikon, Canon, Sony, Fujifilm, Panasonic, 
 
 ## Start the editor
 
+macOS is the primary platform. Linux has automated build and functional checks; native desktop qualification remains open. Windows support will come later, and Windows CI is disabled. See [platform status](engineering/platforms.md).
+
 After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional original:
 
 ```sh
@@ -201,6 +203,8 @@ The neutral rendition uses camera calibration without film simulations, Picture 
 Letters act only when no text field has focus. `F` fits, `1` is 100%, `O` toggles mask coverage in Mask mode and thirds elsewhere, `J` toggles both clipping overlays, `V` returns to the pointer, `M` enters Mask mode, and each module's declared letter (`R` for crop and straighten, `W` for the Neutral picker, which picks from the sensor on a RAW photo) enters its canvas mode, exactly as the mode strip and the pickers in the tools panel do. Escape cancels an armed or active mask tool, or leaves a canvas mode that has no draft of its own. `\` holds Compare and Shift+`\` holds it uncropped. Cmd+Option+[ and Cmd+Option+] show and hide the two side panels. Cmd+O / Ctrl+O opens a file, Cmd+E / Ctrl+E exports it and Shift+Cmd+E / Shift+Ctrl+E exports it keeping metadata, Cmd+Z / Ctrl+Z and Shift+Cmd+Z / Shift+Ctrl+Z undo and redo, and Tab and Shift+Tab move between fields. New mask creation, and an Add or Edit gradient, disables unrelated shortcuts until it is applied or cancelled.
 
 ### Crop and straighten
+
+Lens-profile distortion and perspective correction are [planned](design/lens-and-perspective.md), not available controls. Required embedded corrections for supported DNG sources are already part of RAW development.
 
 The crop editor appears in the tool panel as soon as a registered module declares a crop frame; the ratios, the angle range and the action it commits all come from that module's descriptor.
 
