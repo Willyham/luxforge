@@ -375,9 +375,7 @@ impl Batch {
 /// positions, so the organizer's first place lookup on the owner does not pay its ~10 ms build.
 fn warm_gazetteer() {
     static WARM: Once = Once::new();
-    WARM.call_once(|| {
-        let _ = crate::organize::gazetteer::nearest(0.0, 0.0);
-    });
+    WARM.call_once(crate::organize::Gazetteer::warm);
 }
 
 /// When progress was last published, and how many headers the job has queued.
