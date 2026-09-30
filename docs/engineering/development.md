@@ -626,17 +626,25 @@ pixels are the kind-conformance suite's.
 The first owner builds the catalog: all five component kinds created from JSON (a gradient, a
 radial, the two range selections and a brush through `mask.add-stroke`), one mask composing three
 kinds in the three modes, a second stroke on a brush, an amount, an inversion, a geometry patch, a
-rename, a masked Basic layer, a masked Presence layer and a masked mixer layer, and a duplicate that
-copies the bound layer. It then stops. A fresh owner over the same file returns the same revision
+rename, a masked Basic layer, a masked Presence layer, a masked mixer layer and a masked Tone curve
+layer beside the mixer on the radial mask, and two duplicates that copy the bound layers. On the way
+it proves the masked curve's placement: `mask.list` lists it once, before the mixer; it changes the
+pixels the inverted radial covers and not the centre it excludes; the radial mask's duplicate holds
+the same layers in the same order, its curve layer placed after its source's; and `mask.reorder`
+moving the copy first re-sorts the masked curve layers in `asset.state` into the new mask order.
+`render.sample` equals the rendered byte at every probe after the curve and after the reorder. It
+then stops. A fresh owner over the same file returns the same revision
 and current entry, the masks, components, payloads and bound layers by identity, and the same
 `render.sample` values at six positions across the frame. Everything lands in `result.json` under
-`masks`, and any mismatch fails the command.
+`masks`, the masked curve's figures under `masks.masked_curve`, and any mismatch fails the command.
 
-One contract shapes how it reads pixels: it uses `render.sample` and never renders a recipe in
-process. A brush component's payload holds its strokes by content address and the resolved strokes are
-never serialized, so a recipe fetched over JSON has addresses and no points and rendering it outside
-the catalog that holds the store is refused by name. That is the retention contract working. The owner
-has the store, so the owner is asked.
+One contract shapes how it reads pixels: it reads them with `render.sample` and never renders a recipe
+fetched over JSON. A brush component's payload holds its strokes by content address and the resolved
+strokes are never serialized, so such a recipe has addresses and no points and rendering it outside
+the catalog that holds the store is refused by name. That is the retention contract working. The
+oracle `render.sample` is compared with is therefore the owner's own bound stack for the current
+entry — its preview evaluation, with every stroke's points bound in from the store — rendered in
+process on the fixture's decoded source with the owner's registry.
 
 ### Authentic RAW evidence
 
