@@ -94,7 +94,7 @@ Paths are under `crates/luxforge-app/src`.
 - `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver.
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
-- The Select workspace of the [catalog](catalog.md) is one seam across the three layers: `app/select.rs` (with `app/message/select.rs`), `state/select.rs` and `view/select.rs`, skeletons its lane fills.
+- The Select workspace of the [catalog](catalog.md#workspaces) is one seam across the three layers: `app/select.rs` (with `app/message/select.rs`: the switch, the owner's view tasks, the synchronous `browse.select` and the grid's layout, scroll and viewport), `state/select.rs` (what Select last read, its rows window, and every region's model) and `view/select.rs` (the Select screen, and the workspace switch both title bars draw).
 - `layout.rs`: the window's framework-free layout: the bar and panel sizes, the rules between them, the Fit inset and the photo surface they leave.
 - `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync and the Performance sampler share.
 - `crop_draft.rs`: the crop frame's geometry, whose draft is a core draft like every other gesture's.
@@ -289,6 +289,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Items one `browse.select` names | 50,000 | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/catalog_types/library.rs` |
 | Event computations the owner caches, each its events' summaries and file rows | 2, keyed by index revision and event thresholds; each bounded by the index | `CACHED`, `crates/luxforge-core/src/browse/events.rs` |
 | A histogram `Report`, before protocol encoding | 16 KiB | `REPORT_BOUND_BYTES`, `crates/luxforge-core/src/analysis.rs` |
+| View rows the desktop's Select workspace holds | 16 blocks of 200, the blocks nearest the screen | `ROW_BLOCKS_KEPT` and `ROW_BLOCK`, `crates/luxforge-app/src/state/select.rs` |
 
 **Masks** (the delivered mask data model)
 

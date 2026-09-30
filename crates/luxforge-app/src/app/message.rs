@@ -56,7 +56,8 @@ pub(crate) enum Message {
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
     // ── catalog lane D: views and desktop ──
-    // `Select(select::SelectMessage)`, one Select workspace gesture or answer, once it has one.
+    /// One Select workspace gesture or owner answer.
+    Select(select::SelectMessage),
     // ── end lane D ──
     Close,
 }

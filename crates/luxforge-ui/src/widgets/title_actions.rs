@@ -76,7 +76,8 @@ pub enum DevelopButtonModel {
 }
 
 /// Renders Develop N. `on_press` is sent while it is ready with picks, and while it is busy (to
-/// show the job, say); at zero picks it is never sent.
+/// show the job, say); at zero picks it is never sent. Ready with picks but no `on_press`, it is
+/// drawn disabled as at zero, keeping its count.
 pub fn develop_button<'a, M: Clone + 'a>(
     model: &DevelopButtonModel,
     on_press: Option<M>,
@@ -89,7 +90,7 @@ pub fn develop_button<'a, M: Clone + 'a>(
             .color(ink)
     };
     let control = match *model {
-        DevelopButtonModel::Ready { picks: 0 } => {
+        DevelopButtonModel::Ready { picks } if picks == 0 || on_press.is_none() => {
             button(container(label(theme::DEVELOP_DISABLED_INK)).center_y(Length::Fill))
                 .style(theme::develop_disabled)
         }

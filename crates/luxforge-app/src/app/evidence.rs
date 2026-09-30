@@ -3215,7 +3215,7 @@ impl Editor {
     fn arm_performance_settle(&mut self) {
         let starts = performance::sampling(
             !self.performance.expanded,
-            self.session.workspace.state_panel && self.gallery_page().is_none(),
+            self.left_panel_shown() && self.gallery_page().is_none(),
         );
         if starts {
             self.await_step(Settle::Performance);
