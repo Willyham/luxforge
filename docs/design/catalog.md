@@ -10,7 +10,7 @@ The contracts have landed:
 - generated data (`cargo xtask generate-catalog`);
 - module skeletons.
 
-Registered so far: picks and the journal of library changes (`pick.set`, `pick.list`, `library.journal`, `library.inspect`, `library.undo`, `library.redo`), catalog folders and collections (`folder.*`, `asset.move`, `collection.*`), availability and Locate (`source.check`, `source.locate`), `catalog.info`, the index lane with its methods (`index.refresh`, `index.add-folder`, `index.remove-folder`, `index.folders`, `card.list`, `volume.list`, `disk.folders`), and, over the built preview lane and cache ([the index and previews cache](#the-index-and-previews-cache)), `preview.read`; nothing in the desktop uses them yet. What the catalog does today is in [feature status](../features.md): it references one file at a time, and the desktop never lists or switches photographs.
+Registered so far: picks and the journal of library changes (`pick.set`, `pick.list`, `library.journal`, `library.inspect`, `library.undo`, `library.redo`), catalog folders and collections (`folder.*`, `asset.move`, `collection.*`), availability and Locate (`source.check`, `source.locate`), resolving missing originals (`source.missing`, `source.find`, `source.relink`), `catalog.info`, the index lane with its methods (`index.refresh`, `index.add-folder`, `index.remove-folder`, `index.folders`, `card.list`, `volume.list`, `disk.folders`), and, over the built preview lane and cache ([the index and previews cache](#the-index-and-previews-cache)), `preview.read`; nothing in the desktop uses them yet. What the catalog does today is in [feature status](../features.md): it references one file at a time, and the desktop never lists or switches photographs.
 
 ## Product
 
