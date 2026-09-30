@@ -26,36 +26,48 @@ fn subprocess_client_edits_queries_and_exits_cleanly_on_eof() {
         .unwrap();
     let mut input = child.stdin.take().unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
-    writeln!(
-        input,
-        "{}",
-        json!({"id":"import","method":"catalog.import","params":{"path":fixture,"mutation":{"request_id":"import","actor":"subprocess-test"}}})
-    )
-    .unwrap();
-    input.flush().unwrap();
     let mut line = String::new();
-    output.read_line(&mut line).unwrap();
-    let imported: Value = serde_json::from_str(&line).unwrap();
-    assert!(imported.get("error").is_none());
-    let job_id = imported["result"]["job_id"].as_str().unwrap();
-    let asset = wait_for("the import job", || {
-        writeln!(
-            input,
-            "{}",
-            json!({"id":"status","method":"job.read","params":{"job_id":job_id}})
-        )
-        .unwrap();
-        input.flush().unwrap();
-        line.clear();
-        output.read_line(&mut line).unwrap();
-        let status: Value = serde_json::from_str(&line).unwrap();
-        assert!(status.get("error").is_none(), "{status}");
-        match status["result"]["status"].as_str() {
-            Some("ready") => Some(status["result"]["result"]["asset"]["id"].clone()),
-            Some("queued" | "running") => None,
-            other => panic!("unexpected source job {other:?}: {status}"),
-        }
-    });
+    // Open the fixture as a client does: develop it, then prepare its photograph.
+    let asset = {
+        let mut next = 0;
+        let mut ask = |method: &str, params: Value| -> Value {
+            next += 1;
+            writeln!(
+                input,
+                "{}",
+                json!({"id": format!("open-{next}"), "method": method, "params": params})
+            )
+            .unwrap();
+            input.flush().unwrap();
+            line.clear();
+            output.read_line(&mut line).unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert!(response.get("error").is_none(), "{method}: {response}");
+            response["result"].clone()
+        };
+        let started = ask(
+            "pick.develop",
+            json!({
+                "targets": {"kind": "paths", "paths": [fixture]},
+                "into": [],
+                "confirm_removable": true,
+                "mutation": {"request_id": "develop", "actor": "subprocess-test"},
+            }),
+        );
+        let developed = wait_for("the Develop", || {
+            let status = ask("job.read", json!({"job_id": started["job_id"]}));
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        });
+        assert_eq!(developed["status"], "ready", "{developed}");
+        let asset = developed["result"]["developed"][0]["asset_id"].clone();
+        let prepared = ask("source.prepare", json!({"asset_id": asset}));
+        let ready = wait_for("the preparation", || {
+            let status = ask("job.read", json!({"job_id": prepared["job_id"]}));
+            (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
+        });
+        assert_eq!(ready["status"], "ready", "{ready}");
+        asset
+    };
     writeln!(
         input,
         "{}",
@@ -277,13 +289,7 @@ fn a_proof_endpoint_client_installs_runs_the_task_and_applies_its_tint() {
         ],
         "cli",
     );
-    let imported = client.call(
-        "catalog.import",
-        json!({"path": fixture, "mutation": {"request_id": "cli-import", "actor": "cli-test"}}),
-    );
-    let imported = client.settle("job.read", &imported["job_id"]);
-    assert_eq!(imported["status"], "ready", "{imported}");
-    let asset = imported["result"]["asset"]["id"].clone();
+    let asset = client.open(&fixture, "cli-test")["asset"]["id"].clone();
     let module = "luxforge.capabilities";
     let mutation = settings_mutation(&mut client, "cli-profile");
     let profile = client.call(

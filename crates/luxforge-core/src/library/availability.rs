@@ -11,9 +11,10 @@
 //!   photographs offline with one look ([`mounted`]); otherwise each locator is looked at: the
 //!   recorded file (its length and file identity) is available, another file there is changed, no
 //!   file is missing. A photograph whose file moved within its volume is found again by its file
-//!   identity in the index and confirmed by its fingerprint ([`Found`]), and relinked by the owner
-//!   as one library change by the `system` actor ([`relinks`]); nothing else is relinked without
-//!   being asked.
+//!   identity in the index and confirmed by its fingerprint ([`Found`]), and one whose own file
+//!   is still at its locator under another identity (a volume mounted again under another device
+//!   number) is confirmed by its fingerprint too; each is relinked by the owner as one library
+//!   change by the `system` actor ([`relinks`]); nothing else is relinked without being asked.
 //! - **A refusal**: a preparation, an evaluation or an export whose original is not there is
 //!   refused naming why ([`refusal`]), and records what it found.
 //! - **A preparation** that read and verified the original records it available.
@@ -226,11 +227,15 @@ pub(crate) fn observe(
             } else {
                 control.checkpoint()?;
                 let (availability, moved) = look(&subject);
-                if moved
-                    && let Some(index) = index
-                    && let Some(again) = find_by_identity(index, &subject, control, pause)?
-                {
-                    found.push(again);
+                if moved {
+                    let again = match renumbered(&subject, control, pause)? {
+                        Some(again) => Some(again),
+                        None => match index {
+                            Some(index) => find_by_identity(index, &subject, control, pause)?,
+                            None => None,
+                        },
+                    };
+                    found.extend(again);
                 }
                 availability
             };
@@ -269,6 +274,49 @@ fn look(subject: &Subject) -> (FileAvailability, bool) {
         }
         Ok(_) => (FileAvailability::Changed, true),
         Err(_) => (FileAvailability::Missing, true),
+    }
+}
+
+/// The photograph's own file at its locator when only its file identity changed, confirmed by its
+/// fingerprint: a volume mounted again after another disk may be given another device number,
+/// which renumbers the identity of every file on it. Anything else at the locator is not it, and
+/// only a cancel stops the check.
+fn renumbered(
+    subject: &Subject,
+    control: &JobControl,
+    pause: &dyn Fn(Phase),
+) -> Result<Option<Found>, Error> {
+    let locator = &subject.source.locator;
+    let Ok(metadata) = locator.metadata() else {
+        return Ok(None);
+    };
+    let signature = source_signature(locator, &metadata);
+    if !metadata.is_file()
+        || signature.byte_len() != subject.byte_len
+        || signature.file_identity() == subject.source.file_identity
+    {
+        return Ok(None);
+    }
+    match locate::verify_file(
+        locator,
+        &signature,
+        &subject.fingerprint,
+        control,
+        pause,
+        &|_, _| {},
+    ) {
+        Ok(signature) => Ok(Some(Found {
+            asset_id: subject.asset_id.clone(),
+            was: subject.source.clone(),
+            now: locate::source_value(
+                locator,
+                subject.source.volume_id.clone(),
+                signature.file_identity(),
+            ),
+            signature,
+        })),
+        Err(error) if error.kind == ErrorKind::Cancelled => Err(error),
+        Err(_) => Ok(None),
     }
 }
 

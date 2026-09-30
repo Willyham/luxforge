@@ -64,10 +64,10 @@ pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
-    ActionResult, AssetPage, AssetRecord, AssetSummary, DraftStamp, EditorService, EditorState,
-    Evaluation, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
-    MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
-    SourceKind, SourceTag, Version,
+    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, HistoryPage,
+    LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome, MutationResult,
+    PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting, SourceKind,
+    SourceTag, Version,
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::CaptureMetadata;

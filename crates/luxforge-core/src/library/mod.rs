@@ -25,8 +25,11 @@
 //! - `missing.rs` (with `missing/search.rs`): missing originals by source folder, the bounded
 //!   search, and relinking what it verified.
 //!
-//! Planned: `develop.rs` (the develop lane: fingerprint, RAW interpretation without developing,
-//! linking, relinking, card copies, sending back), `remove.rs` and `batch.rs`.
+//! - `develop.rs` (with `develop/`): planning a Develop by event, the develop lane that reads each
+//!   file once off the owner and commits in batches, linking and relinking, card copies, and
+//!   sending back.
+//! - `batch.rs`: applying a preset to, and exporting, many photographs as one job.
+//! - `remove.rs`: removing photographs to Removed, putting them back, and emptying Removed.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
@@ -45,6 +48,9 @@ pub(crate) mod tree;
 // Availability and Locate (TASK-016).
 pub(crate) mod availability;
 pub(crate) mod locate;
+/// The one scratch disk image the offline-volume tests attach at a time.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) mod test_disk;
 pub(crate) mod worker;
 
 // Developing picks (TASK-013).
@@ -56,5 +62,11 @@ pub(crate) mod develop;
 pub(crate) mod missing;
 
 // Removing (TASK-014).
+/// Removing photographs, putting them back, and emptying Removed.
+pub(crate) mod remove;
+#[cfg(test)]
+mod remove_tests;
 
 // Batch preset and export (TASK-015).
+/// Batch preset and export: what both share, the naming, and the report as it grows.
+pub(crate) mod batch;
