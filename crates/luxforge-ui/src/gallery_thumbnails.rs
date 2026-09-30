@@ -7,9 +7,6 @@
 //! in a `LazyLock`, and cloned, which keeps its id — exactly the rule the app's own grid follows
 //! with the previews it holds.
 
-// Removed once the Select gallery states draw these (lane D phase 0).
-#![allow(dead_code)]
-
 use iced::widget::image::Handle;
 use std::sync::LazyLock;
 
@@ -35,10 +32,13 @@ const fn rgb(r: u8, g: u8, b: u8) -> [f32; 3] {
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
 }
 
+/// A scene's width, height, sky, haze, ground, horizon and sun, as [`Scene`] names them.
+type Palette = (u32, u32, [f32; 3], [f32; 3], [f32; 3], f32, (f32, f32, f32));
+
 /// The scenes: mostly 3:2 landscapes, one 4:3 and one portrait, so a grid shows fitted previews of
 /// more than one shape.
 #[rustfmt::skip]
-const PALETTES: [(u32, u32, [f32; 3], [f32; 3], [f32; 3], f32, (f32, f32, f32)); SCENES] = [
+const PALETTES: [Palette; SCENES] = [
     (240, 160, rgb(58, 104, 168), rgb(170, 196, 222), rgb(38, 64, 104), 0.55, (0.7, 0.25, 0.07)),
     (240, 160, rgb(92, 140, 196), rgb(214, 222, 226), rgb(78, 128, 52), 0.5, (0.25, 0.2, 0.06)),
     (240, 160, rgb(34, 44, 88), rgb(236, 150, 92), rgb(40, 34, 44), 0.62, (0.5, 0.58, 0.09)),

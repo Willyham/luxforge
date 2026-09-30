@@ -606,6 +606,163 @@ pub const AGENT_CONNECTED: Color = Color::from_rgb8(0x57, 0xb5, 0x6b);
 
 // The Select workspace's grid, cells and moment rows, from the catalog boards' CSS (`.cc`,
 // `.mom`, `.dayh`, `.camh`, `.wrap`, and `.cell` for the catalog's larger cells).
+//
+// A translucent fill over a known surface is stored opaque, composited over it, for the reason
+// [`RULE`] gives. A badge sits over the photograph, whose colour is not known, so it stays
+// translucent; its alpha is raised so that Iced's linear-light blend over a mid-grey photograph
+// lands where the board's sRGB blend does. The offline photograph's opacity is corrected the same
+// way over the cell. The tests below recompute each.
+
+/// A Select cell (`.cc`): 136 × 122 pt at the default size, rounded [`RADIUS`].
+pub const CELL_SIZE: iced::Size = iced::Size {
+    width: 136.0,
+    height: 122.0,
+};
+/// A Select cell's image box (`.cc .im`, 98 pt tall with 8/8/2 pt padding): the photograph is
+/// fitted within [`CELL_IMAGE_MAX`] and centred in this box.
+pub const CELL_IMAGE: iced::Rectangle = iced::Rectangle {
+    x: 8.0,
+    y: 8.0,
+    width: 120.0,
+    height: 88.0,
+};
+/// The largest fitted photograph in a Select cell (`.cc .im img`).
+pub const CELL_IMAGE_MAX: iced::Size = iced::Size {
+    width: 120.0,
+    height: 86.0,
+};
+/// A Select cell's footer (`.cc .ft`): 24 pt under the image box, its label 10.5 pt, 9 pt in.
+pub const CELL_FOOTER_TOP: f32 = 98.0;
+pub const CELL_FOOTER_HEIGHT: f32 = 24.0;
+pub const CELL_FOOTER_INSET: f32 = 9.0;
+pub const SIZE_CELL_LABEL: f32 = 10.5;
+/// Where a Select cell's badges sit from its corner (`.tk`, `.cnt`: 11 pt from the top and side).
+pub const CELL_BADGE_INSET: f32 = 11.0;
+/// A catalog cell (`.cell`): 168 × 176 pt, its image box 142 pt tall with 10/10/4 pt padding and a
+/// 148 × 124 pt photograph, a 30 pt footer 10 pt in with an 11 pt label, badges 14 pt in. The
+/// footer ends 4 pt above the cell's bottom, as the board's cell does.
+pub const CATALOG_CELL_SIZE: iced::Size = iced::Size {
+    width: 168.0,
+    height: 176.0,
+};
+pub const CATALOG_CELL_IMAGE: iced::Rectangle = iced::Rectangle {
+    x: 10.0,
+    y: 10.0,
+    width: 148.0,
+    height: 128.0,
+};
+pub const CATALOG_CELL_IMAGE_MAX: iced::Size = iced::Size {
+    width: 148.0,
+    height: 124.0,
+};
+pub const CATALOG_CELL_FOOTER_TOP: f32 = 142.0;
+pub const CATALOG_CELL_FOOTER_HEIGHT: f32 = 30.0;
+pub const CATALOG_CELL_FOOTER_INSET: f32 = 10.0;
+pub const SIZE_CATALOG_CELL_LABEL: f32 = 11.0;
+pub const CATALOG_CELL_BADGE_INSET: f32 = 14.0;
+/// The narrowest cell the size slider may ask for; a narrower request draws this.
+pub const CELL_MIN_WIDTH: f32 = 64.0;
+/// A cell's ground (`.cc`), and a selected or the active cell's (`.cc.sel`, `.cc.act`).
+pub const CELL_SURFACE: Color = Color::from_rgb8(0x1d, 0x1d, 0x20);
+pub const CELL_SELECTED: Color = Color::from_rgb8(0x34, 0x34, 0x3a);
+/// The active cell's inset accent outline (`.cc.act`: 1.5 pt).
+pub const CELL_ACTIVE_OUTLINE: f32 = 1.5;
+/// The soft shadow under a photograph (`0 1px 3px rgba(0,0,0,.5)`).
+pub const CELL_IMAGE_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.5,
+    },
+    offset: iced::Vector { x: 0.0, y: 1.0 },
+    blur_radius: 3.0,
+};
+/// A photograph whose preview is not decoded yet, or an unreadable file: a flat neutral rectangle
+/// at the photograph's shape, a step over the cell, with no spinner.
+pub const CELL_PLACEHOLDER: Color = Color::from_rgb8(0x26, 0x26, 0x2a);
+/// An offline photograph's opacity (the library board's `.mis` cell draws it at 45%): 0.27 in
+/// Iced's linear-light blend lands a mid-grey photograph over [`CELL_SURFACE`] where 45% does in the
+/// board's sRGB blend.
+pub const CELL_OFFLINE_OPACITY: f32 = 0.27;
+/// A pick (`.tk`): an 18 pt [`ACCENT`] disc holding a 10 pt check in [`PRIMARY_INK`], in a 2 pt
+/// ring of `rgba(20,20,22,.6)` (alpha corrected for linear light, see the section's note).
+pub const CELL_PICK_SIZE: f32 = 18.0;
+pub const CELL_CHECK_SIZE: f32 = 10.0;
+pub const CELL_PICK_RING_WIDTH: f32 = 2.0;
+pub const CELL_PICK_RING: Color = Color {
+    r: 20.0 / 255.0,
+    g: 20.0 / 255.0,
+    b: 22.0 / 255.0,
+    a: 0.794,
+};
+/// A badge over the photograph (`.cnt`, and `.mis` for an unavailable file): 16 pt tall, 5 pt in,
+/// rounded 4 pt, a 10 pt icon 3 pt before its 10.5 pt semibold text ("In the catalog" 4 pt), on
+/// `rgba(20,20,22,.82)` (alpha corrected for linear light). Badges on one side are 4 pt apart.
+pub const CELL_BADGE_HEIGHT: f32 = 16.0;
+pub const CELL_BADGE_PADDING: f32 = 5.0;
+pub const CELL_BADGE_RADIUS: f32 = 4.0;
+pub const CELL_BADGE_ICON_SIZE: f32 = 10.0;
+pub const CELL_BADGE_SPACING: f32 = 3.0;
+pub const CELL_CATALOG_BADGE_SPACING: f32 = 4.0;
+pub const CELL_BADGE_GAP: f32 = 4.0;
+pub const SIZE_CELL_BADGE: f32 = 10.5;
+pub const CELL_BADGE_SURFACE: Color = Color {
+    r: 20.0 / 255.0,
+    g: 20.0 / 255.0,
+    b: 22.0 / 255.0,
+    a: 0.934,
+};
+/// The unavailable badge's text ("Offline", "Unreadable"), 10 pt semibold in [`CLIPPING_HIGHLIGHT`].
+pub const SIZE_CELL_UNAVAILABLE: f32 = 10.0;
+/// A moment row (`.mom`): rounded 9 pt on a step between the canvas and the panel, outlined in
+/// white at 7% (stored opaque over the row), 6 pt in at the sides and bottom under a 28 pt header.
+pub const MOMENT_RADIUS: f32 = 9.0;
+pub const MOMENT_SURFACE: Color = Color::from_rgb8(0x20, 0x20, 0x24);
+pub const MOMENT_OUTLINE: Color = Color::from_rgb8(48, 48, 51);
+pub const MOMENT_PADDING: f32 = 6.0;
+pub const MOMENT_HEADER_HEIGHT: f32 = 28.0;
+/// A moment header's inset inside the row's padding, the gap between its parts and its 12 pt kind
+/// icon (`.mom .mh`); the action button's extra 6 pt margin before it.
+pub const MOMENT_HEADER_INSET: f32 = 4.0;
+pub const MOMENT_HEADER_SPACING: f32 = 7.0;
+pub const MOMENT_ICON_SIZE: f32 = 12.0;
+pub const MOMENT_ACTION_MARGIN: f32 = 6.0;
+/// A moment's evidence tag (`.tag`): 10 pt text 6 pt in, 14 pt tall, rounded 4 pt, on [`CONTROL`]
+/// in [`TEXT_SECONDARY`].
+pub const MOMENT_TAG_PADDING: f32 = 6.0;
+pub const MOMENT_TAG_HEIGHT: f32 = 14.0;
+pub const MOMENT_TAG_RADIUS: f32 = 4.0;
+pub const SIZE_MOMENT_TAG: f32 = 10.0;
+/// A moment's action button (`.tb` at 22 pt, 8 pt in, 11 pt text).
+pub const MOMENT_ACTION_PADDING: f32 = 8.0;
+pub const SIZE_MOMENT_ACTION: f32 = 11.0;
+/// The grid's flow (`.wrap`): 6 pt between cells, moments and lines; the centre's 16 pt at the
+/// sides, 80 pt under the last line for the floating strip, and 10 pt over a first line of cells
+/// (a heading brings its own, as the catalog grid's `padding:10px 16px 80px` and the event board
+/// draw them).
+pub const THUMB_GRID_GAP: f32 = 6.0;
+pub const THUMB_GRID_SIDE_INSET: f32 = 16.0;
+pub const THUMB_GRID_TOP_INSET: f32 = 10.0;
+pub const THUMB_GRID_BOTTOM_INSET: f32 = 80.0;
+/// A day heading (`.dayh`): 14 pt over a 16 pt line and 6 pt under it, 2 pt in; its 13 pt semibold
+/// title in [`TEXT_BRIGHT`] and 11 pt detail in [`TEXT_TERTIARY`] 10 pt apart on one baseline.
+pub const DAY_HEADING_TOP: f32 = 14.0;
+pub const DAY_HEADING_LINE: f32 = 16.0;
+pub const DAY_HEADING_BOTTOM: f32 = 6.0;
+pub const DAY_HEADING_SPACING: f32 = 10.0;
+/// A camera heading (`.camh`): 4 pt over a 13 pt line and 8 pt under it, 2 pt in; its capitalised
+/// 10.5 pt semibold name and plain count in [`TEXT_TERTIARY`], 8 pt apart.
+pub const CAMERA_HEADING_TOP: f32 = 4.0;
+pub const CAMERA_HEADING_LINE: f32 = 13.0;
+pub const CAMERA_HEADING_BOTTOM: f32 = 8.0;
+pub const CAMERA_HEADING_SPACING: f32 = 8.0;
+/// Both headings' inset from the grid's content edge.
+pub const HEADING_INSET: f32 = 2.0;
+/// The grid's scrollbar: the panel scrollbar's width and margin, a scroller never shorter than
+/// this, and the strip at the grid's right edge that takes the pointer for it.
+pub const THUMB_GRID_SCROLLER_MIN: f32 = 24.0;
+pub const THUMB_GRID_SCROLLBAR_HIT: f32 = 10.0;
 
 // -- end Select: the thumbnail grid ------------------------------------------------------------
 
@@ -1429,6 +1586,190 @@ mod tests {
     use super::*;
 
     // -- Select: the thumbnail grid's token tests.
+
+    /// The Select cell is the board's `.cc`: the image box is `.im`'s 98 pt less its 8/8/2 pt
+    /// padding, the footer follows it and fills the cell.
+    #[test]
+    fn select_cell_sizes_are_the_boards_css() {
+        assert_eq!((CELL_SIZE.width, CELL_SIZE.height), (136.0, 122.0));
+        assert_eq!(CELL_IMAGE.x, 8.0);
+        assert_eq!(CELL_IMAGE.width, CELL_SIZE.width - 8.0 - 8.0);
+        assert_eq!(CELL_IMAGE.y + CELL_IMAGE.height + 2.0, 98.0);
+        assert_eq!(CELL_FOOTER_TOP, 98.0);
+        assert_eq!(CELL_FOOTER_TOP + CELL_FOOTER_HEIGHT, CELL_SIZE.height);
+        assert_eq!((CELL_IMAGE_MAX.width, CELL_IMAGE_MAX.height), (120.0, 86.0));
+        assert_eq!((CELL_FOOTER_INSET, SIZE_CELL_LABEL), (9.0, 10.5));
+        assert_eq!(CELL_BADGE_INSET, 11.0);
+        assert_eq!(CELL_SURFACE, Color::from_rgb8(0x1d, 0x1d, 0x20));
+        assert_eq!(CELL_SELECTED, Color::from_rgb8(0x34, 0x34, 0x3a));
+        assert_eq!(CELL_ACTIVE_OUTLINE, 1.5);
+        assert_eq!(CELL_IMAGE_SHADOW.offset, iced::Vector::new(0.0, 1.0));
+        assert_eq!(
+            (CELL_IMAGE_SHADOW.blur_radius, CELL_IMAGE_SHADOW.color.a),
+            (3.0, 0.5)
+        );
+    }
+
+    /// The catalog cell is the catalog board's `.cell`, which leaves 4 pt under its footer.
+    #[test]
+    fn catalog_cell_sizes_are_the_boards_css() {
+        let size = CATALOG_CELL_SIZE;
+        assert_eq!((size.width, size.height), (168.0, 176.0));
+        assert_eq!(CATALOG_CELL_IMAGE.width, size.width - 10.0 - 10.0);
+        assert_eq!(
+            CATALOG_CELL_IMAGE.y + CATALOG_CELL_IMAGE.height + 4.0,
+            142.0
+        );
+        assert_eq!(CATALOG_CELL_FOOTER_TOP, 142.0);
+        assert_eq!(
+            CATALOG_CELL_FOOTER_TOP + CATALOG_CELL_FOOTER_HEIGHT + 4.0,
+            size.height
+        );
+        assert_eq!(
+            (CATALOG_CELL_IMAGE_MAX.width, CATALOG_CELL_IMAGE_MAX.height),
+            (148.0, 124.0)
+        );
+        assert_eq!(
+            (
+                CATALOG_CELL_FOOTER_INSET,
+                SIZE_CATALOG_CELL_LABEL,
+                CATALOG_CELL_BADGE_INSET
+            ),
+            (10.0, 11.0, 14.0)
+        );
+    }
+
+    /// The badges, the pick, the moment row and the headings are the boards' `.tk`, `.cnt`, `.mom`,
+    /// `.tag`, `.tb`, `.wrap`, `.dayh` and `.camh`.
+    #[test]
+    fn badge_moment_and_heading_sizes_are_the_boards_css() {
+        assert_eq!(
+            (CELL_PICK_SIZE, CELL_CHECK_SIZE, CELL_PICK_RING_WIDTH),
+            (18.0, 10.0, 2.0)
+        );
+        assert_eq!(
+            (
+                CELL_BADGE_HEIGHT,
+                CELL_BADGE_PADDING,
+                CELL_BADGE_RADIUS,
+                CELL_BADGE_ICON_SIZE,
+                CELL_BADGE_SPACING,
+                CELL_CATALOG_BADGE_SPACING
+            ),
+            (16.0, 5.0, 4.0, 10.0, 3.0, 4.0)
+        );
+        assert_eq!((SIZE_CELL_BADGE, SIZE_CELL_UNAVAILABLE), (10.5, 10.0));
+        assert_eq!(
+            (MOMENT_RADIUS, MOMENT_PADDING, MOMENT_HEADER_HEIGHT),
+            (9.0, 6.0, 28.0)
+        );
+        assert_eq!(MOMENT_SURFACE, Color::from_rgb8(0x20, 0x20, 0x24));
+        assert_eq!(
+            (
+                MOMENT_HEADER_INSET,
+                MOMENT_HEADER_SPACING,
+                MOMENT_ICON_SIZE,
+                MOMENT_ACTION_MARGIN
+            ),
+            (4.0, 7.0, 12.0, 6.0)
+        );
+        assert_eq!(
+            (
+                MOMENT_TAG_PADDING,
+                MOMENT_TAG_HEIGHT,
+                MOMENT_TAG_RADIUS,
+                SIZE_MOMENT_TAG
+            ),
+            (6.0, 14.0, 4.0, 10.0)
+        );
+        assert_eq!((MOMENT_ACTION_PADDING, SIZE_MOMENT_ACTION), (8.0, 11.0));
+        assert_eq!(
+            (
+                THUMB_GRID_GAP,
+                THUMB_GRID_SIDE_INSET,
+                THUMB_GRID_TOP_INSET,
+                THUMB_GRID_BOTTOM_INSET
+            ),
+            (6.0, 16.0, 10.0, 80.0)
+        );
+        assert_eq!(
+            (DAY_HEADING_TOP, DAY_HEADING_LINE, DAY_HEADING_BOTTOM),
+            (14.0, 16.0, 6.0)
+        );
+        assert_eq!(
+            (
+                CAMERA_HEADING_TOP,
+                CAMERA_HEADING_LINE,
+                CAMERA_HEADING_BOTTOM
+            ),
+            (4.0, 13.0, 8.0)
+        );
+        assert_eq!(
+            (DAY_HEADING_SPACING, CAMERA_HEADING_SPACING, HEADING_INSET),
+            (10.0, 8.0, 2.0)
+        );
+    }
+
+    fn linear(channel: f32) -> f32 {
+        if channel <= 0.04045 {
+            channel / 12.92
+        } else {
+            ((channel + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn encoded(channel: f32) -> f32 {
+        if channel <= 0.003_130_8 {
+            channel * 12.92
+        } else {
+            1.055 * channel.powf(1.0 / 2.4) - 0.055
+        }
+    }
+
+    /// `colour` at `opacity` over `background` as Iced draws it: blended in linear light, then
+    /// encoded, to the 8-bit code a capture samples.
+    fn linear_composite(colour: Color, background: Color, opacity: f32) -> [u8; 3] {
+        [
+            (colour.r, background.r),
+            (colour.g, background.g),
+            (colour.b, background.b),
+        ]
+        .map(|(c, b)| {
+            let mixed = linear(b) + (linear(c) - linear(b)) * opacity;
+            (encoded(mixed) * 255.0).round() as u8
+        })
+    }
+
+    /// The moment row's outline is white at 7% over the row. The badges and the pick's ring keep
+    /// their alpha, raised so that Iced's linear-light blend over a mid-grey photograph matches the
+    /// board's sRGB blend; the offline photograph's opacity is corrected the same way over the
+    /// cell.
+    #[test]
+    fn select_grid_tints_are_the_boards_composites() {
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
+        assert!(near(
+            code(MOMENT_OUTLINE),
+            composite(Color::WHITE, MOMENT_SURFACE, 0.07)
+        ));
+        let grey = Color::from_rgb8(128, 128, 128);
+        let ink = Color::from_rgb8(20, 20, 22);
+        assert!(near(
+            linear_composite(CELL_BADGE_SURFACE, grey, CELL_BADGE_SURFACE.a),
+            composite(ink, grey, 0.82)
+        ));
+        assert!(near(
+            linear_composite(CELL_PICK_RING, grey, CELL_PICK_RING.a),
+            composite(ink, grey, 0.6)
+        ));
+        let [r, g, _] = linear_composite(grey, CELL_SURFACE, CELL_OFFLINE_OPACITY);
+        let [br, bg, _] = composite(grey, CELL_SURFACE, 0.45);
+        assert!(r.abs_diff(br) <= 1 && g.abs_diff(bg) <= 1, "{r} {br}");
+        assert_eq!(
+            [CELL_BADGE_SURFACE, CELL_PICK_RING].map(code),
+            [[20, 20, 22]; 2]
+        );
+        assert_eq!(CELL_PLACEHOLDER, Color::from_rgb8(0x26, 0x26, 0x2a));
+    }
 
     // -- end Select: the thumbnail grid's token tests.
 
