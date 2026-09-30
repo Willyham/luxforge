@@ -2,6 +2,8 @@
 
 `luxforge-raw` is one of the few Luxforge crates with an explicit unsafe FFI boundary ([architecture](../../docs/design/architecture.md#unsafe-code)). It builds pinned native source locally; the rest of the workspace keeps its `forbid(unsafe_code)` rule. The safe API takes source bytes owned by the caller, unpacks one qualified RAW image on a worker, retains one immutable sensor mosaic, and develops green-normalized white-balance edits (positive gains up to 32×) into one owned planar float allocation. It never rewrites an original or creates an intermediate file. [THIRD_PARTY.md](THIRD_PARTY.md) records provenance, notices, build flags, and the exact native source selection.
 
+The pinned [RawSpeed](../../docs/design/rawspeed-unpack.md) and its pugixml are also built, unpatched, as C++20 in their own `cc` build, with RawSpeed's `cameras.xml` embedded and parsed once per process on first use. A crate-private entry point decodes borrowed bytes with RawSpeed into an uncropped, uncorrected u16 mosaic of an expected size; it is not yet routed into `decode`, which LibRaw still fills.
+
 ```rust
 let source = RawSource::decode(verified_bytes, &cancel)?;
 let metadata = source.metadata();
@@ -108,5 +110,12 @@ LUXFORGE_RAW_POPULAR_DIR=/path/to/popular/raw \
 ```
 
 The owner and public corpus checks are separate tests. If only owner originals are available, run the same command with `--skip authentic_public_modes --skip nikon_high_efficiency` and report the public modes as untested.
+
+The RawSpeed comparison decodes the owner Z6 NEF and, from the CC0 popular-camera corpus (files named `<raw.pixls.us id>.<EXT>`), a Nikon Z 6II lossy NEF (`4161.NEF`) and a Canon EOS 6D Mark II CR2 (`1625.CR2`) with both libraries, and requires LibRaw's `curve[RawSpeed uncorrected sample]` to equal LibRaw's sample everywhere, and the CR2's uncorrected samples to equal LibRaw's directly:
+
+```sh
+LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_POPULAR_DIR=/path/to/popular \
+  cargo test --release -p luxforge-raw --locked --lib rawspeed -- --ignored --nocapture
+```
 
 The authentic tests compare full sensor u16 buffers to the hashes the [RAW backend comparison](../../docs/research/raw-backend-selection.md) recorded independently, verify source hashes before/after, mode, crop, CFA, white metadata, owner Z6 EXIF orientation, finite developed floats, the developed float range (printed), invalid gains and cancellation. The DJI test also checks the opcode/calibration payload hashes, fixed matrix against LibRaw's rendered matrix, malformed mandatory operations, and 18 corrected camera-plane samples computed independently from sparse pre-correction pixels in [the DNG reference](../../fixtures/raw-dng-reference.json) (`luxforge_reference::dng`). Its crate-private required-opcode list and corrected point queries are checked against the same file by the ignored library tests `owner_dji_dng_requires_warp_and_gain_map` and `owner_dji_dng_answers_corrected_point_queries` (`--lib owner_dji -- --ignored`). The fixture itself and generated sparse dump stay outside the repository. Manual dependency/native/asset review and clean Windows/Linux package verification are still outstanding. This crate alone does not qualify visible color, export or end-to-end latency.
