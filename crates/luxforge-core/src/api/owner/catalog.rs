@@ -15,8 +15,11 @@
 )]
 
 use super::{ClientId, Owner, OwnerMessage, files, library, previews, views};
-use crate::{JobId, activity::ActivityBoard, jobs::JobKind};
-use std::sync::{Arc, mpsc::SyncSender};
+use crate::{JobId, activity::ActivityBoard, catalog_types::LibraryItem, jobs::JobKind};
+use std::{
+    path::PathBuf,
+    sync::{Arc, mpsc::SyncSender},
+};
 
 /// What a catalog lane's worker posts to the owner, which the owner hands to that lane.
 pub(super) enum CatalogMessage {
@@ -70,6 +73,23 @@ impl CatalogLanes {
         self.previews.disconnect(client);
         self.library.disconnect(client);
         self.views.disconnect(client);
+    }
+
+    /// A library change committed, a change, an undo or a redo alike: each lane that follows a kind
+    /// of item it changed hears which. Lane A follows the indexed folders it watches, so an undone
+    /// `index.add-folder` stops its watcher and a redone one starts it again. A lane that follows
+    /// another kind adds its arm here.
+    pub(super) fn library_changed(&mut self, items: &[LibraryItem]) {
+        let folders: Vec<PathBuf> = items
+            .iter()
+            .filter_map(|item| match item {
+                LibraryItem::IndexedFolder { path } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        if !folders.is_empty() {
+            self.files.indexed_folders_changed(&folders);
+        }
     }
 
     /// A job of a catalog lane was cancelled in the job table (`job.cancel`): the lane that runs it

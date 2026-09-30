@@ -79,9 +79,11 @@ pub(crate) enum Outcome {
     /// A change was recorded, now or, for a retry, by the request's first attempt.
     Recorded {
         change: LibraryChange,
-        /// The photographs whose original the change moved, whose cached rows the service reads
-        /// again once it commits.
-        sources: Vec<AssetId>,
+        /// The items it changed, in its order; empty for a retry, which changed nothing. What the
+        /// change touched is read from here once it commits: the photographs whose original it
+        /// moved, whose cached rows the service reads again, and whatever a lane follows (the
+        /// indexed folders lane A watches).
+        items: Vec<LibraryItem>,
         deduplicated: bool,
     },
 }
@@ -122,18 +124,27 @@ impl Outcome {
         }
     }
 
-    /// The photographs whose original this write moved.
-    pub(crate) fn sources(&self) -> &[AssetId] {
+    /// The items this write changed.
+    pub(crate) fn items(&self) -> &[LibraryItem] {
         match self {
-            Self::Recorded { sources, .. } => sources,
+            Self::Recorded { items, .. } => items,
             Self::NoOp => &[],
         }
     }
 
-    fn deduplicated(change: LibraryChange) -> Self {
+    /// The photographs whose original this write moved.
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &AssetId> {
+        self.items().iter().filter_map(|item| match item {
+            LibraryItem::AssetSource { asset_id } => Some(asset_id),
+            _ => None,
+        })
+    }
+
+    /// The answer to a retry of the request that recorded `change`.
+    pub(crate) fn deduplicated(change: LibraryChange) -> Self {
         Self::Recorded {
             change,
-            sources: Vec::new(),
+            items: Vec::new(),
             deduplicated: true,
         }
     }
@@ -544,7 +555,6 @@ fn record(
              after_json)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
-    let mut sources = Vec::new();
     for (ordinal, row) in rows.iter().enumerate() {
         insert.execute(params![
             sequence,
@@ -554,9 +564,6 @@ fn record(
             row.before.as_ref().map(encode).transpose()?,
             row.after.as_ref().map(encode).transpose()?,
         ])?;
-        if let LibraryItem::AssetSource { asset_id } = &row.item {
-            sources.push(asset_id.clone());
-        }
     }
     let (undoes, redoes) = match relation {
         Relation::None => (None, None),
@@ -576,7 +583,7 @@ fn record(
             redoes,
             undone_by: None,
         },
-        sources,
+        items: rows.into_iter().map(|row| row.item).collect(),
         deduplicated: false,
     })
 }
