@@ -55,6 +55,8 @@ pub(crate) enum Phase {
     Hashed,
     /// Verified, before the owner commits.
     Verified,
+    /// A batch job is about to take its next photograph (`super::batch`).
+    NextPhotograph,
 }
 
 /// A chosen file that passed every check made before reading it.

@@ -755,6 +755,15 @@ pub struct BatchSkip {
     pub reason: String,
 }
 
+/// A photograph a batch preset was applied to without some of the preset's settings, and which:
+/// the settings `edit.apply-preset` reports skipped because they do not apply to it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchSettingsSkipped {
+    pub asset_id: AssetId,
+    pub settings: Vec<crate::SkippedSetting>,
+}
+
 /// A `batch.apply-preset` or `batch.export` job's result.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -764,6 +773,9 @@ pub struct BatchReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub written: Vec<PathBuf>,
     pub skipped: Vec<BatchSkip>,
+    /// Photographs done without some of the preset's settings, with those settings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub settings_skipped: Vec<BatchSettingsSkipped>,
 }
 
 /// What `pick.list` answers: picks in path order after the cursor, and the cursor that continues
