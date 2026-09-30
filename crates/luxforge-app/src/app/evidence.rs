@@ -142,8 +142,6 @@ pub(crate) struct Recorded {
     /// oldest first, each with the wall-clock moment it was read, so a runner can re-derive the
     /// shown figures and the newest rate without trusting the model that derived them.
     pub(crate) performance: VecDeque<(u64, Value)>,
-    /// The Performance section's last `activity.list` answer as the owner sent it.
-    pub(crate) activity: Option<Value>,
 }
 
 /// What a running `agent` step waits for. The desktop sends nothing for it: the owner wakes the
@@ -3679,24 +3677,18 @@ impl Editor {
             // the frame before it, which could only show dashes.
             Outcome::PerformanceRead(read) => {
                 if let (Some(read), Some(evidence)) = (read, &mut self.evidence) {
-                    let PerformanceRead {
-                        resources,
-                        activity,
-                        wall_ms,
-                    } = *read;
+                    let PerformanceRead { resources, wall_ms } = *read;
                     let recorded = &mut evidence.recorded;
                     if recorded.performance.len() == 2 {
                         recorded.performance.pop_front();
                     }
                     recorded.performance.push_back((wall_ms, resources));
-                    recorded.activity = Some(activity);
                 }
                 self.settle_step(Settle::Performance, by);
             }
             Outcome::PerformanceRestarted => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.performance.clear();
-                    evidence.recorded.activity = None;
                 }
             }
             Outcome::ExportPlanned(plan) => {
@@ -4646,7 +4638,6 @@ mod tests {
             epoch,
             result: Ok(Box::new(crate::app::tasks::PerformanceRead {
                 resources,
-                activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
                 wall_ms: 0,
             })),
         }));
