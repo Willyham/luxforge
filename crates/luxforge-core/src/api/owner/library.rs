@@ -457,8 +457,10 @@ pub(super) fn change(
 /// before its targets are resolved again, so it neither reads the disk nor fails on a file that has
 /// moved since.
 pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
-    Ok(library_journal::find(&owner.service.connection, request)?
-        .map(|change| Outcome::deduplicated(change).answer()))
+    Ok(
+        library_journal::answered(&owner.service.connection, request)?
+            .map(|answered| answered.answer()),
+    )
 }
 
 /// The items selected in the calling client's view.
