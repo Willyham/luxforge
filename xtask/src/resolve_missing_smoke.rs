@@ -42,7 +42,7 @@ pub const SCENARIO: &str = "resolve-missing";
 pub const NOTE: &str = "The run first generates real JPEGs with `cargo xtask generate-catalog \
     --images 120 --seed 1`, copies them onto two disk images made with `hdiutil` and attached with \
     `-nobrowse` inside the run (a scratch folder elsewhere than macOS) and into a scratch folder, \
-    develops them into `generated/catalog.sqlite` with `catalog.import`, reorganizes them (moved, \
+    develops them into `generated/catalog.sqlite` with `pick.develop`, reorganizes them (moved, \
     rewritten, duplicated, deleted, a drive detached), records them missing with `source.check`, \
     asks the core for the answers the frames are checked against (`resolve-missing-expected.json`) \
     and launches the editor over that catalog with `--catalog`; after the run it reads the catalog \
@@ -325,16 +325,24 @@ fn make(generated: &Path) -> Result<(Vec<DiskImage>, Value)> {
             let started = ask(
                 owner,
                 client,
-                "catalog.import",
-                json!({"path": path, "mutation": {"request_id": format!("setup-import-{index}"), "actor": "setup"}}),
+                "pick.develop",
+                json!({
+                    "targets": {"kind": "paths", "paths": [path]},
+                    "into": [],
+                    "confirm_removable": true,
+                    "mutation": {"request_id": format!("setup-develop-{index}"), "actor": "setup"},
+                }),
             )?;
             let settled = settle(owner, client, &started["job_id"])?;
             ensure(
-                settled["status"] == "ready",
+                settled["status"] == "ready" && settled["result"]["failed"] == json!([]),
                 format!("The setup could not develop {}: {settled}", path.display()),
             )?;
             let name = path.file_name().ok_or("a file")?.to_string_lossy();
-            assets.insert(name.into_owned(), settled["result"]["asset"]["id"].clone());
+            assets.insert(
+                name.into_owned(),
+                settled["result"]["developed"][0]["asset_id"].clone(),
+            );
         }
         Ok(assets)
     })?;

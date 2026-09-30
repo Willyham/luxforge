@@ -10,11 +10,13 @@
 //!   the presented frame. The grid under the loupe scrolls to keep the active frame in its rows
 //!   window, so the rows the loupe names are read.
 //! - **Frames.** `app/loupe_frames.rs` reads, decodes and holds the frames on screen and the
-//!   look-ahead under the loupe's byte budget; `app/loupe_region.rs` cuts the 100% region.
+//!   look-ahead under the loupe's byte budget, and the strip's photographs' grid tiers under the
+//!   same budget; a file's strip frame borrows the Select grid's preview, which that grid already
+//!   holds. `app/loupe_region.rs` cuts the 100% region.
 //! - **Identity.** After every message the loupe mirrors what it holds into its state
 //!   ([`Holding`](crate::state::loupe::Holding)); the model draws a picture only under its own
-//!   frame, and the view borrows a handle by that frame's item and preview key alone
-//!   ([`LoupeImages`]).
+//!   frame, and a strip thumbnail only under its own strip frame, and the view borrows a handle by
+//!   that frame's item and preview key alone ([`LoupeImages`]).
 //! - **Waking.** The loupe's signal carries a decode landing and the owner's previews wake, which
 //!   the Select grid registers for this client and passes on here ([`owner_woke`]); the
 //!   subscription exists only while the loupe is open. Nothing polls.
@@ -31,7 +33,7 @@
 //!   does for the photograph's `preview_displayed`: not display scanout.
 use crate::app::{
     Before, Editor,
-    loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Want},
+    loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Role, Slot, Want},
     loupe_region::{self, FocusCheck, RegionMessage, RegionRequest},
     message::{Message, loupe::LoupeMessage, select::SelectMessage},
     select::select_call,
@@ -40,8 +42,8 @@ use crate::app::{
     waker::Signal,
 };
 use crate::state::loupe::{
-    self as model, Goto, Holding, Picture, Region, Travel, after_pick, focus_request, subject,
-    target, unit_of,
+    self as model, Goto, Holding, Picture, Region, StripFrame, Travel, after_pick, focus_request,
+    subject, target, unit_of,
 };
 use crate::state::select::{SelectGesture, select_params};
 use iced::{
@@ -78,8 +80,8 @@ struct Trace {
 }
 
 impl Loupe {
-    /// What the view borrows: this loupe's frames and region, and the grid's previews for the
-    /// strip.
+    /// What the view borrows: this loupe's frames, strip thumbnails and region, and the grid's
+    /// previews for the strip's files.
     pub(crate) fn images<'a>(&'a self, grid: &'a SelectPreviews) -> LoupeImages<'a> {
         LoupeImages {
             frames: &self.frames,
@@ -473,12 +475,17 @@ impl Editor {
             .map(|answers| frames_message(LoupeFramesMessage::Read(answers)))
     }
 
-    /// What the loupe wants now, as the frames cache takes it.
+    /// What the loupe wants now, as the frames cache takes it: frames, then the strip's
+    /// photographs' thumbnails.
     fn loupe_wants(&self) -> Vec<Want> {
         model::wanted(&self.select.state, &self.session.browse)
             .into_iter()
             .map(|frame| Want {
-                item: frame.item,
+                slot: if frame.thumbnail {
+                    Slot::thumbnail(frame.item)
+                } else {
+                    Slot::frame(frame.item)
+                },
                 pixels: frame.pixels,
                 shown: frame.shown,
             })
@@ -492,18 +499,23 @@ impl Editor {
     }
 
     /// Mirror what the loupe holds into its state, for the model: the pictures of the frames on
-    /// screen, each under its own item, the region and the look-ahead's progress.
+    /// screen and of the strip's photographs, each under its own item, the region and the
+    /// look-ahead's progress.
     fn loupe_mirror(&mut self, wants: &[Want]) {
         let frames = &self.select.loupe.frames;
         let focus = &self.select.loupe.focus;
         let (ahead, ahead_ready) = frames.ahead();
-        let active = wants.first().map(|want| &want.item);
-        self.select.state.loupe.held = Holding {
-            frames: wants
+        let active = wants.first().map(|want| &want.slot.item);
+        let held = |role: Role| {
+            wants
                 .iter()
-                .filter(|want| want.shown)
-                .map(|want| frames.held(&want.item))
-                .collect(),
+                .filter(move |want| want.shown && want.slot.role == role)
+                .map(|want| frames.held(&want.slot))
+                .collect()
+        };
+        self.select.state.loupe.held = Holding {
+            frames: held(Role::Frame),
+            thumbnails: held(Role::Thumbnail),
             region: focus.region(),
             region_pending: focus.pending(),
             region_error: active.and_then(|item| focus.error(item)),
@@ -588,6 +600,12 @@ impl Editor {
                 "start": strip.start,
                 "positions": strip.frames.iter().map(|frame| frame.position).collect::<Vec<_>>(),
                 "picked": strip.frames.iter().filter(|frame| frame.picked).count(),
+                "thumbnails": strip.frames.iter().map(|frame| json!({
+                    "position": frame.position,
+                    "item": frame.item,
+                    "picture": picture(frame.thumbnail.as_ref()),
+                    "drawn": self.loupe_images().thumbnail(frame).is_some(),
+                })).collect::<Vec<_>>(),
             })),
             "compare_frames": model.compare.iter().map(|cell| json!({
                 "position": cell.position,
@@ -723,9 +741,9 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     }
 }
 
-/// What the loupe's view borrows: each frame's handle by its own item and preview key, the
-/// region's handle, and the grid's previews for the strip. Plain lookups, so drawing makes no
-/// handle and uploads nothing again.
+/// What the loupe's view borrows: each frame's and strip thumbnail's handle by its own item and
+/// preview key, the region's handle, and the grid's previews for the strip's files. Plain lookups,
+/// so drawing makes no handle and uploads nothing again.
 #[derive(Clone, Copy)]
 pub(crate) struct LoupeImages<'a> {
     frames: &'a LoupeFrames,
@@ -746,12 +764,20 @@ impl<'a> LoupeImages<'a> {
         focus.handle(region)
     }
 
-    /// A strip frame's grid preview, as the grid holds it for a file near the active one.
-    pub(crate) fn thumbnail(&self, item: &PreviewItem) -> Option<&'a Handle> {
-        let grid: &'a SelectPreviews = self.grid;
-        match item {
-            PreviewItem::File { file_id } => grid.handle(*file_id),
-            PreviewItem::Photo { .. } => None,
+    /// A strip frame's grid preview: a file's as the Select grid holds it for a file near the
+    /// active one, a photograph's as the loupe holds it for exactly the picture the model names for
+    /// that frame's own item.
+    pub(crate) fn thumbnail(&self, frame: &StripFrame) -> Option<&'a Handle> {
+        match frame.item.as_ref()? {
+            PreviewItem::File { file_id } => {
+                let grid: &'a SelectPreviews = self.grid;
+                grid.handle(*file_id)
+            }
+            item @ PreviewItem::Photo { .. } => {
+                let frames: &'a LoupeFrames = self.frames;
+                let picture = frame.thumbnail.as_ref().filter(|p| &p.item == item)?;
+                frames.thumbnail(picture)
+            }
         }
     }
 }
