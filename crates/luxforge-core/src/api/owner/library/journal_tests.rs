@@ -556,7 +556,7 @@ fn catalog_info_reports_the_counts_behind_the_catalog_sources_and_the_journal() 
     assert_eq!(info["path"], json!(fixture.catalog));
     assert_eq!(
         (&info["format"], &info["index_format"]),
-        (&json!(12), &json!(1))
+        (&json!(12), &json!(crate::INDEX_FORMAT))
     );
     assert_eq!(
         info["counts"],

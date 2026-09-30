@@ -1,7 +1,8 @@
 //! The preview lane through the catalog owner: `preview.read` and `job.read` over
 //! [`OwnerHandle::call`], the grid's two stages, the lane's order with the workers held at a gate,
 //! view jobs and their progress, `job.cancel` of queued and running work, the queue's bound, the
-//! refusals, a file with no usable preview, and the waker.
+//! refusals, a corrupt file, the development fallback for a RAW with no usable preview, and the
+//! waker.
 use super::super::{ClientId, OwnerHandle};
 use crate::{
     ApiRequest, ApiResponse, EditorService, SourceTag,
@@ -9,7 +10,9 @@ use crate::{
         FileId, FileRecord, FileSignature, HeaderState, PreviewState, PreviewTier, VolumeId,
     },
     index::{IndexDb, index_dir, upsert_file},
-    previews::preview_cache::{add_file, camera_jpeg, decoded, header},
+    previews::preview_cache::{
+        add_file, broken_jpeg, camera_jpeg, counted_development, decoded, header, synthetic_dng,
+    },
 };
 use luxforge_testbase::{Gate, paths::temp_dir, wait_for, wait_until};
 use serde_json::{Value, json};
@@ -344,7 +347,7 @@ fn preview_cache_owner_view_job_reports_progress_and_cancels() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 4, "read": 4, "failed": 0})
+        json!({"files": 4, "read": 4, "deferred": 0, "failed": 0})
     );
     assert_eq!(
         record["progress"],
@@ -499,16 +502,14 @@ fn preview_cache_owner_refuses_what_it_cannot_read() {
     assert!(setup.owner.previews_dispatched().is_empty());
 }
 
-/// A file with no usable preview fails `unsupported-input`, is remembered — read again it answers
-/// the failure at once and its grid is `unavailable` — until it changes.
+/// A corrupt file fails with its own kind, `invalid-input`, and is remembered — read again it
+/// answers the failure at once and its grid is `unavailable` — until it changes.
 #[test]
-fn preview_cache_owner_remembers_a_file_with_no_usable_preview() {
+fn preview_cache_owner_remembers_a_corrupt_file() {
     let mut setup = Setup::new("preview-owner-unusable");
     let (bytes, ..) = camera_jpeg((640, 427), (160, 107), 1);
-    let mut broken = bytes[..bytes.len() / 2].to_vec();
-    broken.extend_from_slice(&[0xff, 0xd9]);
     let path = setup.root.join("BROKEN.JPG");
-    fs::write(&path, &broken).unwrap();
+    fs::write(&path, broken_jpeg()).unwrap();
     let file = add_file(
         &mut setup.index,
         &path,
@@ -518,13 +519,13 @@ fn preview_cache_owner_remembers_a_file_with_no_usable_preview() {
     let job = setup.read(file, "grid", "visible")["job_id"].clone();
     let record = setup.settled(&job);
     assert_eq!(record["status"], "failed");
-    assert_eq!(record["error"]["code"], "unsupported-input");
+    assert_eq!(record["error"]["code"], "invalid-input");
     assert_eq!(
         setup.failure(
             "preview.read",
             json!({"item": {"kind": "file", "file_id": file}, "tier": "grid"})
         ),
-        "unsupported-input"
+        "invalid-input"
     );
     assert_eq!(setup.owner.previews_dispatched().len(), 1, "not read again");
     assert_eq!(
@@ -607,4 +608,235 @@ fn preview_cache_owner_keeps_the_loupe_budget() {
         "ready",
         "grids are kept"
     );
+}
+
+/// A RAW that carries no usable preview (a synthetic DNG with none, as the Canon EOS R5 Mark II's
+/// and R8's H.265-only files are to the lane) is not developed for a view in the background: the
+/// view job counts it done and deferred, not failed, its grid stays `pending`, a background read
+/// answers `not-ready` at once and a newer view does not read it again. A visible request develops
+/// it once, labelled `developed`; the loupe's look-ahead develops its own tier.
+#[test]
+fn preview_cache_owner_develops_what_is_on_screen_and_defers_the_rest() {
+    let mut setup = Setup::new("preview-owner-develop");
+    let path = setup.root.join("H265.DNG");
+    fs::write(&path, synthetic_dng("DJI", "FC3411", 64, 48)).unwrap();
+    let file = add_file(
+        &mut setup.index,
+        &path,
+        SourceTag::Raw,
+        HeaderState::Pending,
+    );
+    let developments = Arc::new(AtomicUsize::new(0));
+    setup
+        .owner
+        .develop_previews_with(Some(counted_development(developments.clone())));
+
+    let view = setup
+        .owner
+        .want_view(setup.client, vec![file])
+        .unwrap()
+        .expect("the grid tier is missing");
+    let record = setup.settled(&json!(view));
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(
+        record["result"],
+        json!({"files": 1, "read": 0, "deferred": 1, "failed": 0})
+    );
+    assert_eq!(
+        record["progress"],
+        json!({"fraction": 1.0, "message": "1 of 1"})
+    );
+    assert_eq!(developments.load(Ordering::SeqCst), 0, "nothing developed");
+    assert_eq!(
+        setup.owner.preview_grid_states(vec![file]),
+        [PreviewState::Pending]
+    );
+    assert_eq!(
+        setup.failure(
+            "preview.read",
+            json!({"item": {"kind": "file", "file_id": file}, "tier": "grid", "priority": "background"})
+        ),
+        "not-ready"
+    );
+    assert_eq!(
+        setup.owner.want_view(setup.client, vec![file]).unwrap(),
+        None,
+        "a deferred file is not read again in the background"
+    );
+    assert_eq!(setup.owner.previews_dispatched().len(), 1);
+
+    let job = setup.read(file, "grid", "visible")["job_id"].clone();
+    let record = setup.settled(&job);
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(record["result"]["origin"], "developed");
+    assert_eq!(developments.load(Ordering::SeqCst), 1);
+    let preview = setup.read(file, "grid", "visible");
+    assert_eq!(preview["state"], "ready");
+    assert_eq!(preview["preview"]["origin"], "developed");
+    let path = PathBuf::from(preview["preview"]["path"].as_str().unwrap());
+    assert_eq!(decoded(&path).dimensions(), (96, 64));
+    assert_eq!(
+        setup.owner.preview_grid_states(vec![file]),
+        [PreviewState::Ready]
+    );
+    assert_eq!(
+        developments.load(Ordering::SeqCst),
+        1,
+        "read from the cache"
+    );
+
+    let loupe = setup.read(file, "loupe", "look-ahead")["job_id"].clone();
+    let record = setup.settled(&loupe);
+    assert_eq!(record["result"]["origin"], "developed", "{record}");
+    assert_eq!(developments.load(Ordering::SeqCst), 2);
+}
+
+/// A background task that was deferred while a visible request joined it runs again and
+/// develops; the request's job answers the developed tier.
+#[test]
+fn preview_cache_owner_develops_a_deferred_task_a_visible_request_joined() {
+    let mut setup = Setup::new("preview-owner-develop-joined");
+    let path = setup.root.join("H265.DNG");
+    fs::write(&path, synthetic_dng("DJI", "FC3411", 64, 48)).unwrap();
+    let file = add_file(
+        &mut setup.index,
+        &path,
+        SourceTag::Raw,
+        HeaderState::Pending,
+    );
+    let developments = Arc::new(AtomicUsize::new(0));
+    setup
+        .owner
+        .develop_previews_with(Some(counted_development(developments.clone())));
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_previews(Some(gate.clone()));
+    let view = setup
+        .owner
+        .want_view(setup.client, vec![file])
+        .unwrap()
+        .unwrap();
+    gate.wait_reached(1, "the background task");
+    let job = setup.read(file, "grid", "visible")["job_id"].clone();
+    gate.open();
+    let record = setup.settled(&job);
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(record["result"]["origin"], "developed");
+    assert_eq!(developments.load(Ordering::SeqCst), 1);
+    assert_eq!(setup.settled(&json!(view))["status"], "ready");
+    let grid = (file, PreviewTier::Grid);
+    assert_eq!(setup.owner.previews_dispatched(), [grid, grid]);
+}
+
+/// A camera Luxforge cannot develop, through the production development, fails
+/// `unsupported-input` naming why and is remembered: read again it answers at once and its grid is
+/// `unavailable`.
+#[test]
+fn preview_cache_owner_remembers_a_raw_it_cannot_develop() {
+    let mut setup = Setup::new("preview-owner-undevelopable");
+    let path = setup.root.join("SENSOR.DNG");
+    fs::write(&path, synthetic_dng("Example", "Sensor", 64, 48)).unwrap();
+    let file = add_file(
+        &mut setup.index,
+        &path,
+        SourceTag::Raw,
+        HeaderState::Pending,
+    );
+    let job = setup.read(file, "grid", "visible")["job_id"].clone();
+    let record = setup.settled(&job);
+    assert_eq!(record["status"], "failed", "{record}");
+    assert_eq!(record["error"]["code"], "unsupported-input");
+    let detail = record["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("SENSOR.DNG has no usable preview")
+            && detail.contains("cannot be developed"),
+        "{record}"
+    );
+    assert_eq!(
+        setup.failure(
+            "preview.read",
+            json!({"item": {"kind": "file", "file_id": file}, "tier": "grid"})
+        ),
+        "unsupported-input"
+    );
+    assert_eq!(setup.owner.previews_dispatched().len(), 1, "not read again");
+    assert_eq!(
+        setup.owner.preview_grid_states(vec![file]),
+        [PreviewState::Unavailable]
+    );
+}
+
+/// RAW files that carry no usable preview — the Canon EOS R5 Mark II's and R8's, whose previews
+/// are H.265 only — through the production development, read in place and never written: each
+/// visible grid read answers a tier labelled `developed`, and the loupe tier and a 100% region
+/// come from the same kept development; or the grid fails with its own kind naming why (a mode
+/// outside the RAW catalog is `unsupported-input`). Run in release with `LUXFORGE_NO_PREVIEW_RAWS`
+/// naming the files, separated by `:`:
+///
+/// ```sh
+/// LUXFORGE_NO_PREVIEW_RAWS=/path/r5m2.CR3:/path/r8.CR3 cargo test --release -p luxforge-core \
+///   --lib preview_cache_owner_develops_supplied -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs LUXFORGE_NO_PREVIEW_RAWS: RAW files with no usable preview, outside Git; run in release"]
+fn preview_cache_owner_develops_supplied_raws_with_no_usable_preview() {
+    use sha2::{Digest, Sha256};
+    let files = std::env::var("LUXFORGE_NO_PREVIEW_RAWS")
+        .expect("LUXFORGE_NO_PREVIEW_RAWS names the files");
+    let mut setup = Setup::new("preview-owner-no-preview-raws");
+    for path in files.split(':').map(PathBuf::from) {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let before = Sha256::digest(fs::read(&path).unwrap());
+        let file = add_file(
+            &mut setup.index,
+            &path,
+            SourceTag::Raw,
+            HeaderState::Pending,
+        );
+        let answer = setup.read(file, "grid", "visible");
+        let record = setup.settled(&answer["job_id"]);
+        if record["status"] == "ready" {
+            let preview = &record["result"];
+            assert_eq!(preview["origin"], "developed", "{name}: {record}");
+            let (width, height) =
+                decoded(Path::new(preview["path"].as_str().unwrap())).dimensions();
+            assert_eq!(
+                json!([width, height]),
+                json!([preview["width"], preview["height"]])
+            );
+            assert_eq!(width.max(height), 512, "{name}");
+            let loupe = setup.read(file, "loupe", "look-ahead");
+            let loupe = &setup.settled(&loupe["job_id"])["result"];
+            assert_eq!(loupe["origin"], "developed", "{name}: {loupe}");
+            let region = setup.ok(
+                "preview.region",
+                json!({
+                    "item": {"kind": "file", "file_id": file},
+                    "rect": {"x": 0, "y": 0, "width": 512, "height": 512},
+                    "frame": {"width": 2, "height": 2},
+                }),
+            );
+            let region = setup.settled(&region["job_id"]);
+            assert_eq!(region["result"]["origin"], "developed", "{name}: {region}");
+            println!(
+                "{name}: grid developed, {width} x {height}; loupe {} x {}; a 100% region of the {} x {} frame",
+                loupe["width"],
+                loupe["height"],
+                region["result"]["frame"]["width"],
+                region["result"]["frame"]["height"]
+            );
+        } else {
+            assert_eq!(
+                record["error"]["code"], "unsupported-input",
+                "{name}: {record}"
+            );
+            println!("{name}: {}", record["error"]["message"]);
+        }
+        assert_eq!(
+            Sha256::digest(fs::read(&path).unwrap()),
+            before,
+            "{name} is unchanged"
+        );
+    }
+    crate::previews::region::release_development();
 }
