@@ -4634,8 +4634,11 @@ mod tests {
             json!({"job_id": prepare}),
         );
 
-        // Analysis: running on its worker, then cancelled by its only client while it runs. It
-        // reads running until the worker stops, and cancelled with the board once it has.
+        // Analysis: running on its worker, then cancelled by its only client while its render is
+        // held at the gate. It reads running until the worker stops, and cancelled with the board
+        // once it has. The worker ends its activity before the owner takes the outcome, so the
+        // cancel waits for the render to be held: one cancelled before its first row stops
+        // without reaching the gate and is briefly listed cancelled while it still reads running.
         ok(
             &owner,
             client,
@@ -4647,6 +4650,7 @@ mod tests {
             }),
         );
         render_gate.shut();
+        let rows_before = render_gate.reached();
         let analysis = ok(
             &owner,
             client,
@@ -4660,6 +4664,7 @@ mod tests {
             agreeing(&owner, client, &analysis, "analysis.histogram")["status"],
             "running"
         );
+        render_gate.wait_reached(rows_before + 1, "the analysis render");
         let left = ok(
             &owner,
             client,
