@@ -88,6 +88,8 @@ pub(crate) struct Select {
     pub(crate) read_in_flight: bool,
     /// The grid's decoded previews: each cell's handle, made once and held under the byte budget.
     pub(crate) previews: SelectPreviews,
+    /// The loupe's decoded frames and focus check (`app/loupe.rs`).
+    pub(crate) loupe: crate::app::loupe::Loupe,
 }
 
 /// A folder browsed on disk whose listing and headers the index lane is reading.
@@ -127,6 +129,7 @@ impl Default for Select {
             reading: None,
             read_in_flight: false,
             previews: SelectPreviews::default(),
+            loupe: crate::app::loupe::Loupe::default(),
         }
     }
 }
@@ -454,7 +457,7 @@ impl Editor {
     /// Nothing Select asked the owner for is in flight or still wanted, and the cells on screen have
     /// their previews or nothing to wait for: what an evidence step settles on.
     pub(crate) fn select_quiet(&self) -> bool {
-        self.select_reads_quiet() && self.select.previews.settled()
+        self.select_reads_quiet() && self.select.previews.settled() && self.loupe_settled()
     }
 
     /// Nothing Select asked the owner for is in flight or still wanted: the events, the view and
@@ -507,7 +510,7 @@ impl Editor {
             self.select.state.menu = None;
             self.select.state.shown = Shown::Develop;
             self.select.previews.release();
-            return Task::none();
+            return self.loupe_leave();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
@@ -1080,6 +1083,7 @@ impl Editor {
             "info_panel": state.info_panel,
             "cell_width": state.cell_width(),
             "previews": self.select.previews.summary(),
+            "loupe": self.loupe_summary(),
             "title": {
                 "name": model.title.name,
                 "summary": model.title.summary,
