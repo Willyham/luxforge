@@ -245,6 +245,14 @@ Decided by the owner on 2026-09-28, accepting the recommendations recorded in [p
 - **GPU residency beyond the photo-texture ceiling stays a standalone follow-up** outside the programme waves, measured beside the whole-editor RAW measurement before any total-memory claim. **The 1088 MiB photo-texture ceiling is one budget shared by every photo surface**, so a second surface draws from it rather than doubling it. Neither implies a total editor or GPU memory guarantee.
 - **RAW priorities are narrowed** to what the recorded product decisions leave open: which recording modes, firmware and controlled quality scenes come next, and whether any camera-JPEG or film matching goes beyond the neutral development.
 
+## Popular cameras and RawSpeed
+
+Decided by the owner on 2026-09-30, after the [popularity study](research/popular-cameras.md) and the [RawSpeed evaluation](research/rawspeed-evaluation.md).
+
+- **Camera support is weighed by the cameras photographers use,** not the owner's own bodies. The default and common recording modes of the most-used cameras are admitted first ([popular camera support](design/popular-camera-support.md)).
+- **Nikon High Efficiency (HE and HE★) NEF is not supported** until upstream LibRaw decodes it. It is refused explicitly, before unpack, for every Nikon model, never decoded silently or as garbage.
+- **RawSpeed fills the sensor mosaic for the modes where it is exact and faster,** behind LibRaw's identify, metadata and post-unpack steps, through the adapter's own decode rather than LibRaw's RawSpeed hook ([RawSpeed unpacking](design/rawspeed-unpack.md)). LibRaw is not replaced.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
