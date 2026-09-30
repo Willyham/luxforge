@@ -788,11 +788,12 @@ pub(crate) fn delete_files(tx: &Transaction<'_>, ids: &[FileId]) -> Result<(), E
     Ok(())
 }
 
-/// Drop the row of the file at `path`, if there is one.
-pub(crate) fn delete_file_at(tx: &Transaction<'_>, path: &Path) -> Result<(), Error> {
-    tx.prepare_cached("DELETE FROM files WHERE path = ?1")?
-        .execute([path.to_string_lossy()])?;
-    Ok(())
+/// Drop the row of the file at `path`, if there is one: whether there was.
+pub(crate) fn delete_file_at(tx: &Transaction<'_>, path: &Path) -> Result<bool, Error> {
+    Ok(tx
+        .prepare_cached("DELETE FROM files WHERE path = ?1")?
+        .execute([path.to_string_lossy()])?
+        > 0)
 }
 
 /// Every root the index lists, in path order.

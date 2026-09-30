@@ -664,40 +664,50 @@ impl Batch {
         if self.writes.is_empty() {
             return Ok(());
         }
-        let changes = self
-            .writes
-            .iter()
-            .any(|write| !matches!(write, Write::Cursor { .. }));
+        // Whether a write changed a file or a root: a cursor changes neither, and a file gone or a
+        // volume's roots may find nothing to change, so a batch of nothing else advances no
+        // revision and records no event.
+        let mut changed = false;
         let tx = connection.transaction()?;
         for write in self.writes.drain(..) {
-            match write {
+            changed |= match write {
                 Write::File(record) => {
                     database::upsert_file(&tx, &record)?;
+                    true
                 }
                 Write::Moved { id, record, reread } => {
                     database::move_file(&tx, id, &record, reread)?;
+                    true
                 }
-                Write::Identity { id, record } => database::refresh_identity(
-                    &tx,
-                    id,
-                    record.signature.identity,
-                    &record.volume_id,
-                )?,
+                Write::Identity { id, record } => {
+                    database::refresh_identity(
+                        &tx,
+                        id,
+                        record.signature.identity,
+                        &record.volume_id,
+                    )?;
+                    true
+                }
                 Write::Gone(path) => database::delete_file_at(&tx, &path)?,
-                Write::Vanished(ids) => database::delete_files(&tx, &ids)?,
+                Write::Vanished(ids) => {
+                    database::delete_files(&tx, &ids)?;
+                    !ids.is_empty()
+                }
                 Write::Root(root) => {
                     database::upsert_root(&tx, &root)?;
+                    true
                 }
-                Write::Cursor { root, cursor } => database::set_root_cursor(&tx, &root, cursor)?,
+                Write::Cursor { root, cursor } => {
+                    database::set_root_cursor(&tx, &root, cursor)?;
+                    false
+                }
                 Write::Offline {
                     mount_point,
                     offline,
-                } => {
-                    database::set_roots_offline_under(&tx, &mount_point, offline)?;
-                }
-            }
+                } => !database::set_roots_offline_under(&tx, &mount_point, offline)?.is_empty(),
+            };
         }
-        let revision = changes
+        let revision = changed
             .then(|| database::advance_revision(&tx))
             .transpose()?;
         tx.commit()?;
