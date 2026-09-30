@@ -12,6 +12,8 @@
 //!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a RAW
 //!   with no usable preview is developed instead (`develop_instead`), for a visible or look-ahead
 //!   task.
+//! - `display.rs`: [`decode_preview`], a cached preview decoded for a client to draw at the size it
+//!   needs, on the client's own worker: the desktop's Select grid's decode (lane D's).
 //! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
 //!   the view — deduplicated by (file, tier) and bounded, the failures and deferrals it remembers,
 //!   and at most two worker threads, each blocked on its channel while idle.
@@ -35,6 +37,7 @@
 //! uses or evicts the editor's one-slot source cache.
 mod bracket;
 mod cache;
+mod display;
 mod extract;
 mod lane;
 pub(crate) mod region;
@@ -52,6 +55,7 @@ pub(crate) use bracket::{PreviewProbe, bracket_probe};
 )]
 pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
 pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};
+pub use display::{DecodedPreview, decode_preview};
 #[cfg(test)]
 pub(crate) use lane::DevelopHook;
 pub(crate) use lane::{

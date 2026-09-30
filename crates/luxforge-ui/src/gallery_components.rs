@@ -283,10 +283,10 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         },
         |_| (),
     ));
-    // The icons in two columns, so the whole board fits one gallery page beside a curve.
-    let half = Icon::NAMED.len().div_ceil(2);
+    // The icons in three columns, so the whole board fits one gallery page beside a curve.
+    let third = Icon::NAMED.len().div_ceil(3);
     let mut columns = iced::widget::row![].spacing(24.0);
-    for chunk in Icon::NAMED.chunks(half) {
+    for chunk in Icon::NAMED.chunks(third) {
         let mut icons = iced::widget::column![].spacing(6.0);
         for &(name, symbol) in chunk {
             icons = icons.push(

@@ -12,8 +12,8 @@ use crate::{
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
     presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    select_smoke as select, viewport_smoke as viewport, vignette_smoke as vignette,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -630,7 +630,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "gallery",
-        about: "All 99 widget gallery states across thirteen pages",
+        about: "All 124 widget gallery states across eighteen pages",
         launches: &[LaunchSpec {
             plan: gallery::plan,
             developer: true,
@@ -666,6 +666,16 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(capabilities::NOTE),
         own: Some(capabilities::run),
+    },
+    Scenario {
+        name: select::SCENARIO,
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a folder of real images, and back to Develop",
+        launches: &[],
+        verify: select::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(select::NOTE),
+        own: Some(select::run),
     },
     Scenario {
         name: "unavailable",

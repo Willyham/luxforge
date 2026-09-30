@@ -557,7 +557,6 @@ impl BracketProbe for PreviewProbe<'_> {
 /// hand to `organize::group`: it reads nothing until organizing asks about a run, and then only
 /// that run's fingerprints (the fingerprints of files' grid tiers whose row is valid for the
 /// file's current signature).
-#[allow(dead_code, reason = "lane D's browse.view calls it as it lands")]
 pub(crate) fn bracket_probe(connection: &Connection) -> PreviewProbe<'_> {
     PreviewProbe {
         fingerprints: Fingerprints::Index(connection),

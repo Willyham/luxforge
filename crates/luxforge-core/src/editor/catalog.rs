@@ -785,6 +785,13 @@ impl EditorService {
 }
 // ── end lane C ──
 // ── catalog lane D: views ──
+impl EditorService {
+    /// The catalog's latest library change, or 0 before the first: what a browse view is stamped
+    /// with, so a later change marks it stale. The journal's own reader, one row by its key.
+    pub(crate) fn library_sequence(&self) -> Result<crate::catalog_types::LibraryChangeSeq, Error> {
+        crate::library::journal::latest(&self.connection)
+    }
+}
 // ── end lane D ──
 
 #[cfg(test)]
