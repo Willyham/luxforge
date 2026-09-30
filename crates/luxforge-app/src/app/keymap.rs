@@ -9,6 +9,10 @@ use crate::app::message::{
     view::ViewMessage,
 };
 use crate::state::palette::Panel;
+// ── catalog lane D: views and desktop ──
+use crate::app::message::select::{SelectMessage, Step};
+use crate::state::select::{SelectPanel, Shown};
+// ── end lane D ──
 use iced::{
     Event, Subscription,
     event::Status,
@@ -58,6 +62,10 @@ pub(crate) struct KeyContext {
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
     // ── catalog lane D: views and desktop ──
+    /// The Select workspace is shown: its own keys act, and none of Develop's.
+    pub(crate) select: bool,
+    /// One of Select's chip or sort menus is open, so Escape closes it.
+    pub(crate) select_menu_open: bool,
     // ── end lane D ──
 }
 
@@ -98,6 +106,13 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     {
         return Some(Message::History(HistoryMessage::CompareEnd));
     }
+    // ── catalog lane D: views and desktop ──
+    // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
+    // reaches it, so nothing acts on a photograph it does not show.
+    if context.select {
+        return select_keys(keyboard, status, context);
+    }
+    // ── end lane D ──
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
@@ -210,7 +225,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return None;
     }
     // ── catalog lane D: views and desktop ──
-    // The Select workspace's keys (`docs/design/catalog.md#keyboard`), while it is shown.
+    // `G` shows the Select workspace. The switch answers the one start refusal, so an open draft
+    // refuses it with its reason.
+    if !*repeat && character(key, "g") && plain(modifiers) {
+        return Some(Message::Select(SelectMessage::Switch(Shown::Select)));
+    }
     // ── end lane D ──
     // While a kind menu is open its letters start its kinds. The menu is what the person is looking
     // at, so its letters win over a canvas-mode letter that happens to be the same.
@@ -339,6 +358,87 @@ fn character(key: &Key, letter: &str) -> bool {
     matches!(key, Key::Character(value) if value.eq_ignore_ascii_case(letter))
 }
 
+// ── catalog lane D: views and desktop ──
+/// No modifier held.
+fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
+    !modifiers.shift() && !modifiers.alt() && !modifiers.control() && !modifiers.logo()
+}
+
+/// The Select workspace's keys: Escape closes an open menu whatever has focus; otherwise only a key
+/// no text field took acts. The arrows move the active item and repeat while held, with Shift
+/// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Tab` toggles the side panels,
+/// and `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst.
+/// `D`, which will develop the active frame, waits for picks, and the loupe's keys for the loupe.
+fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
+    let Keys::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+        ..
+    } = keyboard
+    else {
+        return None;
+    };
+    if context.select_menu_open && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Select(SelectMessage::Menu(None)));
+    }
+    if status != Status::Ignored {
+        return None;
+    }
+    if modifiers.command() {
+        if modifiers.alt() {
+            if character(key, "[") {
+                return Some(Message::Select(SelectMessage::TogglePanel(
+                    SelectPanel::Sources,
+                )));
+            }
+            if character(key, "]") {
+                return Some(Message::Select(SelectMessage::TogglePanel(
+                    SelectPanel::Info,
+                )));
+            }
+            return None;
+        }
+        if modifiers.shift() || *repeat {
+            return None;
+        }
+        if character(key, "a") {
+            return Some(Message::Select(SelectMessage::SelectAll));
+        }
+        if character(key, "d") {
+            return Some(Message::Select(SelectMessage::SelectNone));
+        }
+        return None;
+    }
+    let step = match key {
+        Key::Named(Named::ArrowLeft) => Some(Step::Left),
+        Key::Named(Named::ArrowRight) => Some(Step::Right),
+        Key::Named(Named::ArrowUp) => Some(Step::Up),
+        Key::Named(Named::ArrowDown) => Some(Step::Down),
+        _ => None,
+    };
+    if let Some(step) = step {
+        if modifiers.alt() || modifiers.control() || modifiers.logo() {
+            return None;
+        }
+        return Some(Message::Select(SelectMessage::Move {
+            step,
+            extend: modifiers.shift(),
+        }));
+    }
+    if *repeat || !plain(modifiers) {
+        return None;
+    }
+    if matches!(key, Key::Named(Named::Tab)) {
+        return Some(Message::Select(SelectMessage::TogglePanels));
+    }
+    if character(key, "s") {
+        return Some(Message::Select(SelectMessage::Collapse));
+    }
+    None
+}
+// ── end lane D ──
+
 /// The events the keyboard table can act on. Everything else never wakes the update function, so a
 /// pointer move costs nothing here.
 pub(super) fn raw_event(
@@ -439,6 +539,10 @@ mod tests {
             mask_menu_open: false,
             kind_menu: None,
             mask_keys: false,
+            // ── catalog lane D: views and desktop ──
+            select: false,
+            select_menu_open: false,
+            // ── end lane D ──
         }
     }
 
