@@ -1,25 +1,33 @@
 //! **Lane B (previews)** on the owner: the preview lane's queue and workers (`crate::previews`),
 //! who wants each task, the jobs clients read, each client's view job and its progress, the
 //! failures and deferrals the lane remembers, waking clients whose previews were written, the
-//! handler of `preview.read` (`crate::catalog_types::api`), and, in `previews/regions.rs`, the
-//! region jobs of `preview.region` on their own worker.
+//! handler of `preview.read` (`crate::catalog_types::api`), in `previews/regions.rs` the region
+//! jobs of `preview.region` on their own worker, and in `previews/renders.rs` developed
+//! photographs' previews: their render jobs on the render worker, the camera preview each shows
+//! until its first render, and following every commit.
 //!
 //! Everything here is SQL and bookkeeping on the owner thread: a request reads the file's index
 //! row and its preview rows in one query, stats the one cached file it answers with, and queues a
 //! task; the workers read, decode, encode and write (performance rule 5).
 //!
-//! - **Tasks and jobs.** A task is one file's tier. A client's `preview.read` that finds no valid
-//!   tier queues the task, or joins it, and answers its job: one catalog job per task, shared by
-//!   every client that asks, whose result is the
+//! - **Tasks and jobs.** A task is one file's tier, or the camera preview of a developed
+//!   photograph's tier (`crate::previews::CameraSource`). A client's `preview.read` that finds no
+//!   valid tier of a file queues the task, or joins it, and answers its job: one catalog job per
+//!   task, shared by every client that asks, whose result is the
 //!   [`PreviewInfo`](crate::catalog_types::PreviewInfo). `job.cancel` of it removes the task from
 //!   the queue, or stops it while it runs, unless a view still wants it. These jobs are too short
 //!   for rows of their own on the activity board.
-//! - **View jobs.** [`want_view`] queues, in the background, the grid tiers a client's view lacks,
-//!   as one catalog job per client ("Reading previews", `n of N`), which replaces the client's
-//!   previous one and whose cancel drops the tasks it alone wanted.
+//! - **View jobs.** [`want_view_items`] queues, in the background, the grid tiers a client's view
+//!   lacks, as one catalog job per client ("Reading previews", `n of N`), which replaces the
+//!   client's previous one and whose cancel drops the tasks it alone wanted. For a developed
+//!   photograph with no grid row at all that is its camera preview only, never a render: renders
+//!   run for what is visible or looked ahead to.
 //! - **Waking.** A client that asked ([`OwnerHandle::watch_previews`]) is woken, on the owner
-//!   thread, when a task its request or its view waits on writes a preview or ends, and reads
-//!   `preview.read` again for the cells it waits on: nothing polls.
+//!   thread, when something its own request waits on is written or ends — a task its
+//!   `preview.read` was answered `queued` for (each stage of a file's grid tier; a photograph's
+//!   camera preview and its render), or its `preview.region` — and reads `preview.read` again
+//!   for the cells it waits on: nothing polls. A view job's progress wakes nobody: a client reads
+//!   it from the activity board, as any job's.
 //! - **Failures.** A file that cannot give a tier — no usable preview Luxforge can develop, a
 //!   corrupt file, one past a limit — is remembered, per tier and signature, in memory only: its
 //!   grid reports `unavailable` and `preview.read` answers the failure until the file changes or
@@ -40,16 +48,17 @@ use super::{
     catalog::{CatalogMessage, Poster},
 };
 use crate::{
-    Error, ErrorKind, JobId,
+    EditorService, Error, ErrorKind, JobId,
     activity::{ActivityBoard, ActivitySpec},
     catalog_types::{
-        FileId, PreviewAnswer, PreviewItem, PreviewOrigin, PreviewPriority, PreviewState,
-        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, api::PreviewRead, jobs::PREVIEW_EXTRACT,
+        AssetRowId, FileId, PreviewAnswer, PreviewItem, PreviewOrigin, PreviewPriority,
+        PreviewState, PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, ViewItem, api::PreviewRead,
+        jobs::PREVIEW_EXTRACT,
     },
     jobs::{CatalogOpened, JobControl, JobKind, Jobs, Output},
     previews::{
-        self, Failures, Outcome, Post, Queue, RegionDone, Store, Task, TaskKey, WorkerEvent,
-        Workers, region,
+        self, CameraSource, Failures, Outcome, Post, Queue, RegionDone, RenderDone, Store, Task,
+        TaskKey, WorkerEvent, Workers, region,
     },
 };
 use rusqlite::Connection;
@@ -68,7 +77,9 @@ const DISCONNECTED: &str = "the client disconnected";
 const UNWANTED: &str = "no request or view wants this preview any more";
 
 mod regions;
+mod renders;
 pub(in crate::api) use regions::preview_region;
+pub(in crate::api::owner) use renders::follow_changes;
 
 /// Lane B's state on the owner.
 pub(super) struct PreviewsLane {
@@ -93,6 +104,7 @@ pub(super) struct PreviewsLane {
     /// disconnects, the kept development is released.
     developing: BTreeSet<ClientId>,
     regions: regions::Regions,
+    renders: renders::Renders,
     #[cfg(test)]
     develop: Option<previews::DevelopHook>,
     #[cfg(test)]
@@ -116,6 +128,10 @@ struct Wanted {
     views: BTreeSet<ClientId>,
     /// The clients that asked for it, woken when it writes a preview or ends.
     waiters: BTreeSet<ClientId>,
+    /// A photograph's render waits on it: its camera preview is the fallback until the render.
+    for_render: bool,
+    /// For a photograph's camera preview, its original as the catalog records it.
+    camera: Option<Arc<CameraSource>>,
     running: bool,
 }
 
@@ -127,17 +143,20 @@ impl Wanted {
             job: None,
             views: BTreeSet::new(),
             waiters: BTreeSet::new(),
+            for_render: false,
+            camera: None,
             running: false,
         }
     }
 
     fn wanted(&self) -> bool {
-        self.job.is_some() || !self.views.is_empty()
+        self.job.is_some() || !self.views.is_empty() || self.for_render
     }
 
-    /// Every client to wake when it writes a preview or ends.
+    /// Every client to wake when it writes a preview or ends: those whose own requests wait on
+    /// it, never a view's.
     fn clients(&self) -> impl Iterator<Item = ClientId> + '_ {
-        self.waiters.iter().chain(&self.views).copied()
+        self.waiters.iter().copied()
     }
 }
 
@@ -174,12 +193,25 @@ pub(super) enum PreviewsMessage {
     Worker(WorkerEvent),
     /// The region worker finished a job.
     Region(RegionDone),
+    /// The render worker finished a render.
+    Render(RenderDone),
     /// Hold every task handed out from now on at this gate, or stop holding them.
     #[cfg(test)]
     Hold(Option<Arc<luxforge_testbase::Gate>>),
     /// Hold every region job handed out from now on at this gate, or stop holding them.
     #[cfg(test)]
     HoldRegions(Option<Arc<luxforge_testbase::Gate>>),
+    /// Hold every render handed out from now on at this gate, or stop holding them.
+    #[cfg(test)]
+    HoldRenders(Option<Arc<luxforge_testbase::Gate>>),
+    /// Answer the renders handed out so far, in order.
+    #[cfg(test)]
+    RendersDispatched(
+        std::sync::mpsc::SyncSender<Vec<(crate::AssetId, crate::EntryId, Vec<PreviewTier>)>>,
+    ),
+    /// Bound the render queue at this many renders.
+    #[cfg(test)]
+    RenderCapacity(usize),
     /// Develop a RAW with no usable preview through this hook from now on, or through the
     /// production development again.
     #[cfg(test)]
@@ -193,11 +225,11 @@ pub(super) enum PreviewsMessage {
     /// Answer the tasks handed out so far, in order.
     #[cfg(test)]
     Dispatched(std::sync::mpsc::SyncSender<Vec<TaskKey>>),
-    /// Call [`want_view`] for this client, as lane D's `browse.view` will.
+    /// Call [`want_view_items`] for this client, as lane D's `browse.view` will.
     #[cfg(test)]
     WantView {
         client: ClientId,
-        files: Vec<FileId>,
+        items: Vec<ViewItem>,
         reply: std::sync::mpsc::SyncSender<Result<Option<JobId>, Error>>,
     },
     /// Answer [`PreviewsLane::grid_states`] for these files.
@@ -206,13 +238,22 @@ pub(super) enum PreviewsMessage {
         files: Vec<FileId>,
         reply: std::sync::mpsc::SyncSender<Result<Vec<PreviewState>, Error>>,
     },
+    /// Answer [`PreviewsLane::view_grid_states`] for these items.
+    #[cfg(test)]
+    ViewGridStates {
+        items: Vec<ViewItem>,
+        reply: std::sync::mpsc::SyncSender<Result<Vec<PreviewState>, Error>>,
+    },
 }
 
 impl OwnerHandle {
-    /// Wake `client` whenever a preview it waits on is written or its task ends: a tier its
-    /// `preview.read` queued, or a grid tier its view job reads. `wake` runs on the owner thread
-    /// and must only post a signal; the client then reads `preview.read` again for the cells it
-    /// waits on. A later call replaces the waker, and disconnecting the client drops it.
+    /// Wake `client` whenever something its own request waits on is written or ends: a tier its
+    /// `preview.read` was answered `queued` for, once per stage it waits on (a file's grid tier's
+    /// thumbnail and its embedded preview; a photograph's camera preview and its render), or its
+    /// `preview.region`. A view job's progress wakes nobody; the activity board carries it. `wake`
+    /// runs on the owner thread and must only post a signal; the client then reads `preview.read`
+    /// again for the cells it waits on. A later call replaces the waker, and disconnecting the
+    /// client drops it.
     pub fn watch_previews(&self, client: ClientId, wake: EventWake) {
         let _ = self
             .sender
@@ -238,6 +279,7 @@ impl PreviewsLane {
             deferred: Failures::default(),
             developing: BTreeSet::new(),
             regions: regions::Regions::default(),
+            renders: renders::Renders::default(),
             #[cfg(test)]
             develop: None,
             #[cfg(test)]
@@ -264,6 +306,7 @@ impl PreviewsLane {
             self.end_view(client, jobs);
         }
         self.regions.disconnect(client, jobs);
+        self.renders.disconnect(client);
         if self.developing.remove(&client) && self.developing.is_empty() {
             region::release_development();
         }
@@ -273,7 +316,7 @@ impl PreviewsLane {
     /// only it wanted; a request's job leaves its task, which is removed from the queue, or
     /// stopped while it runs, when nothing else wants it.
     pub(super) fn cancelled(&mut self, job_id: &JobId, jobs: &mut Jobs) {
-        if self.regions.cancelled(job_id, jobs) {
+        if self.regions.cancelled(job_id, jobs) || self.renders.cancelled(job_id, jobs) {
             return;
         }
         if let Some(client) = self
@@ -305,6 +348,7 @@ impl PreviewsLane {
             wanted.control.cancel("the catalog owner stopped");
         }
         self.regions.shutdown();
+        self.renders.shutdown();
         region::wake_development_waiters();
         region::release_development();
         drop(self.workers);
@@ -327,7 +371,7 @@ impl PreviewsLane {
                 (PreviewState::Pending, Some(signature))
                     if self
                         .failures
-                        .get(&(*file, PreviewTier::Grid), &signature)
+                        .get(&(ViewItem::File(*file), PreviewTier::Grid), &signature)
                         .is_some() =>
                 {
                     PreviewState::Unavailable
@@ -335,6 +379,64 @@ impl PreviewsLane {
                 (state, _) => state,
             })
             .collect())
+    }
+
+    /// Each item's grid state, in the order given, for lane D's `browse.rows`: a file's as
+    /// [`Self::grid_states`] answers it, and a developed photograph's against its current entry —
+    /// `ready` for its rendered grid tier at this generation, `thumbnail` for a camera preview only
+    /// or a render of another entry or generation, `pending` for nothing. Three queries at most:
+    /// the files', the photographs' current entries in the catalog, and their grid rows.
+    #[allow(dead_code, reason = "lane D's browse.rows calls it as it lands")]
+    pub(super) fn view_grid_states(
+        &self,
+        service: &EditorService,
+        items: &[ViewItem],
+    ) -> Result<Vec<PreviewState>, Error> {
+        let files: Vec<FileId> = items
+            .iter()
+            .filter_map(|item| match item {
+                ViewItem::File(file) => Some(*file),
+                ViewItem::Photo(_) => None,
+            })
+            .collect();
+        let rows: Vec<AssetRowId> = items
+            .iter()
+            .filter_map(|item| match item {
+                ViewItem::Photo(row) => Some(*row),
+                ViewItem::File(_) => None,
+            })
+            .collect();
+        let photos = renders::photos_at(service, &rows)?;
+        let current: Vec<_> = photos
+            .iter()
+            .flatten()
+            .map(|photo| (photo.asset_id.clone(), photo.entry_id.clone()))
+            .collect();
+        let index = service.index()?;
+        let mut files = self.grid_states(index.connection(), &files)?.into_iter();
+        let mut grids = previews::photo_grid_rows(index.connection(), &current)?.into_iter();
+        let mut photos = photos.into_iter();
+        Ok(items
+            .iter()
+            .map(|item| match item {
+                ViewItem::File(_) => files.next().unwrap_or(PreviewState::Pending),
+                ViewItem::Photo(_) => match photos.next().flatten() {
+                    Some(_) => grids
+                        .next()
+                        .map_or(PreviewState::Pending, |grid| grid.state()),
+                    None => PreviewState::Pending,
+                },
+            })
+            .collect())
+    }
+
+    /// A photograph's render wrote `key`'s tier: its camera preview is no longer wanted in its
+    /// place, and is dropped unless a view still wants it.
+    fn release_camera(&mut self, key: TaskKey) {
+        if let Some(wanted) = self.tasks.get_mut(&key) {
+            wanted.for_render = false;
+        }
+        self.drop_unwanted(key);
     }
 
     /// Wake `clients`, each once.
@@ -419,18 +521,18 @@ fn answer(answer: &PreviewAnswer) -> Result<Value, Error> {
 }
 
 /// `preview.read`: a file's cached tier, or the job making it with the best preview cached
-/// meanwhile. A developed photograph's tiers are not built yet.
+/// meanwhile; a developed photograph's rendered tier, or the render making it
+/// ([`renders::read_photo`]).
 pub(in crate::api) fn preview_read(
     owner: &mut Owner,
     call: &Call<'_>,
     params: PreviewRead,
 ) -> Result<Value, Error> {
+    let priority = params.priority.unwrap_or_default();
     let file = match params.item {
         PreviewItem::File { file_id } => file_id,
-        PreviewItem::Photo { .. } => {
-            return Err(Error::unsupported_input(
-                "rendered previews of developed photographs are not built yet",
-            ));
+        PreviewItem::Photo { asset_id, entry_id } => {
+            return renders::read_photo(owner, call, &asset_id, entry_id, params.tier, priority);
         }
     };
     let tier = match params.tier {
@@ -441,8 +543,7 @@ pub(in crate::api) fn preview_read(
         }
         tier => tier,
     };
-    let priority = params.priority.unwrap_or_default();
-    let key = (file, tier);
+    let key = (ViewItem::File(file), tier);
     let fallback = {
         let index = owner.service.index()?;
         let tiers = previews::file_tiers(index.connection(), file)?
@@ -513,17 +614,36 @@ pub(in crate::api) fn preview_read(
     answer(&PreviewAnswer::Queued { job_id, fallback })
 }
 
-/// Queue in the background the grid tiers `client`'s view lacks among `files` — those without a
-/// valid complete grid tier, found in one query, less those the lane knows it cannot read or
-/// deferred for a development — as one view job that replaces the client's previous one, and
-/// release the kept development, whose frame belonged to the view replaced. Answers the job, or
-/// none when every grid tier is there. `resource-limit` when the queue cannot take them, and then
-/// nothing is queued. Lane D's `browse.view` calls it when it evaluates a view over files.
+/// [`want_view_items`] for a view over files.
 #[allow(dead_code, reason = "lane D's browse.view calls it as it lands")]
 pub(super) fn want_view(
     owner: &mut Owner,
     client: ClientId,
     files: &[FileId],
+) -> Result<Option<JobId>, Error> {
+    let items: Vec<ViewItem> = files.iter().copied().map(ViewItem::File).collect();
+    want_view_items(owner, client, &items)
+}
+
+/// Queue in the background what `client`'s view lacks among `items`, as one view job that
+/// replaces the client's previous one, and release the kept development, whose frame belonged to
+/// the view replaced:
+///
+/// - for a file, its grid tier when it has no valid complete one (one query), less the files the
+///   lane knows it cannot read or deferred for a development;
+/// - for a developed photograph with no grid row at all — no render of any entry and no camera
+///   preview (two queries: the catalog's record, the index's rows) — its camera preview only,
+///   which is cheap, and never a render: renders run for visible and look-ahead requests, never
+///   for thousands of photographs in the background.
+///
+/// Answers the job, or none when nothing is lacking. `resource-limit` when the queue cannot take
+/// the files' tiers, and then nothing is queued; photographs' camera previews take the room left,
+/// in the view's order, since a visible read of any other asks for its own. Lane D's `browse.view`
+/// calls it when it evaluates a view.
+pub(super) fn want_view_items(
+    owner: &mut Owner,
+    client: ClientId,
+    items: &[ViewItem],
 ) -> Result<Option<JobId>, Error> {
     if let Some(view) = owner.catalog.previews.views.get(&client) {
         let job_id = view.job_id.clone();
@@ -531,23 +651,57 @@ pub(super) fn want_view(
         owner.catalog.previews.end_view(client, &mut owner.jobs);
     }
     region::release_development();
+    let mut files = Vec::new();
+    let mut rows = Vec::new();
+    for item in items {
+        match item {
+            ViewItem::File(file) => files.push(*file),
+            ViewItem::Photo(row) => rows.push(*row),
+        }
+    }
     let wanted = {
         let index = owner.service.index()?;
-        previews::grids_wanted(index.connection(), files)?
+        previews::grids_wanted(index.connection(), &files)?
     };
+    let mut cameras: Vec<(TaskKey, CameraSource)> = Vec::new();
+    if !rows.is_empty() {
+        owner.catalog.previews.renders.used();
+        let photos: Vec<CameraSource> = renders::photos_at(&owner.service, &rows)?
+            .into_iter()
+            .flatten()
+            .collect();
+        let current: Vec<_> = photos
+            .iter()
+            .map(|photo| (photo.asset_id.clone(), photo.entry_id.clone()))
+            .collect();
+        let grids = {
+            let index = owner.service.index()?;
+            previews::photo_grid_rows(index.connection(), &current)?
+        };
+        let lane = &owner.catalog.previews;
+        let mut seen = HashSet::new();
+        for (photo, grid) in photos.into_iter().zip(grids) {
+            let key = (ViewItem::Photo(photo.row), PreviewTier::Grid);
+            let signature = previews::recorded_signature(&photo);
+            if !grid.any
+                && seen.insert(key)
+                && lane.failures.get(&key, &signature).is_none()
+                && lane.deferred.get(&key, &signature).is_none()
+            {
+                cameras.push((key, photo));
+            }
+        }
+    }
     let lane = &owner.catalog.previews;
     let keys: Vec<TaskKey> = wanted
         .into_iter()
-        .filter(|(file, signature)| {
-            let key = (*file, PreviewTier::Grid);
-            lane.failures.get(&key, signature).is_none()
-                && lane.deferred.get(&key, signature).is_none()
+        .map(|(file, signature)| ((ViewItem::File(file), PreviewTier::Grid), signature))
+        .filter(|(key, signature)| {
+            lane.failures.get(key, signature).is_none()
+                && lane.deferred.get(key, signature).is_none()
         })
-        .map(|(file, _)| (file, PreviewTier::Grid))
+        .map(|(key, _)| key)
         .collect();
-    if keys.is_empty() {
-        return Ok(None);
-    }
     let new = keys
         .iter()
         .filter(|key| !lane.tasks.contains_key(key))
@@ -556,6 +710,18 @@ pub(super) fn want_view(
         return Err(Error::resource_limit(format!(
             "the preview queue cannot take the {new} grid previews this view lacks"
         )));
+    }
+    let mut room = lane.queue.room() - new;
+    cameras.retain(|(key, _)| {
+        if lane.tasks.contains_key(key) {
+            return true;
+        }
+        let fits = room > 0;
+        room = room.saturating_sub(1);
+        fits
+    });
+    if keys.is_empty() && cameras.is_empty() {
+        return Ok(None);
     }
     ensure_workers(owner)?;
     let lane = &mut owner.catalog.previews;
@@ -576,12 +742,18 @@ pub(super) fn want_view(
         job_id: Some(job_id.to_string()),
     }));
     let mut running = false;
-    for key in &keys {
+    let mut pending = HashSet::with_capacity(keys.len() + cameras.len());
+    let photos = cameras.into_iter().map(|(key, photo)| (key, Some(photo)));
+    for (key, camera) in keys.into_iter().map(|key| (key, None)).chain(photos) {
         let wanted = lane
-            .want(*key, PreviewPriority::Background)
+            .want(key, PreviewPriority::Background)
             .expect("the queue was checked to fit them");
         wanted.views.insert(client);
+        if let Some(camera) = camera {
+            wanted.camera.get_or_insert_with(|| Arc::new(camera));
+        }
         running |= wanted.running;
+        pending.insert(key);
     }
     if running {
         owner.jobs.start(&job_id);
@@ -589,10 +761,10 @@ pub(super) fn want_view(
     let view = View {
         job_id: job_id.clone(),
         control,
-        total: keys.len(),
+        total: pending.len(),
         failed: 0,
         deferred: 0,
-        pending: keys.into_iter().collect(),
+        pending,
     };
     view.progress();
     lane.views.insert(client, view);
@@ -618,6 +790,36 @@ fn ensure_workers(owner: &mut Owner) -> Result<(), Error> {
     });
     owner.catalog.previews.workers = Some(Workers::start(stores, post)?);
     Ok(())
+}
+
+/// Ask the extraction workers for `photo`'s camera preview of `tier` at `priority`, the fallback
+/// `client`'s read waits on until the photograph's render: not when the lane remembers it has none
+/// or cannot read it, and not when the queue is full — the render still comes.
+fn want_camera(
+    owner: &mut Owner,
+    photo: CameraSource,
+    tier: PreviewTier,
+    priority: PreviewPriority,
+    client: ClientId,
+) {
+    let key = (ViewItem::Photo(photo.row), tier);
+    let signature = previews::recorded_signature(&photo);
+    let lane = &owner.catalog.previews;
+    if lane.failures.get(&key, &signature).is_some()
+        || lane.deferred.get(&key, &signature).is_some()
+    {
+        return;
+    }
+    if ensure_workers(owner).is_err() {
+        return;
+    }
+    let Ok(wanted) = owner.catalog.previews.want(key, priority) else {
+        return;
+    };
+    wanted.for_render = true;
+    wanted.waiters.insert(client);
+    wanted.camera.get_or_insert_with(|| Arc::new(photo));
+    dispatch(owner);
 }
 
 /// Hand the highest-priority tasks to the idle workers.
@@ -649,6 +851,7 @@ fn dispatch(owner: &mut Owner) {
             control: wanted.control.clone(),
             budget: lane.budget,
             develops: wanted.priority >= PreviewPriority::Visible,
+            camera: wanted.camera.clone(),
             #[cfg(test)]
             develop: lane.develop.clone(),
             #[cfg(test)]
@@ -681,10 +884,21 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
             outcome,
         }) => finished(owner, worker, key, outcome),
         PreviewsMessage::Region(done) => regions::finished(owner, done),
+        PreviewsMessage::Render(done) => renders::finished(owner, done),
         #[cfg(test)]
         PreviewsMessage::Hold(hold) => owner.catalog.previews.hold = hold,
         #[cfg(test)]
         PreviewsMessage::HoldRegions(hold) => owner.catalog.previews.regions.hold(hold),
+        #[cfg(test)]
+        PreviewsMessage::HoldRenders(hold) => owner.catalog.previews.renders.hold(hold),
+        #[cfg(test)]
+        PreviewsMessage::RendersDispatched(reply) => {
+            let _ = reply.send(owner.catalog.previews.renders.dispatched());
+        }
+        #[cfg(test)]
+        PreviewsMessage::RenderCapacity(capacity) => {
+            owner.catalog.previews.renders.set_capacity(capacity);
+        }
         #[cfg(test)]
         PreviewsMessage::Develop(develop) => owner.catalog.previews.develop = develop,
         #[cfg(test)]
@@ -698,10 +912,18 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
         #[cfg(test)]
         PreviewsMessage::WantView {
             client,
-            files,
+            items,
             reply,
         } => {
-            let _ = reply.send(want_view(owner, client, &files));
+            let _ = reply.send(want_view_items(owner, client, &items));
+        }
+        #[cfg(test)]
+        PreviewsMessage::ViewGridStates { items, reply } => {
+            let states = owner
+                .catalog
+                .previews
+                .view_grid_states(&owner.service, &items);
+            let _ = reply.send(states);
         }
         #[cfg(test)]
         PreviewsMessage::GridStates { files, reply } => {
@@ -841,11 +1063,53 @@ impl OwnerHandle {
         self.previews(PreviewsMessage::Budget(bytes));
     }
 
-    /// The preview tasks handed to workers so far, in order.
-    pub(crate) fn previews_dispatched(&self) -> Vec<TaskKey> {
+    /// Every preview task handed to the extraction workers so far, in order.
+    fn preview_tasks_dispatched(&self) -> Vec<TaskKey> {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.previews(PreviewsMessage::Dispatched(reply));
         answer.recv().expect("the owner answered")
+    }
+
+    /// The files' preview tasks handed to workers so far, in order.
+    pub(crate) fn previews_dispatched(&self) -> Vec<(FileId, PreviewTier)> {
+        self.preview_tasks_dispatched()
+            .into_iter()
+            .filter_map(|(item, tier)| match item {
+                ViewItem::File(file) => Some((file, tier)),
+                ViewItem::Photo(_) => None,
+            })
+            .collect()
+    }
+
+    /// The photographs' camera previews handed to the extraction workers so far, in order.
+    pub(crate) fn cameras_dispatched(&self) -> Vec<(AssetRowId, PreviewTier)> {
+        self.preview_tasks_dispatched()
+            .into_iter()
+            .filter_map(|(item, tier)| match item {
+                ViewItem::Photo(row) => Some((row, tier)),
+                ViewItem::File(_) => None,
+            })
+            .collect()
+    }
+
+    /// Hold every render handed out from now on at `gate`, or stop holding them.
+    pub(crate) fn hold_renders(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
+        self.previews(PreviewsMessage::HoldRenders(gate));
+    }
+
+    /// The renders handed to the render worker so far, in order: each photograph, entry and the
+    /// tiers it made.
+    pub(crate) fn renders_dispatched(
+        &self,
+    ) -> Vec<(crate::AssetId, crate::EntryId, Vec<PreviewTier>)> {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.previews(PreviewsMessage::RendersDispatched(reply));
+        answer.recv().expect("the owner answered")
+    }
+
+    /// Bound the render queue at `capacity` renders.
+    pub(crate) fn render_capacity(&self, capacity: usize) {
+        self.previews(PreviewsMessage::RenderCapacity(capacity));
     }
 
     /// [`want_view`] for `client`, as lane D's `browse.view` will call it.
@@ -854,13 +1118,32 @@ impl OwnerHandle {
         client: ClientId,
         files: Vec<FileId>,
     ) -> Result<Option<JobId>, Error> {
+        self.want_view_items(client, files.into_iter().map(ViewItem::File).collect())
+    }
+
+    /// [`want_view_items`] for `client`, as lane D's `browse.view` will call it.
+    pub(crate) fn want_view_items(
+        &self,
+        client: ClientId,
+        items: Vec<ViewItem>,
+    ) -> Result<Option<JobId>, Error> {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.previews(PreviewsMessage::WantView {
             client,
-            files,
+            items,
             reply,
         });
         answer.recv().expect("the owner answered")
+    }
+
+    /// The owner's grid states for `items`.
+    pub(crate) fn view_grid_states(&self, items: Vec<ViewItem>) -> Vec<PreviewState> {
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.previews(PreviewsMessage::ViewGridStates { items, reply });
+        answer
+            .recv()
+            .expect("the owner answered")
+            .expect("the grid states")
     }
 
     /// The owner's grid states for `files`.

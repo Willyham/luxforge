@@ -404,7 +404,7 @@ pub(crate) fn cache_bytes(connection: &Connection) -> Result<CacheBytes, Error> 
 
 /// Remove a cache file. One already gone is what was wanted, and one that cannot be removed has
 /// nobody to be reported to: no row names it any more, so it costs only its bytes.
-fn remove(path: &Path) {
+pub(super) fn remove(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
@@ -428,6 +428,16 @@ impl Store {
 
     pub(crate) fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// The connection, for a write of a developed photograph's rows (`photos.rs`).
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+
+    /// `<catalog>.index/previews`.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The file's `tier` still valid for `signature`, having first removed the row and its file
