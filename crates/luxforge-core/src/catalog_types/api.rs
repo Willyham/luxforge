@@ -635,7 +635,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "collection.delete",
         Catalog,
         "LibraryAnswer",
-        &[Validation, Conflict, CatalogError],
+        &[Validation, Conflict, ResourceLimit, CatalogError],
         "deletes a collection with its memberships, or an empty group",
     ),
     method::<CollectionMembers>(
