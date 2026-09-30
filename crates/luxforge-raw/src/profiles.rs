@@ -4,6 +4,7 @@
 //! static data equals it and to exercise the validation on mutated catalogs.
 //! Camera policy is data; these enums name implemented format/processing capabilities.
 use crate::opcodes;
+pub(crate) use crate::unpacker::Unpacker;
 use serde::Deserialize;
 use std::{borrow::Cow, collections::HashSet};
 
@@ -52,6 +53,10 @@ pub(crate) struct Mode {
     /// camera's `sensor_size`. Never smaller than the sensor in either dimension.
     #[serde(default)]
     pub frame_size: Option<[u32; 2]>,
+    /// The decoder that fills the mosaic; LibRaw's own when omitted. RawSpeed is allowed only
+    /// on a decoder in the code-owned replaceable table.
+    #[serde(default)]
+    pub unpacker: Unpacker,
 }
 
 impl Mode {
@@ -297,6 +302,11 @@ impl Catalog {
                         return fail("invalid padded mode frame size");
                     }
                 }
+                if mode.unpacker == Unpacker::Rawspeed
+                    && crate::unpacker::replaceable(&mode.decoder).is_none()
+                {
+                    return fail("RawSpeed unpacker requires a replaceable LibRaw decoder");
+                }
                 if let Some(dng) = &camera.dng {
                     if (dng.container == DngContainer::UncompressedU16SingleStrip
                         && mode.bits != 16)
@@ -500,6 +510,111 @@ mod tests {
         assert!(parse(&ambiguous).unwrap_err().contains("ambiguous"));
         assert!(Catalog::parse(&" ".repeat(1024 * 1024 + 1)).is_err());
         assert!(Catalog::parse("{broken").is_err());
+    }
+
+    /// A mode's `unpacker` is LibRaw when omitted, parses only as `libraw` or `rawspeed`, and is
+    /// `rawspeed` only on a decoder in the replaceable table.
+    #[test]
+    fn mode_unpacker_is_strict_and_rawspeed_needs_a_replaceable_decoder() {
+        let data = catalog();
+        let find = |decoder: &str| {
+            data["cameras"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .find_map(|(camera, entry)| {
+                    entry["modes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .position(|mode| mode["decoder"] == decoder)
+                        .map(|mode| format!("/cameras/{camera}/modes/{mode}"))
+                })
+                .unwrap_or_else(|| panic!("a catalog mode with {decoder}"))
+        };
+        let replaceable = find("nikon_load_raw()");
+        let other = find("unpacked_load_raw()");
+        let unpacker_at = |value: Option<Value>, pointer: &str| {
+            let mut changed = data.clone();
+            let mode = changed
+                .pointer_mut(pointer)
+                .unwrap()
+                .as_object_mut()
+                .unwrap();
+            match value {
+                Some(value) => mode.insert("unpacker".into(), value),
+                None => mode.remove("unpacker"),
+            };
+            let result = parse(&changed);
+            let mode = |catalog: &Catalog| {
+                catalog
+                    .cameras
+                    .iter()
+                    .flat_map(|camera| camera.modes.iter())
+                    .find(|mode| {
+                        Some(mode.id.as_ref()) == changed.pointer(pointer).unwrap()["id"].as_str()
+                    })
+                    .unwrap()
+                    .unpacker
+            };
+            result.map(|catalog| mode(&catalog))
+        };
+        assert_eq!(unpacker_at(None, &replaceable), Ok(Unpacker::Libraw));
+        assert_eq!(
+            unpacker_at(Some(json!("libraw")), &replaceable),
+            Ok(Unpacker::Libraw)
+        );
+        assert_eq!(
+            unpacker_at(Some(json!("rawspeed")), &replaceable),
+            Ok(Unpacker::Rawspeed)
+        );
+        assert_eq!(
+            unpacker_at(Some(json!("libraw")), &other),
+            Ok(Unpacker::Libraw)
+        );
+        assert!(
+            unpacker_at(Some(json!("rawspeed")), &other)
+                .unwrap_err()
+                .contains("RawSpeed unpacker requires a replaceable LibRaw decoder")
+        );
+        for invalid in [
+            json!("RawSpeed"),
+            json!("lib_raw"),
+            json!("dng_sdk"),
+            json!(""),
+            json!(1),
+            Value::Null,
+        ] {
+            assert!(
+                unpacker_at(Some(invalid.clone()), &replaceable).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        // Every catalog mode on a replaceable decoder may be routed, and no other.
+        let parsed = parse(&data).unwrap();
+        let (mut routable, mut refused) = (0, 0);
+        for (camera, entry) in parsed.cameras.iter().enumerate() {
+            for (index, mode) in entry.modes.iter().enumerate() {
+                let mut routed = parsed.clone();
+                routed.cameras.to_mut()[camera].modes.to_mut()[index].unpacker = Unpacker::Rawspeed;
+                let result = routed.validate();
+                if crate::unpacker::replaceable(&mode.decoder).is_some() {
+                    assert_eq!(result, Ok(()), "{}", mode.id);
+                    routable += 1;
+                } else {
+                    assert!(
+                        result
+                            .as_ref()
+                            .is_err_and(|text| text.contains("RawSpeed unpacker")),
+                        "{}: {result:?}",
+                        mode.id
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert!(routable > 0 && refused > 0, "{routable} {refused}");
     }
 
     #[test]

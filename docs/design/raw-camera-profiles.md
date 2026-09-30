@@ -63,6 +63,7 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `compression` | `null`, or `{ "probe": "nef_maker_note" or "raf_header", "value": integer }`; absent/malformed source markers never match |
 | `dng_version` | Packed DNG version integer or `null`; `17039360` is `0x01040000` |
 | Mode `frame_size` | Optional `[width, height]` of the decoder's stored frame when the mode pads the sensor, such as Sony's lossless compressed ARW in 512-pixel tiles. At least `sensor_size` in each dimension, different from it, within the same limits, and not allowed on a DNG profile. Omit when the stored frame is the sensor |
+| `unpacker` | Optional: `libraw` (the default when omitted) fills the mosaic with LibRaw's own decoder; `rawspeed` fills it with RawSpeed in place of that decoder, and is accepted only when `decoder` is in the code-owned replaceable table (`crates/luxforge-raw/src/unpacker.rs`). Any other value fails the build. Route a mode only with authentic evidence that its mosaic equals the LibRaw-only hash ([RawSpeed unpacking](rawspeed-unpack.md)) |
 | Camera `dng` | `null` for backend calibration, or the complete DNG settings object below; enabled together with `dng_tags` |
 | DNG `container` | `uncompressed_u16_single_strip` or `integer_cfa_single_segment`: one-channel integer CFA storage with matching sensor geometry and integral crop |
 | `calibration` | `root_fixed_matrix`: both source matrices required, identity AnalogBalance, no alternate calibration/forward profiles |

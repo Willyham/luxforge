@@ -14,20 +14,40 @@ For the recording modes where it is exact and faster, the RAW adapter fills the 
 
 **Classify before unpack.** The native open currently identifies and unpacks in one call, and Rust classifies the mode afterwards. The call splits: `open` runs LibRaw's `open_buffer` and returns the identify-time metadata (make, model, decoder name, raw size, bit depth, CFA, frame count, DNG version). Rust classifies the mode from that metadata and the source bytes, and then calls `unpack` with the mode's unpacker. After unpack, the adapter checks that the geometry and decoder are unchanged, as it does today. Unsupported modes are then refused before any unpack work. The High Efficiency refusal in [popular camera support](popular-camera-support.md#behavior) stays ahead of both calls.
 
-**Substituting LibRaw's decoder.** The adapter's LibRaw subclass sets LibRaw's `load_raw` member to its own RawSpeed decode after `open_buffer` and before `unpack`. LibRaw's `unpack` then allocates its raw buffer, calls that decode, and runs `crop_masked_pixels`, black statistics and every later step unchanged. The decode:
+**Substituting LibRaw's decoder.** For the RawSpeed selector, `lf_raw_unpack` first requires the identified LibRaw decoder to be in the replaceable table below and the row's guard to hold, and refuses otherwise before any unpack work, leaving the handle unpackable. The adapter's LibRaw subclass then sets LibRaw's protected `load_raw` member to its own RawSpeed decode (`static_cast<void (LibRaw::*)()>(&AdapterLibRaw::rawspeed_load_raw)`) and calls LibRaw's `unpack`. LibRaw allocates its raw buffer, calls that decode where it would call its decoder, and runs `crop_masked_pixels`, black statistics and every later step unchanged. The decode:
 
-1. Wraps the caller's borrowed encoded bytes in a RawSpeed `Buffer` without copying.
-2. Parses them with `RawParser`, and configures the decoder with `uncorrectedRawValues = true`, `applyCrop = false`, `interpolateBadPixels = false`, `applyStage1DngOpcodes = false` and `failOnUnknown = true`. It then calls `checkSupport` and `decodeRaw`.
-3. Requires a one-component u16 image whose uncropped size equals LibRaw's `raw_width` × `raw_height`.
-4. Writes each row into LibRaw's `raw_image` at `raw_pitch`, through LibRaw's own `curve` table when the replaced LibRaw decoder applies that curve, and unchanged when it does not.
+1. Restores the replaced decoder in `load_raw` before anything else, because `crop_masked_pixels` and the post-unpack decoder report compare `load_raw` with LibRaw's own decoders (for example, the CR2 masked-area rule for `lossless_jpeg_load_raw`). A guard restores it on every other path too.
+2. Wraps the handle's borrowed encoded bytes (borrowed from `lf_raw_open` until the handle closes) in a RawSpeed `Buffer` without copying.
+3. Parses them with `RawParser`, and configures the decoder with `uncorrectedRawValues = true`, `applyCrop = false`, `interpolateBadPixels = false`, `applyStage1DngOpcodes = false` and `failOnUnknown = true`. It then calls `checkSupport` and `decodeRaw`, checking cancellation immediately before and after `decodeRaw`.
+4. Refuses an image on which RawSpeed recorded an error, and requires a one-component u16 image whose uncropped size equals LibRaw's `raw_width` × `raw_height`, and LibRaw's `raw_pitch` to be exactly `raw_width` samples.
+5. Writes each row into LibRaw's `raw_image` at `raw_pitch`, through the replaced decoder's curve rule, and releases RawSpeed's image before returning.
 
-Any RawSpeed exception becomes a LibRaw decode failure, which the adapter reports as an explicit error. No exception crosses the C ABI.
+Any RawSpeed exception or refusal becomes a LibRaw decode failure. The adapter records RawSpeed's text on the handle and reports it as a `RawError::Native` message that starts `RawSpeed:` and gives what RawSpeed decoded against the expected size, for example `RawSpeed: Not a supported DNG image format: v2.0.0.0 (nothing decoded; expected 64x48 u16)`. The handle's one unpack is spent, so LibRaw's decoder never runs instead. No exception crosses the C ABI.
 
-**The replaceable decoders are code-owned.** The curve rule is a property of the LibRaw decoder being replaced, so it belongs to one table in the adapter, keyed by LibRaw decoder name: `nikon_load_raw()`, `lossless_jpeg_load_raw()`, `fuji_compressed_load_raw()`, `olympus_load_raw()`, `pentax_load_raw()`, `lossless_dng_load_raw()`, `packed_dng_load_raw()`, `panasonic_load_raw()`, `panasonicC6_load_raw()` and `panasonicC8_load_raw()`. The catalog build refuses `rawspeed` on a mode whose decoder is not in the table. Adding a decoder to the table needs the exactness evidence below across its corpus.
+**The replaceable decoders are code-owned.** The curve rule is a property of the LibRaw decoder being replaced, so it belongs to one table, `REPLACEABLE` in `crates/luxforge-raw/src/unpacker.rs`, keyed by LibRaw decoder name. The build script includes that file, validates every catalog mode against it, and writes it into the adapter's generated `rawspeed_decoders.h`; a crate test proves the compiled header is the table. The catalog build refuses `rawspeed` on a mode whose decoder is not in the table. Adding a decoder to the table needs the exactness evidence below across its corpus.
+
+Each rule was decided from the LibRaw 0.22.2 decoder's source. A curve rule of `curve[v]` means LibRaw writes its `curve` table's entry for the decoded value, so the adapter writes RawSpeed's uncorrected value through the same table; `v` means LibRaw writes the decoded value. A guard names what else the LibRaw decoder does to the samples or their placement; a file on which it fails is refused as an unsupported mode before unpack, never approximated. Every row also needs a one-channel colour filter array mosaic (so LibRaw allocates the same raw buffer whatever decoder flags the substitute reports) and no Fujifilm SuperCCD rotation (`fuji_width`).
+
+| LibRaw decoder | LibRaw writes | Guard | Source |
+| --- | --- | --- | --- |
+| `nikon_load_raw()` | `curve[min(v, 0x3fff)]` | `height` equals `raw_height` | `decoders_dcraw.cpp:941` clamps the signed predictor to 0–0x3fff before the lookup, where RawSpeed clamps it to 0–0x7fff, so the two agree for every predictor in −0x8000–0x7fff; rows `0..height` only (`:918`) |
+| `lossless_jpeg_load_raw()` | `curve[v]` | no row interleave (`load_flags & 1`) and `raw_width` not 3984 | `decoders_dcraw.cpp:574`; interleave `:570`, two-column shift `:588` |
+| `fuji_compressed_load_raw()` | `v` | none | `fuji_compressed.cpp:362`, `:416` |
+| `olympus_load_raw()` | `v` | none | `olympus14.cpp:314` |
+| `pentax_load_raw()` | `v` | none | `decoders_dcraw.cpp:833` |
+| `lossless_dng_load_raw()` | `curve[v]` (the DNG LinearizationTable) | one sample per pixel and one raw frame | `adobe_copy_pixel`, `dng.cpp:43`; frame selection `:64`, second sample `:38` |
+| `packed_dng_load_raw()` | `curve[v]` | one sample per pixel and one raw frame | `dng.cpp:167` and `decoders_libraw_dcrdefs.cpp:66` through `adobe_copy_pixel`; frame selection `dng.cpp:150` |
+| `panasonic_load_raw()` | `v` | none | `decoders_dcraw.cpp:1113`–`1150` (encoding 5), `:1180` |
+| `panasonicC6_load_raw()` | `v` | `raw_height` a multiple of 16 and `raw_width` of the 11- or 14-pixel block | `decoders_libraw.cpp:525`–`529`; whole strips `:473`, blocks `:457` |
+| `panasonicC8_load_raw()` | `v` | none | `pana8.cpp:324`–`338`. LibRaw applies the file's own gamma table only when it is not the identity (`:196`, `:390`–`398`); RawSpeed refuses any gamma parameters but the identity and any clip value but 0xffff (`Rw2Decoder.cpp:138`, `:202`–`208`), and under those LibRaw's `gammaCurve` (`pana8.cpp:447`) is the identity too |
+
+No listed decoder was dropped. The crate's authentic comparison routes every row: the owner Z6 and Air 2S originals and thirteen raw.pixls.us samples (Nikon Z 6II lossy and D850 lossless NEF, Canon 6D Mark II and 5D Mark IV CR2, OM-1 ORF, Ricoh GR III, Leica Q2 and M10-R DNG, Panasonic S5II, S5 and GX7 Mark III RW2, Fujifilm X-T5 lossless compressed RAF and Pentax K-3 Mark III PEF). Every routed mosaic and native metadata record equals LibRaw's, and every recorded LibRaw-only mosaic hash matches. Of these files only the Z 6II lossy NEF has a non-identity LibRaw `curve` (2,496 entries, changing 15,504,878 samples), so it is the one authentic proof of a curve rule; a synthetic DNG with a LinearizationTable proves the DNG rule. For the `v` rows LibRaw's `curve` was the identity on every sample, so their rule rests on the source.
 
 **Camera data.** RawSpeed needs its `cameras.xml` for support checks and decoder hints. The pinned file is embedded in the binary and parsed once per process, on the first routed unpack, into one immutable RawSpeed `CameraMetaData`. The parse is guarded by a one-time initializer and takes about 4 ms, on the source worker. Nothing reads it from disk or the environment. RawSpeed's white, black, crop and colour values in that file are never used.
 
 **Build.** RawSpeed is vendored at commit `c835b05aecfacb7343f7c424abd620aa12116c3f` (the tip of `develop` on 2026-09-30). Only the library sources, `data/cameras.xml` and the licences are vendored, with pugixml at a pinned release. `build.rs` compiles RawSpeed as C++20 in its own `cc` build, separate from LibRaw's C++17 flags. The build is generic-CPU, with no OpenMP, no zlib and no libjpeg: deflate and lossy DNG are unsupported and never routed. RawSpeed's CMake-generated configuration headers are written by hand. No source patch is applied to RawSpeed or LibRaw. [THIRD_PARTY.md](../../crates/luxforge-raw/THIRD_PARTY.md) records provenance, the LGPL-2.0-or-later code licence and the CC-BY-SA 3.0 `cameras.xml` licence. The macOS build is required. Linux and Windows builds keep going through the existing portability checks; native Windows (MSVC or clang-cl) is unverified and recorded as such.
+
+**Log output.** RawSpeed's only log sink, `rawspeed::writeLog`, is the one definition in its `common/Common.cpp`, which prints warnings to standard output, where the `luxforge-json` CLI writes its JSON. The build leaves that file out and the adapter defines `writeLog` with the same signature, filtering and format, writing to standard error. No vendored file is edited.
 
 ## Constraints and consequences
 
@@ -38,7 +58,8 @@ Any RawSpeed exception becomes a LibRaw decode failure, which the adapter report
 
 ## Evidence and acceptance
 
-- Unit tests: the catalog refuses `rawspeed` on an unlisted decoder and on unknown values. Classification before unpack refuses unsupported modes without unpacking. A RawSpeed failure on a routed mode is an explicit error, with no LibRaw fallback. Cancellation before and after the RawSpeed decode publishes nothing.
+- Unit tests: the catalog refuses `rawspeed` on an unlisted decoder and on unknown values. Classification before unpack refuses unsupported modes without unpacking. A RawSpeed failure on a routed mode is an explicit error, with no LibRaw fallback. Cancellation before and after the RawSpeed decode publishes nothing. A RawSpeed warning writes nothing to standard output.
+- Before any mode is routed, crate tests force the unpacker: `RawSource::decode_forcing` overrides the classified mode's unpacker, and a test-only native open without the catalog check (`lf_raw_open_uncatalogued`) compares the two unpackers on files whose camera or mode the catalog does not yet hold. Production never calls either.
 - Authentic tests for every routed mode: the routed mosaic hash equals the LibRaw-only hash in the evidence manifest; the source hash is unchanged; the metadata equals the LibRaw-only metadata; and development is finite. The owner Z6 and Air 2S originals and the existing oracles (`bayer_owner_mosaic_and_rgb_oracle`, the DNG reference) still pass.
 - The initial routed set is every catalog mode on a replaceable decoder whose evidence passes and whose unpack is at least 1.3× faster in the adapter's own release measurement. A mode that fails either stays on LibRaw, and the reason is recorded in [modern camera support](modern-camera-support.md).
 - Measurement, after the feature is complete:
@@ -46,3 +67,14 @@ Any RawSpeed exception becomes a LibRaw decode failure, which the adapter report
   - the owner Z6's cold saved-WB preparation p50 and p95, against the 546 ms baseline in [performance](../specs/performance.md#native-development-and-saved-white-balance-preparation);
   - peak process RSS for one open of the largest routed mode.
   They follow the [performance rules](../engineering/performance-rules.md) and are recorded in the [performance spec](../specs/performance.md).
+
+## Performance checklist
+
+- **Original reads.** Unchanged: the source worker reads, hashes and decodes the original once through the verified source cache. The routed decode reads the same borrowed bytes LibRaw opened; nothing is copied or read again.
+- **New full-frame allocations.** A routed unpack briefly holds RawSpeed's own u16 image of the sensor size (91 MiB at 45.7 MP) until its rows are copied into LibRaw's raw buffer, bounded by the same sensor limits checked at open (16,384 per side, 128 million pixels) and released before the unpack returns. The Nikon rule adds a 128 KiB value map for the same span. The retained mosaic, the development and every later buffer are unchanged and still shared.
+- **Point queries, validation and no-op checks.** None render. The catalog check is at build time; the replaceable-table lookup and guard are a few comparisons before unpack.
+- **Owner thread.** Nothing new; the decode stays on the source worker. RawSpeed runs serially, with no new thread or pool.
+- **Desktop messages.** No new `asset.state`, `history.list`, preview or upload.
+- **Timers, polls and subscriptions.** None.
+- **Measurement.** None yet: no mode is routed, so no request path changes. The unpack time per routed mode, the owner Z6's cold saved-WB preparation and the peak RSS of the largest routed mode are measured when modes are routed.
+- **Exactness.** Unit tests compare the routed and LibRaw mosaics and metadata on synthetic DNGs, with and without a curve; the authentic test compares them on every replaceable decoder and against the recorded LibRaw-only hashes. The retained mosaic's sharing is unchanged.
