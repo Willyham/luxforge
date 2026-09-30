@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{ArtifactId, Error, artifacts::MAX_LAYER_ARTIFACTS, modules::valid_name};
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -14,7 +14,9 @@ pub const RECIPE_FORMAT: u32 = 2;
 /// formats; the host writes that format on every layer a plan commits or updates.
 pub const EFFECT_FORMAT: u32 = 1;
 
-fn valid_id(value: &str, prefix: &str) -> bool {
+/// Whether `value` is an identity with `prefix`: the prefix, then letters, digits and hyphens, 9 to
+/// 96 bytes in all. Every minted identity type checks its text here.
+pub(crate) fn valid_id(value: &str, prefix: &str) -> bool {
     value.len() > prefix.len() + 8
         && value.len() <= 96
         && value.starts_with(prefix)
@@ -23,29 +25,36 @@ fn valid_id(value: &str, prefix: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
+/// Declare one minted string identity: `$prefix` and a UUID when minted, parsed and serialized as
+/// its text, and refused by name when a text is not an identity of its type. Every path it names is
+/// absolute, so any module of the crate declares its identities with it (`catalog_types` does).
 macro_rules! identifier {
-    ($name:ident, $prefix:literal) => {
+    ($(#[$attr:meta])* $name:ident, $prefix:literal) => {
+        $(#[$attr])*
         #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name(String);
         impl $name {
+            /// The prefix every identity of this type starts with.
+            #[allow(dead_code)]
+            pub const PREFIX: &'static str = $prefix;
             pub fn new() -> Self {
                 Self(format!(
                     concat!($prefix, "{}"),
-                    uuid::Uuid::new_v4().simple()
+                    ::uuid::Uuid::new_v4().simple()
                 ))
             }
             /// Whether `value` is an identity of this type, checked in place. A request never
             /// names a layer or snapshot, so theirs goes unused.
             #[allow(dead_code)]
             pub(crate) fn is_valid(value: &str) -> bool {
-                valid_id(value, $prefix)
+                $crate::model::valid_id(value, $prefix)
             }
-            pub fn parse(value: impl Into<String>) -> Result<Self, Error> {
+            pub fn parse(value: impl Into<String>) -> Result<Self, $crate::Error> {
                 let value = value.into();
-                if valid_id(&value, $prefix) {
+                if $crate::model::valid_id(&value, $prefix) {
                     Ok(Self(value))
                 } else {
-                    Err(Error::validation(concat!("invalid ", stringify!($name))))
+                    Err($crate::Error::validation(concat!("invalid ", stringify!($name))))
                 }
             }
             pub fn as_str(&self) -> &str {
@@ -62,19 +71,25 @@ macro_rules! identifier {
                 self.0.fmt(f)
             }
         }
-        impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        impl ::serde::Serialize for $name {
+            fn serialize<S: ::serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> Result<S::Ok, S::Error> {
                 serializer.serialize_str(&self.0)
             }
         }
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                let value = String::deserialize(deserializer)?;
-                Self::parse(value).map_err(de::Error::custom)
+        impl<'de> ::serde::Deserialize<'de> for $name {
+            fn deserialize<D: ::serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> Result<Self, D::Error> {
+                let value = <String as ::serde::Deserialize>::deserialize(deserializer)?;
+                Self::parse(value).map_err(::serde::de::Error::custom)
             }
         }
     };
 }
+pub(crate) use identifier;
 
 identifier!(AssetId, "asset-");
 identifier!(LayerId, "layer-");

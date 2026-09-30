@@ -21,6 +21,7 @@ pub(crate) mod performance;
 pub(crate) mod pointer;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod select;
 pub(crate) mod sync;
 pub(crate) mod view;
 
@@ -54,6 +55,9 @@ pub(crate) enum Message {
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
+    // ── catalog lane D: views and desktop ──
+    // `Select(select::SelectMessage)`, one Select workspace gesture or answer, once it has one.
+    // ── end lane D ──
     Close,
 }
 
