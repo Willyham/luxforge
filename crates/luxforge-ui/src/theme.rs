@@ -818,7 +818,464 @@ pub const COMPONENTS_GAP: f32 = 4.0;
 // -- Select: sources, filters, title bar, long-running work, loupe and filmstrip ----------------
 
 // The Select workspace's chrome, from the catalog boards' CSS (`.src`, `.fbar`, `.fchip`,
-// `.seg`, `.tb`, `.sheet`, `.bar`, `.mstrip`, `.fstrip`).
+// `.seg`, `.tb`, `.sheet`, `.bar`, `.mstrip`, `.fstrip`). Every translucent fill the boards draw
+// over a known surface is stored opaque, composited over that surface, for the reason [`RULE`]
+// gives; the tests below recompute each composite. What sits over a photograph (the pick check's
+// ring, the pointer's region box) keeps its alpha, since there is no surface to composite over.
+
+/// A source row (`.src`): 24 pt, rounded 5 pt, 8 pt either side plus [`SOURCE_INDENT`] per level,
+/// its parts [`SOURCE_ROW_SPACING`] apart.
+pub const SOURCE_ROW_HEIGHT: f32 = 24.0;
+pub const SOURCE_ROW_PADDING: f32 = 8.0;
+pub const SOURCE_INDENT: f32 = 12.0;
+pub const SOURCE_ROW_SPACING: f32 = 7.0;
+/// A source row's disclosure chevron and its 10 pt column.
+pub const SOURCE_CHEVRON_SIZE: f32 = 10.0;
+/// A source row's icon column, and the 13 pt icon centred in it, in [`TEXT_IDENTITY`].
+pub const SOURCE_ICON_WIDTH: f32 = 14.0;
+pub const SOURCE_ICON_SIZE: f32 = 13.0;
+/// Between a source's name and its secondary text (an event's dates).
+pub const SOURCE_SECONDARY_SPACING: f32 = 6.0;
+/// The selected source row: white at 7% over [`PANEL`], the history's current row.
+pub const SOURCE_ROW_SELECTED: Color = LIST_ROW_CURRENT;
+/// Between the rows of one sources section, and between the panel's sections.
+pub const SOURCE_LIST_SPACING: f32 = 1.0;
+pub const SOURCE_SECTION_SPACING: f32 = 10.0;
+/// A month or a group label under a sources heading (`.mon`): 10.5 pt semibold capitals in this
+/// grey, a step under the section label, inset 6 pt above, 8 pt at the sides and 2 pt under.
+pub const SOURCE_MONTH: Color = Color::from_rgb8(0x5f, 0x5f, 0x66);
+pub const SOURCE_MONTH_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 8.0,
+    bottom: 2.0,
+    left: 8.0,
+};
+/// A neutral tag after a sources heading (`.tag`, "auto"): 10 pt secondary text on [`CONTROL`],
+/// 1 pt above and below and 6 pt at the sides, rounded 4 pt, [`SOURCE_TAG_SPACING`] after the
+/// label.
+pub const SIZE_TAG: f32 = 10.0;
+pub const TAG_PADDING: Padding = Padding {
+    top: 1.0,
+    right: 6.0,
+    bottom: 1.0,
+    left: 6.0,
+};
+pub const TAG_RADIUS: f32 = 4.0;
+pub const SOURCE_TAG_SPACING: f32 = 8.0;
+/// A sources heading (`sec_head`): the state panel's heading row, inset 8 pt.
+pub const SOURCE_HEADING_HEIGHT: f32 = PANEL_HEADING_HEIGHT;
+
+/// Filter text: the segments, the chips, the panel's search field and the filter bar's action.
+pub const SIZE_FILTER: f32 = 11.5;
+/// A search field (`.lsearch`, `.search`): 26 pt on [`CONTROL`], rounded [`RADIUS`], its search
+/// icon 8 pt in and 6 pt before the text. The panel's is 11.5 pt with a 12 pt icon; the filter
+/// bar's is [`SEARCH_WIDTH`] wide, 12 pt with a 13 pt icon and its key hint at the right.
+pub const SEARCH_HEIGHT: f32 = 26.0;
+pub const SEARCH_PADDING: f32 = 8.0;
+pub const SEARCH_ICON_SPACING: f32 = 6.0;
+pub const SEARCH_WIDTH: f32 = 250.0;
+pub const SEARCH_ICON_SIZE: f32 = 13.0;
+pub const COMPACT_SEARCH_ICON_SIZE: f32 = 12.0;
+
+/// The filter bar (`.fbar`) and the filmstrip (`.fstrip`): a step under the panel, with a 1 pt rule
+/// of white at 6% composited over it.
+pub const SELECT_BAR: Color = Color::from_rgb8(0x1d, 0x1d, 0x20);
+pub const SELECT_BAR_RULE: Color = Color::from_rgb8(43, 43, 45);
+/// The filter bar: 40 pt with its rule, 12 pt in from either end, its pieces 6 pt apart and its
+/// trailing pieces 10 pt apart.
+pub const FILTER_BAR_HEIGHT: f32 = 40.0;
+pub const FILTER_BAR_PADDING: f32 = 12.0;
+pub const FILTER_BAR_SPACING: f32 = 6.0;
+pub const FILTER_BAR_TRAILING_SPACING: f32 = 10.0;
+/// A filter segment (`.fseg button`): 22 pt, 9 pt either side, rounded 4 pt on a track rounded
+/// 6 pt; its count 7 pt after its label (the button's 4 pt gap and the count's own 3 pt).
+pub const FILTER_SEGMENT_HEIGHT: f32 = 22.0;
+pub const FILTER_SEGMENT_PADDING: f32 = 9.0;
+pub const FILTER_SEGMENT_RADIUS: f32 = 4.0;
+pub const FILTER_TRACK_RADIUS: f32 = 6.0;
+pub const FILTER_COUNT_SPACING: f32 = 7.0;
+/// A filter chip (`.fchip`): 24 pt, 8 pt either side, rounded [`RADIUS`], its icon, label and
+/// chevron or clear 5 pt apart, in [`CHIP_LABEL`] on this fill.
+pub const FILTER_CHIP_HEIGHT: f32 = 24.0;
+pub const FILTER_CHIP_PADDING: f32 = 8.0;
+pub const FILTER_CHIP_SPACING: f32 = 5.0;
+pub const FILTER_CHIP: Color = Color::from_rgb8(0x26, 0x26, 0x2a);
+/// A set condition (`.fchip.on`): the accent at 16% over [`SELECT_BAR`], in accent ink; its clear
+/// glyph is the accent at 80% over that.
+pub const FILTER_CHIP_SET: Color = Color::from_rgb8(61, 53, 44);
+pub const FILTER_CHIP_CLEAR: Color = Color::from_rgb8(193, 155, 94);
+pub const FILTER_CHIP_ICON_SIZE: f32 = 11.0;
+pub const FILTER_CHIP_GLYPH_SIZE: f32 = 9.0;
+/// The filter bar's action (Save as smart collection…): 24 pt on [`CONTROL`], a 12 pt icon 5 pt
+/// before its label.
+pub const FILTER_ACTION_HEIGHT: f32 = 24.0;
+
+/// A workspace switch segment's key hint (`G`, `D`): 4 pt after its label.
+pub const SWITCH_HINT_SPACING: f32 = 4.0;
+/// Develop N (`.tb.pri`): 28 pt, 12 pt either side, its count and chevron 6 pt apart. Busy, its
+/// label and bar are 8 pt apart on [`CONTROL`], at least [`DEVELOP_BUSY_MIN_WIDTH`] wide, the bar
+/// [`DEVELOP_BUSY_BAR_WIDTH`] long. At zero picks its label is in this grey.
+pub const DEVELOP_HEIGHT: f32 = 28.0;
+pub const DEVELOP_PADDING: f32 = 12.0;
+pub const DEVELOP_SPACING: f32 = 6.0;
+pub const DEVELOP_BUSY_SPACING: f32 = 8.0;
+pub const DEVELOP_BUSY_MIN_WIDTH: f32 = 150.0;
+pub const DEVELOP_BUSY_BAR_WIDTH: f32 = 48.0;
+pub const DEVELOP_CHEVRON_SIZE: f32 = 11.0;
+pub const DEVELOP_DISABLED_INK: Color = Color::from_rgb8(0x5a, 0x5a, 0x62);
+
+/// Long-running work's bar (`.bar`): 4 pt on [`RAIL`], rounded 2 pt, filled with the accent only as
+/// far as the work truthfully reports.
+pub const WORK_BAR_HEIGHT: f32 = 4.0;
+/// The status bar's busiest job: 26 pt, its dot, label, bar and caption 8 pt apart, the bar
+/// [`STATUS_JOB_BAR_WIDTH`] long.
+pub const STATUS_JOB_HEIGHT: f32 = 26.0;
+pub const STATUS_JOB_SPACING: f32 = 8.0;
+pub const STATUS_JOB_BAR_WIDTH: f32 = 70.0;
+/// A Performance row for work that can be stopped (`jobrow`): 6 pt above and below and 8 pt at the
+/// sides, 4 pt between its two lines, the bar line [`WORK_ROW_INDENT`] in, its parts 8 pt apart.
+pub const WORK_ROW_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 8.0,
+    bottom: 6.0,
+    left: 8.0,
+};
+pub const WORK_ROW_LINE_SPACING: f32 = 4.0;
+pub const WORK_ROW_SPACING: f32 = 8.0;
+pub const WORK_ROW_INDENT: f32 = 14.0;
+/// The in-view progress sheet (`sheet`): 330 pt on [`BAR`], outlined in white at 10% over it,
+/// rounded 12 pt over a soft shadow; its body inset 14 pt above, 16 pt at the sides and 12 pt
+/// under, its lines 8 pt apart, its bar 5 pt; its footer on [`PANEL`] under a rule of white at 7%
+/// over the panel, inset 10 pt and 12 pt, its buttons 6 pt apart.
+pub const SHEET_WIDTH: f32 = 330.0;
+pub const SHEET_RADIUS: f32 = 12.0;
+pub const SHEET_BORDER: Color = STRIP_RULE;
+pub const SHEET_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.45,
+    },
+    offset: iced::Vector { x: 0.0, y: 12.0 },
+    blur_radius: 30.0,
+};
+pub const SHEET_PADDING: Padding = Padding {
+    top: 14.0,
+    right: 16.0,
+    bottom: 12.0,
+    left: 16.0,
+};
+pub const SHEET_SPACING: f32 = 8.0;
+pub const SHEET_BAR_HEIGHT: f32 = 5.0;
+pub const SHEET_ICON_SIZE: f32 = 14.0;
+pub const SHEET_FOOTER_RULE: Color = Color::from_rgb8(48, 48, 50);
+pub const SHEET_FOOTER_PADDING: Padding = Padding {
+    top: 10.0,
+    right: 12.0,
+    bottom: 10.0,
+    left: 12.0,
+};
+
+/// A moment's frame under the loupe (`.mstrip .fr`): 124 × 84 pt on [`BAR`], rounded 5 pt, the
+/// image fitted into 116 × 76; the active one on [`FRAME_ACTIVE`] with a 2 pt inset accent outline;
+/// its number 6 pt in and 4 pt up, 10 pt semibold; the frames 6 pt apart.
+pub const MOMENT_FRAME_WIDTH: f32 = 124.0;
+pub const MOMENT_FRAME_HEIGHT: f32 = 84.0;
+pub const MOMENT_FRAME_RADIUS: f32 = 5.0;
+pub const MOMENT_IMAGE_WIDTH: f32 = 116.0;
+pub const MOMENT_IMAGE_HEIGHT: f32 = 76.0;
+pub const MOMENT_ACTIVE_OUTLINE: f32 = 2.0;
+pub const MOMENT_STRIP_SPACING: f32 = 6.0;
+pub const FRAME_ACTIVE: Color = Color::from_rgb8(0x2a, 0x2a, 0x2f);
+pub const SIZE_FRAME_NUMBER: f32 = 10.0;
+pub const FRAME_NUMBER_INSET: Padding = Padding {
+    top: 0.0,
+    right: 0.0,
+    bottom: 4.0,
+    left: 6.0,
+};
+/// A pick's check (`.tk`): an 18 pt accent disc holding a 10 pt check in [`PRIMARY_INK`], ringed
+/// 2 pt in near-black at 60% so it reads over any photograph; 5 pt in from the frame's corner.
+pub const PICK_CHECK_SIZE: f32 = 18.0;
+pub const PICK_CHECK_GLYPH: f32 = 10.0;
+pub const PICK_CHECK_RING_WIDTH: f32 = 2.0;
+pub const PICK_CHECK_RING: Color = Color {
+    r: 20.0 / 255.0,
+    g: 20.0 / 255.0,
+    b: 22.0 / 255.0,
+    a: 0.6,
+};
+pub const PICK_CHECK_INSET: f32 = 5.0;
+/// The loupe's info bar: the draft bar's 34 pt floating surface, 12 pt in from either end.
+pub const LOUPE_INFO_PADDING: f32 = 12.0;
+/// The 100% focus check's inset: 308 pt wide on [`BAR`], rounded 8 pt, outlined in white at 12%
+/// over it, over a big shadow; the region 209 pt tall over a 24 pt footer inset 8 pt, its parts
+/// 8 pt apart.
+pub const FOCUS_INSET_WIDTH: f32 = 308.0;
+pub const FOCUS_REGION_HEIGHT: f32 = 209.0;
+pub const FOCUS_FOOTER_HEIGHT: f32 = 24.0;
+pub const FOCUS_INSET_RADIUS: f32 = 8.0;
+pub const FOCUS_INSET_BORDER: Color = Color::from_rgb8(61, 61, 64);
+pub const FOCUS_INSET_SHADOW: Shadow = Shadow {
+    color: Color {
+        r: 0.0,
+        g: 0.0,
+        b: 0.0,
+        a: 0.5,
+    },
+    offset: iced::Vector { x: 0.0, y: 10.0 },
+    blur_radius: 30.0,
+};
+/// The pointer's region box over the loupe: a 1.5 pt outline of white at 90%, ringed outside by
+/// 1 pt of black at 50% so it reads on a bright sky.
+pub const REGION_BOX_WIDTH: f32 = 1.5;
+pub const REGION_BOX: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.9,
+};
+pub const REGION_BOX_RING: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.5,
+};
+/// The loupe's key hints (`.hint`): 14 pt apart; each key cap 10.5 pt semibold in [`TEXT_LABEL`] on
+/// [`CONTROL`], 1 pt above and below and 5 pt at the sides, rounded 4 pt, 4 pt before its action.
+pub const KEY_HINT_SPACING: f32 = 14.0;
+pub const KEY_CAP_PADDING: Padding = Padding {
+    top: 1.0,
+    right: 5.0,
+    bottom: 1.0,
+    left: 5.0,
+};
+pub const KEY_CAP_RADIUS: f32 = 4.0;
+pub const KEY_CAP_SPACING: f32 = 4.0;
+/// Develop's filmstrip (`.fstrip`): 92 pt with its rule on [`SELECT_BAR`]; a 24 pt header inset
+/// 10 pt, its parts 8 pt apart; cells 78 × 58 pt on [`BAR`], rounded 4 pt, 4 pt apart, the image
+/// fitted into 72 × 52, the active cell on [`FRAME_ACTIVE`] with a 1.5 pt inset accent outline; the
+/// cells inset 10 pt at the sides and 6 pt under.
+pub const FILMSTRIP_HEIGHT: f32 = 92.0;
+pub const FILMSTRIP_HEADER_HEIGHT: f32 = 24.0;
+pub const FILMSTRIP_PADDING: f32 = 10.0;
+pub const FILMSTRIP_HEADER_SPACING: f32 = 8.0;
+pub const FILMSTRIP_CELL_WIDTH: f32 = 78.0;
+pub const FILMSTRIP_CELL_HEIGHT: f32 = 58.0;
+pub const FILMSTRIP_CELL_RADIUS: f32 = 4.0;
+pub const FILMSTRIP_IMAGE_WIDTH: f32 = 72.0;
+pub const FILMSTRIP_IMAGE_HEIGHT: f32 = 52.0;
+pub const FILMSTRIP_CELL_SPACING: f32 = 4.0;
+pub const FILMSTRIP_ACTIVE_OUTLINE: f32 = 1.5;
+pub const FILMSTRIP_BOTTOM: f32 = 6.0;
+
+/// A source row: [`SOURCE_ROW_SELECTED`] in every state while selected, else [`ROW_HOVER`] under the
+/// pointer, else no surface. The row names its own ink, so the style's text colour is unused.
+pub fn source_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = if selected {
+            Some(SOURCE_ROW_SELECTED)
+        } else if pointer {
+            Some(ROW_HOVER)
+        } else {
+            None
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: TEXT_LABEL,
+            border: Border {
+                radius: LIST_ROW_RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// A neutral tag or a key cap: [`CONTROL`], rounded `radius`.
+pub fn tag_surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| {
+        surface(CONTROL).border(Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: radius.into(),
+        })
+    }
+}
+
+/// The filter bar's and the filmstrip's surface.
+pub fn select_bar_surface(_theme: &Theme) -> container::Style {
+    surface(SELECT_BAR)
+}
+
+/// The rule under the filter bar and over the filmstrip.
+pub fn select_bar_rule(_theme: &Theme) -> container::Style {
+    surface(SELECT_BAR_RULE)
+}
+
+/// A filter segments' track: [`SEGMENT_TRACK`] rounded [`FILTER_TRACK_RADIUS`].
+pub fn filter_track(_theme: &Theme) -> container::Style {
+    surface(SEGMENT_TRACK).border(Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: FILTER_TRACK_RADIUS.into(),
+    })
+}
+
+/// A filter segment: [`segment`]'s fills and inks, rounded [`FILTER_SEGMENT_RADIUS`].
+pub fn filter_segment(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |theme, status| {
+        let mut style = segment(selected)(theme, status);
+        style.border.radius = FILTER_SEGMENT_RADIUS.into();
+        style
+    }
+}
+
+/// A filter chip: [`FILTER_CHIP_SET`] in accent ink while its condition is set, else
+/// [`FILTER_CHIP`] in [`CHIP_LABEL`], lifting to [`CONTROL`] under the pointer.
+pub fn filter_chip(set: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = match (set, pointer) {
+            (true, _) => FILTER_CHIP_SET,
+            (false, true) => CONTROL,
+            (false, false) => FILTER_CHIP,
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: if set { ACCENT } else { CHIP_LABEL },
+            border: Border {
+                radius: RADIUS.into(),
+                width: 0.0,
+                color: Color::TRANSPARENT,
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// Develop N while it is busy: [`CONTROL`] behind primary ink in every state, since it reports work
+/// rather than offering it.
+pub fn develop_busy(_theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(CONTROL)),
+        text_color: TEXT_PRIMARY,
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// Develop N with nothing picked (`.tb.dis`): [`CONTROL`] behind [`DEVELOP_DISABLED_INK`].
+pub fn develop_disabled(theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        text_color: DEVELOP_DISABLED_INK,
+        ..develop_busy(theme, status)
+    }
+}
+
+/// The status bar's busiest job: no surface at rest, [`ROW_HOVER`] under the pointer.
+pub fn status_job(_theme: &Theme, status: button::Status) -> button::Style {
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => Some(Background::Color(ROW_HOVER)),
+        button::Status::Active | button::Status::Disabled => None,
+    };
+    button::Style {
+        background,
+        text_color: TEXT_SECONDARY,
+        border: Border {
+            radius: RADIUS.into(),
+            width: 0.0,
+            color: Color::TRANSPARENT,
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// A text action inside a row, such as a job's Cancel: no surface, [`TEXT_IDENTITY`] ink lifting to
+/// primary under the pointer. Its label names no colour, so it takes this ink.
+pub fn quiet_action(_theme: &Theme, status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        text_color: match status {
+            button::Status::Hovered | button::Status::Pressed => TEXT_PRIMARY,
+            button::Status::Active => TEXT_IDENTITY,
+            button::Status::Disabled => TEXT_TERTIARY,
+        },
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// The in-view progress sheet's surface.
+pub fn sheet_surface(_theme: &Theme) -> container::Style {
+    surface(BAR)
+        .border(Border {
+            color: SHEET_BORDER,
+            width: BORDER_WIDTH,
+            radius: SHEET_RADIUS.into(),
+        })
+        .shadow(SHEET_SHADOW)
+}
+
+/// A framed image cell — a moment's frame or a filmstrip cell — rounded `radius`: on [`BAR`], or on
+/// [`FRAME_ACTIVE`] with an inset accent outline `outline` wide while active; [`FRAME_ACTIVE`] under
+/// the pointer.
+pub fn image_cell(
+    active: bool,
+    radius: f32,
+    outline: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: Some(Background::Color(if active || pointer {
+                FRAME_ACTIVE
+            } else {
+                BAR
+            })),
+            text_color: TEXT_PRIMARY,
+            border: Border {
+                radius: radius.into(),
+                width: if active { outline } else { 0.0 },
+                color: if active { ACCENT } else { Color::TRANSPARENT },
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// The 100% inset's surface under its region and footer.
+pub fn focus_inset_surface(_theme: &Theme) -> container::Style {
+    surface(BAR)
+        .border(Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: FOCUS_INSET_RADIUS.into(),
+        })
+        .shadow(FOCUS_INSET_SHADOW)
+}
+
+/// The 100% inset's outline, drawn over its region so the photograph never covers it.
+pub fn focus_inset_outline(_theme: &Theme) -> container::Style {
+    container::Style::default().border(Border {
+        color: FOCUS_INSET_BORDER,
+        width: BORDER_WIDTH,
+        radius: FOCUS_INSET_RADIUS.into(),
+    })
+}
 
 // -- end Select chrome ---------------------------------------------------------------------------
 
@@ -1988,6 +2445,187 @@ mod tests {
     }
 
     // -- Select chrome's token tests.
+
+    /// The catalog boards' literal colours, copied exactly.
+    #[test]
+    fn select_chrome_literals_match_the_catalog_boards() {
+        assert_eq!(code(SOURCE_MONTH), [0x5f, 0x5f, 0x66]);
+        assert_eq!(code(SELECT_BAR), [0x1d, 0x1d, 0x20]);
+        assert_eq!(code(FILTER_CHIP), [0x26, 0x26, 0x2a]);
+        assert_eq!(code(DEVELOP_DISABLED_INK), [0x5a, 0x5a, 0x62]);
+        assert_eq!(code(FRAME_ACTIVE), [0x2a, 0x2a, 0x2f]);
+        // The inks the boards name that the workspace already has.
+        assert_eq!(
+            code(TEXT_IDENTITY),
+            [0x8a, 0x8a, 0x90],
+            "`.src .ic`, `.hint`"
+        );
+        assert_eq!(code(CHIP_LABEL), [0xb0, 0xb0, 0xb6], "`.fchip`");
+        assert_eq!(code(TEXT_CURRENT_ROW), [0xf2, 0xf2, 0xf4], "`.src.on`");
+        assert_eq!(code(TEXT_FAINT), [0x55, 0x55, 0x5c], "a count's ` / `");
+        assert_eq!(code(AGENT_CONNECTED), [0x57, 0xb5, 0x6b], "`.src .vd`");
+        assert_eq!(code(RAIL), [0x3a, 0x3a, 0x40], "`.bar`");
+        // The pick check's ring and the region box keep their alpha: they sit over a photograph.
+        assert_eq!(code(PICK_CHECK_RING), [20, 20, 22]);
+        assert!((PICK_CHECK_RING.a - 0.6).abs() < f32::EPSILON);
+        assert_eq!((REGION_BOX.a, REGION_BOX_RING.a), (0.9, 0.5));
+    }
+
+    /// Every translucent fill the catalog boards draw over a known surface is stored opaque: the
+    /// CSS alpha composited over that surface, to within a code.
+    #[test]
+    fn select_chrome_tints_are_the_boards_composites() {
+        let white = Color::WHITE;
+        let near = |a: [u8; 3], b: [u8; 3]| a.iter().zip(b).all(|(x, y)| x.abs_diff(y) <= 1);
+        // `.src.on`: white at 7% over the panel, the history's current row.
+        assert!(near(
+            code(SOURCE_ROW_SELECTED),
+            composite(white, PANEL, 0.07)
+        ));
+        assert_eq!(SOURCE_ROW_SELECTED, LIST_ROW_CURRENT);
+        // `.fbar`'s and `.fstrip`'s rule: white at 6% over their surface.
+        assert_eq!(code(SELECT_BAR_RULE), composite(white, SELECT_BAR, 0.06));
+        // `.fchip.on`: the accent at 16% over the filter bar; its clear at 80% over that.
+        assert_eq!(code(FILTER_CHIP_SET), composite(ACCENT, SELECT_BAR, 0.16));
+        assert_eq!(
+            code(FILTER_CHIP_CLEAR),
+            composite(ACCENT, FILTER_CHIP_SET, 0.8)
+        );
+        // The sheet: white at 10% over the Bar, and its footer's rule at 7% over the panel.
+        assert_eq!(code(SHEET_BORDER), composite(white, BAR, 0.10));
+        assert_eq!(code(SHEET_FOOTER_RULE), composite(white, PANEL, 0.07));
+        // The 100% inset: white at 12% over the Bar.
+        assert_eq!(code(FOCUS_INSET_BORDER), composite(white, BAR, 0.12));
+        for colour in [
+            SOURCE_ROW_SELECTED,
+            SELECT_BAR_RULE,
+            FILTER_CHIP_SET,
+            FILTER_CHIP_CLEAR,
+            SHEET_BORDER,
+            SHEET_FOOTER_RULE,
+            FOCUS_INSET_BORDER,
+        ] {
+            assert_eq!(colour.a, 1.0, "opaque, not an alpha Iced would brighten");
+        }
+    }
+
+    /// The catalog boards' sizes, pinned.
+    #[test]
+    fn select_chrome_sizes_match_the_catalog_boards() {
+        // `.src`, `sec_head`, `.mon`, `.tag`, `.lsearch` and `.search`.
+        assert_eq!(
+            (SOURCE_ROW_HEIGHT, SOURCE_ROW_PADDING, SOURCE_INDENT),
+            (24.0, 8.0, 12.0)
+        );
+        assert_eq!(
+            (SOURCE_ROW_SPACING, SOURCE_ICON_WIDTH, SOURCE_ICON_SIZE),
+            (7.0, 14.0, 13.0)
+        );
+        assert_eq!((SOURCE_CHEVRON_SIZE, SOURCE_SECONDARY_SPACING), (10.0, 6.0));
+        assert_eq!(SOURCE_HEADING_HEIGHT, 22.0);
+        assert_eq!(
+            (
+                SOURCE_MONTH_PADDING.top,
+                SOURCE_MONTH_PADDING.right,
+                SOURCE_MONTH_PADDING.bottom
+            ),
+            (6.0, 8.0, 2.0)
+        );
+        assert_eq!((SIZE_TAG, TAG_RADIUS, SOURCE_TAG_SPACING), (10.0, 4.0, 8.0));
+        assert_eq!(
+            (SEARCH_HEIGHT, SEARCH_WIDTH, SIZE_FILTER),
+            (26.0, 250.0, 11.5)
+        );
+        // `.fbar`, `.fseg`, `.fchip`.
+        assert_eq!(
+            (FILTER_BAR_HEIGHT, FILTER_BAR_PADDING, FILTER_BAR_SPACING),
+            (40.0, 12.0, 6.0)
+        );
+        assert_eq!((FILTER_SEGMENT_HEIGHT, FILTER_SEGMENT_PADDING), (22.0, 9.0));
+        assert_eq!(
+            FILTER_SEGMENT_HEIGHT + 2.0 * SEGMENT_INSET,
+            26.0,
+            "the track"
+        );
+        assert_eq!((FILTER_SEGMENT_RADIUS, FILTER_TRACK_RADIUS), (4.0, 6.0));
+        assert_eq!(
+            (FILTER_CHIP_HEIGHT, FILTER_CHIP_PADDING, FILTER_CHIP_SPACING),
+            (24.0, 8.0, 5.0)
+        );
+        // `.tb.pri` and the busy button.
+        assert_eq!((DEVELOP_HEIGHT, DEVELOP_PADDING), (28.0, 12.0));
+        assert_eq!(
+            (DEVELOP_BUSY_MIN_WIDTH, DEVELOP_BUSY_BAR_WIDTH),
+            (150.0, 48.0)
+        );
+        // `.bar`, `statusbit`, `jobrow` and `sheet`.
+        assert_eq!(WORK_BAR_HEIGHT, 4.0);
+        assert_eq!((STATUS_JOB_HEIGHT, STATUS_JOB_BAR_WIDTH), (26.0, 70.0));
+        assert_eq!(WORK_ROW_INDENT, 14.0);
+        assert_eq!(
+            (SHEET_WIDTH, SHEET_RADIUS, SHEET_BAR_HEIGHT),
+            (330.0, 12.0, 5.0)
+        );
+        // `.mstrip .fr`, `.tk`, the inset and the filmstrip.
+        assert_eq!((MOMENT_FRAME_WIDTH, MOMENT_FRAME_HEIGHT), (124.0, 84.0));
+        assert_eq!((MOMENT_IMAGE_WIDTH, MOMENT_IMAGE_HEIGHT), (116.0, 76.0));
+        assert_eq!(PICK_CHECK_SIZE, 18.0);
+        assert_eq!(
+            (FOCUS_INSET_WIDTH, FOCUS_REGION_HEIGHT, FOCUS_FOOTER_HEIGHT),
+            (308.0, 209.0, 24.0)
+        );
+        assert_eq!((FILMSTRIP_HEIGHT, FILMSTRIP_HEADER_HEIGHT), (92.0, 24.0));
+        assert_eq!((FILMSTRIP_CELL_WIDTH, FILMSTRIP_CELL_HEIGHT), (78.0, 58.0));
+        assert_eq!(
+            (FILMSTRIP_IMAGE_WIDTH, FILMSTRIP_IMAGE_HEIGHT),
+            (72.0, 52.0)
+        );
+        // The strip's cells fit its height: header, the cells and the bottom inset under the rule.
+        const {
+            assert!(
+                FILMSTRIP_HEADER_HEIGHT + FILMSTRIP_CELL_HEIGHT + FILMSTRIP_BOTTOM + BORDER_WIDTH
+                    <= FILMSTRIP_HEIGHT
+            )
+        };
+    }
+
+    /// A source row lifts under the pointer and keeps its selection in every state; a set filter
+    /// chip is the accent tint behind accent ink.
+    #[test]
+    fn select_chrome_styles_follow_their_state() {
+        let row = |selected, status| source_row(selected)(&theme(), status).background;
+        assert_eq!(row(false, button::Status::Active), None);
+        assert_eq!(
+            row(false, button::Status::Hovered),
+            Some(Background::Color(ROW_HOVER))
+        );
+        assert_eq!(
+            row(true, button::Status::Active),
+            Some(Background::Color(SOURCE_ROW_SELECTED))
+        );
+        let chip = filter_chip(true)(&theme(), button::Status::Active);
+        assert_eq!(chip.background, Some(Background::Color(FILTER_CHIP_SET)));
+        assert_eq!(chip.text_color, ACCENT);
+        let chip = filter_chip(false)(&theme(), button::Status::Active);
+        assert_eq!(chip.background, Some(Background::Color(FILTER_CHIP)));
+        assert_eq!(chip.text_color, CHIP_LABEL);
+        let cell = image_cell(true, MOMENT_FRAME_RADIUS, MOMENT_ACTIVE_OUTLINE)(
+            &theme(),
+            button::Status::Active,
+        );
+        assert_eq!(cell.background, Some(Background::Color(FRAME_ACTIVE)));
+        assert_eq!((cell.border.width, cell.border.color), (2.0, ACCENT));
+        let cell = image_cell(false, MOMENT_FRAME_RADIUS, MOMENT_ACTIVE_OUTLINE)(
+            &theme(),
+            button::Status::Active,
+        );
+        assert_eq!(cell.background, Some(Background::Color(BAR)));
+        assert_eq!(cell.border.width, 0.0);
+        assert_eq!(
+            develop_disabled(&theme(), button::Status::Disabled).text_color,
+            DEVELOP_DISABLED_INK
+        );
+    }
 
     // -- end Select chrome's token tests.
 }

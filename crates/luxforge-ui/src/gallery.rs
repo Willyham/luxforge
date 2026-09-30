@@ -642,6 +642,7 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
     // -- end Select: the thumbnail grid's states.
 
     // -- Select: chrome's states.
+    states.extend(crate::gallery_select::gallery_select());
     // -- end Select: chrome's states.
     states
 }
