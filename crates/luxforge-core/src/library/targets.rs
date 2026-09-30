@@ -83,10 +83,6 @@ pub(crate) fn files(
 /// The photographs `targets` names, each once, in the order named: by identity; by the path of
 /// their original, or the index row of that file; or the photographs selected in the caller's view.
 /// One that names no photograph in the catalog is refused by name.
-#[allow(
-    dead_code,
-    reason = "asset.move and collection.add resolve their targets here"
-)]
 pub(crate) fn assets(
     service: &EditorService,
     targets: &Targets,
