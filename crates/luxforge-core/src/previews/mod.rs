@@ -11,6 +11,8 @@
 //!   and its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`,
 //!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a file
 //!   with no usable preview is developed instead (`develop_instead`, TASK-009's).
+//! - `display.rs`: [`decode_preview`], a cached preview decoded for a client to draw at the size it
+//!   needs, on the client's own worker: the desktop's Select grid's decode (lane D's).
 //! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
 //!   the view — deduplicated by (file, tier) and bounded, the failures it remembers, and at most
 //!   two worker threads, each blocked on its channel while idle.
@@ -27,6 +29,7 @@
 //! `bracket.rs` (the brightness check, a [`BracketProbe`](crate::catalog_types::BracketProbe) over
 //! decoded grid previews).
 mod cache;
+mod display;
 mod extract;
 mod lane;
 pub(crate) mod region;
@@ -37,6 +40,7 @@ pub(crate) mod region;
 )]
 pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
 pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};
+pub use display::{DecodedPreview, decode_preview};
 pub(crate) use lane::{
     Failures, Outcome, PREVIEW_WORKERS, Post, Queue, Task, TaskKey, WorkerEvent, Workers,
 };
