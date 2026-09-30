@@ -18,7 +18,11 @@
 //!   from when the catalog opens with indexed folders ([`opened`]) or a client first asks about
 //!   the disk. What it applies on its own is announced as work no request made: method
 //!   [`UNREQUESTED`] with no request id, one event per batch. A volume mounted or taken out has
-//!   the volumes surveyed again, and a card mounted is listed as an `index.refresh` job.
+//!   the volumes surveyed again, and a card mounted is listed as an `index.refresh` job; so is
+//!   every card already mounted as the lane starts, once the first survey after it has found it.
+//!   The lane's own listings — rescans, and roots listed again — are `index-refresh` jobs no
+//!   request started, which the lane announces ([`LaneEvent::Began`]) and the owner records like
+//!   its own, so `job.read` and `job.cancel` answer for them.
 //! - **One event as a listing ends.** Every `index.refresh` job, however it ends, records one event
 //!   naming its request and the index revision it left, so a client learns it ended from the event
 //!   log.
@@ -47,7 +51,7 @@ use crate::{
     Error, JobId,
     activity::{ActivityBoard, ActivitySpec},
     api::{Origin, announce_once},
-    catalog_types::{IndexSource, JobStarted, RootKind, jobs::INDEX_REFRESH},
+    catalog_types::{IndexReport, IndexSource, JobStarted, RootKind, jobs::INDEX_REFRESH},
     editor::folder_rows,
     index::{
         database,
@@ -317,6 +321,15 @@ pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
     }
 }
 
+/// An `index-refresh` job's report as its record keeps it.
+fn output(result: Result<IndexReport, Error>) -> Result<Output, Error> {
+    result.and_then(|report| {
+        serde_json::to_value(report)
+            .map(Output::Value)
+            .map_err(|error| Error::internal(error.to_string()))
+    })
+}
+
 /// Announce that an `index.refresh` job made under `origin` ended: one event naming its request, the
 /// job and the index revision it left, `revision` as the lane read it, else the index's revision now.
 fn ended(owner: &mut Owner, origin: Origin, job_id: &JobId, revision: Option<u64>) {
@@ -338,6 +351,8 @@ fn ended(owner: &mut Owner, origin: Origin, job_id: &JobId, revision: Option<u64
 /// was closed is caught up (replayed on macOS, listed elsewhere), and the volumes' notifications
 /// keep what `volume.list` answers current. A catalog without indexed folders starts nothing.
 pub(super) fn opened(owner: &mut Owner) {
+    #[cfg(test)]
+    opening_mounts(owner);
     let Ok(folders) = indexed_folders(owner) else {
         return;
     };
@@ -357,6 +372,30 @@ pub(super) fn opened(owner: &mut Owner) {
         origin: unrequested(),
     });
     dispatch(owner);
+}
+
+/// Mount tables tests stand in with from a catalog's opening, by the catalog's path: the lane of a
+/// catalog with indexed folders starts as it opens, before a test's message can reach the owner.
+#[cfg(test)]
+pub(super) static OPENING_MOUNTS: std::sync::Mutex<Vec<(PathBuf, MountSource)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Stand in with the mount table a test gave for this catalog's opening, if it gave one.
+#[cfg(test)]
+fn opening_mounts(owner: &mut Owner) {
+    let Some(catalog) = owner.service.connection.path().map(PathBuf::from) else {
+        return;
+    };
+    let mounts = OPENING_MOUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(path, _)| *path == catalog)
+        .map(|(_, mounts)| mounts.clone());
+    if let Some(mounts) = mounts {
+        owner.catalog.files.mounts = mounts;
+        owner.catalog.files.new_mount_source();
+    }
 }
 
 /// Hand the lane its next piece of work when it is idle, starting it on first use.
@@ -498,17 +537,39 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
     match message {
         FilesMessage::Lane(LaneEvent::Committed { revision, by }) => {
             // A batch of the owner's work is announced under the request that asked for it; one
-            // the watcher's notifications made as work no request made.
+            // the watcher's notifications made, or a listing of the lane's own, as work no request
+            // made. A listing's batch names its job.
             let running = owner.catalog.files.running.as_ref();
             let origin = match by {
                 Maker::Job(job) => running
                     .filter(|running| running.job.as_ref().map(|(id, _)| id) == Some(&job))
-                    .map(|running| running.origin.clone().job(job)),
-                Maker::Owner => running.map(|running| running.origin.clone()),
-                Maker::Watcher => None,
-            }
-            .unwrap_or_else(unrequested);
+                    .map_or_else(unrequested, |running| running.origin.clone())
+                    .job(job),
+                Maker::Owner => running.map_or_else(unrequested, |running| running.origin.clone()),
+                Maker::Watcher => unrequested(),
+            };
             announce_once(&mut owner.announced, &origin.index(revision));
+            owner.record_announced();
+        }
+        FilesMessage::Lane(LaneEvent::Began { job_id, control }) => {
+            // Recorded running before the lane shows it on the board, which it does only after
+            // posting this, so whoever saw it there finds it here.
+            owner.jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind: JobKind::IndexRefresh,
+                asset_id: None,
+                origin: Some(unrequested()),
+                control,
+            });
+            owner.jobs.start(&job_id);
+        }
+        FilesMessage::Lane(LaneEvent::Listed {
+            job_id,
+            result,
+            revision,
+        }) => {
+            owner.jobs.finish(&job_id, output(result));
+            ended(owner, unrequested(), &job_id, revision);
             owner.record_announced();
         }
         FilesMessage::Lane(LaneEvent::Refreshed {
@@ -516,14 +577,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
             result,
             revision,
         }) => {
-            owner.jobs.finish(
-                &job_id,
-                result.and_then(|report| {
-                    serde_json::to_value(report)
-                        .map(Output::Value)
-                        .map_err(|error| Error::internal(error.to_string()))
-                }),
-            );
+            owner.jobs.finish(&job_id, output(result));
             let origin = owner
                 .catalog
                 .files
@@ -541,6 +595,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         FilesMessage::Lane(LaneEvent::Opened(index)) => owner.service.adopt_index(index),
         FilesMessage::Lane(LaneEvent::Started { watcher }) => {
             owner.catalog.files.notified = watcher.is_ok();
+            queries::lane_started(owner);
         }
         FilesMessage::Lane(LaneEvent::Watching { path, watching }) => {
             owner.catalog.files.watching.insert(path, watching);

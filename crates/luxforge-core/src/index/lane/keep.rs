@@ -11,10 +11,16 @@
 //!   and every row under it dropped. A rename can arrive as two reports, its old path in one and
 //!   its new path in the next, so a path gone waits [`GONE_AFTER`] for the path it may have moved
 //!   to, which carries its row by file identity, before it is looked at again and its rows go.
-//! - **Rescans are listings.** A subtree whose changes were not all reported is listed again and
-//!   reconciled by signature; the whole root when the root itself is named. A root that changed
-//!   (moved, removed, its volume gone) is dropped from the watcher, listed again if it is there and
-//!   watched anew, or else recorded offline or missing, as a listing records it.
+//! - **Rescans are listings, and jobs.** A subtree whose changes were not all reported is listed
+//!   again and reconciled by signature; the whole root when the root itself is named. A root that
+//!   changed (moved, removed, its volume gone) is dropped from the watcher, listed again if it is
+//!   there and watched anew, or else recorded offline or missing, as a listing records it. Each
+//!   such listing is an `index-refresh` job no request started ([`Run::own_job`]), which a client
+//!   reads and cancels as any listing.
+//! - **Stale roots.** A root whose listing was cancelled or failed, or that a unit which failed
+//!   touched, is stale, on its row too: it records no cursor, and it is listed in full before its
+//!   next change is applied, as the catalog next opens (watched without a cursor, so the watcher
+//!   asks for the listing) and when its volume comes back.
 //! - **Cursors.** On macOS each event may carry where the root's notifications resume. The newest is
 //!   recorded on the root's row in the transaction that writes the last change of the unit it came
 //!   in, after every header read of that unit, so a restart replays from there; a unit that fails
@@ -27,8 +33,7 @@
 //!   no longer follows all of, is reported to the owner with the reason.
 use super::{Input, LaneEvent, Listed, Post, RootPlan, Run, Write};
 use crate::{
-    Error,
-    activity::{ActivitySpec, Outcome},
+    Error, ErrorKind,
     catalog_types::{FileSignature, RootKind, VolumeId},
     index::{
         database,
@@ -52,8 +57,6 @@ const ON_NETWORK: &str =
     "it is on a network volume, whose changes are not reported: refresh it to list it again";
 /// Why a folder whose volume was taken out is not watched.
 const OFFLINE: &str = "it is offline: its volume is not connected";
-/// What the activity board calls the lane's own listings.
-const ACTIVITY: &str = "index.watch";
 /// How long a path reported gone waits, before its rows go, for the path it may have moved to:
 /// longer than the platform takes between the reports of a rename's two halves.
 pub(crate) const GONE_AFTER: Duration = Duration::from_millis(500);
@@ -190,7 +193,8 @@ impl Keeper {
 
     /// Watch the indexed folders `roots` as the catalog opens, each from the cursor its root row
     /// keeps: what changed while Luxforge was closed is replayed (macOS), and a root without one, or
-    /// on a platform that keeps no history, is listed again when the watcher says so.
+    /// on a platform that keeps no history, is listed again when the watcher says so. A root left
+    /// stale is watched without its cursor, so it is listed again now.
     pub(super) fn watch(
         &mut self,
         connection: &Connection,
@@ -203,13 +207,25 @@ impl Keeper {
                 continue;
             };
             let index = self.keep(&plan.path, volume_id);
-            let resume = database::root_cursor(connection, &plan.path).ok().flatten();
+            self.roots[index].stale |= database::root_stale(connection, &plan.path).unwrap_or(false);
+            let resume = self.resume(connection, index);
             self.add(index, resume, mounts, post);
         }
     }
 
-    /// A job listed `listed` in full: an indexed folder not watched yet is watched from the cursor
-    /// read before its walk, recorded on its row first, so what changed during the walk replays.
+    /// Where the root at `index` resumes when the watcher follows it again: the cursor its row
+    /// keeps, or none while it is stale, so the watcher asks for the listing that makes it current.
+    fn resume(&self, connection: &Connection, index: usize) -> Option<Resume> {
+        let root = &self.roots[index];
+        if root.stale {
+            return None;
+        }
+        database::root_cursor(connection, &root.path).ok().flatten()
+    }
+
+    /// A job listed `listed` in full: each is current again, and an indexed folder not watched yet
+    /// is watched from the cursor read before its walk, recorded on its row first, so what changed
+    /// during the walk replays.
     pub(super) fn listed(
         &mut self,
         connection: &mut Connection,
@@ -219,6 +235,7 @@ impl Keeper {
     ) {
         for root in listed.iter().filter(|root| root.kind == RootKind::Indexed) {
             let index = self.keep(&root.path, &root.volume_id);
+            self.roots[index].stale = false;
             if self.roots[index].active {
                 continue;
             }
@@ -325,14 +342,19 @@ impl Keeper {
         }
     }
 
-    /// The unit failed: its cursors are not recorded, and every root it touched is listed again
-    /// before a later cursor of its own is.
-    pub(super) fn unrecorded(&mut self) {
+    /// The unit failed: its cursors are not recorded, and every root it touched is stale, listed
+    /// again before a later cursor of its own is. Answers the roots it made stale, for their rows.
+    pub(super) fn unrecorded(&mut self) -> Vec<PathBuf> {
         self.applied.clear();
+        let mut stale = Vec::new();
         for root in &mut self.roots {
             root.cursor = None;
-            root.stale |= std::mem::take(&mut root.touched);
+            if std::mem::take(&mut root.touched) && !root.stale {
+                root.stale = true;
+                stale.push(root.path.clone());
+            }
         }
+        stale
     }
 
     /// Apply one event in the run of a unit.
@@ -343,14 +365,21 @@ impl Keeper {
         mounts: &[PlatformMount],
         last_stamp: &mut i64,
     ) -> Result<(), Error> {
-        // A root a failed unit left stale is listed again first, so what it missed is caught up.
-        while let Some(index) = self.roots.iter().position(|root| root.stale) {
-            self.roots[index].stale = false;
-            let path = self.roots[index].path.clone();
-            self.rescan(run, index, &path, mounts, last_stamp)?;
-        }
         if let Some(index) = event.root().and_then(|root| self.index_of(root)) {
             self.roots[index].touched = true;
+            // A stale root is listed in full before its next change is applied, so what it missed
+            // is caught up; a rescan of the whole root, or of a root that changed, is that listing.
+            let changes = match &event {
+                WatchEvent::Changed { .. } => true,
+                WatchEvent::Rescan {
+                    subtree, reason, ..
+                } => *reason != RescanReason::RootChanged && *subtree != self.roots[index].path,
+                _ => false,
+            };
+            if self.roots[index].stale && changes {
+                let path = self.roots[index].path.clone();
+                self.rescan(run, index, &path, mounts, last_stamp)?;
+            }
         }
         match event {
             WatchEvent::Changed {
@@ -513,8 +542,8 @@ impl Keeper {
         Ok(())
     }
 
-    /// List `subtree` of the root at `index` again, reconciling by signature: the whole root when
-    /// it names the root.
+    /// List `subtree` of the root at `index` again, reconciling by signature — the whole root when
+    /// it names the root — as a job of the lane's own ([`Run::own_job`]).
     fn rescan(
         &mut self,
         run: &mut Run<'_>,
@@ -524,45 +553,74 @@ impl Keeper {
         last_stamp: &mut i64,
     ) -> Result<(), Error> {
         let root = self.roots[index].path.clone();
-        // What the unit wrote so far is in the index before the listing reconciles against it.
-        run.batch.commit(run.connection, &run.config.post)?;
-        run.stamp = next_stamp(last_stamp);
-        run.control
-            .begin_activity(run.config.board.begin(ActivitySpec {
-                kind: ACTIVITY,
-                label: "Indexing",
-                detail: Some(subtree.display().to_string()),
-                asset_id: None,
-                job_id: None,
-            }));
-        let outcome = if subtree == root {
-            let plan = RootPlan {
-                path: root,
-                kind: RootKind::Indexed,
-                volume_id: Some(self.roots[index].volume_id.clone()),
-            };
-            let listed = run.root(&plan, mounts, false);
-            run.listed.clear();
-            listed
-        } else if subtree.starts_with(&root) {
-            match volume_in(mounts, &root, run.stamp) {
-                Ok(volume) if subtree.symlink_metadata().is_ok_and(|m| m.is_dir()) => {
-                    run.list(subtree, &volume, None).map(|_| ())
-                }
-                Ok(_) => drop_under(run, &[subtree.to_path_buf()]),
-                // The root is not there: its root change lists it.
-                Err(_) => Ok(()),
-            }
-        } else {
-            Ok(())
+        let whole = subtree == root;
+        let plan = RootPlan {
+            path: root.clone(),
+            kind: RootKind::Indexed,
+            volume_id: Some(self.roots[index].volume_id.clone()),
         };
-        run.control.finish_activity(Outcome::of(&outcome));
-        outcome
+        // What the unit wrote so far is committed before the listing reconciles against it.
+        run.stamp = next_stamp(last_stamp);
+        let listed = run.own_job(&root, subtree, |run| {
+            if whole {
+                let listed = run.root(&plan, mounts, false);
+                run.listed.clear();
+                listed
+            } else if subtree.starts_with(&root) {
+                match volume_in(mounts, &root, run.stamp) {
+                    Ok(volume) if subtree.symlink_metadata().is_ok_and(|m| m.is_dir()) => {
+                        let walked = run.list(subtree, &volume, None)?;
+                        run.report.roots.push(subtree.to_path_buf());
+                        run.report.files += u32::try_from(walked.files).unwrap_or(u32::MAX);
+                        run.report.unreadable_folders +=
+                            u32::try_from(walked.unreadable_folders).unwrap_or(u32::MAX);
+                        Ok(())
+                    }
+                    Ok(_) => drop_under(run, &[subtree.to_path_buf()]),
+                    // The root is not there: its root change lists it.
+                    Err(_) => Ok(()),
+                }
+            } else {
+                Ok(())
+            }
+        });
+        self.listed_own(run, index, whole, listed)
+    }
+
+    /// How a listing of the lane's own of the root at `index` ended, `whole` when it listed all of
+    /// it: the root is current once the whole of it was listed, and stale when the listing did not
+    /// complete. A cancelled listing ends there and the unit goes on with its other changes, unless
+    /// the lane is stopping; one that failed fails the unit.
+    fn listed_own(
+        &mut self,
+        run: &Run<'_>,
+        index: usize,
+        whole: bool,
+        listed: Result<(), Error>,
+    ) -> Result<(), Error> {
+        match listed {
+            Ok(()) => {
+                if whole {
+                    self.roots[index].stale = false;
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.roots[index].stale = true;
+                if error.kind == ErrorKind::Cancelled && !run.stop.is_cancelled() {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     /// The root at `index` moved, was removed or its volume went away: stop following it, list it
-    /// again (which records it offline or missing when it is not there), and follow it anew from
-    /// the cursor read before that listing when it is there.
+    /// again as a job of the lane's own (which records it offline or missing when it is not
+    /// there), and follow it anew from the cursor read before that listing when it is there. One
+    /// whose listing was cancelled is followed from now: it is stale, so its next change lists it
+    /// (where the platform keeps no history, following it asks for that listing at once).
     fn root_changed(
         &mut self,
         run: &mut Run<'_>,
@@ -576,15 +634,19 @@ impl Keeper {
             && path
                 .symlink_metadata()
                 .is_ok_and(|metadata| metadata.is_dir());
-        run.batch.commit(run.connection, &run.config.post)?;
         run.stamp = next_stamp(last_stamp);
         let plan = RootPlan {
             path: path.clone(),
             kind: RootKind::Indexed,
             volume_id: Some(self.roots[index].volume_id.clone()),
         };
-        run.root(&plan, mounts, false)?;
-        let cursor = run.listed.drain(..).find_map(|listed| listed.cursor);
+        let listed = run.own_job(&path, &path, |run| run.root(&plan, mounts, false));
+        let completed = listed.is_ok();
+        self.listed_own(run, index, true, listed)?;
+        let cursor = match run.listed.drain(..).find_map(|listed| listed.cursor) {
+            None if !completed => luxforge_watch::current_cursor(&path),
+            cursor => cursor,
+        };
         if there {
             self.roots[index].cursor = cursor;
             self.add(index, cursor, mounts, &run.config.post);
@@ -618,7 +680,8 @@ impl Keeper {
                     })
                     .collect();
                 for index in back {
-                    let resume = database::root_cursor(run.connection, &self.roots[index].path)?;
+                    // A stale root comes back without its cursor, so it is listed again.
+                    let resume = self.resume(run.connection, index);
                     self.add(index, resume, mounts, &run.config.post);
                 }
             }
