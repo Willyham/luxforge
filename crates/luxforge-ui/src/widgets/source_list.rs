@@ -65,10 +65,12 @@ pub struct SourceRowModel {
     pub indent: u8,
     /// `Some(expanded)` for a row that opens, drawn as a chevron down or right; `None` for a leaf.
     pub disclosure: Option<bool>,
+    /// The volume dot; an offline one also dims the row's name.
     pub volume: Option<Volume>,
     pub count: SourceCount,
     pub selected: bool,
-    /// Offline or removed: the name in tertiary ink, even while selected.
+    /// Offline without a dot (a folder on an unplugged volume) or removed: the name in tertiary
+    /// ink, even while selected.
     pub dimmed: bool,
 }
 
@@ -162,29 +164,24 @@ pub fn source_row<'a, M: Clone + 'a>(
         .center_x(Length::Fixed(theme::SOURCE_ICON_WIDTH)),
     );
 
-    // The name takes what the icon, the dot and the count leave, and hugs its text, so the
-    // secondary text follows it; the secondary text keeps its width and the name gives way.
-    let mut named = Row::new()
-        .push(
-            truncated_text(
-                model.name.clone(),
-                theme::SIZE_CONTROL,
-                theme::FONT,
-                name_ink(model),
-            )
-            .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into())),
-        )
-        .spacing(theme::SOURCE_SECONDARY_SPACING)
-        .align_y(Alignment::Center);
+    // The name takes what the icon, the dot and the count leave; the secondary text follows it,
+    // kept whole, and the name ends in its ellipsis first.
+    let mut name = truncated_text(
+        model.name.clone(),
+        theme::SIZE_CONTROL,
+        theme::FONT,
+        name_ink(model),
+    )
+    .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()));
     if let Some(secondary) = &model.secondary {
-        named = named.push(
-            text(secondary.clone())
-                .size(theme::SIZE_SMALL_CAPTION)
-                .wrapping(Wrapping::None)
-                .color(theme::TEXT_TERTIARY),
+        name = name.suffix(
+            secondary.clone(),
+            theme::SIZE_SMALL_CAPTION,
+            theme::TEXT_TERTIARY,
+            theme::SOURCE_SECONDARY_SPACING,
         );
     }
-    content = content.push(container(named).width(Length::Fill));
+    content = content.push(name);
 
     if let Some(volume) = model.volume {
         content = content.push(match volume {
@@ -262,10 +259,11 @@ pub(crate) fn has_chevron_column(model: &SourceRowModel) -> bool {
     model.disclosure.is_some() || model.indent > 0
 }
 
-/// The name's ink: tertiary when dimmed, whatever the selection; the current row's white when
-/// selected; else the label colour.
+/// The name's ink: tertiary when dimmed or offline, whatever the selection, as the boards dim an
+/// offline event or volume; the current row's white when selected; else the label colour.
 pub(crate) fn name_ink(model: &SourceRowModel) -> Color {
-    match (model.dimmed, model.selected) {
+    let dimmed = model.dimmed || model.volume == Some(Volume::Offline);
+    match (dimmed, model.selected) {
         (true, _) => theme::TEXT_TERTIARY,
         (false, true) => theme::TEXT_CURRENT_ROW,
         (false, false) => theme::TEXT_LABEL,
@@ -343,6 +341,15 @@ mod tests {
         assert_eq!(ink(true, false), theme::TEXT_CURRENT_ROW);
         assert_eq!(ink(false, true), theme::TEXT_TERTIARY);
         assert_eq!(ink(true, true), theme::TEXT_TERTIARY);
+        // An offline event or volume is dimmed by its dot alone; a mounted one is not.
+        let volume = |volume| {
+            name_ink(&SourceRowModel {
+                volume: Some(volume),
+                ..row(0, None)
+            })
+        };
+        assert_eq!(volume(Volume::Offline), theme::TEXT_TERTIARY);
+        assert_eq!(volume(Volume::Mounted), theme::TEXT_LABEL);
     }
 
     /// A count is plain, picks in the accent over the total, or unavailable in the clipping red.

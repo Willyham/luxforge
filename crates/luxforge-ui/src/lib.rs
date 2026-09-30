@@ -30,6 +30,9 @@ mod gallery_components;
 mod gallery_masks;
 mod gallery_performance;
 mod gallery_select;
+// Its scene table's tuple type trips `clippy::type_complexity`, which `lint` denies; the grid's
+// branch owns the file and names the type, after which this allow goes.
+#[allow(clippy::type_complexity)]
 mod gallery_thumbnails;
 
 /// Builds one instance of every widget in every state shown on the components board
@@ -216,11 +219,10 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     (
         "Select sources and filters",
         &[
-            "Sources · search, a card, events by month, on disk",
+            "Sources · files by card, event and disk; the catalog by folder and collection",
             "Filter bar · over files, at rest and with conditions set",
-            "Sources · catalog folders by year, collections, missing, removed",
-            "Filter bar · over the catalog, search, set conditions, save",
             "Search fields · the panel's and the filter bar's, empty and typed",
+            "Filter bar · over the catalog, search, set conditions, save",
             "Filter chip · the Group menu open",
         ],
     ),
@@ -295,7 +297,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 119);
+        assert_eq!(next - 1, 118);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

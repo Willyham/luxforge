@@ -155,7 +155,6 @@ fn sources_over_files() -> Element<'static, ()> {
         row_of(SourceRowModel {
             disclosure: Some(false),
             volume: Some(Volume::Offline),
-            dimmed: true,
             ..source(Icon::Drive, "Photos SSD", SourceCount::None)
         }),
     ]);
@@ -631,11 +630,12 @@ fn strip(first: usize, total: usize, active: usize, loading: &[usize]) -> Elemen
 pub(crate) fn gallery_select() -> Vec<Element<'static, ()>> {
     vec![
         // -- Select sources and filters.
-        sources_over_files(),
+        row![sources_over_files(), sources_over_the_catalog()]
+            .spacing(theme::SPACING)
+            .into(),
         filter_bar_over_files(),
-        sources_over_the_catalog(),
-        filter_bar_over_the_catalog(),
         search_fields(),
+        filter_bar_over_the_catalog(),
         group_menu_open(),
         // -- Select title bar and long-running work.
         switch_both_ways(),
@@ -652,7 +652,7 @@ pub(crate) fn gallery_select() -> Vec<Element<'static, ()>> {
         info_bar(),
         frames(6, 2, 2, 4),
         insets(),
-        frames(1000, 499, 497, 4),
+        frames(1000, 499, 500, 4),
         region_over_the_loupe(),
         strip(0, 18, 0, &[]),
         hints(),
