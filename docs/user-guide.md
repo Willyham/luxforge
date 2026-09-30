@@ -8,6 +8,8 @@ RAW profiles cover selected modes from Nikon, Canon, Sony, Fujifilm, Panasonic, 
 
 ## Start the editor
 
+macOS is the primary platform. Linux has automated build and functional checks; native desktop qualification remains open. Windows support will come later, and Windows CI is disabled. See [platform status](engineering/platforms.md).
+
 After [developer setup](engineering/development.md), start an optimized build with a catalog and an optional original:
 
 ```sh

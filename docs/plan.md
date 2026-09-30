@@ -95,7 +95,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 **Full-editor verification.** Native M4 handoff of the complete editor, then Windows and Linux.
 
 **Cross-platform builds.**
-- Three-platform CI with GUI smoke results and artifact retention
+- macOS and Linux CI with GUI smoke results and artifact retention; Windows CI is disabled and Windows support will come later
 - Windows and Linux packaging, checked in real desktop sessions
 - Reproducible Linux VM route
 - Developer guide checked on Windows and Linux
