@@ -3716,6 +3716,9 @@ fn a_release_that_changes_no_geometry_captures_the_next_redraw() {
     // This checks geometry-only release. Coverage that was still arriving would correctly keep
     // the evidence step waiting for its evaluated grid instead of capturing before it is drawn.
     masking.message(MaskMessage::Overlay(0));
+    // The sweep's own preview can still be in flight here, and a step correctly waits for it;
+    // let it land so the release is judged alone.
+    drain_queue(&mut masking);
     let asked = masking.editor.presentation.preview_generation;
 
     attach_script(&mut masking.editor, r#"[{"mask":{"release":true}}]"#);
