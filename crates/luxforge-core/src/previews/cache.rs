@@ -21,7 +21,13 @@
 //!
 //! **Budget.** Grid tiers are kept. Loupe tiers and developed photographs' large tiers (in
 //! `photo_previews`) share one byte budget, least recently used out first ([`Store::evict`]).
-use super::extract::Made;
+//!
+//! **Fingerprints.** A complete grid tier's brightness fingerprint (`bracket.rs`) is made from the
+//! tier's own bytes as it is written, and kept in `grid_fingerprints` in the same transaction as
+//! the tier's row, naming the tier's file: it is valid while the file's grid row names that file
+//! and is valid itself, and a thumbnail stage's row removes it. Its own table keeps the `previews`
+//! rows small for the scans the budget and `catalog.info` make.
+use super::{bracket::Fingerprint, extract::Made};
 use crate::{
     Error,
     atomic_file::file_error,
@@ -203,7 +209,12 @@ impl Stored {
 }
 
 /// A signature from the four columns a table stores it in.
-fn signature(len: i64, modified_ns: i64, device: Option<i64>, inode: Option<i64>) -> FileSignature {
+pub(super) fn signature(
+    len: i64,
+    modified_ns: i64,
+    device: Option<i64>,
+    inode: Option<i64>,
+) -> FileSignature {
     FileSignature {
         len: len.max(0) as u64,
         modified_ns,
@@ -502,7 +513,14 @@ impl Store {
             origin: made.origin,
             last_used_ms: now_ms,
         };
-        let replaced = match self.record(&preview) {
+        // A complete grid tier's fingerprint, from the tier's own bytes (a reduced decode of at
+        // most the tier's pixels), so whichever path made the tier gives it one. A tier it cannot
+        // decode has none, which only leaves its runs to the metadata.
+        let fingerprint = (tier == PreviewTier::Grid
+            && made.origin != PreviewOrigin::ExifThumbnail)
+            .then(|| Fingerprint::of_jpeg(&made.jpeg))
+            .flatten();
+        let replaced = match self.record(&preview, fingerprint.as_ref()) {
             Ok(replaced) => replaced,
             Err(error) => {
                 remove(&preview.path);
@@ -517,11 +535,16 @@ impl Store {
         Ok(preview)
     }
 
-    /// Write the row of `preview`, answering the path the row named before, if there was one. The
-    /// transaction takes the write lock before it reads: under write-ahead logging a read
+    /// Write the row of `preview` and, for a grid tier, its `fingerprint` row (removed when it has
+    /// none, as a thumbnail stage has not), answering the path the row named before, if there was
+    /// one. The transaction takes the write lock before it reads: under write-ahead logging a read
     /// transaction another connection has written past cannot become a write, and would fail at
     /// once rather than wait its turn.
-    fn record(&mut self, preview: &CachedPreview) -> Result<Option<PathBuf>, Error> {
+    fn record(
+        &mut self,
+        preview: &CachedPreview,
+        fingerprint: Option<&Fingerprint>,
+    ) -> Result<Option<PathBuf>, Error> {
         let identity = preview.signature.identity.map(FileIdentity::to_columns);
         let tx = self
             .connection
@@ -557,6 +580,23 @@ impl Store {
             preview.origin.as_str(),
             preview.last_used_ms,
         ])?;
+        if preview.tier == PreviewTier::Grid {
+            match fingerprint {
+                Some(fingerprint) => tx
+                    .prepare_cached(
+                        "INSERT OR REPLACE INTO grid_fingerprints (file_id, path, fingerprint)
+                         VALUES (?1, ?2, ?3)",
+                    )?
+                    .execute(params![
+                        preview.file.0,
+                        preview.path.to_string_lossy(),
+                        fingerprint.as_bytes()
+                    ])?,
+                None => tx
+                    .prepare_cached("DELETE FROM grid_fingerprints WHERE file_id = ?1")?
+                    .execute([preview.file.0])?,
+            };
+        }
         tx.commit()?;
         Ok(replaced.map(PathBuf::from))
     }

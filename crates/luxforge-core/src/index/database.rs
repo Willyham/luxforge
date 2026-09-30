@@ -28,10 +28,11 @@ use std::{
     time::Duration,
 };
 
-/// Format 1: files with their signatures and header columns, the roots listed, and the preview
-/// records of files and developed photographs. Any other marker, a database SQLite cannot read, and
-/// an index of another catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 1;
+/// Format 2: files with their signatures and header columns, the roots listed, the preview records
+/// of files and developed photographs, and the brightness fingerprints of files' complete grid
+/// tiers (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database
+/// SQLite cannot read, and an index of another catalog are discarded and recreated.
+pub const INDEX_FORMAT: i64 = 2;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
@@ -133,6 +134,11 @@ const SCHEMA: &str = "
         PRIMARY KEY (file_id, tier)
     ) WITHOUT ROWID;
     CREATE INDEX previews_by_use ON previews(last_used_ms);
+    CREATE TABLE grid_fingerprints (
+        file_id INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        fingerprint BLOB NOT NULL
+    );
     CREATE TABLE photo_previews (
         asset_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
@@ -895,7 +901,14 @@ mod tests {
         assert_eq!(opened, IndexOpened::Created);
         assert_eq!(
             tables(index.connection()),
-            ["files", "index_meta", "photo_previews", "previews", "roots"]
+            [
+                "files",
+                "grid_fingerprints",
+                "index_meta",
+                "photo_previews",
+                "previews",
+                "roots"
+            ]
         );
         let format: i64 = index
             .connection()
