@@ -18,7 +18,7 @@
 use crate::{
     AssetId, Error,
     artifacts::{ArtifactId, LiveArtifacts},
-    catalog_types::{AssetRemovalValue, AssetRowId, LibraryItem},
+    catalog_types::{AssetRemovalValue, AssetRowId, LibraryChangeRow, LibraryItem},
     editor::library_rows,
     library::{
         folders::counted,
@@ -63,7 +63,7 @@ pub(crate) fn restore(assets: Vec<(AssetId, AssetRowId)>) -> Planned {
 
 /// The photographs a change's rows name, as its label says them: "DSC_0412.NEF" or
 /// "5 photographs".
-fn photographs(connection: &Connection, rows: &[crate::catalog_types::LibraryChangeRow]) -> String {
+fn photographs(connection: &Connection, rows: &[LibraryChangeRow]) -> String {
     tree::photographs(connection, rows, |count| {
         counted(count, "photograph", "photographs")
     })
@@ -113,8 +113,7 @@ pub(crate) fn empty(
     let mut strokes = stored_strokes(tx, &ids)?;
     let referenced = referenced_artifacts(tx, &ids)?;
     lifted(tx, LIFTED_TRIGGERS, |tx| {
-        library_rows::delete_photographs(tx, &assets)?;
-        Ok(())
+        library_rows::delete_photographs(tx, &assets)
     })?;
     if !strokes.is_empty() {
         still_named(tx, &mut strokes)?;
