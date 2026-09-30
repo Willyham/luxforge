@@ -8,8 +8,11 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | --- | --- |
 | [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| [Detail](detail.json) | Planned capture sharpening and manual noise reduction: pre-tone placement, exact settled Fit, shared controls/masks/presets/history and quality/performance qualification |
 
 The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
+
+Detail's choices are delegated and recorded in its [design](../docs/design/detail.md). The plan is ready for later implementation without an owner-review prerequisite; the planning request does not itself authorize implementation.
 
 ## Other plans
 
