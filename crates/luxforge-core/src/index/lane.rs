@@ -5,6 +5,11 @@
 //! piece of [`Work`] at a time and hears back through [`LaneEvent`]s what each batch committed and
 //! how the work ended (`api/owner/files.rs`).
 //!
+//! - **Off the owner, the index's opening included.** The coordinator opens the index on its first
+//!   work (creating it, or recreating one it cannot use), hands the owner a connection of its own
+//!   ([`LaneEvent::Opened`]), resolves the catalog's own directories and reads each root's volume
+//!   from only the mounts that could hold it, so a hung network volume elsewhere never holds a
+//!   listing.
 //! - **Bounded.** At most [`HEADERS_IN_FLIGHT`] header reads are queued or being read; a batch holds
 //!   at most [`INDEX_BATCH`] writes. A listing's memory is one folder's files, the folders still to
 //!   visit and the set of rows it has seen, which its file limit bounds.
@@ -19,11 +24,11 @@
 //!   of the headers read. Each committed batch advances the index's revision in the same transaction
 //!   and is announced as one event ([`LaneEvent::Committed`]).
 use super::{
-    database,
-    exclude::Exclusions,
+    IndexDb, database,
+    exclude::{Exclusions, OwnDirs},
     read::{FileTask, HeaderOutcome, read_file},
     reconcile::{Decision, Reconciler},
-    volumes::{MountSource, MountTable},
+    volumes::{MountSource, PlatformMount, mounted_in, volume_in},
     walk::{ListedFolder, Walk, WalkLimits},
 };
 use crate::{
@@ -61,9 +66,14 @@ pub(crate) type Post = Arc<dyn Fn(LaneEvent) + Send + Sync>;
 
 /// What the lane needs to run.
 pub(crate) struct LaneConfig {
-    /// The index directory; the owner has opened (and if need be recreated) the database in it.
+    /// The index directory. The lane opens the database in it on its first work (creating it, or
+    /// recreating one it cannot use), off the owner, and hands the owner a connection of its own
+    /// ([`LaneEvent::Opened`]).
     pub index_dir: PathBuf,
-    pub exclusions: Exclusions,
+    /// The catalog the index belongs to.
+    pub catalog_id: String,
+    /// Luxforge's own directories, which the lane resolves into what every walk skips.
+    pub own: OwnDirs,
     pub mounts: MountSource,
     pub limits: WalkLimits,
     pub post: Post,
@@ -92,6 +102,8 @@ pub(crate) struct Refresh {
 }
 
 /// One root a job lists: its path as named, why it is listed, and the volume it was last seen on.
+/// A root planned as [`RootKind::Browsed`] that the index already lists as an indexed folder or a
+/// card keeps that kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RootPlan {
     pub path: PathBuf,
@@ -102,6 +114,8 @@ pub(crate) struct RootPlan {
 /// What the lane tells the owner.
 #[derive(Debug)]
 pub(crate) enum LaneEvent {
+    /// The lane opened the index; this connection is the owner's, for its reads.
+    Opened(IndexDb),
     /// A batch committed and left the index at `revision`.
     Committed { revision: u64 },
     /// A refresh ended.
@@ -223,7 +237,8 @@ fn coordinator(
     tasks: SyncSender<Task>,
     answers: &Receiver<Answer>,
 ) {
-    let mut connection = database::connect_at(&config.index_dir);
+    let exclusions = config.own.exclusions();
+    let mut connection = None;
     let mut last_stamp = 0;
     let mut runs = 0;
     while let Ok(work) = commands.recv() {
@@ -234,11 +249,12 @@ fn coordinator(
                 // taken for one the next listing did not see.
                 let stamp = now_ms().max(last_stamp + 1);
                 last_stamp = stamp;
-                let result = match &mut connection {
+                let result = match open(&config, &mut connection) {
                     Ok(connection) => {
                         let mut run = Run {
                             id: runs,
                             config: &config,
+                            exclusions: &exclusions,
                             connection,
                             tasks: &tasks,
                             answers,
@@ -260,7 +276,7 @@ fn coordinator(
                             Err(Error::internal("indexing failed unexpectedly"))
                         })
                     }
-                    Err(error) => Err(error.clone()),
+                    Err(error) => Err(error),
                 };
                 (config.post)(LaneEvent::Refreshed {
                     job_id: refresh.job_id,
@@ -268,13 +284,30 @@ fn coordinator(
                 });
             }
             Work::Forget(path) => {
-                if let Ok(connection) = &mut connection {
+                if let Ok(connection) = open(&config, &mut connection) {
                     let _ = forget(connection, &path, &config.post);
                 }
                 (config.post)(LaneEvent::Forgotten);
             }
         }
     }
+}
+
+/// The lane's connection to the index, opening the index on the lane's first work: created when
+/// there is none and recreated when it cannot be used ([`IndexDb::open`]), with a connection of
+/// its own handed to the owner for its reads. A failure fails the work that needed it, and the
+/// next work tries again.
+fn open<'c>(
+    config: &LaneConfig,
+    connection: &'c mut Option<Connection>,
+) -> Result<&'c mut Connection, Error> {
+    if connection.is_none() {
+        let (index, _) = IndexDb::open(&config.index_dir, &config.catalog_id)?;
+        let own = index.connect()?;
+        (config.post)(LaneEvent::Opened(index));
+        *connection = Some(own);
+    }
+    Ok(connection.as_mut().expect("the index was opened above"))
 }
 
 /// One write of a batch.
@@ -427,6 +460,8 @@ struct Run<'r> {
     /// Which of the lane's listings this is, which its tasks and their answers carry.
     id: u64,
     config: &'r LaneConfig,
+    /// What every walk skips, resolved from the catalog's own directories when the lane started.
+    exclusions: &'r Exclusions,
     connection: &'r mut Connection,
     tasks: &'r SyncSender<Task>,
     answers: &'r Receiver<Answer>,
@@ -443,10 +478,10 @@ impl Run<'_> {
     /// List every root in turn. A cancel or a failure commits what the batch holds, waits for the
     /// reads in flight and stops.
     fn refresh(&mut self, roots: &[RootPlan], strict: bool) -> Result<IndexReport, Error> {
-        let table = self.config.mounts.read(self.stamp);
+        let mounts = self.config.mounts.list();
         let mut outcome = Ok(());
         for root in roots {
-            outcome = self.root(root, &table, strict);
+            outcome = self.root(root, &mounts, strict);
             if outcome.is_err() {
                 break;
             }
@@ -459,16 +494,22 @@ impl Run<'_> {
 
     /// List one root, or record why it cannot be: offline when its volume is not mounted, missing
     /// when it is gone from a mounted volume. A `strict` job fails with `source-unavailable` then;
-    /// another reports it and lists the rest.
-    fn root(&mut self, plan: &RootPlan, table: &MountTable, strict: bool) -> Result<(), Error> {
+    /// another reports it and lists the rest. Only the mounts that could hold the root, or carry
+    /// its volume, are looked at in `mounts`.
+    fn root(
+        &mut self,
+        plan: &RootPlan,
+        mounts: &[PlatformMount],
+        strict: bool,
+    ) -> Result<(), Error> {
         self.control.checkpoint()?;
         let canonical = match plan.path.canonicalize() {
             Ok(canonical) => canonical,
             Err(_) => {
-                let offline = plan
-                    .volume_id
-                    .as_ref()
-                    .is_some_and(|volume| table.offline(&plan.path, volume));
+                let offline = plan.volume_id.as_ref().is_some_and(|volume| {
+                    plan.path.symlink_metadata().is_err()
+                        && mounted_in(mounts, volume, self.stamp).is_none()
+                });
                 if offline {
                     if let (Some(root), Some(volume_id)) = (
                         database::root(self.connection, &plan.path)?,
@@ -498,16 +539,22 @@ impl Run<'_> {
                 return Ok(());
             }
         };
-        let volume = table.volume_of(&canonical)?;
+        let volume = volume_in(mounts, &canonical, self.stamp)?;
         self.report.roots.push(canonical.clone());
-        let about = database::root(self.connection, &canonical)?
+        let listed = database::root(self.connection, &canonical)?;
+        let about = listed
+            .as_ref()
             .and_then(|root| root.file_count)
             .map(|count| count as usize);
-        let exclusions = &self.config.exclusions;
+        // A folder browsed that is already listed as an indexed folder or a card stays one.
+        let kind = match (plan.kind, &listed) {
+            (RootKind::Browsed, Some(root)) => root.kind,
+            (kind, _) => kind,
+        };
         let mut walk = Walk::new(
             &canonical,
             &volume.mount_point,
-            exclusions,
+            self.exclusions,
             self.config.limits,
         )?;
         let control = self.control.clone();
@@ -541,7 +588,7 @@ impl Run<'_> {
         }
         self.batch.push(Write::Root(IndexRoot {
             path: canonical,
-            kind: plan.kind,
+            kind,
             volume_id: volume.id,
             listed_ms: Some(now_ms()),
             file_count: Some(u32::try_from(walk.files()).unwrap_or(u32::MAX)),

@@ -24,6 +24,7 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::{
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
     time::Duration,
 };
 
@@ -39,6 +40,11 @@ pub const PREVIEWS_DIR: &str = "previews";
 
 /// How long a connection waits for another connection's write before it answers `conflict`.
 const BUSY_WAIT: Duration = Duration::from_millis(2000);
+
+/// Held while an index is opened ([`IndexDb::open`]), so openers on different threads never
+/// discard and recreate one index at once. Opening is rare (once per catalog and thread that
+/// needs it), so one lock for the process serves every catalog.
+static OPENING: Mutex<()> = Mutex::new(());
 
 const SCHEMA: &str = "
     CREATE TABLE index_meta (
@@ -180,7 +186,27 @@ pub struct IndexDb {
 impl IndexDb {
     /// Open the index in `dir` for the catalog `catalog_id`, creating it when there is none and
     /// discarding it — never the catalog — when it cannot be used.
+    ///
+    /// One open at a time in the process ([`OPENING`]): the index lane's threads open it while the
+    /// owner may open it for another lane, and two openers of an index that cannot be used must
+    /// not both discard it, one under the other's new connection.
     pub fn open(dir: &Path, catalog_id: &str) -> Result<(Self, IndexOpened), Error> {
+        let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::open_alone(dir, catalog_id)
+    }
+
+    /// [`Self::open`] when there is an index database in `dir`; none, creating nothing, when
+    /// there is not.
+    pub(crate) fn open_existing(dir: &Path, catalog_id: &str) -> Result<Option<Self>, Error> {
+        let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+        if !dir.join(INDEX_FILE).exists() {
+            return Ok(None);
+        }
+        Self::open_alone(dir, catalog_id).map(|(index, _)| Some(index))
+    }
+
+    /// [`Self::open`], holding [`OPENING`].
+    fn open_alone(dir: &Path, catalog_id: &str) -> Result<(Self, IndexOpened), Error> {
         std::fs::create_dir_all(dir).map_err(|error| {
             Error::file_access(format!(
                 "cannot create the index directory: {}",
@@ -572,9 +598,9 @@ impl StoredFile {
     }
 }
 
-/// A connection to the index database in `dir`, configured as every index connection is, for the
-/// index lane's own thread. The owner opens (and, when it cannot be used, recreates) the index
-/// first ([`IndexDb::open`]).
+/// A connection to the index database in `dir`, configured as every index connection is, for a
+/// test that reads what the lane wrote, once the index has been opened by [`IndexDb::open`].
+#[cfg(test)]
 pub(crate) fn connect_at(dir: &Path) -> Result<Connection, Error> {
     configured(&dir.join(INDEX_FILE))
 }
