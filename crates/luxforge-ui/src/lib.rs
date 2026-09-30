@@ -29,6 +29,7 @@ mod gallery;
 mod gallery_components;
 mod gallery_masks;
 mod gallery_performance;
+mod gallery_select;
 mod gallery_select_grid;
 mod gallery_thumbnails;
 
@@ -229,6 +230,40 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     // -- end Select: the thumbnail grid's pages.
     //
     // -- Select: chrome's pages.
+    (
+        "Select sources and filters",
+        &[
+            "Sources · files by card, event and disk; the catalog by folder and collection",
+            "Filter bar · over files, at rest and with conditions set",
+            "Search fields · the panel's and the filter bar's, empty and typed",
+            "Filter bar · over the catalog, search, set conditions, save",
+            "Filter chip · the Group menu open",
+        ],
+    ),
+    (
+        "Select title bar and long-running work",
+        &[
+            "Workspace switch · Select and Develop, with Add a folder…",
+            "Develop N · ready, busy, nothing picked, a large count",
+            "Status bar job · with a total, without one, alone",
+            "Performance rows · a count and estimate, no estimate yet, working",
+            "Progress sheet · reading a card, with its count and estimate",
+            "Progress sheet · no total yet, working",
+        ],
+    ),
+    (
+        "Select loupe and filmstrip",
+        &[
+            "Loupe info bar · moment, frame, exposure and source",
+            "Moment frames · a window of six, frame 3 active and picked",
+            "100% inset · a camera preview and a Luxforge development",
+            "Moment frames · the middle of a 1,000-frame burst",
+            "Region box · the 100% region under the pointer",
+            "Filmstrip · the development set's first photograph",
+            "Key hints · the loupe's keys",
+            "Filmstrip · deep in a long set, two previews still loading",
+        ],
+    ),
     // -- end Select: chrome's pages.
 ];
 
@@ -276,7 +311,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 105);
+        assert_eq!(next - 1, 124);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }
