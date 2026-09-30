@@ -17,3 +17,5 @@
 //! `extract.rs` (embedded previews per camera), `region.rs` (the 100% region and the development
 //! fallback), `rendered.rs` (previews of developed photographs) and `bracket.rs` (the brightness
 //! check).
+
+pub(crate) mod region;
