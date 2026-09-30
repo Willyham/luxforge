@@ -39,6 +39,12 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Editing tools
 
+**Tone curve** (planned, [design](design/tone-curve.md), [plan](../tasks/tone-curve.json)). One composite point curve over encoded luminance, drawn by the delivered curve editor and posted as the same points; the next module candidate by the owner's decision of 2026-09-21, not yet authorized for implementation.
+- Frozen curve numerics against an independent reference
+- The `luxforge.curve` field-patch module after Basic and before the mixer, with `edit.set-curve` and `query.sample-curve`
+- Conformance, placement, the `curve` smoke scenario, presets with the Lightroom composite-curve transfer, masks, and photo-sized measurement
+- Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit and the Lightroom transfer
+
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
 - Owner decisions: behaviour, repair-stage order, scope
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow

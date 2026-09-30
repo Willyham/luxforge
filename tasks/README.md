@@ -8,8 +8,11 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | --- | --- |
 | [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| [Tone curve](tone-curve.json) | The Tone curve module: frozen curve numerics, the field-patch module, conformance and placement, the desktop scenario, presets, masks and measurement |
 
 The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
+
+The Tone curve plan is planned work, not yet authorized for implementation: it runs on the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
 
 ## Other plans
 
