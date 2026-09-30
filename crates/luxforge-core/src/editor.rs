@@ -15,7 +15,6 @@ use crate::{
     artifacts::{ArtifactId, LiveArtifacts, PREPARED_ARTIFACT_BYTES, PreparedArtifacts},
     source::PreparedSource,
 };
-use catalog::{CATALOG_FORMAT, default_artifact_root};
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -30,6 +29,7 @@ mod artifact_store;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
+mod catalog_rows;
 mod describe;
 mod entries;
 mod evaluate;
@@ -42,7 +42,15 @@ mod test_support;
 #[cfg(test)]
 pub(crate) use test_support::{mutation, mutation_json, recast_as_raw};
 
-pub(crate) use catalog::{DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, decode, encode, now_ms, write};
+pub(crate) use catalog::{
+    CATALOG_FORMAT, DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, decode, default_artifact_root, encode,
+    insert_entry, now_ms, write,
+};
+#[allow(unused_imports, reason = "catalog contracts: used as the lanes land")]
+pub(crate) use catalog_rows::{
+    NewAsset, capture_of, insert_asset, insert_capture, insert_catalog_folder, insert_collection,
+    insert_indexed_folder, insert_member, insert_pick, top_level_folder, upsert_volume,
+};
 pub use evaluate::Evaluation;
 pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
@@ -591,6 +599,11 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// Where this catalog's index lives: `<catalog stem>.index` beside the catalog file.
+    index_dir: PathBuf,
+    /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
+    /// a catalog that never browses a file gets no index directory.
+    index: RefCell<Option<crate::index::IndexDb>>,
 }
 
 impl EditorService {
@@ -627,7 +640,7 @@ impl EditorService {
         })?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
-            0 => Self::create_schema(&mut connection)?,
+            0 => Self::create_schema(&mut connection, &uuid::Uuid::new_v4().simple().to_string())?,
             CATALOG_FORMAT => {}
             other => {
                 return Err(Error::incompatible(format!(
@@ -645,8 +658,9 @@ impl EditorService {
         let catalog_id = catalog_id.ok_or_else(|| {
             Error::incompatible("catalog has no identity; choose a new catalog path")
         })?;
-        // The root follows the catalog file, so moving both together keeps it valid.
+        // The roots follow the catalog file, so moving them together keeps them valid.
         let artifact_root = default_artifact_root(path);
+        let index_dir = crate::index::index_dir(path);
         Ok(Self {
             connection,
             // Opening starts empty: nothing read before a reopen is trusted after it.
@@ -659,6 +673,8 @@ impl EditorService {
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
             live_artifacts: LiveArtifacts::default(),
+            index_dir,
+            index: RefCell::new(None),
         })
     }
 
@@ -670,5 +686,29 @@ impl EditorService {
     /// The render context every evaluation this service plans reads.
     pub fn render_context(&self) -> &RenderContext {
         &self.render
+    }
+
+    /// This catalog's identity.
+    pub fn catalog_id(&self) -> &str {
+        &self.catalog_id
+    }
+
+    /// Where this catalog's index lives, whether or not it has been opened.
+    pub fn index_dir(&self) -> &Path {
+        &self.index_dir
+    }
+
+    /// The catalog's index database, opened on first use: created when there is none, and
+    /// discarded and recreated when it cannot be used, never touching the catalog
+    /// ([`crate::IndexDb::open`]).
+    pub fn index(&self) -> Result<std::cell::RefMut<'_, crate::index::IndexDb>, Error> {
+        let mut slot = self.index.borrow_mut();
+        if slot.is_none() {
+            let (index, _) = crate::index::IndexDb::open(&self.index_dir, &self.catalog_id)?;
+            *slot = Some(index);
+        }
+        Ok(std::cell::RefMut::map(slot, |slot| {
+            slot.as_mut().expect("the index was opened above")
+        }))
     }
 }

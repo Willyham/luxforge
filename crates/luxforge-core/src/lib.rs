@@ -4,8 +4,12 @@ pub mod analysis;
 mod api;
 mod artifacts;
 mod atomic_file;
+/// The catalog's browse views, facets and selection over the index and the catalog (lane D).
+mod browse;
 mod cancel;
 pub mod capabilities;
+/// The catalog's shared shapes, which every lane of the catalog work codes against.
+pub mod catalog_types;
 /// One home for the sRGB transfer function, Rec. 709 luminance, the Oklab conversion, small 3×3
 /// linear algebra and the Planckian locus, shared by every renderer and colour module.
 pub mod colour;
@@ -14,25 +18,35 @@ mod editor;
 mod error;
 /// JPEG export: capture metadata, the encoder and a publish that never replaces a file.
 mod export;
+/// The index of the files Luxforge browses, beside the catalog (lane A).
+mod index;
 pub mod jobs;
 /// One persistent worker that runs the newest job, behind the preview, the analysis and the
 /// desktop's clipping overlay.
 pub mod latest;
+/// Picks, the library journal, catalog folders, collections, developing picks, availability,
+/// missing originals, removal and batch jobs (lane C).
+mod library;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;
 mod mask_field;
 mod model;
 mod modules;
+/// Events, days, cameras and moments, computed from header metadata (lane A).
 mod organize;
 /// The host's path primitives: the stored coordinate grid, decimation, the stroke a painting
 /// action captures, and the content-addressed store those strokes live in.
 pub mod path;
 mod presets;
 mod preview;
+/// The preview lane and cache of files and developed photographs (lane B).
+mod previews;
 mod profile;
 mod proxy;
 mod render;
 pub mod resources;
+/// Generated catalogs and indexes, written in bulk for `cargo xtask generate-catalog` and tests.
+pub mod seed;
 mod source;
 
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
@@ -98,6 +112,18 @@ pub use render::{
     render, stage_transform,
 };
 pub use source::{LinearImage, SourceImage, open_source};
+
+// The catalog's public surface beyond `catalog_types`, one marked section per lane of the catalog
+// work, so the lanes add their exports on lines of their own.
+// ── catalog lane A: files ──
+pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};
+// ── end lane A ──
+// ── catalog lane B: previews ──
+// ── end lane B ──
+// ── catalog lane C: catalog ──
+// ── end lane C ──
+// ── catalog lane D: views ──
+// ── end lane D ──
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};
