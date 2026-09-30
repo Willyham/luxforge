@@ -132,20 +132,11 @@ impl Harness {
 
     /// A copy of the fixture `name` (`s0/…`) at `relative` in the scratch directory, imported.
     fn photograph(&self, name: &str, relative: &str) -> AssetId {
-        let path = self.dir.join(relative);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::copy(fixture(&format!("s0/{name}")), &path).unwrap();
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let started = self.ok(
-            "catalog.import",
-            json!({
-                "path": path.canonicalize().unwrap(),
-                "mutation": envelope(&format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed))),
-            }),
+        let path = super::opening::distinct_copy(
+            &fixture(&format!("s0/{name}")),
+            &self.dir.join(relative),
         );
-        let settled = self.settle(&started["job_id"]);
-        assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        serde_json::from_value(super::opening::import(&self.owner, self.client, &path)).unwrap()
     }
 
     fn revision(&self, asset: &AssetId) -> u64 {

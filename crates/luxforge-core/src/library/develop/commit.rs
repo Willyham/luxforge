@@ -31,7 +31,10 @@ use crate::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 /// What one developed file becomes.
 #[derive(Debug)]
@@ -77,7 +80,7 @@ pub(crate) fn decide(
     service: &EditorService,
     files: Vec<Developed>,
     now_ms: i64,
-) -> Result<(Vec<Decided>, Vec<ItemFailure>), Error> {
+) -> Result<(Vec<Decided>, Vec<Refused>), Error> {
     let catalog = &service.connection;
     let mut decided = Vec::with_capacity(files.len());
     let mut failed = Vec::new();
@@ -87,11 +90,14 @@ pub(crate) fn decide(
     for developed in files {
         let file = &developed.file;
         if !locate::unchanged(&file.path, &file.signature) {
-            failed.push(failure(
-                &developed.pick,
-                None,
-                &Error::conflict(format!("{} changed after it was read", file.path.display())),
-            ));
+            failed.push(Refused {
+                pick: developed.pick,
+                asset: None,
+                error: Error::conflict(format!(
+                    "{} changed after it was read",
+                    file.path.display()
+                )),
+            });
             continue;
         }
         let becomes = match made.get(&file.fingerprint) {
@@ -99,16 +105,17 @@ pub(crate) fn decide(
             None => match matching(catalog, file, &relinked)? {
                 Match::Named { asset, same_bytes } if same_bytes => Becomes::Linked(asset),
                 Match::Named { asset, .. } => {
-                    failed.push(failure(
-                        &developed.pick,
-                        Some(&asset),
-                        &Error::conflict(format!(
-                            "{} is already the original of photograph {asset}, which was \
-                             developed from other bytes",
-                            file.path.display()
-                        ))
-                        .with_data(json!({"asset_id": asset})),
-                    ));
+                    let error = Error::conflict(format!(
+                        "{} is already the original of photograph {asset}, which was developed \
+                         from other bytes",
+                        file.path.display()
+                    ))
+                    .with_data(json!({"asset_id": asset}));
+                    failed.push(Refused {
+                        pick: developed.pick,
+                        asset: Some(asset),
+                        error,
+                    });
                     continue;
                 }
                 Match::Available(asset) | Match::Unavailable(asset) => Becomes::Linked(asset),
@@ -141,7 +148,11 @@ pub(crate) fn decide(
                             Becomes::Created(Box::new(photograph))
                         }
                         Err(error) => {
-                            failed.push(failure(&developed.pick, None, &error));
+                            failed.push(Refused {
+                                pick: developed.pick,
+                                asset: None,
+                                error,
+                            });
                             continue;
                         }
                     }
@@ -375,6 +386,21 @@ fn label(decided: &[Decided]) -> String {
             )
         ),
         many => format!("Developed {}", many.len()),
+    }
+}
+
+/// A developed file the owner refused to commit, with why.
+#[derive(Debug)]
+pub(crate) struct Refused {
+    pub pick: PathBuf,
+    pub asset: Option<AssetId>,
+    pub error: Error,
+}
+
+impl Refused {
+    /// The refusal as a Develop's report lists it.
+    pub(crate) fn failure(&self) -> ItemFailure {
+        failure(&self.pick, self.asset.as_ref(), &self.error)
     }
 }
 

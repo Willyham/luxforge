@@ -33,7 +33,7 @@ pub(crate) mod send_back;
 #[cfg(test)]
 pub(crate) mod develop_picks_tests;
 
-pub(crate) use commit::{Decided, decide, failure, write};
+pub(crate) use commit::{Decided, Refused, decide, failure, write};
 #[allow(
     unused_imports,
     reason = "the views lane organizes the files it views from the same rows"
@@ -42,15 +42,83 @@ pub(crate) use frames::{Frames, frames};
 pub(crate) use plan::{Destination, Plan, PlannedFile, destinations, plan};
 pub(crate) use read::{ReadFile, from_copy, read};
 
-use super::locate::Phase;
+use super::{availability::SYSTEM_ACTOR, journal::Request, locate::Phase};
 use crate::{
-    Error,
+    EditorService, EditorState, Error, JobId,
     catalog_types::{
-        DevelopOutcome, DevelopReport, DevelopedPick, LibraryChangeDetail, LibraryItem, MomentId,
+        CatalogFolderId, DevelopOutcome, DevelopReport, DevelopedPick, FolderValue,
+        LibraryChangeDetail, LibraryItem, MomentId,
     },
+    editor::now_ms,
     jobs::JobControl,
 };
-use std::{path::PathBuf, time::Duration};
+use rusqlite::OptionalExtension;
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+impl EditorService {
+    /// Bring the file at `path` into the catalog and prepare it, on the caller's thread, blocking:
+    /// a Develop of that one file — the develop lane's read ([`read`]), then the owner's decision
+    /// and commit ([`decide`], [`write`]) as one library change by the actor `system` — into the
+    /// top-level catalog folder named after its folder on disk, made when there is none, then its
+    /// preparation ([`Self::prepare`]). A file whose bytes are already a photograph's is linked to
+    /// it, and one that is a missing original's relinks it, as a Develop does. For tests, tools
+    /// and the harness; a client sends `pick.develop`, `source.prepare` and `job.adopt`.
+    pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
+        let file = read(path, &JobControl::new(), &|_| {})?;
+        let now = now_ms();
+        let name = plan::parent(&file.path).file_name().map_or_else(
+            || "Imported".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let existing: Option<String> = self
+            .connection
+            .prepare_cached(
+                "SELECT id FROM catalog_folders WHERE parent_id IS NULL AND name = ?1 COLLATE NOCASE",
+            )?
+            .query_row([&name], |row| row.get(0))
+            .optional()?;
+        let destination = match existing {
+            Some(id) => Destination::Existing(CatalogFolderId::parse(id)?),
+            None => Destination::New {
+                folder: FolderValue {
+                    id: CatalogFolderId::new(),
+                    name,
+                    parent_id: None,
+                    created_ms: now,
+                    event: None,
+                },
+                events: Vec::new(),
+            },
+        };
+        let developed = Developed {
+            pick: file.path.clone(),
+            used: None,
+            file,
+            moment: None,
+        };
+        let (decided, refused) = decide(self, vec![developed], now)?;
+        if let Some(refused) = refused.into_iter().next() {
+            return Err(refused.error);
+        }
+        let asset = decided
+            .first()
+            .map(|decided| decided.reported().asset_id)
+            .ok_or_else(|| Error::internal("a developed file was neither committed nor refused"))?;
+        let request_id = JobId::new().to_string();
+        let request = Request {
+            method: "pick.develop",
+            actor: SYSTEM_ACTOR,
+            request_id: &request_id,
+        };
+        let artifact_root = self.artifact_root().to_path_buf();
+        self.library_write(|tx| write(tx, request, &artifact_root, &destination, &decided, now))?;
+        let needs = self.entry_needs(&asset, None)?;
+        self.prepare(&needs)
+    }
+}
 
 /// The most files a batch after the first commits at once.
 pub(crate) const BATCH_FILES: usize = 100;
