@@ -75,7 +75,8 @@ Paths are under `crates/luxforge-core/src`.
 | `index/` | The index of the files Luxforge browses (lane A): its database in `<catalog stem>.index/index.sqlite`, versioned on its own and discarded rather than refused (`database.rs`), and which volume a path is on (`volume.rs`); the index lane is to come |
 | `organize/` | Events, days, cameras and moments, pure functions of header metadata (lane A); their signatures are final and their bodies placeholders |
 | `library/` | The library (lane C): `journal.rs`, the one path every library change records through, with generic undo and redo; `items.rs`, each journal item's value read and written; `targets.rs`, the files or photographs a method's targets name; `picks.rs`. Catalog folders, collections, developing picks and the rest are to come |
-| `previews/`, `browse/` | The preview lane and cache (lane B), and browse views, facets and selection (lane D); each a module documenting its lane and its planned files |
+| `previews/` | The preview lane and cache of browsed files (lane B): the cache's names, validity by signature, writes and shared byte budget, and the grid and loupe states and sizes other lanes read (`cache.rs`); a file's tiers from a JPEG original or a RAW's embedded images, upright, and the seam where a file with no usable preview is developed (`extract.rs`); the priority queue, the failures it remembers and its worker threads (`lane.rs`). Its owner side — jobs, view jobs, waking clients and `preview.read` — is `api/owner/previews.rs` |
+| `browse/` | Browse views, facets and selection (lane D); a module documenting its lane and its planned files |
 | `seed.rs` | Generated catalogs and indexes written in bulk, for `cargo xtask generate-catalog` and tests, through the same row writers |
 | `api/owner/catalog.rs` and `files.rs`, `previews.rs`, `library.rs`, `views.rs` | The catalog lanes on the owner: each lane's owner-side state, the messages its workers post back, its handlers and its per-client clean-up, one file per lane |
 
@@ -274,6 +275,13 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Display bounds | 4096 px per side and 8 megapixels | `ProxyBounds::MAX_SIDE` and `ProxyBounds::MAX_PIXELS`, `crates/luxforge-core/src/proxy.rs` |
 | A proxy without a crop | 64 MiB for a JPEG, 96 MiB of RAW planes | No single constant: follows from the display bounds and the fit rule, `ProxyPlan::fit` in `crates/luxforge-core/src/proxy.rs` |
 | Finished results waiting for their consumer, per latest-job worker | 2 | `WAITING_RESULTS`, `crates/luxforge-core/src/latest.rs` |
+| A 100% region's pixels | 32 MiB of RGBA8 | `MAX_REGION_BYTES`, `crates/luxforge-core/src/previews/region.rs` |
+| Bytes a 100% region reads from a RAW to list its previews and extract one | 64 MiB | `REGION_READ_BUDGET`, as above |
+| The embedded JPEG a 100% region extracts, LibRaw's buffer and the copy each | 48 MiB | `REGION_PREVIEW_BYTES`, as above |
+| A turned region's decode strip | 16 rows of the stored rectangle | `REGION_STRIP_ROWS`, as above |
+| RAW developments for the 100% region and the developed tiers, process-wide | 1 running, 4 callers waiting | The one slot `DEVELOPMENTS` and `MAX_DEVELOPMENT_WAITERS`, as above |
+| Developed frames kept | 1, upright RGBA8 within the evaluated-frame limit, released before another is developed | The one slot `DEVELOPMENTS`, as above |
+| A developed preview's long edge | 2560 px | `MAX_DEVELOPED_PREVIEW_SIDE`, as above |
 
 **Catalog and API**
 
@@ -292,6 +300,32 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Library changes per `library.journal` page, and picks per `pick.list` page | 500 (100 when the request names no `limit`), and 5,000 (1,000) | `MAX_JOURNAL_PAGE` and `MAX_PICK_PAGE`, `crates/luxforge-core/src/catalog_types/library.rs` |
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
 | A histogram `Report`, before protocol encoding | 16 KiB | `REPORT_BOUND_BYTES`, `crates/luxforge-core/src/analysis.rs` |
+
+**Header reads** (a photo file's capture metadata for indexing, `crates/luxforge-core/src/export/metadata/header/`). A read past its budget is not an error: it returns the fields read so far and says it was capped.
+
+| Limit | Figure | Enforced by |
+| --- | --- | --- |
+| The first read of a file | 64 KiB, or the whole file when shorter | `HEADER_HEAD_BYTES`, `mod.rs` |
+| Every later read | The 4 KiB-aligned chunks around a range the container names, each read once and kept | `CHUNK_BYTES`, `mod.rs` |
+| One file's header read | 256 KiB and 16 reads, head included (the authentic corpus needs at most 84 KiB and 5) | `MAX_HEADER_BYTES` and `MAX_HEADER_READS`, `mod.rs` |
+| Entries of one IFD; one text value | 256 (a larger table is not read); 256 bytes | `MAX_IFD_ENTRIES` and `MAX_TEXT_BYTES`, `tiff.rs` |
+| IFDs one file's walk visits; IFD chain and SubIFDs followed | 24; 8 each | `MAX_IFDS` and `MAX_CHAIN`, `container.rs` |
+| JPEG segments before the frame header; bytes scanned for one marker | 64; 1 KiB | `MAX_JPEG_SEGMENTS` and `MAX_MARKER_SCAN`, `container.rs` |
+| ISO-BMFF boxes per level; RAF directory records | 64; 64 | `MAX_BOXES` and `MAX_RAF_RECORDS`, `container.rs` |
+| A located thumbnail | A JPEG of at most 512 KiB, or uncompressed RGB of at most 1024 px a side | `MAX_THUMBNAIL_JPEG_BYTES` and `MAX_THUMBNAIL_SIDE`, `mod.rs` |
+
+**Catalog previews** (the preview lane of browsed files)
+
+| Limit | Figure | Enforced by |
+| --- | --- | --- |
+| Preview tasks waiting, each one file's tier | 20,000: the design's 10,000 files in view, two tiers each | `PREVIEW_QUEUE_CAPACITY`, `crates/luxforge-core/src/previews/lane.rs` |
+| Preview worker threads | 2, started on the first task, each blocked on its own channel while idle | `PREVIEW_WORKERS`, `crates/luxforge-core/src/previews/lane.rs` |
+| Failures remembered, in memory, per file's tier and signature | 20,000, the oldest forgotten first | `REMEMBERED_FAILURES`, `crates/luxforge-core/src/previews/lane.rs` |
+| Loupe and large tiers on disk, together (grid tiers are kept) | 4 GiB, least recently used out | `SHARED_PREVIEW_BUDGET_BYTES`, `crates/luxforge-core/src/catalog_types/previews.rs`, a parameter of the lane |
+| A tier's long edge | 512 px for a grid tier, 2560 px for a loupe tier, never enlarged | `FILE_GRID_SIDE`, `crates/luxforge-core/src/previews/mod.rs`, and `LOUPE_MAX_SIDE`, `crates/luxforge-core/src/catalog_types/previews.rs` |
+| A JPEG original's EXIF thumbnail read | 64 KiB | `MAX_THUMBNAIL_BYTES`, `crates/luxforge-core/src/previews/extract.rs` |
+| One task's decoded frame | The JPEG original's limits (64 MP), checked at the frame's full size, decoded at the DCT scale that covers the tier | `JPEG_LIMITS`, `crates/luxforge-core/src/source.rs`, with `Scale::covering` |
+| One task's reads of a RAW, and its one extraction | 128 MiB of reads, one image of 64 MiB | `MAX_EMBEDDED_READ_BUDGET` and `MAX_EMBEDDED_IMAGE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 
 **Masks** (the delivered mask data model)
 
