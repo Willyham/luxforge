@@ -14,11 +14,12 @@
 //!   navigation wrote;
 //! - a no-op records only its request and moves nothing.
 //!
-//! One write changes a head's row rather than its history: a relocation, which points an asset at
-//! the file its original is now found at, rewrites the asset's locator and file identity in one
-//! transaction and, after it commits, puts the row it stored on the cached head
-//! ([`EntryCache::row_changed`]), so the next read sees the new locator without reopening the
-//! catalog.
+//! One write changes a head's row rather than its history: a relocation, a library change that
+//! points an asset at the file its original is now found at (`crate::library::locate`), rewrites
+//! the asset's locator and file identity in one transaction and, after it commits, puts the row it
+//! stored on the cached head ([`EntryCache::row_changed`], through
+//! [`EditorService::library_write`](crate::EditorService::library_write)), so the next read sees
+//! the new locator without reopening the catalog.
 //!
 //! No other write moves a head. An import inserts a new asset under a new identity, which no head or
 //! entry here can name, so there is nothing to update, and a repeated import writes nothing; naming
@@ -398,7 +399,10 @@ mod tests {
         let moved = dir.join("moved.jpg");
         std::fs::rename(&second_source, &moved).unwrap();
         assert_eq!(
-            service.relocate(&other, &moved).unwrap(),
+            crate::library::locate::locate_now(&mut service, &other, &moved)
+                .unwrap()
+                .answer()
+                .outcome,
             MutationOutcome::Applied
         );
         assert_coherent(&service, &other, "a relocation");
@@ -414,7 +418,7 @@ mod tests {
         let short = dir.join("short.jpg");
         std::fs::write(&short, b"not the original").unwrap();
         let relocated = service.state(&other).unwrap();
-        assert!(service.relocate(&other, &short).is_err());
+        assert!(crate::library::locate::locate_now(&mut service, &other, &short).is_err());
         assert_eq!(service.state(&other).unwrap(), relocated);
         assert_coherent(&service, &other, "a refused relocation");
 
