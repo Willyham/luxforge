@@ -1676,10 +1676,15 @@ impl Owner {
         }
     }
 
-    /// Record every change the message just handled announced, once each.
+    /// Record every change the message just handled announced, once each, and mark the browse
+    /// views a change left behind stale.
     fn record_announced(&mut self) {
-        for origin in std::mem::take(&mut self.announced) {
-            self.log.record(&origin);
+        let announced = std::mem::take(&mut self.announced);
+        for origin in &announced {
+            self.log.record(origin);
+        }
+        if !announced.is_empty() {
+            views::changed(self);
         }
     }
 

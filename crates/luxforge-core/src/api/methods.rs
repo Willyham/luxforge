@@ -827,6 +827,36 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // ── catalog lane C: catalog ──
     // ── end lane C ──
     // ── catalog lane D: views ──
+    owner!(
+        "event.list",
+        crate::catalog_types::api::EventListParams,
+        owner::views::event_list,
+        "{events: [{id, name, place?, first_day?, last_day?, months, cameras, count, picked, offline, roots, volumes, undated}], months: [{month, events, files, picked}]}: the events over the files of the indexed folders and mounted cards, computed from the index under the default thresholds and cached until the index changes, newest first with the Undated events last; month (YYYY-MM) keeps the events listed under it; query keeps those whose name, place, cameras or dates contain it ignoring case, or whose days span a YYYY-MM-DD it names; months counts the events the query matches, newest first, with the files taken that month and their picks"
+    ),
+    owner!(
+        "browse.view",
+        crate::catalog_types::api::BrowseView,
+        owner::views::browse_view,
+        "evaluates a query into the caller's one view, held by the owner as its ordered items, and answers {revision, query, count, picked, in_catalog, unavailable, groups: {days, cameras, moments}, library_sequence, index_revision} without a row; files come from the index (an event, a folder on disk with its subfolders when asked, or a card), photographs from the catalog; without_pick is decided per frame over the whole source, Day › Camera › Moment under the query's thresholds, before the other conditions; grouping applies under the capture-time sort only; every sort ends in capture time (undated last), the file name ignoring case, then the path or the photograph's row; the selection carries over by item; resource-limit past 1,000,000 items in the source; a later library change or index revision marks the view stale"
+    ),
+    owner!(
+        "browse.rows",
+        crate::catalog_types::api::BrowseRows,
+        owner::views::browse_rows,
+        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
+    ),
+    owner!(
+        "browse.facets",
+        crate::catalog_types::api::BrowseFacets,
+        owner::views::browse_facets,
+        "{counts: {facet: [{value?, label?, count}]}}: for each facet asked (date, place, camera, lens, kind, pick), every value most frequent first, each count exactly the size of the view the source and filter give with that facet's own condition replaced by that value; the value absent counts the items that record none; the pick facet counts files only; the default thresholds decide moments"
+    ),
+    owner!(
+        "browse.select",
+        crate::catalog_types::api::BrowseSelect,
+        owner::views::browse_select,
+        "changes the caller's selection in its view and answers the session, whose browse.selection holds disjoint ascending position ranges, their count and the active position: the union of items, range and all is replaced, added, removed or toggled by mode (replace by default); without items, range or all only active moves, and {all: false} selects none; conflict when revision names another view; writes nothing"
+    ),
     // ── end lane D ──
 ];
 
@@ -1885,9 +1915,14 @@ fn refresh_conflict(service: &EditorService, session: &mut ClientSession) -> Res
     Ok(())
 }
 
-/// The session as a client reads it, with its draft's conflict state recomputed first.
-fn session_value(service: &EditorService, session: &mut ClientSession) -> Result<Value, Error> {
+/// The session as a client reads it, with its draft's conflict state and its browse view's
+/// staleness recomputed first.
+pub(super) fn session_value(
+    service: &EditorService,
+    session: &mut ClientSession,
+) -> Result<Value, Error> {
     refresh_conflict(service, session)?;
+    crate::browse::refresh_stale(service, &mut session.browse)?;
     value(session)
 }
 

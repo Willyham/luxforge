@@ -748,6 +748,21 @@ pub(super) fn entry_from(
 // ── catalog lane C: catalog ──
 // ── end lane C ──
 // ── catalog lane D: views ──
+impl EditorService {
+    /// The catalog's latest library change, or 0 before the first: what a browse view is stamped
+    /// with, so a later change marks it stale. The sequence is the journal's integer key, so this
+    /// reads one row.
+    pub(crate) fn library_sequence(&self) -> Result<crate::catalog_types::LibraryChangeSeq, Error> {
+        let sequence: i64 = self.connection.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM library_changes",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(crate::catalog_types::LibraryChangeSeq(
+            sequence.max(0) as u64
+        ))
+    }
+}
 // ── end lane D ──
 
 #[cfg(test)]
