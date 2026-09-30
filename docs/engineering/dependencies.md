@@ -33,6 +33,16 @@ License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is G
 
 The workspace's text is set in Inter 4.1 (SIL Open Font License 1.1), vendored as two unmodified static TTF instances in `crates/luxforge-ui/assets/fonts/inter-4.1/` with the upstream licence beside them and compiled in with `include_bytes!`. `crates/luxforge-ui/THIRD_PARTY.md` records the release, archive and file hashes; `cargo xtask inventory` copies it and the licence into the notices under `fonts/` and lists the font in `dependencies.json`. Changing a font file is a dependency update. The embedded-font review above still applies and is not complete.
 
+## Bundled place names
+
+Events are named after the populated place nearest to their photographs, from a gazetteer compiled into the binary, so no position leaves the machine. The table is a modified extract of GeoNames' `cities15000` (populated places over 15,000 inhabitants, and capitals; 34,152 rows), licensed CC BY 4.0, which asks for the attribution, licence address and indication of changes that `crates/luxforge-core/THIRD_PARTY.md` carries. `cargo xtask inventory` copies that file into the notices under `data/luxforge-core/` and lists the data as `bundled_data` in `dependencies.json`; there is no licence file to copy, since the licence is named by its address.
+
+- **Source and pin.** `https://download.geonames.org/export/dump/cities15000.zip`, downloaded on 2026-09-30, SHA-256 `44347468d5656101a999ba0cbb64b0cbdc7c2b48de83c8f6e129b50e697dd05d`; the extracted `cities15000.txt` is `5db14f4826ba451b779cbf25ad363f04d6dce20d334d61dfafdd3a5ff64a40e7`. The derived asset is `c62805b2e717dcd3167eaadd14d9b9a4f1cce477c080a121aa1c97cd54bbd59b`. A test checks that `THIRD_PARTY.md` records the committed asset's rows, size and hash.
+- **Form and size.** `crates/luxforge-core/assets/gazetteer/places.tsv` is a sorted UTF-8 table of six columns (name, country code, GeoNames feature code, latitude, longitude, population), 1,445,433 bytes (616 KB gzipped). It is text so that a regenerated file reviews as a line diff and the lookup borrows its names from the compiled-in bytes. It is parsed and indexed on the first lookup, about 3.5 MB of heap in about 10 ms, never at startup; a binary that uses it grows by the asset's size.
+- **Regeneration.** `cargo xtask gazetteer --source PATH/TO/cities15000.txt --output NEW_FILE` converts the extracted file with no network access and refuses an output that exists. Replacing the asset is a dependency update: record the new hashes, date and row count in `THIRD_PARTY.md` and here.
+
+The manual license and asset review of this data is deferred by the owner and remains incomplete; the hashes are provenance, not an audit.
+
 ## RAW implementation dependencies
 
 The [RAW backend selection](../research/raw-backend-selection.md) records pinned decoder/development candidates and why their processing stages are separate. The standalone Rawler comparison workspace has its own lockfile and is not an application runtime dependency. The private native adapter vendors the chosen LibRaw/librtprocess source with upstream notices and build configuration. These additions require the same source/notice and portable packaging checks; their experiments do not complete the deferred manual audit.
