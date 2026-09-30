@@ -1134,7 +1134,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "browse.rows",
         crate::catalog_types::api::BrowseRows,
         owner::views::browse_rows,
-        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
+        "{revision, from, rows: [{position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, folder_id?, collections?, availability, preview}]}: rows from..from + count of the caller's view, fewer at its end, read in a fixed number of statements; conflict when revision names another view, or when the view is stale and an item of the window is gone; a stale view still answers for its items"
     ),
     owner!(
         "browse.facets",

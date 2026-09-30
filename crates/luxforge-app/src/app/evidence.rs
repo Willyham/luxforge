@@ -6,6 +6,7 @@ use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
 mod long_work;
 mod select;
+mod select_catalog;
 mod select_missing;
 // ── end lane D ──
 use crate::state::MenuTarget;
@@ -970,6 +971,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
+            Step::Catalog(step) => self.catalog_step(step),
             // ── end lane D ──
         }
     }
