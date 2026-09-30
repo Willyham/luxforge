@@ -130,10 +130,10 @@ models and the three owner originals. Full verification also passed 19 general
 rendered scenarios and the independent RAW numerical reference. The resource ledger records sampled process memory
 and its limits. For the popular modes, the background `raw-editor` journey
 passed on Sony A7 IV compressed (6932), Fujifilm X-T5 uncompressed (6124),
-Nikon Z50II lossless (7762) and Canon 90D RAW (4649). The Z6III lossless sample
-(7819) qualifies but its journey fails on open: its As shot temperature and
-tint land on the +100 tint limit (4877 K, +100) and do not reproduce the
-camera's gains, an editor white-balance limit rather than a decoding one. The
+Nikon Z6III lossless (7819), Nikon Z50II lossless (7762) and Canon 90D RAW
+(4649). The Z6III sample's As shot white lies within half a tint unit beyond
++100, so its controls show the limit (4877 K, +100), as the white-balance
+inversion does for any such white. The
 A7R V lossless mode's padded 9728×6656 frame has no editor or resource-ledger
 measurement yet. Controlled
 color/detail, other recording modes, and native Windows/Linux package
