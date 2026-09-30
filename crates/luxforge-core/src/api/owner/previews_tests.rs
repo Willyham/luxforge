@@ -124,7 +124,8 @@ impl Drop for Setup {
 }
 
 /// `preview.read` answers the job making a tier, `job.read` answers the preview it made, the next
-/// read answers it ready, and the client that asked is woken.
+/// read answers it ready, and the client that asked is woken. A file's tiers are never
+/// approximate.
 #[test]
 fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() {
     let mut setup = Setup::new("preview-owner-read");
@@ -145,6 +146,7 @@ fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() 
     assert_eq!(record["kind"], "preview-extract");
     let preview = record["result"].clone();
     assert_eq!(preview["origin"], "embedded");
+    assert_eq!(preview["approximate"], false);
     assert_eq!(preview["item"], json!({"kind": "file", "file_id": file}));
     assert_eq!(
         (preview["width"].clone(), preview["height"].clone()),
@@ -169,6 +171,7 @@ fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() 
     let loupe = setup.settled(&queued["job_id"]);
     assert_eq!(loupe["result"]["tier"], "loupe");
     assert_eq!(loupe["result"]["width"], 640, "never enlarged");
+    assert_eq!(loupe["result"]["approximate"], false);
 }
 
 /// A client is woken only for what its own requests wait on: a view job over files wakes nobody,
@@ -447,7 +450,7 @@ fn preview_cache_owner_view_job_reports_progress_and_cancels() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 4, "read": 4, "deferred": 0, "failed": 0})
+        json!({"items": 4, "read": 4, "deferred": 0, "failed": 0})
     );
     assert_eq!(
         record["progress"],
@@ -740,7 +743,7 @@ fn preview_cache_owner_develops_what_is_on_screen_and_defers_the_rest() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 1, "read": 0, "deferred": 1, "failed": 0})
+        json!({"items": 1, "read": 0, "deferred": 1, "failed": 0})
     );
     assert_eq!(
         record["progress"],

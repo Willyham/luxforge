@@ -29,7 +29,7 @@ use super::{
     extract::{DEVELOP, FileImages, Found, develop_instead},
 };
 use crate::{
-    Error, ErrorKind,
+    AssetId, Error, ErrorKind,
     catalog_types::{
         FileId, FileSignature, LOUPE_MAX_SIDE, PreviewInfo, PreviewPriority, PreviewTier, ViewItem,
     },
@@ -37,7 +37,7 @@ use crate::{
 };
 use std::{
     cmp::Reverse,
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
     hash::Hash,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -191,13 +191,24 @@ impl<K: Copy + Ord + Hash> Queue<K> {
 /// answers: a failure, so a file that cannot give the tier is not read again until it changes,
 /// or, in a second instance, a deferral, so a RAW that needs a development is not read again in
 /// the background. A photograph's original is known by the length the catalog recorded
-/// ([`camera::recorded_signature`]): it never changes and stays the photograph's. Bounded, the
+/// ([`camera::recorded_signature`]): it never changes and stays the photograph's. A photograph's
+/// entry also names its asset, so it is forgotten when the photograph leaves the catalog
+/// ([`Self::forget_photographs`]), whose row number a later photograph may be given. Bounded, the
 /// oldest forgotten first, and never stored: a restart tries again.
 #[derive(Debug)]
 pub(crate) struct Failures<K = TaskKey> {
-    entries: HashMap<K, (FileSignature, Error)>,
+    entries: HashMap<K, Remembered>,
     order: VecDeque<K>,
     capacity: usize,
+}
+
+/// One remembered failure or deferral.
+#[derive(Debug)]
+struct Remembered {
+    signature: FileSignature,
+    error: Error,
+    /// The photograph a camera preview's entry is of; none for a file's.
+    photo: Option<AssetId>,
 }
 
 impl<K> Default for Failures<K> {
@@ -211,8 +222,21 @@ impl<K> Default for Failures<K> {
 }
 
 impl<K: Copy + Eq + Hash> Failures<K> {
-    pub(crate) fn remember(&mut self, key: K, signature: FileSignature, error: Error) {
-        if self.entries.insert(key, (signature, error)).is_none() {
+    /// Remember `error` for `key` while its file has `signature`; `photo` names the photograph a
+    /// camera preview's key is of.
+    pub(crate) fn remember(
+        &mut self,
+        key: K,
+        signature: FileSignature,
+        error: Error,
+        photo: Option<AssetId>,
+    ) {
+        let remembered = Remembered {
+            signature,
+            error,
+            photo,
+        };
+        if self.entries.insert(key, remembered).is_none() {
             self.order.push_back(key);
         }
         while self.entries.len() > self.capacity {
@@ -227,13 +251,28 @@ impl<K: Copy + Eq + Hash> Failures<K> {
     pub(crate) fn get(&self, key: &K, signature: &FileSignature) -> Option<&Error> {
         self.entries
             .get(key)
-            .filter(|(failed, _)| failed == signature)
-            .map(|(_, error)| error)
+            .filter(|remembered| remembered.signature == *signature)
+            .map(|remembered| &remembered.error)
     }
 
     pub(crate) fn forget(&mut self, key: &K) {
         if self.entries.remove(key).is_some() {
             self.order.retain(|held| held != key);
+        }
+    }
+
+    /// Forget every entry of a photograph in `assets`: one pass over what is remembered.
+    pub(crate) fn forget_photographs(&mut self, assets: &HashSet<AssetId>) {
+        let before = self.entries.len();
+        self.entries.retain(|_, remembered| {
+            remembered
+                .photo
+                .as_ref()
+                .is_none_or(|photo| !assets.contains(photo))
+        });
+        if self.entries.len() != before {
+            let entries = &self.entries;
+            self.order.retain(|key| entries.contains_key(key));
         }
     }
 }
