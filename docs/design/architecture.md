@@ -290,6 +290,19 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
 | A histogram `Report`, before protocol encoding | 16 KiB | `REPORT_BOUND_BYTES`, `crates/luxforge-core/src/analysis.rs` |
 
+**Header reads** (a photo file's capture metadata for indexing, `crates/luxforge-core/src/export/metadata/header/`). A read past its budget is not an error: it returns the fields read so far and says it was capped.
+
+| Limit | Figure | Enforced by |
+| --- | --- | --- |
+| The first read of a file | 64 KiB, or the whole file when shorter | `HEADER_HEAD_BYTES`, `mod.rs` |
+| Every later read | The 4 KiB-aligned chunks around a range the container names, each read once and kept | `CHUNK_BYTES`, `mod.rs` |
+| One file's header read | 256 KiB and 16 reads, head included (the authentic corpus needs at most 84 KiB and 5) | `MAX_HEADER_BYTES` and `MAX_HEADER_READS`, `mod.rs` |
+| Entries of one IFD; one text value | 256 (a larger table is not read); 256 bytes | `MAX_IFD_ENTRIES` and `MAX_TEXT_BYTES`, `tiff.rs` |
+| IFDs one file's walk visits; IFD chain and SubIFDs followed | 24; 8 each | `MAX_IFDS` and `MAX_CHAIN`, `container.rs` |
+| JPEG segments before the frame header; bytes scanned for one marker | 64; 1 KiB | `MAX_JPEG_SEGMENTS` and `MAX_MARKER_SCAN`, `container.rs` |
+| ISO-BMFF boxes per level; RAF directory records | 64; 64 | `MAX_BOXES` and `MAX_RAF_RECORDS`, `container.rs` |
+| A located thumbnail | A JPEG of at most 512 KiB, or uncompressed RGB of at most 1024 px a side | `MAX_THUMBNAIL_JPEG_BYTES` and `MAX_THUMBNAIL_SIDE`, `mod.rs` |
+
 **Masks** (the delivered mask data model)
 
 | Limit | Figure | Enforced by |
