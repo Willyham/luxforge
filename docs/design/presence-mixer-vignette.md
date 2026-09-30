@@ -129,9 +129,10 @@ Recommendations for the owner, recorded as proposals until decided. The plan run
 | Stage order | Colour before spatial before geometry before finish, with the mixer after Basic by declared order | Spatial before colour, which would require sampling through neighbourhoods for the neutral picker |
 | Mixer layout | Three property groups (Hue, Saturation, Luminance) with eight sliders each | Lightroom's per-colour view and targeted-adjustment drag, which need a view switch and a drag canvas interaction that the vocabulary does not have |
 | Vignette style | One luminance-neutral style; positive amount lightens toward white | Highlight-priority and paint-overlay styles, colour-priority desaturation |
-| Spatial precision on the JPEG path | The spatial operation reads the quantized frame of the preceding segment, one extra 8-bit boundary on an 8-bit source | A float hand-off from the colour run, which needs a full-frame float plane the memory limits do not allow |
 | Gesture latency for spatial sliders | At Fit the display-bounded proxy follows motion. At 100% and above, a half-scale viewport region follows motion, then exact visible-region detail and whole-image analysis settle after the shared quiet policy or release; whole-image counts stay marked updating meanwhile | Exact-only frames for every moving input, which cost a full-resolution neighbourhood pass per input |
 | Point-sample cost through a spatial layer | The declared O(halo² × layers) exception | Refusing samples through spatial layers, which would break readout and acceptance parity |
+
+Spatial precision on the JPEG path is decided (owner, 2026-09-30): a spatial frame on the byte path that feeds a colour run or another spatial unit holds 16-bit encoded sRGB, and 8-bit quantization happens only at a resample, a point replacement or the terminal output. The change is carried by the [Detail plan](../../tasks/detail.json), because Detail places a spatial unit before Basic; until it lands, the delivered path still reads the quantized 8-bit frame of the preceding segment. Presence's JPEG output bytes change within rounding when it does, and the Detail plan's performance task re-measures Presence before and after.
 
 ## References
 

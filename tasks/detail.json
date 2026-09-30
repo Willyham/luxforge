@@ -2,483 +2,1091 @@
   "schema_version": "1.0",
   "plan_id": "detail",
   "title": "Detail: capture sharpening and noise reduction",
-  "objective": "Deliver a deterministic, bounded Detail module with pre-tone capture sharpening and manual noise reduction on RAW/JPEG, exact settled Fit, shared masks/presets/history and photographic/native M4 evidence.",
-  "context_summary": "Planning only. Choices are delegated by the owner on 2026-09-30 and recorded in docs/decisions.md and docs/design/detail.md; no owner-review prerequisite and no implementation authorized by this planning request. Defaults: restoration before Basic/Presence, denoise then sharpen, zero strengths, scaled approximate motion and exact-derived settled Fit. Current host contracts require extensions for source-pixel scale, Fit presentation and off-owner pre-tone pixel queries. Numerical coefficients, controlled photographs and cost remain unqualified until these tasks prove them. Preserve current formats only; no output sharpening, AI/profiled denoise or new capabilities. Listed test filters are to be added by their tasks; commands use existing tools. Use fresh evidence output paths for reruns.",
+  "objective": "Deliver a deterministic, bounded Detail module with pre-tone capture sharpening and manual noise reduction on RAW and JPEG, the 16-bit byte-path hand-off, an exact-derived settled Fit, the restoration-prefix proxy cache, value-based mask overlays behind Detail, every pixel read off the catalog owner, shared masks/presets/history, and photographic and native M4 evidence.",
+  "context_summary": "Planned, not authorized for implementation. Choices delegated by the owner on 2026-09-30 and four owner decisions taken the same day (16-bit hand-off on the JPEG path, restoration-prefix proxy cache, input-grid cache for mask overlays, off-owner mutation path with no rule-5 exception) are recorded in docs/design/detail.md and docs/decisions.md; board captions and settled-Fit latency run on recorded defaults the owner may revise. The design is the prescriptive contract and names every type, constant and rule these tasks implement. Detail owns CompileStage for the planned modules; Tone curve and Lens plans share linked_modules, field_patch.rs, the descriptor snapshot, conformance KNOWN, smoke SCENARIOS, app/preview.rs and ProxyApproximation, so those edits land sequentially and generated files are regenerated after each rebase. Commands that name a test, flag, fixture or scenario the task adds exist only after that task. Timing runs only in the performance task, sequentially on a quiet host after all feature work. Use fresh NEW_DIR outputs; FILE is the owner's private RAW manifest and PATH a baseline release binary.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Freeze the Detail numerical contract and reproducible quality corpus.",
+      "description": "Freeze the Detail numerical contract in an independent reference with synthetic fixtures and quality gates.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Product choices are delegated and recorded; do not add an owner-review gate. This study resolves coefficient mappings and evidence, not processing order or scope.",
-        "Use bounded three-level B-spline shrinkage in extended Oklab followed by edge-gated unsharp masking. No AI, profile lookup, new dependency or whole-frame opponent buffer.",
-        "Keep this task numerical and photographic; photo-sized timing waits until the finished feature. Missing authentic scenes are an explicit qualification gap, never a substituted pass."
+        "Start from the design's baseline (Algorithms and numerics): difference-form B3 denoise with k_j = [0.8914, 0.1992, 0.0860], T_L = 0.05*(luminance/100)^1.5*k_j, T_C = 0.04*(colour/100)^1.5*k_j, 3x3 protection, non-negative garrote; Gaussian unsharp residual with coring theta = 0.01*(1 - sharpen-detail/100)^2, gradient masking guide and tanh 3x3 limiter at delta = 0.04*(hi - lo). Tune within it; do not change scope, stage or the two-unit contract.",
+        "Formulation is fixed: difference-form smoothing x + sum_{i!=0} w_i (x_{p+ih} - x_p) with taps in the order -2,-1,+1,+2; output equals input when delta-lab is zero bit for bit; achromatic snap |a'|,|b'| <= NEUTRAL_CHROMA_SNAP (1e-6) gives [L'^3; 3]; otherwise from_oklab.",
+        "Proxy rule is fixed: per-axis sampled normalized Gaussians sigma' = h_j*s (h = 1,2,4), R' = max(1, ceil(3 sigma')), weights normalized in f64; sharpen sigma' = radius*s; guide and limiter windows max(1, ceil(r*s)); halo' = sum_j R'_j + 1 (denoise) and max(R'_s, R'_guide + 1, 1) (sharpen). The study measures and freezes its error bound; it does not choose another rule.",
+        "Chroma contingency is pre-decided: if the correlated-chroma gate fails with three levels, adopt a fourth chroma-only level at spacing 8, raise DETAIL_DENOISE_HALO_MAX to 32 (operation cap 48 px) and record it in the design and study. No other scale change.",
+        "The reference crate imports no workspace crate (repository rule independent-references). Numeric probes from the design review (8-bit vs float hand-off banding, Oklab identity costs, proxy rule errors, cost estimates) are the expected orders of magnitude; the study reproduces its own figures."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Independent references",
+          "label": "Reference crate",
           "target": "crates/luxforge-reference/src/lib.rs",
-          "relevance": "Implement f64 equations without importing production."
+          "relevance": "Add `pub mod detail;` beside presence; f64 equations without production imports."
         },
         {
           "kind": "file",
-          "label": "RAW coverage",
-          "target": "fixtures/raw-coverage.json",
-          "relevance": "Identify controlled detail/high-ISO gaps; do not infer quality from admission."
+          "label": "Presence reference and generator (pattern)",
+          "target": "crates/luxforge-reference/tests/studies/presence.rs",
+          "locator": "generate_presence_fixtures",
+          "relevance": "Copy the generate/reload pattern (generate_presence_fixtures, presence_fixtures_match_reference) for Detail."
+        },
+        {
+          "kind": "file",
+          "label": "Presence fixtures (pattern)",
+          "target": "fixtures/presence/README.md",
+          "relevance": "Image specs, not pixels; LCG/SplitMix seeding; reload tests in cargo xtask check."
+        },
+        {
+          "kind": "file",
+          "label": "Oklab conversion",
+          "target": "crates/luxforge-core/src/colour.rs",
+          "relevance": "The production conversion whose rounded inverses set the f32 round-trip floor (2.6e-6 in gamut, 1.1e-5 extended)."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer study tolerance precedent",
+          "target": "docs/design/mixer-study.md",
+          "relevance": "1e-5 + 1e-5*|ref| plus one code at a quantization boundary."
         },
         {
           "kind": "file",
           "label": "Denoise research",
           "target": "docs/research/darktable/raw-and-denoise.md",
-          "relevance": "Alternatives and distinction from profiled sensor denoise."
+          "relevance": "Alternatives and the distinction from profiled sensor denoise."
         }
       ],
       "acceptance_criteria": [
-        "A short numerical study freezes all eight field mappings, signed/HDR conversion, thresholds and edge protection, Gaussian limiter, per-axis fractional proxy taps and rounding, true-edge rules, and peak-live scratch formulae.",
-        "Denoise and sharpen halos are proven at most 24 and 16 full-resolution pixels respectively; neutral components bypass conversion and work exactly.",
-        "Independent reference fixtures cover identity, constants, noise, slanted edges, chroma boundaries, negative/HDR values, tiny/odd images and seams. Freeze float/quantization tolerances before production, initially the design's 1e-6 absolute/relative and one terminal code.",
-        "A hashed/provenanced corpus names Z6, X100VI, Air 2S and photographic JPEGs, clean/noisy references, ISO/settings, inspection crops and fixed parameter sets, with missing coverage explicitly recorded.",
-        "The designated moderate-setting synthetic gates measure at least 25% flat-patch RMS reduction, less than one-code mean drift, and at least 10% sharpening MTF50 improvement with at most 5% edge-contrast overshoot/undershoot; record photographic failure cases, not only aggregate scores."
+        "`docs/design/detail-study.md` exists and freezes: all eight field mappings; the formulation, neutral snap and copy-if-unchanged rule; per-band thresholds and protection; the sharpen residual, coring, masking guide and limiter; proxy taps, normalization and integer halo rounding; true-edge clamping; scratch formulae (denoise 13*4*w*h, sharpen 6*4*w*h bytes); the tolerance 1e-5 + 1e-5*|ref| in linear light plus at most one output code at a quantization boundary, with the round-trip floor that justifies it.",
+        "`crates/luxforge-reference/src/detail.rs` implements denoise, sharpen, the proxy rule and the halo formulas in f64 and exposes DETAIL_DENOISE_HALO_MAX = 24, DETAIL_SHARPEN_HALO_MAX = 16 and NEUTRAL_CHROMA_SNAP = 1e-6 (or 32 under the chroma contingency). Exact halos are proven: denoise 15 px, sharpen max(ceil(3*radius), 4) <= 9 px.",
+        "`fixtures/detail/README.md`, `fixtures/detail/cases.json` and `fixtures/detail/measurements.json` hold image specs and reference outputs for identity, constants, impulses, slanted edges, gratings, chroma boundaries, neutral and saturated ramps, negative/HDR values, tiny and odd sizes (1x1, 2x3, 17x5), tile seams, JPEG 8x8 blocks, signal-dependent and correlated chroma noise, masks at coverage 0, 0.5 and 1, and proxy scales 1/2, 1/3, 1/4, 1/6, 1/8 including non-integer scales.",
+        "Reference tests prove constants bit-identical through both units, a noisy grey ramp channel-equal, and difference-form B3 exact on constants.",
+        "Gates pass at the frozen moderate settings (luminance 40, colour 40, sharpening 40-50, radius 1.0), measured exactly as the design's Verification section specifies: flat-patch RMS reduction >= 25% with |mean drift| < 1 code at every level and noise pair; MTF50 improvement >= 10% with overshoot and undershoot <= 5% of edge contrast at optical sigma 0.8 and 0.5 and contrast up to 150 codes; correlated chroma (sigma_corr 8 and 16 px) reduced >= 25%. The report lists failing configurations, not only aggregates.",
+        "The proxy rule's error against Reduce(Exact) is measured on the probe image at every listed scale and the bound is frozen (proposal: RMS <= 1.2 codes, p99 <= 3 codes); clamp and skip rules are recorded as rejected with their figures.",
+        "The study records the 8-bit versus 16-bit hand-off banding on the dark ramp (codes 8-40, 1.5-code noise, +2 EV, Shadows +100) as the reference expectation for the production test: 16-bit hand-off max neighbour jump <= 1 code."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "unit",
         "steps": [
-          "Build independent references and synthetic fixtures; inspect matched photographic crops at 100% and final output size.",
-          "Record a reproducible gate report and freeze coefficients before production kernels; tune within selected support and scope if cases fail."
+          "Write the reference and the study together; generate fixtures with the ignored generator, then commit them and the reload tests.",
+          "Run the gates and proxy-error measurements from the study tests; freeze coefficients before any production kernel exists."
         ],
         "commands": [
-          "cargo test -p luxforge-reference detail"
+          "cargo test -p luxforge-reference --test studies -- --ignored generate_detail_fixtures",
+          "cargo test -p luxforge-reference --test studies detail",
+          "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Reference fixtures and numerical study agree; every required scene is present or recorded incomplete."
+          "The generator (added by this task) rewrites fixtures/detail deterministically; detail_fixtures_match_reference and detail_measurements_match_reference (added by this task) pass; every gate test named detail_*_gate passes or the study records the failure and the contingency taken."
         ]
       }
     },
     {
       "id": "TASK-002",
-      "description": "Extend shared placement, scale and sampling contracts for pre-tone restoration.",
+      "description": "Assemble the hashed, provenanced photographic corpus for Detail quality qualification.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Host contracts can be proved with a small test provider while numerical study runs. Own shared descriptor/registry/compilation and worker changes here.",
-        "Add restoration as placement only, reusing Spatial. Existing stored layers remain in their stored order; stacks without Detail retain current semantics.",
-        "Pre-tone spatial work makes the JPEG neutral picker expensive. Move its complete patch evaluation to the bounded point/query worker, not a new worker per tool."
+        "Does not block production kernels; it blocks only photographic qualification. Private originals are never committed: the committed file records hashes, provenance and crops, and paths live in the owner's private RAW manifest (passed as FILE).",
+        "Missing scenes are recorded as explicit gaps, never substituted. Deterministic noise on a clean reference is allowed only where no paired capture exists and is labelled synthetic."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Placement",
-          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
-          "relevance": "Stage and mask-target insertion."
+          "label": "RAW coverage",
+          "target": "fixtures/raw-coverage.json",
+          "relevance": "Record detail and high-ISO gaps; admission is not quality."
         },
         {
           "kind": "file",
-          "label": "Descriptors",
-          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
-          "relevance": "Declare restoration and generic settled-Fit policy."
+          "label": "RAW manifest reader",
+          "target": "xtask/src/raw.rs",
+          "relevance": "The one reader of the private manifest; corpus RAW entries must be readable by it."
         },
         {
           "kind": "file",
-          "label": "Point worker",
-          "target": "crates/luxforge-core/src/api/owner/point.rs",
-          "relevance": "Reuse bounded ordered replies and tile cache for pixel-reading queries."
-        },
-        {
-          "kind": "file",
-          "label": "Module and API contract",
-          "target": "docs/design/modules-and-api.md",
-          "relevance": "Discovery, source-kind validation and immutable evaluation."
-        },
-        {
-          "kind": "file",
-          "label": "Performance rules",
-          "target": "docs/engineering/performance-rules.md",
-          "relevance": "Owner work, source reuse and bounded requests."
+          "label": "Evidence rules",
+          "target": "docs/engineering/development.md",
+          "relevance": "Evidence and private-manifest conventions."
         }
       ],
       "acceptance_criteria": [
-        "Restoration inserts after the leading source/pixel prefix and before the first colour/spatial/geometry/finish layer; new pixel/colour edits respect it and RAW stays index zero. Existing interleaved pixel/colour layers stay in stored order without rewriting. Placement tests cover creation permutations, a pixel proof after colour and mask ranks.",
-        "One compilation context carries exact stage, evaluated stage and per-axis scale to modules on full, proxy and region paths; no module-name switch or duplicate pipeline is introduced.",
-        "A generic opt-in settled-Fit-from-exact declaration is validated/discoverable and aggregation depends on active compiled operations, so neutral Detail has no preview overhead.",
-        "Basic neutral patches and all newly expensive pixel-reading query paths run off-owner on immutable evaluations with bounded queue/cache, preserved entry/revision identity, disconnect handling and stale-apply refusal. Sensor WB retains its current contract.",
-        "Range-mask input and overlay planning is audited for the earlier spatial prefix; existing explicit cost refusal stays honest. Planning and field validation perform no pixel work."
+        "`fixtures/detail/corpus.json` lists, per required scene (low- and high-ISO skin, hair or fur, foliage or fabric, skies and shadows, coloured edges, repeating texture), for each of Z6 (Bayer), X100VI (X-Trans), Air 2S DNG and photographic JPEG: SHA-256, camera, ISO, exposure settings, provenance, the private manifest key, 2-4 inspection crop rectangles, whether a paired clean capture exists, and the fixed parameter sets (the study's moderate set plus two stress sets).",
+        "Every required cell is present or carries an explicit `gap` with the reason; `fixtures/raw-coverage.json` records the same gaps.",
+        "The corpus RAW entries resolve and hash-verify through the private manifest on the owner's Mac; the JSON is validated by a reference-crate test."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Use a test provider to prove insertion, context scale and neutral policy aggregation on JPEG/RAW.",
-          "Hold a query worker evaluation and prove another client remains responsive; exercise a stale answer and queue/cancellation failures."
+          "Collect and hash files on the owner's Mac; write corpus.json and the validation test.",
+          "Run the validation test; verify the RAW entries through raw-authentic with the private manifest."
         ],
         "commands": [
-          "cargo test -p luxforge-core --lib restoration",
+          "cargo test -p luxforge-reference --test studies detail_corpus",
+          "cargo xtask raw-authentic --manifest FILE --output NEW_DIR",
           "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Shared host can express Detail without changing existing recipes or blocking the owner."
+          "detail_corpus_manifest_is_complete_or_records_gaps (added by this task) passes: hashes are 64 hex digits, crops lie inside the recorded dimensions, every required cell has an entry or a gap; raw-authentic verifies every listed RAW."
         ]
       }
     },
     {
       "id": "TASK-003",
-      "description": "Implement bounded Detail spatial kernels against the frozen references.",
-      "status": "pending",
-      "dependencies": [
-        "TASK-001",
-        "TASK-002"
-      ],
+      "description": "Add the restoration stage, its placement rule and the shared CompileStage context.",
+      "status": "ready",
+      "dependencies": [],
       "extra_context": [
-        "Transcribe the study into module-owned denoise and sharpening units; host owns all scheduling, buffers and masks.",
-        "No source decode, global noise estimate, private pool, GPU kernel or camera-specific path. Use the existing spatial tile side, shared budget and cancellation."
+        "Detail owns CompileStage for all three planned modules (cross-plan rule): define it once in modules/processing.rs as SamplingScale { x, y: f64 } and CompileStage { stage, full, scale } with CompileStage::exact(stage).",
+        "Change ToolModule::compile(effect_id, format, payload, at: CompileStage), FieldPatch::compile(values, at) and compile_bound(.., at, bound); update every implementation (grep `fn compile(` and `fn compile_bound(` under crates/luxforge-core/src, test providers included). Existing modules read at.stage; their bytes must not change.",
+        "full per layer comes from ModuleRegistry::stages(exact_width, exact_height, recipe) (O(layers), no pixels); scale = stage/full per axis in f64. compile_sampled gains the exact content dimensions; pass them at the three proxy compile sites in render/entry.rs: proxy_window, plan_proxy_region, render_proxy_region.",
+        "EffectStage::Restoration: serde \"restoration\" via the existing kebab-case rename, as_str \"restoration\", declared between Pixel and Color. Add arms to every exhaustive match: placement_index, the registry proxy-eligibility match (restoration is eligible), field_patch Shape::of (Restoration -> Shape::Spatial), descriptor validation (maskable restoration allowed).",
+        "placement_index: Pixel opens its region at {Restoration, Spatial, Geometry, Finish}; Restoration opens at {Color, Spatial, Geometry, Finish}; Color unchanged and gains no lower bump; Spatial's lower bump set becomes {Pixel, Color, Restoration}. Update the placement table in the doc comment.",
+        "Prove everything with a test restoration provider (a #[cfg(test)] spatial effect at stage restoration, order 0, maskable) and colour test providers at orders 0, 5 and 10; the real module arrives later. Name every new test with `restoration` so the filter selects it."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Spatial contract",
-          "target": "crates/luxforge-core/src/modules/spatial.rs",
-          "relevance": "Unit/halo bounds and declared scratch."
+          "label": "Placement",
+          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
+          "locator": "placement_index",
+          "relevance": "placement_index and its table."
         },
         {
           "kind": "file",
-          "label": "Spatial execution",
-          "target": "crates/luxforge-core/src/render/spatial.rs",
-          "relevance": "Shared tile and sample path."
+          "label": "Stage enum",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "locator": "EffectStage",
+          "relevance": "EffectStage and as_str."
         },
         {
           "kind": "file",
-          "label": "Colour primitives",
-          "target": "crates/luxforge-core/src/colour.rs",
-          "relevance": "Existing conversion and output-domain conventions."
+          "label": "Compile and proxy eligibility",
+          "target": "crates/luxforge-core/src/modules/registry/compile.rs",
+          "locator": "compile_sampled",
+          "relevance": "proxy_eligible match, compile_sampled, stages, compile_bound call."
+        },
+        {
+          "kind": "file",
+          "label": "Tool module trait",
+          "target": "crates/luxforge-core/src/modules/mod.rs",
+          "locator": "fn compile",
+          "relevance": "ToolModule::compile signature."
+        },
+        {
+          "kind": "file",
+          "label": "Field patch framework",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "FieldPatch::compile and Shape::of; shared with Tone curve and Lens plans, land sequentially."
+        },
+        {
+          "kind": "file",
+          "label": "Processing types",
+          "target": "crates/luxforge-core/src/modules/processing.rs",
+          "relevance": "Home of Stage and the new CompileStage."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy compile sites",
+          "target": "crates/luxforge-core/src/render/entry.rs",
+          "relevance": "proxy_window, plan_proxy_region, render_proxy_region."
         }
       ],
       "acceptance_criteria": [
-        "Both units match independent references on exact and proxy grids at the frozen tolerances, including signed/HDR and near-black/saturated inputs without intermediate clipping.",
-        "Neutral strengths omit their units; constants and identities retain exact buffers. Denoise precedes sharpen without intermediate quantization.",
-        "Full/sample and region/full results match byte for byte on both domains; repeated runs, supported tile cuts and serial/pool execution are deterministic, with correct borders and halos.",
-        "Scratch accounts for all concurrently live planes/bands/guide storage with overflow checks, reserve-before-allocate and cleanup on cancel/error/panic; operation halo stays at most 40 px and units at most two.",
-        "Cancellation checkpoints bound each pass/row chunk; no full-frame mask, opponent image or per-scale full-frame buffer is allocated."
+        "`restoration_placement_*` tests enumerate every creation permutation of {restoration, colour order 0, colour order 5, colour order 10, spatial, geometry crop, finish} on JPEG and RAW (source layer stays index 0), globally and through two masks, and assert the canonical result [source?, pixel, restoration, colour 0, 5, 10, spatial, geometry, finish].",
+        "`pixel_placement_without_restoration_is_unchanged` proves a new pixel edit in a stack without restoration still lands after colour and before the first spatial layer; `restoration_placement_keeps_a_pixel_proof_after_colour` keeps a stored interleaved pixel layer where it is; `restoration_placement_keeps_noncanonical_colour_order` turns [colour 10, restoration] + colour 0 into [colour 0, colour 10, restoration]; preset apply and undo/redo of a stack stored without restoration place and render exactly as before.",
+        "`restoration_stage_serializes_as_restoration`, `restoration_field_patch_shape_is_spatial` and `restoration_is_proxy_eligible` pass.",
+        "`restoration_compile_stage_reaches_modules` proves a test provider receives stage, full and scale on the exact (scale 1), Fit proxy, windowed proxy and half-scale viewport paths, with scale = stage/full per axis; no module-name switch exists.",
+        "Existing Presence, mixer, vignette and oracle tests pass unchanged, proving existing modules' bytes are unchanged; the built-in descriptor snapshot is unchanged."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "unit",
         "steps": [
-          "Run frozen fixtures through production and the independent reference, exercising each field alone and extrema together.",
-          "Use deterministic cancellation gates and constrained scratch targets to test cleanup and single-tile progress."
+          "Change the trait signatures and every implementation mechanically; then add the stage and placement with the test providers.",
+          "Run the restoration filter, then the existing module and descriptor tests that prove nothing else moved."
         ],
         "commands": [
-          "cargo test -p luxforge-core --lib detail",
-          "cargo test -p luxforge-reference detail"
+          "cargo test -p luxforge-core --lib restoration",
+          "cargo test -p luxforge-core --lib placement",
+          "cargo test -p luxforge-core --lib presence",
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Kernels satisfy exactness and allocation contracts; no photographic or speed claim inferred from small fixtures."
+          "All restoration_* tests (added by this task) pass; existing placement, presence and descriptor tests pass unchanged."
         ]
       }
     },
     {
       "id": "TASK-004",
-      "description": "Deliver the Detail module, generated controls and shared action semantics.",
+      "description": "Move every pixel read through a spatial prefix off the catalog owner: queries on the point worker, mutations owner to point worker to owner.",
       "status": "pending",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
-        "One layer per global/mask target, sources JPEG and RAW, effect format 1, eight fields and zero strength defaults. Proposed action names become real only here.",
-        "Own module descriptor, registry assembly and generated UI integration; no hand-maintained API list or new widget-specific business logic."
+        "Owner decision (2026-09-30): no pixel work on the owner and no rule-5 exception. One mechanism covers the JPEG neutral picker, mask.sample-input, the colour-limited brush seed and any planning read (pixel set) through a spatial prefix.",
+        "Deferral: HostStage::sample_before keeps its per-index compiled prefix. When compiled.evaluates_spatial() and the context's PixelMemo lacks the answer, record PixelRead { index, x, y } in EditorService's deferred_read slot (RefCell<Option<DeferredRead>>) and return an internal error. The owner checks the slot after every handler; a recorded read wins over the handler's result. A prefix without a spatial layer is answered on the owner as today.",
+        "Queries: a deferred query becomes Planned::Query(Box<QueryPlan>) holding an owned exact editor Evaluation, the resolved query (module or host), checked parameters, target and view. The point worker runs it with WorkerStage: StageQuestions over that evaluation, keeping one point Evaluation (SpatialMode::Point) per prefix index for the whole query so the 25-point neutral patch shares one tile cache. mask.sample-input answers from MaskInputPixel::linear of the prefix evaluation (full precision on a wide byte frame). Answers go to the caller with the planning sequence, as samples do.",
+        "Mutations: park the call as ParkedRead { client, request, response, key: PixelReadKey, rounds } and submit a PointCall that posts OwnerMessage::PixelsRead { ticket, result } back to the owner. PixelReadKey = { asset_id, entry_id, asset revision, draft id and draft revision or none, prefix_hash, source fingerprint and development }. On receipt: equal key -> install answers as the call's PixelMemo and run the request again; unequal -> discard and run again (defers anew). MAX_PIXEL_READ_ROUNDS = 4: exceeded after a key change is `conflict` (\"the stack changed while its pixels were read; retry\"), exceeded with answered rounds is `resource-limit`. Record a retried request only when finally answered.",
+        "Draft memo: Session::pixel_memo (not a serialized Draft field), at most MAX_PIXEL_MEMO = 32 answers keyed by PixelReadKey + (index, x, y); cleared by draft.begin, draft.reapply, draft.cancel, commit and any key change. A colour-limited stroke reads its seed once per draft; commit planning answers from the memo.",
+        "Point worker: parked reads and queries share POINT_QUEUE_CAPACITY; the refusal text names \"point samples, queries or pixel reads\". PointCall gains cancel: Cancel, tripped by disconnect for the running call; disconnect also drops the client's parked reads. Estimate-miss reductions stay serial.",
+        "Tests use the restoration test provider from the stage task (or Presence stored before the sampled layer). Every test name contains `restoration` or `point`."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Module contract",
-          "target": "docs/design/modules-and-api.md",
-          "relevance": "Field patches, draft lifecycle, refusal and provider rules."
+          "label": "Host stage sampler",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "locator": "impl StageQuestions for HostStage",
+          "relevance": "HostStage::sample_before, compiled_prefix, run_query."
         },
         {
           "kind": "file",
-          "label": "Conformance",
-          "target": "crates/luxforge-core/tests/modules/conformance/mod.rs",
-          "relevance": "Registry-discovered patch/target tests."
+          "label": "Mask seed and sample-input",
+          "target": "crates/luxforge-core/src/editor/masks.rs",
+          "locator": "mask_colour_seed",
+          "relevance": "mask_colour_seed and mask_input_sample, planned inside every draft.set today."
         },
         {
           "kind": "file",
-          "label": "Controls",
-          "target": "docs/design/ui-components.md",
-          "relevance": "Generic number fields, resets and keyboard semantics."
+          "label": "Owned evaluations",
+          "target": "crates/luxforge-core/src/editor/evaluate.rs",
+          "locator": "PointPlan",
+          "relevance": "Evaluation and PointPlan: the pattern QueryPlan follows."
         },
         {
           "kind": "file",
-          "label": "Capabilities boundary",
-          "target": "docs/design/module-capabilities.md",
-          "relevance": "Detail requires no capability declarations or external resources."
+          "label": "Planned answers",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "locator": "enum Planned",
+          "relevance": "Planned::Value and Planned::Sample; add Planned::Query."
+        },
+        {
+          "kind": "file",
+          "label": "Owner loop",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "locator": "enum OwnerMessage",
+          "relevance": "OwnerMessage, call, answer, disconnect, parking pattern (park_event_wait)."
+        },
+        {
+          "kind": "file",
+          "label": "Point worker",
+          "target": "crates/luxforge-core/src/api/owner/point.rs",
+          "locator": "POINT_QUEUE_CAPACITY",
+          "relevance": "PointCall, Reply, POINT_QUEUE_CAPACITY, disconnect."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules 5 and 12",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner does catalog work only; draft.set is a synchronous desktop call."
         }
       ],
       "acceptance_criteria": [
-        "Common registry exposes luxforge.detail and luxforge.detail.adjust, set-detail/reset-detail and schema-described fields/defaults/ranges/mask target; update the built-in descriptor snapshot.",
-        "Panel is collapsed after Basic, before Presence, with Sharpening and Noise reduction groups, existing resets/scope chip/numeric input/Copy as JSON and a 100% hint. Ancillary fields stay editable with zero strength.",
-        "Independent UI/API actions produce equal recipes, pixels, labels, errors and no-ops; malformed, non-finite, out-of-range, unknown and duplicate-target inputs refuse atomically.",
-        "Drafts commit once, cancel without rows and retain conflicts for Discard/Reapply; changes to ancillary values persist even when image output is neutral.",
-        "No automatic import edit, registration I/O, eager pixel resource, placeholder control or source-kind-specific sharpening default."
+        "`restoration_owner_evaluates_no_spatial_tile`: a #[cfg(test)] thread-local counter of spatial tile evaluations on the owner thread stays 0 across a JPEG neutral pick, mask.sample-input, a colour-limited stroke (draft and commit) and a pixel set, each through a restoration prefix.",
+        "`restoration_neutral_sample_runs_off_owner`: while the point worker is held (HoldPoints), another client's draft.set is answered; `restoration_neutral_patch_evaluates_each_tile_once_per_query` counts one evaluation per touched tile for the 25 points.",
+        "`restoration_mask_sample_input_equals_the_range_mask_read` proves the answer equals the linear value the render's range mask reads at that pixel; `restoration_pointwise_query_stays_on_owner` proves a query reading no pixel, or reading through a pointwise prefix, never reaches the worker.",
+        "`restoration_colour_limited_stroke_reads_its_seed_once_per_draft`: 100 draft.set calls and a commit cause exactly one worker read; the stored seed equals the codes an owner-side read would have produced.",
+        "`restoration_parked_read_after_an_intervening_commit_is_reread` and `restoration_pixel_read_rounds_are_bounded` prove identity checks and both refusals; `restoration_neutral_pick_applied_after_an_intervening_commit_is_refused_with_its_revision` proves stale apply refusal.",
+        "`restoration_disconnect_drops_parked_reads_and_cancels_the_running_call`, `restoration_point_queue_counts_parked_reads` (full queue answers resource-limit with the new text) and `point_sample_estimate_miss_behind_restoration_is_cancellable` pass; `restoration_retried_parked_mutation_is_answered_once` proves retry semantics."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "integration",
         "steps": [
-          "Extend descriptor/conformance tests and app state/control tests using the shared schema.",
-          "Run a focused background rendered scenario once it is added and inspect controls and recorded action/state correlation; carry complete journeys to integration."
+          "Implement deferral, QueryPlan and ParkedRead with the test provider; hold the point worker in tests to prove the owner stays responsive.",
+          "Exercise stale answers, round limits, queue limits and disconnect with deterministic holds; no timing."
         ],
         "commands": [
-          "cargo test -p luxforge-core --test modules detail",
-          "cargo test -p luxforge-app --lib detail"
+          "cargo test -p luxforge-core --lib restoration",
+          "cargo test -p luxforge-core --lib point",
+          "cargo test -p luxforge-core --test mask",
+          "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Controls and API use the same action path; JPEG and RAW imports remain unchanged until explicitly edited."
+          "All listed tests (added by this task) pass; existing point, sample and mask tests pass unchanged."
         ]
       }
     },
     {
       "id": "TASK-005",
-      "description": "Implement honest moving Detail previews and exact-derived Fit settlement.",
+      "description": "Add the settle policy, restoration reporting and prefix boundary, and the 16-bit byte-path hand-off shared with Presence.",
       "status": "pending",
       "dependencies": [
-        "TASK-002"
+        "TASK-003"
       ],
       "extra_context": [
-        "Can build against the host test provider before the real module is assembled. Use the common compiled policy; no hardcoded Detail identity.",
-        "Moving previews run scaled kernels, never silently omit the effect. Whole-frame exact work is already needed for analysis; add only a bounded downsample/presentation on settlement."
+        "Owner decision (2026-09-30): on the byte path a spatial frame feeding a colour run or another spatial unit is 16-bit encoded sRGB; 8-bit quantization only at a resample, a point replacement or the terminal. This settles Presence's JPEG precision too; this task implements it for both and re-validates Presence.",
+        "Settle policy: EffectDescriptor.fit_settle: FitSettle { #[default] Proxy, Exact } with #[serde(default, skip_serializing_if = default, rename_all = \"kebab-case\")]. SpatialEntry carries its layer's stage and whether its effect declares Exact. Compiled::settles_from_exact() is true only for a non-empty entry declaring Exact.",
+        "Reporting: ProxyApproximation gains restoration: bool (non-empty restoration entry) with reason \"a restoration layer's full-resolution filters run on averaged proxy pixels\"; spatial counts spatial-stage entries only.",
+        "Prefix boundary (used by both caches): ModuleRegistry::restoration_prefix(layers) -> usize = length of the leading run of source, pixel and restoration layers; Compiled::restoration_boundary() -> Option<usize> = the segment whose input frame is that prefix's output, Some only when the prefix holds a non-empty restoration operation.",
+        "Byte hand-off: colour::srgb::decode16_table() (65,536 f32, built once, entries at 257*c bit-identical to decode_table()[c]) and quantize16(f32) -> u16 (exact f64-derived thresholds, one definition). Byte::Pixel = [u16; 3] (8-bit values stored as 257*code). ByteFrame { Narrow(Arc<Vec<u8>>) RGBA8, Wide(Arc<Vec<u16>>) RGB16 }. byte_frame_widths(&Compiled) implements the design's four rules and is read by rasterize, the point path and the grid. segment_pass and SegmentRows become generic over the frame sample type; a wide segment holds chunk rows as f32 between load and store. Add a u16 frame_mut sibling with the same frame_writes instrumentation. Wide length = w*h*6, checked against MAX_FRAME_BYTES.",
+        "Memory: byte peak stays two frames, a wide one 1.5x a narrow one (24 MP: at most 275 MiB; 64 MP JPEG limit: at most 732 MiB). No timing here; the performance task measures Presence on JPEG before and after.",
+        "Update docs/design/presence-study.md and the Presence design's current-behaviour text to the delivered hand-off when this lands; record any re-frozen byte literal's reason in its test."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Preview contract",
-          "target": "docs/design/instant-preview.md",
-          "relevance": "Queue, quiet timer, region/window, quality and display identity."
+          "label": "Byte domain",
+          "target": "crates/luxforge-core/src/render/byte.rs",
+          "locator": "impl PixelDomain for Byte",
+          "relevance": "tile_output, write_tile, frame_pixel, spatial_frame, rasterize, band, colour_byte_rows."
         },
         {
           "kind": "file",
-          "label": "Preview worker",
-          "target": "crates/luxforge-core/src/preview/worker.rs",
-          "relevance": "Proxy/exact sequencing and cancellation."
+          "label": "Pixel domain and segment pass",
+          "target": "crates/luxforge-core/src/render/pipeline.rs",
+          "locator": "trait PixelDomain",
+          "relevance": "PixelDomain, SegmentRows, segment_pass."
         },
         {
           "kind": "file",
-          "label": "Window planner",
-          "target": "crates/luxforge-core/src/render/window.rs",
-          "relevance": "Halos and earlier spatial segments."
+          "label": "sRGB tables",
+          "target": "crates/luxforge-core/src/colour.rs",
+          "relevance": "decode_table, quantizer: add the 16-bit siblings in colour::srgb."
         },
         {
           "kind": "file",
-          "label": "Proxy reduction",
+          "label": "Compiled IR",
+          "target": "crates/luxforge-core/src/render/compiled.rs",
+          "locator": "fn approximation",
+          "relevance": "Entry, SpatialEntry, Segment, approximation, evaluates_spatial."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy approximation",
           "target": "crates/luxforge-core/src/proxy.rs",
-          "relevance": "Reuse bounded linear-light area reduction."
+          "locator": "ProxyApproximation",
+          "relevance": "ProxyApproximation fields and reason()."
+        },
+        {
+          "kind": "file",
+          "label": "Descriptor types",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "EffectDescriptor: add fit_settle; the snapshot gains the field only where a module declares Exact."
+        },
+        {
+          "kind": "file",
+          "label": "Raster frames",
+          "target": "crates/luxforge-core/src/render/raster.rs",
+          "relevance": "expected_len, zeroed_frame, frame_mut."
         }
       ],
       "acceptance_criteria": [
-        "Fit motion uses source-scale-aware kernels on display proxies; 100%+ motion uses half-scale visible regions. Detail approximation reasons coexist with thin-mask and RAW-WB reasons.",
-        "On quiet/release, active policy stacks present a bounded downsample of the exact final rendered output at Fit, tagged exact-derived; full-resolution drafted RAW WB remains marked approximate. Counts retain whole-image exact provenance.",
-        "History/presets/Compare, mask edits, other controls, crop, resize, display density and return to Fit trigger the matching settlement; inactive policy does not add work.",
-        "Scale/window/recipe/draft/development identity reaches cache, frame, overlays and state; a newer input cancels or rejects every stale exact/downsample/upload completion.",
-        "Region/full and window/whole equality, chained spatial layers and cold Dehaze estimates are tested; unsupported cuts report and measure their fallback rather than presenting it as a region success.",
-        "Reuse latest queue, quiet timer, frame limits and aggregate texture caps; no full-frame clone or permanent polling; idle returns to sleep."
+        "`restoration_fit_settle_defaults_to_proxy_and_serializes_only_exact`, `restoration_neutral_operation_does_not_settle_from_exact` and `restoration_and_spatial_reasons_are_reported_separately` pass; `restoration_prefix_is_the_leading_source_pixel_restoration_run` covers canonical, masked-restoration and noncanonical (colour before restoration: no boundary) stacks.",
+        "`byte_decode16_table_matches_the_8_bit_table_at_every_code` and `byte_quantize16_is_monotone_and_exact_at_every_threshold` pass.",
+        "`byte_frame_widths_follow_the_hand_off_rules` is table-driven over: spatial -> colour (wide), spatial -> crop -> terminal (narrow, quantized once), colour -> spatial (wide), a segment with point replacements (narrow input, 8-bit at the replacement), resample (narrow), spatial -> spatial pass-through (wide).",
+        "`byte_point_sample_equals_rendered_byte_through_a_wide_hand_off` and `byte_region_and_window_equal_whole_through_a_wide_hand_off` pass for Presence stacks and the test restoration provider; `byte_wide_frame_len_is_checked_against_the_frame_limit` passes.",
+        "`restoration_jpeg_ramp_under_exposure_shows_no_new_steps`: the design's dark ramp through a smoothing test restoration provider, then Basic +2 EV and Shadows +100, has no neighbour jump above one code.",
+        "Every existing byte-path Presence, mixer, vignette, sample, window, estimate-reuse and cancellation test passes; any literal re-frozen for the hand-off names its reason. The rendered presence scenario passes on a release build."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Prove reducer reference equality and scheduling races with test providers and gated jobs.",
-          "Add native background capture coverage for moving-to-settled Fit, percentage zoom and no stale draws, to be run with the real Detail module at integration."
+          "Land the policy/reporting/boundary plumbing with the test provider, then the byte hand-off behind byte_frame_widths.",
+          "Run the full core render suite and the rendered Presence scenario, since Presence's JPEG bytes change within rounding."
         ],
         "commands": [
           "cargo test -p luxforge-core --lib restoration",
-          "cargo test -p luxforge-app --lib restoration"
+          "cargo test -p luxforge-core --lib byte",
+          "cargo test -p luxforge-core --lib render",
+          "cargo test -p luxforge-core --lib presence",
+          "cargo test -p luxforge-core --test cancellation",
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- smoke --scenario presence --output NEW_DIR",
+          "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Settled Fit includes full-resolution processing, and every approximation and fallback remains observable."
+          "All listed tests (added by this task) pass, the existing suites pass, and the presence scenario's captures and logs show the correlated frame with no stale or blank draw."
         ]
       }
     },
     {
       "id": "TASK-006",
-      "description": "Verify Detail across masks, native presets, history, RAW and export.",
+      "description": "Implement the Detail denoise and sharpen spatial units against the frozen reference.",
       "status": "pending",
       "dependencies": [
-        "TASK-004",
-        "TASK-005"
+        "TASK-001",
+        "TASK-003"
       ],
       "extra_context": [
-        "One Detail instance denoises then sharpens its own input. Global precedes masks; overlaps deliberately process repeatedly in mask-list order.",
-        "Native presets store global fields only. Lightroom Detail fields remain explicitly unsupported with import reports in this slice; do not imply Adobe algorithm equivalence."
+        "Files: crates/luxforge-core/src/modules/detail/{mod.rs, denoise.rs, sharpen.rs, oracle.rs (#[cfg(test)], reads fixtures/detail/cases.json)}; declare `mod detail` in modules/mod.rs. The descriptor and registration come in the module task.",
+        "DenoiseUnit and SharpenUnit implement SpatialUnit. Unit presence depends only on strengths (denoise iff luminance or colour > 0, sharpen iff sharpening > 0); both absent -> SpatialOperation::neutral(). Halo and kernels are fixed at compile from CompileStage; halo(&self, _: Stage) ignores its argument.",
+        "Transcribe the study exactly: difference form, copy-if-unchanged, NEUTRAL_CHROMA_SNAP, proxy Gaussians, integer halo rounding. Constants DETAIL_DENOISE_HALO_MAX, DETAIL_SHARPEN_HALO_MAX, NEUTRAL_CHROMA_SNAP take the study's frozen values.",
+        "scratch_bytes: denoise 13*4*w*h, sharpen 6*4*w*h via checked_mul; overflow -> resource-limit. Reserve before allocate under the shared spatial target; release on error, panic and cancel; cancellation checkpoints per level and row chunk. No private pool, GPU path, global estimate or full-frame buffer. RenderPass::Spatial threshold until measured.",
+        "The frozen study docs/design/detail-study.md (written by the numerics task) holds the equations, constants and tolerance these kernels implement."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Mask model",
-          "target": "docs/design/masking.md",
-          "relevance": "Input-based coverage, spatial write blend and target order."
+          "label": "Spatial unit contract",
+          "target": "crates/luxforge-core/src/modules/spatial.rs",
+          "locator": "trait SpatialUnit",
+          "relevance": "SpatialUnit, halo, scratch_bytes, MAX_SPATIAL_HALO, MAX_MASKED_SPATIAL_LAYERS."
         },
         {
           "kind": "file",
-          "label": "Presets",
-          "target": "docs/design/presets.md",
-          "relevance": "Global patch capture and atomic composite apply."
+          "label": "Spatial execution",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "locator": "fn blend",
+          "relevance": "Tiles, masked blend (1 - M)*in + M*u, sample path."
         },
         {
           "kind": "file",
-          "label": "History",
-          "target": "docs/design/versions-and-lineage.md",
-          "relevance": "Immutable snapshots, navigation and reopen."
-        },
-        {
-          "kind": "file",
-          "label": "Export",
-          "target": "docs/design/export.md",
-          "relevance": "Shared exact recipe evaluation and original protection."
-        },
-        {
-          "kind": "file",
-          "label": "RAW",
-          "target": "docs/design/initial-raw.md",
-          "relevance": "Developed float data and WB invalidation."
+          "label": "Presence units (pattern)",
+          "target": "crates/luxforge-core/src/modules/presence/texture.rs",
+          "relevance": "A unit whose halo ignores the stage argument; oracle test pattern in presence/oracle.rs."
         }
       ],
       "acceptance_criteria": [
-        "Gradient/radial/brush/range masks, amount/inversion, overlaps and reorder preserve host blend semantics: zero input equality, full unmasked equality, no tile/mask-boundary seams or stored edge-mask plane.",
-        "Range-mask rendering reads each layer input; first-bound overlay changes invalidate correctly or return the documented cost refusal. No circular evaluation or wrong-stage coverage.",
-        "Native preset capture/export/import/apply round-trips all eight fields, zero strengths and inactive settings; masks remain untouched and one apply is one entry. Unsupported Lightroom keys are individually reported.",
-        "Independent API and UI journeys prove partial patch/retry/revision/conflict behaviour, reset/no-op, undo/redo/Restore/versions, historical preview and fresh-owner reopen.",
-        "RAW white-balance changes invalidate dependent pixels; Detail sliders cause no redevelopment. JPEG and RAW retain their declared quantization/headroom boundaries.",
-        "Original hashes remain unchanged; missing/disabled Detail, unsupported format or corrupt input retains data and refuses affected outputs. Export consumes exact Detail once, never a proxy or a second output-sharpen pass."
+        "`detail_oracle_matches_every_fixture_case_within_the_frozen_tolerance` passes on exact and proxy grids, including signed/HDR and near-black/saturated inputs with no intermediate clip.",
+        "`detail_constant_planes_are_bit_identical`, `detail_unchanged_pixels_are_copied_not_round_tripped`, `detail_grey_ramp_stays_byte_neutral` and `detail_b3_pass_is_exact_on_constants` pass.",
+        "`detail_halo_ignores_the_stage_argument`, `detail_declared_halos_stay_within_their_caps` and `detail_proxy_and_exact_compile_the_same_segments` pass; `detail_proxy_tracks_reduced_exact_within_frozen_error` meets the study's bound.",
+        "`detail_tiled_evaluation_agrees_with_the_whole_frame_at_every_tile_size`, `detail_sample_equals_rendered_byte_on_both_paths` and `detail_serial_and_pool_tiles_are_bit_identical` pass on byte (with the 16-bit hand-off once present) and linear domains.",
+        "`detail_scratch_declaration_covers_every_live_plane`, `detail_scratch_overflow_is_a_resource_limit`, `detail_one_tile_fits_the_spatial_budget` and `detail_cancellation_releases_scratch` pass.",
+        "`masked_detail_full_coverage_equals_unmasked_bit_for_bit` and `masked_detail_zero_coverage_returns_input_exactly` pass through the host blend."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "unit",
         "steps": [
-          "Add current-shape integration fixtures and failure injection; compare exact raster buffers before JPEG encoding rather than using lossy JPEG equality as an oracle.",
-          "Check full Detail+Basic+Presence+geometry stacks and independent client/desktop requests against the same snapshot."
+          "Port the reference equations into the two units; run the oracle and exactness tests on both domains.",
+          "Use deterministic cancellation gates and a constrained scratch target to test cleanup and single-tile progress."
         ],
         "commands": [
-          "cargo test -p luxforge-core --test modules detail",
-          "cargo test -p luxforge-core --test mask detail",
           "cargo test -p luxforge-core --lib detail"
         ],
         "expected_results": [
-          "All integrations preserve source/history data and share one rendering/mutation service."
+          "All detail_* tests (added by this task) pass; no photographic or speed claim is inferred from small fixtures."
         ]
       }
     },
     {
       "id": "TASK-007",
-      "description": "Qualify photographic output and the native rendered editing journey.",
+      "description": "Register the Detail module, its generated controls and the detail smoke scenario.",
       "status": "pending",
       "dependencies": [
+        "TASK-005",
         "TASK-006"
       ],
       "extra_context": [
-        "Use the frozen corpus and criteria from the study; no owner review checkpoint. Any missing source or unresolved material photographic defect leaves quality incomplete.",
-        "Add real background evidence scenarios to xtask before invoking them; do not document a proposed scenario command as already available."
+        "Descriptor exactly as the design: module luxforge.detail, title Detail, hint \"Judge fine detail at 100%\", collapsed; effect luxforge.detail.adjust, EFFECT_FORMAT 1, stage restoration, order 0, single: true, maskable: true, no sources, fit_settle exact; actions set-detail (patch) and reset-detail; groups Sharpening and Noise reduction; the eight fields with the design's ranges, steps, defaults, units, precision and zero; ancillary fields' notes \"Takes effect when Amount is above 0\". Export DETAIL_EFFECT beside PRESENCE_EFFECT.",
+        "Keep the default is_neutral (all fields default). History labels: Sharpening, Sharpen radius, Sharpen detail, Sharpen masking, Luminance noise, Luminance noise detail, Colour noise, Colour noise detail; Reset Sharpening, Reset Noise reduction, Reset Detail.",
+        "Order: insert into linked_modules after Tone curve (when registered) and before Presence; adjust the array length, its doc comment and the order test in registry/tests.rs. Add luxforge.detail to conformance KNOWN. Regenerate the descriptor snapshot; never hand-merge it.",
+        "Board deviations (recorded default, a proposal): no caption or note controls; the hint and field notes carry the text. No new control vocabulary.",
+        "Fixture: add fixtures/generated/detail.jpg (6000x4000: noisy flat patches, slanted edges, a fine grating, correlated chroma blotches) as a row of the xtask/src/fixtures.rs table. Scenario: xtask/src/detail_smoke.rs with a `detail` row in SCENARIOS (panel, each slider, resets, keyboard and numeric entry, Copy as JSON, a masked target).",
+        "Smoke launches target/release/luxforge: build the release app first."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Evidence workflow",
-          "target": "docs/engineering/development.md",
-          "relevance": "Background launches, correlated captures and integration tiers."
+          "label": "Registry order",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "locator": "linked_modules",
+          "relevance": "linked_modules array (shared with Tone curve and Lens plans)."
         },
         {
           "kind": "file",
-          "label": "Coverage gaps",
-          "target": "fixtures/raw-coverage.json",
-          "relevance": "Track missing controlled scenes honestly."
+          "label": "Conformance",
+          "target": "crates/luxforge-core/tests/modules/conformance/mod.rs",
+          "locator": "KNOWN",
+          "relevance": "KNOWN list of discovered modules."
         },
         {
           "kind": "file",
-          "label": "Status",
-          "target": "docs/features.md",
-          "relevance": "Record precisely what native evidence proves."
+          "label": "Descriptor snapshot",
+          "target": "fixtures/modules/builtin-descriptors.json",
+          "relevance": "Regenerated by generate_builtin_descriptor_snapshot."
+        },
+        {
+          "kind": "file",
+          "label": "Presence module (pattern)",
+          "target": "crates/luxforge-core/src/modules/presence/mod.rs",
+          "relevance": "A field-patch spatial module's descriptor and compile."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke table",
+          "target": "xtask/src/smoke.rs",
+          "locator": "SCENARIOS",
+          "relevance": "SCENARIOS rows; presence row as the pattern."
+        },
+        {
+          "kind": "file",
+          "label": "Generated fixtures",
+          "target": "xtask/src/fixtures.rs",
+          "relevance": "Fixture table and the presence fixture generator pattern."
+        },
+        {
+          "kind": "file",
+          "label": "Controls",
+          "target": "docs/design/ui-components.md",
+          "relevance": "Generated number fields, resets and keyboard semantics."
         }
       ],
       "acceptance_criteria": [
-        "Inspect registered original/processed 100% crops and exact-derived Fit across the photographic matrix, low/high ISO and combined adjustments; document residual noise/texture tradeoffs and every retained artefact case.",
-        "Frozen synthetic quality gates pass and photographic comparisons show no unresolved material halos, waxy skin, worms, chroma bleeding, colour shifts, moir\u00e9 or compression amplification at the qualified moderate presets; extremes are documented stress results.",
-        "Native M4 scenarios prove sliders/resets/keyboard, scoped masks, presets, Compare/history, crop/rotate, Fit settle, 100%/200% refinement/pan and display scales with correlated state, logs and captures.",
-        "Exercise rapid edits, photo/view changes, RAW WB and neutral picks while work is pending; no stale/blank draw or false exact label passes.",
-        "Quick and rendered tiers pass on the integrated feature; portable functional evidence is labelled separately and absent native-platform evidence is not implied."
+        "`detail_descriptor_matches_the_design` asserts every descriptor value above; the regenerated snapshot differs only by the Detail module.",
+        "`detail_first_ancillary_set_commits_a_layer_that_renders_identity`, `detail_reset_keeps_the_layer_and_its_id`, `detail_history_labels_name_the_field_group` and `detail_patch_refuses_invalid_input_atomically` (malformed, non-finite, out-of-range, unknown field, duplicate target) pass.",
+        "The registry order test places Detail after Tone curve (if registered) and before Presence; conformance discovers luxforge.detail.",
+        "App tests `detail_controls_generate_two_groups_with_hint_and_notes` and `detail_ancillary_fields_stay_editable_at_zero_strength` pass; UI and API produce equal recipes, labels, errors and no-ops.",
+        "The detail smoke scenario passes on a release build with correlated state, logs and captures; JPEG and RAW imports remain unchanged until edited."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Register and execute focused background Detail evidence, inspect its images, and fix failures before the finished integration tiers.",
-          "Run the complete numerical/photographic comparisons without relaxing gates after seeing production failures."
+          "Register the module, regenerate the snapshot, extend conformance and app control tests.",
+          "Generate the fixture, build the release app and run the new scenario in the background."
         ],
         "commands": [
-          "cargo xtask verify --tier quick --output /private/tmp/luxforge-detail-quick",
-          "cargo xtask verify --tier rendered --output /private/tmp/luxforge-detail-rendered"
+          "cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot",
+          "cargo test -p luxforge-core --test modules detail",
+          "cargo test -p luxforge-core --test modules descriptors",
+          "cargo test -p luxforge-core --test modules field_patch",
+          "cargo test -p luxforge-app --lib detail",
+          "cargo xtask generate-fixtures --output fixtures/generated",
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail --output NEW_DIR"
         ],
         "expected_results": [
-          "Photographic and UI evidence are reproducible and no skip is reported as a pass."
+          "Listed tests (added by this task) pass; the detail scenario (added by this task) passes with no stale or blank draw."
         ]
       }
     },
     {
       "id": "TASK-008",
-      "description": "Measure and bound finished Detail processing and interaction on the M4.",
+      "description": "Produce the settled Fit from the exact frame in core, with the reduce-only job and window cost cases.",
       "status": "pending",
       "dependencies": [
-        "TASK-007"
+        "TASK-003",
+        "TASK-005"
       ],
       "extra_context": [
-        "Feature code is complete before distributions. Use fresh output directories, native release build, host-wide timing discipline and unchanged recorded datasets/settings.",
-        "Performance misses use the existing reporting policy, not invented product approval. Resource violations, stale results and unbounded work remain correctness failures."
+        "ExactOutcome gains display: Option<Raster>: downscale_raster(&Raster, ProxyPlan, &Cancel) in proxy.rs, a sibling of downscale_jpeg reusing BoxDownscale and Coverage. Compute it in preview/worker.rs right after exact.frame() under the exact phase's cancel token, only when layer_count is None, the job has proxy bounds, intent is not Interactive, compiled.settles_from_exact() and the proxy scale is below 1. At most 8 MP RGBA8 (32 MiB).",
+        "Reduce-only job: PreviewIntent::Reduce and PreviewJob::reduce(Arc<Raster>, ProxyBounds, identity) produce PhaseOutcome::Reduced(ReducedOutcome) from a retained exact raster without rendering or cloning it.",
+        "Windows: keep the EstimateAfterSpatial fallback for restoration + Dehaze; add explicit tests that it is reported. Accepting it when the store holds the exact estimate is not part of this plan.",
+        "Build against the test restoration provider; the real module is exercised at integration. No timing (performance task)."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
-          "label": "Checklist",
-          "target": "docs/engineering/performance-rules.md",
-          "relevance": "Answer every item for finished crate changes."
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "locator": "pub(super) fn run",
+          "relevance": "run: proxy then exact phase; plan_proxy."
+        },
+        {
+          "kind": "file",
+          "label": "Preview results",
+          "target": "crates/luxforge-core/src/preview/result.rs",
+          "locator": "PhaseOutcome",
+          "relevance": "ExactOutcome, PhaseOutcome."
+        },
+        {
+          "kind": "file",
+          "label": "Area reducer",
+          "target": "crates/luxforge-core/src/proxy.rs",
+          "locator": "downscale_jpeg",
+          "relevance": "downscale_jpeg, BoxDownscale, Coverage."
+        },
+        {
+          "kind": "file",
+          "label": "Window planner",
+          "target": "crates/luxforge-core/src/render/window.rs",
+          "relevance": "WindowPlan and fallbacks."
+        },
+        {
+          "kind": "file",
+          "label": "Estimate-after-spatial",
+          "target": "crates/luxforge-core/src/render/compiled.rs",
+          "locator": "fn plan_window",
+          "relevance": "Entry::plan_window."
+        },
+        {
+          "kind": "file",
+          "label": "Preview contract",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "Queue, quiet policy, identity and crop-stage rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "`restoration_display_raster_equals_the_reduced_exact_frame` (byte for byte against the shared reducer over the exact raster) and `restoration_settled_display_is_cancelled_with_the_exact_phase` pass.",
+        "`restoration_neutral_operation_adds_no_downsample` counts zero reductions; `restoration_display_only_for_whole_stack_fit_jobs` proves none for layer_count jobs, Interactive jobs, scale 1 and stacks that do not settle from exact.",
+        "`restoration_reduce_job_rereduces_retained_exact_without_rendering` counts zero renders and no raster clone.",
+        "`restoration_window_equals_whole_before_presence`, `restoration_region_equals_full_through_two_spatial_segments` and `restoration_and_dehaze_report_the_estimate_after_spatial_fallback` pass."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Add the reducer, the display field and the reduce job; prove equality, cancellation and no-work cases with gated jobs.",
+          "Add the window equality and fallback-report tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib restoration",
+          "cargo test -p luxforge-core --lib preview",
+          "cargo test -p luxforge-core --lib proxy"
+        ],
+        "expected_results": [
+          "All listed tests (added by this task) pass; existing preview and proxy tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Add the display-bounded restoration-prefix proxy cache on the preview worker.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Owner decision (2026-09-30); a cache under performance rule 14 (docs/engineering/performance-rules.md). New file crates/luxforge-core/src/preview/prefix.rs: RestorationPrefixKey { proxy: ProxyKey, prefix_hash: String, domain: String }, RestorationPrefixFrame { key, held: Region, pixels: Wide(Arc<Vec<u16>>) | Linear(Arc<Vec<f32>>), bytes: u64 }, RestorationPrefixCache (one entry), PrefixUse { Built, Reused, TooLarge }, RESTORATION_PREFIX_MAX_BYTES = 128 MiB.",
+        "prefix_hash: SHA-256 of the canonical JSON of the layers before restoration_prefix(layers) plus the masks and strokes they reference, computed as spatial entries compute theirs. domain: the proxy source domain's estimate_prefix (byte dimensions/orientation; RAW development, view and white-balance approximation).",
+        "Render API in render/entry.rs: Render::prefix_frame (evaluate the proxy compilation through Compiled::restoration_boundary() and return that boundary's frame) and Render::render_proxy_suffix (render the segments after the boundary with that frame supplied) plus the region equivalent for render_proxy_region. The byte driver starts at the boundary segment with the supplied wide frame; the linear evaluation reads the supplied planes as that entry's frame (Linear spatial frames become Arc<Vec<f32>> so they are shared, not copied).",
+        "preview::worker::run and run_viewport take the cache. Hit -> suffix only. Miss -> release the held frame, build under the proxy cancel token, store, render suffix. Cancel or error -> cache empty. Frames above the cap are rendered as today and reported TooLarge. A ProxyCache miss clears this cache. PreviewResult.restoration_prefix: Option<PrefixUse>.",
+        "No active prefix (noncanonical colour before restoration, or neutral Detail) -> today's path unchanged."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy cache (pattern)",
+          "target": "crates/luxforge-core/src/proxy.rs",
+          "locator": "ProxyCache",
+          "relevance": "ProxyCache::source_for: one entry, release before build, cancel leaves empty."
+        },
+        {
+          "kind": "file",
+          "label": "Preview worker",
+          "target": "crates/luxforge-core/src/preview/worker.rs",
+          "relevance": "run and run_viewport proxy phases."
+        },
+        {
+          "kind": "file",
+          "label": "Proxy render paths",
+          "target": "crates/luxforge-core/src/render/entry.rs",
+          "locator": "fn render_proxy",
+          "relevance": "render_proxy, render_proxy_region, spatial_globals."
+        },
+        {
+          "kind": "file",
+          "label": "Byte driver",
+          "target": "crates/luxforge-core/src/render/byte.rs",
+          "locator": "pub(super) fn rasterize",
+          "relevance": "rasterize: start at a supplied boundary frame."
+        },
+        {
+          "kind": "file",
+          "label": "Linear driver",
+          "target": "crates/luxforge-core/src/render/linear.rs",
+          "locator": "type SpatialFrame",
+          "relevance": "SpatialFrame and the pull evaluation."
+        }
+      ],
+      "acceptance_criteria": [
+        "`restoration_prefix_cache_hit_equals_uncached_proxy_render` passes byte for byte on JPEG and RAW, whole and windowed proxies, global and masked restoration, and 100% interactive regions.",
+        "`restoration_prefix_cache_reuses_across_downstream_drafts`: 20 Basic drafts after one Detail layer evaluate the prefix once (PrefixUse Built then Reused).",
+        "`restoration_prefix_cache_misses_on_every_key_change`: Detail payload, pixel edit, RAW exposure, drafted RAW white balance, bounds, window and source each rebuild.",
+        "`restoration_prefix_cache_holds_one_entry_and_releases_before_building`, `restoration_prefix_cache_reports_too_large_above_the_cap`, `restoration_prefix_cache_cancelled_build_leaves_it_empty`, `restoration_prefix_cache_cleared_on_proxy_source_change` and `restoration_noncanonical_colour_before_restoration_has_no_prefix` pass."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Implement the key, cache and suffix render; prove equality against the uncached render first, then reuse, invalidation and bounds.",
+          "Use gated jobs for cancellation; no timing (performance task)."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib restoration_prefix",
+          "cargo test -p luxforge-core --lib preview",
+          "cargo test -p luxforge-core --lib render"
+        ],
+        "expected_results": [
+          "All restoration_prefix_* tests (added by this task) pass; existing preview and render tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Keep value-based mask overlays and thumbnails working behind Detail with a bounded input-grid cache on each overlay worker.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Owner decision (2026-09-30). New file crates/luxforge-core/src/preview/input_grid.rs: InputGridKey { source, prefix_hash, domain, transform, region, cells }, InputGrid (per cell: the restoration prefix output at the content pixel that cell reads, [u16; 3] wide on JPEG, [f32; 3] on RAW, plus an outside marker), InputGridCache (one grid), INPUT_GRID_MAX_CELLS = 8_000_000 (refused by name above it).",
+        "Build: map cells to content pixels with the coverage grid's own cell_pixel and StageTransform arithmetic; group cells by the stage-aligned tile holding them; evaluate each tile once through the render's tile function and parallelism; a tile holding fewer than (tile area / window area) cells evaluates each cell through a window of its pixel grown by the prefix's summed halo. Cancellation per tile; a cancelled build stores nothing.",
+        "Use: analysis/mask_overlay.rs gains MaskPixels::Grid(&dyn MaskInputGrid) with linear_cell(cell, x, y). render::layer_input keeps its refusal unless the prefix before the first bound layer is an active restoration prefix followed only by colour and pixel operations with no boundary; then each cell's input is the cached value run through that pointwise remainder, O(remaining layers) per cell. Anything else (a spatial layer after the leading restoration run) keeps today's refusal sentence.",
+        "Evaluation::mask_overlay_coverage and Evaluation::mask_coverage take &mut InputGridCache. The app's mask-coverage worker (app/mask_coverage.rs) and thumbnail worker (app/thumbnails.rs) each own one cache; neither holds an evaluation between jobs.",
+        "Expected cost: about one full-resolution Detail pass over touched tiles per prefix change per worker; the performance task measures it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "Coverage overlay",
+          "target": "crates/luxforge-core/src/preview/coverage.rs",
+          "locator": "fn mask_overlay_for",
+          "relevance": "mask_overlay_for, mask_overlay_coverage, mask_coverage, stack_key."
+        },
+        {
+          "kind": "file",
+          "label": "Layer input refusal",
+          "target": "crates/luxforge-core/src/render/entry.rs",
+          "locator": "pub(crate) fn layer_input",
+          "relevance": "layer_input refuses any prefix that evaluates spatial."
+        },
+        {
+          "kind": "file",
+          "label": "Coverage grid",
+          "target": "crates/luxforge-core/src/analysis/mask_overlay.rs",
+          "locator": "MaskPixels",
+          "relevance": "MaskInputPixel, MaskPixels, coverage_grid_region, MAX_OVERLAY_CELLS."
+        },
+        {
+          "kind": "file",
+          "label": "Coverage worker",
+          "target": "crates/luxforge-app/src/app/mask_coverage.rs",
+          "locator": "CoverageQueue",
+          "relevance": "CoverageQueue on Latest; owns the cache."
+        },
+        {
+          "kind": "file",
+          "label": "Thumbnail worker",
+          "target": "crates/luxforge-app/src/app/thumbnails.rs",
+          "locator": "fn thumbnails",
+          "relevance": "28 x 19 cells per mask; owns the cache."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "First-bound-layer input rule and the overlay refusal."
+        }
+      ],
+      "acceptance_criteria": [
+        "`restoration_input_grid_matches_per_cell_point_evaluation` proves grid-backed coverage equals per-cell point evaluation through the whole prefix bit for bit, on JPEG and RAW, for range, colour-range and colour-limited-brush masks bound to a colour layer behind restoration.",
+        "`restoration_input_grid_sparse_windows_equal_tile_evaluation` passes.",
+        "`restoration_input_grid_is_reused_across_mask_and_colour_edits` (one build over mask slider and Basic changes) and `restoration_input_grid_rebuilds_on_prefix_change` pass.",
+        "`restoration_overlay_behind_presence_keeps_its_refusal`, `restoration_input_grid_refuses_above_the_cell_cap` and `restoration_input_grid_cancel_stores_nothing` pass.",
+        "App tests `restoration_coverage_worker_reuses_its_input_grid` and `restoration_thumbnails_behind_restoration_have_grids` pass; neither worker retains an evaluation after its job."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Implement the grid and its key, then the Grid pixel source and the narrowed refusal; prove equality before reuse.",
+          "Wire both app workers; test with the restoration test provider."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib restoration_input_grid",
+          "cargo test -p luxforge-core --lib coverage",
+          "cargo test -p luxforge-core --test mask",
+          "cargo test -p luxforge-app --lib restoration"
+        ],
+        "expected_results": [
+          "All listed tests (added by this task) pass; existing coverage, mask and thumbnail tests pass unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Present the settled Fit on the desktop with its adoption gate, triggers and exclusions, and add the detail-fit and detail-zoom scenarios.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Presenter::show_settled(raster, content) sets photo_content and never full_content. Retained gains Settled(SettledFrame), used on zoom back to Fit. Adopt a display raster only when generation, content serial and proxy_bounds() all match; otherwise drop it and request a reduce (PreviewIntent::Reduce) of the retained exact raster.",
+        "Triggers: every whole-stack Develop job with Fit bounds whose compilation settles from exact: commits, history, presets, Compare exit, mask edits, other sliders, zoom to Fit; resize re-reduces. Never crop-draft stages, thumbnails, coverage jobs, Compare sides or Interactive jobs.",
+        "Status strings: \"Moving preview · Detail approximate\" during motion and \"Settled from exact · display reduced\" after; the drafted RAW white-balance flag persists. Evidence summaries carry settled_from_exact and the approximation reasons.",
+        "Scenarios in xtask/src/detail_smoke.rs with SCENARIOS rows: detail-fit (moving and settled Fit, identity fields, stale rejection on resize) and detail-zoom (100% and 200% refinement and pan). app/preview.rs and ProxyApproximation are also edited by the Lens plan: land sequentially."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "Presenter",
+          "target": "crates/luxforge-app/src/app/presenter.rs",
+          "locator": "pub(crate) struct Presenter",
+          "relevance": "photo_content versus full_content."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop preview",
+          "target": "crates/luxforge-app/src/app/preview.rs",
+          "locator": "enum Retained",
+          "relevance": "Retained, exact adoption while a proxy is presented, proxy_bounds."
+        },
+        {
+          "kind": "file",
+          "label": "Thumbnails",
+          "target": "crates/luxforge-app/src/app/thumbnails.rs",
+          "relevance": "Must never trigger settled Fit work."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence",
+          "target": "crates/luxforge-app/src/app/evidence.rs",
+          "relevance": "Correlated state in captures."
+        }
+      ],
+      "acceptance_criteria": [
+        "`restoration_settled_fit_is_dropped_after_resize`, `restoration_settled_fit_never_serves_100_percent` and `restoration_crop_stage_and_thumbnails_never_settle_from_exact` pass.",
+        "`restoration_settle_triggers_cover_commit_history_preset_compare_mask_and_zoom_to_fit` and `restoration_resize_rereduces_retained_exact_without_rendering` pass.",
+        "`restoration_status_reads_the_moving_and_settled_strings` and `restoration_drafted_white_balance_flag_survives_the_settled_fit` pass.",
+        "detail-fit and detail-zoom pass on a release build in the background with correlated generation, content, bounds, approximation and logs, and no stale or blank draw."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Implement presenter and retained states with app tests, then the two scenarios.",
+          "Build the release app and run both scenarios in the background."
+        ],
+        "commands": [
+          "cargo test -p luxforge-app --lib restoration",
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-fit --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-zoom --output NEW_DIR"
+        ],
+        "expected_results": [
+          "App tests (added by this task) pass; the detail-fit and detail-zoom scenarios (added by this task) pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Verify Detail across masks, native presets, Lightroom reports, history, RAW and export.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-007",
+        "TASK-010",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Blend is the host's (1 - M)*in + M*u. Global precedes masked; masked instances follow the mask list and each adds to global Detail. Masked Detail and masked Presence share MAX_MASKED_SPATIAL_LAYERS = 4; keep the existing refusal message.",
+        "Lightroom reasons in presets/mapping.rs become \"Lightroom sharpening is not mapped to Luxforge Detail\" and \"Lightroom noise reduction is not mapped to Luxforge Detail\" (NO_SHARPENING, NO_NOISE_REDUCTION); Unless rules unchanged; update presets/tests.rs expectations and docs/design/presets.md's statement.",
+        "Compare exact raster buffers before JPEG encoding; never use lossy JPEG equality as an oracle."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "locator": "NO_SHARPENING",
+          "relevance": "NO_SHARPENING, NO_NOISE_REDUCTION and the Detail rows."
+        },
+        {
+          "kind": "file",
+          "label": "Preset tests",
+          "target": "crates/luxforge-core/src/presets/tests.rs",
+          "relevance": "Expectations naming the old reasons."
+        },
+        {
+          "kind": "file",
+          "label": "Mask integration tests",
+          "target": "crates/luxforge-core/tests/mask/main.rs",
+          "relevance": "Masked spatial layers and range masks."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Lightroom unsupported-key reports."
+        },
+        {
+          "kind": "file",
+          "label": "Export",
+          "target": "docs/design/export.md",
+          "relevance": "Exact recipe evaluation and original protection."
+        },
+        {
+          "kind": "file",
+          "label": "History",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "Snapshots, navigation, versions and reopen."
+        }
+      ],
+      "acceptance_criteria": [
+        "`detail_masks_blend_with_the_host_rule` (gradient, radial, brush, range; amount and inversion; zero coverage exact, full coverage equals unmasked), `detail_overlapping_masks_process_in_mask_list_order` and `a_fifth_masked_detail_or_presence_layer_is_refused` pass.",
+        "`detail_range_mask_reads_the_layer_input_behind_detail` and `detail_colour_limited_stroke_behind_detail_seeds_off_owner` pass with the real module; overlays and thumbnails behind Detail have grids.",
+        "`detail_native_preset_round_trips_all_eight_fields_and_zero_strengths` (capture, export, import, apply; masks untouched; one entry per apply) and `detail_lightroom_keys_report_not_mapped_to_detail` pass.",
+        "`detail_history_undo_redo_restore_versions_and_reopen`, `detail_drafts_conflict_and_reapply`, `detail_export_evaluates_exact_detail_once`, `detail_missing_provider_refuses_affected_outputs_and_keeps_data`, `detail_raw_white_balance_invalidates_and_sliders_do_not_redevelop` and `detail_original_hashes_unchanged` pass.",
+        "The presets scenario still passes with the new report reasons."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Add current-shape integration tests and failure injection; update preset reasons and their tests.",
+          "Run the preset scenario on a release build."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --test modules detail",
+          "cargo test -p luxforge-core --test mask detail",
+          "cargo test -p luxforge-core --lib detail",
+          "cargo test -p luxforge-core --lib presets",
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- smoke --scenario presets --output NEW_DIR"
+        ],
+        "expected_results": [
+          "All listed tests (added by this task unless they already exist) pass; the presets scenario passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Qualify photographic output and the native rendered editing journey on the M4.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-009",
+        "TASK-012"
+      ],
+      "extra_context": [
+        "Use the frozen corpus and study gates; do not relax a gate after seeing production output. A missing scene or unresolved material defect leaves quality incomplete.",
+        "Add the raw-detail scenario (SCENARIOS row taking --source) before invoking it; run it for the Z6, X100VI and Air 2S entries of the private manifest. Automated launches stay hidden in the background.",
+        "Corpus: fixtures/detail/corpus.json (created by this plan). Scenes, crops and parameter sets (written by the corpus task)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "Evidence workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Background launches, correlated captures and tiers."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Record exactly what native evidence proves."
+        }
+      ],
+      "acceptance_criteria": [
+        "`docs/design/detail-study.md` gains a photographic section with a per-crop disposition table (scene, camera, ISO, setting, 100% and final-size verdict for waxy skin, worms, halos, colour bleeding or shift, ringing, moire and compression amplification) for every corpus cell; extremes are stress results.",
+        "Frozen synthetic gates pass on production output through the full pipeline, including the JPEG ramp banding gate.",
+        "detail, detail-fit, detail-zoom and raw-detail pass with correlated state, logs and captures covering sliders, resets, keyboard, masks, presets, Compare, history, crop and rotate, Fit settle, 100%/200% refinement and pan, 1x/2x density, neutral picking and a colour-limited stroke; rapid edits, photo and view changes and RAW white balance while work is pending show no stale or blank draw and no false exact label.",
+        "Quick and rendered tiers pass on the integrated feature; portable functional evidence is labelled separately."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the scenarios and inspect their images; fix failures before the tiers.",
+          "Run the photographic comparisons from the corpus and write the disposition table."
+        ],
+        "commands": [
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-fit --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-zoom --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- smoke --scenario raw-detail --source RAW --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Every scenario (raw-detail added by this task) and tier passes; every corpus cell has a disposition or a recorded gap; no skip is reported as a pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Measure finished Detail, the 16-bit hand-off and both caches on the M4, sequentially on a quiet host.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-013"
+      ],
+      "extra_context": [
+        "Runs only after all feature work, sequentially, never beside another plan's builds (shared-host timing skew). Build a baseline release binary from the plan's base commit in a separate worktree and pass it with --binary for before figures; run before and after back to back and once reversed.",
+        "Add editor-latency --detail (commits edit.set-detail {sharpening 60, luminance 40, colour 40} before the gesture, as --presence does) with a full_detail() step in xtask/src/scenario/recipe.rs and the flag in xtask/src/main.rs.",
+        "Expected results to confirm or refute (design, Expected costs): settled Fit ~0.5 s at 24 MP and ~2.5 s at 60 MP; Detail, RAW exposure and RAW white-balance drags miss the 16/32 ms Fit and 50 ms RAW exposure budgets; downstream drags with the prefix held pay only the suffix; Detail + Dehaze falls back from windows; neutral pick and first colour-limited tick wait one tile set; RAW Z6 Detail + Presence ~1.8 GiB against the 1.5 GiB investigation target.",
+        "Misses are reported under the existing non-blocking policy; resource violations, stale results and unbounded work are correctness failures. Change RenderPass thresholds only with a serial/pool crossover measured at 0.025-2 MP."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
+        },
+        {
+          "kind": "file",
+          "label": "editor-latency",
+          "target": "xtask/src/editor_latency.rs",
+          "locator": "presence",
+          "relevance": "Options and the --presence precondition pattern."
         },
         {
           "kind": "file",
@@ -488,99 +1096,118 @@
         },
         {
           "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Checklist answers and known-cost rows."
+        },
+        {
+          "kind": "file",
           "label": "Limits",
           "target": "docs/design/architecture.md",
-          "relevance": "Distinguish per-buffer hard limits, shared scratch targets and GPU accounting."
+          "relevance": "Per-buffer limits versus targets."
         }
       ],
       "acceptance_criteria": [
-        "Record p50/p95, counts, host load and display dimensions for startup/discovery/first-use, cold/warm Fit, exact settlement/viewport/full processing, samples/picker, export and sustained slider/mask/pan/cancellation workloads.",
-        "Compare no-Detail and Detail on 24/60 MP JPEG and authentic Z6/X100VI/Air 2S RAW, each strength/all fields, overlapping masks and Detail+Basic+Presence/Dehaze+crop; include exact-fallback cases.",
-        "Report interaction against below-16 ms target and below-32 ms acceptable p95; report settlement separately from the 120 ms scheduling delay and every miss explicitly.",
-        "Measure source-cache/development reuse, peak tile scratch and budget concurrency, RAW planes/retained source RSS, GPU residency and unchanged texture caps; leave backend staging limitations explicit.",
-        "Benchmark changed-kernel serial/pool crossover at 0.025\u20132 MP before changing thresholds, and demonstrate cancellation cleanup, idle sleep and source-buffer sharing for neutral Detail.",
-        "The full performance-rules checklist is answered with evidence and scope, without a total-memory or speed guarantee inferred from synthetic fixtures."
+        "p50/p95, counts, host load and display bounds are recorded for: Detail sliders (sharpening, luminance) at 24 and 60 MP and at 100%; set-basic exposure and set-presence behind Detail with the prefix held; hover samples with Detail and Presence; crop 5 degrees with Detail and Presence; the mask-overlay paint mode behind Detail (grid build and reuse); settled-Fit latency after quiet; neutral pick and first colour-limited tick; Presence on JPEG before and after the 16-bit hand-off; export.",
+        "RAW Z6, X100VI and Air 2S RSS high-water marks for Detail alone, Presence alone and both are recorded against the 1.5 GiB target, with cache bytes, retained sources, CPU scratch and GPU residency separated and backend staging marked unmeasured.",
+        "Cancellation cleanup, idle sleep with caches held, and source-buffer sharing for neutral Detail are demonstrated.",
+        "The performance-rules checklist is answered in docs/specs/performance.md with scope; no total-memory or speed guarantee is inferred from synthetic fixtures."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "manual",
         "steps": [
-          "Extend existing timing workloads for Detail, then run finished-build baseline/comparison under the shared timing lock.",
-          "Use native resource evidence to attribute cost; rerun only affected measurements if an optimization changes code."
+          "Add --detail, build baseline and current release binaries, then run each command sequentially on a quiet host.",
+          "Record distributions and resource figures; rerun only affected measurements after any optimization."
         ],
         "commands": [
-          "cargo xtask verify --tier timing --output /private/tmp/luxforge-detail-timing"
+          "cargo xtask generate-fixtures --output fixtures/generated",
+          "cargo xtask build --release",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --detail --action set-detail --parameter sharpening --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --detail --action set-detail --parameter luminance --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/60mp.jpg --output NEW_DIR --detail --action set-detail --parameter luminance --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --zoom 100 --detail --action set-detail --parameter luminance --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --detail --action set-basic --parameter exposure --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --detail --presence --action set-presence --parameter clarity --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode hover --detail --presence --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --crop 5 --detail --presence --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --mode paint --mask-overlay --detail --samples 30",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --presence --samples 30 --binary PATH",
+          "cargo run --release --locked --package xtask -- editor-latency --source fixtures/generated/24mp.jpg --output NEW_DIR --presence --samples 30",
+          "cargo run --release --locked --package xtask -- editor-performance --source fixtures/generated/24mp.jpg --output NEW_DIR --samples 30",
+          "cargo run --release --locked --package xtask -- smoke --scenario raw-detail --source RAW --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier timing --output NEW_DIR"
         ],
         "expected_results": [
-          "Measured costs and any target misses are recorded honestly; queues/allocations are bounded and idle work stops."
+          "Every listed case (the --detail flag is added by this task) is recorded with its scope; every predicted miss is confirmed or refuted in the record; queues and allocations are bounded and idle work stops."
         ]
       }
     },
     {
-      "id": "TASK-009",
-      "description": "Complete Detail qualification and update current product contracts.",
+      "id": "TASK-015",
+      "description": "Complete Detail qualification and update the current product contracts.",
       "status": "pending",
       "dependencies": [
-        "TASK-008"
+        "TASK-014"
       ],
       "extra_context": [
-        "No implementation milestone is complete until the required evidence is present. No owner-review gate is added.",
-        "Output sharpening, AI/profiled/sensor denoise and export resizing remain out of scope. Update docs to actual results rather than keeping design defaults labelled as measured."
+        "No milestone claim until the evidence is present. Output sharpening, AI/profiled/sensor denoise and export resizing remain out of scope.",
+        "Docs to bring to delivered behaviour: this design (drop planned wording), decisions (only if a delivered result changes a recorded choice), architecture (restoration stage, wide byte frames, caches and their limits), modules-and-api (descriptor, fit_settle, Planned::Query, parked reads), instant-preview (settled Fit, prefix cache, window fallback), masking (input-grid cache, remaining refusal, shared masked-spatial cap), presets (Lightroom reasons), Presence design and study (16-bit hand-off), performance rules (rule 5 text on planning samplers, known-cost rows), feature status and user guide (zero defaults, capture versus output sharpening, settled Fit, 100% inspection, masked Detail adds to global, RAW/JPEG differences)."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Detail design",
           "target": "docs/design/detail.md",
-          "relevance": "Selected scope, defaults, contracts and acceptance; all proposed interfaces remain unimplemented."
+          "relevance": "The prescriptive contract: stage, pixel formulation, 16-bit hand-off, compile context, previews, caches, off-owner reads, masks and verification. Nothing it names exists yet unless it says so."
         },
         {
           "kind": "file",
           "label": "Completion tiers",
           "target": "docs/engineering/development.md",
-          "relevance": "Full requires an authentic RAW manifest; skips are incomplete."
+          "relevance": "full requires the authentic RAW manifest; skips are incomplete."
         },
         {
           "kind": "file",
           "label": "Architecture",
           "target": "docs/design/architecture.md",
-          "relevance": "Update placement, points, scale and frame contracts."
+          "relevance": "Placement, frames, caches and limits."
         },
         {
           "kind": "file",
           "label": "API contracts",
           "target": "docs/design/modules-and-api.md",
-          "relevance": "Publish actual descriptor and actions."
+          "relevance": "Descriptor, actions, queries and worker routing."
         },
         {
           "kind": "file",
           "label": "Guide",
           "target": "docs/user-guide.md",
-          "relevance": "Explain capture sharpening, Fit and 100%, masks and limitations."
+          "relevance": "Only real commands and controls."
         },
         {
           "kind": "file",
           "label": "Feature status",
           "target": "docs/features.md",
-          "relevance": "Precisely scoped implementation/evidence status."
+          "relevance": "Precisely scoped status and evidence."
         }
       ],
       "acceptance_criteria": [
-        "Current design, decisions, architecture, module/API, masking, presets, preview and performance documents agree with delivered semantics and qualified limitations.",
-        "User guide lists only real commands/controls and explains zero defaults, capture versus output sharpening, settled Fit, 100% inspection, mask composition and RAW/JPEG differences.",
-        "Full tier with the real corpus manifest passes and source hashes remain unchanged; missing or skipped checks leave qualification incomplete. Native M4 results are distinct from other-platform/headless checks.",
-        "No compatibility migration, deferred control, provider framework or future output-sharpen implementation is added; completed-plan lifecycle follows repository conventions."
+        "Every listed document agrees with delivered semantics, measured costs and qualified limitations; the user guide names only real controls.",
+        "The full tier with the authentic manifest passes and source hashes are unchanged; native M4 results are distinguished from other-platform or headless checks.",
+        "No compatibility migration, deferred control, provider framework or output-sharpen implementation is added; the completed plan is deleted per repository conventions."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Resolve the authenticated/private manifest from the registered corpus, then run the documented full tier with that file and a new output directory; do not substitute an empty/generated manifest.",
-          "Inspect summary and captures, reconcile docs/links and record evidence paths and all remaining scope limits."
+          "Run the full tier with the private manifest and a new output directory; inspect summary and captures.",
+          "Reconcile documents and links; record evidence paths and remaining scope limits."
         ],
         "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier full --manifest FILE --output NEW_DIR",
           "cargo xtask check-repository"
         ],
         "expected_results": [
-          "Only evidenced behaviour is marked complete; the source-preservation, parity, quality and bounded-processing contracts are all accounted for."
+          "Only evidenced behaviour is marked complete; source preservation, parity, quality and bounded-processing contracts are all accounted for."
         ]
       }
     }
@@ -590,44 +1217,55 @@
       "wave": 1,
       "task_ids": [
         "TASK-001",
-        "TASK-002"
+        "TASK-002",
+        "TASK-003"
       ]
     },
     {
       "wave": 2,
       "task_ids": [
-        "TASK-003",
-        "TASK-005"
+        "TASK-004",
+        "TASK-005",
+        "TASK-006"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-004"
+        "TASK-007",
+        "TASK-008",
+        "TASK-010"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-006"
+        "TASK-009",
+        "TASK-011"
       ]
     },
     {
       "wave": 5,
       "task_ids": [
-        "TASK-007"
+        "TASK-012"
       ]
     },
     {
       "wave": 6,
       "task_ids": [
-        "TASK-008"
+        "TASK-013"
       ]
     },
     {
       "wave": 7,
       "task_ids": [
-        "TASK-009"
+        "TASK-014"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-015"
       ]
     }
   ]
