@@ -34,8 +34,6 @@ pub(crate) enum MissingMessage {
     Stop,
     /// `job.cancel` answered.
     Stopped(Result<Value, String>),
-    /// The timer that exists while a search or a Locate runs.
-    Poll,
     /// `job.read` of the running search and the running Locate answered.
     Polled {
         search: Option<(String, Result<Value, String>)>,

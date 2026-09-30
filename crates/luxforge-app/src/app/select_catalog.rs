@@ -243,6 +243,10 @@ impl Editor {
         match action {
             CatalogAction::View(source) => {
                 self.close_catalog_menus();
+                // As any source chosen: a card or folder being read goes on as the status bar's
+                // job, and its end no longer replaces the view.
+                self.select.reading = None;
+                self.select.stale_while_reading = false;
                 let query = model::view_query(&self.select.state.catalog, source);
                 return self.evaluate(query);
             }

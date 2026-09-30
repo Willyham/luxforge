@@ -406,7 +406,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -417,7 +417,6 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
     export::subscription,
     // ── catalog lane D: views and desktop ──
     select::subscription,
-    select_missing::subscription,
     loupe::subscription,
     long_work::subscription,
     // ── end lane D ──

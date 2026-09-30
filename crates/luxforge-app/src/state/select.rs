@@ -129,6 +129,9 @@ pub(crate) struct SelectState {
     pub(crate) events_error: Option<String>,
     /// The folder browsed On disk, with its subfolders.
     pub(crate) folder: Option<PathBuf>,
+    /// The card or folder being read for this desktop while it waits to replace the view (not
+    /// sent to the background): the title names it.
+    pub(crate) reading: Option<ReadSource>,
     /// The query the desktop last sent, which the sources panel and the filter bar show while its
     /// answer is on its way.
     pub(crate) query: Option<ViewQuery>,
@@ -185,6 +188,7 @@ impl Default for SelectState {
             events: None,
             events_error: None,
             folder: None,
+            reading: None,
             query: None,
             loading: false,
             summary: None,
@@ -1482,6 +1486,18 @@ pub(crate) fn title(state: &SelectState) -> SelectTitle {
         title.info_open = state.info_panel;
         title
     };
+    // The view that waits for its card or folder to be read is the one on screen.
+    if let Some(reading) = &state.reading {
+        let mut parts = vec!["Reading\u{2026}".to_owned()];
+        if let ReadSource::Folder(path) = reading {
+            parts.push(shown_path(path, state.home.as_deref()));
+        }
+        return panels(SelectTitle {
+            name: reading.sheet_name(),
+            summary: parts.join(" \u{b7} "),
+            ..SelectTitle::default()
+        });
+    }
     let Some(source) = source(state) else {
         return panels(SelectTitle {
             name: "Select".to_owned(),
@@ -1806,18 +1822,16 @@ fn catalog_rows(state: &SelectState, is: &impl Fn(&ViewSource) -> bool) -> Vec<S
 pub(crate) fn event_label(event: &Event) -> String {
     // An Undated event is listed under Undated, so its row names its folder alone.
     if event.undated
-        && let Some(folder) = event.name.strip_prefix("Undated \u{b7} ")
+        && let Some(folder) = event.label.strip_prefix("Undated \u{b7} ")
         && !folder.trim().is_empty()
     {
         return folder.to_owned();
     }
-    if let Some(dates) = dates(event.first_day, event.last_day, false)
-        && let Some(label) = event.name.strip_suffix(&format!(" \u{b7} {dates}"))
-        && !label.trim().is_empty()
-    {
-        return label.to_owned();
+    // A name that is its dates alone has no label: the whole name, then.
+    if event.label.trim().is_empty() {
+        return event.name.clone();
     }
-    event.name.clone()
+    event.label.clone()
 }
 
 fn event_row(event: &Event, is: &impl Fn(&ViewSource) -> bool) -> SourceRow {
