@@ -686,11 +686,13 @@ fn a_batch_export_writes_the_files_single_exports_write_under_the_export_rule() 
 }
 
 /// A batch export reports every photograph it leaves out, with the code and words the single export
-/// refuses it with, and writes the rest: one in Removed, one whose original is missing, and one whose
-/// every name is taken in the folder. A folder that is not one is refused before anything starts.
+/// refuses it with, and writes the rest: one whose preparation fails, one in Removed, one whose
+/// original is missing, and one whose every name is taken in the folder. A folder that is not one is
+/// refused before anything starts.
 #[test]
 fn a_batch_export_reports_every_photograph_it_leaves_out() {
     let harness = Harness::new("export-skips");
+    let changed = harness.photograph("orientation-8.jpg", "photos/Changed.jpg");
     let exported = harness.photograph("srgb.jpg", "photos/Keep.jpg");
     let removed = harness.photograph("portrait.jpg", "photos/Removed.jpg");
     let missing = harness.photograph("orientation-3.jpg", "photos/Gone.jpg");
@@ -708,8 +710,23 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
         json!({"asset_id": missing, "destination": harness.dir.join("gone.jpg"), "mutation": envelope("gone")}),
     );
     assert_eq!(gone.code, "source-unavailable");
+    // Other bytes of the same length written in place: the one look every read of an original
+    // starts from passes, and preparing it fails, which is the single export's answer.
+    let path = harness.dir.join("photos/Changed.jpg");
+    let mut bytes = fs::read(&path).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0xff;
+    fs::write(&path, &bytes).unwrap();
+    let preparing = harness
+        .refused(
+            "export.jpeg",
+            json!({"asset_id": changed, "destination": harness.dir.join("changed.jpg"), "mutation": envelope("changed")}),
+        );
+    assert_eq!(preparing.code, "preparation-required");
+    let failed = harness.settle(&json!(preparing.job_id.unwrap()));
+    assert_eq!(failed["status"], "failed", "{failed}");
 
-    let targets = [&exported, &removed, &missing, &crowded].map(Clone::clone);
+    let targets = [&changed, &exported, &removed, &missing, &crowded].map(Clone::clone);
     let started = harness.ok(
         "batch.export",
         json!({"targets": assets(&targets), "destination": out, "mutation": envelope("skips")}),
@@ -720,17 +737,21 @@ fn a_batch_export_reports_every_photograph_it_leaves_out() {
     assert_eq!(report["done"], json!([exported]));
     assert_eq!(report["written"], json!([out.join("Keep-edited.jpg")]));
     let skipped = report["skipped"].as_array().unwrap();
-    assert_eq!(skipped.len(), 3, "{report}");
+    assert_eq!(skipped.len(), 4, "{report}");
     assert_eq!(
         skipped[0],
-        json!({"asset_id": removed, "code": "removed", "reason": "it is in Removed; put it back to include it"})
+        json!({"asset_id": changed, "code": failed["error"]["code"], "reason": failed["error"]["message"]})
     );
     assert_eq!(
         skipped[1],
+        json!({"asset_id": removed, "code": "removed", "reason": "it is in Removed; put it back to include it"})
+    );
+    assert_eq!(
+        skipped[2],
         json!({"asset_id": missing, "code": gone.code, "reason": gone.message})
     );
-    assert_eq!(skipped[2]["asset_id"], json!(crowded));
-    assert_eq!(skipped[2]["code"], "conflict");
+    assert_eq!(skipped[3]["asset_id"], json!(crowded));
+    assert_eq!(skipped[3]["code"], "conflict");
     assert_eq!(names(&out).len(), 65, "only Keep-edited.jpg was added");
     assert!(fs::read(out.join("Keep-edited.jpg")).is_ok());
 
