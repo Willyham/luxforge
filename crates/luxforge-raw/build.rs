@@ -373,7 +373,9 @@ fn main() {
         // unless told otherwise, and MSVC rejects defining a dllimport
         // function. LIBRAW_NODLL disables that path on all platforms.
         .define("LIBRAW_NODLL", None)
-        .file(manifest.join("native/adapter.cpp"));
+        .file(manifest.join("native/adapter.cpp"))
+        // Embedded previews: LibRaw's identify through a Rust reader, never an unpack.
+        .file(manifest.join("native/embedded.cpp"));
     // No USE_ZLIB/JPEG/RAWSPEED/DNGSDK/LCMS or OpenMP features.
     // The qualified NEF/RAF/DNG decoding paths do not require them.
     add_cpp_tree(&mut build, &libraw.join("src"), "cpp", &[]);
@@ -390,6 +392,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/native_status.rs");
     println!("cargo:rerun-if-changed=src/unpacker.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
+    println!("cargo:rerun-if-changed=native/embedded.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
     println!("cargo:rerun-if-changed=patches/librtprocess-local.patch");
