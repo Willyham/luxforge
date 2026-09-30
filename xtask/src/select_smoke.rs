@@ -26,6 +26,10 @@
 //! Performance section; and Cancel on its Performance row, captured once the job has ended
 //! cancelled on the activity board and the section has read it again.
 //!
+//! Then the catalog ([`select_catalog_smoke`]): real photographs developed into it before the run,
+//! viewed from their catalog folder with their previews, counted and narrowed by the Metadata
+//! browser and the search, saved as a smart collection, moved, collected and organized.
+//!
 //! Each frame's `select` block is checked against the core's own answers: the view's size, picks
 //! and group layout as `browse.view` answered the runner's client, the headings' and headers' pick
 //! counts as the layout counts them, each library gesture's request as an agent writes it, and the
@@ -39,6 +43,7 @@
 use crate::{
     generate_catalog,
     scenario::{Checked, Checks, Frame, Launch, Plan, Run, Step, plan::only},
+    select_catalog_smoke,
     smoke::Scenario,
     *,
 };
@@ -50,7 +55,10 @@ use luxforge_evidence::{
 pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates its catalog and index into `generated/` with \
-    `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, asks the core for the \
+    `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, develops 28 of \
+    its JPEGs (`iPhone export` and `Card dumps/2026-09-16`) into a new catalog folder `Real \
+    photographs` through the runner's own client (`folder.create`, `index.refresh`, `pick.set`, \
+    `pick.plan`, `pick.develop`, as the actor `setup`), asks the core for the \
     answers the frames are checked against over a pristine copy (`select-expected.json`), writes \
     16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, and launches \
     the editor over that catalog with `--catalog`.";
@@ -94,78 +102,100 @@ pub struct Picks {
 
 /// Every frame, in order; `first_look` is the large folder whose first look is sent to the
 /// background and cancelled.
-pub fn plan(picks: &Picks, count: u64, folder: &str, images: u64, first_look: &str) -> Plan {
+pub fn plan(
+    picks: &Picks,
+    count: u64,
+    folder: &str,
+    images: u64,
+    first_look: &str,
+    catalog: Vec<Step>,
+) -> Plan {
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let arrow = |direction, extend| SelectStep::Arrow { direction, extend };
     let own = format!("Picked {}", picks.own_name);
     let all = &picks.bracket_label;
-    Plan::new(vec![
-        Step::opened("opened"),
-        Step::new("select", script::Step::key("g")),
-        select("event", SelectStep::Source(EVENT.into()))
-            .status(format!("{EVENT_LABEL} \u{b7} {count} in view")),
-        select("right", arrow(ArrowKey::Right, false)),
-        select("right-again", arrow(ArrowKey::Right, false)),
-        select("extended", arrow(ArrowKey::Right, true)),
-        select(
-            "grouped",
-            SelectStep::Choose {
-                menu: SelectMenu::Group,
-                item: "Day".into(),
-            },
-        ),
-        select(
-            "picked",
-            SelectStep::AgentPick {
-                positions: vec![picks.agent],
-                picked: true,
-            },
-        )
-        .status(format!(
-            "{EVENT_LABEL} changed elsewhere and was read again \u{b7} {count} in view"
-        )),
-        select(
-            "regrouped",
-            SelectStep::Choose {
-                menu: SelectMenu::Group,
-                item: "Day \u{203a} Camera \u{203a} Moment".into(),
-            },
-        ),
-        select(
-            "clicked",
-            SelectStep::Click {
-                position: picks.own,
-                shift: false,
-                command: false,
-            },
-        ),
-        Step::new("own-pick", script::Step::key("p"))
-            .status(format!("{own} \u{b7} Undo \u{2318}Z")),
-        select(
-            "pick-all",
-            SelectStep::PickAll {
-                position: picks.bracket,
-            },
-        )
-        .status(format!("{all} \u{b7} Undo \u{2318}Z")),
-        select("undo", SelectStep::Library(LibraryKey::Undo))
-            .status(format!("Undid {all} \u{b7} Redo \u{21e7}\u{2318}Z")),
-        select("undo-again", SelectStep::Library(LibraryKey::Undo))
-            .status(format!("Undid {own} \u{b7} Redo \u{21e7}\u{2318}Z")),
-        select("nothing-to-undo", SelectStep::Library(LibraryKey::Undo)).status("Nothing to undo"),
-        select("redo", SelectStep::Library(LibraryKey::Redo))
-            .status(format!("Redid {own} \u{b7} Undo \u{2318}Z")),
-        select("first-look", SelectStep::FirstLook(first_look.into())),
-        select("background", SelectStep::ContinueInBackground),
-        select("cancelled", SelectStep::CancelWork).status_starts("Cancelled reading "),
-        select("folder", SelectStep::Folder(folder.into()))
-            .status(format!("images \u{b7} {images} in view")),
-        select("develop", SelectStep::Switch(SelectWorkspace::Develop)),
-    ])
+    Plan::new(
+        [
+            Step::opened("opened"),
+            Step::new("select", script::Step::key("g")),
+            select("event", SelectStep::Source(EVENT.into()))
+                .status(format!("{EVENT_LABEL} \u{b7} {count} in view")),
+            select("right", arrow(ArrowKey::Right, false)),
+            select("right-again", arrow(ArrowKey::Right, false)),
+            select("extended", arrow(ArrowKey::Right, true)),
+            select(
+                "grouped",
+                SelectStep::Choose {
+                    menu: SelectMenu::Group,
+                    item: "Day".into(),
+                },
+            ),
+            select(
+                "picked",
+                SelectStep::AgentPick {
+                    positions: vec![picks.agent],
+                    picked: true,
+                },
+            )
+            .status(format!(
+                "{EVENT_LABEL} changed elsewhere and was read again \u{b7} {count} in view"
+            )),
+            select(
+                "regrouped",
+                SelectStep::Choose {
+                    menu: SelectMenu::Group,
+                    item: "Day \u{203a} Camera \u{203a} Moment".into(),
+                },
+            ),
+            select(
+                "clicked",
+                SelectStep::Click {
+                    position: picks.own,
+                    shift: false,
+                    command: false,
+                },
+            ),
+            Step::new("own-pick", script::Step::key("p"))
+                .status(format!("{own} \u{b7} Undo \u{2318}Z")),
+            select(
+                "pick-all",
+                SelectStep::PickAll {
+                    position: picks.bracket,
+                },
+            )
+            .status(format!("{all} \u{b7} Undo \u{2318}Z")),
+            select("undo", SelectStep::Library(LibraryKey::Undo))
+                .status(format!("Undid {all} \u{b7} Redo \u{21e7}\u{2318}Z")),
+            select("undo-again", SelectStep::Library(LibraryKey::Undo))
+                .status(format!("Undid {own} \u{b7} Redo \u{21e7}\u{2318}Z")),
+            select("nothing-to-undo", SelectStep::Library(LibraryKey::Undo))
+                .status("Nothing to undo"),
+            select("redo", SelectStep::Library(LibraryKey::Redo))
+                .status(format!("Redid {own} \u{b7} Undo \u{2318}Z")),
+            select("first-look", SelectStep::FirstLook(first_look.into())),
+            select("background", SelectStep::ContinueInBackground),
+            select("cancelled", SelectStep::CancelWork).status_starts("Cancelled reading "),
+            select("folder", SelectStep::Folder(folder.into()))
+                .status(format!("images \u{b7} {images} in view")),
+        ]
+        .into_iter()
+        // The catalog: browsed and organized (`select_catalog_smoke`).
+        .chain(catalog)
+        .chain([select(
+            "develop",
+            SelectStep::Switch(SelectWorkspace::Develop),
+        )])
+        .collect(),
+    )
 }
 
 /// One request through the runner's own client.
-fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn ask(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let response = owner
         .call(
             client,
@@ -213,7 +243,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result {
 
 /// `body` over a scratch copy of the catalog in `generated`, through an owner of its own and a
 /// client of the runner's, so the run's own catalog is only ever the editor's.
-fn over_copy<T>(
+pub(crate) fn over_copy<T>(
     generated: &Path,
     name: &str,
     body: impl FnOnce(&OwnerHandle, ClientId) -> Result<T>,
@@ -495,7 +525,10 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
                     images: Some(IMAGES),
                 },
             )?;
+            // Real photographs developed into the catalog, before anything reads it.
+            select_catalog_smoke::prepare(&generated)?;
             let mut expected = expect(&generated)?;
+            expected["catalog"] = select_catalog_smoke::expect(&generated)?;
             let first_look = run.out().join(FIRST_LOOK);
             write_first_look(&first_look)?;
             expected["first_look"] = json!({"path": first_look, "files": FIRST_LOOK_FILES});
@@ -515,7 +548,8 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         let first_look = expected["first_look"]["path"]
             .as_str()
             .ok_or("The expected answers name no first-look folder")?;
-        let plan = plan(&picks, count, folder, images, first_look);
+        let catalog = select_catalog_smoke::steps(&expected)?;
+        let plan = plan(&picks, count, folder, images, first_look, catalog);
         let mut launch = Launch::app()
             .catalog(&generated.join(generate_catalog::CATALOG))
             .script("script.json", plan.script());
@@ -570,7 +604,7 @@ fn picks_of(expected: &Value) -> Result<Picks> {
     })
 }
 
-fn select(frame: &Frame) -> &Value {
+pub(crate) fn select(frame: &Frame) -> &Value {
     &frame.state()["select"]
 }
 
@@ -624,7 +658,12 @@ fn headers_count_picks(frame: &Frame, name: &str) -> Result<Value> {
 
 /// The library request a frame's gesture sent: `method` with `params`, apart from the request
 /// identity, as an agent writes it, with the desktop's actor, and what the owner answered.
-fn library_sent(frame: &Frame, name: &str, method: &str, params: Value) -> Result<Value> {
+pub(crate) fn library_sent(
+    frame: &Frame,
+    name: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let library = &select(frame)["library"];
     let request_id = &library["params"]["mutation"]["request_id"];
     ensure(
@@ -715,7 +754,7 @@ fn view_is(frame: &Frame, name: &str, expected: &Value) -> Result<Value> {
 
 /// The Select centre shows its grid: the region between the panels holds the placeholders' and the
 /// headings' colours, not one flat canvas.
-fn grid_drawn(frame: &Frame) -> Result<Value> {
+pub(crate) fn grid_drawn(frame: &Frame) -> Result<Value> {
     let image = frame.image()?;
     let (width, height) = image.dimensions();
     let scale = frame["scale"].as_f64().unwrap_or(1.0);
@@ -1160,8 +1199,22 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ["desktop", "library.undo", format!("Undo {own_label}")],
         ["desktop", "library.redo", format!("Redo {own_label}")],
     ]);
+    // Then the catalog's changes, as its steps made them.
+    let catalog: Vec<Value> = after["changes"]
+        .as_array()
+        .map(|changes| changes.iter().skip(6).cloned().collect())
+        .unwrap_or_default();
     ensure(
-        after["changes"] == journal,
+        after["changes"]
+            .as_array()
+            .map(|changes| &changes[..changes.len().min(6)])
+            == journal.as_array().map(Vec::as_slice)
+            && catalog
+                .iter()
+                .map(|change| (change[0].as_str(), change[1].as_str()))
+                .eq(select_catalog_smoke::journal()
+                    .into_iter()
+                    .map(|method| (Some("desktop"), Some(method)))),
         format!("The journal holds {}, expected {journal}", after["changes"]),
     )?;
     ensure(
@@ -1206,8 +1259,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"view": view, "manifest": manifest, "grid": grid_drawn(folder)?}),
     );
 
+    select_catalog_smoke::verify(&mut checks, launch, &expected, &generated)?;
+
     // Back to Develop: Select keeps its view for when it is shown again.
     let develop = launch.at("develop")?;
+    let last = launch.at(select_catalog_smoke::LAST)?;
     let block = select(develop);
     ensure(
         block["shown"] == "develop",
@@ -1215,7 +1271,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     for key in ["revision", "count", "picked", "selection", "grouping"] {
         ensure(
-            block[key] == select(folder)[key],
+            block[key] == select(last)[key],
             format!("Switching to Develop changed Select's {key}"),
         )?;
     }
@@ -1457,9 +1513,22 @@ mod tests {
             bracket: 20,
             bracket_label: "Picked 3 files".into(),
         };
-        let plan = plan(&picks, 205, "/generated/images", 120, "/run/first-look");
+        let expected = json!({"catalog": {
+            "folder": {"count": 28},
+            "camera": {"label": "iPhone 15 Pro"},
+            "search": {"count": 9},
+        }});
+        let catalog = crate::select_catalog_smoke::steps(&expected).unwrap();
+        let plan = plan(
+            &picks,
+            205,
+            "/generated/images",
+            120,
+            "/run/first-look",
+            catalog,
+        );
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 21);
+        assert_eq!(plan.len(), 36);
         assert!(plan.scripted());
     }
 }
