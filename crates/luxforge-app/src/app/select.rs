@@ -23,6 +23,7 @@
 //! Which workspace is shown, the panels, the collapsed bursts, the size slider and the selection's
 //! anchor are this desktop's own view state, like the developer gallery page: no other client sees
 //! them.
+use crate::app::select_previews::{GridWindow, SelectPreviewMessage, SelectPreviews};
 use crate::app::{
     Before, Editor,
     gesture::Starting,
@@ -52,7 +53,7 @@ use std::{ops::Range, path::PathBuf};
 
 /// The Select workspace's own state in the editor: its view-model state, the grid's layout, scroll
 /// and viewport, and what is in flight.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct Select {
     /// What the model reads.
     pub(crate) state: SelectState,
@@ -85,6 +86,8 @@ pub(crate) struct Select {
     pub(crate) reading: Option<Reading>,
     /// A `job.read` of the reading folder's job is in flight.
     pub(crate) read_in_flight: bool,
+    /// The grid's decoded previews: each cell's handle, made once and held under the byte budget.
+    pub(crate) previews: SelectPreviews,
 }
 
 /// A folder browsed on disk whose listing and headers the index lane is reading.
@@ -123,6 +126,7 @@ impl Default for Select {
             rereading: false,
             reading: None,
             read_in_flight: false,
+            previews: SelectPreviews::default(),
         }
     }
 }
@@ -435,6 +439,13 @@ impl Editor {
                 state.info_panel = show;
             }
             SelectMessage::Checked(result) => return self.checked(result),
+            SelectMessage::Previews(message) => {
+                return self
+                    .select
+                    .previews
+                    .update(&self.owner, self.client, message)
+                    .map(previews_message);
+            }
         }
         Task::none()
     }
@@ -488,6 +499,7 @@ impl Editor {
         if shown == Shown::Develop {
             self.select.state.menu = None;
             self.select.state.shown = Shown::Develop;
+            self.select.previews.release();
             return Task::none();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
@@ -935,6 +947,25 @@ impl Editor {
     }
 
     /// Start the staleness check a wake asked for, while Select is shown.
+    /// Take in the cells the grid shows, and read and decode the previews they lack, while Select
+    /// shows a view.
+    fn want_previews(&mut self) -> Task<Message> {
+        if !self.select_shown() || self.select.state.summary.is_none() {
+            return Task::none();
+        }
+        let window = GridWindow {
+            layout: &self.select.layout,
+            rows: &self.select.state.rows,
+            scroll: self.select.scroll,
+            height: self.select.viewport.height,
+            scale_factor: self.view_state.scale_factor,
+        };
+        self.select
+            .previews
+            .want(&self.owner, self.client, window)
+            .map(previews_message)
+    }
+
     fn start_check(&mut self) -> Task<Message> {
         if !self.select_shown() || self.select.check.start().is_none() {
             return Task::none();
@@ -1041,6 +1072,7 @@ impl Editor {
             "sources_panel": state.sources_panel,
             "info_panel": state.info_panel,
             "cell_width": state.cell_width(),
+            "previews": self.select.previews.summary(),
             "title": {
                 "name": model.title.name,
                 "summary": model.title.summary,
@@ -1057,16 +1089,24 @@ impl Editor {
 /// An evidence run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
+    let previews = editor.want_previews();
     let check = editor.start_check();
     if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
         editor.outcome(Outcome::SelectSettled);
     }
-    Task::batch([rows, check])
+    Task::batch([rows, previews, check])
+}
+
+fn previews_message(message: SelectPreviewMessage) -> Message {
+    Message::Select(SelectMessage::Previews(message))
 }
 
 /// The reading folder's job timer, which exists only while a folder browsed on disk is being read.
+///
+/// And the grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits
+/// for it.
 pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
-    if editor
+    let reading = if editor
         .select
         .reading
         .as_ref()
@@ -1075,5 +1115,11 @@ pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
         iced::time::every(READ_POLL).map(|_| Message::Select(SelectMessage::ReadPoll))
     } else {
         iced::Subscription::none()
-    }
+    };
+    let previews = if editor.select_shown() {
+        crate::app::select_previews::subscription().map(previews_message)
+    } else {
+        iced::Subscription::none()
+    };
+    iced::Subscription::batch([reading, previews])
 }

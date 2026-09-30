@@ -97,6 +97,7 @@ pub(crate) mod waker;
 pub(crate) mod select;
 #[cfg(test)]
 mod select_owner_tests;
+pub(crate) mod select_previews;
 #[cfg(test)]
 mod select_tests;
 // ── end lane D ──
@@ -769,6 +770,7 @@ impl Editor {
                     viewport: self.select.viewport,
                     rows: &self.select.state.rows,
                     content: &self.select.state.content,
+                    images: self.select.previews.grid(&self.select.state.rows),
                 },
             ),
             // ── end lane D ──
