@@ -10,7 +10,7 @@
 //! every rule can be tested with made-up samples.
 use crate::state::{
     Inputs,
-    long_work::{Rates, WorkInfo, work_info, work_label},
+    long_work::{Rates, WorkInfo, followed, work_info, work_label},
 };
 use luxforge_core::{
     ActivitySnapshot,
@@ -568,7 +568,7 @@ pub(crate) fn jobs(activity: Option<&ActivitySnapshot>, work: Work<'_>) -> Jobs 
         .iter()
         .find(|job| job.duration_ms >= LONG_JOB_MS && job.ended_ms_ago <= RECENT_JOB_MS)
         .map(|job| Jobs {
-            rows: vec![finished(job)],
+            rows: vec![finished(job, work)],
             more: None,
             caption: None,
         })
@@ -616,15 +616,21 @@ fn running(job: &ActiveActivity, work: Work<'_>) -> JobRow {
 
 /// A finished job: its duration, and how and when it ended. The time is whole seconds and at least
 /// one, because "0 s ago" reads as a mistake.
-fn finished(job: &RecentActivity) -> JobRow {
+fn finished(job: &RecentActivity, work: Work<'_>) -> JobRow {
     let how = match job.outcome {
         Outcome::Completed => "Finished",
         Outcome::Cancelled => "Cancelled",
         Outcome::Failed => "Failed",
     };
     let ago = job.ended_ms_ago.saturating_add(500) / 1000;
+    // Catalog work keeps the place it worked on, as it read while it ran.
+    let label = if followed(&job.entry) {
+        work_label(&job.entry, work.home)
+    } else {
+        job.entry.label.to_string()
+    };
     JobRow {
-        label: job.entry.label.to_string(),
+        label,
         trailing: format_elapsed(job.duration_ms),
         detail: Some(format!("{how} {} s ago", ago.max(1))),
         progress: None,
@@ -1178,14 +1184,17 @@ mod tests {
             ("failed", "Failed"),
             ("completed", "Finished"),
         ] {
-            let row = finished(&recent("Rendering preview", outcome, 900, 10_000));
+            let row = finished(
+                &recent("Rendering preview", outcome, 900, 10_000),
+                Work::default(),
+            );
             assert_eq!(
                 row.detail.as_deref(),
                 Some(format!("{word} 10 s ago").as_str())
             );
         }
         assert_eq!(
-            finished(&recent("x", "completed", 900, 120))
+            finished(&recent("x", "completed", 900, 120), Work::default())
                 .detail
                 .as_deref(),
             Some("Finished 1 s ago"),

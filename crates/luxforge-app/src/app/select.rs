@@ -562,6 +562,10 @@ impl Editor {
         };
         match self.long_work.state.job(job) {
             Some(running) => {
+                // Sent to the background, the job is the status bar's job: the line is left free.
+                if self.long_work.state.background.as_deref() == Some(job) {
+                    return Task::none();
+                }
                 let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
                 if let Some(progress) = running
                     .entry
