@@ -761,39 +761,12 @@ impl EditorService {
             height,
             source: source_kind,
         };
-        let mut snapshot = Snapshot::original(asset.id.clone());
-        // A source with RAW metadata is exactly the source `SourceKind::of` reads as a RAW.
-        if let Some(metadata) = source.metadata() {
-            snapshot = snapshot.with_layer_inserted(
-                0,
-                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
-                    .layer(LayerId::new()),
-            )?;
-        }
-        let mut entry = HistoryEntry {
-            id: EntryId::new(),
-            asset_id: asset.id.clone(),
-            sequence: 0,
-            action_id: "original".into(),
-            label: "Original".into(),
-            parameters: json!({}),
-            actor: "system".into(),
-            timestamp_ms: now_ms(),
-            request_id: None,
-            base_revision: 0,
-            result_revision: 0,
-            snapshot,
-            undo_parent: None,
-            restore_target: None,
-        };
-        // An import is its own write, because it creates the asset a head would name, but it admits
-        // its Original exactly as a commit admits the stack it writes.
-        self.admit(&asset, &mut entry.snapshot.recipe)?;
+        let NewPhotograph { asset, original } = self.new_photograph(asset, now_ms())?;
         // Until picks are developed into the folders a person chooses (`pick.develop`, which
         // replaces this import), one imported file goes into the top-level catalog folder named
         // after its folder on disk, made when there is none, and records the volume it is on and
         // what the import knows of its capture: its stored size and orientation.
-        let now = entry.timestamp_ms;
+        let now = original.timestamp_ms;
         let volume = crate::index::volume_of(&canonical, now)?;
         let source_folder = asset.source_root.clone();
         let folder_name = source_folder.file_name().map_or_else(
@@ -809,8 +782,10 @@ impl EditorService {
         write(&mut self.connection, |tx| {
             upsert_volume(tx, &volume)?;
             let catalog_folder_id = top_level_folder(tx, &folder_name, now)?;
-            let row = insert_asset(
+            insert_photograph(
                 tx,
+                artifact_root,
+                &original,
                 &NewAsset {
                     record: &asset,
                     canonical_locator: &canonical_text,
@@ -824,12 +799,8 @@ impl EditorService {
                     checked_ms: now,
                     develop_moment: None,
                 },
-            )?;
-            insert_capture(tx, row, &header, None)?;
-            insert_entry(tx, artifact_root, &entry)?;
-            tx.execute(
-                "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
-                params![asset.id.as_str(), entry.id.as_str()],
+                &header,
+                None,
             )?;
             Ok(())
         })?;
@@ -843,13 +814,90 @@ impl EditorService {
             EditorState {
                 asset,
                 revision: 0,
-                current_entry: entry,
+                current_entry: original,
                 redo: Vec::new(),
             },
             true,
         ))
     }
 
+    /// A new photograph of `asset`, not yet written: its Original entry at `now_ms`, which for a
+    /// RAW holds its source development at the camera's as-shot white balance, admitted exactly as
+    /// a commit admits the stack it writes. What an import and a Develop bring in, and nothing
+    /// else makes; [`insert_photograph`] writes it. `O(layers)`: nothing is read or decoded.
+    pub(crate) fn new_photograph(
+        &self,
+        asset: AssetRecord,
+        now_ms: i64,
+    ) -> Result<NewPhotograph, Error> {
+        let mut snapshot = Snapshot::original(asset.id.clone());
+        if let SourceKind::Raw { metadata } = &asset.source {
+            snapshot = snapshot.with_layer_inserted(
+                0,
+                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
+                    .layer(LayerId::new()),
+            )?;
+        }
+        let mut original = HistoryEntry {
+            id: EntryId::new(),
+            asset_id: asset.id.clone(),
+            sequence: 0,
+            action_id: "original".into(),
+            label: "Original".into(),
+            parameters: json!({}),
+            actor: "system".into(),
+            timestamp_ms: now_ms,
+            request_id: None,
+            base_revision: 0,
+            result_revision: 0,
+            snapshot,
+            undo_parent: None,
+            restore_target: None,
+        };
+        // Bringing a photograph in is its own write, because it creates the asset a head would
+        // name, but it admits its Original exactly as a commit admits the stack it writes.
+        self.admit(&asset, &mut original.snapshot.recipe)?;
+        Ok(NewPhotograph { asset, original })
+    }
+
+    /// Where this catalog's artifacts live, which an entry's references are checked in when a
+    /// transaction the caller runs writes one ([`insert_photograph`]).
+    pub(crate) fn artifact_root(&self) -> &Path {
+        &self.artifact_root
+    }
+}
+
+/// A photograph about to be brought into the catalog: its asset record and its admitted Original
+/// entry ([`EditorService::new_photograph`]).
+#[derive(Clone, Debug)]
+pub(crate) struct NewPhotograph {
+    pub(crate) asset: AssetRecord,
+    pub(crate) original: HistoryEntry,
+}
+
+/// Write a new photograph's rows in the caller's transaction: its asset row (`row`, whose record is
+/// the photograph's), its capture row from `header` and the place its position was named, its
+/// Original entry and its state row at revision 0. The one writer of a new photograph, which the
+/// single-file import and a Develop share.
+pub(crate) fn insert_photograph(
+    tx: &rusqlite::Transaction<'_>,
+    artifact_root: &Path,
+    original: &HistoryEntry,
+    row: &NewAsset<'_>,
+    header: &HeaderMetadata,
+    place: Option<&str>,
+) -> Result<crate::catalog_types::AssetRowId, Error> {
+    let asset_row = insert_asset(tx, row)?;
+    insert_capture(tx, asset_row, header, place)?;
+    insert_entry(tx, artifact_root, original)?;
+    tx.execute(
+        "INSERT INTO asset_state VALUES (?1,?2,0,'[]')",
+        params![row.record.id.as_str(), original.id.as_str()],
+    )?;
+    Ok(asset_row)
+}
+
+impl EditorService {
     /// The asset's prepared original from the verified cache, once its file still has the
     /// signature it was prepared under, holding the development of `recipe`'s white balance when
     /// the second slot has it ([`SecondDevelopment::take_up`]). Nothing is read here: a cache miss

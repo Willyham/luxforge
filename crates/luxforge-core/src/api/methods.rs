@@ -1048,7 +1048,26 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     // Developing picks (TASK-013).
-
+    owner!(
+        "pick.plan",
+        crate::catalog_types::api::PickPlan,
+        owner::library::develop::pick_plan,
+        "{events: [{event_id?, name, count, folder: {kind: existing, folder_id} | {kind: new, name, parent_id?}, folder_name?, removable?: [{volume_id, label, count, with_copy}]}], count, offline}: what developing the files targets names, picked or not, would do (without targets, every pick in the caller's view, which is validation until views land): the files by event, the events organized over every file the index lists in their folders (a file it does not list is an undated frame of its folder), chronological and undated last; each event's proposed folder, the newest catalog folder made from it (its stored event key, else an overlapping stored span; for an undated event, the folder its folder's undated photographs went into) with its folder_name, or else a new top-level folder named after the event (its place with the month and year of its first day, \"Konstanz · Sep 2026\", else the event's name), unique among the top-level folders; the picks on each removable volume and how many have a file of the same name and length in an indexed folder on a fixed volume (with_copy); and offline, the files whose volume is not connected; reads nothing but the catalog, the index and one stat a file"
+    ),
+    owner!(
+        "pick.develop",
+        crate::catalog_types::api::PickDevelop,
+        owner::library::develop::pick_develop,
+        "starts a develop-picks job, answering {job_id, status, deduplicated}, whose result is {developed: [{path, used?, asset_id, outcome: created | linked | relinked}], failed: [{path, asset_id?, code, message}], changes}: the files are planned as pick.plan plans them and each event goes into the folder its into entry names by event_id, else the entry with no event_id, else the plan's proposal, so into: [] accepts the plan; an existing folder must exist and a new one's name is checked as folder.create's (validation, conflict), and events given the same new folder share it, made with their span; each file is read once off the owner, bounded, its SHA-256 streamed, its header read and its interpretation read without developing, and must keep its signature while it is read and until it commits; a file whose bytes are a photograph's is linked to it, one whose name, length and fingerprint match a photograph whose original is not there relinks it (asset-source, its folder and history unchanged), a file another photograph names with other bytes fails with conflict, and any other becomes a photograph with its Original, capture row, source folder and moment in its event's folder; the job commits in batches, the first of one file, then up to 100 files or 5 s, never across an event, each one library change (developed-asset, catalog-folder, asset-source and pick items) announced as one event, clearing its picks; a file that fails is listed in failed and stays picked; picks on a removable volume are conflict (naming it in data) unless use_copies finds each a copy to verify or confirm_removable is set, and with use_copies a card's pick is developed from the first copy whose fingerprint matches (used), else from the card only with confirm_removable; an offline file fails with source-unavailable; nothing to develop is validation; job.cancel stops between files and keeps every batch committed; library.undo of a batch sends its photographs back and picks their files again; a retry answers the first job, and after a restart a finished job with the report its changes record; resource-limit when 4 library jobs already wait",
+        retries: Owner,
+    ),
+    owner!(
+        "asset.send-back",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::develop::asset_send_back,
+        "sends the photographs targets names back as one library change, answering {outcome, change?, items, deduplicated}: each one's catalog record (asset, capture, Original entry, state and requests) is deleted and its file picked again with its signature now (kept as picked when it already is); refused with conflict, naming the item in data.items and changing nothing, for a photograph with history beyond its Original, a named version or a collection (it leaves only by removal) and for one whose original is not at its locator (it could not be picked again); a sent-back photograph is developed again with pick.develop, so undoing a send-back is conflict; targets as asset.move's; the file is never touched",
+        retries: Owner,
+    ),
     // Resolving missing originals (TASK-017).
     owner!(
         "source.missing",
