@@ -74,7 +74,7 @@
   {
    "id": "TASK-002",
    "description": "Vendor RawSpeed and pugixml at pinned revisions and build them into luxforge-raw.",
-   "status": "in_progress",
+   "status": "completed",
    "dependencies": [],
    "extra_context": [
     "RawSpeed commit c835b05aecfacb7343f7c424abd620aa12116c3f (develop tip on 2026-09-30); vendor only the library sources, data/cameras.xml and licences. pugixml at a pinned release.",
@@ -134,7 +134,7 @@
   {
    "id": "TASK-003",
    "description": "Admit the popular cameras' default and common recording modes in the camera catalog, with authentic evidence.",
-   "status": "ready",
+   "status": "in_progress",
    "dependencies": [
     "TASK-001"
    ],
@@ -215,7 +215,7 @@
   {
    "id": "TASK-004",
    "description": "Classify the recording mode before unpack by splitting the native open into identify and unpack calls.",
-   "status": "ready",
+   "status": "in_progress",
    "dependencies": [
     "TASK-001"
    ],
