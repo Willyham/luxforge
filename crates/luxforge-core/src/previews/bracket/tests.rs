@@ -19,7 +19,7 @@ use crate::{
         preview_cache::{Fixture, header},
     },
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A deterministic 64-bit stream (splitmix64).
 struct Random(u64);
@@ -327,12 +327,10 @@ fn organized(prints: Vec<Fingerprint>) -> Option<Moment> {
     };
     let day = LocalDay::from_ymd(2026, 9, 18).unwrap();
     let mut frames = Vec::new();
-    let mut probe = PreviewProbe::default();
+    let mut fingerprints = HashMap::new();
     for (at, print) in prints.into_iter().enumerate() {
         let file = FileId(at as i64 + 1);
-        probe
-            .fingerprints
-            .insert(file, (PreviewOrigin::Embedded, print));
+        fingerprints.insert(file, (PreviewOrigin::Embedded, print));
         frames.push(FrameFacts {
             item: ViewItem::File(file),
             folder: tables.folder("/card/DCIM/100MEDIA".into()),
@@ -349,6 +347,7 @@ fn organized(prints: Vec<Fingerprint>) -> Option<Moment> {
             },
         });
     }
+    let probe = PreviewProbe::memory(fingerprints);
     crate::organize::order(&mut frames, &tables, Grouping::DayCameraMoment, false);
     let layout = crate::organize::group(
         &frames,
@@ -579,10 +578,12 @@ fn bracket_preview_measures_nothing_it_cannot_tell() {
     assert_eq!(measured(&apart), None, "nothing usable in both");
 
     let items: Vec<ViewItem> = (1..=3).map(|id| ViewItem::File(FileId(id))).collect();
-    let probe = |origins: [PreviewOrigin; 3], present: usize| PreviewProbe {
-        fingerprints: (0..present)
-            .map(|at| (FileId(at as i64 + 1), (origins[at], three[at].clone())))
-            .collect(),
+    let probe = |origins: [PreviewOrigin; 3], present: usize| {
+        PreviewProbe::memory(
+            (0..present)
+                .map(|at| (FileId(at as i64 + 1), (origins[at], three[at].clone())))
+                .collect(),
+        )
     };
     let embedded = [PreviewOrigin::Embedded; 3];
     assert!(probe(embedded, 3).measure(&items).is_some());
@@ -675,20 +676,21 @@ fn bracket_preview_fingerprints_are_kept_with_the_grid_tier() {
             fixture.add(&path, SourceTag::Jpeg, header(1, None))
         })
         .collect();
-    let probe = bracket_probe(fixture.index.connection(), &files).unwrap();
-    assert_eq!(probe.len(), 0, "no grid tier yet");
+    let probe = bracket_probe(fixture.index.connection());
+    assert!(probe.loaded(&files).is_empty(), "no grid tier yet");
     let mut tiers = Vec::new();
     for file in &files {
         let written = lane::run(&mut store, &task(*file), &|| {}).result.unwrap();
         assert_eq!(written.origin, PreviewOrigin::Embedded);
         tiers.push(written);
     }
-    let probe = bracket_probe(fixture.index.connection(), &files).unwrap();
-    assert_eq!(probe.len(), 3);
+    let probe = bracket_probe(fixture.index.connection());
+    let loaded = probe.loaded(&files);
+    assert_eq!(loaded.len(), 3);
     for (file, tier) in files.iter().zip(&tiers) {
         let bytes = std::fs::read(&tier.path).unwrap();
         assert_eq!(
-            probe.fingerprints[file].1,
+            loaded[file].1,
             Fingerprint::of_jpeg(&bytes).unwrap(),
             "the tier's own bytes"
         );
@@ -712,13 +714,13 @@ fn bracket_preview_fingerprints_are_kept_with_the_grid_tier() {
         fixture.add(&first, SourceTag::Jpeg, header(1, None)),
         files[0]
     );
-    let probe = bracket_probe(fixture.index.connection(), &files).unwrap();
-    assert!(!probe.fingerprints.contains_key(&files[0]), "stale");
+    let probe = bracket_probe(fixture.index.connection());
+    assert!(!probe.loaded(&files).contains_key(&files[0]), "stale");
     assert_eq!(probe.measure(&items), None);
     lane::run(&mut store, &task(files[0]), &|| {})
         .result
         .unwrap();
-    let probe = bracket_probe(fixture.index.connection(), &files).unwrap();
+    let probe = bracket_probe(fixture.index.connection());
     let found = probe.measure(&items).expect("remade");
     assert!((found[1] - 2.0).abs() <= 0.05, "{found:?}");
 
@@ -740,9 +742,10 @@ fn bracket_preview_fingerprints_are_kept_with_the_grid_tier() {
     store
         .write(files[1], PreviewTier::Grid, &signature, &thumbnail, 0)
         .unwrap();
-    let probe = bracket_probe(fixture.index.connection(), &files).unwrap();
-    assert_eq!(probe.len(), 2);
-    assert!(!probe.fingerprints.contains_key(&files[1]));
+    let probe = bracket_probe(fixture.index.connection());
+    let loaded = probe.loaded(&files);
+    assert_eq!(loaded.len(), 2);
+    assert!(!loaded.contains_key(&files[1]));
     let fingerprints: i64 = fixture
         .index
         .connection()
@@ -751,6 +754,70 @@ fn bracket_preview_fingerprints_are_kept_with_the_grid_tier() {
         })
         .unwrap();
     assert_eq!(fingerprints, 2);
+}
+
+/// The probe reads lazily: a view whose runs the metadata classifies (a bracket whose bias steps,
+/// frames apart in time) asks it nothing and reads no fingerprint, and a burst's run, which the
+/// metadata cannot classify, reads its own frames' and no others.
+#[test]
+fn bracket_preview_a_metadata_only_view_reads_no_fingerprints() {
+    let fixture = Fixture::new("bracket-preview-lazy");
+    let mut tables = FrameTables::default();
+    let body = CameraBody {
+        make: "NIKON CORPORATION".into(),
+        model: "NIKON Z 8".into(),
+        serial: None,
+    };
+    let day = LocalDay::from_ymd(2026, 9, 12).unwrap();
+    let frame = |tables: &mut FrameTables, id: i64, ms: i64, bias: f32| FrameFacts {
+        item: ViewItem::File(FileId(id)),
+        folder: tables.folder("/card/DCIM/100NZ8_1".into()),
+        name: format!("DSC_{id:04}.NEF").into(),
+        instant_ms: Some(1_789_000_000_000 + ms),
+        local_day: Some(day),
+        position: None,
+        body: tables.body(Some(&body)),
+        exposure: Exposure {
+            time_s: Some(1.0 / 250.0),
+            f_number: Some(8.0),
+            iso: Some(64),
+            bias_ev: Some(bias),
+            ..Exposure::default()
+        },
+    };
+    let group = |frames: &mut Vec<FrameFacts>, tables: &FrameTables, probe: &PreviewProbe| {
+        crate::organize::order(frames, tables, Grouping::DayCameraMoment, false);
+        crate::organize::group(
+            frames,
+            tables,
+            Grouping::DayCameraMoment,
+            &Thresholds::default(),
+            probe,
+        )
+    };
+    // A metadata bracket, then a single frame a minute later.
+    let mut frames = vec![
+        frame(&mut tables, 1, 0, -1.0),
+        frame(&mut tables, 2, 300, 0.0),
+        frame(&mut tables, 3, 600, 1.0),
+        frame(&mut tables, 4, 60_000, 0.0),
+    ];
+    let probe = bracket_probe(fixture.index.connection());
+    let layout = group(&mut frames, &tables, &probe);
+    assert_eq!(layout.moments.len(), 1);
+    assert_eq!(layout.moments[0].kind, MomentKind::Bracket);
+    assert_eq!(probe.frames_asked(), 0, "nothing read for a metadata view");
+    // Add a burst of three frames with one exposure: only its frames are looked up.
+    frames.extend([
+        frame(&mut tables, 5, 120_000, 0.0),
+        frame(&mut tables, 6, 120_100, 0.0),
+        frame(&mut tables, 7, 120_200, 0.0),
+    ]);
+    let probe = bracket_probe(fixture.index.connection());
+    let layout = group(&mut frames, &tables, &probe);
+    assert_eq!(layout.moments.len(), 2);
+    assert_eq!(layout.moments[1].kind, MomentKind::Burst, "no fingerprints");
+    assert_eq!(probe.frames_asked(), 3, "the burst's frames alone");
 }
 
 /// The agreement bands the calibration compares with [`AGREEMENT`], first.
@@ -959,9 +1026,9 @@ fn bracket_preview_the_generated_image_folders() {
                 },
             );
         }
-        let probe = bracket_probe(fixture.index.connection(), &ids).unwrap();
+        let probe = bracket_probe(fixture.index.connection());
         assert_eq!(
-            probe.len(),
+            probe.loaded(&ids).len(),
             ids.len(),
             "every complete grid tier has a fingerprint"
         );
