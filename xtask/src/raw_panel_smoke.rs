@@ -727,80 +727,253 @@ fn canvas_background(image: &image::RgbImage, frame: &Value) -> Result<([u8; 3],
     Ok((image.get_pixel(rect[0] + 4, rect[1] + 4).0, rect))
 }
 
-/// A straightened draft draws its whole input stage as one rotated picture: sampled on a grid over
-/// the stage's interior, mapped through the draft's Fit view and rotation, almost no sample shows
-/// the canvas background. Drawn as the toolkit's own fragments of an image wider than one atlas
-/// layer, each turned about its own centre, it showed the background through 12% of these samples
-/// on the X100VI at 7°, and 66% at 44°.
-fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
-    let draft = &frame["state"]["crop"];
-    let angle = draft["angle"]
-        .as_f64()
-        .ok_or("The draft records no angle")?;
-    let stage = luxforge_core::CropStage {
-        width: source[0],
-        height: source[1],
-        angle,
+/// How much of the input stage a crop draft draws outside its crop rectangle: the crop canvas's
+/// `DIM_OPACITY`, which the photo surface applies as the stage's alpha over the canvas, so a dimmed
+/// pixel is the canvas plus this share of the stage's difference from it.
+const DRAFT_DIM_OPACITY: f64 = 0.35;
+/// How far, in physical pixels, a sample must be from a draft's crop rectangle for the opacity it
+/// is drawn at to be known: the rectangle's own edge, its stroke and its handles are skipped.
+const DRAFT_BRIGHT_MARGIN: f64 = 4.0;
+
+/// One crop draft at Fit, as its frame records it: where a stage point lands on screen through the
+/// draft's rotation and Fit view, and the crop rectangle the stage is drawn at full opacity in.
+struct DraftView {
+    stage: luxforge_core::CropStage,
+    zoom: f64,
+    origin: (f64, f64),
+    /// The crop rectangle on screen, `[left, top, right, bottom]` physical pixels.
+    bright: [f64; 4],
+}
+
+impl DraftView {
+    /// The rotated box centred in `fit`, the area the layout fits into, with the crop rectangle
+    /// `rect` (`[x, y, width, height]` in box pixels) drawn bright.
+    fn new(stage: luxforge_core::CropStage, fit: [u32; 4], rect: [f64; 4]) -> Self {
+        let (box_width, box_height) = stage.bounding_box();
+        let [fit_left, fit_top, fit_right, fit_bottom] = fit.map(f64::from);
+        let available = (fit_right - fit_left, fit_bottom - fit_top);
+        let zoom = (available.0 / box_width).min(available.1 / box_height);
+        let origin = (
+            fit_left + (available.0 - box_width * zoom) / 2.0,
+            fit_top + (available.1 - box_height * zoom) / 2.0,
+        );
+        let [x, y, width, height] = rect;
+        Self {
+            stage,
+            zoom,
+            origin,
+            bright: [
+                origin.0 + x * zoom,
+                origin.1 + y * zoom,
+                origin.0 + (x + width) * zoom,
+                origin.1 + (y + height) * zoom,
+            ],
+        }
+    }
+
+    /// The draft a frame records, on the `source` input stage.
+    fn of(frame: &Value, source: [u32; 2]) -> Result<Self> {
+        let draft = &frame["state"]["crop"];
+        let angle = draft["angle"]
+            .as_f64()
+            .ok_or("The draft records no angle")?;
+        let rect: [f64; 4] = serde_json::from_value(draft["rect"].clone())
+            .map_err(|_| format!("The draft records no crop rectangle: {draft}"))?;
+        let stage = luxforge_core::CropStage {
+            width: source[0],
+            height: source[1],
+            angle,
+        };
+        Ok(Self::new(stage, fit_area(frame)?, rect))
+    }
+
+    /// Where stage point `(u, v)` is drawn, in physical pixels.
+    fn screen(&self, u: f64, v: f64) -> (f64, f64) {
+        let (x, y) = self.stage.to_box(u, v);
+        (self.origin.0 + x * self.zoom, self.origin.1 + y * self.zoom)
+    }
+
+    /// The opacity the stage is drawn at here: full inside the crop rectangle, dimmed outside it,
+    /// and unknown within [`DRAFT_BRIGHT_MARGIN`] of its edge.
+    fn opacity(&self, (x, y): (f64, f64)) -> Option<f64> {
+        let [left, top, right, bottom] = self.bright;
+        let margin = DRAFT_BRIGHT_MARGIN;
+        if x >= left + margin && x <= right - margin && y >= top + margin && y <= bottom - margin {
+            Some(1.0)
+        } else if x < left - margin || x > right + margin || y < top - margin || y > bottom + margin
+        {
+            Some(DRAFT_DIM_OPACITY)
+        } else {
+            None
+        }
+    }
+}
+
+/// How far a sample's scene must be from the canvas, in 8-bit codes on its furthest channel as the
+/// straightened draft would draw it, for the canvas there to be a gap rather than dark content.
+const SCENE_APART: f64 = 8.0;
+/// The largest share of those samples that may show the canvas.
+const GAP_SHARE: f64 = 0.005;
+/// The fewest samples a straightened draft must be judged on, a quarter of the grid, so a photo
+/// dark enough to leave little to judge fails rather than passing unexamined.
+const JUDGED_AT_LEAST: u32 = 1200;
+
+/// What a scan of a straightened draft against its unstraightened one found.
+#[derive(Debug, PartialEq)]
+struct Wholeness {
+    /// Grid samples on screen in both drafts, clear of the bars drawn over the canvas.
+    sampled: u32,
+    /// Those at a known opacity in both whose scene the unstraightened draft shows at least
+    /// [`SCENE_APART`] from the canvas throughout a 5 × 5 neighbourhood.
+    judged: u32,
+    /// Judged samples the straightened draft shows as the canvas, within a code on every channel.
+    gaps: u32,
+    /// Samples showing the canvas colour anywhere, judged or not: dark content included.
+    canvas_coloured: u32,
+}
+
+/// Scan a straightened draft against the unstraightened draft of the same input stage, drawn with
+/// nothing turned. An 80 × 60 grid of stage points over the stage's interior is mapped into both.
+/// The unstraightened draft says what the scene is at each: its distance from the canvas colour,
+/// the least over a 5 × 5 neighbourhood so a registration pixel, a thin guide line or noise cannot
+/// lift it, taken back through the opacity it is drawn at there and forward through the opacity
+/// the straightened draft draws it at. Where that is at least [`SCENE_APART`], the straightened
+/// draft cannot show the canvas colour by drawing the scene; showing it there is a gap. Dark scene
+/// content is the canvas's colour in both drafts and is never judged, however much of it there is.
+fn draft_gaps(
+    straightened: (&image::RgbImage, &DraftView),
+    reference: (&image::RgbImage, &DraftView),
+    background: [u8; 3],
+    rows: (f64, f64),
+    source: [u32; 2],
+) -> Wholeness {
+    let (image, view) = straightened;
+    let (reference, reference_view) = reference;
+    let on = |image: &image::RgbImage, (x, y): (f64, f64)| {
+        x >= 0.0
+            && y >= rows.0
+            && y <= rows.1
+            && x < f64::from(image.width())
+            && y < f64::from(image.height())
     };
-    let (box_width, box_height) = stage.bounding_box();
+    let apart = |pixel: [u8; 3]| {
+        pixel
+            .iter()
+            .zip(background)
+            .map(|(a, b)| a.abs_diff(b))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut found = Wholeness {
+        sampled: 0,
+        judged: 0,
+        gaps: 0,
+        canvas_coloured: 0,
+    };
+    for j in 0..60 {
+        for i in 0..80 {
+            let u = f64::from(source[0]) * (0.03 + 0.94 * (f64::from(i) + 0.5) / 80.0);
+            let v = f64::from(source[1]) * (0.03 + 0.94 * (f64::from(j) + 0.5) / 60.0);
+            let (at, then) = (view.screen(u, v), reference_view.screen(u, v));
+            if !on(image, at) || !on(reference, then) {
+                continue;
+            }
+            found.sampled += 1;
+            let canvas = apart(image.get_pixel(at.0 as u32, at.1 as u32).0) <= 1;
+            found.canvas_coloured += u32::from(canvas);
+            let (Some(drawn), Some(drawn_then)) = (view.opacity(at), reference_view.opacity(then))
+            else {
+                continue;
+            };
+            let (cx, cy) = (then.0 as i64, then.1 as i64);
+            let nearest = (-2..=2)
+                .flat_map(|dy| (-2..=2).map(move |dx| (cx + dx, cy + dy)))
+                .map(|(x, y)| {
+                    let x = x.clamp(0, i64::from(reference.width()) - 1) as u32;
+                    let y = y.clamp(0, i64::from(reference.height()) - 1) as u32;
+                    apart(reference.get_pixel(x, y).0)
+                })
+                .min()
+                .unwrap_or(0);
+            if f64::from(nearest) / drawn_then * drawn >= SCENE_APART {
+                found.judged += 1;
+                found.gaps += u32::from(canvas);
+            }
+        }
+    }
+    found
+}
+
+/// A straightened draft draws its whole input stage as one rotated picture: at the stage points
+/// where the unstraightened draft of the same stage shows a scene clearly apart from the canvas,
+/// almost no sample of the straightened draft shows the canvas ([`draft_gaps`]). Drawn as the
+/// toolkit's own fragments of an image wider than one atlas layer, each turned about its own
+/// centre, it showed the background through 12% of the grid on the X100VI at 7°, and 66% at 44°.
+/// Counting every canvas-coloured sample instead failed the 5D Mark IV's chart on a dark ground,
+/// whose scene is the canvas colour, within a code, at 1.4% of the grid.
+fn draft_is_whole(frame: &Frame, reference: &Frame, source: [u32; 2]) -> Result<Value> {
+    let view = DraftView::of(frame, source)?;
+    let reference_view = DraftView::of(reference, source)?;
+    ensure(
+        reference_view.stage.angle == 0.0,
+        format!(
+            "The unstraightened draft is at {}°",
+            reference_view.stage.angle
+        ),
+    )?;
     let image = frame.image()?;
     let (background, [_, top, _, bottom]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
-    // The Fit view: the rotated box centred in the area the layout fits into, the canvas less the
-    // Fit padding, as the frame records it.
-    let [fit_left, fit_top, fit_right, fit_bottom] = fit_area(frame)?;
-    let available = (
-        f64::from(fit_right - fit_left),
-        f64::from(fit_bottom - fit_top),
-    );
-    let zoom = (available.0 / box_width).min(available.1 / box_height);
-    let origin = (
-        f64::from(fit_left) + (available.0 - box_width * zoom) / 2.0,
-        f64::from(fit_top) + (available.1 - box_height * zoom) / 2.0,
-    );
     // The draft bar and the mode strip are drawn over the canvas; rows under them are skipped.
-    let (first_row, last_row) = (
+    let rows = (
         f64::from(top) + 70.0 * scale,
         f64::from(bottom) - 70.0 * scale,
     );
-    let (mut sampled, mut background_samples) = (0u32, 0u32);
-    for j in 0..60 {
-        for i in 0..80 {
-            let u = f64::from(source[0]) * (0.03 + 0.94 * (f64::from(i) + 0.5) / 80.0);
-            let v = f64::from(source[1]) * (0.03 + 0.94 * (f64::from(j) + 0.5) / 60.0);
-            let (x, y) = stage.to_box(u, v);
-            let (sx, sy) = (origin.0 + x * zoom, origin.1 + y * zoom);
-            if sy < first_row || sy > last_row {
-                continue;
-            }
-            sampled += 1;
-            let pixel = image.get_pixel(sx as u32, sy as u32).0;
-            if pixel
-                .iter()
-                .zip(background)
-                .all(|(a, b)| a.abs_diff(b) <= 1)
-            {
-                background_samples += 1;
-            }
-        }
-    }
-    let share = f64::from(background_samples) / f64::from(sampled.max(1));
+    let found = draft_gaps(
+        (image, &view),
+        (reference.image()?, &reference_view),
+        background,
+        rows,
+        source,
+    );
+    whole(&found)?;
+    Ok(json!({
+        "angle": view.stage.angle,
+        "samples": found.sampled,
+        "judged_samples": found.judged,
+        "gap_samples": found.gaps,
+        "canvas_coloured_samples": found.canvas_coloured,
+        "background_rgb": background,
+        "scene_apart_codes": SCENE_APART,
+        "threshold_share": GAP_SHARE,
+        "judged_at_least": JUDGED_AT_LEAST,
+    }))
+}
+
+/// The verdict on a scan: enough judged samples, and under [`GAP_SHARE`] of them gaps.
+fn whole(found: &Wholeness) -> Result {
+    let Wholeness {
+        sampled,
+        judged,
+        gaps,
+        ..
+    } = *found;
     ensure(
-        sampled >= 2000 && share < 0.01,
+        sampled >= 2000 && judged >= JUDGED_AT_LEAST,
         format!(
-            "The straightened draft shows the canvas through {background_samples} of {sampled} samples of its input stage ({:.1}%): it is not drawn as one picture",
-            share * 100.0
+            "Only {judged} of {sampled} samples of the straightened draft have a scene clearly apart from the canvas: too few to judge whether it is drawn as one picture"
         ),
     )?;
-    Ok(json!({
-        "angle": angle,
-        "samples": sampled,
-        "background_samples": background_samples,
-        "background_rgb": background,
-        "threshold_share": 0.01,
-    }))
+    let share = f64::from(gaps) / f64::from(judged);
+    ensure(
+        share < GAP_SHARE,
+        format!(
+            "The straightened draft shows the canvas at {gaps} of {judged} samples whose scene is clearly apart from it ({:.1}%): it is not drawn as one picture",
+            share * 100.0
+        ),
+    )
 }
 
 /// A committed crop at Fit: the photograph on the canvas — where the editor records drawing it, its
@@ -925,7 +1098,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
         straightened["state"]["crop"]["angle"] == json!(CROP_ANGLE),
         "The draft was not straightened",
     )?;
-    let whole = draft_is_whole(straightened, source)?;
+    let whole = draft_is_whole(straightened, started, source)?;
 
     let applied = launch.at(names::CROP_APPLIED)?;
     expect_no_failure(launch, names::CROP_APPLIED, "Apply")?;
@@ -1650,4 +1823,197 @@ mod tests {
 
     // The gap stays inside the window iced gives a double-click's two presses.
     const _: () = assert!(GAP_MS <= 250);
+
+    const STAGE: [u32; 2] = [1200, 800];
+    const FIT: [u32; 4] = [20, 20, 980, 680];
+    const BACKGROUND: [u8; 3] = crate::scenario::pixels::CANVAS;
+
+    fn stage(angle: f64) -> luxforge_core::CropStage {
+        luxforge_core::CropStage {
+            width: STAGE[0],
+            height: STAGE[1],
+            angle,
+        }
+    }
+
+    /// The unstraightened draft on the whole stage, and a 7° draft with an inner crop rectangle,
+    /// so both opacities are drawn.
+    fn views() -> (DraftView, DraftView) {
+        let turned = stage(7.0);
+        let (width, height) = turned.bounding_box();
+        (
+            DraftView::new(stage(0.0), FIT, [0.0, 0.0, 1200.0, 800.0]),
+            DraftView::new(turned, FIT, [150.0, 150.0, width - 300.0, height - 300.0]),
+        )
+    }
+
+    /// A chart on a ground exactly the canvas's colour at the right, and dark specks within a code
+    /// of it scattered over a lit gradient elsewhere: canvas-coloured scene content, lots of it.
+    fn dark_scene(u: f64, v: f64) -> [u8; 3] {
+        let [width, height] = STAGE.map(f64::from);
+        if u > 0.55 * width && v > 0.35 * height {
+            let (column, row) = ((u / 60.0) as u32, (v / 60.0) as u32);
+            return if (column + row) % 3 == 0 {
+                [200, 60, 90]
+            } else {
+                BACKGROUND
+            };
+        }
+        let (column, row) = ((u / 8.0) as u64, (v / 8.0) as u64);
+        if (column * 7919 + row * 104_729) % 29 == 0 {
+            return [26, 25, 27];
+        }
+        [
+            70 + (130.0 * u / width) as u8,
+            90 + (90.0 * v / height) as u8,
+            150,
+        ]
+    }
+
+    /// A draft drawn as the photo surface draws it: the stage, turned, at full opacity inside the
+    /// crop rectangle and at the dim opacity over the canvas outside it, and the canvas elsewhere.
+    fn render(view: &DraftView, scene: impl Fn(f64, f64) -> [u8; 3]) -> image::RgbImage {
+        image::RgbImage::from_fn(1000, 700, |x, y| {
+            let (sx, sy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (u, v) = view.stage.to_input(
+                (sx - view.origin.0) / view.zoom,
+                (sy - view.origin.1) / view.zoom,
+            );
+            if !(0.0..f64::from(STAGE[0])).contains(&u) || !(0.0..f64::from(STAGE[1])).contains(&v)
+            {
+                return image::Rgb(BACKGROUND);
+            }
+            let [left, top, right, bottom] = view.bright;
+            let opacity = if (left..right).contains(&sx) && (top..bottom).contains(&sy) {
+                1.0
+            } else {
+                DRAFT_DIM_OPACITY
+            };
+            let pixel = scene(u, v);
+            image::Rgb(std::array::from_fn(|channel| {
+                let (drawn, under) = (f64::from(pixel[channel]), f64::from(BACKGROUND[channel]));
+                (under + opacity * (drawn - under)).round() as u8
+            }))
+        })
+    }
+
+    fn scan(straightened: &image::RgbImage, reference: &image::RgbImage) -> Wholeness {
+        let (unturned, turned) = views();
+        draft_gaps(
+            (straightened, &turned),
+            (reference, &unturned),
+            BACKGROUND,
+            (0.0, 700.0),
+            STAGE,
+        )
+    }
+
+    /// Paint the canvas over a region of a draft, where the picture does not cover it.
+    fn expose(image: &mut image::RgbImage, inside: impl Fn(f64, f64) -> bool) {
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            if inside(f64::from(x), f64::from(y)) {
+                *pixel = image::Rgb(BACKGROUND);
+            }
+        }
+    }
+
+    /// Dark content the canvas's colour, more of it than the 1% of the grid a canvas-colour count
+    /// allowed, is never taken for a gap: the unstraightened draft shows the same dark scene there.
+    #[test]
+    fn a_straightened_draft_with_canvas_coloured_content_is_whole() {
+        let (unturned, turned) = views();
+        let found = scan(&render(&turned, dark_scene), &render(&unturned, dark_scene));
+        assert!(
+            f64::from(found.canvas_coloured) > 0.1 * f64::from(found.sampled),
+            "{found:?}"
+        );
+        assert_eq!(found.gaps, 0, "{found:?}");
+        whole(&found).unwrap();
+    }
+
+    /// A wedge of canvas between two fragments, and a hole of a few grid steps, each fail.
+    #[test]
+    fn a_straightened_draft_with_a_canvas_wedge_or_hole_is_not_whole() {
+        let (unturned, turned) = views();
+        let reference = render(&unturned, dark_scene);
+        let straightened = render(&turned, dark_scene);
+
+        let mut wedge = straightened.clone();
+        // From a point at the top of the Fit area to 60 px wide at its bottom.
+        expose(&mut wedge, |x, y| {
+            (x - 500.0).abs() * 660.0 <= 30.0 * (y - 20.0)
+        });
+        let found = scan(&wedge, &reference);
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("not drawn as one picture"), "{failure}");
+
+        let mut hole = straightened;
+        // 64 px square over the lit gradient, a quarter of the way into the stage.
+        let (x, y) = turned.screen(300.0, 200.0);
+        expose(&mut hole, |px, py| {
+            (px - x).abs() <= 32.0 && (py - y).abs() <= 32.0
+        });
+        let found = scan(&hole, &reference);
+        assert!(found.gaps >= 25, "{found:?}");
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("not drawn as one picture"), "{failure}");
+    }
+
+    /// A scene all the canvas's colour leaves nothing to judge, which fails rather than passing.
+    #[test]
+    fn a_straightened_draft_too_dark_to_judge_fails() {
+        let (unturned, turned) = views();
+        let dark = |_: f64, _: f64| BACKGROUND;
+        let found = scan(&render(&turned, dark), &render(&unturned, dark));
+        assert_eq!(found.judged, 0);
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("too few to judge"), "{failure}");
+    }
+
+    /// The recorded runs under `STRAIGHTENED_RECORDED` (each `DIR/raw-panel*`, a `verify`
+    /// component's or a `smoke --output` directory), their straightened draft judged against their
+    /// unstraightened one and printed, whatever an earlier check of the run found; any failure is
+    /// listed.
+    #[test]
+    #[ignore = "needs recorded raw-panel runs"]
+    fn straightened_drafts_recorded() {
+        let root = PathBuf::from(std::env::var("STRAIGHTENED_RECORDED").expect("a directory"));
+        let plan = plan(&[]);
+        let frame = |app: &Path, step: &str| -> Frame {
+            let number = plan.index(step).expect("a planned step") + 1;
+            let record = std::fs::read_to_string(app.join(format!("state-{number}.json")))
+                .expect("a frame record");
+            Frame::unchecked(
+                serde_json::from_str(&record).expect("a frame record"),
+                &app.join(format!("frame-{number}.png")),
+            )
+        };
+        let mut runs = std::fs::read_dir(&root)
+            .expect("a directory")
+            .map(|entry| entry.unwrap().path())
+            .filter(|run| {
+                run.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(SCENARIO)
+            })
+            // A `verify` component's run is under `run/`; a `smoke --output` directory is the run.
+            .flat_map(|run| [run.join("run/app"), run.join("app")])
+            .filter(|app| app.join("state-1.json").is_file())
+            .collect::<Vec<_>>();
+        runs.sort();
+        assert!(!runs.is_empty(), "no run under {}", root.display());
+        let mut failures = Vec::new();
+        for app in runs {
+            let started = frame(&app, names::CROP_STARTED);
+            let source: [u32; 2] =
+                serde_json::from_value(started["state"]["crop"]["input_stage"].clone()).unwrap();
+            let verdict = draft_is_whole(&frame(&app, names::CROP_STRAIGHTENED), &started, source);
+            println!("{}: {verdict:?}", app.display());
+            if let Err(error) = verdict {
+                failures.push(format!("{}: {error}", app.display()));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }
