@@ -139,6 +139,89 @@ measurement yet. Controlled
 color/detail, other recording modes, and native Windows/Linux package
 qualification remain separate work.
 
+### RawSpeed-routed modes
+
+64 of the 67 catalog modes whose LibRaw decoder is in the [replaceable table](rawspeed-unpack.md#routed-modes) have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. The current rule, pending the speed measurement, routes every candidate that is exact on every local authentic sample of it; the measurement applies the 1.3× gate and moves any mode below it back to LibRaw. Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. After routing, the qualifier reproduced all 130 evidence entries exactly.
+
+| Mode | Decoder | Samples (raw.pixls.us id) | Routed |
+| --- | --- | --- | --- |
+| `CanonEOS5DMarkIIIRaw14` | `lossless_jpeg_load_raw()` | 771 | yes |
+| `CanonEOS5DMarkIVRaw14` | `lossless_jpeg_load_raw()` | 983 | yes |
+| `CanonEOS5DMarkIVRaw14DualPixel` | `lossless_jpeg_load_raw()` | 980 | yes |
+| `CanonEOS6DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1625 | yes |
+| `CanonEOS7DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1064 | yes |
+| `CanonEOS80DRaw14` | `lossless_jpeg_load_raw()` | 1294 | yes |
+| `CanonEOSM6Raw14` | `lossless_jpeg_load_raw()` | 1382 | yes |
+| `DJIFC220Dng16` | `packed_dng_load_raw()` | 1052 | yes |
+| `DJIFC4382Dng16` | `lossless_dng_load_raw()` | 7823 | no |
+| `DJIFC6310Dng16` | `packed_dng_load_raw()` | 2155 | yes |
+| `DJIFC7303Dng16` | `packed_dng_load_raw()` | 4785 | yes |
+| `DjiAir2sDng16` | `packed_dng_load_raw()` | owner Air 2S | yes |
+| `FujifilmX100FRaw14` | `fuji_compressed_load_raw()` | 1936 | yes |
+| `FujifilmX100VRaw14` | `fuji_compressed_load_raw()` | 3812 | yes |
+| `FujifilmX100ViLossless14` | `fuji_compressed_load_raw()` | 7301 (pin) | yes |
+| `FujifilmXE4Raw14` | `fuji_compressed_load_raw()` | 4446 | yes |
+| `FujifilmXH2Raw14` | `fuji_compressed_load_raw()` | 6001 | no |
+| `FujifilmXH2SRaw14` | `fuji_compressed_load_raw()` | 6007 | yes |
+| `FujifilmXM5Lossless14` | `fuji_compressed_load_raw()` | 7748 | yes |
+| `FujifilmXS20Raw14` | `fuji_compressed_load_raw()` | 6666 | yes |
+| `FujifilmXT3Raw14` | `fuji_compressed_load_raw()` | 2783 | yes |
+| `FujifilmXT5Lossy14` | `fuji_compressed_load_raw()` | 6123 | no |
+| `FujifilmXT5Raw14` | `fuji_compressed_load_raw()` | 6122 | yes |
+| `LeicaCLDng14` | `packed_dng_load_raw()` | 2489 | yes |
+| `LeicaM10Dng16` | `lossless_dng_load_raw()` | 1603 | yes |
+| `LeicaM10RDng16` | `lossless_dng_load_raw()` | 7853 | yes |
+| `LeicaQ2Dng14` | `packed_dng_load_raw()` | 3204 | yes |
+| `LeicaSL2Dng14` | `packed_dng_load_raw()` | 7872 | yes |
+| `NikonD5600Raw14` | `nikon_load_raw()` | 1416 | yes |
+| `NikonD7500Raw14` | `nikon_load_raw()` | 1534 | yes |
+| `NikonD750Raw14` | `nikon_load_raw()` | 898, 896 (no record) | yes |
+| `NikonD780Raw14` | `nikon_load_raw()` | 3828 | yes |
+| `NikonD850Lossless14` | `nikon_load_raw()` | 1840 | yes |
+| `NikonD850Lossy14` | `nikon_load_raw()` | 1841 | yes |
+| `NikonZ30Raw14` | `nikon_load_raw()` | 5813 | yes |
+| `NikonZ502Lossless14` | `nikon_load_raw()` | 7762 | yes |
+| `NikonZ50Raw14` | `nikon_load_raw()` | 3647 | yes |
+| `NikonZ52Lossless14` | `nikon_load_raw()` | 7745 | yes |
+| `NikonZ5Raw14` | `nikon_load_raw()` | 4136 | yes |
+| `NikonZ62Raw14` | `nikon_load_raw()` | 4160, 4161 (no record) | yes |
+| `NikonZ63Lossless14` | `nikon_load_raw()` | 7819 | yes |
+| `NikonZ6Lossless12` | `nikon_load_raw()` | 3585 (pin) | yes |
+| `NikonZ6Lossless14` | `nikon_load_raw()` | 3582 (pin), owner Z6 (pin) | yes |
+| `NikonZ8Raw14` | `nikon_load_raw()` | 6617 | yes |
+| `NikonZ9Raw14` | `nikon_load_raw()` | 5146 | yes |
+| `NikonZfRaw14` | `nikon_load_raw()` | 6885 | yes |
+| `NikonZfcRaw14` | `nikon_load_raw()` | 4812 | yes |
+| `OMDigitalOM1MarkIIRaw12` | `olympus_load_raw()` | 7262 | yes |
+| `OMDigitalOM1Raw12` | `olympus_load_raw()` | 5283 | yes |
+| `OMDigitalOM3Raw12` | `olympus_load_raw()` | 7796 | yes |
+| `OMDigitalOM5Raw12` | `olympus_load_raw()` | 6343 | yes |
+| `OlympusEM10MarkIVRaw12` | `olympus_load_raw()` | 4126 | yes |
+| `OlympusEM1MarkIIIRaw12` | `olympus_load_raw()` | 3800 | yes |
+| `OlympusEM1XRaw12` | `olympus_load_raw()` | 3041 | yes |
+| `PanasonicDCG9M2Raw16` | `panasonicC8_load_raw()` | 6999 | yes |
+| `PanasonicDCGH5Raw12` | `panasonic_load_raw()` | 1516 | yes |
+| `PanasonicDCGH6Raw16` | `panasonicC8_load_raw()` | 5876 | yes |
+| `PanasonicDCGH7Raw16` | `panasonicC8_load_raw()` | 8062 | yes |
+| `PanasonicDCGX7MK3Raw12` | `panasonic_load_raw()` | 5967 | yes |
+| `PanasonicDCS5M2Raw14` | `panasonicC8_load_raw()` | 7790 | yes |
+| `PanasonicDCS5Raw14` | `panasonicC6_load_raw()` | 4096 | yes |
+| `PentaxK1MarkIIDng14` | `lossless_dng_load_raw()` | 3345 | yes |
+| `PentaxK3MarkIIIRaw14` | `pentax_load_raw()` | 4677 | yes |
+| `PentaxK70Raw14` | `pentax_load_raw()` | 1141 | yes |
+| `PentaxKPDng14` | `lossless_dng_load_raw()` | 1824 | yes |
+| `RicohGRIIIDng14` | `lossless_dng_load_raw()` | 3115 | yes |
+| `RicohGRIIIxDng14` | `lossless_dng_load_raw()` | 5818 | yes |
+
+The background `raw-editor` journey passed on routed modes from every routed family: the owner Z6 (`NikonZ6Lossless14`) and Air 2S (`DjiAir2sDng16`), Nikon Z6III lossless (7819), Canon 5D Mark IV (983), Fujifilm X-T5 lossless compressed (6122), OM-1 (5283), Panasonic S5II (7790) and Pentax K-3 Mark III (4677). The lossless DNG journey over the Ricoh GR III (3115) stops at the scenario's DNG precondition, which requires at least one applied opcode: that file has none under either unpacker, and no routed lossless DNG mode's sample has one. A replay of the recorded run with only that precondition relaxed passed every other check.
+
+The three candidates left on LibRaw, each refused by RawSpeed on its sample and structurally on every file of the mode:
+
+| Mode | Sample | Reason |
+| --- | --- | --- |
+| `FujifilmXH2Raw14`, `FujifilmXT5Lossy14` | 6001, 6123 | Lossy compressed RAF (RAF header 3). The compressed stream's header stores 0 in its third byte, LibRaw's lossless flag; RawSpeed's `FujiDecompressor` reads the byte as a version that must be 1 and refuses the file ("compressed RAF header check"). Lossless compressed files store 1 and are routed |
+| `DJIFC4382Dng16` | 7823 | The lossless JPEG DNG tiles use predictor 6; RawSpeed's `LJpegDecoder::decodeScan` implements only predictor 1 and refuses every tile ("Unsupported predictor mode: 6"). LibRaw's decoder handles every predictor |
+
 ## Reproducing adapter qualification
 
 Download the selected public sources with the bounded

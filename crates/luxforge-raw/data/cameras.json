@@ -25,7 +25,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "NikonZ6Lossless14",
@@ -37,7 +38,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "NikonZ6Raw14",
@@ -86,7 +88,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -136,7 +139,8 @@
           "dng_version": 17039360,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -161,7 +165,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -186,7 +191,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -211,7 +217,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -264,7 +271,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -314,7 +322,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -339,7 +348,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -364,7 +374,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -389,7 +400,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -442,7 +454,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -579,7 +592,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -604,7 +618,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -707,7 +722,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -760,7 +776,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -788,7 +805,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -813,7 +831,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -891,7 +910,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -916,7 +936,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -941,7 +962,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -991,7 +1013,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1047,7 +1070,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1172,7 +1196,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1222,7 +1247,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1272,7 +1298,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1347,7 +1374,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1397,7 +1425,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1422,7 +1451,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1478,7 +1508,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1506,7 +1537,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "FujifilmXT5Uncompressed14",
@@ -1555,7 +1587,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1667,7 +1700,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1777,7 +1811,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1849,7 +1884,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1874,7 +1910,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1899,7 +1936,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -1924,7 +1962,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ],
       "calibration": {
@@ -1998,7 +2037,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2023,7 +2063,8 @@
           "decoder": "lossless_jpeg_load_raw()",
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         },
         {
           "id": "CanonEOS5DMarkIVRaw14",
@@ -2032,7 +2073,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2057,7 +2099,8 @@
           "decoder": "lossless_jpeg_load_raw()",
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2094,7 +2137,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2131,7 +2175,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2168,7 +2213,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2205,7 +2251,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2242,7 +2289,8 @@
           "raw_count": 1,
           "dng_version": 16908288,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2323,7 +2371,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2373,7 +2422,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2423,7 +2473,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2473,7 +2524,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2529,7 +2581,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2566,7 +2619,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         },
         {
           "id": "NikonD850Lossy14",
@@ -2578,7 +2632,8 @@
             "probe": "nef_maker_note",
             "value": 4
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2628,7 +2683,8 @@
           "raw_count": 1,
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2653,7 +2709,8 @@
           "raw_count": 1,
           "dng_version": null,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -2984,7 +3041,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -3035,7 +3093,8 @@
           "raw_count": 1,
           "dng_version": 17039360,
           "validation": "decoder_metadata",
-          "compression": null
+          "compression": null,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -3063,7 +3122,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -3091,7 +3151,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ],
       "calibration": {
@@ -3140,7 +3201,8 @@
             "probe": "nef_maker_note",
             "value": 3
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ],
       "calibration": {
@@ -3226,7 +3288,8 @@
             "probe": "raf_header",
             "value": 2
           },
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     },
@@ -3276,7 +3339,8 @@
           "dng_version": null,
           "validation": "decoder_metadata",
           "compression": null,
-          "raw_count": 1
+          "raw_count": 1,
+          "unpacker": "rawspeed"
         }
       ]
     }

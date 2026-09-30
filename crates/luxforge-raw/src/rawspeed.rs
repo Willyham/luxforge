@@ -125,7 +125,7 @@ pub(crate) mod test_hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{NativeHandle, NativeUnpacker, RawSource, native_result};
+    use crate::{NativeHandle, NativeUnpacker, RawMetadata, RawSource, native_result};
     use sha2::{Digest, Sha256};
     use std::{
         ffi::c_void,
@@ -289,8 +289,8 @@ mod tests {
         curve
     }
 
-    /// Decode `path` with LibRaw (through `RawSource::decode`) and RawSpeed, and compare every
-    /// sample: `curve[rawspeed] == libraw` always, and `rawspeed == libraw` directly when
+    /// Decode `path` with LibRaw (through `RawSource::decode_forcing`) and RawSpeed, and compare
+    /// every sample: `curve[rawspeed] == libraw` always, and `rawspeed == libraw` directly when
     /// `direct`. Returns (samples, samples LibRaw's curve changed).
     fn compare(path: &str, sha256: &str, direct: bool) -> (usize, usize) {
         let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
@@ -300,7 +300,8 @@ mod tests {
             "{path} hash"
         );
         let cancel = AtomicBool::new(false);
-        let libraw = RawSource::decode(&bytes, &cancel).expect("LibRaw decode");
+        let libraw = RawSource::decode_forcing(&bytes[..], &cancel, NativeUnpacker::Libraw)
+            .expect("LibRaw decode");
         let (width, height) = (
             libraw.metadata().sensor_width,
             libraw.metadata().sensor_height,
@@ -486,12 +487,16 @@ mod tests {
             assert_eq!(mosaic_sha256, hash, "{path}: mosaic hash in the {place}");
         }
         let recorded = recorded.map(|(place, _)| place);
-        let mode = match RawSource::decode(&bytes[..], &cancel) {
+        let mode = match RawSource::decode_forcing(&bytes[..], &cancel, NativeUnpacker::Libraw) {
             Ok(libraw) => {
                 let routed =
                     RawSource::decode_forcing(&bytes[..], &cancel, NativeUnpacker::Rawspeed)
                         .unwrap_or_else(|e| panic!("{path}: routed RawSource: {e}"));
-                assert_eq!(routed.metadata(), libraw.metadata(), "{path}: RawMetadata");
+                assert_eq!(
+                    metadata_differences(libraw.metadata(), routed.metadata()),
+                    Vec::<String>::new(),
+                    "{path}: RawMetadata"
+                );
                 assert!(
                     routed.mosaic() == libraw.mosaic(),
                     "{path}: RawSource mosaic"
@@ -523,6 +528,33 @@ mod tests {
             recorded,
             mode,
         }
+    }
+
+    /// The fields in which `routed` differs from `libraw`, other than `backend`, which names the
+    /// unpacker and must: LibRaw's for `libraw`, RawSpeed's for `routed`.
+    fn metadata_differences(libraw: &RawMetadata, routed: &RawMetadata) -> Vec<String> {
+        assert_eq!(libraw.backend, crate::LIBRAW_PROVIDER);
+        assert_eq!(routed.backend, crate::RAWSPEED_PROVIDER);
+        let fields = |metadata: &RawMetadata| {
+            let mut value = serde_json::to_value(metadata).expect("metadata JSON");
+            value
+                .as_object_mut()
+                .expect("metadata object")
+                .remove("backend");
+            value
+        };
+        let (libraw, routed) = (fields(libraw), fields(routed));
+        let names: std::collections::BTreeSet<&String> = libraw
+            .as_object()
+            .into_iter()
+            .chain(routed.as_object())
+            .flat_map(|object| object.keys())
+            .collect();
+        names
+            .into_iter()
+            .filter(|name| libraw.get(name.as_str()) != routed.get(name.as_str()))
+            .cloned()
+            .collect()
     }
 
     /// The little-endian bytes of a mosaic, as the evidence manifest hashes it.
@@ -633,5 +665,339 @@ mod tests {
             RawSource::decode_forcing(&bytes[..], &cancelled, NativeUnpacker::Rawspeed).map(|_| ()),
             Err(RawError::Cancelled)
         );
+    }
+
+    /// The LibRaw-only mosaic hashes of the authentic samples of the catalog modes the evidence
+    /// manifest has no entry for, as the authentic tests in `tests/real_files.rs` pin them:
+    /// (sample, source SHA-256, mosaic SHA-256).
+    const PINNED_MOSAICS: [(&str, &str, &str); 4] = [
+        (
+            "owner nikon_z6.NEF",
+            "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+            "86c76c382dd4273e619a2dcc177a27b15c9e9b2d1187639c54d4d4c1336e8bfc",
+        ),
+        (
+            "z6-12-lossless.NEF (raw.pixls.us 3585)",
+            "59615b65f8a7edc92a845b2a9c8ef313d6e7d7a5d842f94e6adf786da045a6db",
+            "f25f0aafd76a99f5f20cbe2a001f4620397be43de829010d5dbaf9255ce64424",
+        ),
+        (
+            "z6-14-lossless.NEF (raw.pixls.us 3582)",
+            "c079345fc93f53a4f0d322f8ddaae505f920c36015f25b58befccaa61db1af31",
+            "9896187fd3e3e29922b5b051a62f24afedbbbb75ddf63b5879a2b28de896116c",
+        ),
+        (
+            "x100vi-lossless.RAF (raw.pixls.us 7301)",
+            "e9709b98f4ff96b993dbe4ad20eff0accfa709a58559eb4219f59d1e7181934a",
+            "f10be69db8c3731fdcacf3741fd188fcef2557efd5de79f84a22a34adf443283",
+        ),
+    ];
+
+    /// What a sample's LibRaw-only results must equal, recorded before any mode was routed.
+    struct Recorded {
+        place: &'static str,
+        mosaic: String,
+        /// The as-shot and perturbed-white-balance development hashes, where recorded.
+        developments: Option<[String; 2]>,
+    }
+
+    /// The SHA-256 of a developed image's float planes, as the qualifier and the evidence
+    /// manifest hash them.
+    fn planes_sha256(image: &crate::PlanarRgb) -> String {
+        let mut hash = Sha256::new();
+        for chunk in image.data.chunks(4096) {
+            let bytes: Vec<u8> = chunk.iter().flat_map(|v| v.to_le_bytes()).collect();
+            hash.update(bytes);
+        }
+        format!("{:x}", hash.finalize())
+    }
+
+    /// The as-shot and perturbed-white-balance developments' hashes, with the qualifier's
+    /// perturbation.
+    fn development_hashes(raw: &RawSource) -> Result<[String; 2], String> {
+        let cancel = AtomicBool::new(false);
+        let gains = raw.metadata().as_shot_gains;
+        let perturbed = [
+            (gains[0] * 1.05).min(32.0),
+            1.0,
+            (gains[2] * 0.95).max(f32::MIN_POSITIVE),
+        ];
+        let mut hashes = [String::new(), String::new()];
+        for (hash, gains) in hashes.iter_mut().zip([gains, perturbed]) {
+            let image = raw
+                .develop(gains, &cancel)
+                .map_err(|e| format!("develop: {e}"))?;
+            if !image.data.iter().all(|v| v.is_finite()) {
+                return Err("development is not finite".into());
+            }
+            *hash = planes_sha256(&image);
+        }
+        Ok(hashes)
+    }
+
+    /// Route one authentic sample of a catalog mode on a replaceable decoder through RawSpeed and
+    /// compare it with its LibRaw-only decode and with what was recorded for it. `Err` names the
+    /// first difference.
+    fn check_routed_sample(
+        bytes: &[u8],
+        libraw: &RawSource,
+        recorded: Option<&Recorded>,
+    ) -> Result<(), String> {
+        let cancel = AtomicBool::new(false);
+        let libraw_mosaic = format!("{:x}", Sha256::digest(le_bytes(libraw.mosaic())));
+        if let Some(recorded) = recorded
+            && libraw_mosaic != recorded.mosaic
+        {
+            return Err(format!(
+                "the LibRaw-only mosaic {libraw_mosaic} is not the one recorded in the {}",
+                recorded.place
+            ));
+        }
+        let routed = RawSource::decode_forcing(bytes, &cancel, NativeUnpacker::Rawspeed)
+            .map_err(|e| format!("routed decode refused: {e}"))?;
+        if routed.mosaic() != libraw.mosaic() {
+            let pairs = || routed.mosaic().iter().zip(libraw.mosaic());
+            let differing = pairs().filter(|(a, b)| a != b).count();
+            let first = pairs().position(|(a, b)| a != b).unwrap_or(0);
+            let width = libraw.metadata().sensor_width as usize;
+            return Err(format!(
+                "mosaic differs in {differing} of {} samples; first at (x {}, y {}): RawSpeed {}, \
+                 LibRaw {}",
+                libraw.mosaic().len(),
+                first % width,
+                first / width,
+                routed.mosaic()[first],
+                libraw.mosaic()[first],
+            ));
+        }
+        let fields = metadata_differences(libraw.metadata(), routed.metadata());
+        if !fields.is_empty() {
+            return Err(format!("metadata differs in {fields:?}"));
+        }
+        let libraw_developments = development_hashes(libraw)?;
+        let routed_developments = development_hashes(&routed)?;
+        if routed_developments != libraw_developments {
+            return Err(format!(
+                "developments differ: RawSpeed {routed_developments:?}, LibRaw \
+                 {libraw_developments:?}"
+            ));
+        }
+        if let Some(Recorded {
+            place,
+            developments: Some(developments),
+            ..
+        }) = recorded
+            && &libraw_developments != developments
+        {
+            return Err(format!(
+                "developments {libraw_developments:?} are not the ones recorded in the {place}"
+            ));
+        }
+        // The catalog's own decode names the unpacker its mode routes to, and fills the same
+        // mosaic.
+        let catalogued =
+            RawSource::decode(bytes, &cancel).map_err(|e| format!("catalog decode: {e}"))?;
+        let expected = match libraw.metadata().mode.0.unpacker {
+            crate::unpacker::Unpacker::Libraw => crate::LIBRAW_PROVIDER,
+            crate::unpacker::Unpacker::Rawspeed => crate::RAWSPEED_PROVIDER,
+        };
+        if catalogued.metadata().backend != expected || catalogued.mosaic() != libraw.mosaic() {
+            return Err(format!(
+                "the catalog decode ({}) differs",
+                catalogued.metadata().backend
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every catalog mode whose LibRaw decoder RawSpeed may replace, routed through RawSpeed on
+    /// every local authentic sample of it and compared with LibRaw: the identical mosaic, every
+    /// metadata field but `backend` identical, identical as-shot and perturbed-white-balance
+    /// developments, and each LibRaw-only result equal to what was recorded before routing (the
+    /// evidence manifest's mosaic and development hashes, or the owner and public-fixture pins).
+    /// A mode the catalog routes must pass on every sample found, with every evidence sample of
+    /// it found. A candidate that fails is printed with the reason and must stay on LibRaw.
+    ///
+    /// `LUXFORGE_RAW_SAMPLE_DIRS` is a path list of directories of authentic RAW files, each file
+    /// read once whatever its name; files outside the catalog are skipped:
+    ///
+    /// ```sh
+    /// LUXFORGE_RAW_SAMPLE_DIRS=/selection:/popular:/corpus:/owner cargo test --release \
+    ///   -p luxforge-raw --locked --lib replaceable_catalog_modes -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "authentic routed-mode exactness over local sample directories"]
+    fn replaceable_catalog_modes_match_libraw_on_every_local_sample() {
+        let dirs = std::env::var_os("LUXFORGE_RAW_SAMPLE_DIRS").expect("LUXFORGE_RAW_SAMPLE_DIRS");
+        let evidence: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/modern-camera-evidence.json"
+            ))
+            .expect("evidence manifest"),
+        )
+        .expect("evidence JSON");
+        let entries = evidence["entries"].as_array().expect("evidence entries");
+        let recorded_for = |source: &str| -> Option<Recorded> {
+            let text = |value: &serde_json::Value| value.as_str().expect("hash").to_owned();
+            if let Some(entry) = entries
+                .iter()
+                .find(|entry| entry["source_sha256"] == source)
+            {
+                return Some(Recorded {
+                    place: "evidence manifest",
+                    mosaic: text(&entry["mosaic_sha256"]),
+                    developments: Some([
+                        text(&entry["as_shot"]["sha256"]),
+                        text(&entry["perturbed_wb"]["sha256"]),
+                    ]),
+                });
+            }
+            PINNED_MOSAICS
+                .iter()
+                .find(|(_, pinned, _)| *pinned == source)
+                .map(|(_, _, mosaic)| Recorded {
+                    place: "real_files.rs pins",
+                    mosaic: (*mosaic).to_owned(),
+                    developments: None,
+                })
+        };
+        let mut files = Vec::new();
+        for dir in std::env::split_paths(&dirs) {
+            let mut listed: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .map(|entry| entry.expect("directory entry").path())
+                .filter(|path| {
+                    std::fs::metadata(path).is_ok_and(|m| m.is_file())
+                        && path.extension().is_some_and(|ext| {
+                            [
+                                "nef", "cr2", "cr3", "raf", "orf", "pef", "dng", "rw2", "arw",
+                            ]
+                            .contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+                        })
+                })
+                .collect();
+            listed.sort();
+            files.extend(listed);
+        }
+        /// One mode's decoder, catalog unpacker and checked samples (name, record, outcome).
+        type Checked = (
+            &'static str,
+            crate::unpacker::Unpacker,
+            Vec<(String, Option<&'static str>, Result<(), String>)>,
+        );
+        let mut modes: std::collections::BTreeMap<&'static str, Checked> =
+            std::collections::BTreeMap::new();
+        let mut seen = std::collections::HashSet::new();
+        let cancel = AtomicBool::new(false);
+        for path in files {
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let source = format!("{:x}", Sha256::digest(&bytes));
+            if !seen.insert(source.clone()) {
+                continue;
+            }
+            let name = path.display().to_string();
+            let libraw =
+                match RawSource::decode_forcing(&bytes[..], &cancel, NativeUnpacker::Libraw) {
+                    Ok(libraw) => libraw,
+                    Err(error) => {
+                        println!("{name}: not a catalog mode ({error})");
+                        continue;
+                    }
+                };
+            let mode = libraw.metadata().mode.0;
+            if crate::unpacker::replaceable(&mode.decoder).is_none() {
+                continue;
+            }
+            let recorded = recorded_for(&source);
+            let outcome = check_routed_sample(&bytes, &libraw, recorded.as_ref());
+            drop(libraw);
+            assert_eq!(
+                format!(
+                    "{:x}",
+                    Sha256::digest(std::fs::read(&path).expect("reread"))
+                ),
+                source,
+                "{name} unchanged"
+            );
+            println!(
+                "{name}: {} ({}): {}",
+                mode.id,
+                recorded.as_ref().map_or("no record", |r| r.place),
+                match &outcome {
+                    Ok(()) => "exact",
+                    Err(reason) => reason,
+                }
+            );
+            modes
+                .entry(&mode.id)
+                .or_insert((&mode.decoder, mode.unpacker, Vec::new()))
+                .2
+                .push((name, recorded.map(|r| r.place), outcome));
+        }
+        println!("| mode | decoder | catalog unpacker | samples | result |");
+        let mut failures = Vec::new();
+        for (mode, (decoder, unpacker, samples)) in &modes {
+            let reasons: Vec<_> = samples
+                .iter()
+                .filter_map(|(name, _, outcome)| {
+                    let file = name.rsplit('/').next().unwrap_or(name);
+                    outcome
+                        .as_ref()
+                        .err()
+                        .map(|reason| format!("{file}: {reason}"))
+                })
+                .collect();
+            println!(
+                "| {mode} | {decoder} | {unpacker:?} | {} | {} |",
+                samples
+                    .iter()
+                    .map(|(name, place, _)| format!(
+                        "{} ({})",
+                        name.rsplit('/').next().unwrap_or(name),
+                        place.unwrap_or("no record")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if reasons.is_empty() {
+                    "exact".to_owned()
+                } else {
+                    reasons.join("; ")
+                }
+            );
+            if *unpacker == crate::unpacker::Unpacker::Rawspeed {
+                if !reasons.is_empty() {
+                    failures.push(format!("{mode} is routed but not exact: {reasons:?}"));
+                }
+                if samples.iter().all(|(_, place, _)| place.is_none()) {
+                    failures.push(format!("{mode} is routed with no recorded LibRaw result"));
+                }
+            }
+        }
+        // Every routed mode was found, with every evidence sample of it.
+        for mode in crate::camera_catalog()
+            .cameras
+            .iter()
+            .flat_map(|camera| camera.modes.iter())
+            .filter(|mode| mode.unpacker == crate::unpacker::Unpacker::Rawspeed)
+        {
+            let listed = entries
+                .iter()
+                .filter(|entry| entry["mode"] == mode.id.as_ref())
+                .count();
+            let checked = modes.get(mode.id.as_ref()).map_or(0, |(_, _, samples)| {
+                samples
+                    .iter()
+                    .filter(|(_, place, _)| *place == Some("evidence manifest"))
+                    .count()
+            });
+            if !modes.contains_key(mode.id.as_ref()) || checked < listed {
+                failures.push(format!(
+                    "{} is routed but {checked} of its {listed} evidence samples were found",
+                    mode.id
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
