@@ -588,14 +588,13 @@ impl LoupeFrames {
 
     /// The frames on screen of `wanted` — what the loupe wants now, which may be newer than what
     /// it last handed over — have what they will draw: each the tier decoded at the size it needs,
-    /// or nothing more to wait for (refused, or its decode failed or could not fit), with no read in
-    /// flight. An evidence run waits for it before a capture.
+    /// or nothing more to wait for (refused, or its decode failed or could not fit). The look-ahead's
+    /// reads and decodes may still be under way. An evidence run waits for it before a capture.
     pub(crate) fn settled(&self, wanted: &[Want]) -> bool {
-        self.reading.is_none()
-            && wanted
-                .iter()
-                .filter(|want| want.shown)
-                .all(|want| self.frame_settled(want))
+        wanted
+            .iter()
+            .filter(|want| want.shown)
+            .all(|want| self.frame_settled(want))
     }
 
     fn frame_settled(&self, want: &Want) -> bool {

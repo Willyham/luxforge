@@ -165,8 +165,11 @@ fn single<'a>(
 fn compare<'a>(cells: &'a [FrameModel], images: LoupeImages<'a>) -> Element<'a, Message> {
     Row::with_children(cells.iter().map(|cell| {
         let active = cell.active;
-        let framed = container(picture(cell, images))
-            .padding(theme::BORDER_WIDTH * 2.0)
+        // The active frame's accent outline, drawn over the picture's edge so the picture keeps
+        // its fitted size.
+        let outline = container(Space::new())
+            .width(Length::Fixed(cell.rect.width))
+            .height(Length::Fixed(cell.rect.height))
             .style(move |_: &Theme| {
                 container::Style::default().border(Border {
                     color: if active {
@@ -187,7 +190,8 @@ fn compare<'a>(cells: &'a [FrameModel], images: LoupeImages<'a>) -> Element<'a, 
         .padding([2.0, 6.0])
         .style(theme::tag_surface(4.0));
         container(stack![
-            framed,
+            picture(cell, images),
+            outline,
             container(number).padding(Padding {
                 top: 8.0,
                 left: 8.0,

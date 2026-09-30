@@ -286,3 +286,105 @@ fn loupe_compares_checks_focus_and_moves_on_after_a_burst_pick() {
     );
     finish(editor, catalog);
 }
+
+/// The loupe builds in each of its states: nothing to show, a frame reading, a frame with the
+/// focus check, and compare.
+#[test]
+fn loupe_view_builds_in_every_state() {
+    use crate::state::loupe::{
+        Area, FocusModel, FrameModel, InfoText, LoupeModel, StripFrame, StripModel,
+    };
+    use luxforge_core::catalog_types::{Dimensions, FileId, PixelRect};
+    let loupe = crate::app::loupe::Loupe::default();
+    let grid = crate::app::select_previews::SelectPreviews::default();
+    let images = loupe.images(&grid);
+    let rect = Area {
+        x: 200.0,
+        y: 100.0,
+        width: 900.0,
+        height: 600.0,
+    };
+    let frame = |position: u32, active: bool| FrameModel {
+        position,
+        item: PreviewItem::File {
+            file_id: FileId(i64::from(position)),
+        },
+        name: format!("DSC_{position:04}.JPG"),
+        number: position + 1,
+        active,
+        picture: None,
+        rect,
+        note: Some("Reading the preview\u{2026}".into()),
+    };
+    let empty = LoupeModel {
+        open: true,
+        info: InfoText {
+            source: "Choose a frame in the grid".into(),
+            ..InfoText::default()
+        },
+        ..LoupeModel::default()
+    };
+    let _ = loupe_view(&empty, images);
+    let single = LoupeModel {
+        frame: Some(frame(1, true)),
+        strip: Some(StripModel {
+            first: 0,
+            frames: (0..3)
+                .map(|position| StripFrame {
+                    position,
+                    item: None,
+                    picked: position == 1,
+                })
+                .collect(),
+            active: 1,
+            start: 0,
+            previous: false,
+            next: true,
+        }),
+        hints: vec![("Z".into(), "100%".into())],
+        focus: Some(FocusModel {
+            rect: PixelRect {
+                x: 0,
+                y: 0,
+                width: 616,
+                height: 418,
+            },
+            frame: Dimensions {
+                width: 6000,
+                height: 4000,
+            },
+            region_box: Area {
+                x: 10.0,
+                y: 10.0,
+                width: 92.0,
+                height: 62.0,
+            },
+            inset: Area {
+                x: 776.0,
+                y: 451.0,
+                width: 308.0,
+                height: 233.0,
+            },
+            region: None,
+            developed: true,
+            pending: true,
+            error: None,
+        }),
+        ..empty.clone()
+    };
+    let _ = loupe_view(&single, images);
+    let compare = LoupeModel {
+        compare: (0..4)
+            .map(|position| frame(position, position == 1))
+            .collect(),
+        ..single.clone()
+    };
+    let _ = loupe_view(&compare, images);
+}
+
+fn loupe_view<'a>(
+    model: &'a crate::state::loupe::LoupeModel,
+    images: LoupeImages<'a>,
+) -> iced::Element<'a, Message> {
+    crate::view::loupe::loupe(model, images)
+}

@@ -52,7 +52,20 @@ Click selects a cell, Cmd-click adds or removes it and Shift-click extends the s
 
 When another client changes the library while Select is shown — an agent picks a file, say — the view is read again without a reload, the scroll kept near the active item, and the status bar says so ("Konstanz changed elsewhere and was read again"). A pick an agent makes appears as the accent check on its cell and in the counts.
 
-Not yet: cells are placeholders at each photograph's shape rather than previews. Picking from the desktop, the loupe, Develop N, Add a folder…, library undo and redo, and the catalog's counts, folders and collections come later.
+#### The loupe
+
+`Space` or `E` (or the strip's Loupe) shows the active frame fitted to the screen; with nothing active it opens on the view's first frame, and `Esc` goes back to the grid on the frame the loupe left. The bar over it names the moment ("Moment 4 of 37 · burst", or the file's name for a single frame), the frame's place and its time after the moment's first frame ("Frame 3 of 6 · +0.52 s"), its exposure, and what the picture is and its size: "Camera preview · 2560 × 1707" for a file's largest embedded preview (at most 2560 px), "Preview" for a developed photograph's rendered 2048 px tier, with "approximate" when the render approximates and "reading full size…" while a smaller preview stands in for the one being read. Under it are the moment's frames, numbered, with the pick check on a picked one; click one to show it, or a chevron for the moment either side.
+
+- `←` `→` step through the view's frames, across moments; they repeat while held.
+- `↑` `↓` go to the first frame of the previous or next moment; a single frame counts as a moment of its own, so every frame is reached.
+- `1`–`9` jump to that frame of a burst or bracket.
+- `Z` turns the 100% focus check on or off: a box on the photograph follows the pointer (the middle while the pointer is elsewhere), and an inset at its lower right shows the rectangle under it at 100%, one of the photograph's pixels to one of the screen's. It is the camera's own full-size preview, labelled "100% · Focus check under the pointer", or, where the camera's preview is smaller than the sensor, a neutral Luxforge development of that frame, labelled "100% · Luxforge development"; a first development can take a second or more.
+- `C` shows up to four frames of the moment side by side at one zoom, the active one outlined; `←` `→` move through them. A single frame has nothing to compare, and the status bar says so.
+- `Tab` hides the side panels, as in the grid.
+
+The loupe reads the frames ahead in the direction you are moving, and the next moment's first frame, while you look, so the next frame is usually on screen in the frame after the key; the status bar says "next frames ready" once they are. Its decoded frames are held within 256 MiB. Every step is the `browse.select` an agent would send, and `Z` is `preview.region`.
+
+Not yet: cells are placeholders at each photograph's shape rather than previews. Picking from the desktop (`P` in the loupe says it is not yet available; once picks land, picking a burst's frame moves on to the next moment), Develop N, Add a folder…, library undo and redo, and the catalog's counts, folders and collections come later.
 
 ## Edit and inspect
 
