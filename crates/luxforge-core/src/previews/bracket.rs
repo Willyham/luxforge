@@ -26,9 +26,10 @@
 //!   step is the weighted mean difference of the cells that agree with the weighted median one.
 //!   A run is `O(frames × cells)`: for 9 frames, 8 comparisons of 576 cells, with every working
 //!   array on the stack (under 10 KB) and the answer its one allocation.
-//! - **The probe** ([`PreviewProbe`], [`bracket_probe`]). A view's fingerprints read in one query
-//!   and held in memory, so organizing's calls measure in microseconds and never read a file or
-//!   decode.
+//! - **The probe** ([`PreviewProbe`], [`bracket_probe`]). Organizing asks it only about runs the
+//!   metadata cannot classify, and it reads just that run's fingerprints, in one indexed query
+//!   through a cached statement, so a view whose runs the metadata classifies reads none; it never
+//!   reads a photograph's file or decodes.
 //!
 //! **Calibration** (the tests' `bracket_preview_calibration`: six synthetic scenes through their
 //! grid tiers' JPEGs, brackets within ±2 EV). Without a tone curve, as the generated folders
@@ -51,6 +52,8 @@ use crate::{
 };
 use luxforge_jpeg::{Decoder, Limits, Scale};
 use rusqlite::Connection;
+use std::cell::Cell;
+#[cfg(test)]
 use std::collections::HashMap;
 
 /// Cells on each side of a fingerprint's grid: a cell is about 21 px of a 512 px grid tier, and a
@@ -421,91 +424,145 @@ fn framing(a: &Fingerprint, b: &Fingerprint, usable: &[bool; CELLS]) -> Option<f
     (pairs > 0 && aa >= structure && bb >= structure).then(|| dot / (aa * bb).sqrt())
 }
 
-/// A view's grid fingerprints, in memory: what organizing asks about a run the metadata cannot
-/// classify ([`BracketProbe`]), answered from memory in microseconds.
-#[derive(Debug, Default)]
-pub(crate) struct PreviewProbe {
-    fingerprints: HashMap<FileId, (PreviewOrigin, Fingerprint)>,
+/// What organizing asks about a run the metadata cannot classify ([`BracketProbe`]), answered
+/// from the run's grid fingerprints. It reads them lazily, one run at a time: organizing asks only
+/// about runs of 2 to [`MAX_FRAMES`] frames whose metadata does not vary, so a view whose runs the
+/// metadata classifies reads none, and a burst's run reads its own frames' fingerprints and no
+/// others, in one indexed query ([`bracket_probe`]).
+pub(crate) struct PreviewProbe<'c> {
+    fingerprints: Fingerprints<'c>,
+    /// Frames looked up so far, whatever was found.
+    asked: Cell<usize>,
 }
 
-impl PreviewProbe {
-    /// How many of the files it was loaded for have a fingerprint.
+/// Where a probe reads fingerprints.
+enum Fingerprints<'c> {
+    /// The index, a run at a time, through one cached statement.
+    Index(&'c Connection),
+    /// A map, for tests that measure without an index.
+    #[cfg(test)]
+    Memory(HashMap<FileId, (PreviewOrigin, Fingerprint)>),
+}
+
+impl PreviewProbe<'_> {
+    /// How many frames it has looked up so far: none for a view whose runs the metadata
+    /// classifies.
     #[allow(dead_code, reason = "lane D's browse.view reports it as it lands")]
-    pub(crate) fn len(&self) -> usize {
-        self.fingerprints.len()
+    pub(crate) fn frames_asked(&self) -> usize {
+        self.asked.get()
+    }
+
+    /// A probe over fingerprints held in memory.
+    #[cfg(test)]
+    pub(crate) fn memory(
+        fingerprints: HashMap<FileId, (PreviewOrigin, Fingerprint)>,
+    ) -> PreviewProbe<'static> {
+        PreviewProbe {
+            fingerprints: Fingerprints::Memory(fingerprints),
+            asked: Cell::new(0),
+        }
+    }
+
+    /// The fingerprints of `files`' grid tiers, in order, `None` for a file without one: a file
+    /// with no grid tier yet, only its thumbnail stage, a stale row, or a row written before the
+    /// fingerprint existed.
+    fn load(&self, files: &[FileId]) -> Result<Vec<Option<(PreviewOrigin, Fingerprint)>>, Error> {
+        self.asked.set(self.asked.get() + files.len());
+        let connection = match &self.fingerprints {
+            Fingerprints::Index(connection) => *connection,
+            #[cfg(test)]
+            Fingerprints::Memory(map) => {
+                return Ok(files.iter().map(|file| map.get(file).cloned()).collect());
+            }
+        };
+        let mut found = vec![None; files.len()];
+        if files.is_empty() {
+            return Ok(found);
+        }
+        let ids = serde_json::to_string(&files.iter().map(|file| file.0).collect::<Vec<_>>())
+            .map_err(|error| Error::internal(format!("file ids: {error}")))?;
+        let mut statement = connection.prepare_cached(
+            "SELECT f.id, f.byte_len, f.modified_ns, f.device, f.inode,
+                    p.byte_len, p.modified_ns, p.device, p.inode, p.origin, g.fingerprint
+             FROM json_each(?1) j
+             JOIN files f ON f.id = j.value
+             JOIN previews p ON p.file_id = f.id AND p.tier = 'grid'
+             JOIN grid_fingerprints g ON g.file_id = f.id AND g.path = p.path",
+        )?;
+        let mut rows = statement.query([ids])?;
+        while let Some(row) = rows.next()? {
+            let current = cache::signature(row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
+            let recorded = cache::signature(row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?);
+            if current != recorded {
+                continue;
+            }
+            let file = FileId(row.get(0)?);
+            let origin: String = row.get(9)?;
+            let bytes: Vec<u8> = row.get(10)?;
+            if let (Some(at), Some(origin), Some(fingerprint)) = (
+                files.iter().position(|asked| *asked == file),
+                PreviewOrigin::parse(&origin),
+                Fingerprint::from_bytes(&bytes),
+            ) {
+                found[at] = Some((origin, fingerprint));
+            }
+        }
+        Ok(found)
+    }
+
+    /// The fingerprints of `files` as [`Self::load`] finds them, keyed by file, for tests.
+    #[cfg(test)]
+    pub(crate) fn loaded(&self, files: &[FileId]) -> HashMap<FileId, (PreviewOrigin, Fingerprint)> {
+        let found = self.load(files).unwrap();
+        files
+            .iter()
+            .zip(found)
+            .filter_map(|(file, found)| found.map(|found| (*file, found)))
+            .collect()
     }
 }
 
-impl BracketProbe for PreviewProbe {
-    /// [`measure`] over the frames' fingerprints, when every frame is a file with a fingerprint
-    /// and all of one origin: a camera's embedded preview and a neutral development differ in
-    /// brightness by more than a bracket's step. A photograph answers `None`.
+impl BracketProbe for PreviewProbe<'_> {
+    /// [`measure`] over the frames' fingerprints, read for this run alone, when every frame is a
+    /// file with a fingerprint and all of one origin: a camera's embedded preview and a neutral
+    /// development differ in brightness by more than a bracket's step. A photograph, or an index
+    /// that cannot be read, answers `None`: the run stays a burst.
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>> {
-        if frames.len() > MAX_FRAMES {
+        if !(2..=MAX_FRAMES).contains(&frames.len()) {
             return None;
         }
-        let mut found: [Option<&Fingerprint>; MAX_FRAMES] = [None; MAX_FRAMES];
-        let mut origin = None;
-        for (slot, item) in found.iter_mut().zip(frames) {
+        let mut files = [FileId(0); MAX_FRAMES];
+        for (slot, item) in files.iter_mut().zip(frames) {
             let ViewItem::File(file) = item else {
                 return None;
             };
-            let (frame_origin, fingerprint) = self.fingerprints.get(file)?;
-            if *origin.get_or_insert(*frame_origin) != *frame_origin {
-                return None;
-            }
-            *slot = Some(fingerprint);
+            *slot = *file;
         }
-        let first = found[0]?;
-        let fingerprints: [&Fingerprint; MAX_FRAMES] =
-            std::array::from_fn(|at| found[at].unwrap_or(first));
-        measure(&fingerprints[..frames.len()])
+        let found = self.load(&files[..frames.len()]).ok()?;
+        let origin = found.first()?.as_ref()?.0;
+        let fingerprints = found
+            .iter()
+            .map(|found| {
+                found
+                    .as_ref()
+                    .filter(|(frame_origin, _)| *frame_origin == origin)
+                    .map(|(_, fingerprint)| fingerprint)
+            })
+            .collect::<Option<Vec<&Fingerprint>>>()?;
+        measure(&fingerprints)
     }
 }
 
-/// The fingerprints of `files`' grid tiers, in one query: those whose row is valid for the file's
-/// current signature and carries one. A file with no grid tier yet, only its thumbnail stage, a
-/// stale row or a row written before the fingerprint existed has none, and a run holding it
-/// measures `None`. Lane D's `browse.view` loads it for a view's files and hands it to
-/// `organize::group`.
+/// The preview bracket probe over the index behind `connection`, for lane D's `browse.view` to
+/// hand to `organize::group`: it reads nothing until organizing asks about a run, and then only
+/// that run's fingerprints (the fingerprints of files' grid tiers whose row is valid for the
+/// file's current signature).
 #[allow(dead_code, reason = "lane D's browse.view calls it as it lands")]
-pub(crate) fn bracket_probe(
-    connection: &Connection,
-    files: &[FileId],
-) -> Result<PreviewProbe, Error> {
-    let mut probe = PreviewProbe::default();
-    if files.is_empty() {
-        return Ok(probe);
+pub(crate) fn bracket_probe(connection: &Connection) -> PreviewProbe<'_> {
+    PreviewProbe {
+        fingerprints: Fingerprints::Index(connection),
+        asked: Cell::new(0),
     }
-    let ids = serde_json::to_string(&files.iter().map(|file| file.0).collect::<Vec<_>>())
-        .map_err(|error| Error::internal(format!("file ids: {error}")))?;
-    let mut statement = connection.prepare_cached(
-        "SELECT f.id, f.byte_len, f.modified_ns, f.device, f.inode,
-                p.byte_len, p.modified_ns, p.device, p.inode, p.origin, g.fingerprint
-         FROM json_each(?1) j
-         JOIN files f ON f.id = j.value
-         JOIN previews p ON p.file_id = f.id AND p.tier = 'grid'
-         JOIN grid_fingerprints g ON g.file_id = f.id AND g.path = p.path",
-    )?;
-    let mut rows = statement.query([ids])?;
-    while let Some(row) = rows.next()? {
-        let current = cache::signature(row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?);
-        let recorded = cache::signature(row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?);
-        if current != recorded {
-            continue;
-        }
-        let origin: String = row.get(9)?;
-        let bytes: Vec<u8> = row.get(10)?;
-        if let (Some(origin), Some(fingerprint)) = (
-            PreviewOrigin::parse(&origin),
-            Fingerprint::from_bytes(&bytes),
-        ) {
-            probe
-                .fingerprints
-                .insert(FileId(row.get(0)?), (origin, fingerprint));
-        }
-    }
-    Ok(probe)
 }
 
 #[cfg(test)]
