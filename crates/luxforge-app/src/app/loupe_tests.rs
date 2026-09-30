@@ -13,7 +13,7 @@ use std::path::PathBuf;
 /// The editor with the seeded event viewed, every row read.
 fn viewing() -> (Editor, PathBuf) {
     let (mut editor, catalog) = selecting();
-    let SourcePress::View(source) = editor.workspace.select.sources.months[0].rows[0]
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
         .press
         .clone()
     else {
@@ -257,16 +257,34 @@ fn loupe_compares_checks_focus_and_moves_on_after_a_burst_pick() {
     assert!(!editor.loupe_settled(), "the region has not landed");
     send(&mut editor, LoupeMessage::ToggleFocus);
     assert!(editor.loupe_region().is_none());
-    // P: lane D's pick is not on this branch; nothing moves or changes.
-    send(&mut editor, LoupeMessage::Pick);
+    // P: the active frame picked through Select's own pick (`pick.set` naming its file), answered
+    // in this update; a burst's pick moves on to the next moment's first frame (P7).
     assert_eq!(active(&editor), Some(burst + 1));
-    assert!(editor.status.text.contains("not yet available"));
-    // P7, as the pick's answer calls it.
-    editor.loupe_picked(&[burst + 1], true, true);
+    send(&mut editor, LoupeMessage::Pick);
+    let sent = editor.select.library.clone().expect("a library request");
+    assert_eq!(sent["method"], "pick.set", "{sent}");
+    assert_eq!(sent["params"]["picked"], true, "{sent}");
+    assert!(sent["error"].is_null(), "{sent}");
     assert_eq!(
         active(&editor),
         Some(burst + 3),
         "the next moment's first frame"
+    );
+    evaluate(&mut editor);
+    read_rows(&mut editor);
+    assert_eq!(
+        active(&editor),
+        Some(burst + 3),
+        "kept once the view is read again"
+    );
+    assert!(
+        editor
+            .select
+            .state
+            .rows
+            .row(burst + 1)
+            .is_some_and(|row| row.picked),
+        "the burst's frame is picked"
     );
     assert!(editor.loupe_select(bracket + 1));
     editor.loupe_picked(&[bracket + 1], true, true);
