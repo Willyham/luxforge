@@ -43,13 +43,19 @@ use std::{
 
 #[cfg(test)]
 mod artifact_tests;
+mod catalog;
 #[cfg(test)]
 mod catalog_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
+// The catalog lanes' owner-side homes, one file each ([`catalog`]).
+pub(super) mod files;
+pub(super) mod library;
 mod point;
+pub(super) mod previews;
 mod requests;
+pub(super) mod views;
 
 const EVENT_CAPACITY: usize = 256;
 /// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
@@ -152,6 +158,8 @@ enum OwnerMessage {
         job: Option<JobId>,
         reply: SyncSender<()>,
     },
+    /// A catalog lane's worker has something for the owner, which hands it to that lane.
+    Catalog(catalog::CatalogMessage),
     Disconnect(ClientId),
     Stop,
 }
@@ -886,12 +894,16 @@ impl OwnerHandle {
         let completions = sender.clone();
         let host = CapabilityHost::new(host);
         let owner_activity = activity.clone();
+        // The catalog lanes post their workers' results through the same channel.
+        let catalog =
+            catalog::CatalogLanes::new(catalog::Poster::new(sender.clone()), activity.clone());
         let join = std::thread::spawn(move || {
             owner_loop(
                 service,
                 host,
                 jobs,
                 sources,
+                catalog,
                 completions,
                 receiver,
                 worker,
@@ -1099,6 +1111,7 @@ fn owner_loop(
     host: CapabilityHost,
     jobs: Jobs,
     sources: SourceQueue,
+    catalog: catalog::CatalogLanes,
     completions: SyncSender<OwnerMessage>,
     receiver: Receiver<OwnerMessage>,
     worker: JoinHandle<()>,
@@ -1131,6 +1144,7 @@ fn owner_loop(
         source_waiters: Vec::new(),
         event_waits: Vec::new(),
         parking: None,
+        catalog,
         #[cfg(test)]
         fault: None,
     };
@@ -1218,6 +1232,7 @@ fn owner_loop(
                 OwnerMessage::AwaitSource { client, job, reply } => {
                     owner.await_source(client, job, reply);
                 }
+                OwnerMessage::Catalog(message) => owner.catalog_message(message),
                 OwnerMessage::Disconnect(client) => owner.disconnect(client),
                 OwnerMessage::SourceStarted(id) => owner.jobs.start(&id),
                 OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
@@ -1250,8 +1265,12 @@ fn owner_loop(
     // The sample being evaluated finishes; the ones waiting are dropped with every other call.
     owner.points.stop();
     let Owner {
-        mut jobs, sources, ..
+        mut jobs,
+        sources,
+        catalog,
+        ..
     } = owner;
+    catalog.shutdown();
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
     // left waiting on a full channel while the owner waits for it. Every live job is asked to
     // stop, the source worker's included, and the lanes are joined; a running export stops at its
@@ -1376,6 +1395,8 @@ pub(super) struct Owner {
     /// Set by the `events.wait` handler when it cannot answer yet: the wait [`Owner::call`] parks
     /// with the call's own reply channel, which the handler does not hold. Empty between calls.
     parking: Option<PendingWait>,
+    /// The catalog lanes' owner-side state, one field per lane, each in its own file.
+    catalog: catalog::CatalogLanes,
     #[cfg(test)]
     fault: Option<Fault>,
 }
@@ -1749,6 +1770,7 @@ impl Owner {
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
         self.event_waits.retain(|held| held.client != client);
+        self.catalog.disconnect(client);
     }
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
@@ -1817,7 +1839,7 @@ impl Owner {
                     self.jobs.finish(job_id, Err(Error::cancelled(CANCELLED)));
                 }
             }
-            Family::Capability | Family::Export => {}
+            Family::Capability | Family::Export | Family::Catalog => {}
         }
     }
 
@@ -1937,6 +1959,10 @@ pub(super) fn job_cancel(
             .cancel(&mut owner.jobs, job_id, &mut owner.announced)?,
         Family::Export => {
             owner.jobs.cancel(job_id, export::CANCELLED);
+        }
+        Family::Catalog => {
+            owner.jobs.cancel(job_id, CANCELLED);
+            owner.catalog.cancelled(job_id, kind);
         }
     }
     owner.read_job(job_id, client)
@@ -5563,8 +5589,6 @@ mod tests {
                     IdentityKind::Collection => {
                         crate::catalog_types::CollectionId::new().to_string()
                     }
-                    IdentityKind::Volume => crate::catalog_types::VolumeId::new().to_string(),
-                    IdentityKind::Event => crate::catalog_types::EventId::new().to_string(),
                 };
                 (json!(valid), json!("x"))
             }

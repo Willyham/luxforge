@@ -16,11 +16,12 @@
 //! - [`previews`]: preview tiers, items, origins and answers (lane B).
 //! - [`jobs`]: the long-running catalog work, each kind named once.
 //! - `api`: every catalog method's parameters, answer, envelope and error codes, declared once
-//!   ([`CATALOG_METHODS`]); each lane registers its methods in the method table when they work.
+//!   (`api::CATALOG_METHODS`); each lane registers its methods in the method table when they work.
 //!
 //! Serde shapes follow the rest of the API: snake_case fields, kebab-case enum values, tagged
 //! unions under `kind` (or `item`, `result`, `state` where a flattened answer needs its own tag),
 //! and `deny_unknown_fields` on everything a request carries.
+pub(crate) mod api;
 pub mod browse;
 pub mod disk;
 pub mod header;

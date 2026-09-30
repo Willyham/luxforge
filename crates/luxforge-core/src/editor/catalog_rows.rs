@@ -354,3 +354,13 @@ pub(crate) fn insert_indexed_folder(
     )?;
     Ok(())
 }
+
+// Each lane's row writers and readers, one marked section per lane.
+// ── catalog lane A: files ──
+// ── end lane A ──
+// ── catalog lane B: previews ──
+// ── end lane B ──
+// ── catalog lane C: catalog ──
+// ── end lane C ──
+// ── catalog lane D: views ──
+// ── end lane D ──
