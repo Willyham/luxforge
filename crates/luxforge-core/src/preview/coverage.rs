@@ -14,7 +14,8 @@
 //! `O(recipe)` and without filling a cell that nothing changed.
 use super::{MaskOverlayOutcome, MaskOverlayRequest, PreviewSource, worker::mask_overlay_for};
 use crate::{
-    Cancel, ComponentId, Error, Evaluation, MaskId, Region, mask::CompiledMask, modules::Stage,
+    Cancel, ComponentId, Error, Evaluation, Mask, MaskId, Region, mask::CompiledMask,
+    modules::Stage,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -76,14 +77,30 @@ fn hash_json(hasher: &mut DefaultHasher, value: &impl serde::Serialize) -> Resul
 }
 
 impl Evaluation {
-    /// Resolve one overlay target from this exact evaluation. A create must add exactly one mask
-    /// to its base entry. Missing, ambiguous or non-draft targets are explicit refusals.
-    pub fn mask_coverage_target(
-        &self,
-        target: &MaskCoverageTarget,
-    ) -> Result<MaskOverlayRequest, Error> {
-        let (mask, component) = match target {
-            MaskCoverageTarget::Existing { mask, component } => (mask.clone(), component.clone()),
+    /// The mask and component `target` names in this exact evaluation. A create must add exactly
+    /// one mask to its base entry. Missing, ambiguous or non-draft targets are explicit refusals.
+    fn resolve_target<'a>(
+        &'a self,
+        target: &'a MaskCoverageTarget,
+    ) -> Result<(&'a Mask, Option<&'a ComponentId>), Error> {
+        let masks = &self.recipe().masks;
+        match target {
+            MaskCoverageTarget::Existing { mask, component } => {
+                let held = masks.iter().find(|held| &held.id == mask).ok_or_else(|| {
+                    Error::validation(format!(
+                        "mask {mask} is not in the stack this evaluation holds"
+                    ))
+                })?;
+                if let Some(component) = component
+                    && !held.components.iter().any(|held| &held.id == component)
+                {
+                    return Err(Error::validation(format!(
+                        "mask {} holds no component {component}",
+                        held.name
+                    )));
+                }
+                Ok((held, component.as_ref()))
+            }
             MaskCoverageTarget::DraftCreated => {
                 if self.draft().is_none() {
                     return Err(Error::validation(
@@ -91,9 +108,7 @@ impl Evaluation {
                     ));
                 }
                 let base = &self.entry().snapshot.recipe.masks;
-                let mut created = self
-                    .recipe()
-                    .masks
+                let mut created = masks
                     .iter()
                     .filter(|mask| !base.iter().any(|old| old.id == mask.id));
                 let mask = created
@@ -104,77 +119,48 @@ impl Evaluation {
                         "the evaluated draft created more than one mask",
                     ));
                 }
-                (mask.id.clone(), None)
+                Ok((mask, None))
             }
-        };
-        Ok(MaskOverlayRequest {
-            mask,
-            component,
-            cells_w: 1,
-            cells_h: 1,
-            whole_cells_w: 1,
-            whole_cells_h: 1,
-        })
+        }
     }
 
-    /// A process-local identity of the photograph's pixels. Unbound masks and draft/history
-    /// bookkeeping do not change pixels. Bound masks, source development and every layer do.
-    /// This reads no pixel and keeps no source alive; failures still prevent reuse.
-    pub fn pixel_content_key(&self) -> Result<u64, Error> {
+    /// The source's pixels, the recipe format, every layer and each mask `keep` selects, hashed.
+    /// Reads no pixel and keeps no source alive; a stack that does not compile has no key.
+    fn stack_key(&self, keep: impl Fn(&Mask) -> bool) -> Result<u64, Error> {
         self.compiled()?;
+        let recipe = self.recipe();
         let mut hasher = DefaultHasher::new();
         std::fmt::write(
             &mut Sink(&mut hasher),
             format_args!("{:?}", self.source().identity()),
         )
         .map_err(|_| Error::internal("a source identity could not be formatted"))?;
-        self.recipe().format.hash(&mut hasher);
-        hash_json(&mut hasher, &self.recipe().layers)?;
-        for mask in &self.recipe().masks {
-            if self
-                .recipe()
-                .layers
-                .iter()
-                .any(|layer| layer.mask.as_ref() == Some(&mask.id))
-            {
-                hash_json(&mut hasher, mask)?;
-            }
+        recipe.format.hash(&mut hasher);
+        hash_json(&mut hasher, &recipe.layers)?;
+        for mask in recipe.masks.iter().filter(|mask| keep(mask)) {
+            hash_json(&mut hasher, mask)?;
         }
         Ok(hasher.finish())
+    }
+
+    /// A process-local identity of the photograph's pixels. Unbound masks and draft/history
+    /// bookkeeping do not change pixels. Bound masks, source development and every layer do.
+    pub fn pixel_content_key(&self) -> Result<u64, Error> {
+        let layers = &self.recipe().layers;
+        self.stack_key(|mask| {
+            layers
+                .iter()
+                .any(|layer| layer.mask.as_ref() == Some(&mask.id))
+        })
     }
 
     /// The exact dependencies that must stay fixed while accepted revisions of one edited mask
     /// provide progressive feedback. Only that target's values may differ: source development,
     /// all layers (including geometry and bindings), and every other mask remain in the key.
-    /// The caller also fences the base entry, draft, target and display choices. No pixels are
-    /// read and no evaluation is retained by the key.
+    /// The caller also fences the base entry, draft, target and display choices.
     pub fn mask_feedback_key(&self, target: &MaskCoverageTarget) -> Result<u64, Error> {
-        self.compiled()?;
-        let request = self.mask_coverage_target(target)?;
-        if !self
-            .recipe()
-            .masks
-            .iter()
-            .any(|mask| mask.id == request.mask)
-        {
-            return Err(Error::validation(
-                "the feedback target is absent from the evaluated recipe",
-            ));
-        }
-        let mut hasher = DefaultHasher::new();
-        std::fmt::write(
-            &mut Sink(&mut hasher),
-            format_args!("{:?}", self.source().identity()),
-        )
-        .map_err(|_| Error::internal("a source identity could not be formatted"))?;
-        self.recipe().format.hash(&mut hasher);
-        hash_json(&mut hasher, &self.recipe().layers)?;
-        for mask in &self.recipe().masks {
-            if mask.id != request.mask {
-                hash_json(&mut hasher, mask)?;
-            }
-        }
-        Ok(hasher.finish())
+        let edited = &self.resolve_target(target)?.0.id;
+        self.stack_key(|mask| &mask.id != edited)
     }
 
     /// Exact composed or component coverage, independently of photograph rasterization, over a
@@ -191,7 +177,7 @@ impl Evaluation {
         cancel: &Cancel,
     ) -> Result<MaskCoverage, Error> {
         cancel.check()?;
-        let mut request = self.mask_coverage_target(target)?;
+        let (held, component) = self.resolve_target(target)?;
         let (cells_w, cells_h) = cells;
         let limit = crate::analysis::MAX_OVERLAY_CELLS;
         if cells_w == 0 || cells_h == 0 {
@@ -204,31 +190,14 @@ impl Evaluation {
                 "a mask overlay grid exceeds the {limit} cells a side the display overlay allows"
             )));
         }
-        request.cells_w = cells_w;
-        request.cells_h = cells_h;
-        request.whole_cells_w = cells_w;
-        request.whole_cells_h = cells_h;
-        // Validate the selected identities before keying. The exact coverage path checks the
-        // first bound input of any value-based component without rasterizing the photograph.
-        let recipe = self.recipe();
-        let held = recipe
-            .masks
-            .iter()
-            .find(|mask| mask.id == request.mask)
-            .ok_or_else(|| {
-                Error::validation(format!(
-                    "mask {} is not in the stack this evaluation holds",
-                    request.mask
-                ))
-            })?;
-        if let Some(component) = &request.component
-            && !held.components.iter().any(|held| &held.id == component)
-        {
-            return Err(Error::validation(format!(
-                "mask {} holds no component {component}",
-                held.name
-            )));
-        }
+        let request = MaskOverlayRequest {
+            mask: held.id.clone(),
+            component: component.cloned(),
+            cells_w,
+            cells_h,
+            whole_cells_w: cells_w,
+            whole_cells_h: cells_h,
+        };
         let mut hasher = DefaultHasher::new();
         // Full recipe identity is intentionally conservative. No cached source/evaluation is kept;
         // one grid is cached and may be reused only under all its exact dependencies.
@@ -260,7 +229,7 @@ impl Evaluation {
         let mut outcome = mask_overlay_for(
             self.registry(),
             &frame,
-            recipe,
+            self.recipe(),
             &request,
             region,
             cancel,
@@ -533,7 +502,7 @@ mod tests {
         let empty = evaluation(Recipe::default(), Recipe::default(), draft.clone());
         assert!(
             empty
-                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .resolve_target(&MaskCoverageTarget::DraftCreated)
                 .unwrap_err()
                 .detail
                 .contains("no mask")
@@ -545,7 +514,7 @@ mod tests {
         let ambiguous = evaluation(Recipe::default(), recipe.clone(), draft);
         assert!(
             ambiguous
-                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .resolve_target(&MaskCoverageTarget::DraftCreated)
                 .unwrap_err()
                 .detail
                 .contains("more than one")
@@ -553,7 +522,7 @@ mod tests {
         let saved = evaluation(recipe.clone(), recipe, None);
         assert!(
             saved
-                .mask_coverage_target(&MaskCoverageTarget::DraftCreated)
+                .resolve_target(&MaskCoverageTarget::DraftCreated)
                 .unwrap_err()
                 .detail
                 .contains("evaluated draft")
