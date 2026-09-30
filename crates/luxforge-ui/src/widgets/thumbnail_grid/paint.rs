@@ -634,7 +634,7 @@ fn paint_cell<'a>(
             Size::new(dot, dot),
         );
         painter.fill(Fill::flat(rect, theme::ACCENT, dot / 2.0));
-        right = rect.x - theme::MOMENT_HEADER_SPACING;
+        right = rect.x - theme::CELL_FOOTER_SPACING;
     }
     if let Some(label) = view.label {
         let style = regular(metrics.label_size);
@@ -689,7 +689,7 @@ impl Badge<'_> {
 
 /// A cell's badges over its photograph: the pick at the top left with the catalog badge after it,
 /// the frame count at the top right with the unavailable badge before it. The catalog badge keeps
-/// only its icon when its words would reach the right-hand badges.
+/// only its icon when its words would reach the right-hand badges, or pass the photograph's box.
 fn paint_badges<'a>(
     origin: Point,
     view: &CellView<'a>,
@@ -717,7 +717,8 @@ fn paint_badges<'a>(
         );
         left += disc + theme::CELL_BADGE_GAP;
     }
-    let mut right = origin.x + metrics.cell.width - inset;
+    let corner = origin.x + metrics.cell.width - inset;
+    let mut right = corner;
     let mut count_text = String::new();
     if let Some(count) = view.count {
         use std::fmt::Write as _;
@@ -760,7 +761,14 @@ fn paint_badges<'a>(
             ink: theme::TEXT_PRIMARY,
             spacing: theme::CELL_CATALOG_BADGE_SPACING,
         };
-        if left + badge.width(painter) > right {
+        // With nothing on the right, the words may reach the photograph's box, not only the
+        // corner's inset: after a pick, at the default size, they need about 1 pt more.
+        let limit = if right == corner {
+            origin.x + metrics.cell.width - metrics.image.x
+        } else {
+            right
+        };
+        if left + badge.width(painter) > limit {
             badge.text = "";
         }
         let width = badge.width(painter);
