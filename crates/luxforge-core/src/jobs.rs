@@ -472,6 +472,22 @@ pub(crate) struct Opened {
     pub control: Arc<JobControl>,
 }
 
+/// A job a catalog lane is about to run on its own workers ([`Family::Catalog`]). Its identity is
+/// chosen by the lane, so the work it queues can carry it before it is recorded.
+#[allow(
+    dead_code,
+    reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
+)]
+pub(crate) struct CatalogOpened {
+    pub job_id: JobId,
+    pub kind: JobKind,
+    pub asset_id: Option<AssetId>,
+    /// The request that started it, when one did.
+    pub origin: Option<Origin>,
+    /// Shared with the lane's worker: the cancel flag it checks and the activity it publishes to.
+    pub control: Arc<JobControl>,
+}
+
 /// What a client's leaving a shared job means for its work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Release {
@@ -813,6 +829,47 @@ impl Jobs {
         let job_id = opened.job_id.clone();
         self.insert(opened);
         self.finish(&job_id, Ok(output));
+    }
+
+    /// Record a job a catalog lane runs on its own workers ([`Family::Catalog`]): `queued` until
+    /// the lane starts it ([`Self::start`]), then finished through [`Self::finish`]. Like a lane
+    /// job it belongs to no client: any client reads it, a cancel stops it for everyone
+    /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
+    )]
+    pub(crate) fn open_catalog(&mut self, opened: CatalogOpened) {
+        let CatalogOpened {
+            job_id,
+            kind,
+            asset_id,
+            origin,
+            control,
+        } = opened;
+        debug_assert_eq!(
+            kind.family(),
+            Family::Catalog,
+            "{kind:?} is not a catalog job"
+        );
+        let mut entry = Entry::new(
+            JobRecord {
+                job_id: job_id.clone(),
+                kind,
+                status: JobStatus::Queued,
+                progress: JobProgress::default(),
+                asset_id,
+                module_id: None,
+                resource_id: None,
+                identity: None,
+                result: None,
+                error: None,
+                request_id: None,
+            },
+            control,
+        );
+        entry.origin = origin;
+        self.entries.insert(job_id, entry);
     }
 
     fn insert(&mut self, opened: Opened) {
@@ -1805,6 +1862,70 @@ mod tests {
         assert_eq!(
             jobs.complete(&id, result).unwrap().record.status,
             JobStatus::Ready
+        );
+        jobs.shutdown();
+    }
+
+    /// A catalog lane's job belongs to no client: any client reads it, a disconnect leaves it, and
+    /// a cancel stops it for everyone, at once while it waits and at its next checkpoint while its
+    /// lane runs it. Its outcome is recorded like any other job's.
+    #[test]
+    fn a_catalog_job_is_read_and_cancelled_by_any_client() {
+        let (mut jobs, _) = jobs();
+        let one = ClientId::testing(1);
+        let two = ClientId::testing(2);
+        let open = |jobs: &mut Jobs| {
+            let job_id = JobId::new();
+            let control = JobControl::new();
+            jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind: JobKind::PreviewExtract,
+                asset_id: None,
+                origin: Some(Origin::new("preview.read", "request")),
+                control: control.clone(),
+            });
+            (job_id, control)
+        };
+
+        let (waiting, waiting_control) = open(&mut jobs);
+        let record = jobs.read_for(&waiting, two).unwrap();
+        assert_eq!(record.status, JobStatus::Queued);
+        assert_eq!(record.kind, JobKind::PreviewExtract);
+        assert_eq!(record.request_id.as_deref(), Some("request"));
+        assert!(jobs.disconnect(one).is_empty(), "a disconnect leaves it");
+        let Some(Cancelled::Removed(record)) = jobs.cancel(&waiting, "stopped by a client") else {
+            panic!("a waiting catalog job is removed at once");
+        };
+        assert_eq!(record.status, JobStatus::Cancelled);
+        assert!(waiting_control.is_cancelled());
+
+        let (running, running_control) = open(&mut jobs);
+        jobs.start(&running);
+        assert_eq!(
+            jobs.read_for(&running, one).unwrap().status,
+            JobStatus::Running
+        );
+        assert!(matches!(
+            jobs.cancel(&running, "stopped by a client"),
+            Some(Cancelled::Requested(_))
+        ));
+        let error = running_control.checkpoint().unwrap_err();
+        let finished = jobs.finish(&running, Err(error)).unwrap();
+        assert_eq!(finished.record.status, JobStatus::Cancelled);
+        assert_eq!(
+            finished.record.error.unwrap().message,
+            "stopped by a client"
+        );
+
+        let (ready, _) = open(&mut jobs);
+        jobs.start(&ready);
+        let finished = jobs
+            .finish(&ready, Ok(Output::Value(json!({"done": true}))))
+            .unwrap();
+        assert_eq!(finished.record.status, JobStatus::Ready);
+        assert_eq!(
+            jobs.read_for(&ready, two).unwrap().result,
+            Some(json!({"done": true}))
         );
         jobs.shutdown();
     }
