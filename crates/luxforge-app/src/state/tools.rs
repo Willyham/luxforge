@@ -61,6 +61,10 @@ pub(crate) struct CurveUi {
     pub(crate) edits: BTreeMap<(String, usize, usize), String>,
     /// The accepted sampled curve of each channel, by channel parameter.
     pub(crate) samples: BTreeMap<String, CurveSamples>,
+    /// The Points disclosure is open. View state, closed by default, shared by the global and
+    /// masked targets and kept while the window is open: a sample refresh or a photo change
+    /// leaves it as it is.
+    pub(crate) points_open: bool,
 }
 
 /// A colour control's local state.
@@ -498,6 +502,9 @@ pub(crate) struct CurveControl {
     pub(crate) id: (String, String),
     pub(crate) action: String,
     pub(crate) label: String,
+    /// Draw the label line above the plot. False for a curve that is the only control of a
+    /// [`headerless_group`], whose band already names it.
+    pub(crate) label_shown: bool,
     pub(crate) channels: Vec<CurveChannelModel>,
     pub(crate) sample_query: String,
     pub(crate) background: bool,
@@ -509,7 +516,17 @@ pub(crate) struct CurveControl {
     pub(crate) point_rows: Vec<CurvePointRowModel>,
     pub(crate) dragging: bool,
     pub(crate) version: u64,
+    /// The Points disclosure is open ([`CurveUi::points_open`]).
+    pub(crate) points_open: bool,
+    /// The most points the shown channel's kind declares.
+    pub(crate) points_max: usize,
+    /// [`CURVE_HINT`] when points can be added and removed: the kind fixes no `x` and its point
+    /// count may vary.
+    pub(crate) hint: Option<String>,
 }
+
+/// The line under a curve plot whose points can be added and removed.
+pub(crate) const CURVE_HINT: &str = "Double-click to add a point, or on one to remove it";
 
 pub(crate) fn group_key(module_id: &str, path: &[usize]) -> String {
     let mut key = format!("{module_id}/");
@@ -802,6 +819,11 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                     enabled,
                     &[0, index],
                 ));
+            }
+            // A curve that is the headerless group's only control is named by the band above
+            // it, so it draws no label line of its own.
+            if let [ControlModel::Curve(curve)] = controls.as_mut_slice() {
+                curve.label_shown = false;
             }
         }
         None => {
@@ -1559,6 +1581,18 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
     let precision = declared
         .and_then(|parameter| parameter.precision)
         .unwrap_or(3) as usize;
+    let (points_max, hint) = match declared.map(|declared| &declared.kind) {
+        Some(ParameterKind::Curve {
+            points_min,
+            points_max,
+            fixed_x,
+            ..
+        }) => (
+            *points_max,
+            (fixed_x.is_none() && points_min != points_max).then(|| CURVE_HINT.to_owned()),
+        ),
+        _ => (0, None),
+    };
     let parsed = declared.and_then(|declared| parse_field(declared, text).ok());
     let points = parsed
         .as_ref()
@@ -1632,6 +1666,7 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
         id,
         action: action.to_owned(),
         label: curve.label.clone(),
+        label_shown: true,
         channels: channels
             .iter()
             .map(|channel| CurveChannelModel {
@@ -1651,6 +1686,9 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
         point_rows,
         dragging,
         version: hasher.finish(),
+        points_open: local.is_some_and(|local| local.points_open),
+        points_max,
+        hint,
     })
 }
 

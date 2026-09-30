@@ -1569,20 +1569,23 @@ fn curve_view<'a>(
         dragging: curve.dragging,
         enabled,
         version,
+        points_open: curve.points_open,
+        points_max: curve.points_max,
+        hint: curve.hint.clone(),
     };
     let action = curve.action.clone();
     let parameter = channel.parameter.clone();
-    let widget = column![
-        label_line(curve.label.clone(), enabled),
-        curve_editor(&model, move |event| Message::Control(
-            ControlMessage::Curve {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                event,
-            }
-        ))
-    ]
-    .spacing(theme::SLIDER_GAP);
+    let mut widget = column![].spacing(theme::SLIDER_GAP);
+    if curve.label_shown {
+        widget = widget.push(label_line(curve.label.clone(), enabled));
+    }
+    let widget = widget.push(curve_editor(&model, move |event| {
+        Message::Control(ControlMessage::Curve {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            event,
+        })
+    }));
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
