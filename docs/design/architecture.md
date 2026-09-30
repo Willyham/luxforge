@@ -32,7 +32,7 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 - `crates/luxforge-net`: the host's network transport and secure secret store, behind the core's `Transport` and `SecretStore` traits. The desktop and `luxforge-json` build both and give them to the catalog owner through `HostConfig`. Only this crate may depend on `ureq`, and only it frames HTTP *(enforced)*. Its files are listed [below](#the-transports-files).
 - `crates/luxforge-ui`: the widget library and theme tokens of the Develop workspace. It depends on Iced only, never on the core, so a widget cannot hold editing logic.
 - `crates/luxforge-jpeg`: the one JPEG codec, libjpeg-turbo through `mozjpeg`, and the JPEG container around it; described [below](#the-jpeg-codec). It depends on no workspace crate, and only `luxforge-core` depends on it *(enforced)*.
-- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)); its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
+- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)) that develops a qualified RAW and, for any RAW LibRaw identifies, lists and extracts its embedded previews by positional reads without unpacking it; its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
 - `crates/luxforge-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API.
 - `crates/luxforge-app`: the desktop and the `luxforge` desktop binary; its layers are listed [below](#the-desktops-files), with the boundaries between them *(enforced)*.
 - `crates/luxforge-cli`: the headless `luxforge-json` binary (`json.rs`), which serves one JSON-lines client on its standard streams, and `Paths` (`paths.rs`), where the application keeps its configuration, data and logs, which the desktop resolves once at startup through the same type. Its normal dependencies hold no GUI crate (Iced, wgpu, rfd, `luxforge-ui` or `luxforge-app`) *(enforced)*, so building the headless binary builds no window, renderer or dialog stack. Its process tests (`tests/`) drive the built binary.
@@ -229,6 +229,9 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | RAW planar RGB float allocation, per buffer | 1.5 GiB | `MAX_RGB_BYTES` (1536 MiB), `crates/luxforge-raw/src/limits.rs` |
 | A retained second RAW development | 600 MiB of planes | `RETAINED_DEVELOPMENT_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | LibRaw's native scratch | 512 MiB | No named constant: the literal `max_raw_memory_mb = 512` in `crates/luxforge-raw/native/adapter.cpp` |
+| One embedded RAW preview extracted, LibRaw's buffer and the copy returned each (the caller's own limit goes below it) | 64 MiB | `MAX_EMBEDDED_IMAGE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| Bytes an embedded-preview handle reads from its source over its life (the caller's own budget goes below it) | 128 MiB | `MAX_EMBEDDED_READ_BUDGET`, `crates/luxforge-raw/src/limits.rs` |
+| An embedded-preview handle's read cache | 8 blocks of 16 KiB | `READ_BLOCKS` and `READ_BLOCK`, `crates/luxforge-raw/src/embedded.rs` |
 
 **Rendering**
 
