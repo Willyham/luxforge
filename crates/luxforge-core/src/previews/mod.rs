@@ -25,8 +25,9 @@
 //!   `preview.read` of a photograph.
 //! - `bracket.rs`: the brightness check for brackets the metadata cannot show (TASK-008): a
 //!   fingerprint of each complete grid tier, kept beside its row, and [`PreviewProbe`], a
-//!   [`BracketProbe`](crate::catalog_types::BracketProbe) over a view's fingerprints that
-//!   [`bracket_probe`] loads in one query for lane D's `browse.view` to hand to `organize::group`.
+//!   [`BracketProbe`](crate::catalog_types::BracketProbe) over the index ([`bracket_probe`]) that
+//!   lane D's `browse.view` hands to `organize::group`: it reads a run's fingerprints only when
+//!   organizing asks about that run.
 //!
 //! The owner's side — each request's job, each client's view job and its progress on the activity
 //! board, waking clients, `preview.read`, and the region jobs of `preview.region` with their queue

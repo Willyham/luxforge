@@ -367,8 +367,9 @@ impl PlaceNames for NoPlaces {
 /// cannot classify: each frame's measured exposure in stops relative to the first frame (brighter
 /// positive, the first `0`), one value per frame, and only when the framing is confirmed unchanged;
 /// `None` when it cannot tell — previews not decoded yet, or the framing moved. It must answer from
-/// previews already decoded, in microseconds, and never read a file. Lane B's is
-/// `previews::PreviewProbe`, loaded for a view's files in one query by `previews::bracket_probe`.
+/// previews already decoded, in microseconds, and never read a photograph's file. Lane B's is
+/// `previews::PreviewProbe` (`previews::bracket_probe`), which reads a run's stored fingerprints in
+/// one indexed query when it is asked about that run, and nothing for a run it is not asked about.
 pub trait BracketProbe {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>>;
 }
