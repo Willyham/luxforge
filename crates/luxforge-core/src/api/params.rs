@@ -199,6 +199,56 @@ pub(crate) mod kind {
         ParameterDescriptor::new("", ParameterKind::Artifact)
     }
 
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn catalog_folder() -> ParameterDescriptor {
+        identity(IdentityKind::CatalogFolder)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn collection() -> ParameterDescriptor {
+        identity(IdentityKind::Collection)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn volume() -> ParameterDescriptor {
+        identity(IdentityKind::Volume)
+    }
+
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn event() -> ParameterDescriptor {
+        identity(IdentityKind::Event)
+    }
+
+    /// A file's row in the index (`file_id`), valid while the index exists.
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn file() -> ParameterDescriptor {
+        integer(1, i64::MAX).notes("a file's row in the index, as a view row names it")
+    }
+
+    /// A position in the caller's view, from 0.
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: the catalog methods declare it"
+    )]
+    pub(crate) fn position() -> ParameterDescriptor {
+        integer(0, crate::catalog_types::MAX_VIEW_ITEMS as i64 - 1)
+    }
+
     pub(crate) fn integer(min: i64, max: i64) -> ParameterDescriptor {
         ParameterDescriptor::integer("", min, max)
     }
