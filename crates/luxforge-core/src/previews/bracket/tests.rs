@@ -647,10 +647,11 @@ fn original(scene: &Scene, step: f32) -> Vec<u8> {
 
 fn task(file: FileId) -> Task {
     Task {
-        key: (file, PreviewTier::Grid),
+        key: (ViewItem::File(file), PreviewTier::Grid),
         control: JobControl::new(),
         budget: SHARED_PREVIEW_BUDGET_BYTES,
         develops: true,
+        camera: None,
         develop: None,
         hold: None,
         stage_hold: None,
