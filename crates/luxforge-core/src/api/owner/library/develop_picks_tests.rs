@@ -1180,7 +1180,8 @@ fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() 
 
 /// A Develop committed in several batches is undone as the one change it was: one `library.undo`
 /// sends every photograph back and picks every file again, recorded as one undo per batch and
-/// announced once, and a retry of that undo answers them all.
+/// announced once, and a retry of that undo answers them all; redoing it is refused, as a
+/// sent-back photograph is developed again with `pick.develop`.
 #[test]
 fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
     let harness = Harness::new("undo-batches");
@@ -1230,6 +1231,20 @@ fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
         (&undone["change"], &json!(7), &json!(true))
     );
     assert_eq!(harness.photographs(), 0, "a retry undoes nothing more");
+
+    // A sent-back photograph is developed again with pick.develop, so redoing the undo is refused,
+    // naming the first photograph it would bring back, and changes nothing.
+    let sequence = harness.sequence();
+    let refused = harness
+        .send("library.redo", json!({"mutation": envelope("redo-all")}))
+        .error
+        .expect("a refusal");
+    assert_eq!(refused.code, "conflict", "{refused:?}");
+    assert!(refused.message.contains("develop it again"), "{refused:?}");
+    assert_eq!(refused.data.unwrap()["items"][0]["kind"], "developed-asset");
+    assert_eq!(harness.photographs(), 0);
+    assert_eq!(harness.ok("pick.list", json!({}))["picks"], picks);
+    assert!(harness.events_after(sequence).is_empty());
 }
 
 /// `asset.send-back` sends an unedited photograph back as one library change — its record gone,
