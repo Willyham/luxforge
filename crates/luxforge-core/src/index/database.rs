@@ -24,15 +24,17 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::{
     path::{Path, PathBuf},
+    sync::{Mutex, PoisonError},
     time::Duration,
 };
 
-/// Format 3: files with their signatures and header columns, the roots listed, the preview records
+/// Format 4: files with their signatures and header columns, the roots listed with where each
+/// watched root's change notifications resume (`cursor_volume`, `cursor_event`), the preview records
 /// of files and developed photographs — a photograph's rendered tier with whether it is
 /// approximate — and the brightness fingerprints of files' complete grid tiers
 /// (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database SQLite
 /// cannot read, and an index of another catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 3;
+pub const INDEX_FORMAT: i64 = 4;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
@@ -41,6 +43,11 @@ pub const PREVIEWS_DIR: &str = "previews";
 
 /// How long a connection waits for another connection's write before it answers `conflict`.
 const BUSY_WAIT: Duration = Duration::from_millis(2000);
+
+/// Held while an index is opened ([`IndexDb::open`]), so openers on different threads never
+/// discard and recreate one index at once. Opening is rare (once per catalog and thread that
+/// needs it), so one lock for the process serves every catalog.
+static OPENING: Mutex<()> = Mutex::new(());
 
 const SCHEMA: &str = "
     CREATE TABLE index_meta (
@@ -54,7 +61,10 @@ const SCHEMA: &str = "
         volume_id TEXT NOT NULL,
         listed_ms INTEGER,
         file_count INTEGER CHECK (file_count IS NULL OR file_count >= 0),
-        offline INTEGER NOT NULL DEFAULT 0 CHECK (offline IN (0, 1))
+        offline INTEGER NOT NULL DEFAULT 0 CHECK (offline IN (0, 1)),
+        cursor_volume BLOB CHECK (cursor_volume IS NULL OR length(cursor_volume) = 16),
+        cursor_event INTEGER,
+        CHECK ((cursor_volume IS NULL) = (cursor_event IS NULL))
     );
     CREATE TABLE files (
         id INTEGER PRIMARY KEY,
@@ -189,7 +199,27 @@ pub struct IndexDb {
 impl IndexDb {
     /// Open the index in `dir` for the catalog `catalog_id`, creating it when there is none and
     /// discarding it — never the catalog — when it cannot be used.
+    ///
+    /// One open at a time in the process ([`OPENING`]): the index lane's threads open it while the
+    /// owner may open it for another lane, and two openers of an index that cannot be used must
+    /// not both discard it, one under the other's new connection.
     pub fn open(dir: &Path, catalog_id: &str) -> Result<(Self, IndexOpened), Error> {
+        let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+        Self::open_alone(dir, catalog_id)
+    }
+
+    /// [`Self::open`] when there is an index database in `dir`; none, creating nothing, when
+    /// there is not.
+    pub(crate) fn open_existing(dir: &Path, catalog_id: &str) -> Result<Option<Self>, Error> {
+        let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);
+        if !dir.join(INDEX_FILE).exists() {
+            return Ok(None);
+        }
+        Self::open_alone(dir, catalog_id).map(|(index, _)| Some(index))
+    }
+
+    /// [`Self::open`], holding [`OPENING`].
+    fn open_alone(dir: &Path, catalog_id: &str) -> Result<(Self, IndexOpened), Error> {
         std::fs::create_dir_all(dir).map_err(|error| {
             Error::file_access(format!(
                 "cannot create the index directory: {}",
@@ -581,9 +611,9 @@ impl StoredFile {
     }
 }
 
-/// A connection to the index database in `dir`, configured as every index connection is, for the
-/// index lane's own thread. The owner opens (and, when it cannot be used, recreates) the index
-/// first ([`IndexDb::open`]).
+/// A connection to the index database in `dir`, configured as every index connection is, for a
+/// test that reads what the lane wrote, once the index has been opened by [`IndexDb::open`].
+#[cfg(test)]
 pub(crate) fn connect_at(dir: &Path) -> Result<Connection, Error> {
     configured(&dir.join(INDEX_FILE))
 }
@@ -761,11 +791,12 @@ pub(crate) fn delete_files(tx: &Transaction<'_>, ids: &[FileId]) -> Result<(), E
     Ok(())
 }
 
-/// Drop the row of the file at `path`, if there is one.
-pub(crate) fn delete_file_at(tx: &Transaction<'_>, path: &Path) -> Result<(), Error> {
-    tx.prepare_cached("DELETE FROM files WHERE path = ?1")?
-        .execute([path.to_string_lossy()])?;
-    Ok(())
+/// Drop the row of the file at `path`, if there is one: whether there was.
+pub(crate) fn delete_file_at(tx: &Transaction<'_>, path: &Path) -> Result<bool, Error> {
+    Ok(tx
+        .prepare_cached("DELETE FROM files WHERE path = ?1")?
+        .execute([path.to_string_lossy()])?
+        > 0)
 }
 
 /// Every root the index lists, in path order.
@@ -803,6 +834,82 @@ pub(crate) fn root(connection: &Connection, path: &Path) -> Result<Option<IndexR
     Ok(roots(connection)?
         .into_iter()
         .find(|root| root.path == path))
+}
+
+/// Where the change notifications of the root at `path` resume: the cursor recorded once every
+/// change before it was applied ([`set_root_cursor`]). None when the index lists no root there or
+/// has no cursor for it.
+pub(crate) fn root_cursor(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<luxforge_watch::Resume>, Error> {
+    let cursor: Option<(Option<Vec<u8>>, Option<i64>)> = connection
+        .prepare_cached("SELECT cursor_volume, cursor_event FROM roots WHERE path = ?1")?
+        .query_row([path.to_string_lossy()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
+    Ok(match cursor {
+        Some((Some(volume), Some(event))) => {
+            let volume: [u8; 16] = volume
+                .try_into()
+                .map_err(|_| Error::incompatible("index root cursor: not 16 bytes"))?;
+            Some(luxforge_watch::Resume {
+                volume,
+                // Event IDs are stored as their bits.
+                event_id: event as u64,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Record where the change notifications of the root at `path` resume, in the transaction that
+/// applied every change before `cursor`, or forget it. A root the index does not list keeps none.
+pub(crate) fn set_root_cursor(
+    tx: &Transaction<'_>,
+    path: &Path,
+    cursor: Option<luxforge_watch::Resume>,
+) -> Result<(), Error> {
+    tx.prepare_cached("UPDATE roots SET cursor_volume = ?2, cursor_event = ?3 WHERE path = ?1")?
+        .execute(params![
+            path.to_string_lossy(),
+            cursor.map(|cursor| cursor.volume.to_vec()),
+            cursor.map(|cursor| cursor.event_id as i64),
+        ])?;
+    Ok(())
+}
+
+/// Mark every root at or under `mount_point` offline, or back online where its folder is there
+/// again, as a volume is taken out or mounted: the roots whose state changed.
+pub(crate) fn set_roots_offline_under(
+    tx: &Transaction<'_>,
+    mount_point: &Path,
+    offline: bool,
+) -> Result<Vec<PathBuf>, Error> {
+    let (from, to) = under(mount_point);
+    let mut changed = Vec::new();
+    {
+        let mut statement = tx.prepare_cached(
+            "SELECT path FROM roots WHERE (path = ?1 OR (path >= ?2 AND path < ?3)) AND offline != ?4",
+        )?;
+        let rows = statement.query_map(
+            params![mount_point.to_string_lossy(), from, to, offline],
+            |row| row.get::<_, String>(0),
+        )?;
+        for path in rows {
+            let path = PathBuf::from(path?);
+            // A root comes back online only when its folder is there again.
+            if offline || path.symlink_metadata().is_ok() {
+                changed.push(path);
+            }
+        }
+    }
+    let mut update = tx.prepare_cached("UPDATE roots SET offline = ?2 WHERE path = ?1")?;
+    for path in &changed {
+        update.execute(params![path.to_string_lossy(), offline])?;
+    }
+    Ok(changed)
 }
 
 /// Forget the root at `path`.

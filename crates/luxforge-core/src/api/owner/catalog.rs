@@ -82,19 +82,6 @@ impl CatalogLanes {
         self.views.disconnect(client);
     }
 
-    /// A job of a catalog lane was cancelled in the job table (`job.cancel`): the lane that runs it
-    /// drops it from its queue, and a running one stops at its next checkpoint through its
-    /// control. A lane whose job has no one worker to report its end records it in `jobs`.
-    pub(super) fn cancelled(&mut self, job_id: &JobId, kind: JobKind, jobs: &mut Jobs) {
-        match kind {
-            JobKind::IndexRefresh => self.files.cancelled(job_id),
-            JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
-                self.previews.cancelled(job_id, jobs)
-            }
-            _ => self.library.cancelled(job_id),
-        }
-    }
-
     /// Stop every lane's workers as the owner stops.
     pub(super) fn shutdown(self) {
         self.files.shutdown();
@@ -104,6 +91,20 @@ impl CatalogLanes {
 }
 
 impl Owner {
+    /// A job of a catalog lane was cancelled in the job table (`job.cancel`): the lane that runs it
+    /// drops it from its queue, and a running one stops at its next checkpoint through its
+    /// control. A lane whose job has no one worker to report its end records it in the job table;
+    /// lane A announces the end of an `index.refresh` job that was waiting.
+    pub(super) fn catalog_cancelled(&mut self, job_id: &JobId, kind: JobKind) {
+        match kind {
+            JobKind::IndexRefresh => files::cancelled(self, job_id),
+            JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
+                self.catalog.previews.cancelled(job_id, &mut self.jobs)
+            }
+            _ => self.catalog.library.cancelled(job_id),
+        }
+    }
+
     /// A library change committed, a change, an undo or a redo alike, under `origin`: each lane
     /// that follows a kind of item it changed hears which, with the owner, so it can schedule work.
     /// Lane A follows the indexed folders it lists, so an undone `index.add-folder` stops its

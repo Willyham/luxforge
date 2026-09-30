@@ -247,6 +247,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-ui/src",
     "crates/luxforge-raw/src",
     "crates/luxforge-process/src",
+    "crates/luxforge-watch/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
 ];
@@ -260,6 +261,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-ui",
     "crates/luxforge-raw",
     "crates/luxforge-process",
+    "crates/luxforge-watch",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
 ];
@@ -874,6 +876,10 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/index",
             "crates/luxforge-core/src/previews",
             "crates/luxforge-core/src/library",
+            // The folder watcher's one thread on Linux (blocking in `poll`) and on Windows
+            // (blocking on its completion port); macOS delivers on a dispatch queue instead.
+            "crates/luxforge-watch/src/linux.rs",
+            "crates/luxforge-watch/src/windows.rs",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
             // The widget crate's GPU retirement worker.
@@ -1119,6 +1125,17 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    // The watcher's platform code is a leaf the core's index uses: it builds against no workspace
+    // crate. Its tests may use the test base, which reaches no workspace crate either.
+    DependencyRule {
+        name: "watch-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-watch"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-watch may depend on no workspace crate and no path, except in its \
+                 [dev-dependencies]",
     },
     // One HTTP client: `ureq` and `ureq-proto` belong to the module transport in `luxforge-net`.
     DependencyRule {
@@ -4196,6 +4213,42 @@ mod tests {
                 error.contains("luxforge-testbase/Cargo.toml:")
                     && error.contains("no workspace crate")
                     && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_watcher_builds_against_no_workspace_crate_but_its_tests_may_use_the_test_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-watch/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-watch\"\n\n[dependencies]\n\n\
+                     [target.'cfg(target_os = \"linux\")'.dependencies]\n\
+                     rustix.workspace = true\n\n[dev-dependencies]\n\
+                     luxforge-testbase = { path = \"../luxforge-testbase\" }\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["watch-leaf"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            (
+                "the process counters",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\" }\n",
+            ),
+            (
+                "the core, for one platform",
+                "[target.'cfg(windows)'.dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            ),
+            (
+                "a path in its build",
+                "[build-dependencies]\nhelper = { path = \"../helper\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-watch/Cargo.toml:")
+                    && error.contains("no workspace crate"),
                 "{what}: {error}"
             );
         }

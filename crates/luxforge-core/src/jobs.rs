@@ -421,9 +421,9 @@ impl JobControl {
             .unwrap_or_default()
     }
 
-    /// End the job's activity with this outcome. Owner-only, called once a job's result is in; a
-    /// job that never started running has no activity to end.
-    fn finish_activity(&self, outcome: Outcome) {
+    /// End the job's activity with this outcome, once a job's result is in; a job that never
+    /// started running has no activity to end. The index lane also ends its own listings' this way.
+    pub(crate) fn finish_activity(&self, outcome: Outcome) {
         if let Some(activity) = self.activity.lock().expect("job activity").take() {
             activity.finish(outcome);
         }

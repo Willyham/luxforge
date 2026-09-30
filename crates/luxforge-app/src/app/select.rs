@@ -86,6 +86,9 @@ pub(crate) struct Select {
     pub(crate) reading: Option<Reading>,
     /// A `job.read` of the reading folder's job is in flight.
     pub(crate) read_in_flight: bool,
+    /// The board changed while that read was in flight, so a `queued` or `running` answer is read
+    /// again once.
+    pub(crate) read_again: bool,
     /// The grid's decoded previews: each cell's handle, made once and held under the byte budget.
     pub(crate) previews: SelectPreviews,
     /// The loupe's decoded frames and focus check (`app/loupe.rs`).
@@ -99,11 +102,6 @@ pub(crate) struct Reading {
     /// The `index.refresh` job, once the owner has answered with it.
     pub(crate) job: Option<String>,
 }
-
-/// How often the reading folder's job is read while it runs. The core pushes no client anything
-/// about a job, so a client waiting for one reads it, as export does; the timer exists only while
-/// a folder is being read.
-pub(crate) const READ_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Default for Select {
     fn default() -> Self {
@@ -128,6 +126,7 @@ impl Default for Select {
             rereading: false,
             reading: None,
             read_in_flight: false,
+            read_again: false,
             previews: SelectPreviews::default(),
             loupe: crate::app::loupe::Loupe::default(),
         }
@@ -353,7 +352,6 @@ impl Editor {
                     }
                 }
             },
-            SelectMessage::ReadPoll => return self.poll_reading(),
             SelectMessage::ReadAnswered(result) => return self.reading_answered(result),
             SelectMessage::Change(change) => {
                 self.select.state.menu = None;
@@ -531,7 +529,9 @@ impl Editor {
 
     /// Browse a folder on disk: the index lane lists it with its subfolders and reads each file's
     /// header (`index.refresh`, a job), and the folder is viewed once the job has ended. The status
-    /// bar says it is reading until then.
+    /// bar says it is reading until then, and a first look that takes a while shows its progress
+    /// sheet (long-running work). The job's progress and end reach the desktop through the
+    /// activity board ([`Editor::reading_followed`]): nothing polls it.
     pub(crate) fn read_folder(&mut self, path: PathBuf) -> Task<Message> {
         self.select.state.folder = Some(path.clone());
         self.select.state.menu = None;
@@ -550,7 +550,43 @@ impl Editor {
         )
     }
 
-    /// Read the reading folder's job, one read at a time.
+    /// Long-running work has read the activity board, which wakes the desktop whenever catalog work
+    /// begins, reports progress or ends. While the reading folder's job runs on it, its progress is
+    /// the status line. When it does not, and it was just named or the catalog jobs running have
+    /// changed since the last read — this one ended, or another ended ahead of it — its record is
+    /// read once, which says how it ended or that it is still queued. So the job's end is heard as
+    /// a board change, and no timer asks after it.
+    pub(crate) fn reading_followed(&mut self, changed: bool) -> Task<Message> {
+        let Some(reading) = &self.select.reading else {
+            return Task::none();
+        };
+        let Some(job) = reading.job.as_deref() else {
+            return Task::none();
+        };
+        match self.long_work.state.job(job) {
+            Some(running) => {
+                // Sent to the background, the job is the status bar's job: the line is left free.
+                if self.long_work.state.background.as_deref() == Some(job) {
+                    return Task::none();
+                }
+                let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
+                if let Some(progress) = running
+                    .entry
+                    .progress
+                    .as_ref()
+                    .and_then(|progress| progress.message.as_deref())
+                {
+                    self.status.text = format!("Reading {name} \u{b7} {progress}");
+                }
+                Task::none()
+            }
+            None if changed => self.poll_reading(),
+            None => Task::none(),
+        }
+    }
+
+    /// Read the reading folder's job, one read at a time; asked again while one is in flight, it is
+    /// read once more when that answers.
     fn poll_reading(&mut self) -> Task<Message> {
         let Some(job) = self
             .select
@@ -561,6 +597,7 @@ impl Editor {
             return Task::none();
         };
         if std::mem::replace(&mut self.select.read_in_flight, true) {
+            self.select.read_again = true;
             return Task::none();
         }
         let (owner, client) = (self.owner.clone(), self.client);
@@ -574,6 +611,7 @@ impl Editor {
     /// folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
     fn reading_answered(&mut self, result: Result<Value, String>) -> Task<Message> {
         self.select.read_in_flight = false;
+        let again = std::mem::take(&mut self.select.read_again);
         let Some(reading) = self.select.reading.clone() else {
             return Task::none();
         };
@@ -592,6 +630,9 @@ impl Editor {
                     Some(progress) => format!("Reading {name} \u{b7} {progress}"),
                     None => format!("Reading {name}\u{2026}"),
                 };
+                if again {
+                    return self.poll_reading();
+                }
                 Task::none()
             }
             Some("ready") => {
@@ -608,6 +649,11 @@ impl Editor {
                         subfolders: true,
                     },
                 ))
+            }
+            Some("cancelled") => {
+                self.select.reading = None;
+                self.status.text = format!("Cancelled reading {name}");
+                Task::none()
             }
             other => {
                 self.select.reading = None;
@@ -1112,25 +1158,13 @@ fn previews_message(message: SelectPreviewMessage) -> Message {
     Message::Select(SelectMessage::Previews(message))
 }
 
-/// The reading folder's job timer, which exists only while a folder browsed on disk is being read.
-///
-/// And the grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits
-/// for it.
+/// The grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits for
+/// it. The reading folder's job needs no timer: long-running work's watch on the activity board
+/// hears it end.
 pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
-    let reading = if editor
-        .select
-        .reading
-        .as_ref()
-        .is_some_and(|reading| reading.job.is_some())
-    {
-        iced::time::every(READ_POLL).map(|_| Message::Select(SelectMessage::ReadPoll))
-    } else {
-        iced::Subscription::none()
-    };
-    let previews = if editor.select_shown() {
+    if editor.select_shown() {
         crate::app::select_previews::subscription().map(previews_message)
     } else {
         iced::Subscription::none()
-    };
-    iced::Subscription::batch([reading, previews])
+    }
 }

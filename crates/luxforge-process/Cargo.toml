@@ -29,9 +29,9 @@ windows-sys = { version = "=0.61.2", features = [
 [dev-dependencies]
 luxforge-testbase = { path = "../luxforge-testbase" }
 
-# This crate contains locally documented FFI to the operating system's process accounting and
-# mount table. It is the second crate allowed `unsafe`, after `luxforge-raw`; the rest of the
-# workspace retains its forbid(unsafe_code) policy.
+# This crate contains locally documented FFI to the operating system's process accounting. It is
+# the second crate allowed `unsafe`, after `luxforge-raw`; the rest of the workspace retains its
+# forbid(unsafe_code) policy.
 [lints.rust]
 unsafe_code = "allow"
 unsafe_op_in_unsafe_fn = "deny"

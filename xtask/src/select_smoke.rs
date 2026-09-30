@@ -15,7 +15,12 @@
 //! desktop reads through its own event sync and answers by evaluating its view again; a folder of
 //! real generated JPEGs (`--images 120`, with EXIF and thumbnails and their ground truth in
 //! `images/manifest.json`) browsed on disk, which the index lane reads before it is viewed; and
-//! back to Develop through the switch.
+//! back to Develop through the switch. Between the agent's pick and that folder, long-running work:
+//! a first look at a folder of 16,000 one-byte `.jpg` files the run writes beside `generated/`
+//! (`first-look/`), captured while the index lane still reads it with the view's progress sheet;
+//! Continue in background, captured with the sheet gone and the job in the status bar and the
+//! Performance section; and Cancel on its Performance row, captured once the job has ended
+//! cancelled on the activity board and the section has read it again.
 //!
 //! Each frame's `select` block is checked against the core's own answers: the view's size, picks
 //! and group layout as `browse.view` answered the runner's client, and the selection as the owner
@@ -36,8 +41,9 @@ pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates its catalog and index into `generated/` with \
     `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, asks the core for the \
-    answers the frames are checked against over a pristine copy (`select-expected.json`), and \
-    launches the editor over that catalog with `--catalog`.";
+    answers the frames are checked against over a pristine copy (`select-expected.json`), writes \
+    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, and launches \
+    the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and index.
 pub const GENERATED: &str = "generated";
 /// The core's answers from before the run.
@@ -54,10 +60,17 @@ const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
 const EVENT_LABEL: &str = "Konstanz";
 /// The actor the evidence driver's second client picks as.
 const AGENT: &str = "evidence-agent";
+/// The folder whose first look is long-running work, written into the run's output directory.
+const FIRST_LOOK: &str = "first-look";
+/// Its files, in folders of [`FIRST_LOOK_FOLDER`]: enough that the index lane takes several seconds
+/// to list and read them on the owner's M4, so the sheet, Continue in background and Cancel are
+/// each captured while the job runs.
+const FIRST_LOOK_FILES: u32 = 16_000;
+const FIRST_LOOK_FOLDER: u32 = 250;
 
 /// Every frame, in order. The agent picks `pick`, a file of the Day-grouped view the core said
 /// was not picked, on the first screen.
-pub fn plan(pick: u32, count: u64, folder: &str, images: u64) -> Plan {
+pub fn plan(pick: u32, count: u64, folder: &str, images: u64, first_look: &str) -> Plan {
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let arrow = |direction, extend| SelectStep::Arrow { direction, extend };
     Plan::new(vec![
@@ -85,6 +98,9 @@ pub fn plan(pick: u32, count: u64, folder: &str, images: u64) -> Plan {
         .status(format!(
             "{EVENT_LABEL} changed elsewhere and was read again \u{b7} {count} in view"
         )),
+        select("first-look", SelectStep::FirstLook(first_look.into())),
+        select("background", SelectStep::ContinueInBackground),
+        select("cancelled", SelectStep::CancelWork).status_starts("Cancelled reading "),
         select("folder", SelectStep::Folder(folder.into()))
             .status(format!("images \u{b7} {images} in view")),
         select("develop", SelectStep::Switch(SelectWorkspace::Develop)),
@@ -108,6 +124,20 @@ fn ask(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Re
         Some(error) => Err(format!("{method}: {}: {}", error.code, error.message).into()),
         None => Ok(response.result.unwrap_or(Value::Null)),
     }
+}
+
+/// The first look's folder: [`FIRST_LOOK_FILES`] one-byte `.jpg` files, which the index lane lists
+/// and reads a header from — unreadable, which is quick and needs no image data on disk.
+fn write_first_look(dir: &Path) -> Result {
+    let _ = fs::remove_dir_all(dir);
+    for index in 0..FIRST_LOOK_FILES {
+        let folder = dir.join(format!("{:03}", index / FIRST_LOOK_FOLDER));
+        if index % FIRST_LOOK_FOLDER == 0 {
+            fs::create_dir_all(&folder)?;
+        }
+        fs::write(folder.join(format!("IMG_{index:05}.jpg")), b"x")?;
+    }
+    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result {
@@ -293,7 +323,11 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
                     images: Some(IMAGES),
                 },
             )?;
-            write_json(&expected_file, &expect(&generated)?)?;
+            let mut expected = expect(&generated)?;
+            let first_look = run.out().join(FIRST_LOOK);
+            write_first_look(&first_look)?;
+            expected["first_look"] = json!({"path": first_look, "files": FIRST_LOOK_FILES});
+            write_json(&expected_file, &expected)?;
         }
         let expected = read_json(&expected_file)?;
         let pick = expected["pick"]["position"]
@@ -308,7 +342,10 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         let images = expected["folder"]["view"]["count"]
             .as_u64()
             .ok_or("The expected answers hold no folder view")?;
-        let plan = plan(pick, count, folder, images);
+        let first_look = expected["first_look"]["path"]
+            .as_str()
+            .ok_or("The expected answers name no first-look folder")?;
+        let plan = plan(pick, count, folder, images, first_look);
         let mut launch = Launch::app()
             .catalog(&generated.join(generate_catalog::CATALOG))
             .script("script.json", plan.script());
@@ -667,6 +704,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"selection": recorded, "catalog": after, "status": picked_frame.state()["status"]}),
     );
 
+    long_work(&mut checks, launch, picked_frame)?;
+
     // A folder of real images browsed on disk: read by the index lane, then viewed with its
     // subfolders, its days, cameras and moments the core's own and its moments the manifest's.
     let folder = launch.at("folder")?;
@@ -715,15 +754,232 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     checks.write(&launch.evidence, "select", json!({"expected": expected}))
 }
 
+fn long_work_of(frame: &Frame) -> &Value {
+    &frame.state()["long_work"]
+}
+
+/// The board entry of `job_id` among the catalog work a frame's long work lists running.
+fn running_job<'a>(frame: &'a Frame, job_id: &Value) -> Option<&'a Value> {
+    long_work_of(frame)["running"]
+        .as_array()?
+        .iter()
+        .find(|entry| &entry["job_id"] == job_id)
+}
+
+/// How many distinct colours a band of the Select centre holds, sampled every 4 px: `from` and `to`
+/// are fractions of the grid region's height, between the filter bar and the status bar.
+fn centre_colours(frame: &Frame, from: f64, to: f64) -> Result<usize> {
+    let image = frame.image()?;
+    let (width, height) = image.dimensions();
+    let scale = frame["scale"].as_f64().unwrap_or(1.0);
+    let at = |points: f64| (points * scale).round() as u32;
+    let (left, right) = (at(241.0) + 8, width.saturating_sub(at(301.0) + 8));
+    let (top, bottom) = (at(84.0) + 8, height.saturating_sub(at(90.0)));
+    let span = f64::from(bottom - top);
+    let (first, last) = (top + (span * from) as u32, top + (span * to) as u32);
+    let mut colours = std::collections::BTreeSet::new();
+    for y in (first..last).step_by(4) {
+        for x in (left..right).step_by(4) {
+            colours.insert(image.get_pixel(x, y).0);
+        }
+    }
+    Ok(colours.len())
+}
+
+/// Long-running work: the first look's progress sheet over the empty view, drawing exactly what
+/// the job on the board reports; Continue in background, the job still running in the status bar
+/// and the Performance section with Cancel; and the job cancelled from its row, ended cancelled on
+/// the board and in the section, the view told.
+fn long_work(checks: &mut Checks, launch: &Checked, before: &Frame) -> Result {
+    let look = launch.at("first-look")?;
+    let work = long_work_of(look);
+    let sheet = &work["sheet"];
+    ensure(
+        sheet.is_object(),
+        format!("The first look shows no progress sheet: {work}"),
+    )?;
+    let job_id = sheet["job_id"].clone();
+    ensure(
+        work["waiting"]["job_id"] == job_id
+            && sheet["title"] == format!("Reading {FIRST_LOOK}").as_str()
+            && select(look)["reading_folder"] == true,
+        format!("The sheet is not the waiting first look's: {work}"),
+    )?;
+    let entry = running_job(look, &job_id)
+        .ok_or_else(|| format!("The sheet's job is not running on the board: {work}"))?;
+    ensure(
+        entry["kind"] == "index.refresh",
+        format!("The sheet follows {entry}"),
+    )?;
+    // Exactly what the work reports: its own count, and a fraction only when it reports one.
+    let fraction = entry["progress"]["fraction"].as_f64();
+    ensure(
+        sheet["count"] == entry["progress"]["message"]
+            && match (fraction, sheet["fraction"].as_f64()) {
+                (None, None) => true,
+                (Some(reported), Some(drawn)) => (reported - drawn).abs() < 1e-6,
+                _ => false,
+            },
+        format!("The sheet shows {sheet}, the board reports {entry}"),
+    )?;
+    ensure(
+        sheet["estimate"].is_null()
+            || sheet["estimate"].as_str().is_some_and(|estimate| {
+                estimate.starts_with("about ") && estimate.ends_with(" left")
+            }),
+        format!("The sheet's estimate reads {}", sheet["estimate"]),
+    )?;
+    ensure(
+        work["busiest"]["jobs"]
+            .as_u64()
+            .is_some_and(|jobs| jobs >= 1),
+        format!("The status bar shows no job during the first look: {work}"),
+    )?;
+    // The sheet sits over the waiting view's empty canvas, not over the grid it replaced.
+    let flat = centre_colours(look, 0.05, 0.2)?;
+    let grid = centre_colours(before, 0.05, 0.2)?;
+    let sheet_colours = centre_colours(look, 0.45, 0.55)?;
+    ensure(
+        flat <= 2 && grid > flat && sheet_colours >= 4,
+        format!(
+            "The first look's centre: {flat} colours above the sheet (the grid before it drew {grid}), {sheet_colours} across it"
+        ),
+    )?;
+    checks.note(
+        look,
+        "a first look's progress sheet, drawing the job's own count and fraction",
+        json!({"sheet": sheet, "board": entry, "status_bar": work["busiest"],
+            "centre_colours": {"above_sheet": flat, "grid_before": grid, "across_sheet": sheet_colours}}),
+    );
+
+    let background = launch.at("background")?;
+    let work = long_work_of(background);
+    ensure(
+        work["sheet"].is_null() && work["background"] == job_id,
+        format!("Continue in background left {work}"),
+    )?;
+    let entry = running_job(background, &job_id)
+        .ok_or_else(|| format!("The job stopped when it went to the background: {work}"))?;
+    let rows = background.state()["performance"]["jobs"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let row = rows
+        .iter()
+        .find(|row| row["work"]["job_id"] == job_id)
+        .ok_or_else(|| format!("The Performance section lists no row to cancel: {rows:?}"))?;
+    ensure(
+        row["running"] == true
+            && row["work"]["count"].is_string()
+            && row["label"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("Indexing ") && label.ends_with(FIRST_LOOK)),
+        format!("The job's Performance row: {row}"),
+    )?;
+    ensure(
+        work["busiest"]["jobs"]
+            .as_u64()
+            .is_some_and(|jobs| jobs >= 1)
+            && work["timers"]["refresh"] == true,
+        format!("The job left the status bar: {work}"),
+    )?;
+    // The view it was replacing is back, drawn in the band the sheet's empty canvas left flat.
+    let returned = centre_colours(background, 0.05, 0.2)?;
+    ensure(
+        returned > 2,
+        format!("The centre is still empty after Continue in background: {returned} colours"),
+    )?;
+    checks.note(
+        background,
+        "Continue in background: the sheet gone, the job in the status bar and the section",
+        json!({"status_bar": work["busiest"], "row": row, "board": entry, "centre_colours": returned}),
+    );
+
+    let cancelled = launch.at("cancelled")?;
+    let work = long_work_of(cancelled);
+    ensure(
+        cancelled["step"]["cancel"]["job_id"] == job_id,
+        format!(
+            "Cancel was pressed on {}, not the first look's row",
+            cancelled["step"]["cancel"]
+        ),
+    )?;
+    ensure(
+        running_job(cancelled, &job_id).is_none()
+            && work["cancels"]
+                .as_array()
+                .is_some_and(|cancels| cancels.contains(&job_id)),
+        format!("The cancelled job still runs: {work}"),
+    )?;
+    let ended = work["recent"]
+        .as_array()
+        .and_then(|recent| recent.iter().find(|entry| entry["job_id"] == job_id))
+        .ok_or_else(|| format!("The board does not list the job as ended: {work}"))?;
+    ensure(
+        ended["outcome"] == "cancelled",
+        format!("The job ended {}", ended["outcome"]),
+    )?;
+    ensure(
+        select(cancelled)["reading_folder"] == false && work["waiting"].is_null(),
+        "The view still waits on the cancelled job",
+    )?;
+    ensure(
+        cancelled.state()["status"]
+            .as_str()
+            .is_some_and(|status| status.ends_with(&format!("/{FIRST_LOOK}"))),
+        format!(
+            "The status bar does not say the first look was cancelled: {}",
+            cancelled.state()["status"]
+        ),
+    )?;
+    let performance = &cancelled.state()["performance"];
+    let sampled = performance["activity"]["recent"]
+        .as_array()
+        .and_then(|recent| recent.iter().find(|entry| entry["job_id"] == job_id));
+    ensure(
+        sampled.is_some_and(|entry| entry["outcome"] == "cancelled"),
+        format!(
+            "The Performance section has not read the cancelled job: {}",
+            performance["activity"]
+        ),
+    )?;
+    let rows = performance["jobs"].as_array().cloned().unwrap_or_default();
+    ensure(
+        rows.iter().all(|row| row["work"]["job_id"] != job_id),
+        "The cancelled job still has a Cancel",
+    )?;
+    let finished = rows.iter().find(|row| {
+        row["running"] == false
+            && row["label"]
+                .as_str()
+                .is_some_and(|label| label.ends_with(FIRST_LOOK))
+    });
+    if let Some(row) = finished {
+        ensure(
+            row["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.starts_with("Cancelled ")),
+            format!("The finished row reads {row}"),
+        )?;
+    }
+    checks.note(
+        cancelled,
+        "the job cancelled from its row: ended cancelled on the board and in the section",
+        json!({"board": ended, "section_row": finished, "status": cancelled.state()["status"],
+            "status_bar": work["busiest"]}),
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn the_select_plan_is_well_formed() {
-        let plan = plan(7, 205, "/generated/images", 120);
+        let plan = plan(7, 205, "/generated/images", 120, "/run/first-look");
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 10);
+        assert_eq!(plan.len(), 13);
         assert!(plan.scripted());
     }
 }
