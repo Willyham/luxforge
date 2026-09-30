@@ -74,7 +74,8 @@ Paths are under `crates/luxforge-core/src`.
 | `catalog_types/` | The [catalog](catalog.md)'s shared shapes, which every lane codes against, one file per concept: `identity.rs` (file identities and signatures, volumes, catalog folders, collections, events, moments, library changes and the owner's 16-byte view item), `header.rs` (header metadata), `disk.rs` (volumes, cards, indexed folders and the index's file and root records), `organize.rs` (thresholds, events, moments and group layouts), `browse.rs` (view queries, summaries, rows, facets and the selection), `library.rs` (picks, targets, catalog folders, collections, the journal, developing picks, availability and missing originals), `previews.rs`, `jobs.rs` (each long-running catalog job's names) and `api.rs` (every catalog method's parameters, answer, envelope, job and error codes, declared once for the lane that registers it) |
 | `index/` | The index of the files Luxforge browses (lane A): its database in `<catalog stem>.index/index.sqlite`, versioned on its own and discarded rather than refused (`database.rs`), and which volume a path is on (`volume.rs`); the index lane is to come |
 | `organize/` | Events, days, cameras and moments, pure functions of header metadata (lane A); their signatures are final and their bodies placeholders |
-| `previews/`, `library/`, `browse/` | The preview lane and cache (lane B), picks, the library journal, catalog folders, collections and developing picks (lane C), and browse views, facets and selection (lane D); each a module documenting its lane and its planned files |
+| `previews/`, `library/` | The preview lane and cache (lane B), and picks, the library journal, catalog folders, collections and developing picks (lane C); each a module documenting its lane and its planned files |
+| `browse/` | Browse views, facets, selection and events (lane D), evaluated on the catalog owner: reading a source's compact columns from the index or the catalog (`candidates.rs`), a filter as per-item predicates (`filter.rs`), evaluation, ordering and the held item list (`view.rs`), windows (`rows.rs`), facet counts (`facets.rs`), the selection and its carry-over (`select.rs`), events and `event.list` with their cache (`events.rs`), and the preview-state seam to lane B (`previews.rs`) |
 | `seed.rs` | Generated catalogs and indexes written in bulk, for `cargo xtask generate-catalog` and tests, through the same row writers |
 | `api/owner/catalog.rs` and `files.rs`, `previews.rs`, `library.rs`, `views.rs` | The catalog lanes on the owner: each lane's owner-side state, the messages its workers post back, its handlers and its per-client clean-up, one file per lane |
 
@@ -283,6 +284,10 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Point samples waiting behind the one being evaluated | 9 (the live clients and the desktop's one in flight) | `POINT_QUEUE_CAPACITY` (`MAX_CLIENTS + 1`), `crates/luxforge-core/src/api/owner/point.rs` |
 | Buffered events | 256 | `EVENT_CAPACITY`, `crates/luxforge-core/src/api/owner.rs` |
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
+| Items one browse view's source may hold; the owner keeps 16 bytes per item of each client's view | 1,000,000 | `MAX_VIEW_ITEMS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
+| Rows per `browse.rows` window | 1000 | `MAX_VIEW_ROWS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
+| Items one `browse.select` names | 50,000 | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/catalog_types/library.rs` |
+| Event computations the owner caches, each its events' summaries and file rows | 2, keyed by index revision and event thresholds; each bounded by the index | `CACHED`, `crates/luxforge-core/src/browse/events.rs` |
 | A histogram `Report`, before protocol encoding | 16 KiB | `REPORT_BOUND_BYTES`, `crates/luxforge-core/src/analysis.rs` |
 
 **Masks** (the delivered mask data model)
