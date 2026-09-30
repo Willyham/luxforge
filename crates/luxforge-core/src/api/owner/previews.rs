@@ -1,7 +1,8 @@
 //! **Lane B (previews)** on the owner: the preview lane's queue and workers (`crate::previews`),
 //! who wants each task, the jobs clients read, each client's view job and its progress, the
-//! failures the lane remembers, waking clients whose previews were written, and the handler of
-//! `preview.read` (`crate::catalog_types::api`).
+//! failures and deferrals the lane remembers, waking clients whose previews were written, the
+//! handler of `preview.read` (`crate::catalog_types::api`), and, in `previews/regions.rs`, the
+//! region jobs of `preview.region` on their own worker.
 //!
 //! Everything here is SQL and bookkeeping on the owner thread: a request reads the file's index
 //! row and its preview rows in one query, stats the one cached file it answers with, and queues a
@@ -19,9 +20,21 @@
 //! - **Waking.** A client that asked ([`OwnerHandle::watch_previews`]) is woken, on the owner
 //!   thread, when a task its request or its view waits on writes a preview or ends, and reads
 //!   `preview.read` again for the cells it waits on: nothing polls.
-//! - **Failures.** A file with no usable preview is remembered, per tier and signature, in memory
-//!   only: its grid reports `unavailable` and `preview.read` answers the failure until the file
-//!   changes or Luxforge restarts.
+//! - **Failures.** A file that cannot give a tier — no usable preview Luxforge can develop, a
+//!   corrupt file, one past a limit — is remembered, per tier and signature, in memory only: its
+//!   grid reports `unavailable` and `preview.read` answers the failure until the file changes or
+//!   Luxforge restarts.
+//! - **The development fallback.** A RAW with no usable preview (the Canon EOS R5 Mark II's and
+//!   R8's H.265-only files) is developed neutrally for a visible or look-ahead task, one RAW at a
+//!   time in the process, and its tier labelled `developed`. A background task — a view job's —
+//!   never develops: it ends deferred, counted done in its view job's progress and not failed, is
+//!   remembered per tier and signature so views do not read it again, and its grid stays
+//!   `pending` until a visible request develops it. A background `preview.read` of it answers
+//!   `not-ready`.
+//! - **The kept development.** The one development the process keeps (`previews::region`) is
+//!   released when a client's view is replaced, when the last client that asked for a region or
+//!   was served a developed tier disconnects, and when the lane stops; every cancel of running
+//!   work wakes the callers waiting for the development, so a cancelled one returns at once.
 use super::{
     Call, ClientId, EventWake, Owner, OwnerHandle, OwnerMessage,
     catalog::{CatalogMessage, Poster},
@@ -30,11 +43,14 @@ use crate::{
     Error, ErrorKind, JobId,
     activity::{ActivityBoard, ActivitySpec},
     catalog_types::{
-        FileId, PreviewAnswer, PreviewItem, PreviewPriority, PreviewState, PreviewTier,
-        SHARED_PREVIEW_BUDGET_BYTES, api::PreviewRead, jobs::PREVIEW_EXTRACT,
+        FileId, PreviewAnswer, PreviewItem, PreviewOrigin, PreviewPriority, PreviewState,
+        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, api::PreviewRead, jobs::PREVIEW_EXTRACT,
     },
     jobs::{CatalogOpened, JobControl, JobKind, Jobs, Output},
-    previews::{self, Failures, Outcome, Post, Queue, Store, Task, TaskKey, WorkerEvent, Workers},
+    previews::{
+        self, Failures, Outcome, Post, Queue, RegionDone, Store, Task, TaskKey, WorkerEvent,
+        Workers, region,
+    },
 };
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -50,6 +66,9 @@ const REPLACED: &str = "replaced by a newer view";
 const DISCONNECTED: &str = "the client disconnected";
 /// The reason a task stops when nobody wants it any more.
 const UNWANTED: &str = "no request or view wants this preview any more";
+
+mod regions;
+pub(in crate::api) use regions::preview_region;
 
 /// Lane B's state on the owner.
 pub(super) struct PreviewsLane {
@@ -67,6 +86,15 @@ pub(super) struct PreviewsLane {
     views: HashMap<ClientId, View>,
     wakers: HashMap<ClientId, EventWake>,
     failures: Failures,
+    /// The RAWs a background task found with no usable preview and did not develop, per tier and
+    /// signature, each with the `not-ready` error a background request answers.
+    deferred: Failures,
+    /// The clients that asked for a region or were served a developed tier: when the last of them
+    /// disconnects, the kept development is released.
+    developing: BTreeSet<ClientId>,
+    regions: regions::Regions,
+    #[cfg(test)]
+    develop: Option<previews::DevelopHook>,
     #[cfg(test)]
     hold: Option<Arc<luxforge_testbase::Gate>>,
     #[cfg(test)]
@@ -119,6 +147,9 @@ struct View {
     control: Arc<JobControl>,
     total: usize,
     failed: usize,
+    /// Tiers of RAWs with no usable preview, left for a visible request to develop: done, not
+    /// failed.
+    deferred: usize,
     /// The tasks it still waits on.
     pending: HashSet<TaskKey>,
 }
@@ -141,9 +172,18 @@ pub(super) enum PreviewsMessage {
         wake: EventWake,
     },
     Worker(WorkerEvent),
+    /// The region worker finished a job.
+    Region(RegionDone),
     /// Hold every task handed out from now on at this gate, or stop holding them.
     #[cfg(test)]
     Hold(Option<Arc<luxforge_testbase::Gate>>),
+    /// Hold every region job handed out from now on at this gate, or stop holding them.
+    #[cfg(test)]
+    HoldRegions(Option<Arc<luxforge_testbase::Gate>>),
+    /// Develop a RAW with no usable preview through this hook from now on, or through the
+    /// production development again.
+    #[cfg(test)]
+    Develop(Option<previews::DevelopHook>),
     /// Hold every grid task handed out from now on after its thumbnail stage, or stop.
     #[cfg(test)]
     HoldStages(Option<Arc<luxforge_testbase::Gate>>),
@@ -195,6 +235,11 @@ impl PreviewsLane {
             views: HashMap::new(),
             wakers: HashMap::new(),
             failures: Failures::default(),
+            deferred: Failures::default(),
+            developing: BTreeSet::new(),
+            regions: regions::Regions::default(),
+            #[cfg(test)]
+            develop: None,
             #[cfg(test)]
             hold: None,
             #[cfg(test)]
@@ -204,8 +249,10 @@ impl PreviewsLane {
         }
     }
 
-    /// A client has gone: its waker goes, and its view job ends, dropping the tasks only it
-    /// wanted. The jobs its requests made belong to no client and stay.
+    /// A client has gone: its waker goes, its view job ends, dropping the tasks only it wanted,
+    /// its region job is cancelled and its region answer removed, and the kept development is
+    /// released when it was the last client that used it. The jobs its preview requests made
+    /// belong to no client and stay.
     pub(super) fn disconnect(&mut self, client: ClientId, jobs: &mut Jobs) {
         self.wakers.remove(&client);
         for wanted in self.tasks.values_mut() {
@@ -216,12 +263,19 @@ impl PreviewsLane {
             jobs.cancel(&job_id, DISCONNECTED);
             self.end_view(client, jobs);
         }
+        self.regions.disconnect(client, jobs);
+        if self.developing.remove(&client) && self.developing.is_empty() {
+            region::release_development();
+        }
     }
 
     /// `job.cancel` cancelled one of this lane's jobs in the job table: a view job drops the tasks
     /// only it wanted; a request's job leaves its task, which is removed from the queue, or
     /// stopped while it runs, when nothing else wants it.
     pub(super) fn cancelled(&mut self, job_id: &JobId, jobs: &mut Jobs) {
+        if self.regions.cancelled(job_id, jobs) {
+            return;
+        }
         if let Some(client) = self
             .views
             .iter()
@@ -242,13 +296,17 @@ impl PreviewsLane {
         self.drop_unwanted(key);
     }
 
-    /// Stop every task as the owner stops: each running one at its next checkpoint, and each
-    /// worker as soon as it is idle, when its channel closes. The workers are not joined: one may
-    /// be posting into the owner's channel, which the owner no longer reads.
+    /// Stop every task and region as the owner stops: each running one at its next checkpoint,
+    /// a waiter for the development at once, and each worker as soon as it is idle, when its
+    /// channel closes. The kept development and the region answers go. The workers are not
+    /// joined: one may be posting into the owner's channel, which the owner no longer reads.
     pub(super) fn shutdown(self) {
         for wanted in self.tasks.values() {
             wanted.control.cancel("the catalog owner stopped");
         }
+        self.regions.shutdown();
+        region::wake_development_waiters();
+        region::release_development();
         drop(self.workers);
     }
 
@@ -316,6 +374,7 @@ impl PreviewsLane {
         }
         if wanted.running {
             wanted.control.cancel(UNWANTED);
+            region::wake_development_waiters();
         } else {
             self.queue.remove(&key);
             self.tasks.remove(&key);
@@ -406,7 +465,14 @@ pub(in crate::api) fn preview_read(
             .as_ref()
             .filter(|grid| previews::intact(&grid.path))
             .map(|grid| grid.info());
-        if let Some(error) = owner.catalog.previews.failures.get(&key, &tiers.signature) {
+        let lane = &owner.catalog.previews;
+        let remembered = lane.failures.get(&key, &tiers.signature).or_else(|| {
+            // A background request never develops; a visible or look-ahead one does.
+            (priority == PreviewPriority::Background)
+                .then(|| lane.deferred.get(&key, &tiers.signature))
+                .flatten()
+        });
+        if let Some(error) = remembered {
             return match fallback {
                 // The thumbnail stage is the grid tier this file has.
                 Some(preview) if tier == PreviewTier::Grid => {
@@ -448,9 +514,10 @@ pub(in crate::api) fn preview_read(
 }
 
 /// Queue in the background the grid tiers `client`'s view lacks among `files` — those without a
-/// valid complete grid tier, found in one query, less those the lane knows have no usable
-/// preview — as one view job that replaces the client's previous one. Answers the job, or none
-/// when every grid tier is there. `resource-limit` when the queue cannot take them, and then
+/// valid complete grid tier, found in one query, less those the lane knows it cannot read or
+/// deferred for a development — as one view job that replaces the client's previous one, and
+/// release the kept development, whose frame belonged to the view replaced. Answers the job, or
+/// none when every grid tier is there. `resource-limit` when the queue cannot take them, and then
 /// nothing is queued. Lane D's `browse.view` calls it when it evaluates a view over files.
 #[allow(dead_code, reason = "lane D's browse.view calls it as it lands")]
 pub(super) fn want_view(
@@ -463,6 +530,7 @@ pub(super) fn want_view(
         owner.jobs.cancel(&job_id, REPLACED);
         owner.catalog.previews.end_view(client, &mut owner.jobs);
     }
+    region::release_development();
     let wanted = {
         let index = owner.service.index()?;
         previews::grids_wanted(index.connection(), files)?
@@ -471,9 +539,9 @@ pub(super) fn want_view(
     let keys: Vec<TaskKey> = wanted
         .into_iter()
         .filter(|(file, signature)| {
-            lane.failures
-                .get(&(*file, PreviewTier::Grid), signature)
-                .is_none()
+            let key = (*file, PreviewTier::Grid);
+            lane.failures.get(&key, signature).is_none()
+                && lane.deferred.get(&key, signature).is_none()
         })
         .map(|(file, _)| (file, PreviewTier::Grid))
         .collect();
@@ -523,6 +591,7 @@ pub(super) fn want_view(
         control,
         total: keys.len(),
         failed: 0,
+        deferred: 0,
         pending: keys.into_iter().collect(),
     };
     view.progress();
@@ -579,6 +648,9 @@ fn dispatch(owner: &mut Owner) {
             key,
             control: wanted.control.clone(),
             budget: lane.budget,
+            develops: wanted.priority >= PreviewPriority::Visible,
+            #[cfg(test)]
+            develop: lane.develop.clone(),
             #[cfg(test)]
             hold: lane.hold.clone(),
             #[cfg(test)]
@@ -608,8 +680,13 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
             key,
             outcome,
         }) => finished(owner, worker, key, outcome),
+        PreviewsMessage::Region(done) => regions::finished(owner, done),
         #[cfg(test)]
         PreviewsMessage::Hold(hold) => owner.catalog.previews.hold = hold,
+        #[cfg(test)]
+        PreviewsMessage::HoldRegions(hold) => owner.catalog.previews.regions.hold(hold),
+        #[cfg(test)]
+        PreviewsMessage::Develop(develop) => owner.catalog.previews.develop = develop,
         #[cfg(test)]
         PreviewsMessage::HoldStages(hold) => owner.catalog.previews.stage_hold = hold,
         #[cfg(test)]
@@ -640,7 +717,8 @@ pub(super) fn handle(owner: &mut Owner, message: PreviewsMessage) {
 }
 
 /// A worker finished a task: record its outcome for the job and the views that wait on it,
-/// remember a file with no usable preview, wake whoever waits, and hand out the next task.
+/// remember a file that cannot give the tier or a deferred development, wake whoever waits, and
+/// hand out the next task.
 fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
     let lane = &mut owner.catalog.previews;
     if let Some(workers) = lane.workers.as_mut() {
@@ -650,11 +728,18 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         result,
         signature,
         permanent,
+        deferred,
     } = outcome;
     match (&result, signature) {
-        (Ok(_), _) => lane.failures.forget(&key),
+        (Ok(_), _) => {
+            lane.failures.forget(&key);
+            lane.deferred.forget(&key);
+        }
         (Err(error), Some(signature)) if permanent => {
             lane.failures.remember(key, signature, error.clone());
+        }
+        (Err(error), Some(signature)) if deferred => {
+            lane.deferred.remember(key, signature, error.clone());
         }
         _ => {}
     }
@@ -663,16 +748,23 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         return;
     };
     let stopped = matches!(&result, Err(error) if error.kind == ErrorKind::Cancelled);
-    if stopped && wanted.wanted() {
-        // Stopped while something still wanted it (a cancel that raced a new request): it runs
-        // again with a fresh flag.
-        wanted.control = JobControl::new();
+    // Stopped while something still wanted it (a cancel that raced a new request), or deferred
+    // while a visible or look-ahead request joined it: it runs again, with a fresh flag when it
+    // was stopped, and develops if it needs to.
+    let raised = deferred && wanted.job.is_some() && wanted.priority >= PreviewPriority::Visible;
+    if (stopped && wanted.wanted()) || raised {
+        if stopped {
+            wanted.control = JobControl::new();
+        }
         wanted.running = false;
         if lane.queue.push(key, wanted.priority).is_ok() {
             lane.tasks.insert(key, wanted);
             dispatch(owner);
             return;
         }
+    }
+    if matches!(&result, Ok(info) if info.origin == PreviewOrigin::Developed) {
+        lane.developing.extend(wanted.waiters.iter().copied());
     }
     lane.wake(wanted.clients());
     if let Some(job_id) = &wanted.job {
@@ -693,7 +785,9 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         if !view.pending.remove(&key) {
             continue;
         }
-        if result.is_err() {
+        if deferred {
+            view.deferred += 1;
+        } else if result.is_err() {
             view.failed += 1;
         }
         view.progress();
@@ -703,7 +797,8 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
                 &view.job_id,
                 Ok(Output::Value(json!({
                     "files": view.total,
-                    "read": view.total - view.failed,
+                    "read": view.total - view.failed - view.deferred,
+                    "deferred": view.deferred,
                     "failed": view.failed,
                 }))),
             );
@@ -728,6 +823,17 @@ impl OwnerHandle {
     /// Hold every grid task handed out from now on at `gate` after its thumbnail stage, or stop.
     pub(crate) fn hold_preview_stages(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
         self.previews(PreviewsMessage::HoldStages(gate));
+    }
+
+    /// Hold every region job handed out from now on at `gate`, or stop holding them.
+    pub(crate) fn hold_regions(&self, gate: Option<Arc<luxforge_testbase::Gate>>) {
+        self.previews(PreviewsMessage::HoldRegions(gate));
+    }
+
+    /// Develop a RAW with no usable preview through `develop` from now on, or through the
+    /// production development again.
+    pub(crate) fn develop_previews_with(&self, develop: Option<previews::DevelopHook>) {
+        self.previews(PreviewsMessage::Develop(develop));
     }
 
     /// Set the loupe and large tiers' byte budget.
