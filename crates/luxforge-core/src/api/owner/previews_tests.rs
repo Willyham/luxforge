@@ -256,6 +256,11 @@ fn preview_cache_owner_a_view_that_wrote_fingerprints_advances_the_index_revisio
     assert_eq!(events.len(), 1, "one event for the view: {events:?}");
     assert_eq!(events[0]["index_revision"], before + 1);
     assert_eq!(events[0]["method"], "preview-extract");
+    assert_eq!(
+        events[0]["job_id"],
+        json!(job),
+        "the event names the view job"
+    );
     assert_eq!(revision(&setup), before + 1, "once, not once a tier");
 
     let start = setup.ok("events.since", json!({"after": 0}))["current_sequence"]

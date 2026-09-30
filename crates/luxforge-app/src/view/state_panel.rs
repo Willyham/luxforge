@@ -411,6 +411,7 @@ mod tests {
             reserve_detail: false,
             more: Some("+2 more".into()),
             version: 7,
+            board: 3,
         };
         let _: Element<'_, Message> = state_panel(&panel, &expanded);
         let quiet = PerformanceModel {
