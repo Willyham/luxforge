@@ -1386,6 +1386,99 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
     assert_eq!(harness.photographs(), 3);
 }
 
+/// Developing the file of a photograph in Removed puts the photograph back, in the same library
+/// change that links the file and clears its pick, keeping its history; undoing the Develop returns
+/// it to Removed with the time it was removed and picks its file again.
+#[test]
+fn develop_picks_puts_back_a_removed_photograph_whose_file_it_develops() {
+    let harness = Harness::new("put-back");
+    let a = photo(
+        &harness.dir.join("shoot").join("a.jpg"),
+        &Shot::at("2026:09:12 10:00:00"),
+    );
+    let first = harness.develop_paths("develop-a", &[&a]);
+    let asset = asset_of(&first, "a.jpg");
+    let removed = harness.ok(
+        "asset.remove",
+        json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "mutation": envelope("remove")}),
+    );
+    assert_eq!(removed["outcome"], "applied", "{removed}");
+    let removal = harness.inspect(&removed["change"])["rows"][0]["after"].clone();
+    assert!(removal["removed_ms"].is_i64(), "{removal}");
+    let counts = || harness.ok("catalog.info", json!({}))["counts"].clone();
+    assert_eq!(counts()["removed"], 1);
+    let history = harness.state(&asset)["current_entry"].clone();
+
+    harness.pick(&[&a], "pick-again");
+    let again = harness.develop_paths("develop-again", &[&a]);
+    assert_eq!(outcomes(&again), [("a.jpg".into(), "linked".into())]);
+    assert_eq!(again["developed"][0]["asset_id"], asset);
+    let changes = again["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "one change: {again}");
+    let detail = harness.inspect(&changes[0]);
+    let rows: Vec<(Value, Value, Value)> = detail["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["item"].clone(),
+                row["before"].clone(),
+                row["after"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows[0],
+        (
+            json!({"kind": "asset-removal", "asset_id": asset}),
+            removal.clone(),
+            Value::Null
+        ),
+        "put back: {detail}"
+    );
+    assert_eq!(rows[1].0, json!({"kind": "pick", "path": a}));
+    assert_eq!(rows.len(), 2, "{detail}");
+    assert_eq!(counts()["removed"], 0);
+    assert_eq!(harness.photographs(), 1);
+    assert!(harness.picks().is_empty());
+    assert_eq!(harness.state(&asset)["current_entry"], history);
+
+    // Undone, it is in Removed again as it was, and its file is picked again.
+    let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-again")}));
+    assert_eq!(undone["outcome"], "applied", "{undone}");
+    assert_eq!(counts()["removed"], 1);
+    assert_eq!(harness.picks(), std::slice::from_ref(&a));
+    let undo = harness.inspect(&undone["change"]);
+    let back = undo["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["item"]["kind"] == "asset-removal")
+        .expect("the removal written back")
+        .clone();
+    assert_eq!(back["after"], removal, "with the time it was removed");
+
+    // A photograph that is not removed is linked with no removal item at all.
+    harness.ok(
+        "asset.restore",
+        json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "mutation": envelope("restore")}),
+    );
+    let linked = harness.develop_paths("develop-linked", &[&a]);
+    assert_eq!(outcomes(&linked), [("a.jpg".into(), "linked".into())]);
+    let changes = linked["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1, "{linked}");
+    let detail = harness.inspect(&changes[0]);
+    assert!(
+        detail["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["item"]["kind"] == "pick"),
+        "{detail}"
+    );
+}
+
 /// `into` sends an event to the folder its entry names, and every other event to the folder the
 /// entry with no event names, made with that event's span; an unknown event, two default entries,
 /// an unknown folder and a new folder whose name is taken are each refused, developing nothing.
