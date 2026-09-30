@@ -253,19 +253,18 @@ impl Keeper {
         self.gone.front().map(|(.., due)| *due)
     }
 
-    /// Look again at each path reported gone whose wait is over (every one, with `all`), after
+    /// Look again at each path reported gone whose wait is over, after
     /// writing what the unit wrote so far, so a row a move carried is not dropped: a path still
     /// gone, or one the listing now skips, has its row and every row under it dropped.
     pub(super) fn drop_gone(
         &mut self,
         run: &mut Run<'_>,
         mounts: &[PlatformMount],
-        all: bool,
     ) -> Result<(), Error> {
         let now = Instant::now();
         let mut due = Vec::new();
         while let Some((_, _, when)) = self.gone.front() {
-            if !all && *when > now {
+            if *when > now {
                 break;
             }
             let (root, path, _) = self.gone.pop_front().expect("the front was looked at");

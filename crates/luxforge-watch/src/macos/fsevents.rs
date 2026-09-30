@@ -231,7 +231,11 @@ impl Stream {
     }
 }
 
-/// The mount point of the volume `folder` is on, and `folder`'s path without firmlinks.
+/// The mount point of the volume `folder` is on and `folder`'s path, both without firmlinks, so
+/// the one is a prefix of the other. A volume mounted below a firmlinked folder (every volume under
+/// `/Volumes`, which is the data volume's) has its files named without firmlinks through the data
+/// volume, while its mount table entry names its mount point with them, so the mount point is read
+/// the same way as the folder.
 fn volume_path(folder: &File) -> io::Result<(PathBuf, PathBuf)> {
     let descriptor = folder.as_raw_fd();
     // SAFETY: `statfs` is plain data, and all zeros is a valid value of it.
@@ -240,16 +244,31 @@ fn volume_path(folder: &File) -> io::Result<(PathBuf, PathBuf)> {
     if unsafe { libc::fstatfs(descriptor, &raw mut stats) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    let full = path_without_firmlinks(folder)?;
+    let mount_point = PathBuf::from(OsStr::from_bytes(c_field(&stats.f_mntonname)));
+    if full.starts_with(&mount_point) {
+        return Ok((mount_point, full));
+    }
+    let mount_point = path_without_firmlinks(&File::open(&mount_point)?)?;
+    Ok((mount_point, full))
+}
+
+/// The path of the open file or folder `file`, without firmlinks (`F_GETPATH_NOFIRMLINK`).
+fn path_without_firmlinks(file: &File) -> io::Result<PathBuf> {
     let mut path = [0 as c_char; libc::PATH_MAX as usize];
     // SAFETY: `F_GETPATH_NOFIRMLINK` writes at most `PATH_MAX` bytes, NUL-terminated, into the
-    // buffer, which has that many.
-    if unsafe { libc::fcntl(descriptor, libc::F_GETPATH_NOFIRMLINK, path.as_mut_ptr()) } == -1 {
+    // buffer, which has that many; the descriptor is open for the call.
+    if unsafe {
+        libc::fcntl(
+            file.as_raw_fd(),
+            libc::F_GETPATH_NOFIRMLINK,
+            path.as_mut_ptr(),
+        )
+    } == -1
+    {
         return Err(io::Error::last_os_error());
     }
-    Ok((
-        PathBuf::from(OsStr::from_bytes(c_field(&stats.f_mntonname))),
-        PathBuf::from(OsStr::from_bytes(c_field(&path))),
-    ))
+    Ok(PathBuf::from(OsStr::from_bytes(c_field(&path))))
 }
 
 /// The identifier of the device's FSEvents history, if it keeps one.
