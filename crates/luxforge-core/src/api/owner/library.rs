@@ -57,8 +57,11 @@ pub(super) fn handle(_: &mut Owner, message: LibraryMessage) {
 
 /// Record one library change and announce it: `change` runs the journal in one catalog
 /// transaction ([`EditorService::library_write`](crate::EditorService::library_write)), and a
-/// change it recorded now is one event naming its sequence, however many items it covered. A retry
-/// the journal answered announces nothing, as its first attempt did.
+/// change it recorded now is one event naming its sequence, however many items it covered, and is
+/// handed to the lanes that follow its items ([`CatalogLanes::library_changed`]). A retry the
+/// journal answered announces nothing and hands over nothing, as its first attempt did.
+///
+/// [`CatalogLanes::library_changed`]: super::catalog::CatalogLanes::library_changed
 ///
 /// Every lane's library change goes through here, lane A's indexed folders included: its
 /// `index.add-folder` passes `|tx| { upsert_volume(tx, &volume)?; journal::apply(tx, request,
@@ -73,6 +76,7 @@ pub(super) fn change(
     let outcome = owner.service.library_write(change)?;
     if let Some(sequence) = outcome.announced() {
         announce_once(&mut owner.announced, &origin.clone().library(sequence));
+        owner.catalog.library_changed(outcome.items());
     }
     Ok(outcome.answer())
 }
@@ -81,16 +85,8 @@ pub(super) fn change(
 /// before its targets are resolved again, so it neither reads the disk nor fails on a file that has
 /// moved since.
 pub(super) fn retried(owner: &Owner, request: Request<'_>) -> Result<Option<LibraryAnswer>, Error> {
-    Ok(
-        library_journal::find(&owner.service.connection, request)?.map(|change| {
-            Outcome::Recorded {
-                change,
-                sources: Vec::new(),
-                deduplicated: true,
-            }
-            .answer()
-        }),
-    )
+    Ok(library_journal::find(&owner.service.connection, request)?
+        .map(|change| Outcome::deduplicated(change).answer()))
 }
 
 /// The items selected in the calling client's view.

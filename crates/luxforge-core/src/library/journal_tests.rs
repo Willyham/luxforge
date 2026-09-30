@@ -622,7 +622,7 @@ fn journal_undo_and_redo_restore_every_item_kind_exactly() {
     )
     .unwrap();
     assert_eq!(values(&service, &items), after);
-    assert_eq!(change.sources(), std::slice::from_ref(&asset));
+    assert_eq!(change.sources().collect::<Vec<_>>(), [&asset]);
     assert_eq!(
         service.state(&asset).unwrap().asset.locator,
         moved,
