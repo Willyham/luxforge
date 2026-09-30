@@ -15,7 +15,11 @@
 )]
 
 use super::{ClientId, Owner, OwnerMessage, files, library, previews, views};
-use crate::{JobId, activity::ActivityBoard, jobs::JobKind};
+use crate::{
+    JobId,
+    activity::ActivityBoard,
+    jobs::{JobKind, Jobs},
+};
 use std::sync::{Arc, mpsc::SyncSender};
 
 /// What a catalog lane's worker posts to the owner, which the owner hands to that lane.
@@ -64,22 +68,23 @@ impl CatalogLanes {
         }
     }
 
-    /// Forget what the lanes hold for a client that has gone.
-    pub(super) fn disconnect(&mut self, client: ClientId) {
+    /// Forget what the lanes hold for a client that has gone. A lane that ends a job of its own
+    /// for it records that in `jobs`.
+    pub(super) fn disconnect(&mut self, client: ClientId, jobs: &mut Jobs) {
         self.files.disconnect(client);
-        self.previews.disconnect(client);
+        self.previews.disconnect(client, jobs);
         self.library.disconnect(client);
         self.views.disconnect(client);
     }
 
     /// A job of a catalog lane was cancelled in the job table (`job.cancel`): the lane that runs it
     /// drops it from its queue, and a running one stops at its next checkpoint through its
-    /// control.
-    pub(super) fn cancelled(&mut self, job_id: &JobId, kind: JobKind) {
+    /// control. A lane whose job has no one worker to report its end records it in `jobs`.
+    pub(super) fn cancelled(&mut self, job_id: &JobId, kind: JobKind, jobs: &mut Jobs) {
         match kind {
             JobKind::IndexRefresh => self.files.cancelled(job_id),
             JobKind::PreviewExtract | JobKind::PreviewRegion | JobKind::PreviewRender => {
-                self.previews.cancelled(job_id)
+                self.previews.cancelled(job_id, jobs)
             }
             _ => self.library.cancelled(job_id),
         }

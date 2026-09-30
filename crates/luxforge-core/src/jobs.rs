@@ -474,10 +474,6 @@ pub(crate) struct Opened {
 
 /// A job a catalog lane is about to run on its own workers ([`Family::Catalog`]). Its identity is
 /// chosen by the lane, so the work it queues can carry it before it is recorded.
-#[allow(
-    dead_code,
-    reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
-)]
 pub(crate) struct CatalogOpened {
     pub job_id: JobId,
     pub kind: JobKind,
@@ -835,10 +831,6 @@ impl Jobs {
     /// the lane starts it ([`Self::start`]), then finished through [`Self::finish`]. Like a lane
     /// job it belongs to no client: any client reads it, a cancel stops it for everyone
     /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
-    #[allow(
-        dead_code,
-        reason = "catalog contracts: the catalog lanes open their jobs with it as they land"
-    )]
     pub(crate) fn open_catalog(&mut self, opened: CatalogOpened) {
         let CatalogOpened {
             job_id,
