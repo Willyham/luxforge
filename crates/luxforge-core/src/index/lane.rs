@@ -417,9 +417,31 @@ struct Progress {
     published: Option<Instant>,
     queued: u32,
     answered: u32,
+    /// The walk is still discovering the root's extent: header reads answered meanwhile publish
+    /// nothing, because the headers queued so far are not the job's extent, and a fraction of them
+    /// would read nearly done while most of the root is still unlisted. The walk's own count is
+    /// what is published until it ends.
+    listing: bool,
 }
 
 impl Progress {
+    /// What the header reads report: the fraction of the queued headers read, once the walk has
+    /// found every file it queues and so the job's extent; nothing while it is still listing.
+    fn headers(&self) -> Option<(f64, String)> {
+        if self.listing || self.queued == 0 {
+            return None;
+        }
+        let fraction = f64::from(self.answered) / f64::from(self.queued);
+        Some((
+            fraction.min(1.0),
+            format!(
+                "{} of {} headers read",
+                count(self.answered as usize),
+                count(self.queued as usize)
+            ),
+        ))
+    }
+
     fn due(&mut self) -> bool {
         let due = self
             .published
@@ -569,6 +591,7 @@ impl Run<'_> {
         };
         self.control.set_phase("listing");
         self.control.set_progress(None, &listing(0, about));
+        self.progress.listing = true;
         let mut reconciler = Reconciler::new(volume.id.clone());
         while let Some(folder) = walk.next_folder(&checkpoint)? {
             let decisions = reconciler.folder(self.connection, &folder)?;
@@ -579,6 +602,7 @@ impl Run<'_> {
                     .set_progress(None, &listing(walk.files(), about));
             }
         }
+        self.progress.listing = false;
         self.control.set_phase("reading headers");
         self.settle()?;
         let vanished = reconciler.vanished(self.connection, &canonical, self.stamp)?;
@@ -736,16 +760,10 @@ impl Run<'_> {
             }
             None => {}
         }
-        if self.progress.due() && self.progress.queued > 0 {
-            let fraction = f64::from(self.progress.answered) / f64::from(self.progress.queued);
-            self.control.set_progress(
-                Some(fraction.min(1.0)),
-                &format!(
-                    "{} of {} headers read",
-                    count(self.progress.answered as usize),
-                    count(self.progress.queued as usize)
-                ),
-            );
+        if let Some((fraction, message)) = self.progress.headers()
+            && self.progress.due()
+        {
+            self.control.set_progress(Some(fraction), &message);
         }
         if self.batch.due() {
             self.batch.commit(self.connection, &self.config.post)?;
@@ -794,7 +812,26 @@ fn forget(connection: &mut Connection, path: &Path, post: &Post) -> Result<(), E
 
 #[cfg(test)]
 mod tests {
-    use super::{count, listing};
+    use super::{Progress, count, listing};
+
+    /// While the walk is still finding files, the headers queued so far are not the job's extent:
+    /// a fraction of them would read nearly done with most of the root unlisted, so none is
+    /// reported until the walk ends.
+    #[test]
+    fn header_reads_report_a_fraction_only_once_the_walk_has_listed_everything() {
+        let mut progress = Progress {
+            listing: true,
+            queued: 14_608,
+            answered: 14_577,
+            ..Progress::default()
+        };
+        assert_eq!(progress.headers(), None, "still listing");
+        progress.listing = false;
+        let (fraction, message) = progress.headers().unwrap();
+        assert!((fraction - 14_577.0 / 14_608.0).abs() < 1e-12);
+        assert_eq!(message, "14,577 of 14,608 headers read");
+        assert_eq!(Progress::default().headers(), None, "nothing queued");
+    }
 
     #[test]
     fn counts_are_grouped_by_thousands_and_an_extent_is_only_what_was_seen() {
