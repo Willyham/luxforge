@@ -875,7 +875,132 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "catalog.info",
         params::NoParams,
         owner::library::catalog_info,
-        "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days) and the index database's size and the files it lists"
+        "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}, previews: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days), the index database's size and the files it lists, and the preview cache's bytes and files as its rows record them"
+    ),
+    // Catalog folders and collections (TASK-012).
+    owner!(
+        "folder.list",
+        params::NoParams,
+        owner::library::organize::folder_list,
+        "{folders: [{id, name, parent_id?, created_ms, event?: {start_ms, end_ms, event_id?}, count, year?}]}: every catalog folder, parents before children and siblings by name ignoring case; count is the photographs directly in it, removed ones excepted, and year the capture year of its earliest dated photograph"
+    ),
+    owner!(
+        "folder.create",
+        crate::catalog_types::api::FolderCreate,
+        owner::library::organize::folder_create,
+        "makes an empty catalog folder in parent_id's folder or at the top level as one library change, answering {change: {outcome, change?, items, deduplicated}, folder, deduplicated}; the name is trimmed, 1 to 128 characters without control characters (validation), and unique among its siblings ignoring case (conflict naming the clash); an unknown parent is validation; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "folder.rename",
+        crate::catalog_types::api::FolderRename,
+        owner::library::organize::folder_rename,
+        "renames a catalog folder as one library change, answering {outcome, change?, items, deduplicated}; the name follows folder.create's rules (validation, conflict naming the clash), an unknown folder is validation and the same name is a no-op; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "folder.move",
+        crate::catalog_types::api::FolderMove,
+        owner::library::organize::folder_move,
+        "nests a catalog folder in parent_id's folder, or at the top level without it, as one library change, answering {outcome, change?, items, deduplicated}; a move into itself or a folder inside it, and an unknown folder or parent, are validation; a sibling of the same name ignoring case is conflict",
+        retries: Owner,
+    ),
+    owner!(
+        "folder.merge",
+        crate::catalog_types::api::FolderMerge,
+        owner::library::organize::folder_merge,
+        "moves every photograph of folder_id, removed ones too, into into_id, then its subfolders under into_id, then deletes folder_id, as one library change whose undo restores all three, answering {outcome, change?, items, deduplicated}; a merge into itself or a folder inside it and an unknown folder are validation; a subfolder whose name into_id already holds is conflict naming it; more than 50,000 items is resource-limit",
+        retries: Owner,
+    ),
+    owner!(
+        "folder.delete",
+        crate::catalog_types::api::FolderDelete,
+        owner::library::organize::folder_delete,
+        "deletes an empty catalog folder as one library change, answering {outcome, change?, items, deduplicated}; a folder any photograph (removed ones included) or folder is in is conflict saying what it holds; an unknown folder is validation",
+        retries: Owner,
+    ),
+    owner!(
+        "asset.move",
+        crate::catalog_types::api::AssetMove,
+        owner::library::organize::asset_move,
+        "moves the photographs targets names into the catalog folder folder_id as one library change, answering {outcome, change?, items, deduplicated}; photographs already there are left out, and none to move is a no-op; targets are photographs by asset_ids, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown folder or photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.list",
+        params::NoParams,
+        owner::library::organize::collection_list,
+        "{collections: [{id, name, parent_id?, kind: collection | smart | group, query?, created_ms, count?}]}: every collection, smart collection and group, parents before children and siblings by name ignoring case; count is a plain collection's members, removed photographs excepted, and query a smart collection's stored query"
+    ),
+    owner!(
+        "collection.create",
+        crate::catalog_types::api::CollectionCreate,
+        owner::library::organize::collection_create,
+        "makes a plain collection (kind collection) or a group (kind group) in the group parent_id or at the top level as one library change, answering {change: {outcome, change?, items, deduplicated}, collection, deduplicated}; the name is trimmed, 1 to 128 characters without control characters (validation), and unique among its siblings of every kind ignoring case (conflict naming the clash); a parent that is unknown or not a group is validation",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.create-smart",
+        crate::catalog_types::api::CollectionCreateSmart,
+        owner::library::organize::collection_create_smart,
+        "saves query as a smart collection in the group parent_id or at the top level as one library change, answering as collection.create; the query is stored as given with its defaults and must be one browse.view accepts over photographs: an event, folder or card source (files) is validation, as is a {kind: collection} source naming a smart collection, a group or an unknown collection, and a {kind: catalog-folder} source naming an unknown folder; names as collection.create",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.update-smart",
+        crate::catalog_types::api::CollectionUpdateSmart,
+        owner::library::organize::collection_update_smart,
+        "replaces a smart collection's query as one library change, answering {outcome, change?, items, deduplicated}; the query is checked as collection.create-smart's; a collection that is unknown or not smart is validation",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.rename",
+        crate::catalog_types::api::CollectionRename,
+        owner::library::organize::collection_rename,
+        "renames a collection, smart collection or group as one library change, answering {outcome, change?, items, deduplicated}; the name follows collection.create's rules (validation, conflict naming the clash); an unknown collection is validation and the same name a no-op",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.move",
+        crate::catalog_types::api::CollectionMove,
+        owner::library::organize::collection_move,
+        "moves a collection, smart collection or group into the group parent_id, or to the top level without it, as one library change, answering {outcome, change?, items, deduplicated}; a parent that is unknown or not a group, and a group moved into itself or a group inside it, are validation; a sibling of the same name ignoring case is conflict",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.delete",
+        crate::catalog_types::api::CollectionDelete,
+        owner::library::organize::collection_delete,
+        "deletes a plain collection with its memberships, a smart collection, or an empty group, as one library change whose undo restores the collection and its members, answering {outcome, change?, items, deduplicated}; a group that holds anything is conflict; an unknown collection is validation; a collection with 50,000 or more members is resource-limit",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.add",
+        crate::catalog_types::api::CollectionMembers,
+        owner::library::organize::collection_add,
+        "adds the photographs targets names to a plain collection as one library change, answering {outcome, change?, items, deduplicated}; a member keeps when it joined and none to add is a no-op; targets as asset.move's; a collection that is unknown, smart or a group, and an unknown photograph, are validation; resource-limit past 50,000",
+        retries: Owner,
+    ),
+    owner!(
+        "collection.remove",
+        crate::catalog_types::api::CollectionMembers,
+        owner::library::organize::collection_remove,
+        "removes the photographs targets names from a plain collection as one library change, answering {outcome, change?, items, deduplicated}; photographs not in it are left out and none to remove is a no-op; refused as collection.add",
+        retries: Owner,
+    ),
+    // Availability and Locate (TASK-016).
+    owner!(
+        "source.check",
+        crate::catalog_types::api::SourceCheck,
+        owner::library::sources::source_check,
+        "starts a source-check job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, availability, checked_ms}]}: each photograph's original as found now, available (its recorded file at its path), offline (its volume is not connected: one look at the mount point covers every photograph on it), missing (no file at its path) or changed (another file there), recorded with the time it was looked at, outside the journal; a photograph whose file moved within its volume is found again by its file identity in the index, confirmed by its fingerprint and relinked as one library change by the actor system, and nothing else is relinked; one event when anything changed, naming the change when there is one; targets are photographs by id, by the path of their original or its index row, or the photographs selected in the caller's view; read and cancel the job with job.read and job.cancel; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+    ),
+    owner!(
+        "source.locate",
+        crate::catalog_types::api::SourceLocate,
+        owner::library::sources::source_locate,
+        "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait",
+        retries: Owner,
     ),
     // ── end lane C ──
     // ── catalog lane D: views ──

@@ -776,20 +776,27 @@ pub struct PickPage {
     pub next_after: Option<PathBuf>,
 }
 
-/// What `folder.create` answers: the change and the folder it made.
+/// What `folder.create` answers: the change and the folder it made. `deduplicated` repeats the
+/// change's, at the top level where the owner marks every retried answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FolderAnswer {
     pub change: LibraryAnswer,
     pub folder: CatalogFolder,
+    #[serde(default)]
+    pub deduplicated: bool,
 }
 
 /// What `collection.create` and `collection.create-smart` answer: the change and the collection.
+/// `deduplicated` repeats the change's, at the top level where the owner marks every retried
+/// answer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CollectionAnswer {
     pub change: LibraryAnswer,
     pub collection: Collection,
+    #[serde(default)]
+    pub deduplicated: bool,
 }
 
 /// What `catalog.empty-removed` answers: how many removed photographs' records it deleted. It is
@@ -869,9 +876,8 @@ pub struct CatalogInfo {
     pub counts: CatalogCounts,
     /// The index database, and the files it lists; zero before the index is first used.
     pub index: CacheSize,
-    /// The preview cache, once the preview lane reports its size.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previews: Option<CacheSize>,
+    /// The preview cache: the bytes and files its rows record.
+    pub previews: CacheSize,
 }
 
 #[cfg(test)]
