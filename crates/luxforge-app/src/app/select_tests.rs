@@ -203,6 +203,10 @@ fn the_select_keys_are_its_own() {
         select_menu_open: true,
         ..select.clone()
     };
+    let loupe = KeyContext {
+        loupe_open: true,
+        ..select.clone()
+    };
     let command = Modifiers::COMMAND;
     let cases: Vec<(&str, Event, Status, &KeyContext, Option<&str>)> = vec![
         (
@@ -344,6 +348,34 @@ fn the_select_keys_are_its_own() {
             Status::Ignored,
             &select,
             None,
+        ),
+        (
+            "space opens the loupe",
+            pressed(Key::Named(Named::Space), Modifiers::empty()),
+            Status::Ignored,
+            &select,
+            Some("Select(Loupe(Open))"),
+        ),
+        (
+            "e opens the loupe",
+            pressed(letter("e"), Modifiers::empty()),
+            Status::Ignored,
+            &select,
+            Some("Select(Loupe(Open))"),
+        ),
+        (
+            "e in the loupe",
+            pressed(letter("e"), Modifiers::empty()),
+            Status::Ignored,
+            &loupe,
+            None,
+        ),
+        (
+            "escape closes the loupe",
+            pressed(Key::Named(Named::Escape), Modifiers::empty()),
+            Status::Ignored,
+            &loupe,
+            Some("Select(Loupe(Close))"),
         ),
         // Develop's keys never act on the photograph Select does not show.
         (
