@@ -34,7 +34,9 @@ fn ended(editor: &Editor, job: &str) -> Value {
     })
 }
 
+/// The refresh timer's tick, as it comes a second after the last read.
 fn tick(editor: &mut Editor) {
+    editor.long_work.read_at = Some(Instant::now() - REFRESH_INTERVAL);
     let _ = editor.update(Message::LongWork(LongWorkMessage::Tick));
 }
 
@@ -81,6 +83,10 @@ fn a_wake_inside_the_throttle_is_read_when_its_interval_passes() {
     let _ = editor.update(Message::LongWork(LongWorkMessage::Woken));
     assert_eq!(editor.long_work.reads, reads + 2, "read at once");
     assert!(!editor.long_work.timers().throttle);
+    // The refresh timer's tick right after a read adds nothing, so the reads stay at the
+    // throttle's rate.
+    let _ = editor.update(Message::LongWork(LongWorkMessage::Tick));
+    assert_eq!(editor.long_work.reads, reads + 2);
     finish(editor, catalog);
 }
 

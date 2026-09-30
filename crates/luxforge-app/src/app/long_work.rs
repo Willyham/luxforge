@@ -169,7 +169,17 @@ impl Editor {
                     return self.read_board(false);
                 }
             }
-            LongWorkMessage::Tick => return self.read_board(false),
+            LongWorkMessage::Tick => {
+                // A refresh right after a read has nothing to add, and would lift the reads past
+                // the throttle's rate; a due read is always taken.
+                let recent = self
+                    .long_work
+                    .read_at
+                    .is_some_and(|at| at.elapsed() < MIN_INTERVAL);
+                if self.long_work.due || !recent {
+                    return self.read_board(false);
+                }
+            }
             LongWorkMessage::Cancelled { job_id, result } => {
                 if let Err(error) = result {
                     self.event(
