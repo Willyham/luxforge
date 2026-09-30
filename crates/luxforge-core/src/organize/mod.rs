@@ -66,7 +66,7 @@ pub(crate) fn order(
         by_day
             .then(by_body)
             .then_with(|| a.instant_ms.cmp(&b.instant_ms))
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| caseless(&a.name, &b.name))
             .then_with(|| a.item.cmp(&b.item))
     };
     frames.sort_by(|a, b| {
@@ -77,12 +77,19 @@ pub(crate) fn order(
             (false, false) => tables
                 .folder_path(a.folder)
                 .cmp(tables.folder_path(b.folder))
-                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+                .then_with(|| caseless(&a.name, &b.name))
                 .then_with(|| a.item.cmp(&b.item)),
             (true, true) if descending => ascending(b, a),
             (true, true) => ascending(a, b),
         }
     });
+}
+
+/// Two names compared ignoring case, allocating nothing.
+fn caseless(a: &str, b: &str) -> Ordering {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .cmp(b.chars().flat_map(char::to_lowercase))
 }
 
 /// The group layout of `frames`, already in [`order`]: their days, the camera groups of days with
@@ -169,7 +176,7 @@ pub(crate) fn events(
             frame.item,
         )
     };
-    order.sort_by_key(key);
+    order.sort_by_cached_key(key);
     let mut set = EventSet {
         order,
         events: Vec::new(),

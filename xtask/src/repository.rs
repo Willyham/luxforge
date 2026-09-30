@@ -857,6 +857,11 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
+            // The catalog lanes' bounded workers: the index lane and its watchers, the preview
+            // lane, and the develop lane (`docs/design/catalog.md`, "Architecture").
+            "crates/luxforge-core/src/index",
+            "crates/luxforge-core/src/previews",
+            "crates/luxforge-core/src/library",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
             // The widget crate's GPU retirement worker.
