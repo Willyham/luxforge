@@ -3,7 +3,7 @@
 //!
 //! The command reads one local file and writes one new file; it never touches the network, so the
 //! download and its hashes are recorded by hand in `crates/luxforge-core/THIRD_PARTY.md`. The
-//! output is a pure function of the source's rows: each row is validated, five of its 19 columns are
+//! output is a pure function of the source's rows: each row is validated, six of its 19 columns are
 //! kept, and the rows are sorted, so a regenerated asset changes only where GeoNames changed a
 //! place. The core's lookup (`organize/gazetteer.rs`) reads exactly this layout.
 
@@ -12,7 +12,7 @@ use std::{cmp::Ordering, io::Write};
 
 /// The first line of the asset: the column names, which is also the format marker the core's parser
 /// requires.
-const HEADER: &str = "name\tcountry\tlatitude\tlongitude\tpopulation";
+const HEADER: &str = "name\tcountry\tfeature\tlatitude\tlongitude\tpopulation";
 /// A refusal is the message naming what is wrong; `run` adds where.
 type Checked<T> = std::result::Result<T, String>;
 /// Columns of a GeoNames `geoname` table row (readme.txt, "The main 'geoname' table").
@@ -21,10 +21,13 @@ const NAME: usize = 1;
 const LATITUDE: usize = 4;
 const LONGITUDE: usize = 5;
 const FEATURE_CLASS: usize = 6;
+const FEATURE_CODE: usize = 7;
 const COUNTRY: usize = 8;
 const POPULATION: usize = 14;
 /// GeoNames' own bound on a name (`varchar(200)`).
 const MAX_NAME_CHARS: usize = 200;
+/// GeoNames' own bound on a feature code (`varchar(10)`).
+const MAX_FEATURE_CHARS: usize = 10;
 /// Refusals listed before the rest are only counted.
 const MAX_REPORTED: usize = 10;
 
@@ -33,6 +36,7 @@ const MAX_REPORTED: usize = 10;
 struct Place {
     name: String,
     country: String,
+    feature: String,
     latitude: (f64, String),
     longitude: (f64, String),
     population: u32,
@@ -41,13 +45,18 @@ struct Place {
 impl Place {
     fn line(&self) -> String {
         format!(
-            "{}\t{}\t{}\t{}\t{}",
-            self.name, self.country, self.latitude.1, self.longitude.1, self.population
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            self.name,
+            self.country,
+            self.feature,
+            self.latitude.1,
+            self.longitude.1,
+            self.population
         )
     }
 
-    /// Country, name, latitude, longitude, population, then the text: two rows tie only when their
-    /// output lines are identical, so the order never depends on the source's order.
+    /// Country, name, latitude, longitude, population, feature code, then the text: two rows tie
+    /// only when their output lines are identical, so the order never depends on the source's order.
     fn order(&self, other: &Self) -> Ordering {
         self.country
             .cmp(&other.country)
@@ -55,6 +64,7 @@ impl Place {
             .then_with(|| self.latitude.0.total_cmp(&other.latitude.0))
             .then_with(|| self.longitude.0.total_cmp(&other.longitude.0))
             .then_with(|| self.population.cmp(&other.population))
+            .then_with(|| self.feature.cmp(&other.feature))
             .then_with(|| self.line().cmp(&other.line()))
     }
 }
@@ -83,7 +93,7 @@ fn coordinate(text: &str, limit: f64, what: &str) -> Checked<(f64, String)> {
 }
 
 /// Validates one GeoNames row: 19 tab-separated columns, a name, a two-letter country code,
-/// feature class P, coordinates in range and a whole population.
+/// feature class P with a feature code, coordinates in range and a whole population.
 fn place(line: &str) -> Checked<Place> {
     let columns: Vec<&str> = line.split('\t').collect();
     if columns.len() != GEONAMES_COLUMNS {
@@ -108,6 +118,17 @@ fn place(line: &str) -> Checked<Place> {
             "name `{name}` is empty, padded, has a control character or is over {MAX_NAME_CHARS} characters"
         ));
     }
+    let feature = columns[FEATURE_CODE];
+    if feature.is_empty()
+        || feature.len() > MAX_FEATURE_CHARS
+        || !feature
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+    {
+        return Err(format!(
+            "feature code `{feature}` is not one to {MAX_FEATURE_CHARS} capital letters or digits"
+        ));
+    }
     let country = columns[COUNTRY];
     if country.len() != 2 || !country.bytes().all(|b| b.is_ascii_uppercase()) {
         return Err(format!(
@@ -125,6 +146,7 @@ fn place(line: &str) -> Checked<Place> {
     Ok(Place {
         name: name.to_owned(),
         country: country.to_owned(),
+        feature: feature.to_owned(),
         latitude: coordinate(columns[LATITUDE], 90.0, "latitude")?,
         longitude: coordinate(columns[LONGITUDE], 180.0, "longitude")?,
         population,
@@ -207,6 +229,17 @@ mod tests {
 
     /// A GeoNames row with the columns this command reads and the others as upstream fills them.
     fn row(name: &str, latitude: &str, longitude: &str, country: &str, population: &str) -> String {
+        row_of(name, "PPL", latitude, longitude, country, population)
+    }
+
+    fn row_of(
+        name: &str,
+        feature: &str,
+        latitude: &str,
+        longitude: &str,
+        country: &str,
+        population: &str,
+    ) -> String {
         [
             "1",
             name,
@@ -215,7 +248,7 @@ mod tests {
             latitude,
             longitude,
             "P",
-            "PPL",
+            feature,
             country,
             "",
             "01",
@@ -234,19 +267,33 @@ mod tests {
     #[test]
     fn a_small_source_converts_to_the_sorted_selection_of_its_columns() {
         let source = [
-            row("Zürich", "47.36667", "8.55", "CH", "341730"),
-            row("Konstanz", "47.66033", "9.17582", "DE", "83713"),
-            row("Bern", "46.94809", "7.44744", "CH", "133883"),
-            row("Konstanz", "47.5", "-9.5", "DE", "0"),
+            row_of("Zürich", "PPLA", "47.36667", "8.55", "CH", "341730"),
+            row_of("Konstanz", "PPLA3", "47.66033", "9.17582", "DE", "83713"),
+            row_of("Bern", "PPLC", "46.94809", "7.44744", "CH", "133883"),
+            row_of("Konstanz", "PPLX", "47.5", "-9.5", "DE", "0"),
         ]
         .join("\n");
         assert_eq!(
             convert(&source).unwrap(),
-            "name\tcountry\tlatitude\tlongitude\tpopulation\n\
-             Bern\tCH\t46.94809\t7.44744\t133883\n\
-             Zürich\tCH\t47.36667\t8.55\t341730\n\
-             Konstanz\tDE\t47.5\t-9.5\t0\n\
-             Konstanz\tDE\t47.66033\t9.17582\t83713\n"
+            "name\tcountry\tfeature\tlatitude\tlongitude\tpopulation\n\
+             Bern\tCH\tPPLC\t46.94809\t7.44744\t133883\n\
+             Zürich\tCH\tPPLA\t47.36667\t8.55\t341730\n\
+             Konstanz\tDE\tPPLX\t47.5\t-9.5\t0\n\
+             Konstanz\tDE\tPPLA3\t47.66033\t9.17582\t83713\n"
+        );
+    }
+
+    #[test]
+    fn rows_that_differ_only_in_their_feature_code_are_both_kept_in_a_fixed_order() {
+        let rows = [
+            row_of("A", "PPLX", "1", "2", "AA", "3"),
+            row_of("A", "PPL", "1", "2", "AA", "3"),
+        ];
+        let forward = convert(&rows.join("\n")).unwrap();
+        assert!(forward.ends_with("A\tAA\tPPL\t1\t2\t3\nA\tAA\tPPLX\t1\t2\t3\n"));
+        assert_eq!(
+            convert(&[rows[1].clone(), rows[0].clone()].join("\n")).unwrap(),
+            forward
         );
     }
 
@@ -265,7 +312,23 @@ mod tests {
     #[test]
     fn a_malformed_row_is_refused_with_its_line_number() {
         let good = row("Konstanz", "47.66", "9.17", "DE", "83713");
-        let cases: [(String, &str); 12] = [
+        let cases: [(String, &str); 16] = [
+            (
+                row_of("A", "", "1", "2", "DE", "3"),
+                "line 2: feature code ``",
+            ),
+            (
+                row_of("A", "pplx", "1", "2", "DE", "3"),
+                "line 2: feature code `pplx`",
+            ),
+            (
+                row_of("A", "PPL-X", "1", "2", "DE", "3"),
+                "line 2: feature code `PPL-X`",
+            ),
+            (
+                row_of("A", "PPLAAAAAAAA", "1", "2", "DE", "3"),
+                "line 2: feature code `PPLAAAAAAAA`",
+            ),
             ("Konstanz\t47.66\t9.17".to_owned(), "line 2: expected 19"),
             (row("", "1", "2", "DE", "3"), "line 2: name ``"),
             (row(" X", "1", "2", "DE", "3"), "line 2: name ` X`"),
@@ -337,7 +400,8 @@ mod tests {
         run(&source, &output).unwrap();
         assert_eq!(
             fs::read_to_string(&output).unwrap(),
-            "name\tcountry\tlatitude\tlongitude\tpopulation\nKonstanz\tDE\t47.66\t9.17\t83713\n"
+            "name\tcountry\tfeature\tlatitude\tlongitude\tpopulation\n\
+             Konstanz\tDE\tPPL\t47.66\t9.17\t83713\n"
         );
         let error = run(&source, &output).unwrap_err().to_string();
         assert!(error.contains("must be new"), "{error}");
@@ -362,8 +426,8 @@ mod tests {
         let source: Vec<String> = lines
             .map(|line| {
                 let field: Vec<&str> = line.split('\t').collect();
-                assert_eq!(field.len(), 5, "{line}");
-                row(field[0], field[2], field[3], field[1], field[4])
+                assert_eq!(field.len(), 6, "{line}");
+                row_of(field[0], field[2], field[3], field[4], field[1], field[5])
             })
             .collect();
         assert!(source.len() > 30_000);
