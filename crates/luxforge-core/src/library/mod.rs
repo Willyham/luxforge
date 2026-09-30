@@ -49,6 +49,8 @@ pub(crate) mod worker;
 // Developing picks (TASK-013).
 
 // Resolving missing originals (TASK-017).
+/// What is missing, finding it in a chosen folder, and relinking what was verified.
+pub(crate) mod missing;
 
 // Removing (TASK-014).
 
