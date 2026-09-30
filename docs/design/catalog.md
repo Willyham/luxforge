@@ -91,7 +91,7 @@ Whatever is browsed is **indexed**: a bounded, cancellable walk that lists suppo
 Events are Luxforge's organization over the indexed folders and mounted cards ([P3](#proposals)):
 
 - Photographs are sorted by capture time across every camera and folder, and a new event starts at a gap of more than 3 hours, or, when both sides carry a position, where consecutive photographs are more than 25 km apart. A calendar day is never split below that; a long day stays one event.
-- An event is named by its place and dates: the nearest populated place to its photographs' median position, from an offline gazetteer bundled with Luxforge, never an online lookup ([P4](#proposals)); without positions, a user-named folder that holds most of it ("2026-09-12 Lake"), unless the folder's name is a camera's (`100NZ8_1`); otherwise the date and cameras.
+- An event is named by its place and dates: the nearest populated place to its photographs' median position, from an offline gazetteer bundled with Luxforge, never an online lookup ([P4](#proposals)), whose places are GeoNames' `cities15000` extract, compiled in and credited in the notices under CC BY 4.0 ([bundled place names](../engineering/dependencies.md#bundled-place-names)); without positions, a user-named folder that holds most of it ("2026-09-12 Lake"), unless the folder's name is a camera's (`100NZ8_1`); otherwise the date and cameras.
 - Events are listed by month, newest first, each with its picks and total, and are searchable by place, date and camera from the sources panel.
 - An event's photographs from several folders and cards are one view; the Info panel says where each file is.
 
