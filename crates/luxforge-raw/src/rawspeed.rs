@@ -1000,4 +1000,227 @@ mod tests {
         }
         assert!(failures.is_empty(), "{failures:#?}");
     }
+
+    /// The one-minute load average, as the timing records carry it; NaN where it is unknown.
+    fn load_average() -> f64 {
+        #[cfg(unix)]
+        {
+            let mut load = [0.0_f64; 3];
+            // SAFETY: getloadavg writes at most the one element asked for into the array.
+            if unsafe { libc::getloadavg(load.as_mut_ptr(), 1) } == 1 {
+                return load[0];
+            }
+        }
+        f64::NAN
+    }
+
+    /// One decode of `LUXFORGE_RAW_FIXTURE` in this process with the unpacker
+    /// `LUXFORGE_RAW_UNPACKER` names (`libraw` or `rawspeed`), for a peak process RSS read from
+    /// outside, for example with `/usr/bin/time -l`. Run it alone, one decode per process:
+    ///
+    /// ```sh
+    /// LUXFORGE_RAW_FIXTURE=/path/to/1840.NEF LUXFORGE_RAW_UNPACKER=rawspeed /usr/bin/time -l \
+    ///   target/release/deps/luxforge_raw-HASH --ignored --exact \
+    ///   rawspeed::tests::one_decode_for_peak_rss --test-threads 1
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; one decode per process"]
+    fn one_decode_for_peak_rss() {
+        let path = std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE");
+        let unpacker = match std::env::var("LUXFORGE_RAW_UNPACKER").as_deref() {
+            Ok("libraw") => NativeUnpacker::Libraw,
+            Ok("rawspeed") => NativeUnpacker::Rawspeed,
+            other => panic!("LUXFORGE_RAW_UNPACKER must be libraw or rawspeed, not {other:?}"),
+        };
+        let bytes = std::fs::read(&path).expect("read sample");
+        let cancel = AtomicBool::new(false);
+        let source = RawSource::decode_forcing(&bytes[..], &cancel, unpacker).expect("decode");
+        println!(
+            "{} {}x{} {}",
+            source.metadata().mode.0.id,
+            source.metadata().sensor_width,
+            source.metadata().sensor_height,
+            source.metadata().backend
+        );
+    }
+
+    /// Unpack time per RawSpeed-routed catalog mode, LibRaw forced against the mode's RawSpeed
+    /// unpacker, in one release process: identify, classification, unpack, interpretation and
+    /// the copy of the mosaic out of the handle (`RawSource::decode`), with the encoded bytes
+    /// already in memory. Reading the file and dropping the decoded source are outside the clock;
+    /// nothing is developed. Each sample is first decoded once by each unpacker, which warms both
+    /// (the first routed unpack parses RawSpeed's camera data) and checks their mosaics are
+    /// equal; then `LUXFORGE_RAW_SAMPLES` observations per unpacker (default 16, rounded up to
+    /// even) are taken in LibRaw, RawSpeed, RawSpeed, LibRaw blocks. A measurement, not a gate.
+    ///
+    /// Samples are read from `LUXFORGE_RAW_SAMPLE_DIRS`, as the routing exactness test reads
+    /// them. Every mode the catalog routes is timed, or with `LUXFORGE_RAW_TIMING_MODES` (a
+    /// comma list of mode ids) only those modes, whatever their unpacker, provided RawSpeed may
+    /// replace their decoder. `LUXFORGE_RAW_TIMING_OUTPUT` names a CSV file that receives every
+    /// observation. One JSON line per mode is printed, with each sample's nearest-rank p50 and
+    /// p95 in milliseconds per unpacker, their ratio (LibRaw p50 over RawSpeed p50) and the
+    /// mode's lowest sample ratio:
+    ///
+    /// ```sh
+    /// LUXFORGE_RAW_SAMPLE_DIRS=/selection:/popular:/corpus:/owner \
+    ///   LUXFORGE_RAW_TIMING_OUTPUT=target/unpack.csv cargo test --release -p luxforge-raw \
+    ///   --locked --lib rawspeed_unpack_timing -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "a measurement, not a gate; run alone in release"]
+    fn rawspeed_unpack_timing() {
+        use std::io::Write;
+        use std::time::Instant;
+        let dirs = std::env::var_os("LUXFORGE_RAW_SAMPLE_DIRS").expect("LUXFORGE_RAW_SAMPLE_DIRS");
+        let output = std::env::var("LUXFORGE_RAW_TIMING_OUTPUT").expect("observation CSV path");
+        let samples: usize = std::env::var("LUXFORGE_RAW_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(16);
+        let blocks = samples.div_ceil(2).max(1);
+        let only: Option<Vec<String>> = std::env::var("LUXFORGE_RAW_TIMING_MODES")
+            .ok()
+            .map(|list| list.split(',').map(|id| id.trim().to_owned()).collect());
+        let mut files = Vec::new();
+        for dir in std::env::split_paths(&dirs) {
+            let mut listed: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+                .map(|entry| entry.expect("directory entry").path())
+                .filter(|path| {
+                    std::fs::metadata(path).is_ok_and(|m| m.is_file())
+                        && path.extension().is_some_and(|ext| {
+                            ["nef", "cr2", "raf", "orf", "pef", "dng", "rw2"]
+                                .contains(&ext.to_string_lossy().to_ascii_lowercase().as_str())
+                        })
+                })
+                .collect();
+            listed.sort();
+            files.extend(listed);
+        }
+        let cancel = AtomicBool::new(false);
+        // Whether the catalog routes the mode, and its samples (path, bytes).
+        type Timed = (bool, Vec<(String, Arc<[u8]>)>);
+        let mut modes: std::collections::BTreeMap<String, Timed> = Default::default();
+        let mut seen = std::collections::HashSet::new();
+        for path in files {
+            let bytes: Arc<[u8]> = Arc::from(std::fs::read(&path).expect("read sample"));
+            if !seen.insert(format!("{:x}", Sha256::digest(&bytes))) {
+                continue;
+            }
+            let Ok(libraw) = RawSource::decode_forcing(&bytes[..], &cancel, NativeUnpacker::Libraw)
+            else {
+                continue;
+            };
+            let mode = libraw.metadata().mode.0;
+            let routed = mode.unpacker == crate::unpacker::Unpacker::Rawspeed;
+            let selected = match &only {
+                Some(ids) => {
+                    ids.iter().any(|id| id == mode.id.as_ref())
+                        && crate::unpacker::replaceable(&mode.decoder).is_some()
+                }
+                None => routed,
+            };
+            if selected {
+                modes
+                    .entry(mode.id.to_string())
+                    .or_insert((routed, Vec::new()))
+                    .1
+                    .push((path.display().to_string(), bytes));
+            }
+        }
+        let mut csv = std::fs::File::create(&output).expect("create observation CSV");
+        writeln!(
+            csv,
+            "mode,sample,unpacker,block,position,wall_ns,load_before_block"
+        )
+        .unwrap();
+        let decode = |bytes: &[u8], unpacker: NativeUnpacker, routed: bool| {
+            let started = Instant::now();
+            let source = if routed && unpacker == NativeUnpacker::Rawspeed {
+                // The routed mode's own unpacker, as production decodes it.
+                RawSource::decode(bytes, &cancel)
+            } else {
+                RawSource::decode_forcing(bytes, &cancel, unpacker)
+            }
+            .expect("decode");
+            (started.elapsed().as_nanos(), source)
+        };
+        for (mode, (routed, sources)) in &modes {
+            let mut lines = Vec::new();
+            let mut lowest = f64::INFINITY;
+            for (path, bytes) in sources {
+                let file = path.rsplit('/').next().unwrap_or(path).to_owned();
+                let (_, libraw) = decode(bytes, NativeUnpacker::Libraw, *routed);
+                let (_, rawspeed) = decode(bytes, NativeUnpacker::Rawspeed, *routed);
+                assert_eq!(libraw.metadata().backend, crate::LIBRAW_PROVIDER, "{file}");
+                assert_eq!(
+                    rawspeed.metadata().backend,
+                    crate::RAWSPEED_PROVIDER,
+                    "{file}"
+                );
+                assert!(
+                    libraw.mosaic() == rawspeed.mosaic(),
+                    "{file}: mosaics differ"
+                );
+                let sensor = [
+                    libraw.metadata().sensor_width,
+                    libraw.metadata().sensor_height,
+                ];
+                drop((libraw, rawspeed));
+                let load_start = load_average();
+                let mut times = [Vec::new(), Vec::new()];
+                for block in 0..blocks {
+                    let load = load_average();
+                    for (position, unpacker) in [
+                        NativeUnpacker::Libraw,
+                        NativeUnpacker::Rawspeed,
+                        NativeUnpacker::Rawspeed,
+                        NativeUnpacker::Libraw,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        let (ns, source) = decode(bytes, unpacker, *routed);
+                        drop(source);
+                        let index = usize::from(unpacker == NativeUnpacker::Rawspeed);
+                        times[index].push(ns as f64 / 1e6);
+                        writeln!(
+                            csv,
+                            "{mode},{file},{},{block},{position},{ns},{load:.2}",
+                            ["libraw", "rawspeed"][index]
+                        )
+                        .unwrap();
+                    }
+                }
+                csv.flush().unwrap();
+                let load_end = load_average();
+                let [libraw, rawspeed] = times.map(|values| {
+                    luxforge_testbase::Distribution::of(values).expect("observations")
+                });
+                let ratio = libraw.p50 / rawspeed.p50;
+                lowest = lowest.min(ratio);
+                lines.push(serde_json::json!({
+                    "sample": file,
+                    "sensor": sensor,
+                    "encoded_bytes": bytes.len(),
+                    "observations_per_unpacker": libraw.count,
+                    "libraw_p50_p95_ms": [libraw.p50, libraw.p95],
+                    "rawspeed_p50_p95_ms": [rawspeed.p50, rawspeed.p95],
+                    "libraw_min_max_ms": [libraw.min, libraw.max],
+                    "rawspeed_min_max_ms": [rawspeed.min, rawspeed.max],
+                    "ratio": ratio,
+                    "load_start_end": [load_start, load_end],
+                }));
+            }
+            println!(
+                "{}",
+                serde_json::json!({
+                    "mode": mode,
+                    "routed": routed,
+                    "lowest_ratio": lowest,
+                    "samples": lines,
+                })
+            );
+        }
+    }
 }

@@ -85,6 +85,6 @@ Standalone RawSpeed decoded every sample except CR3, High Efficiency NEF, Sony A
 
 Unpacking runs on source open and cache misses only. White-balance and exposure edits develop from the retained mosaic, so they do not change.
 
-- **Owner Z6.** The 546 ms cold saved-WB preparation p50 includes about 235 ms of unpack, so about 160 ms could be saved. This is an estimate until the editor is measured.
+- **Owner Z6.** Measured after routing: cold saved-WB preparation falls from 303 to 162 ms p50, 141 ms saved ([performance](../specs/performance.md#rawspeed-unpacking)). The 546 ms figure this evaluation started from predates later development work.
 - **Popular compressed NEF, CR2, lossless RAF, ORF and DNG sources.** Open time falls by 130–550 ms per photo.
 - **Owner X100VI and CR3, ARW and uncompressed sources.** No change.

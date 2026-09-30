@@ -141,77 +141,77 @@ qualification remain separate work.
 
 ### RawSpeed-routed modes
 
-64 of the 67 catalog modes whose LibRaw decoder is in the [replaceable table](rawspeed-unpack.md#routed-modes) have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. The current rule, pending the speed measurement, routes every candidate that is exact on every local authentic sample of it; the measurement applies the 1.3× gate and moves any mode below it back to LibRaw. Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. After routing, the qualifier reproduced all 130 evidence entries exactly.
+64 of the 67 catalog modes whose LibRaw decoder is in the [replaceable table](rawspeed-unpack.md#routed-modes) have `"unpacker": "rawspeed"`: RawSpeed fills their mosaic inside LibRaw's unpack, and `backend` reads `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270`. A candidate is routed when it is exact on every local authentic sample of it and its adapter unpack is at least 1.3× faster through RawSpeed than through LibRaw. Every exact candidate passed the speed gate, so none was moved back to LibRaw: the lowest ratio is the Panasonic S5's 1.50×, and every other mode is 1.84× or more. The last column is each sample's median `RawSource::decode` time (identify, unpack and the mosaic copy, bytes in memory, nothing developed) with LibRaw forced and with RawSpeed, and their ratio, from 16 alternating observations per unpacker ([performance](../specs/performance.md#rawspeed-unpacking)). Each sample was decoded through both unpackers by the crate's `replaceable_catalog_modes_match_libraw_on_every_local_sample`: the mosaic, every metadata field but `backend`, and the as-shot and perturbed-white-balance developments are identical, and LibRaw's results equal what was recorded before routing: the evidence manifest's mosaic and development hashes, or for a sample marked (pin), the mosaic hash in `tests/real_files.rs` (the modes with no evidence entry). A sample marked (no record) has neither and is compared with LibRaw only. After routing, the qualifier reproduced all 130 evidence entries exactly.
 
-| Mode | Decoder | Samples (raw.pixls.us id) | Routed |
-| --- | --- | --- | --- |
-| `CanonEOS5DMarkIIIRaw14` | `lossless_jpeg_load_raw()` | 771 | yes |
-| `CanonEOS5DMarkIVRaw14` | `lossless_jpeg_load_raw()` | 983 | yes |
-| `CanonEOS5DMarkIVRaw14DualPixel` | `lossless_jpeg_load_raw()` | 980 | yes |
-| `CanonEOS6DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1625 | yes |
-| `CanonEOS7DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1064 | yes |
-| `CanonEOS80DRaw14` | `lossless_jpeg_load_raw()` | 1294 | yes |
-| `CanonEOSM6Raw14` | `lossless_jpeg_load_raw()` | 1382 | yes |
-| `DJIFC220Dng16` | `packed_dng_load_raw()` | 1052 | yes |
-| `DJIFC4382Dng16` | `lossless_dng_load_raw()` | 7823 | no |
-| `DJIFC6310Dng16` | `packed_dng_load_raw()` | 2155 | yes |
-| `DJIFC7303Dng16` | `packed_dng_load_raw()` | 4785 | yes |
-| `DjiAir2sDng16` | `packed_dng_load_raw()` | owner Air 2S | yes |
-| `FujifilmX100FRaw14` | `fuji_compressed_load_raw()` | 1936 | yes |
-| `FujifilmX100VRaw14` | `fuji_compressed_load_raw()` | 3812 | yes |
-| `FujifilmX100ViLossless14` | `fuji_compressed_load_raw()` | 7301 (pin) | yes |
-| `FujifilmXE4Raw14` | `fuji_compressed_load_raw()` | 4446 | yes |
-| `FujifilmXH2Raw14` | `fuji_compressed_load_raw()` | 6001 | no |
-| `FujifilmXH2SRaw14` | `fuji_compressed_load_raw()` | 6007 | yes |
-| `FujifilmXM5Lossless14` | `fuji_compressed_load_raw()` | 7748 | yes |
-| `FujifilmXS20Raw14` | `fuji_compressed_load_raw()` | 6666 | yes |
-| `FujifilmXT3Raw14` | `fuji_compressed_load_raw()` | 2783 | yes |
-| `FujifilmXT5Lossy14` | `fuji_compressed_load_raw()` | 6123 | no |
-| `FujifilmXT5Raw14` | `fuji_compressed_load_raw()` | 6122 | yes |
-| `LeicaCLDng14` | `packed_dng_load_raw()` | 2489 | yes |
-| `LeicaM10Dng16` | `lossless_dng_load_raw()` | 1603 | yes |
-| `LeicaM10RDng16` | `lossless_dng_load_raw()` | 7853 | yes |
-| `LeicaQ2Dng14` | `packed_dng_load_raw()` | 3204 | yes |
-| `LeicaSL2Dng14` | `packed_dng_load_raw()` | 7872 | yes |
-| `NikonD5600Raw14` | `nikon_load_raw()` | 1416 | yes |
-| `NikonD7500Raw14` | `nikon_load_raw()` | 1534 | yes |
-| `NikonD750Raw14` | `nikon_load_raw()` | 898, 896 (no record) | yes |
-| `NikonD780Raw14` | `nikon_load_raw()` | 3828 | yes |
-| `NikonD850Lossless14` | `nikon_load_raw()` | 1840 | yes |
-| `NikonD850Lossy14` | `nikon_load_raw()` | 1841 | yes |
-| `NikonZ30Raw14` | `nikon_load_raw()` | 5813 | yes |
-| `NikonZ502Lossless14` | `nikon_load_raw()` | 7762 | yes |
-| `NikonZ50Raw14` | `nikon_load_raw()` | 3647 | yes |
-| `NikonZ52Lossless14` | `nikon_load_raw()` | 7745 | yes |
-| `NikonZ5Raw14` | `nikon_load_raw()` | 4136 | yes |
-| `NikonZ62Raw14` | `nikon_load_raw()` | 4160, 4161 (no record) | yes |
-| `NikonZ63Lossless14` | `nikon_load_raw()` | 7819 | yes |
-| `NikonZ6Lossless12` | `nikon_load_raw()` | 3585 (pin) | yes |
-| `NikonZ6Lossless14` | `nikon_load_raw()` | 3582 (pin), owner Z6 (pin) | yes |
-| `NikonZ8Raw14` | `nikon_load_raw()` | 6617 | yes |
-| `NikonZ9Raw14` | `nikon_load_raw()` | 5146 | yes |
-| `NikonZfRaw14` | `nikon_load_raw()` | 6885 | yes |
-| `NikonZfcRaw14` | `nikon_load_raw()` | 4812 | yes |
-| `OMDigitalOM1MarkIIRaw12` | `olympus_load_raw()` | 7262 | yes |
-| `OMDigitalOM1Raw12` | `olympus_load_raw()` | 5283 | yes |
-| `OMDigitalOM3Raw12` | `olympus_load_raw()` | 7796 | yes |
-| `OMDigitalOM5Raw12` | `olympus_load_raw()` | 6343 | yes |
-| `OlympusEM10MarkIVRaw12` | `olympus_load_raw()` | 4126 | yes |
-| `OlympusEM1MarkIIIRaw12` | `olympus_load_raw()` | 3800 | yes |
-| `OlympusEM1XRaw12` | `olympus_load_raw()` | 3041 | yes |
-| `PanasonicDCG9M2Raw16` | `panasonicC8_load_raw()` | 6999 | yes |
-| `PanasonicDCGH5Raw12` | `panasonic_load_raw()` | 1516 | yes |
-| `PanasonicDCGH6Raw16` | `panasonicC8_load_raw()` | 5876 | yes |
-| `PanasonicDCGH7Raw16` | `panasonicC8_load_raw()` | 8062 | yes |
-| `PanasonicDCGX7MK3Raw12` | `panasonic_load_raw()` | 5967 | yes |
-| `PanasonicDCS5M2Raw14` | `panasonicC8_load_raw()` | 7790 | yes |
-| `PanasonicDCS5Raw14` | `panasonicC6_load_raw()` | 4096 | yes |
-| `PentaxK1MarkIIDng14` | `lossless_dng_load_raw()` | 3345 | yes |
-| `PentaxK3MarkIIIRaw14` | `pentax_load_raw()` | 4677 | yes |
-| `PentaxK70Raw14` | `pentax_load_raw()` | 1141 | yes |
-| `PentaxKPDng14` | `lossless_dng_load_raw()` | 1824 | yes |
-| `RicohGRIIIDng14` | `lossless_dng_load_raw()` | 3115 | yes |
-| `RicohGRIIIxDng14` | `lossless_dng_load_raw()` | 5818 | yes |
+| Mode | Decoder | Samples (raw.pixls.us id) | Routed | Unpack p50, LibRaw → RawSpeed |
+| --- | --- | --- | --- | --- |
+| `CanonEOS5DMarkIIIRaw14` | `lossless_jpeg_load_raw()` | 771 | yes | 234.1 → 66.3 ms, 3.53× |
+| `CanonEOS5DMarkIVRaw14` | `lossless_jpeg_load_raw()` | 983 | yes | 314.9 → 88.7 ms, 3.55× |
+| `CanonEOS5DMarkIVRaw14DualPixel` | `lossless_jpeg_load_raw()` | 980 | yes | 312.9 → 86.8 ms, 3.60× |
+| `CanonEOS6DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1625 | yes | 291.0 → 94.5 ms, 3.08× |
+| `CanonEOS7DMarkIIRaw14` | `lossless_jpeg_load_raw()` | 1064 | yes | 205.1 → 56.4 ms, 3.64× |
+| `CanonEOS80DRaw14` | `lossless_jpeg_load_raw()` | 1294 | yes | 285.2 → 91.0 ms, 3.13× |
+| `CanonEOSM6Raw14` | `lossless_jpeg_load_raw()` | 1382 | yes | 262.5 → 81.4 ms, 3.23× |
+| `DJIFC220Dng16` | `packed_dng_load_raw()` | 1052 | yes | 7.9 → 3.7 ms, 2.16× |
+| `DJIFC4382Dng16` | `lossless_dng_load_raw()` | 7823 | no | not routed |
+| `DJIFC6310Dng16` | `packed_dng_load_raw()` | 2155 | yes | 12.8 → 5.8 ms, 2.20× |
+| `DJIFC7303Dng16` | `packed_dng_load_raw()` | 4785 | yes | 7.7 → 3.5 ms, 2.17× |
+| `DjiAir2sDng16` | `packed_dng_load_raw()` | owner Air 2S | yes | 12.9 → 5.9 ms, 2.18× |
+| `FujifilmX100FRaw14` | `fuji_compressed_load_raw()` | 1936 | yes | 545.3 → 180.3 ms, 3.02× |
+| `FujifilmX100VRaw14` | `fuji_compressed_load_raw()` | 3812 | yes | 580.9 → 203.2 ms, 2.86× |
+| `FujifilmX100ViLossless14` | `fuji_compressed_load_raw()` | 7301 (pin) | yes | 843.7 → 303.8 ms, 2.78× |
+| `FujifilmXE4Raw14` | `fuji_compressed_load_raw()` | 4446 | yes | 535.5 → 197.5 ms, 2.71× |
+| `FujifilmXH2Raw14` | `fuji_compressed_load_raw()` | 6001 | no | not routed |
+| `FujifilmXH2SRaw14` | `fuji_compressed_load_raw()` | 6007 | yes | 550.7 → 200.1 ms, 2.75× |
+| `FujifilmXM5Lossless14` | `fuji_compressed_load_raw()` | 7748 | yes | 551.3 → 200.1 ms, 2.76× |
+| `FujifilmXS20Raw14` | `fuji_compressed_load_raw()` | 6666 | yes | 584.4 → 202.7 ms, 2.88× |
+| `FujifilmXT3Raw14` | `fuji_compressed_load_raw()` | 2783 | yes | 551.5 → 199.7 ms, 2.76× |
+| `FujifilmXT5Lossy14` | `fuji_compressed_load_raw()` | 6123 | no | not routed |
+| `FujifilmXT5Raw14` | `fuji_compressed_load_raw()` | 6122 | yes | 843.6 → 303.0 ms, 2.78× |
+| `LeicaCLDng14` | `packed_dng_load_raw()` | 2489 | yes | 151.7 → 25.1 ms, 6.03× |
+| `LeicaM10Dng16` | `lossless_dng_load_raw()` | 1603 | yes | 250.5 → 84.9 ms, 2.95× |
+| `LeicaM10RDng16` | `lossless_dng_load_raw()` | 7853 | yes | 422.6 → 150.9 ms, 2.80× |
+| `LeicaQ2Dng14` | `packed_dng_load_raw()` | 3204 | yes | 291.8 → 47.0 ms, 6.21× |
+| `LeicaSL2Dng14` | `packed_dng_load_raw()` | 7872 | yes | 291.1 → 47.4 ms, 6.14× |
+| `NikonD5600Raw14` | `nikon_load_raw()` | 1416 | yes | 216.5 → 76.3 ms, 2.84× |
+| `NikonD7500Raw14` | `nikon_load_raw()` | 1534 | yes | 180.8 → 61.3 ms, 2.95× |
+| `NikonD750Raw14` | `nikon_load_raw()` | 898, 896 (no record) | yes | 200.6 → 60.8 ms, 3.30× (898); 203.9 → 64.7 ms, 3.15× (896) |
+| `NikonD780Raw14` | `nikon_load_raw()` | 3828 | yes | 233.8 → 88.7 ms, 2.64× |
+| `NikonD850Lossless14` | `nikon_load_raw()` | 1840 | yes | 383.3 → 126.0 ms, 3.04× |
+| `NikonD850Lossy14` | `nikon_load_raw()` | 1841 | yes | 384.6 → 126.3 ms, 3.04× |
+| `NikonZ30Raw14` | `nikon_load_raw()` | 5813 | yes | 176.9 → 58.6 ms, 3.02× |
+| `NikonZ502Lossless14` | `nikon_load_raw()` | 7762 | yes | 180.1 → 61.8 ms, 2.91× |
+| `NikonZ50Raw14` | `nikon_load_raw()` | 3647 | yes | 194.7 → 70.0 ms, 2.78× |
+| `NikonZ52Lossless14` | `nikon_load_raw()` | 7745 | yes | 204.6 → 66.6 ms, 3.07× |
+| `NikonZ5Raw14` | `nikon_load_raw()` | 4136 | yes | 213.3 → 72.7 ms, 2.93× |
+| `NikonZ62Raw14` | `nikon_load_raw()` | 4160, 4161 (no record) | yes | 253.6 → 101.6 ms, 2.50× (4160); 205.0 → 86.1 ms, 2.38× (4161) |
+| `NikonZ63Lossless14` | `nikon_load_raw()` | 7819 | yes | 222.9 → 80.0 ms, 2.79× |
+| `NikonZ6Lossless12` | `nikon_load_raw()` | 3585 (pin) | yes | 206.4 → 64.4 ms, 3.21× |
+| `NikonZ6Lossless14` | `nikon_load_raw()` | 3582 (pin), owner Z6 (pin) | yes | 206.3 → 65.4 ms, 3.15× (3582); 203.6 → 65.5 ms, 3.11× (owner Z6) |
+| `NikonZ8Raw14` | `nikon_load_raw()` | 6617 | yes | 425.4 → 161.4 ms, 2.64× |
+| `NikonZ9Raw14` | `nikon_load_raw()` | 5146 | yes | 394.5 → 133.2 ms, 2.96× |
+| `NikonZfRaw14` | `nikon_load_raw()` | 6885 | yes | 212.1 → 71.9 ms, 2.95× |
+| `NikonZfcRaw14` | `nikon_load_raw()` | 4812 | yes | 179.0 → 60.0 ms, 2.98× |
+| `OMDigitalOM1MarkIIRaw12` | `olympus_load_raw()` | 7262 | yes | 293.4 → 120.0 ms, 2.45× |
+| `OMDigitalOM1Raw12` | `olympus_load_raw()` | 5283 | yes | 317.4 → 122.3 ms, 2.60× |
+| `OMDigitalOM3Raw12` | `olympus_load_raw()` | 7796 | yes | 315.0 → 123.6 ms, 2.55× |
+| `OMDigitalOM5Raw12` | `olympus_load_raw()` | 6343 | yes | 263.6 → 115.5 ms, 2.28× |
+| `OlympusEM10MarkIVRaw12` | `olympus_load_raw()` | 4126 | yes | 275.6 → 109.4 ms, 2.52× |
+| `OlympusEM1MarkIIIRaw12` | `olympus_load_raw()` | 3800 | yes | 258.0 → 109.5 ms, 2.36× |
+| `OlympusEM1XRaw12` | `olympus_load_raw()` | 3041 | yes | 307.9 → 108.7 ms, 2.83× |
+| `PanasonicDCG9M2Raw16` | `panasonicC8_load_raw()` | 6999 | yes | 188.3 → 87.2 ms, 2.16× |
+| `PanasonicDCGH5Raw12` | `panasonic_load_raw()` | 1516 | yes | 65.5 → 31.6 ms, 2.07× |
+| `PanasonicDCGH6Raw16` | `panasonicC8_load_raw()` | 5876 | yes | 181.0 → 97.3 ms, 1.86× |
+| `PanasonicDCGH7Raw16` | `panasonicC8_load_raw()` | 8062 | yes | 189.4 → 85.5 ms, 2.22× |
+| `PanasonicDCGX7MK3Raw12` | `panasonic_load_raw()` | 5967 | yes | 66.2 → 31.6 ms, 2.09× |
+| `PanasonicDCS5M2Raw14` | `panasonicC8_load_raw()` | 7790 | yes | 173.6 → 94.4 ms, 1.84× |
+| `PanasonicDCS5Raw14` | `panasonicC6_load_raw()` | 4096 | yes | 42.9 → 28.5 ms, 1.50× |
+| `PentaxK1MarkIIDng14` | `lossless_dng_load_raw()` | 3345 | yes | 353.3 → 105.0 ms, 3.37× |
+| `PentaxK3MarkIIIRaw14` | `pentax_load_raw()` | 4677 | yes | 223.2 → 66.2 ms, 3.37× |
+| `PentaxK70Raw14` | `pentax_load_raw()` | 1141 | yes | 199.6 → 58.7 ms, 3.40× |
+| `PentaxKPDng14` | `lossless_dng_load_raw()` | 1824 | yes | 246.3 → 74.2 ms, 3.32× |
+| `RicohGRIIIDng14` | `lossless_dng_load_raw()` | 3115 | yes | 251.1 → 76.6 ms, 3.28× |
+| `RicohGRIIIxDng14` | `lossless_dng_load_raw()` | 5818 | yes | 237.7 → 70.9 ms, 3.35× |
 
 The background `raw-editor` journey passed on routed modes from every routed family: the owner Z6 (`NikonZ6Lossless14`) and Air 2S (`DjiAir2sDng16`), Nikon Z6III lossless (7819), Canon 5D Mark IV (983), Fujifilm X-T5 lossless compressed (6122), OM-1 (5283), Panasonic S5II (7790), Pentax K-3 Mark III (4677) and the Ricoh GR III lossless DNG (3115), which applies no DNG opcodes.
 

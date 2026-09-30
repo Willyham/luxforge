@@ -144,4 +144,12 @@ LUXFORGE_RAW_SAMPLE_DIRS=/path/to/selection:/path/to/popular:/path/to/corpus:/pa
   cargo test --release -p luxforge-raw --locked --lib replaceable_catalog_modes -- --ignored --nocapture
 ```
 
+Two ignored measurements go with it, and run alone in release. `rawspeed_unpack_timing` reads the same directories and times `RawSource::decode` with LibRaw forced against RawSpeed for every routed mode (or the modes `LUXFORGE_RAW_TIMING_MODES` lists), writing every observation to the CSV `LUXFORGE_RAW_TIMING_OUTPUT` names and printing one JSON line per mode with each sample's p50, p95 and ratio; this is the routing speed gate's measurement ([performance](../../docs/specs/performance.md#rawspeed-unpacking)). `one_decode_for_peak_rss` decodes `LUXFORGE_RAW_FIXTURE` once with the unpacker `LUXFORGE_RAW_UNPACKER` names (`libraw` or `rawspeed`), for a peak RSS read from outside the process:
+
+```sh
+LUXFORGE_RAW_SAMPLE_DIRS=/path/to/selection:/path/to/popular:/path/to/corpus:/path/to/owner/raw \
+  LUXFORGE_RAW_TIMING_OUTPUT=/path/to/unpack.csv cargo test --release -p luxforge-raw --locked \
+  --lib rawspeed_unpack_timing -- --ignored --nocapture
+```
+
 The authentic tests compare full sensor u16 buffers to the hashes the [RAW backend comparison](../../docs/research/raw-backend-selection.md) recorded independently, verify source hashes before/after, mode, crop, CFA, white metadata, owner Z6 EXIF orientation, finite developed floats, the developed float range (printed), invalid gains and cancellation. The DJI test also checks the opcode/calibration payload hashes, fixed matrix against LibRaw's rendered matrix, malformed mandatory operations, and 18 corrected camera-plane samples computed independently from sparse pre-correction pixels in [the DNG reference](../../fixtures/raw-dng-reference.json) (`luxforge_reference::dng`). Its crate-private required-opcode list and corrected point queries are checked against the same file by the ignored library tests `owner_dji_dng_requires_warp_and_gain_map` and `owner_dji_dng_answers_corrected_point_queries` (`--lib owner_dji -- --ignored`). The fixture itself and generated sparse dump stay outside the repository. Manual dependency/native/asset review and clean Windows/Linux package verification are still outstanding. This crate alone does not qualify visible color, export or end-to-end latency.
