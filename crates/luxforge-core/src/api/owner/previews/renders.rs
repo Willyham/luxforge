@@ -27,8 +27,12 @@
 //!   grid tier has it rendered again in the background at once, so views stay current. A newer
 //!   commit supersedes such a re-render that has not started. The stale rows and files go when the
 //!   new tiers are written.
+//! - **Leaving the catalog.** A photograph that leaves has its renders forgotten
+//!   ([`Renders::forget`]): a waiting one leaves the queue, the running one stops and writes no row
+//!   after, and every tier's job ends `cancelled`, naming why.
 use super::{
-    CatalogMessage, ClientId, Owner, PreviewsMessage, answer, finish_cancelled, now_ms, want_camera,
+    CatalogMessage, ClientId, LEFT_THE_CATALOG, Owner, PreviewsMessage, answer, finish_cancelled,
+    now_ms, want_camera,
 };
 use crate::{
     AssetId, EditorService, EntryId, Error, ErrorKind, JobId, SourceTag,
@@ -47,7 +51,7 @@ use crate::{
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::PathBuf,
     sync::Arc,
 };
@@ -119,6 +123,9 @@ struct RenderTask {
     waiters: BTreeSet<ClientId>,
     /// A client asked for it; otherwise only a commit did, and a newer commit supersedes it.
     requested: bool,
+    /// Its photograph left the catalog while it ran ([`Renders::forget`]): what it answers is
+    /// nobody's.
+    forgotten: bool,
 }
 
 impl Renders {
@@ -172,6 +179,44 @@ impl Renders {
         self.photos
             .remove(&(task.asset_id.clone(), task.entry_id.clone()));
         Some(task)
+    }
+
+    /// Forget the renders of `assets`, photographs that left the catalog: a waiting one leaves the
+    /// queue, a commit's re-render among them; the running one is cancelled, so it stops at its
+    /// next checkpoint and writes no row after, and is kept, forgotten, until the worker answers.
+    /// Each tier's job ends `cancelled`, naming why. Answers the clients that waited on them, to
+    /// wake.
+    pub(super) fn forget(&mut self, assets: &HashSet<AssetId>, jobs: &mut Jobs) -> Vec<ClientId> {
+        let ids: Vec<u64> = self
+            .tasks
+            .iter()
+            .filter(|(_, task)| assets.contains(&task.asset_id))
+            .map(|(id, _)| *id)
+            .collect();
+        let mut woken = Vec::new();
+        for id in ids {
+            let (tiers, waiters) = if self.running == Some(id) {
+                let task = self.tasks.get_mut(&id).expect("the render is held");
+                task.control.cancel(LEFT_THE_CATALOG);
+                task.forgotten = true;
+                let key = (task.asset_id.clone(), task.entry_id.clone());
+                let taken = (
+                    std::mem::take(&mut task.tiers),
+                    std::mem::take(&mut task.waiters),
+                );
+                self.photos.remove(&key);
+                taken
+            } else {
+                let task = self.remove(id).expect("the render is held");
+                (task.tiers, task.waiters)
+            };
+            for (job_id, _) in tiers.into_values() {
+                self.jobs.remove(&job_id);
+                jobs.finish(&job_id, Err(Error::cancelled(LEFT_THE_CATALOG)));
+            }
+            woken.extend(waiters);
+        }
+        woken
     }
 
     /// A client has gone: it is woken for nothing any more. The jobs its requests made belong to no
@@ -365,6 +410,7 @@ fn want(
                     making: None,
                     waiters: BTreeSet::new(),
                     requested: false,
+                    forgotten: false,
                 },
             );
             renders.photos.insert(key, id);
@@ -575,7 +621,7 @@ pub(super) fn finished(owner: &mut Owner, done: RenderDone) {
         }
     }
     let key = (task.asset_id.clone(), task.entry_id.clone());
-    let row = task.row;
+    let (row, forgotten) = (task.row, task.forgotten);
     let waiters: Vec<ClientId> = task.waiters.iter().copied().collect();
     if !task.tiers.is_empty() {
         // What is still wanted runs again, with a flag no cancel has set.
@@ -599,7 +645,9 @@ pub(super) fn finished(owner: &mut Owner, done: RenderDone) {
     for (job_id, _) in &ended {
         lane.renders.jobs.remove(job_id);
     }
-    if let Ok(written) = &result {
+    // A forgotten photograph's row may already be another photograph's, whose camera preview is
+    // still its own.
+    if let (Ok(written), false) = (&result, forgotten) {
         for info in written {
             lane.release_camera((ViewItem::Photo(row), info.tier));
         }

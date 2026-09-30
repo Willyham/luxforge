@@ -145,11 +145,13 @@ pub(crate) fn make(
             tier,
             renderer: CAMERA_RENDERER,
             origin: PreviewOrigin::Embedded,
+            approximate: false,
             name: &name,
             jpeg: &made.jpeg,
             width: made.width,
             height: made.height,
             now_ms: now_ms(),
+            control,
         },
     )?;
     match written {
