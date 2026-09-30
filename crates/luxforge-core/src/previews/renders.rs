@@ -149,7 +149,7 @@ pub(crate) fn run(store: &mut Store, work: &RenderWork) -> Result<Vec<PreviewInf
     let now = now_ms();
     let mut written = Vec::with_capacity(tiers.len());
     for tier in &tiers {
-        written.push(write(store, tier, now)?);
+        written.push(write(store, tier, now, control)?);
     }
     let asset_id = work.request.asset_id();
     if work.request.entry_id() == &work.current {
@@ -162,8 +162,14 @@ pub(crate) fn run(store: &mut Store, work: &RenderWork) -> Result<Vec<PreviewInf
     Ok(written)
 }
 
-/// Write one rendered tier and its row.
-fn write(store: &mut Store, tier: &RenderedTier, now_ms: i64) -> Result<PreviewInfo, Error> {
+/// Write one rendered tier and its row, labelled approximate when its proxy render is; none once
+/// `control` is cancelled.
+fn write(
+    store: &mut Store,
+    tier: &RenderedTier,
+    now_ms: i64,
+    control: &JobControl,
+) -> Result<PreviewInfo, Error> {
     let name = tier.key.file_name();
     let row = photos::write(
         store,
@@ -173,11 +179,13 @@ fn write(store: &mut Store, tier: &RenderedTier, now_ms: i64) -> Result<PreviewI
             tier: tier.key.tier,
             renderer: i64::from(RENDERER_GENERATION),
             origin: PreviewOrigin::Rendered,
+            approximate: tier.approximate(),
             name: &name,
             jpeg: &tier.jpeg,
             width: tier.width,
             height: tier.height,
             now_ms,
+            control,
         },
     )?
     .ok_or_else(|| Error::internal("a rendered tier was refused"))?;

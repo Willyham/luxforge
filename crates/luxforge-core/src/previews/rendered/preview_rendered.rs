@@ -307,6 +307,11 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
                 key.tier
             )
         );
+        assert!(
+            !tier.approximate() && !info.approximate,
+            "a Basic edit's {} tier is exact",
+            key.tier.as_str()
+        );
         println!(
             "{} tier {}×{}: {} bytes",
             key.tier.as_str(),
@@ -349,7 +354,9 @@ fn a_grid_tier_is_the_fit_previews_proxy_frame_and_both_tiers_share_one_preparat
 }
 
 /// A spatial stack (Clarity and Dehaze) renders its tiers through the proxy path with the Fit
-/// preview's approximation: the same bytes as its proxy frame, labelled spatial.
+/// preview's approximation: the same bytes as its proxy frame, labelled spatial, and the tier says
+/// it is approximate; its large tier, whose stage already fits, is the exact render and says it is
+/// not.
 #[test]
 fn a_spatial_stack_is_approximated_at_the_tiers_size_as_the_fit_preview_approximates_it() {
     let path = generated_jpeg("rendered-spatial", 1200, 800);
@@ -376,6 +383,19 @@ fn a_spatial_stack_is_approximated_at_the_tiers_size_as_the_fit_preview_approxim
             approximation: fit.approximation
         }
     );
+
+    let both = plan_render(&service, &asset, None, &BOTH).unwrap();
+    let encoded = render(&both, &Cancel::new()).unwrap();
+    let [grid, large] = &encoded[..] else {
+        panic!("two tiers");
+    };
+    assert!(grid.approximate());
+    assert!(
+        grid.info(PathBuf::from("/c.index/previews/g.jpg"))
+            .approximate
+    );
+    assert!(matches!(&large.path, TierPath::Exact { .. }));
+    assert!(!large.approximate(), "an exact render is not approximate");
 }
 
 /// A tier is upright: a JPEG stored under EXIF orientation 6 renders as its upright 320 × 480
@@ -777,7 +797,7 @@ fn stale_rows_are_other_entries_and_other_generations() {
         index
             .connection()
             .execute(
-                "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                "INSERT INTO photo_previews VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                 params![
                     asset,
                     entry,
@@ -788,7 +808,8 @@ fn stale_rows_are_other_entries_and_other_generations() {
                     341,
                     1000 + n as i64,
                     origin,
-                    0
+                    0,
+                    false
                 ],
             )
             .unwrap();

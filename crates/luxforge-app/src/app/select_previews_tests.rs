@@ -54,6 +54,7 @@ fn info(id: i64, origin: PreviewOrigin, width: u32, height: u32) -> PreviewInfo 
         width,
         height,
         origin,
+        approximate: false,
         bytes: 40_000,
         key: format!("file:{id}:sig:grid:{}", origin.as_str()),
     }

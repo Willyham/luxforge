@@ -28,12 +28,13 @@ use std::{
     time::Duration,
 };
 
-/// Format 3: files with their signatures and header columns, the roots listed with where each
+/// Format 4: files with their signatures and header columns, the roots listed with where each
 /// watched root's change notifications resume (`cursor_volume`, `cursor_event`), the preview records
-/// of files and developed photographs, and the brightness fingerprints of files' complete grid
-/// tiers (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database
-/// SQLite cannot read, and an index of another catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 3;
+/// of files and developed photographs — a photograph's rendered tier with whether it is
+/// approximate — and the brightness fingerprints of files' complete grid tiers
+/// (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database SQLite
+/// cannot read, and an index of another catalog are discarded and recreated.
+pub const INDEX_FORMAT: i64 = 4;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
@@ -154,7 +155,9 @@ const SCHEMA: &str = "
         bytes INTEGER NOT NULL,
         origin TEXT NOT NULL CHECK (origin IN ('embedded', 'rendered')),
         last_used_ms INTEGER NOT NULL,
-        PRIMARY KEY (asset_id, entry_id, tier)
+        approximate INTEGER NOT NULL DEFAULT 0 CHECK (approximate IN (0, 1)),
+        PRIMARY KEY (asset_id, entry_id, tier),
+        CHECK (approximate = 0 OR origin = 'rendered')
     ) WITHOUT ROWID;
     CREATE INDEX photo_previews_by_use ON photo_previews(last_used_ms);";
 
