@@ -1,5 +1,7 @@
 //! Organizing's tests: the rules case by case here, an independent reference over random frame
-//! sets in `reference.rs`, and the generated image folders and index end to end in `generated.rs`.
+//! sets in `reference.rs`, and the generated image folders and index end to end in `generated.rs`;
+//! `bracket_timing.rs` is the ignored bench `cargo xtask catalog-measure` times the preview bracket
+//! check with.
 use super::names::{central_position, dates, user_folder_name};
 use super::*;
 use crate::catalog_types::{
@@ -8,6 +10,7 @@ use crate::catalog_types::{
 };
 use std::{cell::Cell, collections::HashMap};
 
+mod bracket_timing;
 mod generated;
 mod reference;
 
