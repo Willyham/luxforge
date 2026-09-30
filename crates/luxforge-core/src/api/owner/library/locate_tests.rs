@@ -960,7 +960,9 @@ fn a_detached_disk_image_makes_its_photographs_offline() {
 
     // Re-attached: available again, and the edits export.
     disk.attach();
-    assert_eq!(harness.check(&all), available);
+    luxforge_testbase::wait_until("every photograph available again", || {
+        harness.check(&all) == available
+    });
     assert!(!harness.export(&images[0], "edited.jpg").is_empty());
 
     // A Locate onto the image, another volume: refused when the image is detached while the file
