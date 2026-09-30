@@ -4,7 +4,7 @@ use time::{Date, OffsetDateTime, format_description::well_known::Iso8601};
 fn exceptions() -> Value {
     json!([
  {"id":"RUSTSEC-2024-0436","package":"paste","version":"1.0.15","reviewed":"2026-09-19","expires":"2026-12-18","task":"TASK-002","reason":"Build-time macro in pinned Metal dependency; no supported Iced upgrade removes it. Local S0 development only."},
- {"id":"RUSTSEC-2026-0192","package":"ttf-parser","version":"0.25.1","reviewed":"2026-09-19","expires":"2026-10-19","task":"TASK-001","reason":"Pinned Iced system/bundled-font stack; no application font import. Undisclosed upstream report requires short review window; no distribution approval."}])
+ {"id":"RUSTSEC-2026-0192","package":"ttf-parser","version":"0.25.1","reviewed":"2026-09-29","expires":"2026-10-29","task":"TASK-001","reason":"Pinned Iced 0.14 system/bundled-font stack (fontdb 0.23; fontdb 0.24 drops ttf-parser but no cosmic-text or Iced release uses it); no application font import. Upstream DoS report still undisclosed and unfixed, so short review window; no distribution approval."}])
 }
 fn validate(
     ex: &Value,
@@ -146,36 +146,57 @@ mod tests {
     fn day(s: &str) -> Date {
         Date::parse(s, &Iso8601::DEFAULT).unwrap()
     }
+    /// The first and last days on which every recorded exception is valid:
+    /// the latest review date and the day before the earliest expiry.
+    fn window(e: &Value) -> (Date, Date) {
+        let dates = |k: &str| {
+            e.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| day(x[k].as_str().unwrap()))
+                .collect::<Vec<_>>()
+        };
+        let first = dates("reviewed").into_iter().max().unwrap();
+        let end = dates("expires").into_iter().min().unwrap();
+        (first, end.previous_day().unwrap())
+    }
     #[test]
     fn valid_and_exclusive_expiry() {
         let (e, p, t) = inputs();
-        let c = validate(&e, &p, &t, "[licenses]\n", day("2026-09-19")).unwrap();
-        assert_eq!(c.matches("{ id =").count(), 2);
-        for date in ["2026-09-18", "2026-10-19"] {
-            assert!(validate(&e, &p, &t, "", day(date)).is_err())
+        let (first, last) = window(&e);
+        assert!(first <= last);
+        for date in [first, last] {
+            let c = validate(&e, &p, &t, "[licenses]\n", date).unwrap();
+            assert_eq!(c.matches("{ id =").count(), e.as_array().unwrap().len());
+        }
+        for date in [first.previous_day().unwrap(), last.next_day().unwrap()] {
+            assert!(validate(&e, &p, &t, "", date).is_err())
         }
     }
     #[test]
     fn mutations_fail_closed() {
         let (e, p, t) = inputs();
+        let today = window(&e).0;
+        assert!(validate(&e, &p, &t, "", today).is_ok());
         for key in ["version", "source"] {
             let mut p = p.clone();
             p[0][key] = json!("changed");
-            assert!(validate(&e, &p, &t, "", day("2026-09-19")).is_err())
+            assert!(validate(&e, &p, &t, "", today).is_err())
         }
-        assert!(validate(&e, &json!([]), &t, "", day("2026-09-19")).is_err());
+        assert!(validate(&e, &json!([]), &t, "", today).is_err());
         for state in ["completed", "cancelled"] {
             let mut t = t.clone();
             t[0]["status"] = json!(state);
-            assert!(validate(&e, &p, &t, "", day("2026-09-19")).is_err())
+            assert!(validate(&e, &p, &t, "", today).is_err())
         }
-        assert!(validate(&e, &p, &json!([]), "", day("2026-09-19")).is_err());
-        assert!(validate(&e, &p, &t, "[advisories]\nignore=[]", day("2026-09-19")).is_err());
+        assert!(validate(&e, &p, &json!([]), "", today).is_err());
+        assert!(validate(&e, &p, &t, "[advisories]\nignore=[]", today).is_err());
         let mut duplicate = e.clone();
         duplicate[1]["id"] = duplicate[0]["id"].clone();
-        assert!(validate(&duplicate, &p, &t, "", day("2026-09-19")).is_err());
+        assert!(validate(&duplicate, &p, &t, "", today).is_err());
         let mut long = e.clone();
-        long[0]["expires"] = json!("2027-01-01");
-        assert!(validate(&long, &p, &t, "", day("2026-09-19")).is_err());
+        let reviewed = day(long[0]["reviewed"].as_str().unwrap());
+        long[0]["expires"] = json!((reviewed + time::Duration::days(91)).to_string());
+        assert!(validate(&long, &p, &t, "", today).is_err());
     }
 }
