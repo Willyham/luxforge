@@ -45,6 +45,8 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Approximate motion, exact-derived settled Fit and 100% inspection
 - Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
 
+**Lens and perspective correction** (planned, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Scope and approach are selected for planning; implementation and qualification remain outstanding.
+
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
 - Owner decisions: behaviour, repair-stage order, scope
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
