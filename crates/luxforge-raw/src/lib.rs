@@ -47,7 +47,11 @@ fn camera_catalog() -> &'static Catalog {
     &catalog::CATALOG
 }
 
-const PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
+/// What read a source, as `RawMetadata::backend` names it: LibRaw identifies the file and reads
+/// its metadata, the mode's unpacker fills the mosaic, and librtprocess demosaics it.
+const LIBRAW_PROVIDER: &str = "LibRaw 0.22.2 + librtprocess 9a858270";
+/// The same, for a mode whose mosaic RawSpeed fills in place of LibRaw's decoder.
+const RAWSPEED_PROVIDER: &str = "LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270";
 
 /// The largest green-normalised white-balance gain a development accepts and a neutral pick
 /// returns.
@@ -668,7 +672,7 @@ impl RawSource {
     }
 
     /// `decode` with `unpacker` in place of the classified mode's, so tests can compare a
-    /// RawSpeed-routed decode with LibRaw's before any catalog mode is routed.
+    /// RawSpeed-routed decode with LibRaw's whichever unpacker the catalog gives the mode.
     #[cfg(test)]
     pub(crate) fn decode_forcing<B: AsRef<[u8]>>(
         encoded: B,
@@ -728,8 +732,14 @@ impl RawSource {
         let unpacker = forced.unwrap_or(NativeUnpacker::of(recording.unpacker));
         let native = handle.unpack(unpacker, cancel)?;
         identity.unchanged_in(&native)?;
-        let (mut metadata, dng_correction) =
-            Self::interpret(&native, profile, RawMode(recording), bytes, &opcodes)?;
+        let (mut metadata, dng_correction) = Self::interpret(
+            &native,
+            profile,
+            RawMode(recording),
+            unpacker,
+            bytes,
+            &opcodes,
+        )?;
         let mut samples = Vec::new();
         samples
             .try_reserve_exact(n)
@@ -852,11 +862,12 @@ impl RawSource {
     }
 
     /// The published metadata of an unpacked `native` frame in the classified `mode` of
-    /// `profile`.
+    /// `profile`, whose mosaic `unpacker` filled.
     fn interpret(
         native: &NativeMetadata,
         profile: &profiles::Camera,
         mode: RawMode,
+        unpacker: NativeUnpacker,
         bytes: &[u8],
         opcodes: &[format::DngOpcode],
     ) -> Result<(RawMetadata, Option<dng::DngCorrection>), RawError> {
@@ -1063,7 +1074,11 @@ impl RawSource {
                 exif_orientation: exif_orientation(native.flip)?,
                 rgb_cam,
                 cam_xyz,
-                backend: PROVIDER.to_string(),
+                backend: match unpacker {
+                    NativeUnpacker::Libraw => LIBRAW_PROVIDER,
+                    NativeUnpacker::Rawspeed => RAWSPEED_PROVIDER,
+                }
+                .to_string(),
                 libraw_inset: inset,
                 format_identity: decoder,
                 warnings,
