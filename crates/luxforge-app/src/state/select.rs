@@ -7,15 +7,18 @@
 //!
 //! The desktop holds no catalog logic. A change of source, filter, sort or grouping is a whole
 //! [`ViewQuery`] for the owner to evaluate ([`changed`]); a selection gesture is the `browse.select`
-//! request an API client would send ([`select_params`]); the grid's blocks are the summary's group
-//! layout as the owner answered it ([`grid_content`]).
+//! request an API client would send ([`select_params`]); a pick, Pick all, and library undo and
+//! redo are the `pick.set`, `library.undo` and `library.redo` requests an agent sends
+//! ([`pick_params`], [`library_params`]); the grid's blocks are the summary's group layout as the
+//! owner answered it, with its days' and moments' pick counts ([`grid_content`]).
 use super::{Inputs, status::clients_text};
 use luxforge_core::{
-    SourceTag,
+    MutationRequest, SourceTag,
     catalog_types::{
-        BodyKey, BracketEvidence, BrowseSession, Event, EventList, Exposure, Facet, Facets,
-        FileAvailability, Grouping, LocalDay, Moment, MomentKind, Month, PreviewState, RowItem,
-        SortKey, ViewQuery, ViewRow, ViewSource, ViewSummary,
+        BodyKey, BracketEvidence, BrowseSession, Cards, CatalogCounts, DiskFolders, Event,
+        EventList, Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexSource,
+        LibraryChange, LibraryItem, LocalDay, Moment, MomentKind, Month, PreviewState, RowItem,
+        SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary, VolumeId, Volumes,
     },
 };
 use serde_json::{Value, json};
@@ -153,6 +156,17 @@ pub(crate) struct SelectState {
     pub(crate) catalog_cell_width: f32,
     /// The home folder, which paths are shown under as `~`.
     pub(crate) home: Option<PathBuf>,
+    /// The mounted camera cards, as `card.list` last answered, read each time Select is shown.
+    pub(crate) cards: Option<Cards>,
+    /// The volumes On disk lists, as `volume.list` last answered, read with the cards.
+    pub(crate) volumes: Option<Volumes>,
+    /// The subfolders `disk.folders` answered for each volume or folder opened On disk.
+    pub(crate) disk: BTreeMap<PathBuf, DiskFolders>,
+    /// The volumes (by mount point) and folders open On disk: the desktop's own view state.
+    pub(crate) open: BTreeSet<PathBuf>,
+    /// The catalog's counts behind the Catalog sources, as `catalog.info` last answered, read when
+    /// Select is shown and after a library change.
+    pub(crate) counts: Option<CatalogCounts>,
 }
 
 impl Default for SelectState {
@@ -178,6 +192,11 @@ impl Default for SelectState {
             files_cell_width: FILES_CELL_WIDTH,
             catalog_cell_width: CATALOG_CELL_WIDTH,
             home: None,
+            cards: None,
+            volumes: None,
+            disk: BTreeMap::new(),
+            open: BTreeSet::new(),
+            counts: None,
         }
     }
 }
@@ -395,6 +414,174 @@ pub(crate) fn select_params(gesture: SelectGesture, revision: Option<u64>) -> Va
     params
 }
 
+// -- Picking and library changes -------------------------------------------------------------------
+
+/// A library change a Select gesture makes, which says how its answer is told in the status bar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LibraryGesture {
+    /// `P` or the Info panel's Pick: pick (`true`) or clear the selection, or the loupe's frame.
+    Pick { picked: bool },
+    /// A bracket's Pick all.
+    PickAll,
+    /// `Cmd+Z` or the title bar's Undo.
+    Undo,
+    /// `Shift+Cmd+Z` or the title bar's Redo.
+    Redo,
+}
+
+impl LibraryGesture {
+    /// The method the gesture sends.
+    pub(crate) fn method(self) -> &'static str {
+        match self {
+            Self::Pick { .. } | Self::PickAll => "pick.set",
+            Self::Undo => "library.undo",
+            Self::Redo => "library.redo",
+        }
+    }
+
+    /// What the status bar says when the owner changed nothing.
+    pub(crate) fn nothing(self) -> &'static str {
+        match self {
+            Self::Pick { picked: true } | Self::PickAll => "Already picked",
+            Self::Pick { picked: false } => "Nothing to clear",
+            Self::Undo => "Nothing to undo",
+            Self::Redo => "Nothing to redo",
+        }
+    }
+
+    /// What the status bar says of a recorded change whose label could not be read.
+    pub(crate) fn done(self) -> &'static str {
+        match self {
+            Self::Pick { picked: true } => "Picked \u{b7} Undo \u{2318}Z",
+            Self::Pick { picked: false } => "Cleared the picks \u{b7} Undo \u{2318}Z",
+            Self::PickAll => "Picked the frames \u{b7} Undo \u{2318}Z",
+            Self::Undo => "Undid the last library change \u{b7} Redo \u{21e7}\u{2318}Z",
+            Self::Redo => "Redid the last library change \u{b7} Undo \u{2318}Z",
+        }
+    }
+
+    /// What a refusal is prefixed with.
+    pub(crate) fn refused(self) -> &'static str {
+        match self {
+            Self::Pick { picked: true } | Self::PickAll => "Could not pick",
+            Self::Pick { picked: false } => "Could not clear",
+            Self::Undo => "Could not undo",
+            Self::Redo => "Could not redo",
+        }
+    }
+}
+
+/// `pick.set`'s parameters: pick or clear `targets` as `mutation`, exactly as an agent writes them.
+pub(crate) fn pick_params(targets: &Targets, picked: bool, mutation: &MutationRequest) -> Value {
+    json!({"targets": targets, "picked": picked, "mutation": mutation})
+}
+
+/// `library.undo`'s and `library.redo`'s parameters: the envelope alone. Its actor is the undo's
+/// scope, so this desktop undoes only its own changes.
+pub(crate) fn library_params(mutation: &MutationRequest) -> Value {
+    json!({ "mutation": mutation })
+}
+
+/// `library.journal`'s parameters for the one change `sequence`: the page after the change before
+/// it, one long. Its label is what the status bar says.
+pub(crate) fn journal_params(sequence: u64) -> Value {
+    json!({"after": sequence.saturating_sub(1), "limit": 1})
+}
+
+/// Whether `P` picks (`true`) or clears (`false`) the selection. The desktop knows a selected
+/// item is picked only from a row it has read, so it clears only when it holds the row of every
+/// selected item and each is picked; otherwise it picks, which leaves an item already picked as it
+/// was. So `P` never clears a pick the desktop has not shown.
+pub(crate) fn pick_value(selection: &SelectionModel, rows: &RowCache) -> bool {
+    if selection.count == 0 || selection.count as usize > rows.len() {
+        return true;
+    }
+    !selection
+        .ranges
+        .iter()
+        .flat_map(|&(start, end)| start..end)
+        .all(|position| rows.row(position).is_some_and(|row| row.picked))
+}
+
+/// The status bar's sentence for a recorded library change: its label from the journal, as a
+/// person reads it, with the key that takes it back. An undo says what it undid and offers redo.
+pub(crate) fn change_text(change: &LibraryChange) -> String {
+    if change.undoes.is_some() {
+        let undone = change.label.strip_prefix("Undo ").unwrap_or(&change.label);
+        format!("Undid {undone} \u{b7} Redo \u{21e7}\u{2318}Z")
+    } else if change.redoes.is_some() {
+        let redone = change.label.strip_prefix("Redo ").unwrap_or(&change.label);
+        format!("Redid {redone} \u{b7} Undo \u{2318}Z")
+    } else {
+        format!("{} \u{b7} Undo \u{2318}Z", change.label)
+    }
+}
+
+/// What a refused undo or redo says: the first item that changed since, by its file's name where
+/// it has one, and how many others did, from the refusal's `data` (`{items, count}`). `None` when
+/// the refusal carries no items.
+pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Option<String> {
+    let data = data?;
+    let first: LibraryItem = serde_json::from_value(data.get("items")?.get(0)?.clone()).ok()?;
+    let count = data.get("count").and_then(Value::as_u64).unwrap_or(1);
+    let name = match &first {
+        LibraryItem::Pick { path } | LibraryItem::IndexedFolder { path } => {
+            path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            )
+        }
+        LibraryItem::CatalogFolder { .. } => "a catalog folder".to_owned(),
+        LibraryItem::Collection { .. } => "a collection".to_owned(),
+        _ => "a photograph".to_owned(),
+    };
+    let others = match count.saturating_sub(1) {
+        0 => String::new(),
+        1 => " and 1 other item".to_owned(),
+        more => format!(" and {more} other items"),
+    };
+    Some(format!(
+        "{}: {name}{others} changed since",
+        gesture.refused()
+    ))
+}
+
+/// The files of the view's frames `start..start + len` whose rows are read, in order; `None` when
+/// any is not read yet or is a photograph. What Pick all names.
+pub(crate) fn frame_files(rows: &RowCache, start: u32, len: u32) -> Option<Vec<FileId>> {
+    (start..start.saturating_add(len))
+        .map(|position| match rows.row(position)?.item {
+            RowItem::File { file_id } => Some(file_id),
+            RowItem::Photo { .. } => None,
+        })
+        .collect()
+}
+
+/// Where the loupe moves on to after picking the frame at `position` (the design's P7): the first
+/// frame after the burst or bracket `position` is in, which is the next moment's first frame or
+/// the next single, or the next frame when `position` is a single. `None` past the view's end.
+/// The loupe (TASK-020) calls it after the editor's `pick_active` and makes the answer active with
+/// `browse.select`.
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the loupe's P7 (TASK-020) calls it; lane B wires it"
+    )
+)]
+pub(crate) fn next_moment(summary: &ViewSummary, position: u32) -> Option<u32> {
+    let moments = &summary.groups.moments;
+    let after = moments.partition_point(|moment| moment.start <= position);
+    let next = after
+        .checked_sub(1)
+        .map(|index| &moments[index])
+        .filter(|moment| position < moment.start.saturating_add(moment.len))
+        .map_or(position.saturating_add(1), |moment| {
+            moment.start.saturating_add(moment.len)
+        });
+    (next < summary.count).then_some(next)
+}
+
 /// The session's selection in the view on screen, as the grid draws it: disjoint ascending ranges
 /// of positions and the active item. Empty when the session describes another revision of the view
 /// than the one drawn.
@@ -457,12 +644,17 @@ pub(crate) enum Block {
         title: String,
         detail: String,
     },
-    /// A burst or a bracket of `frames` consecutive items, with its header.
+    /// A burst or a bracket of `frames` consecutive items, with its header: its pick count in the
+    /// accent ("1 picked") and, for a bracket over files not all picked, its action ("Pick all
+    /// 3"). `index` is the moment's in the summary's `groups.moments`.
     Moment {
+        index: u32,
         bracket: bool,
         title: String,
         detail: String,
         evidence: Option<String>,
+        picked: Option<String>,
+        action: Option<String>,
         frames: u32,
         collapsed: bool,
     },
@@ -478,6 +670,18 @@ pub(crate) struct GridContent {
 }
 
 impl GridContent {
+    /// The summary's index of the grid's moment `number`: the moments counted in order, collapsed
+    /// ones included, as the grid names a header's action.
+    pub(crate) fn moment(&self, number: u32) -> Option<u32> {
+        self.blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Moment { index, .. } => Some(*index),
+                _ => None,
+            })
+            .nth(number as usize)
+    }
+
     /// The footer label of the cell whose first item is `item`.
     pub(crate) fn label(&self, item: u32) -> Option<&str> {
         let index = self
@@ -504,9 +708,12 @@ impl GridContent {
 /// The grid's blocks for a summary: a heading where each day and each camera group starts, a moment
 /// block for each burst and bracket, and the frames between them as singles. It follows the group
 /// layout the owner answered, whatever the grouping: a view with no days has no headings, and one
-/// with no moments is all singles. `collapsed` names the bursts drawn as one cell.
+/// with no moments is all singles. A day says how many of its frames are picked, a moment how many
+/// of its frames are ("1 picked"), and a bracket of files not all picked offers Pick all.
+/// `collapsed` names the bursts drawn as one cell.
 pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> GridContent {
     let count = summary.count;
+    let over_files = summary.query.source.over_files();
     let groups = &summary.groups;
     let mut content = GridContent::default();
     let (mut day, mut camera, mut moment) = (0, 0, 0);
@@ -536,9 +743,13 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
             moment += 1;
         }
         if let Some(group) = groups.days.get(day).filter(|group| group.start == position) {
+            let mut detail = photographs(group.len.min(count - position));
+            if group.picked > 0 {
+                detail = format!("{detail} \u{b7} {} picked", thousands(group.picked));
+            }
             content.blocks.push(Block::Day {
                 title: day_title(group.day),
-                detail: photographs(group.len.min(count - position)),
+                detail,
             });
             day += 1;
         }
@@ -562,10 +773,15 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
             if frames > 0 {
                 let bracket = group.kind == MomentKind::Bracket;
                 content.blocks.push(Block::Moment {
+                    index: moment as u32,
                     bracket,
                     title: if bracket { "Bracket" } else { "Burst" }.to_owned(),
                     detail: moment_detail(group),
                     evidence: group.evidence.map(evidence_label).map(str::to_owned),
+                    picked: (group.picked > 0)
+                        .then(|| format!("{} picked", thousands(group.picked))),
+                    action: (bracket && over_files && group.picked < frames)
+                        .then(|| format!("Pick all {frames}")),
                     frames,
                     collapsed: !bracket && collapsed.contains(&(moment as u32)),
                 });
@@ -742,6 +958,17 @@ impl RowCache {
         self.row(position).map(cell_facts)
     }
 
+    /// The item a cell of `span` items from `item` shows: a collapsed burst shows its pick, the
+    /// first of its frames read as picked, or else its first frame; any other cell its one item.
+    pub(crate) fn shown(&self, item: u32, span: u32) -> u32 {
+        if span <= 1 {
+            return item;
+        }
+        (item..item.saturating_add(span))
+            .find(|&position| self.row(position).is_some_and(|row| row.picked))
+            .unwrap_or(item)
+    }
+
     /// The next block to read for `wanted` items, counted in flight until it is answered; `None`
     /// while one is in flight or every wanted block is held or refused.
     pub(crate) fn next_request(&mut self, wanted: Range<u32>) -> Option<RowsRequest> {
@@ -872,6 +1099,8 @@ fn aspect(row: &ViewRow) -> Option<f32> {
 pub(crate) enum SourceIcon {
     Event,
     Folder,
+    /// A volume or a card.
+    Drive,
     AllPhotographs,
     Recent,
     Missing,
@@ -888,12 +1117,61 @@ pub(crate) enum Count {
         picked: String,
         total: String,
     },
+    /// Photographs whose originals are unavailable, in the clipping red: Missing originals'.
+    Unavailable(String),
+}
+
+/// A source row's dot: a mounted volume's filled one, or the hollow one of an offline volume or
+/// an event whose files are offline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dot {
+    Mounted,
+    Offline,
+}
+
+/// A source that is read before it is viewed: the index lane lists it and reads its headers
+/// (`index.refresh`, a job), then it is viewed as the index listed it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ReadSource {
+    /// A folder on disk, with its subfolders.
+    Folder(PathBuf),
+    /// A mounted camera card, by its volume, with the name its row shows.
+    Card { volume_id: VolumeId, name: String },
+}
+
+impl ReadSource {
+    /// `index.refresh`'s `source`.
+    pub(crate) fn refresh(&self) -> IndexSource {
+        match self {
+            Self::Folder(path) => IndexSource::Folder { path: path.clone() },
+            Self::Card { volume_id, .. } => IndexSource::Card {
+                volume_id: volume_id.clone(),
+            },
+        }
+    }
+
+    /// `index.refresh`'s parameters.
+    pub(crate) fn refresh_params(&self) -> Value {
+        json!({ "source": self.refresh() })
+    }
+
+    /// What the status bar calls it while it is read.
+    pub(crate) fn name(&self, home: Option<&Path>) -> String {
+        match self {
+            Self::Folder(path) => shown_path(path, home),
+            Self::Card { name, .. } => format!("the {name} card"),
+        }
+    }
 }
 
 /// What pressing a source row does.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum SourcePress {
     View(ViewSource),
+    /// A card or a folder on disk: read it, then view it.
+    Read(ReadSource),
+    /// A volume On disk: open or close it.
+    Toggle(PathBuf),
     /// Browse a folder…: the native folder dialog.
     BrowseFolder,
 }
@@ -904,12 +1182,35 @@ pub(crate) struct SourceRow {
     pub(crate) name: String,
     pub(crate) secondary: Option<String>,
     pub(crate) count: Count,
-    /// Its files are offline: the hollow dot.
-    pub(crate) offline: bool,
-    /// Drawn in tertiary ink (Removed).
+    /// The volume dot, or an event's offline one.
+    pub(crate) dot: Option<Dot>,
+    /// Drawn in tertiary ink (Removed, an offline volume).
     pub(crate) dimmed: bool,
     pub(crate) selected: bool,
-    pub(crate) press: SourcePress,
+    /// Nesting On disk: a volume's folders one level in, theirs two.
+    pub(crate) indent: u8,
+    /// A row that opens: whether it is open, and the path its chevron opens or closes.
+    pub(crate) disclosure: Option<(bool, PathBuf)>,
+    /// What pressing it does; nothing for an offline volume.
+    pub(crate) press: Option<SourcePress>,
+}
+
+impl SourceRow {
+    /// A row with no count, dot, nesting or disclosure.
+    fn plain(icon: SourceIcon, name: String, press: Option<SourcePress>) -> Self {
+        Self {
+            icon,
+            name,
+            secondary: None,
+            count: Count::None,
+            dot: None,
+            dimmed: false,
+            selected: false,
+            indent: 0,
+            disclosure: None,
+            press,
+        }
+    }
 }
 
 /// Events under one month label.
@@ -922,9 +1223,13 @@ pub(crate) struct MonthRows {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SourcesModel {
     pub(crate) search: String,
+    /// The mounted camera cards; the section is drawn only when there is one.
+    pub(crate) cards: Vec<SourceRow>,
     pub(crate) months: Vec<MonthRows>,
     /// Said under Events in place of rows: reading, none, or unavailable.
     pub(crate) events_note: Option<String>,
+    /// The volumes, each open one's folders under it, the folder browsed with Browse a folder…
+    /// when it is not among them, and Browse a folder… itself.
     pub(crate) on_disk: Vec<SourceRow>,
     pub(crate) catalog: Vec<SourceRow>,
 }
@@ -984,9 +1289,19 @@ pub(crate) struct ItemInfo {
     pub(crate) name: String,
     /// The preview placeholder's shape.
     pub(crate) aspect: Option<f32>,
+    /// The Pick band, for a file.
+    pub(crate) pick: Option<PickBand>,
     /// The Moment band's rows, empty for a single or a photograph.
     pub(crate) moment: Vec<(String, String)>,
     pub(crate) metadata: Vec<(String, String)>,
+}
+
+/// The Info panel's Pick band for a file: "Picked for Develop" or "Pick", which `P` does too, and
+/// once picked, what that means.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct PickBand {
+    pub(crate) picked: bool,
+    pub(crate) note: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1247,62 +1562,197 @@ pub(crate) fn sources(state: &SelectState) -> SourcesModel {
             }
         }
     }
-    let mut on_disk = vec![SourceRow {
-        icon: SourceIcon::Folder,
-        name: "Browse a folder\u{2026}".to_owned(),
-        secondary: None,
-        count: Count::None,
-        offline: false,
-        dimmed: false,
-        selected: false,
-        press: SourcePress::BrowseFolder,
-    }];
-    if let Some(folder) = &state.folder {
-        let source = ViewSource::Folder {
-            path: folder.clone(),
-            subfolders: true,
-        };
-        on_disk.push(SourceRow {
-            icon: SourceIcon::Folder,
-            name: file_name(folder),
-            secondary: None,
-            count: Count::None,
-            offline: false,
-            dimmed: false,
-            selected: matches!(selected, Some(ViewSource::Folder { path, .. }) if path == folder),
-            press: SourcePress::View(source),
+    let catalog = catalog_rows(state, &is);
+    SourcesModel {
+        search: state.search.clone(),
+        cards: card_rows(state, &is),
+        months,
+        events_note,
+        on_disk: disk_rows(state, selected),
+        catalog,
+    }
+}
+
+/// Cards: each mounted card by its volume's name, with the first camera its files were read from
+/// and how many files its last listing found. Pressing one reads it and views it.
+fn card_rows(state: &SelectState, is: &impl Fn(&ViewSource) -> bool) -> Vec<SourceRow> {
+    let Some(cards) = &state.cards else {
+        return Vec::new();
+    };
+    cards
+        .cards
+        .iter()
+        .map(|card| {
+            let name = card.volume.label.clone();
+            let camera = card
+                .cameras
+                .first()
+                .filter(|camera| **camera != name)
+                .cloned();
+            SourceRow {
+                secondary: camera,
+                count: card
+                    .files
+                    .map_or(Count::None, |files| Count::Total(thousands(files))),
+                selected: is(&ViewSource::Card {
+                    volume_id: card.volume.id.clone(),
+                }),
+                ..SourceRow::plain(
+                    SourceIcon::Drive,
+                    name.clone(),
+                    Some(SourcePress::Read(ReadSource::Card {
+                        volume_id: card.volume.id.clone(),
+                        name,
+                    })),
+                )
+            }
+        })
+        .collect()
+}
+
+/// On disk: every volume but the cards (listed under Cards), the startup disk first, each with its
+/// dot; a mounted one opens to its folders, and each folder opens to its own, as `disk.folders`
+/// answered them. Pressing a volume opens or closes it; pressing a folder reads it with its
+/// subfolders and views it. The folder Browse a folder… chose follows when it is not among them,
+/// then Browse a folder… itself, for a folder the volumes do not reach.
+fn disk_rows(state: &SelectState, selected: Option<&ViewSource>) -> Vec<SourceRow> {
+    let viewing = |path: &Path| matches!(selected, Some(ViewSource::Folder { path: viewed, .. }) if viewed == path);
+    let mut rows = Vec::new();
+    for listed in state
+        .volumes
+        .iter()
+        .flat_map(|volumes| &volumes.volumes)
+        .filter(|listed| !listed.card)
+    {
+        let mount = &listed.volume.mount_point;
+        let open = !listed.offline && state.open.contains(mount);
+        rows.push(SourceRow {
+            dot: Some(if listed.offline {
+                Dot::Offline
+            } else {
+                Dot::Mounted
+            }),
+            dimmed: listed.offline,
+            disclosure: (!listed.offline).then(|| (open, mount.clone())),
+            ..SourceRow::plain(
+                SourceIcon::Drive,
+                listed.volume.label.clone(),
+                (!listed.offline).then(|| SourcePress::Toggle(mount.clone())),
+            )
+        });
+        if open {
+            folder_rows(state, mount, 1, &viewing, &mut rows);
+        }
+    }
+    if let Some(folder) = &state.folder
+        && !rows.iter().any(|row| {
+            matches!(&row.press, Some(SourcePress::Read(ReadSource::Folder(path))) if path == folder)
+        })
+    {
+        rows.push(SourceRow {
+            selected: viewing(folder),
+            ..SourceRow::plain(
+                SourceIcon::Folder,
+                file_name(folder),
+                Some(SourcePress::View(ViewSource::Folder {
+                    path: folder.clone(),
+                    subfolders: true,
+                })),
+            )
         });
     }
-    let catalog = [
-        (SourceIcon::AllPhotographs, ViewSource::AllPhotographs),
+    rows.push(SourceRow::plain(
+        SourceIcon::Folder,
+        "Browse a folder\u{2026}".to_owned(),
+        Some(SourcePress::BrowseFolder),
+    ));
+    rows
+}
+
+/// The folders under `parent` that `disk.folders` answered, each followed by its own when open.
+/// Nesting is bounded by what a person opens, and each listing by `disk.folders`' own bound.
+fn folder_rows(
+    state: &SelectState,
+    parent: &Path,
+    indent: u8,
+    viewing: &impl Fn(&Path) -> bool,
+    rows: &mut Vec<SourceRow>,
+) {
+    let Some(listed) = state.disk.get(parent) else {
+        return;
+    };
+    for folder in &listed.folders {
+        let open = state.open.contains(&folder.path);
+        rows.push(SourceRow {
+            selected: viewing(&folder.path),
+            indent,
+            disclosure: Some((open, folder.path.clone())),
+            ..SourceRow::plain(
+                SourceIcon::Folder,
+                folder.name.clone(),
+                Some(SourcePress::Read(ReadSource::Folder(folder.path.clone()))),
+            )
+        });
+        if open {
+            folder_rows(state, &folder.path, indent.saturating_add(1), viewing, rows);
+        }
+    }
+}
+
+/// A count as the sources panel writes it.
+fn count_text(count: u64) -> String {
+    thousands(count.min(u64::from(u32::MAX)) as u32)
+}
+
+/// Catalog: All photographs, Recently developed, Missing originals and Removed, with the counts
+/// `catalog.info` answered: Missing originals' in the clipping red while there are any, Removed
+/// dimmed.
+fn catalog_rows(state: &SelectState, is: &impl Fn(&ViewSource) -> bool) -> Vec<SourceRow> {
+    let counts = state.counts.as_ref();
+    let total = |count: fn(&CatalogCounts) -> u64| {
+        counts.map_or(Count::None, |counts| {
+            Count::Total(count_text(count(counts)))
+        })
+    };
+    [
+        (
+            SourceIcon::AllPhotographs,
+            ViewSource::AllPhotographs,
+            total(|counts| counts.photographs),
+        ),
         (
             SourceIcon::Recent,
             ViewSource::RecentlyDeveloped {
                 days: luxforge_core::catalog_types::DEFAULT_RECENT_DAYS,
             },
+            total(|counts| counts.recently_developed),
         ),
-        (SourceIcon::Missing, ViewSource::MissingOriginals),
-        (SourceIcon::Removed, ViewSource::Removed),
+        (
+            SourceIcon::Missing,
+            ViewSource::MissingOriginals,
+            match counts.map(|counts| counts.unavailable) {
+                Some(missing) if missing > 0 => Count::Unavailable(count_text(missing)),
+                _ => Count::None,
+            },
+        ),
+        (
+            SourceIcon::Removed,
+            ViewSource::Removed,
+            total(|counts| counts.removed),
+        ),
     ]
     .into_iter()
-    .map(|(icon, source)| SourceRow {
-        icon,
-        name: catalog_name(&source).to_owned(),
-        secondary: None,
-        count: Count::None,
-        offline: false,
+    .map(|(icon, source, count)| SourceRow {
+        count,
         dimmed: icon == SourceIcon::Removed,
         selected: is(&source),
-        press: SourcePress::View(source),
+        ..SourceRow::plain(
+            icon,
+            catalog_name(&source).to_owned(),
+            Some(SourcePress::View(source)),
+        )
     })
-    .collect();
-    SourcesModel {
-        search: state.search.clone(),
-        months,
-        events_note,
-        on_disk,
-        catalog,
-    }
+    .collect()
 }
 
 /// What an event is called in the sources panel and the title bar: its name without the dates it
@@ -1331,8 +1781,6 @@ fn event_row(event: &Event, is: &impl Fn(&ViewSource) -> bool) -> SourceRow {
         event_id: event.id.clone(),
     };
     SourceRow {
-        icon: SourceIcon::Event,
-        name: event_label(event),
         secondary: dates(event.first_day, event.last_day, false),
         count: if event.picked > 0 {
             Count::Picks {
@@ -1342,10 +1790,13 @@ fn event_row(event: &Event, is: &impl Fn(&ViewSource) -> bool) -> SourceRow {
         } else {
             Count::Total(thousands(event.count))
         },
-        offline: event.offline > 0,
-        dimmed: false,
+        dot: (event.offline > 0).then_some(Dot::Offline),
         selected: is(&source),
-        press: SourcePress::View(source),
+        ..SourceRow::plain(
+            SourceIcon::Event,
+            event_label(event),
+            Some(SourcePress::View(source)),
+        )
     }
 }
 
@@ -1553,11 +2004,22 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> InfoModel
         return InfoModel::Nothing;
     };
     match state.rows.row(item) {
-        Some(row) => InfoModel::One(item_info(
-            row,
-            state.summary.as_ref(),
-            state.home.as_deref(),
-        )),
+        Some(row) => {
+            let mut info = item_info(row, state.summary.as_ref(), state.home.as_deref());
+            if matches!(row.item, RowItem::File { .. }) {
+                let picks = title(state).picks;
+                info.pick = Some(PickBand {
+                    picked: row.picked,
+                    note: row.picked.then(|| {
+                        format!(
+                            "Joins the catalog when you press Develop {}. The file stays where it is.",
+                            thousands(picks)
+                        )
+                    }),
+                });
+            }
+            InfoModel::One(info)
+        }
         None => InfoModel::Reading,
     }
 }
@@ -1643,6 +2105,7 @@ pub(crate) fn item_info(
     ItemInfo {
         name: row.file_name.clone(),
         aspect: aspect(row),
+        pick: None,
         moment,
         metadata,
     }

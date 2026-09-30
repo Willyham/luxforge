@@ -919,7 +919,18 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": {"agent_pick": {"positions": [5, 6]}}},
         {"select": {"agent_pick": {"positions": [5], "picked": false}}},
         {"select": {"switch": "develop"}},
+        {"select": {"library": "undo"}},
+        {"select": {"library": "redo"}},
+        {"select": {"pick_all": {"position": 12}}},
     ]));
+    assert_eq!(
+        steps[12],
+        Step::Select(SelectStep::Library(LibraryKey::Undo))
+    );
+    assert_eq!(
+        steps[14],
+        Step::Select(SelectStep::PickAll { position: 12 })
+    );
     assert_eq!(
         steps[3],
         Step::Select(SelectStep::Arrow {

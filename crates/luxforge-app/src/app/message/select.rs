@@ -1,8 +1,11 @@
 //! The Select workspace.
-use crate::state::select::{QueryChange, SelectMenu, SelectPanel, Shown};
+use crate::state::select::{QueryChange, ReadSource, SelectMenu, SelectPanel, Shown};
 use luxforge_core::{
     ClientSession,
-    catalog_types::{EventList, Facets, ViewRows, ViewSource, ViewSummary},
+    catalog_types::{
+        Cards, CatalogCounts, DiskFolders, EventList, Facets, LibraryChange, ViewRows, ViewSource,
+        ViewSummary, Volumes,
+    },
 };
 use luxforge_ui::GridPress;
 use std::path::PathBuf;
@@ -32,12 +35,38 @@ pub(crate) enum SelectMessage {
     /// Browse a folder…: the native folder dialog, and what it chose.
     BrowseFolder,
     FolderPicked(Option<PathBuf>),
-    /// `index.refresh` of the folder answered with its job, or refused.
+    /// A card, or a folder On disk: read it, then view it.
+    Read(ReadSource),
+    /// `index.refresh` of the source being read answered with its job, or refused.
     Reading(Result<String, String>),
-    /// The reading folder's job is read again: the timer that exists while the job runs.
+    /// The job of the source being read is read again: the timer that exists while the job runs.
     ReadPoll,
-    /// `job.read` for the reading folder's job answered.
+    /// `job.read` for the job of the source being read answered.
     ReadAnswered(Result<serde_json::Value, String>),
+    /// A volume's or a folder's chevron On disk: open it, reading its subfolders, or close it.
+    Toggle(PathBuf),
+    /// `disk.folders` answered for a volume or folder opened On disk.
+    Listed {
+        path: PathBuf,
+        result: Result<DiskFolders, String>,
+    },
+    /// `card.list` and `volume.list` answered, read each time Select is shown.
+    Disks(Result<Box<(Cards, Volumes)>, String>),
+    /// `catalog.info` answered with the counts behind the Catalog sources.
+    Counted(Result<CatalogCounts, String>),
+    /// `P`, or the Info panel's Pick: pick or clear the selection.
+    Pick,
+    /// A bracket header's Pick all, by the grid's moment number.
+    PickAll(u32),
+    /// `Cmd+Z` and `Shift+Cmd+Z`, or the title bar's Undo and Redo: library undo and redo.
+    Undo,
+    Redo,
+    /// `library.journal` answered with the change `sequence` a library gesture recorded, whose
+    /// label the status bar says.
+    Labelled {
+        sequence: u64,
+        result: Result<Option<LibraryChange>, String>,
+    },
     /// One change of the filter bar, the Group chip or the sort.
     Change(QueryChange),
     /// Open a chip's or the sort's menu, or close the one open.

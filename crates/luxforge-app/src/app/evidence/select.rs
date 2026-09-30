@@ -13,10 +13,12 @@ use crate::app::{
     select::session_now,
     tasks::{call, owner_task, request},
 };
-use crate::state::select::{PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
+use crate::state::select::{Block, PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
 use iced::Task;
 use luxforge_core::{MutationRequest, catalog_types::RowItem};
-use luxforge_evidence::{ArrowKey, SelectMenu as ScriptMenu, SelectStep, SelectWorkspace};
+use luxforge_evidence::{
+    ArrowKey, LibraryKey, SelectMenu as ScriptMenu, SelectStep, SelectWorkspace,
+};
 use luxforge_ui::{GridPress, PressModifiers};
 use serde_json::{Value, json};
 
@@ -56,6 +58,8 @@ impl Editor {
                 command,
             } => self.click_step(position, PressModifiers { shift, command }),
             SelectStep::AgentPick { positions, picked } => self.agent_pick_step(&positions, picked),
+            SelectStep::Library(key) => self.library_step(key),
+            SelectStep::PickAll { position } => self.pick_all_step(position),
         }
     }
 
@@ -87,14 +91,89 @@ impl Editor {
             })
             .map(|row| row.press.clone());
         match found {
-            Some(SourcePress::View(source)) => {
+            Some(Some(SourcePress::View(source))) => {
                 let task = self.update(Message::Select(SelectMessage::Source(source)));
                 self.await_select(task)
             }
-            Some(SourcePress::BrowseFolder) => self.fail_step(
+            Some(Some(SourcePress::Read(source))) => {
+                let task = self.update(Message::Select(SelectMessage::Read(source)));
+                self.await_select(task)
+            }
+            Some(Some(SourcePress::Toggle(path))) => {
+                let task = self.update(Message::Select(SelectMessage::Toggle(path)));
+                self.await_select(task)
+            }
+            Some(Some(SourcePress::BrowseFolder)) => self.fail_step(
                 "Browse a folder… opens the native dialog, which a script cannot answer",
             ),
+            Some(None) => self.fail_step(format!("the source row {name:?} does nothing")),
             None => self.fail_step(format!("no source row shows {name:?}")),
+        }
+    }
+
+    /// Press `Cmd+Z` or `Shift+Cmd+Z` through the key table, as the keyboard does.
+    fn library_step(&mut self, key: LibraryKey) -> Task<Message> {
+        use iced::keyboard::{
+            Event as KeyEvent, Key, Location, Modifiers,
+            key::{NativeCode, Physical},
+        };
+        let pressed = Key::Character("z".into());
+        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+            key: pressed.clone(),
+            modified_key: pressed,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: match key {
+                LibraryKey::Undo => Modifiers::COMMAND,
+                LibraryKey::Redo => Modifiers::COMMAND | Modifiers::SHIFT,
+            },
+            text: None,
+            repeat: false,
+        });
+        let status = iced::event::Status::Ignored;
+        match keymap(&event, status, &self.key_context()) {
+            Some(Message::Select(SelectMessage::Undo | SelectMessage::Redo)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.await_select(task)
+            }
+            _ => self.fail_step("the key does not undo or redo here"),
+        }
+    }
+
+    /// Press the Pick all action of the bracket holding view position `position`, as its header
+    /// does: the grid's moment number is its place among the grid's moments.
+    fn pick_all_step(&mut self, position: u32) -> Task<Message> {
+        let state = &self.select.state;
+        let Some(summary) = &state.summary else {
+            return self.fail_step("Select holds no view");
+        };
+        let found = state
+            .content
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Moment { index, action, .. } => Some((*index, action.is_some())),
+                _ => None,
+            })
+            .enumerate()
+            .find(|(_, (index, _))| {
+                summary
+                    .groups
+                    .moments
+                    .get(*index as usize)
+                    .is_some_and(|moment| {
+                        (moment.start..moment.start + moment.len).contains(&position)
+                    })
+            });
+        match found {
+            Some((number, (_, true))) => {
+                let task = self.update(Message::Select(SelectMessage::PickAll(number as u32)));
+                self.await_select(task)
+            }
+            Some(_) => self.fail_step(format!(
+                "the moment holding position {position} offers no Pick all"
+            )),
+            None => self.fail_step(format!("no moment holds position {position}")),
         }
     }
 
