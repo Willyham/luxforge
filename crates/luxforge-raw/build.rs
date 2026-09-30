@@ -192,13 +192,14 @@ fn mode(mode: &profiles::Mode) -> String {
         },
     );
     format!(
-        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression} }}",
+        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?} }}",
         text(&mode.id),
         mode.bits,
         mode.raw_count,
         text(&mode.decoder),
         mode.dng_version,
         mode.validation,
+        mode.frame_size,
     )
 }
 

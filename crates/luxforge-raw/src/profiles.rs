@@ -47,6 +47,18 @@ pub(crate) struct Mode {
     pub dng_version: Option<u32>,
     pub validation: ModeValidation,
     pub compression: Option<Compression>,
+    /// The decoder's stored frame, `[width, height]`, when this mode stores the sensor in a
+    /// larger padded frame (such as tiled lossless compression); omitted when the frame is the
+    /// camera's `sensor_size`. Never smaller than the sensor in either dimension.
+    #[serde(default)]
+    pub frame_size: Option<[u32; 2]>,
+}
+
+impl Mode {
+    /// The frame this mode's decoder stores: its padded frame, or the camera's sensor.
+    pub fn frame(&self, camera: &Camera) -> [u32; 2] {
+        self.frame_size.unwrap_or(camera.sensor_size)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -150,14 +162,15 @@ impl Catalog {
             {
                 return fail("invalid or duplicate camera identity");
             }
-            let [w, h] = camera.sensor_size;
-            if w == 0
-                || h == 0
-                || w > crate::limits::MAX_SIDE
-                || h > crate::limits::MAX_SIDE
-                || u64::from(w) * u64::from(h) > crate::limits::MAX_PIXELS as u64
-                || u64::from(w) * u64::from(h) * 12 > crate::limits::MAX_RGB_BYTES as u64
-            {
+            let within_limits = |[w, h]: [u32; 2]| {
+                w != 0
+                    && h != 0
+                    && w <= crate::limits::MAX_SIDE
+                    && h <= crate::limits::MAX_SIDE
+                    && u64::from(w) * u64::from(h) <= crate::limits::MAX_PIXELS as u64
+                    && u64::from(w) * u64::from(h) * 12 <= crate::limits::MAX_RGB_BYTES as u64
+            };
+            if !within_limits(camera.sensor_size) {
                 return fail("sensor size exceeds decode/development limits");
             }
             if !matches!(camera.cfa_size, [2, 2] | [6, 6]) {
@@ -272,6 +285,18 @@ impl Catalog {
                 {
                     return fail("invalid or duplicate mode identifier, decoder or bit depth");
                 }
+                if let Some(frame) = mode.frame_size {
+                    // A padded frame holds the whole sensor: it is never smaller, never merely
+                    // restates the sensor size, and DNG geometry stays the container's own.
+                    if !within_limits(frame)
+                        || frame == camera.sensor_size
+                        || frame[0] < camera.sensor_size[0]
+                        || frame[1] < camera.sensor_size[1]
+                        || camera.dng.is_some()
+                    {
+                        return fail("invalid padded mode frame size");
+                    }
+                }
                 if let Some(dng) = &camera.dng {
                     if (dng.container == DngContainer::UncompressedU16SingleStrip
                         && mode.bits != 16)
@@ -308,6 +333,8 @@ impl Catalog {
                 }
                 if camera.modes[..i].iter().any(|other| {
                     mode.bits == other.bits
+                        && mode.raw_count == other.raw_count
+                        && mode.frame(camera) == other.frame(camera)
                         && mode.decoder == other.decoder
                         && mode.dng_version == other.dng_version
                         && mode.compression == other.compression
@@ -560,6 +587,80 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A mode may store the sensor in a larger padded frame, such as tiled lossless compression:
+    /// it is selected at that frame alone, the camera's other modes keep the sensor size, and a
+    /// frame smaller than the sensor, equal to it, over the limits or on a DNG profile is refused.
+    #[test]
+    fn padded_frame_size_is_a_mode_selector_never_smaller_than_the_sensor() {
+        let padded = |frame: Value| {
+            let mut data = catalog();
+            let mut mode = data["cameras"][0]["modes"][2].clone();
+            mode["id"] = json!("PaddedMode");
+            mode["frame_size"] = frame;
+            data["cameras"][0]["modes"]
+                .as_array_mut()
+                .unwrap()
+                .push(mode);
+            data
+        };
+        let profiles = parse(&padded(json!([6144, 4096]))).unwrap();
+        let mut native = crate::RawSource::blank_native();
+        (native.width, native.height) = (6144, 4096);
+        (native.cfa_width, native.cfa_height) = (2, 2);
+        native.raw_count = 1;
+        native.raw_bps = 14;
+        let classify = |n: &crate::NativeMetadata| {
+            crate::format::classify_mode(
+                &profiles,
+                n,
+                "Nikon",
+                "Z 6",
+                "nikon_14bit_load_raw()",
+                &[],
+            )
+            .map(|(_, mode)| mode.id.to_string())
+        };
+        assert_eq!(classify(&native).unwrap(), "PaddedMode");
+        (native.width, native.height) = (6064, 4040);
+        assert_eq!(classify(&native).unwrap(), "NikonZ6Raw14");
+        (native.width, native.height) = (6144, 4040);
+        assert!(classify(&native).is_err());
+        for invalid in [
+            json!([6064, 4040]),
+            json!([6000, 4096]),
+            json!([6144, 4000]),
+            json!([0, 4096]),
+            json!([16_385, 4096]),
+            json!([16_000, 16_000]),
+            json!([6144]),
+        ] {
+            assert!(
+                parse(&padded(invalid.clone())).is_err(),
+                "accepted {invalid}"
+            );
+        }
+        let mut dng = catalog();
+        dng["cameras"][2]["modes"][0]["frame_size"] = json!([5632, 3712]);
+        assert!(parse(&dng).is_err(), "accepted a padded DNG frame");
+    }
+
+    /// Modes that differ only in raw-frame count or stored frame are distinct selectors, as the
+    /// classifier matches both exactly; any other identical pair stays ambiguous.
+    #[test]
+    fn raw_count_and_frame_size_disambiguate_mode_selectors() {
+        for (field, value) in [("raw_count", json!(2)), ("frame_size", json!([6144, 4096]))] {
+            let mut data = catalog();
+            let mut mode = data["cameras"][0]["modes"][2].clone();
+            mode["id"] = json!("DistinctMode");
+            mode[field] = value;
+            data["cameras"][0]["modes"]
+                .as_array_mut()
+                .unwrap()
+                .push(mode);
+            assert!(parse(&data).is_ok(), "{field}");
+        }
     }
 
     #[test]

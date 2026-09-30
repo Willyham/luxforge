@@ -27,12 +27,15 @@ One-pass Markesteijn allocates `(114² × 19 + 128) × 4 = 988,208` explicit scr
 
 ## Camera calibration data
 
-The OM-3 `xyz_to_camera` matrix in `data/cameras.json` is attributed to the
-RawSpeed contributors' [camera data](https://github.com/darktable-org/rawspeed/blob/0a4a6fdc2da228c71c39025a2a5647b081042299/data/cameras.xml),
+The OM-3, Nikon Z50_2 (Z50II) and Nikon Z5_2 (Z5II) `xyz_to_camera` matrices
+in `data/cameras.json` are attributed to the RawSpeed contributors'
+[camera data](https://github.com/darktable-org/rawspeed/blob/0a4a6fdc2da228c71c39025a2a5647b081042299/data/cameras.xml),
 licensed [CC-BY-SA 3.0 Unported](https://creativecommons.org/licenses/by-sa/3.0/).
-The nine values are transcribed from the OM Digital Solutions OM-3 entry and
-scaled by 1/10000; no other camera's calibration is substituted. That matrix
-data retains the upstream license. That source XML has SHA-256
+Each matrix's nine values are transcribed from that model's own entry (OM
+Digital Solutions OM-3; `NIKON Z50_2` and `NIKON Z5_2`, 14bit-compressed) and
+scaled by 1/10000; no other camera's calibration is substituted. Pinned LibRaw
+0.22.2 has no calibration for these three models. That matrix data retains the
+upstream license. That source XML has SHA-256
 `d67d32beb3acf073a4ecc521daae29545f90bf79270749e9041031dedb89d166`, the same
 file as the `data/cameras.xml` now bundled with RawSpeed.
 The configured matrix uses the pinned LibRaw coefficient conversion; all other

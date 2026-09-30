@@ -111,7 +111,7 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw LUXFORGE_RAW_PROFILE_SOURCE=nikon_z6.N
   cargo test --release -p luxforge-raw --locked --lib bayer_owner_mosaic_and_rgb_oracle -- --ignored --nocapture
 ```
 
-The Nikon High Efficiency refusal runs against the SHA-verified raw.pixls.us samples named `<id>.<EXT>`: the six High Efficiency files (Z 9, Z 8, Z f, Z6_3, Z50_2, Z5_2) are refused, the catalogued lossless controls decode to the mosaics in [the evidence manifest](../../fixtures/modern-camera-evidence.json), and a library test opens the same files directly to check the adapter's own refusal and that no other sample in the directory is refused:
+The Nikon High Efficiency refusal runs against the SHA-verified raw.pixls.us samples named `<id>.<EXT>`: the six High Efficiency files (Z 9, Z 8, Z f, Z6_3, Z50_2, Z5_2) are refused, lossless controls from the same bodies (Z 9, Z f, Z 6II, Z6_3, Z50_2) decode to the mosaics in [the evidence manifest](../../fixtures/modern-camera-evidence.json), and a library test opens the same files directly to check the adapter's own refusal of the four files LibRaw routes to its High Efficiency decoder (the Z50_2 and Z5_2 files, which LibRaw misreads as lossless, pass the native open and are refused only by the container check) and that no other sample in the directory is refused:
 
 ```sh
 LUXFORGE_RAW_POPULAR_DIR=/path/to/popular/raw \

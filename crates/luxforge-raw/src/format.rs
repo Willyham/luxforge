@@ -853,7 +853,6 @@ pub(super) fn classify_mode<'a>(
         .find(|camera| camera.make == make && camera.model == model)
         .ok_or_else(unsupported)?;
     if !matches!(native.raw_count, 1 | 2)
-        || camera.sensor_size != [native.width, native.height]
         || camera.cfa_size != [native.cfa_width, native.cfa_height]
     {
         return Err(unsupported());
@@ -862,7 +861,8 @@ pub(super) fn classify_mode<'a>(
         .modes
         .iter()
         .find(|mode| {
-            mode.bits == native.raw_bps
+            mode.frame(camera) == [native.width, native.height]
+                && mode.bits == native.raw_bps
                 && mode.raw_count == native.raw_count
                 && mode.decoder == decoder
                 && mode.dng_version.unwrap_or(0) == native.dng_version
