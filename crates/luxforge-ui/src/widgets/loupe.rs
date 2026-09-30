@@ -289,29 +289,39 @@ pub(crate) fn inset_labels(source: InsetSource) -> (&'static str, &'static str) 
     }
 }
 
+/// The region under the pointer, as the inset draws it: its pixels and the size in points they take
+/// at 100%, one of the region's pixels to one of the display's (its pixel size over the display's
+/// scale factor).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsetRegion {
+    pub handle: Handle,
+    pub size: Size,
+}
+
 /// Plain data for the 100% focus check's inset.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FocusInsetModel {
-    /// The region under the pointer at 100%, [`theme::FOCUS_INSET_WIDTH`] ×
+    /// The region under the pointer at 100%, normally [`theme::FOCUS_INSET_WIDTH`] ×
     /// [`theme::FOCUS_REGION_HEIGHT`] points of it; `None` while it is being prepared, drawn empty.
-    pub region: Option<Handle>,
+    pub region: Option<InsetRegion>,
     pub source: InsetSource,
 }
 
 /// Renders the 100% inset: the region over a 24 pt footer naming what it is, with the `Z` that
 /// toggles it at the right, on the Bar surface with its outline drawn over the region.
+///
+/// The region is drawn at 100% and never scaled: at the size its pixels take on the display
+/// ([`InsetRegion::size`]), centred in the inset's region area. A region smaller than the area — cut
+/// at the frame's edge, or from a small source — sits on the canvas colour around it rather than
+/// being enlarged, which would show detail that is not there; a larger one is cropped to the area
+/// about its centre.
 pub fn focus_inset<'a, M: 'a>(model: &FocusInsetModel) -> Element<'a, M> {
     let (lead, caption) = inset_labels(model.source);
-    let region: Element<'a, M> = match &model.region {
-        Some(handle) => image::Image::new(handle.clone())
-            .width(Length::Fill)
-            .height(Length::Fixed(theme::FOCUS_REGION_HEIGHT))
-            .content_fit(ContentFit::Cover)
-            .border_radius(iced::border::top(theme::FOCUS_INSET_RADIUS))
-            .into(),
-        None => container(Space::new())
-            .width(Length::Fill)
-            .height(Length::Fixed(theme::FOCUS_REGION_HEIGHT))
+    let area = |content: Element<'a, M>| -> Element<'a, M> {
+        container(content)
+            .center_x(Length::Fixed(theme::FOCUS_INSET_WIDTH))
+            .center_y(Length::Fixed(theme::FOCUS_REGION_HEIGHT))
+            .clip(true)
             .style(|_: &Theme| {
                 container::Style::default()
                     .background(theme::CANVAS)
@@ -320,7 +330,17 @@ pub fn focus_inset<'a, M: 'a>(model: &FocusInsetModel) -> Element<'a, M> {
                         ..Border::default()
                     })
             })
-            .into(),
+            .into()
+    };
+    let region: Element<'a, M> = match &model.region {
+        Some(region) => area(
+            image::Image::new(region.handle.clone())
+                .width(Length::Fixed(region.size.width))
+                .height(Length::Fixed(region.size.height))
+                .content_fit(ContentFit::Fill)
+                .into(),
+        ),
+        None => area(Space::new().into()),
     };
     let footer = row![
         text(lead)
@@ -521,6 +541,22 @@ mod tests {
             let _: Element<'_, ()> = focus_inset(&FocusInsetModel {
                 region: None,
                 source,
+            });
+        }
+        // A region the inset's size, a smaller one (drawn at 100% on the canvas, never enlarged)
+        // and a larger one (cropped about its centre).
+        let pixels = Handle::from_rgba(2, 2, vec![128; 16]);
+        for size in [
+            Size::new(theme::FOCUS_INSET_WIDTH, theme::FOCUS_REGION_HEIGHT),
+            Size::new(120.0, 80.0),
+            Size::new(600.0, 400.0),
+        ] {
+            let _: Element<'_, ()> = focus_inset(&FocusInsetModel {
+                region: Some(InsetRegion {
+                    handle: pixels.clone(),
+                    size,
+                }),
+                source: InsetSource::CameraPreview,
             });
         }
         let _: Element<'_, ()> = focus_box(Size::new(64.0, 44.0));

@@ -366,6 +366,7 @@ fn loupe_view_builds_in_every_state() {
                 height: 233.0,
             },
             region: None,
+            region_points: (308.0, 209.0),
             developed: true,
             pending: true,
             error: None,

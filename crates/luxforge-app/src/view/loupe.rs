@@ -24,8 +24,8 @@ use iced::{
     widget::{Row, Space, column, container, image, mouse_area, stack, text},
 };
 use luxforge_ui::{
-    FocusInsetModel, FrameStripModel, InsetSource, KeyHint, LoupeInfoModel, MomentFrame, caption,
-    focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, theme,
+    FocusInsetModel, FrameStripModel, InsetRegion, InsetSource, KeyHint, LoupeInfoModel,
+    MomentFrame, caption, focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, theme,
 };
 
 fn loupe_message(message: LoupeMessage) -> Message {
@@ -132,7 +132,10 @@ fn single<'a>(
                 .region
                 .as_ref()
                 .and_then(|region| images.region(region))
-                .cloned(),
+                .map(|handle| InsetRegion {
+                    handle: handle.clone(),
+                    size: Size::new(focus.region_points.0, focus.region_points.1),
+                }),
             source: if focus.developed {
                 InsetSource::Development
             } else {
