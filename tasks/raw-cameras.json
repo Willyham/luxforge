@@ -274,7 +274,7 @@
   {
    "id": "TASK-005",
    "description": "Add the RawSpeed unpacker capability: the catalog field, the replaceable-decoder table and the load_raw substitution.",
-   "status": "in_progress",
+   "status": "completed",
    "dependencies": [
     "TASK-002",
     "TASK-004"
@@ -348,7 +348,7 @@
   {
    "id": "TASK-006",
    "description": "Route the qualifying catalog modes to RawSpeed and prove each one exact.",
-   "status": "pending",
+   "status": "in_progress",
    "dependencies": [
     "TASK-003",
     "TASK-005"
