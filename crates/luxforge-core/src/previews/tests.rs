@@ -8,13 +8,15 @@ use super::{
     cache::{self, Store},
     extract,
     lane::{self, Failures, Outcome, PREVIEW_QUEUE_CAPACITY, Pushed, Queue, Task, TaskKey},
+    photos,
+    rendered::RENDERER_GENERATION,
 };
 use crate::{
-    Error, ErrorKind, SourceTag,
+    AssetId, EntryId, Error, ErrorKind, SourceTag,
     catalog_types::{
         EmbeddedFormat, EmbeddedImage, ExifOrientation, FileId, FileRecord, FileSignature,
         HeaderMetadata, HeaderState, LOUPE_MAX_SIDE, PreviewOrigin, PreviewPriority, PreviewState,
-        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, VolumeId,
+        PreviewTier, SHARED_PREVIEW_BUDGET_BYTES, ViewItem, VolumeId,
     },
     index::{IndexDb, upsert_file},
     jobs::JobControl,
@@ -23,6 +25,7 @@ use exif::{Field, In, Tag, Value as ExifValue, experimental::Writer};
 use luxforge_testbase::paths::{self, temp_dir};
 use std::{
     cell::Cell,
+    collections::HashSet,
     fs,
     io::Cursor,
     path::{Path, PathBuf},
@@ -176,12 +179,14 @@ pub(crate) fn camera_jpeg(
     (bytes, offset as u64, thumbnail.len() as u32)
 }
 
-fn task(key: TaskKey) -> Task {
+fn task((file, tier): (FileId, PreviewTier)) -> Task {
+    let key: TaskKey = (ViewItem::File(file), tier);
     Task {
         key,
         control: JobControl::new(),
         budget: SHARED_PREVIEW_BUDGET_BYTES,
         develops: true,
+        camera: None,
         develop: None,
         hold: None,
         stage_hold: None,
@@ -902,7 +907,7 @@ fn preview_cache_the_loupe_budget_evicts_the_least_recently_used_and_keeps_grids
         .connection()
         .execute(
             "INSERT INTO photo_previews VALUES ('asset-1', 'entry-1', 'large', 1, ?1, 10, 10, 100,
-                 'rendered', 500)",
+                 'rendered', 500, 0)",
             [large.to_string_lossy()],
         )
         .unwrap();
@@ -950,6 +955,126 @@ fn preview_cache_the_loupe_budget_evicts_the_least_recently_used_and_keeps_grids
     assert_eq!(used(files[2]), 100_000, "not again within the minute");
     cache::touch(fixture.index.connection(), files[2], 160_000).unwrap();
     assert_eq!(used(files[2]), 160_000);
+}
+
+/// A developed photograph's rows keep whether each tier is approximate. A write whose work was
+/// cancelled writes no row and leaves no file, however far it got. Forgetting photographs deletes
+/// every row of theirs — every entry, tier, renderer generation and origin — a page of
+/// photographs at a time, answers their files and removes them off the caller's thread; another
+/// photograph's row and file stay, and a second call finds nothing.
+#[test]
+fn preview_cache_forgetting_photographs_deletes_every_row_and_file() {
+    let fixture = Fixture::new("preview-forget");
+    let mut store = fixture.store();
+    let (gone, kept) = (AssetId::new(), AssetId::new());
+    let (earlier, current) = (EntryId::new(), EntryId::new());
+    let generation = i64::from(RENDERER_GENERATION);
+    let live = JobControl::new();
+    let mut written = 0;
+    let mut write = |store: &mut Store,
+                     asset_id: &AssetId,
+                     entry_id: &EntryId,
+                     tier: PreviewTier,
+                     renderer: i64,
+                     approximate: bool,
+                     control: &JobControl| {
+        written += 1;
+        let origin = match renderer {
+            photos::CAMERA_RENDERER => PreviewOrigin::Embedded,
+            _ => PreviewOrigin::Rendered,
+        };
+        let name = PathBuf::from(format!("photos/zz/{written}.jpg"));
+        photos::write(
+            store,
+            &photos::NewTier {
+                asset_id,
+                entry_id,
+                tier,
+                renderer,
+                origin,
+                approximate,
+                name: &name,
+                jpeg: b"jpeg",
+                width: 512,
+                height: 341,
+                now_ms: 0,
+                control,
+            },
+        )
+        .map(|row| row.expect("written").path)
+    };
+    let (grid, large) = (PreviewTier::Grid, PreviewTier::Large);
+    let camera = photos::CAMERA_RENDERER;
+    let files = [
+        write(&mut store, &gone, &earlier, grid, camera, false, &live).unwrap(),
+        write(&mut store, &gone, &current, grid, generation, false, &live).unwrap(),
+        write(&mut store, &gone, &current, large, generation, true, &live).unwrap(),
+        write(
+            &mut store,
+            &gone,
+            &earlier,
+            large,
+            generation + 1,
+            false,
+            &live,
+        )
+        .unwrap(),
+    ];
+    let other = write(&mut store, &kept, &current, grid, generation, true, &live).unwrap();
+    let rows = photos::rows(store.connection(), &gone).unwrap();
+    assert_eq!(rows.len(), 4);
+    for row in &rows {
+        assert_eq!(
+            row.info(&gone).approximate,
+            row.tier == large && row.entry_id == current,
+            "{row:?}"
+        );
+    }
+
+    // A cancelled write: refused while it holds the write lock, its file removed.
+    let stopped = JobControl::new();
+    stopped.cancel("the photograph left the catalog");
+    let refused = write(
+        &mut store,
+        &gone,
+        &EntryId::new(),
+        grid,
+        generation,
+        false,
+        &stopped,
+    );
+    assert_eq!(refused.unwrap_err().kind, ErrorKind::Cancelled);
+    assert_eq!(photos::rows(store.connection(), &gone).unwrap().len(), 4);
+    let refused_file = store.dir().join(format!("photos/zz/{written}.jpg"));
+    assert!(
+        !refused_file.exists(),
+        "no file is left for a row never written"
+    );
+
+    // The photograph whose rows go is on the second page.
+    let mut forgotten: Vec<AssetId> = (0..photos::FORGET_PAGE).map(|_| AssetId::new()).collect();
+    forgotten.push(gone.clone());
+    let mut named = photos::forget(store.connection_mut(), &forgotten).unwrap();
+    named.sort();
+    let mut expected = files.to_vec();
+    expected.sort();
+    assert_eq!(named, expected, "every row's file, and no other");
+    assert!(photos::rows(store.connection(), &gone).unwrap().is_empty());
+    assert!(
+        files.iter().all(|file| file.exists()),
+        "the caller removes them"
+    );
+    photos::remove_files(named);
+    luxforge_testbase::wait_until("the forgotten files are removed", || {
+        files.iter().all(|file| !file.exists())
+    });
+    assert_eq!(photos::rows(store.connection(), &kept).unwrap().len(), 1);
+    assert!(other.exists());
+    assert!(
+        photos::forget(store.connection_mut(), &[gone])
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// The grid states lane D reads and the sizes lane C reads, one query each.
@@ -1105,7 +1230,7 @@ fn preview_cache_the_queue_orders_by_priority_and_deduplicates() {
 }
 
 /// A failure is remembered for the signature it happened at, the oldest forgotten first past the
-/// bound.
+/// bound; a photograph's are forgotten with the photograph, and nothing else is.
 #[test]
 fn preview_cache_failures_are_remembered_per_signature() {
     let signature = FileSignature {
@@ -1119,7 +1244,7 @@ fn preview_cache_failures_are_remembered_per_signature() {
     };
     let key = (FileId(1), PreviewTier::Grid);
     let mut failures = Failures::default();
-    failures.remember(key, signature, Error::unsupported_input("H.265 only"));
+    failures.remember(key, signature, Error::unsupported_input("H.265 only"), None);
     assert_eq!(failures.get(&key, &signature).unwrap().detail, "H.265 only");
     assert!(
         failures.get(&key, &changed).is_none(),
@@ -1132,11 +1257,33 @@ fn preview_cache_failures_are_remembered_per_signature() {
     );
     failures.forget(&key);
     assert!(failures.get(&key, &signature).is_none());
+
+    // A photograph's camera preview is remembered under its row, and forgotten by its asset.
+    let (gone, kept) = (AssetId::new(), AssetId::new());
+    let (gone_key, kept_key, file_key) = (
+        (FileId(-1), PreviewTier::Grid),
+        (FileId(-2), PreviewTier::Large),
+        (FileId(9), PreviewTier::Grid),
+    );
+    let none = || Error::not_ready("no usable camera preview");
+    failures.remember(gone_key, signature, none(), Some(gone.clone()));
+    failures.remember(kept_key, signature, none(), Some(kept.clone()));
+    failures.remember(file_key, signature, none(), None);
+    failures.forget_photographs(&HashSet::from([gone.clone()]));
+    assert!(failures.get(&gone_key, &signature).is_none());
+    assert!(failures.get(&kept_key, &signature).is_some());
+    assert!(failures.get(&file_key, &signature).is_some());
+    failures.forget_photographs(&HashSet::from([gone]));
+    assert!(failures.get(&kept_key, &signature).is_some(), "idempotent");
+    failures.forget(&kept_key);
+    failures.forget(&file_key);
+
     for id in 0..lane::REMEMBERED_FAILURES as i64 + 1 {
         failures.remember(
             (FileId(id), PreviewTier::Grid),
             signature,
             Error::unsupported_input("none"),
+            None,
         );
     }
     assert!(

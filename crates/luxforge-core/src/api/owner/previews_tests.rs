@@ -124,7 +124,8 @@ impl Drop for Setup {
 }
 
 /// `preview.read` answers the job making a tier, `job.read` answers the preview it made, the next
-/// read answers it ready, and the client that asked is woken.
+/// read answers it ready, and the client that asked is woken. A file's tiers are never
+/// approximate.
 #[test]
 fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() {
     let mut setup = Setup::new("preview-owner-read");
@@ -145,6 +146,7 @@ fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() 
     assert_eq!(record["kind"], "preview-extract");
     let preview = record["result"].clone();
     assert_eq!(preview["origin"], "embedded");
+    assert_eq!(preview["approximate"], false);
     assert_eq!(preview["item"], json!({"kind": "file", "file_id": file}));
     assert_eq!(
         (preview["width"].clone(), preview["height"].clone()),
@@ -169,6 +171,107 @@ fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() 
     let loupe = setup.settled(&queued["job_id"]);
     assert_eq!(loupe["result"]["tier"], "loupe");
     assert_eq!(loupe["result"]["width"], 640, "never enlarged");
+    assert_eq!(loupe["result"]["approximate"], false);
+}
+
+/// A client is woken only for what its own requests wait on: a view job over files wakes nobody,
+/// while a `preview.read` answered `queued` for one of its files wakes its client once for each of
+/// the grid tier's two stages, and a `preview.region` once when it ends.
+#[test]
+fn preview_cache_owner_wakes_only_what_a_request_waits_on() {
+    let mut setup = Setup::new("preview-owner-wakes");
+    let files: Vec<FileId> = (0..4)
+        .map(|index| setup.jpeg(&format!("W{index}.JPG")))
+        .collect();
+    let woken = Arc::new(AtomicUsize::new(0));
+    let counter = woken.clone();
+    setup.owner.watch_previews(
+        setup.client,
+        Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }),
+    );
+    let job = setup
+        .owner
+        .want_view(setup.client, files[..3].to_vec())
+        .unwrap()
+        .unwrap();
+    assert_eq!(setup.settled(&json!(job))["status"], "ready");
+    assert_eq!(woken.load(Ordering::SeqCst), 0, "a view job wakes nobody");
+
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_previews(Some(gate.clone()));
+    let view = setup
+        .owner
+        .want_view(setup.client, files.clone())
+        .unwrap()
+        .expect("the fourth grid tier is lacking");
+    gate.wait_reached(1, "the worker");
+    let read = setup.read(files[3], "grid", "visible");
+    assert_eq!(read["state"], "queued");
+    gate.open();
+    assert_eq!(setup.settled(&read["job_id"])["status"], "ready");
+    assert_eq!(setup.settled(&json!(view))["status"], "ready");
+    assert_eq!(
+        woken.load(Ordering::SeqCst),
+        2,
+        "once for the thumbnail stage and once for the embedded preview"
+    );
+
+    let region = setup.ok(
+        "preview.region",
+        json!({"item": {"kind": "file", "file_id": files[0]},
+               "rect": {"x": 0, "y": 0, "width": 64, "height": 64}}),
+    );
+    assert_eq!(setup.settled(&region["job_id"])["status"], "ready");
+    assert_eq!(woken.load(Ordering::SeqCst), 3, "a region wakes its client");
+}
+
+/// A view job that wrote grid fingerprints advances the index's revision once when it ends, with
+/// one index event naming it, so a view grouped before the fingerprints existed goes stale; a view
+/// with nothing left to write starts no job and records nothing.
+#[test]
+fn preview_cache_owner_a_view_that_wrote_fingerprints_advances_the_index_revision() {
+    let mut setup = Setup::new("preview-owner-revision");
+    let files: Vec<FileId> = (0..3)
+        .map(|index| setup.jpeg(&format!("R{index}.JPG")))
+        .collect();
+    let revision =
+        |setup: &Setup| crate::index::database::revision(setup.index.connection()).unwrap();
+    let before = revision(&setup);
+    let start = setup.ok("events.since", json!({"after": 0}))["current_sequence"]
+        .as_u64()
+        .unwrap();
+    let job = setup
+        .owner
+        .want_view(setup.client, files.clone())
+        .unwrap()
+        .unwrap();
+    assert_eq!(setup.settled(&json!(job))["status"], "ready");
+    let events = setup.ok("events.since", json!({"after": start}))["events"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(events.len(), 1, "one event for the view: {events:?}");
+    assert_eq!(events[0]["index_revision"], before + 1);
+    assert_eq!(events[0]["method"], "preview-extract");
+    assert_eq!(revision(&setup), before + 1, "once, not once a tier");
+
+    let start = setup.ok("events.since", json!({"after": 0}))["current_sequence"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        setup.owner.want_view(setup.client, files).unwrap(),
+        None,
+        "every grid tier is there"
+    );
+    let events = setup.ok("events.since", json!({"after": start}))["events"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(revision(&setup), before + 1);
 }
 
 /// The grid can draw the file's thumbnail before its embedded preview arrives: while the task is
@@ -347,7 +450,7 @@ fn preview_cache_owner_view_job_reports_progress_and_cancels() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 4, "read": 4, "deferred": 0, "failed": 0})
+        json!({"items": 4, "read": 4, "deferred": 0, "failed": 0})
     );
     assert_eq!(
         record["progress"],
@@ -475,8 +578,8 @@ fn preview_cache_owner_refuses_past_the_queue_bound() {
     gate.open();
 }
 
-/// A photograph's previews are not built yet; a file has no large tier; a file the index does not
-/// hold is refused.
+/// A photograph the catalog does not hold, a file's large tier and a file the index does not hold
+/// are refused.
 #[test]
 fn preview_cache_owner_refuses_what_it_cannot_read() {
     let mut setup = Setup::new("preview-owner-refusals");
@@ -489,7 +592,7 @@ fn preview_cache_owner_refuses_what_it_cannot_read() {
             json!({"kind": "photo", "asset_id": crate::AssetId::new()}),
             "grid"
         ),
-        "unsupported-input"
+        "validation"
     );
     assert_eq!(
         read(json!({"kind": "file", "file_id": file}), "large"),
@@ -640,7 +743,7 @@ fn preview_cache_owner_develops_what_is_on_screen_and_defers_the_rest() {
     assert_eq!(record["status"], "ready", "{record}");
     assert_eq!(
         record["result"],
-        json!({"files": 1, "read": 0, "deferred": 1, "failed": 0})
+        json!({"items": 1, "read": 0, "deferred": 1, "failed": 0})
     );
     assert_eq!(
         record["progress"],

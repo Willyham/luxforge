@@ -77,7 +77,8 @@ impl CachedPreview {
         self.origin != PreviewOrigin::ExifThumbnail
     }
 
-    /// The preview as `preview.read` answers it.
+    /// The preview as `preview.read` answers it. A file's tier is its camera's image or a neutral
+    /// development, never an approximation of an edit.
     pub(crate) fn info(&self) -> PreviewInfo {
         PreviewInfo {
             item: PreviewItem::File { file_id: self.file },
@@ -86,6 +87,7 @@ impl CachedPreview {
             width: self.width,
             height: self.height,
             origin: self.origin,
+            approximate: false,
             bytes: self.bytes,
             key: key(self.file, &self.signature, self.tier, self.origin),
         }
@@ -415,7 +417,7 @@ pub(crate) fn cache_bytes(connection: &Connection) -> Result<CacheBytes, Error> 
 
 /// Remove a cache file. One already gone is what was wanted, and one that cannot be removed has
 /// nobody to be reported to: no row names it any more, so it costs only its bytes.
-fn remove(path: &Path) {
+pub(super) fn remove(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
@@ -439,6 +441,16 @@ impl Store {
 
     pub(crate) fn connection(&self) -> &Connection {
         &self.connection
+    }
+
+    /// The connection, for a write of a developed photograph's rows (`photos.rs`).
+    pub(crate) fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+
+    /// `<catalog>.index/previews`.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// The file's `tier` still valid for `signature`, having first removed the row and its file

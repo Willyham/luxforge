@@ -1,13 +1,15 @@
-//! The preview lane's scheduling and workers: the priority queue of (file, tier) tasks, the
+//! The preview lane's scheduling and workers: the priority queue of (item, tier) tasks, the
 //! failures it remembers, and at most [`PREVIEW_WORKERS`] threads that make one task each at a
-//! time.
+//! time. An item is a file of the index, or a developed photograph whose camera preview is made
+//! from its original (`camera.rs`) until its first render.
 //!
 //! **Order.** The loupe's look-ahead first, then visible cells, then the rest of the view:
 //! oldest first within the look-ahead (the loupe asks for the nearest frame first) and the rest
 //! (the view's order), newest first within visible cells (the last scroll wins). A task is one
-//! (file, tier): a second request joins it, and raises its priority when it asks for more; a
+//! (item, tier): a second request joins it, and raises its priority when it asks for more; a
 //! visible request refreshes its turn. At most [`PREVIEW_QUEUE_CAPACITY`] wait, and a request past
-//! that is refused with `resource-limit`.
+//! that is refused with `resource-limit`. The render worker's queue (`renders.rs`) is the same
+//! [`Queue`] over its own keys.
 //!
 //! **Workers.** Started on the first task, each blocks on its own channel while idle, so nothing
 //! wakes while nothing is queued (performance rule 8). The owner hands the highest-priority task
@@ -23,18 +25,20 @@
 use super::{
     FILE_GRID_SIDE,
     cache::Store,
+    camera::{self, CameraSource},
     extract::{DEVELOP, FileImages, Found, develop_instead},
 };
 use crate::{
-    Error, ErrorKind,
+    AssetId, Error, ErrorKind,
     catalog_types::{
-        FileId, FileSignature, LOUPE_MAX_SIDE, PreviewInfo, PreviewPriority, PreviewTier,
+        FileId, FileSignature, LOUPE_MAX_SIDE, PreviewInfo, PreviewPriority, PreviewTier, ViewItem,
     },
     jobs::JobControl,
 };
 use std::{
     cmp::Reverse,
-    collections::{BTreeSet, HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    hash::Hash,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -57,8 +61,8 @@ const _: () = assert!(PREVIEW_WORKERS <= super::region::MAX_DEVELOPMENT_WAITERS)
 /// view of files none of which carries a usable preview.
 pub(crate) const REMEMBERED_FAILURES: usize = PREVIEW_QUEUE_CAPACITY;
 
-/// One task: a file's tier.
-pub(crate) type TaskKey = (FileId, PreviewTier);
+/// One task: a file's tier, or a developed photograph's camera preview for a tier.
+pub(crate) type TaskKey = (ViewItem, PreviewTier);
 
 /// Where a waiting task stands: its priority class first, then its turn within the class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,22 +82,23 @@ pub(crate) enum Pushed {
     Joined,
 }
 
-/// The waiting tasks in the order they are handed out, deduplicated by (file, tier).
+/// The waiting tasks in the order they are handed out, deduplicated by their key: (item, tier) on
+/// the extraction workers, one render on the render worker.
 #[derive(Debug)]
-pub(crate) struct Queue {
-    order: BTreeSet<(Rank, TaskKey)>,
-    ranks: HashMap<TaskKey, (Rank, PreviewPriority)>,
+pub(crate) struct Queue<K = TaskKey> {
+    order: BTreeSet<(Rank, K)>,
+    ranks: HashMap<K, (Rank, PreviewPriority)>,
     next: u64,
     capacity: usize,
 }
 
-impl Default for Queue {
+impl<K: Copy + Ord + Hash> Default for Queue<K> {
     fn default() -> Self {
         Self::with_capacity(PREVIEW_QUEUE_CAPACITY)
     }
 }
 
-impl Queue {
+impl<K: Copy + Ord + Hash> Queue<K> {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         Self {
             order: BTreeSet::new(),
@@ -112,6 +117,15 @@ impl Queue {
         self.len() + more <= self.capacity
     }
 
+    /// How many new tasks fit.
+    pub(crate) fn room(&self) -> usize {
+        self.capacity.saturating_sub(self.len())
+    }
+
+    pub(crate) fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     fn rank(&mut self, priority: PreviewPriority) -> Rank {
         self.next += 1;
         Rank {
@@ -126,11 +140,7 @@ impl Queue {
 
     /// Queue `key` at `priority`, or join it where it waits. `resource-limit` when a new task would
     /// pass the capacity.
-    pub(crate) fn push(
-        &mut self,
-        key: TaskKey,
-        priority: PreviewPriority,
-    ) -> Result<Pushed, Error> {
+    pub(crate) fn push(&mut self, key: K, priority: PreviewPriority) -> Result<Pushed, Error> {
         match self.ranks.get(&key).copied() {
             None => {
                 if !self.fits(1) {
@@ -159,14 +169,14 @@ impl Queue {
     }
 
     /// The next task to hand out, and the priority it waited at.
-    pub(crate) fn pop(&mut self) -> Option<(TaskKey, PreviewPriority)> {
+    pub(crate) fn pop(&mut self) -> Option<(K, PreviewPriority)> {
         let (_, key) = self.order.pop_first()?;
         let (_, priority) = self.ranks.remove(&key)?;
         Some((key, priority))
     }
 
     /// Take `key` out of the queue; whether it was waiting.
-    pub(crate) fn remove(&mut self, key: &TaskKey) -> bool {
+    pub(crate) fn remove(&mut self, key: &K) -> bool {
         match self.ranks.remove(key) {
             Some((rank, _)) => {
                 self.order.remove(&(rank, *key));
@@ -177,18 +187,31 @@ impl Queue {
     }
 }
 
-/// What the lane remembers of a (file, tier), with the signature the file had and the error it
+/// What the lane remembers of an (item, tier), with the signature the file had and the error it
 /// answers: a failure, so a file that cannot give the tier is not read again until it changes,
 /// or, in a second instance, a deferral, so a RAW that needs a development is not read again in
-/// the background. Bounded, the oldest forgotten first, and never stored: a restart tries again.
+/// the background. A photograph's original is known by the length the catalog recorded
+/// ([`camera::recorded_signature`]): it never changes and stays the photograph's. A photograph's
+/// entry also names its asset, so it is forgotten when the photograph leaves the catalog
+/// ([`Self::forget_photographs`]), whose row number a later photograph may be given. Bounded, the
+/// oldest forgotten first, and never stored: a restart tries again.
 #[derive(Debug)]
-pub(crate) struct Failures {
-    entries: HashMap<TaskKey, (FileSignature, Error)>,
-    order: VecDeque<TaskKey>,
+pub(crate) struct Failures<K = TaskKey> {
+    entries: HashMap<K, Remembered>,
+    order: VecDeque<K>,
     capacity: usize,
 }
 
-impl Default for Failures {
+/// One remembered failure or deferral.
+#[derive(Debug)]
+struct Remembered {
+    signature: FileSignature,
+    error: Error,
+    /// The photograph a camera preview's entry is of; none for a file's.
+    photo: Option<AssetId>,
+}
+
+impl<K> Default for Failures<K> {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
@@ -198,9 +221,22 @@ impl Default for Failures {
     }
 }
 
-impl Failures {
-    pub(crate) fn remember(&mut self, key: TaskKey, signature: FileSignature, error: Error) {
-        if self.entries.insert(key, (signature, error)).is_none() {
+impl<K: Copy + Eq + Hash> Failures<K> {
+    /// Remember `error` for `key` while its file has `signature`; `photo` names the photograph a
+    /// camera preview's key is of.
+    pub(crate) fn remember(
+        &mut self,
+        key: K,
+        signature: FileSignature,
+        error: Error,
+        photo: Option<AssetId>,
+    ) {
+        let remembered = Remembered {
+            signature,
+            error,
+            photo,
+        };
+        if self.entries.insert(key, remembered).is_none() {
             self.order.push_back(key);
         }
         while self.entries.len() > self.capacity {
@@ -212,16 +248,31 @@ impl Failures {
     }
 
     /// The failure remembered for `key` while the file still has `signature`.
-    pub(crate) fn get(&self, key: &TaskKey, signature: &FileSignature) -> Option<&Error> {
+    pub(crate) fn get(&self, key: &K, signature: &FileSignature) -> Option<&Error> {
         self.entries
             .get(key)
-            .filter(|(failed, _)| failed == signature)
-            .map(|(_, error)| error)
+            .filter(|remembered| remembered.signature == *signature)
+            .map(|remembered| &remembered.error)
     }
 
-    pub(crate) fn forget(&mut self, key: &TaskKey) {
+    pub(crate) fn forget(&mut self, key: &K) {
         if self.entries.remove(key).is_some() {
             self.order.retain(|held| held != key);
+        }
+    }
+
+    /// Forget every entry of a photograph in `assets`: one pass over what is remembered.
+    pub(crate) fn forget_photographs(&mut self, assets: &HashSet<AssetId>) {
+        let before = self.entries.len();
+        self.entries.retain(|_, remembered| {
+            remembered
+                .photo
+                .as_ref()
+                .is_none_or(|photo| !assets.contains(photo))
+        });
+        if self.entries.len() != before {
+            let entries = &self.entries;
+            self.order.retain(|key| entries.contains_key(key));
         }
     }
 }
@@ -250,6 +301,8 @@ pub(crate) struct Task {
     /// Whether a RAW with no usable preview is developed: a visible or look-ahead task's is, a
     /// background task's is deferred (the design's "done lazily for what is on screen").
     pub develops: bool,
+    /// For a photograph's camera preview, its original as the catalog records it; none for a file.
+    pub camera: Option<Arc<CameraSource>>,
     /// Where a test develops instead of [`DEVELOP`].
     #[cfg(test)]
     pub develop: Option<DevelopHook>,
@@ -366,7 +419,7 @@ fn work(index: usize, mut store: Store, tasks: Receiver<Task>, post: Post) {
     }
 }
 
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_millis().min(i64::MAX as u128) as i64)
@@ -403,7 +456,16 @@ fn check_unchanged(
 pub(crate) fn run(store: &mut Store, task: &Task, stage: &dyn Fn()) -> Outcome {
     let mut signature = None;
     let mut ended = Ended::default();
-    let result = make(store, task, stage, &mut signature, &mut ended);
+    let result = match (task.key.0, &task.camera) {
+        (ViewItem::File(file), _) => make(store, task, file, stage, &mut signature, &mut ended),
+        (ViewItem::Photo(_), Some(source)) => {
+            signature = Some(camera::recorded_signature(source));
+            camera::make(store, task, source, &mut ended)
+        }
+        (ViewItem::Photo(_), None) => Err(Error::internal(
+            "a photograph's camera preview was queued without its original",
+        )),
+    };
     Outcome {
         permanent: ended.permanent && result.is_err(),
         deferred: ended.deferred && result.is_err(),
@@ -414,9 +476,9 @@ pub(crate) fn run(store: &mut Store, task: &Task, stage: &dyn Fn()) -> Outcome {
 
 /// What a task's failure means beyond its error.
 #[derive(Default)]
-struct Ended {
-    permanent: bool,
-    deferred: bool,
+pub(super) struct Ended {
+    pub(super) permanent: bool,
+    pub(super) deferred: bool,
 }
 
 /// Whether a failure of this kind holds until the file changes, so the lane remembers it: the
@@ -425,7 +487,7 @@ struct Ended {
 /// cancellation or a failed write may go another way next time. A development's `resource-limit`
 /// is a size limit too: the lane's threads — these workers and the region worker — are the only
 /// callers of the one development, so no more of them wait than the development admits.
-fn lasting(kind: ErrorKind) -> bool {
+pub(super) fn lasting(kind: ErrorKind) -> bool {
     matches!(
         kind,
         ErrorKind::UnsupportedInput
@@ -439,11 +501,12 @@ fn lasting(kind: ErrorKind) -> bool {
 fn make(
     store: &mut Store,
     task: &Task,
+    file: FileId,
     stage: &dyn Fn(),
     signature: &mut Option<FileSignature>,
     ended: &mut Ended,
 ) -> Result<PreviewInfo, Error> {
-    let (file, tier) = task.key;
+    let tier = task.key.1;
     let control = &task.control;
     control.checkpoint()?;
     let record = crate::index::file(store.connection(), file)?
