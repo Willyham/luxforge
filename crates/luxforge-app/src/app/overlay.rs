@@ -202,6 +202,10 @@ impl Editor {
     pub(super) fn overlay_update(&mut self, message: OverlayMessage) -> Task<Message> {
         match message {
             OverlayMessage::ToggleClipping(endpoint) => {
+                if let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape()) {
+                    self.status.text = reason;
+                    return Task::none();
+                }
                 // Per-client view state through the same `workspace.set` an API client calls. It
                 // is not an edit: no mutation envelope, no expected revision, no history entry, and
                 // the catalog is untouched.

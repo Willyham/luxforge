@@ -17,6 +17,29 @@ use serde_json::{Map, Value, json};
 impl Editor {
     /// One per-client view-state message.
     pub(super) fn view_update(&mut self, message: ViewMessage) -> Task<Message> {
+        // Completion messages and window facts must still settle while the mask owns the tool.
+        // User navigation cannot change the coordinate system or hide its recovery controls.
+        if matches!(
+            message,
+            ViewMessage::TogglePanel(_)
+                | ViewMessage::ToggleThirds
+                | ViewMessage::SetMode(_)
+                | ViewMessage::Gallery(_)
+                | ViewMessage::OpenMenu(_)
+                | ViewMessage::OpenControlMenu { .. }
+                | ViewMessage::FocusNext
+                | ViewMessage::FocusPrevious
+                | ViewMessage::Zoom(_)
+                | ViewMessage::Panned(_, _)
+                | ViewMessage::Fit
+                | ViewMessage::HundredPercent
+                | ViewMessage::ApplyZoom
+                | ViewMessage::EditZoom
+        ) && let Some(reason) = crate::state::masks::interaction_refusal(self.mask_shape())
+        {
+            self.status.text = reason;
+            return Task::none();
+        }
         match message {
             ViewMessage::GalleryPreview => return Task::none(),
             ViewMessage::Gallery(page) => {

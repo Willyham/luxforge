@@ -70,10 +70,10 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::new("mask-mode", WorkspaceStep::default().mode("mask"))
             .commits(0)
             .mode("mask"),
-        // 2: a new mask whose first component is a linear gradient: the gesture opens and drafts,
-        // and nothing is committed.
+        // 2: the new linear tool is armed without geometry or a core draft.
         Step::new("new", MaskStep::New("linear".into()))
             .commits(0)
+            .no_draft()
             .masks(0),
         // 3: the drag itself, one sweep from the untouched side towards the affected one, with the
         // pointer still down: the frame is the picture mid-gesture, the gradient drafted exactly
@@ -257,11 +257,14 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Left> {
     let lifted = Tolerance::Above(LIFTED);
     let opened = patches(launch.at("opened")?)?;
 
-    // The gesture is open and drafting a create.
-    let opened_draft = &launch.at("new")?.state()["mask_draft"];
+    // Arming a create places nothing until the valid sweep.
+    let opened_draft = &launch.at("new")?.state()["mask_tool"];
     ensure(
-        opened_draft["kind"] == json!("linear") && opened_draft["mask"] == Value::Null,
-        format!("The new step holds no open create gesture: {opened_draft}"),
+        opened_draft["kind"] == json!("linear")
+            && opened_draft["mask"] == Value::Null
+            && opened_draft["placed"] == json!(false)
+            && launch.at("new")?.state()["draft_bar"]["can_apply"] == json!(false),
+        format!("The new step must hold an unplaced create tool: {opened_draft}"),
     )?;
     // The sweep put the gradient exactly where the script drew it, pointer down; the release
     // leaves it there with the gesture still open, because a release commits nothing on its own.

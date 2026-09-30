@@ -183,10 +183,12 @@ pub(crate) fn masks_panel<'a>(
     }
     list = list.push(new_mask_row(model, menu));
     // A gesture that will create a mask has no row yet, so its fields sit under New mask.
-    if let Some(draft) = model.draft.as_ref().filter(|draft| !draft.painted)
-        && model.selected.is_none()
+    if let Some(draft) = model
+        .draft
+        .as_ref()
+        .filter(|draft| !draft.painted && draft.creates)
     {
-        list = list.push(draft_grid(draft, model.enabled));
+        list = list.push(draft_grid(draft, draft.apply_reason.is_none()));
     }
     let mut panel = column![
         band,
@@ -254,7 +256,7 @@ fn drop_target<'a>(
 // ---- the overlay row -----------------------------------------------------------------------------
 
 /// What the canvas draws of the selected mask, and in which of the two tints: four icon segments,
-/// the two swatches and `⇧M`. The segments and swatches follow the host's own declared order, and
+/// the two swatches and `O`. The segments and swatches follow the host's own declared order, and
 /// their tooltips are the host's names. Red is deliberately not offered: the delivered clipping
 /// indicators own red, blue and the magenta between them.
 fn overlay_row(model: &MasksModel) -> Element<'_, Message> {
@@ -274,7 +276,7 @@ fn overlay_row(model: &MasksModel) -> Element<'_, Message> {
                 .copied()
                 .unwrap_or(OverlayTint::Green),
             tint_names: [0, 1].map(|index| name(index, colours)),
-            hint: Some("\u{21e7}M".into()),
+            hint: Some("O".into()),
             enabled: names.len() == OverlayMode::ALL.len(),
         },
         |mode| {
@@ -605,10 +607,13 @@ fn open_mask<'a>(
     ));
     body = body.push(add_row(model, menu));
     // A gesture adding a component has no row yet, so its fields sit under the Add row.
-    if let Some(draft) = model.draft.as_ref().filter(|draft| !draft.painted)
+    if let Some(draft) = model
+        .draft
+        .as_ref()
+        .filter(|draft| !draft.painted && !draft.creates)
         && !model.components.iter().any(|component| component.drafting)
     {
-        body = body.push(draft_grid(draft, model.enabled));
+        body = body.push(draft_grid(draft, draft.apply_reason.is_none()));
     }
     if model.brush_visible {
         body = body.push(brush_section(model));
@@ -777,7 +782,7 @@ fn component_view<'a>(
     // The component's own fields: the gesture's while one is open on it, its stored geometry's
     // otherwise.
     match model.draft.as_ref().filter(|_| component.drafting) {
-        Some(draft) => block = block.push(draft_grid(draft, model.enabled)),
+        Some(draft) => block = block.push(draft_grid(draft, draft.apply_reason.is_none())),
         None => {
             for part in component_fields(&component.fields, enabled, menu, plot) {
                 block = block.push(part);

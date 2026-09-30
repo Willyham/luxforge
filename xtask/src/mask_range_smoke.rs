@@ -432,6 +432,9 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
         )
         .commits(0),
         Step::new("brush-mask", MaskStep::Paint(PaintStep::NewMask)).commits(0),
+        // Arming a brush shows its live coverage by default. These frames measure the
+        // photograph, so make the manual Off choice after arming and retain it through rearming.
+        overlay("brush-photograph", "off"),
         Step::new(
             "stroke",
             MaskStep::Stroke {
@@ -464,6 +467,7 @@ pub fn launch2_plan(_: &[PathBuf]) -> Plan {
             MaskStep::Paint(PaintStep::Component(Reference::Index(0))),
         )
         .commits(0),
+        overlay("held-erase-photograph", "off"),
         Step::new(
             "constrained",
             MaskStep::Stroke {
@@ -811,21 +815,23 @@ fn stroke_latency(root: &Path, events: &[Value], recipe: Value) -> Result<Value>
     // two implementations that could drift apart. The paced stroke no longer races the render
     // pipeline, so there is always at least one pair to find here unless the stroke is genuinely
     // broken.
-    let (queued, latencies) = editor_latency::paced_stroke_latencies(events)?;
+    let feedback = editor_latency::paced_stroke_latencies(events)?;
     ensure(
-        !latencies.is_empty(),
-        "The run painted no stroke whose drafted frame reached the screen",
+        !feedback.photograph_ms.is_empty() || !feedback.coverage_ms.is_empty(),
+        "The run painted no stroke with photograph or authoritative coverage feedback",
     )?;
-    let displayed = latencies.len();
+    let displayed = feedback.photograph_ms.len();
     Ok(json!({
-        "inputs": queued,
+        "inputs": feedback.inputs,
         "displayed": displayed,
-        "rows": [stats::row("input_to_presented_frame", "ms", latencies)],
+        "coverage_feedback": feedback.coverage_ms.len(),
+        "rows": [stats::row("input_to_presented_frame", "ms", feedback.photograph_ms),
+            stats::row("input_to_authoritative_mask_coverage", "ms", feedback.coverage_ms)],
         "interval_ms": STROKE_INTERVAL_MS,
         "positions": STROKE_POSITIONS,
         "recipe": recipe,
         "load": launch::load(launch::load_average(root)),
-        "scope": "mask_draft_set to the preview_displayed of the generation it queued, on this scenario's 1440x960 fixture during a smoke run: the same interval editor-latency measures for a slider, over a different gesture. It is not a 24/60 MP baseline, and it is taken on the heaviest recipe this scenario builds, whose masked layers are recorded beside it — a value-based component bounds the whole stage, so those layers are evaluated over every pixel",
+        "scope": "Photograph timing pairs mask_draft_set with preview_displayed by generation/revision. An unbound change that reuses photograph pixels pairs accepted draft ID/revision with mask_coverage_ready instead, in its own authoritative coverage row; it is not a photograph render or display scanout. This smoke workload uses a 1440x960 fixture and records its masked layers beside the timings; it is not a 24/60 MP baseline.",
     }))
 }
 
@@ -1062,6 +1068,9 @@ fn verify_launch1(launch: &Checked, checks: &mut Checks) -> Result<Vec<(String, 
 
 /// Launch 2, step by step: the colour range's own limits, and the colour-constrained brush.
 fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Checks) -> Result {
+    for name in ["stroke", "painted", "constrained", "held-overlay-off"] {
+        photograph_only(launch.at(name)?)?;
+    }
     // The reopened catalog. Launch 1's mask and its selection are back, in the pixels and not only in
     // the rows.
     let reopened = same(
@@ -1201,6 +1210,17 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
     Ok(())
 }
 
+/// A photograph baseline must have no automatic tint or stale adopted coverage.
+fn photograph_only(frame: &Frame) -> Result {
+    let overlay = &frame.state()["mask_overlay"];
+    ensure(
+        overlay["effective"] == json!("off")
+            && overlay["forced"] == json!(false)
+            && overlay["coverage"]["adopted"] == Value::Null,
+        format!("A photograph baseline retained mask coverage: {overlay}"),
+    )
+}
+
 /// Regression coverage over synthetic events: `stroke_latency` must still pass a
 /// stroke every one of whose positions reached the screen, and must still fail one that reached it
 /// for none of them, which is the "broken stroke" the acceptance criteria keep as a real failure
@@ -1208,6 +1228,28 @@ fn verify_launch2(launch: &Checked, remedy: &[(String, f64)], checks: &mut Check
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn photograph_baselines_explicitly_hide_coverage_after_each_brush_arm() {
+        let plan = launch2_plan(&[]);
+        plan.validate().unwrap();
+        for name in ["stroke", "constrained"] {
+            let at = plan.index(name).unwrap();
+            assert_eq!(
+                plan.steps()[at - 1].script().unwrap(),
+                json!({"workspace":{"mask_overlay":"off"}})
+            );
+        }
+        let baseline = |effective, forced, adopted| {
+            Frame::state_only(&json!({"state":{"mask_overlay":{
+                "setting":"off","effective":effective,"forced":forced,
+                "coverage":{"adopted":adopted}
+            }}}))
+        };
+        photograph_only(&baseline("off", false, Value::Null)).unwrap();
+        assert!(photograph_only(&baseline("tint", true, json!({"mask":"mask-a"}))).is_err());
+        assert!(photograph_only(&baseline("off", false, json!({"mask":"mask-a"}))).is_err());
+    }
 
     /// One `mask_draft_set`/`mask_draft_preview`/`preview_displayed` triple per `(set_ms,
     /// preview_ms, displayed_ms, generation)`, the same shape `paced_stroke_latencies` reads out of
@@ -1273,7 +1315,35 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "The run painted no stroke whose drafted frame reached the screen"
+            "The run painted no stroke with photograph or authoritative coverage feedback"
         );
+    }
+
+    #[test]
+    fn reused_photo_strokes_pair_coverage_by_draft_identity_and_never_count_a_photo_render() {
+        let stamp =
+            |id: &str, revision: u64| json!({"draft":{"draft_id":id,"draft_revision":revision}});
+        let events = vec![
+            json!({"event":"mask_draft_set","elapsed_ms":0.0,"detail":{"draft_id":"draft-a"}}),
+            json!({"event":"mask_draft_preview","elapsed_ms":1.0,"detail":{"generation":5,"draft_revision":1}}),
+            json!({"event":"preview_pixels_reused","elapsed_ms":2.0,"detail":{"generation":5,"identity":stamp("draft-a",1)}}),
+            json!({"event":"mask_coverage_ready","elapsed_ms":3.0,"detail":{"generation":5,"identity":stamp("draft-a",2)}}),
+            json!({"event":"mask_coverage_ready","elapsed_ms":4.0,"detail":{"generation":5,"identity":stamp("draft-a",1)}}),
+            json!({"event":"mask_draft_set","elapsed_ms":5.0,"detail":{"draft_id":"draft-b"}}),
+            json!({"event":"mask_draft_preview","elapsed_ms":6.0,"detail":{"generation":5,"draft_revision":1}}),
+            json!({"event":"preview_pixels_reused","elapsed_ms":7.0,"detail":{"generation":5,"identity":stamp("draft-b",1)}}),
+            json!({"event":"mask_coverage_ready","elapsed_ms":8.0,"detail":{"generation":5,"identity":stamp("draft-a",1)}}),
+            json!({"event":"mask_coverage_ready","elapsed_ms":9.0,"detail":{"generation":5,"identity":stamp("draft-b",1)}}),
+            json!({"event":"preview_displayed","elapsed_ms":10.0,"detail":{"generation":5,"draft_revision":1}}),
+        ];
+        let root = tempfile::tempdir().unwrap();
+        let result = stroke_latency(root.path(), &events, json!({})).unwrap();
+        assert_eq!(result["inputs"], json!(2));
+        assert_eq!(result["displayed"], json!(0));
+        assert_eq!(result["coverage_feedback"], json!(2));
+        let coverage =
+            stats::distribution(&result, "input_to_authoritative_mask_coverage").unwrap();
+        assert_eq!(coverage["samples"], json!([4.0, 4.0]));
+        assert!(stats::distribution(&result, "input_to_presented_frame").is_none());
     }
 }

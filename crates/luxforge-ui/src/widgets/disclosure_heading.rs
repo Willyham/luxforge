@@ -20,7 +20,7 @@ pub fn disclosure_heading<'a, M: Clone + 'a>(
     label: &str,
     trailing: Option<String>,
     expanded: bool,
-    on_toggle: M,
+    on_toggle: Option<M>,
 ) -> Element<'a, M> {
     // The label names no colour, so it takes the button's text colour, which is what lets a hover
     // anywhere on the row lift it (see `theme::button_disclosure`).
@@ -58,7 +58,7 @@ pub fn disclosure_heading<'a, M: Clone + 'a>(
         .width(Length::Fill)
         .height(Length::Fixed(theme::DISCLOSURE_HEADING_HEIGHT))
         .style(theme::button_disclosure)
-        .on_press(on_toggle)
+        .on_press_maybe(on_toggle)
         .into()
 }
 
@@ -166,7 +166,8 @@ mod tests {
     fn every_state_builds() {
         for expanded in [true, false] {
             for trailing in [None, Some("2 jobs".to_string())] {
-                let _: Element<'_, ()> = disclosure_heading("Performance", trailing, expanded, ());
+                let _: Element<'_, ()> =
+                    disclosure_heading("Performance", trailing, expanded, Some(()));
             }
         }
     }

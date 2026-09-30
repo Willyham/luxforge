@@ -67,6 +67,10 @@ impl Editor {
     pub(super) fn sync_update(&mut self, message: SyncMessage) -> Task<Message> {
         match message {
             SyncMessage::Open => {
+                if let Some(reason) = self.mask_creation_refusal() {
+                    self.status.text = reason;
+                    return Task::none();
+                }
                 if self.view_state.picker_open || self.busy || self.evidence.is_some() {
                     return Task::none();
                 }
@@ -275,6 +279,10 @@ impl Editor {
         path: PathBuf,
         queued: Option<tasks::StartupImport>,
     ) -> Task<Message> {
+        if let Some(reason) = self.mask_creation_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
         self.begin_request();
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;

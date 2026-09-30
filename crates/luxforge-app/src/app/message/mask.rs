@@ -84,7 +84,7 @@ pub(crate) enum MaskMessage {
     /// host's own declared list.
     Overlay(usize),
     OverlayColour(usize),
-    /// Shift+M: the tint overlay on, or off again.
+    /// O in Mask mode: the overlay on, or off again.
     ToggleOverlay,
     /// Draw a new mask whose first component is of this kind.
     New(String),

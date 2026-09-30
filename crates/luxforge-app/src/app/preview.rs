@@ -23,7 +23,7 @@ use iced::{Subscription, Task};
 use luxforge_core::{
     DraftId, EntryId, ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob,
     PreviewPhase, PreviewQueue, PreviewResult, ProxyBounds, Raster, Region, RegionOutcome, Zoom,
-    analysis::{AnalysisIdentity, MaskOverlay},
+    analysis::MaskOverlay,
 };
 use serde_json::json;
 use std::{
@@ -233,9 +233,9 @@ pub(crate) struct Presentation {
     /// asset or selection change calls, and so does a discarded mask gesture whose drafted frames
     /// must not reach the screen; nothing else has to.
     pub(crate) presented_generation: u64,
-    /// One opaque surface identity per evaluated content. A pan/zoom retains it; a new draft
-    /// revision, history entry, source development or recipe gets another id.
-    content_key: Option<(AnalysisIdentity, luxforge_core::ProxyIdentity)>,
+    /// One opaque surface identity per photograph content. A pan/zoom or unbound mask edit
+    /// retains it; bound edits, layer changes and source development get another id.
+    content_key: Option<(u64, luxforge_core::ProxyIdentity)>,
     pub(crate) content_serial: u64,
     pub(crate) pending_content: BTreeMap<u64, u64>,
     pending_intent: BTreeMap<u64, PreviewIntent>,
@@ -317,15 +317,24 @@ pub(crate) struct ViewPlan {
 }
 
 impl Presentation {
+    pub(super) fn matches_pixel_content(&self, job: &PreviewJob) -> bool {
+        job.evaluation.pixel_content_key().ok().is_some_and(|key| {
+            self.content_key.as_ref() == Some(&(key, job.evaluation.source().identity()))
+        })
+    }
     /// Key a job's content before it is queued: the same evaluated image keeps its serial across
     /// pans and zooms, and anything else gets the next one. A region the surface cannot allocate
     /// for this content is not asked for again; the job falls back to the whole frame and says
     /// why.
     pub(crate) fn admit(&mut self, job: &mut PreviewJob) -> u64 {
-        let key = (job.identity.clone(), job.evaluation.source().identity());
-        if self.content_key.as_ref() != Some(&key) {
+        let key = job
+            .evaluation
+            .pixel_content_key()
+            .ok()
+            .map(|pixels| (pixels, job.evaluation.source().identity()));
+        if key.is_none() || self.content_key != key {
             self.content_serial = self.content_serial.saturating_add(1);
-            self.content_key = Some(key);
+            self.content_key = key;
         }
         let content = self.content_serial;
         if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
@@ -911,6 +920,7 @@ impl Editor {
             })
     }
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
@@ -934,6 +944,9 @@ impl Editor {
     /// One message about taking up or presenting a preview frame.
     pub(super) fn preview_update(&mut self, message: PreviewMessage) -> Task<Message> {
         match message {
+            PreviewMessage::MaskCoverageSource { epoch, result } => {
+                self.mask_coverage_source_planned(epoch, result);
+            }
             PreviewMessage::ViewLoaded {
                 epoch,
                 intent,
@@ -1031,6 +1044,9 @@ impl Editor {
                 }
                 while let Some(done) = self.thumbnailer.queue.poll() {
                     self.thumbnails_ready(done);
+                }
+                while let Some(done) = self.coverage_worker.queue.poll() {
+                    self.mask_coverage_ready(done);
                 }
                 let delivered = self.deliver_previews();
                 return Task::batch([delivered, self.poll_again()]);
@@ -1302,6 +1318,7 @@ impl Editor {
         if self.overlays.queue.ready()
             || self.presentation.queue.ready()
             || self.thumbnailer.queue.ready()
+            || self.coverage_worker.queue.ready()
         {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
@@ -1811,6 +1828,10 @@ impl Editor {
         {
             self.withdraw_photo(generation, entry, error);
         }
+        if !self.presentation.has_picture() && self.mask_coverage_target().is_some() {
+            self.invalidate_mask_coverage();
+            self.mask_overlay_unavailable(generation, &error.detail);
+        }
         self.outcome(Outcome::PreviewFailed {
             newest: generation >= self.presentation.preview_generation,
         });
@@ -2050,26 +2071,72 @@ impl Editor {
             self.proxy_bounds()
         };
         let content = self.presentation.admit(&mut job);
-        // The mask overlay's coverage grid rides whichever frame is about to be rendered, so it is
-        // attached here rather than by each task that builds a job: one rule, every preview path,
-        // and no second render for the overlay. The core validates the request against the stack
-        // this job will render, so a mask the stack does not hold leaves the frame without a grid
-        // instead of failing the render.
-        if let Some(overlay) = self.mask_overlay_request() {
-            match job.clone().with_mask_overlay(overlay) {
-                Ok(with_overlay) => job = with_overlay,
-                Err(error) => self.event(
-                    "mask_overlay_refused",
-                    || json!({"detail": error.detail.clone()}),
-                ),
-            }
-        }
+        self.request_mask_coverage(&job, content);
+        // Reusing pixels cannot complete work the viewport still owes. A moving region is
+        // intentionally half detail and carries no whole-image report; Settle must refine it
+        // and retain exact pixels. A non-interactive request for analysis also needs its exact
+        // report, even when a mask-only recipe change leaves photograph content unchanged.
+        let settled_pixels = job.intent != PreviewIntent::Settle
+            || (!self.presentation.presented_approximate_white_balance
+                && self.presentation.exact.as_ref().is_some_and(|frame| {
+                    frame.content == Some(content) && !frame.approximate_white_balance
+                })
+                && self
+                    .presentation
+                    .region_raster
+                    .as_ref()
+                    .is_none_or(|region| {
+                        region.quality == luxforge_ui::RegionQuality::Exact && !region.approximate
+                    }));
+        let complete_analysis = job.intent == PreviewIntent::Interactive
+            || !job.analyse
+            || (self.presentation.analysis_content == Some(content)
+                && self.presentation.analysis.is_some());
+        // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
+        // mask edits have a different pixel key and still use the ordinary rendering path.
+        let reusable = job.layer_count.is_none()
+            && content == self.presentation.presented_content
+            && self.presentation.has_picture()
+            && self.presentation.render_error.is_none()
+            && !self.presentation.queue.is_busy()
+            && !self.presentation.queue.ready()
+            && self.presentation.held_by_proxy.is_none()
+            && settled_pixels
+            && complete_analysis
+            && match job.viewport {
+                Some(wanted) => {
+                    self.presentation.presenter.full_content() == Some(content)
+                        || self
+                            .presentation
+                            .region_raster
+                            .as_ref()
+                            .is_some_and(|region| {
+                                region.content == content && contains_region(region.rect, wanted)
+                            })
+                }
+                None => {
+                    self.presentation.region_raster.is_none()
+                        && (!self.presentation.presented_proxy
+                            || self.presentation.presented_bounds == job.proxy)
+                }
+            };
         self.note_thumbnail_source(&job);
+        if reusable {
+            self.coverage_worker.reused = Some(job.identity.clone());
+            self.presentation.preview_generation = self.presentation.presented_generation;
+            self.view_plan.dirty = false;
+            return (
+                self.presentation.presented_generation,
+                timed.then(Instant::now),
+            );
+        }
+        self.coverage_worker.reused = None;
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
         // it in the same step, because the worker takes a pending job by itself the moment the
         // active one ends: a job it took up meanwhile is running, and ends through `poll_preview`.
+        let layer_count = job.layer_count;
         let Requested {
             generation,
             replaced,
@@ -2077,6 +2144,10 @@ impl Editor {
             stage,
             at,
         } = self.presentation.request(job, content, timed);
+        self.event(
+            "preview_job_requested",
+            || json!({"generation":generation,"layer_count":layer_count}),
+        );
         if replaced.is_some() && replaced == self.view_plan.request_generation {
             self.view_plan.request_generation = None;
             self.view_plan.dirty = true;

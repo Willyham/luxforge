@@ -16,7 +16,7 @@
 //!
 //! Nothing here holds a framework type. A figure is described through a [`Pen`] in normalized
 //! content coordinates and mask-space distances, and the canvas implements the pen, so a shape's
-//! drawing is testable without a renderer and the canvas draws every kind with the same three
+//! drawing is testable without a renderer and the canvas draws every kind with the same two
 //! primitives.
 use super::{
     brush::{Brush, BrushEditor, BrushStroke},
@@ -107,9 +107,6 @@ pub(crate) trait Pen {
         alpha: f32,
         dashed: bool,
     );
-    /// A painted path of normalized content positions, drawn as wide as a mask-space `radius` with
-    /// round ends, so a one-position path is the single dab the host evaluates.
-    fn path(&mut self, points: &[[f64; 2]], radius: f64, alpha: f32);
 }
 
 /// Everything one drawn kind's editor owns.
@@ -167,6 +164,12 @@ pub(crate) trait ShapeEditor {
 
     /// Draw a whole shape in one stroke from a press that grabbed no handle.
     fn sweep(&mut self, _from: (f64, f64), _to: (f64, f64), _aspect: f64) {}
+
+    /// Whether an initial drag has a legal extent. An unplaced tool cannot manufacture a
+    /// committable default from a click or a vanishing drag.
+    fn placement_valid(&self, _from: (f64, f64), _to: (f64, f64), _aspect: f64) -> bool {
+        false
+    }
 
     /// Let go of whatever the pointer holds. What was drawn stays; the commit is a separate decision.
     fn release(&mut self);

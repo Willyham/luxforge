@@ -630,6 +630,9 @@ pub enum Mode {
     /// `mask-range` scenario's figure is taken on four masked colour layers, three of whose masks
     /// bind the whole stage, and is therefore not a baseline for the gesture itself.
     Paint,
+    /// Native brush hover after a committed masked adjustment, without pressing the pointer.
+    /// Fractions are routed through the real window widgets and captured with cursor geometry.
+    Hover,
     /// An open drafted adjustment, pans, quiet refinement and release at percentage zoom.
     Viewport,
     /// A crop draft's open: `--samples` Starts at Fit, each held open and then cancelled, over
@@ -647,6 +650,7 @@ impl Mode {
             Self::Commit => "commit",
             Self::Burst => "burst",
             Self::Paint => "paint",
+            Self::Hover => "hover",
             Self::Viewport => "viewport",
             Self::CropStart => "crop-start",
         }
@@ -1484,7 +1488,13 @@ fn paced_stroke_phase_samples(
             continue;
         }
         let proxy = displayed["detail"]["proxy"].as_bool().unwrap_or(false);
-        let phase = if proxy { "proxy" } else { "exact" };
+        let phase = if displayed["detail"]["path"] == json!("region") {
+            "region"
+        } else if proxy {
+            "proxy"
+        } else {
+            "exact"
+        };
         let received = events
             .iter()
             .find(|event| {
@@ -1636,49 +1646,83 @@ fn stroke_quarter(positions: Option<usize>, total: usize) -> Option<&'static str
     }
 }
 
-/// One paced stroke's input-to-presented-frame samples, paired out of a run's own events.
-///
-/// The pairing is exact rather than by order: every `mask_draft_set` is answered by one
-/// `mask_draft_preview` carrying the preview generation that set queued, and `preview_displayed`
-/// repeats that generation. A gesture holds one round trip at a time, so a set with no answer before
-/// the next one was refused rather than previewed, and a refusal is not a measurement.
-///
-/// Returns the number of inputs that queued a preview job and the latency of each one whose frame
-/// reached the screen. The difference between the two is what a hand does not see: a position
-/// superseded by the next one before its own pixels were drawn.
-pub fn paced_stroke_latencies(events: &[Value]) -> Result<(usize, Vec<f64>)> {
-    let mut pending: Option<f64> = None;
-    let mut inputs: Vec<(f64, u64)> = Vec::new();
+/// Accepted stroke inputs with separate photograph-adoption and authoritative-coverage samples.
+/// An input that was superseded before either feedback arrived appears in the input count only.
+#[derive(Debug, Default)]
+pub struct StrokeFeedback {
+    pub inputs: usize,
+    pub photograph_ms: Vec<f64>,
+    pub coverage_ms: Vec<f64>,
+}
+
+/// Keep photograph adoption and authoritative coverage feedback separate. Unbound mask changes
+/// can reuse the photograph; their accepted draft identity/revision pairs only with coverage,
+/// and never acquires an invented photograph rendering or presentation time.
+pub fn paced_stroke_latencies(events: &[Value]) -> Result<StrokeFeedback> {
+    let mut pending: Option<(f64, Option<String>)> = None;
+    let mut inputs: Vec<(f64, u64, Option<String>, Option<u64>)> = Vec::new();
     for event in events {
         match event["event"].as_str() {
-            Some("mask_draft_set") => pending = Some(elapsed(event)?),
+            Some("mask_draft_set") => {
+                pending = Some((
+                    elapsed(event)?,
+                    event["detail"]["draft_id"].as_str().map(str::to_owned),
+                ))
+            }
             Some("mask_draft_preview") => {
-                let Some(sent) = pending.take() else {
+                let Some((sent, draft_id)) = pending.take() else {
                     return Err("A mask_draft_preview answered no mask_draft_set".into());
                 };
                 let generation = event["detail"]["generation"]
                     .as_u64()
                     .ok_or("A mask draft preview named no generation")?;
-                inputs.push((sent, generation));
+                inputs.push((
+                    sent,
+                    generation,
+                    draft_id,
+                    event["detail"]["draft_revision"].as_u64(),
+                ));
             }
             _ => {}
         }
     }
-    let mut latencies = Vec::new();
-    for event in events
-        .iter()
-        .filter(|event| event["event"] == json!("preview_displayed"))
-    {
-        let generation = event["detail"]["generation"].as_u64();
-        if let Some((sent, _)) = inputs
+    let mut feedback = StrokeFeedback {
+        inputs: inputs.len(),
+        ..StrokeFeedback::default()
+    };
+    for (sent, generation, draft_id, revision) in &inputs {
+        let identity_matches = |event: &Value| {
+            let stamp = &event["detail"]["identity"]["draft"];
+            draft_id
+                .as_deref()
+                .is_some_and(|id| stamp["draft_id"].as_str() == Some(id))
+                && revision.is_some()
+                && stamp["draft_revision"].as_u64() == *revision
+        };
+        let reused = events
             .iter()
-            .find(|(_, held)| Some(*held) == generation)
-            .copied()
+            .any(|event| event["event"] == "preview_pixels_reused" && identity_matches(event));
+        if let Some(covered) = events.iter().find(|event| {
+            event["event"] == "mask_coverage_ready"
+                && identity_matches(event)
+                && event["elapsed_ms"].as_f64().is_some_and(|at| at >= *sent)
+        }) {
+            feedback.coverage_ms.push(elapsed(covered)? - *sent);
+        }
+        if !reused
+            && let Some(displayed) = events.iter().find(|event| {
+                event["event"] == "preview_displayed"
+                    && event["detail"]["generation"].as_u64() == Some(*generation)
+                    && revision.is_none_or(|revision| {
+                        event["detail"]["draft_revision"].as_u64() == Some(revision)
+                    })
+                    && event["elapsed_ms"].as_f64().is_some_and(|at| at >= *sent)
+            })
         {
-            latencies.push(elapsed(event)? - sent);
+            feedback.photograph_ms.push(elapsed(displayed)? - *sent);
         }
     }
-    Ok((inputs.len(), latencies))
+    Ok(feedback)
 }
 
 /// The paint mode: one paced brush stroke on a bare masked recipe, measured end to end.
@@ -1700,6 +1744,139 @@ fn run_paint(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
     let stroke = Duration::from_millis(PAINT_INTERVAL_MS * options.samples as u64);
     let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90) + stroke)?;
     run.check(|run| paint(run, options))
+}
+
+fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
+    let field = FieldTarget::lookup(
+        options.action.unwrap_or("set-presence"),
+        options.parameter.unwrap_or("clarity"),
+    )?;
+    let value = if field.parameter == EXPOSURE {
+        0.5
+    } else if field.parameter == "clarity" {
+        50.0
+    } else {
+        field.gesture_values(1)[0]
+    };
+    let mut steps = Vec::new();
+    steps.extend(crop_precondition(options));
+    if options.basic {
+        steps.push(basic_precondition());
+    }
+    if options.presence {
+        steps.push(crate::scenario::recipe::full_presence());
+    }
+    // Reproduce the reported route: one committed brush mask with an adjustment, then New Mask
+    // and cursor motion with no press. The new tool's overlay is enabled by its own UI path.
+    steps.extend(paint_precondition(options).into_iter().take(4));
+    steps.push(script::Step::Slider(
+        SliderStep::new(&field.action, &field.parameter, [value]).release(),
+    ));
+    steps.extend(zoom_step(options));
+    steps.push(script::Step::Mask(MaskStep::Paint(PaintStep::NewMask)));
+    let points = (0..options.samples)
+        .map(|index| {
+            let t = index as f32 / options.samples.saturating_sub(1).max(1) as f32;
+            [
+                0.2 + 0.6 * t,
+                0.5 + 0.15 * (t * std::f32::consts::TAU).sin(),
+            ]
+        })
+        .collect();
+    steps.push(script::Step::CanvasHoverSweep {
+        points,
+        interval_ms: 16,
+    });
+    let hovers = vec![steps.len()];
+    ensure(
+        steps.len() <= script::MAX_SCRIPT_STEPS,
+        "Hover script exceeds its step bound",
+    )?;
+    Ok((steps, hovers))
+}
+
+fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(
+        (1..=240).contains(&options.samples),
+        "Hover samples must be 1..240",
+    )?;
+    ensure(
+        options.control == Control::Slider,
+        "Hover drives a masked adjustment and needs --control slider",
+    )?;
+    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
+    run.check(|run| {
+        let source = options.source.canonicalize()?;
+        let source_hash = hash(&source)?;
+        let (steps, hovers) = hover_script(options)?;
+        let load_start = launch::load_average(root);
+        let launched = gesture_launch(out, "hover", "hover-script.json", &steps, &source, false)
+            .watch(sampled(root, "hover"));
+        let Launched { dir: evidence, watched: usage } = run.launch(launched)?;
+        let app = read_json(&evidence.join("result.json"))?;
+        ensure(app["status"] == "captured" && app["had_input_errors"] == json!(false)
+            && app["script"].as_array().is_some_and(|recorded| recorded.len() == steps.len()),
+            format!("A hover step failed or never ran: {}", app["script"]))?;
+        let events = scenario::events(&evidence.join("events.jsonl"))?;
+        let header = run.provenance(&events)?;
+        let frames = app["frames"].as_array().ok_or("Missing frames")?;
+        let records = app["script"].as_array().ok_or("Missing script records")?;
+        let probe = &records[hovers[0]-1]["cursor_probe"];
+        let traces: Vec<Value> = probe["samples"].as_array().cloned().unwrap_or_else(|| vec![probe.clone()]);
+        let coalesced = probe["coalesced"].as_u64().ok_or("Probe records no coalescing count")?;
+        ensure(traces.len() + coalesced as usize == options.samples, "Hover lost input without naming coalescing")?;
+        for (index, trace) in traces.iter().enumerate() {
+            ensure(trace["epoch"] == json!(index+1) && trace["readout_position"].is_array()
+                && trace["input_to_cursor_geometry_ms"].as_f64().is_some()
+                && trace["editor_update_ms"].as_f64().is_some(),
+                format!("Hover {} has no real mask cursor and readout route: {trace}",index+1))?;
+            let shown = frame_at(frames, hovers[0], "hover")?;
+            ensure(shown["state"]["masks"]["masks"].as_array().is_some_and(|masks| masks.len()==1),
+                "Hover committed an extra mask without a press")?;
+        }
+        let sent = events.iter().position(|event| event["event"] == "script_step"
+            && event["detail"]["step"] == json!(hovers[0])).ok_or("No hover was sent")?;
+        let hover_events = &events[sent..];
+        let photo_jobs = hover_events.iter().filter(|event| event["event"] == "preview_job_requested").count();
+        let draft_sets = hover_events.iter().filter(|event| event["event"] == "mask_draft_set").count();
+        ensure(photo_jobs == 0 && draft_sets == 0, "Hover queued photograph work or altered a mask")?;
+        let point_queries = hover_events.iter().filter(|event| event["event"] == "pointer_sample_requested").count();
+        let retained_reads = hover_events.iter().filter(|event| event["event"] == "pointer_retained_readout").count();
+        let mut rows = Vec::new();
+        for (metric,field) in [("input_to_cursor_geometry","input_to_cursor_geometry_ms"),
+            ("native_widget_update","widget_update_ms"),("cursor_geometry","cursor_geometry_ms"),
+            ("native_dispatch_delay","dispatch_delay_ms"),("input_to_editor_pointer_update","input_to_pointer_update_ms"),
+            ("editor_pointer_update","pointer_update_ms"),("editor_update","editor_update_ms"),
+            ("editor_rederive","editor_rederive_ms")] {
+            rows.push(stats::row(metric,"ms",traces.iter().filter_map(|trace|trace[field].as_f64())));
+        }
+        let baseline = frame_at(frames, hovers[0]-1, "hover baseline")?;
+        let last = frames.last().ok_or("No captured frame")?;
+        ensure(baseline["state"]["surface"]["version"] == last["state"]["surface"]["version"],
+            "Hover replaced the photograph surface")?;
+        rows.extend(resource_rows(&usage,last));
+        let mut result = json!({
+            "status":"passed","mode":"hover","source":source,"source_sha256":source_hash,
+            "source_dimensions":baseline["state"]["source_dimensions"],
+            "preview_dimensions":baseline["state"]["preview_dimensions"],
+            "backend":baseline["state"]["backend"],"physical_size":baseline["physical_size"],"scale":baseline["scale"],
+            "samples":options.samples,"action":options.action.unwrap_or("set-presence"),
+            "parameter":options.parameter.unwrap_or("clarity"),"zoom_percent":options.zoom,
+            "method":"Background native window, masked Clarity +50 by default (Exposure +0.5 EV with --action set-basic --parameter exposure), followed by New Mask and a continuous path scheduled every 16 ms without pressing. Each emitted move is dispatched through the real laid-out MaskCanvas and surrounding mouse_area, paired by epoch with MaskCanvas::draw geometry and its matching editor update/rederive; overdue positions are coalesced before dispatch and counted. One correlated native screenshot captures the final cursor after the sweep. CPU geometry may be built before the queued editor pointer update, so their timings are separate; neither measures GPU completion or scanout.",
+            "scope":"input to CPU brush cursor geometry construction/submission; no GPU completion or display scanout claim",
+            "rows":rows,"traces":traces,"load":launch::load(load_start),
+            "load_average_1m_end":launch::load_average(root),
+            "hover_work":{"point_queries":point_queries,"retained_exact_reads":retained_reads,"photograph_jobs":photo_jobs,"draft_sets":draft_sets,"emitted":traces.len(),"coalesced":coalesced,"interval_ms":16},
+            "resources":{"rss_samples":usage["rss_samples"]},
+            "checks":["Each move emitted its real surrounding pointer message and built brush cursor geometry",
+                "No hover queued a photograph job, posted a mask draft or committed a second mask","Source SHA-256 is unchanged"]
+        });
+        stamp(&mut result,&header);
+        write_json(&out.join("latency.json"),&result)?;
+        ensure(hash(&source)? == source_hash,"The source changed")?;
+        println!("PASS editor latency (hover): {}",out.display());
+        Ok(())
+    })
 }
 
 /// The paint mode's launch and its report, in `run`.
@@ -1779,13 +1956,14 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let components = components.len();
 
     let (queued, phase_samples) = paced_stroke_phase_samples(&events, options.samples)?;
+    let feedback = paced_stroke_latencies(paced_stroke_events(&events, options.samples)?)?;
     let latencies: Vec<f64> = phase_samples
         .iter()
         .map(|sample| sample.input_to_presented_ms)
         .collect();
     ensure(
-        !latencies.is_empty(),
-        "The run painted no stroke whose drafted frame reached the screen",
+        !latencies.is_empty() || !feedback.coverage_ms.is_empty(),
+        "The run painted no stroke with photograph or authoritative coverage feedback",
     )?;
     let input_p95 = stats::Distribution::of(latencies.clone()).map(|d| d.p95);
     let load_end = launch::load_average(root);
@@ -1794,6 +1972,11 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "ms",
         latencies.clone(),
     )];
+    rows.push(stats::row(
+        "input_to_authoritative_mask_coverage",
+        "ms",
+        feedback.coverage_ms.iter().copied(),
+    ));
     type Phase = fn(&PaintPhaseSample) -> f64;
     let phases: [(&str, Phase); 9] = [
         ("owner_round_trip_to_preview_queue", |s| {
@@ -1861,7 +2044,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let overlay_lag = overlay_lags(&events, &phase_samples)?;
     if options.mask_overlay {
         ensure(
-            !overlay_lag.is_empty(),
+            !overlay_lag.is_empty() || !feedback.coverage_ms.is_empty(),
             "The run showed the mask overlay but no frame of the stroke drew its grid",
         )?;
     }
@@ -1904,6 +2087,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "positions_carried_to_the_screen":carried.len(),
             "inputs_that_queued_a_preview":queued,
             "displayed":latencies.len(),
+            "authoritative_coverage_feedback":feedback.coverage_ms.len(),
             "superseded":queued.saturating_sub(latencies.len()),
             "superseded_note":"A position whose own preview job was superseded by the next position before its pixels were drawn. It is what a hand does not see during a continuous stroke, and it is reported rather than averaged away.",
         },
@@ -2151,6 +2335,9 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     }
     if options.mode == Mode::Paint {
         return run_paint(root, out, bin, &options);
+    }
+    if options.mode == Mode::Hover {
+        return run_hover(root, out, bin, &options);
     }
     if options.mode == Mode::CropStart {
         return run_crop_start(root, out, bin, &options);
@@ -3217,6 +3404,35 @@ mod tests {
         assert_eq!(sample.before_worker_result_ms, 1.0);
         assert_eq!(sample.result_to_surface_ms, 2.0);
         assert_eq!(sample.input_to_presented_ms, 15.0);
+    }
+
+    #[test]
+    fn paint_phase_samples_pair_region_adoption_with_its_region_worker_result() {
+        let events = vec![
+            json!({"event":"script_step","elapsed_ms":9.0,"detail":{"request":{"mask":{"stroke":{
+                "interval_ms":24,"points":[[0.2,0.5]]
+            }}}}}),
+            json!({"event":"mask_draft_set","elapsed_ms":10.0}),
+            json!({"event":"mask_draft_preview","elapsed_ms":11.0,"detail":{
+                "generation":7,
+                "round_trip_ms":{"executor_wait":0.0,"draft_set":0.5,"preview_job":0.25,"return_to_queue":0.25}
+            }}),
+            json!({"event":"preview_result_received","elapsed_ms":20.0,"detail":{
+                "generation":7,"phase":"region","queue_wait_ms":2.0,"render_ms":5.0
+            }}),
+            json!({"event":"preview_displayed","elapsed_ms":21.0,"detail":{
+                "generation":7,"path":"region","quality":"interactive","proxy_approximate":true
+            }}),
+        ];
+        let (queued, samples) = paced_stroke_phase_samples(&events, 1).unwrap();
+        assert_eq!(queued, 1);
+        assert_eq!(samples.len(), 1);
+        let sample = &samples[0];
+        assert_eq!(sample.phase, "region");
+        assert_eq!(sample.worker_render_ms, 5.0);
+        assert_eq!(sample.queue_wait_ms, 2.0);
+        assert_eq!(sample.result_to_surface_ms, 1.0);
+        assert_eq!(sample.input_to_presented_ms, 11.0);
     }
 
     /// A position is answered by the first presented frame whose `draft.set` already carried it,
