@@ -19,6 +19,7 @@ pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
 pub(crate) mod palette;
 pub(crate) mod select;
+pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;

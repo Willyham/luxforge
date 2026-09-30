@@ -852,12 +852,16 @@ fn every_select_filter_and_sort_changes_its_own_part_of_the_query() {
     }
     assert_eq!(source_query(event_source()), ViewQuery::of(event_source()));
     assert_eq!(pick_filter(&base), PickFilter::Picked);
-    // The facets asked for: the chips' and, over files, the pick counts.
+    // The facets asked for: the chips' and, over files, the pick counts; over the catalog, the
+    // Metadata browser's columns and Kind.
     assert_eq!(
         facets_params(&base),
         json!({"source": base.source, "filter": base.filter, "facets": ["camera", "kind", "pick"]})
     );
-    assert_eq!(facets_params(&catalog)["facets"], json!(["camera", "kind"]));
+    assert_eq!(
+        facets_params(&catalog)["facets"],
+        json!(["date", "place", "camera", "lens", "kind"])
+    );
 }
 
 fn facet(value: &str, label: Option<&str>, count: u32) -> FacetValue {

@@ -55,6 +55,9 @@ const NOT_YET_DEVELOP: &str = "Developing picks is not yet available";
 /// Why the strip's Loupe cannot be entered without a view.
 const NO_LOUPE: &str = "choose a source first";
 
+/// A catalog cell's footer when its photograph is drawn from an approximate rendered preview.
+const APPROXIMATE: &str = "approximate";
+
 /// The width of an Info panel row's label.
 const INFO_LABEL_WIDTH: f32 = 96.0;
 /// The tallest the Info panel's preview placeholder is drawn.
@@ -105,6 +108,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         middle = middle.push(
             container(sources(
                 &select.sources,
+                &select.catalog.sources,
                 &model.performance,
                 model.panel.can_interact,
             ))
@@ -120,6 +124,8 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         middle = middle.push(
             container(if select.missing.shown {
                 crate::view::select_missing::info(&select.missing)
+            } else if let Some(photos) = &select.catalog.info {
+                crate::view::select_catalog::info(photos, grid.images)
             } else {
                 info(&select.info)
             })
@@ -265,6 +271,7 @@ fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
 /// above a rule, and the Performance section pinned under it, as in Develop.
 fn sources<'a>(
     model: &'a SourcesModel,
+    catalog: &'a crate::state::select_catalog::CatalogSources,
     performance: &'a PerformanceModel,
     can_interact: bool,
 ) -> Element<'a, Message> {
@@ -308,7 +315,10 @@ fn sources<'a>(
     let content = content
         .push(events)
         .push(section("On disk", &model.on_disk))
-        .push(section("Catalog", &model.catalog))
+        .push(crate::view::select_catalog::catalog_section(
+            &model.catalog,
+            catalog,
+        ))
         .spacing(theme::SOURCE_SECTION_SPACING)
         .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
         .width(Length::Fill);
@@ -346,7 +356,7 @@ fn section<'a>(label: &str, rows: &'a [SourceRow]) -> Element<'a, Message> {
         .into()
 }
 
-fn source(model: &SourceRow) -> Element<'_, Message> {
+pub(crate) fn source(model: &SourceRow) -> Element<'_, Message> {
     let row = SourceRowModel {
         icon: match model.icon {
             SourceIcon::Event | SourceIcon::AllPhotographs => Icon::Photos,
@@ -451,13 +461,23 @@ fn centre<'a>(
             .align_bottom(Length::Fill)
             .padding(Padding::default().bottom(theme::SPACING * 1.75)),
     );
-    column![
-        filters(&model.filter),
-        layers.width(Length::Fill).height(Length::Fill)
-    ]
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
+    // Over the catalog: its own filter bar, and the Metadata browser under it while open.
+    let mut regions = match &model.catalog.filter {
+        Some(catalog) => column![crate::view::select_catalog::filter_bar(
+            catalog,
+            &model.filter.kind,
+            model.filter.enabled,
+        )],
+        None => column![filters(&model.filter)],
+    };
+    if let Some(columns) = &model.catalog.metadata {
+        regions = regions.push(crate::view::select_catalog::metadata(columns));
+    }
+    regions
+        .push(layers.width(Length::Fill).height(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 /// One visible cell, from its row when it has been read and the session's selection. A collapsed
@@ -488,7 +508,11 @@ fn cell_view<'a>(
             Availability::Unreadable => CellAvailability::Unreadable,
         },
         count: (cell.span > 1).then_some(cell.span),
-        label: content.label(cell.item),
+        // A bracket frame's exposure step; a photograph drawn from an approximate rendered preview
+        // says so, quietly, as the loupe does.
+        label: content
+            .label(cell.item)
+            .or_else(|| images.approximate(shown).then_some(APPROXIMATE)),
         edited: facts.edited,
     }
 }
@@ -535,7 +559,7 @@ fn filters(model: &FilterBarModel) -> Element<'_, Message> {
 }
 
 /// A chip that opens its menu under it; pressing it again, or anywhere else, closes the menu.
-fn chip<'a>(
+pub(crate) fn chip<'a>(
     model: &'a ChipModel,
     icon: Option<Icon>,
     menu: SelectMenu,
@@ -680,7 +704,7 @@ fn pick_band(band: &PickBand) -> Element<'_, Message> {
 }
 
 /// The preview's place at the photograph's shape: previews come with the preview lane.
-fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
+pub(crate) fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
     let width = TOOLS_PANEL_WIDTH - 2.0 * theme::PANEL_PADDING_X;
     let aspect = aspect
         .filter(|aspect| aspect.is_finite() && *aspect > 0.0)
@@ -701,7 +725,7 @@ fn preview_placeholder<'a>(aspect: Option<f32>) -> Element<'a, Message> {
 }
 
 /// A band: its title, then one label and value per row.
-fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a, Message> {
+pub(crate) fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a, Message> {
     let heading = text(title.to_owned())
         .size(theme::SIZE_TITLE)
         .font(theme::FONT_SEMIBOLD)

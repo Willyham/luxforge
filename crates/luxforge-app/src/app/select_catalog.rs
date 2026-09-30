@@ -224,8 +224,9 @@ impl Editor {
                             read.rows.insert(row.position, row);
                         }
                         if read.rows.len() > model::MAX_SELECTION_ROWS as usize {
-                            let wanted = self.selection();
-                            read.rows.retain(|position, _| wanted.selected(*position, 1));
+                            let wanted = self.catalog_selection();
+                            read.rows
+                                .retain(|position, _| wanted.selected(*position, 1));
                         }
                         self.select.state.catalog.selection_rows = Some(read);
                     }
@@ -568,7 +569,7 @@ impl Editor {
             return None;
         }
         let revision = state.revision()?;
-        let ranges = model::missing_rows(state, &self.selection());
+        let ranges = model::missing_rows(state, &self.catalog_selection());
         if ranges.is_empty() {
             return None;
         }
@@ -588,11 +589,12 @@ impl Editor {
             return None;
         }
         let text = model::search_text(&state.catalog.search);
-        (text != query.filter.text).then(|| model::changed(query, &CatalogChange::Text(text.unwrap_or_default())))
+        (text != query.filter.text)
+            .then(|| model::changed(query, &CatalogChange::Text(text.unwrap_or_default())))
     }
 
     /// The session's selection in the view on screen.
-    fn selection(&self) -> SelectionModel {
+    fn catalog_selection(&self) -> SelectionModel {
         SelectionModel::of(&self.session.browse, self.select.state.revision())
     }
 
@@ -628,8 +630,8 @@ impl Editor {
                 "search": bar.search,
                 "metadata_open": bar.metadata_open,
                 "edited": {"label": bar.edited.label, "set": bar.edited.set},
-                "conditions": bar.conditions.iter().map(|chip| json!([chip.facet.as_str(), chip.label])).collect::<Vec<_>>(),
-                "save": bar.save.as_ref().err(),
+                "conditions": bar.conditions.iter().map(|chip| json!([format!("{:?}", chip.glyph).to_lowercase(), chip.label])).collect::<Vec<_>>(),
+                "save": bar.save_refused,
                 "count": bar.count,
             })),
             "total": state.total.as_ref().map(|total| json!({

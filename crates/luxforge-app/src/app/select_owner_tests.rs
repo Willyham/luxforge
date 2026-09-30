@@ -182,7 +182,7 @@ pub(super) fn selecting() -> (Editor, PathBuf) {
 
 /// Answer the events, the cards and volumes and the catalog's counts the editor has asked for, as
 /// their tasks would.
-fn answer_reads(editor: &mut Editor) {
+pub(super) fn answer_reads(editor: &mut Editor) {
     if editor.select.events.in_flight() {
         let events = events_now(&editor.owner, editor.client, &editor.select.state.search);
         let _ = editor.update(Message::Select(SelectMessage::Events(events)));
@@ -194,6 +194,13 @@ fn answer_reads(editor: &mut Editor) {
     if editor.select.counts.in_flight() {
         let counts = counts_now(&editor.owner, editor.client);
         let _ = editor.update(Message::Select(SelectMessage::Counted(counts)));
+    }
+    // The catalog's folders and collections, read with the counts.
+    if editor.select.catalog.lists.in_flight() {
+        let lists = crate::app::select_catalog::lists_now(&editor.owner, editor.client);
+        let _ = editor.update(Message::Select(SelectMessage::Catalog(
+            crate::app::message::select_catalog::CatalogMessage::Lists(lists),
+        )));
     }
 }
 
