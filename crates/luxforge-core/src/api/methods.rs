@@ -871,6 +871,10 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::catalog_info,
         "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days) and the index database's size and the files it lists"
     ),
+    // Catalog folders and collections (TASK-012).
+
+    // Availability and Locate (TASK-016).
+
     // ── end lane C ──
     // ── catalog lane D: views ──
     // ── end lane D ──

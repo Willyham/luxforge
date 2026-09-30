@@ -27,3 +27,7 @@ pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
 pub(crate) mod targets;
+
+// Catalog folders and collections (TASK-012).
+
+// Availability and Locate (TASK-016).
