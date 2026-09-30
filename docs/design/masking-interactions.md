@@ -31,6 +31,11 @@ keeps recovery and Cancel available. A commit already in flight decides publicat
 requested cancellation is resolved. Cancellation never removes an accepted entry or changes an
 original file.
 
+Late answers stay with the target they were asked for. A canvas pick whose selection moved
+while its locate or sample was out is dropped with a reason. Cancel or Escape during a stroke's
+commit lets that commit decide its entry and puts the brush down. An Add brush in hand takes the
+Add row's current mode, and mask thumbnails follow the Masks panel into the picks taken from it.
+
 Changing masks clears incompatible component hover. Hovering a component row requests its own
 contribution; leaving the row restores composed coverage. Selection, keyboard navigation and
 mouse actions use the same controller rules.
