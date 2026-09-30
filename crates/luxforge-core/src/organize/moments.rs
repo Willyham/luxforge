@@ -219,5 +219,6 @@ fn moment(frames: &[FrameFacts], offset: usize, found: Found) -> Moment {
         span_ms: instant(&frames[0]).abs_diff(instant(&frames[frames.len() - 1])),
         start: offset as u32,
         len: frames.len() as u32,
+        picked: 0,
     }
 }

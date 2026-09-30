@@ -35,6 +35,7 @@ use crate::app::{
 use crate::state::{
     long_work::{FINISHED_SENTENCE_MS, LongWorkState, Waiting, finished_sentence, followed},
     palette::Panel,
+    select::ReadSource,
 };
 use iced::{Subscription, Task};
 use luxforge_core::{
@@ -233,6 +234,7 @@ impl Editor {
             })
             .collect();
         tasks.push(self.reading_followed(first || read.changed));
+        tasks.push(self.missing_followed());
         Task::batch(tasks)
     }
 
@@ -337,11 +339,8 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let waiting = editor.select.reading.as_ref().and_then(|reading| {
         Some(Waiting {
             job_id: reading.job.clone()?,
-            name: reading.path.file_name().map_or_else(
-                || reading.path.display().to_string(),
-                |name| name.to_string_lossy().into_owned(),
-            ),
-            card: false,
+            name: reading.source.sheet_name(),
+            card: matches!(reading.source, ReadSource::Card { .. }),
         })
     });
     let task = if waiting != editor.long_work.state.waiting {

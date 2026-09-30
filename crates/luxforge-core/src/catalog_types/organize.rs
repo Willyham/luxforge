@@ -151,6 +151,10 @@ pub struct Moment {
     pub span_ms: u64,
     pub start: u32,
     pub len: u32,
+    /// How many of its frames are picked: the header's "1 picked". `organize::group` leaves it 0;
+    /// a view's evaluation counts it from the frames' picks.
+    #[serde(default)]
+    pub picked: u32,
 }
 
 /// A day of a grouped view: frames `start..start + len`, all captured on `day` on their camera's
@@ -162,6 +166,10 @@ pub struct DayGroup {
     pub day: Option<LocalDay>,
     pub start: u32,
     pub len: u32,
+    /// How many of its frames are picked: the heading's "9 picked". `organize::group` leaves it 0;
+    /// a view's evaluation counts it from the frames' picks.
+    #[serde(default)]
+    pub picked: u32,
 }
 
 /// One body's frames within a day that has more than one body: frames `start..start + len`.
