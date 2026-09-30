@@ -819,7 +819,10 @@ const SOURCE_RULES: &[SourceRule] = &[
     // One percentile definition: every timing figure — xtask's timing tools and the crates' own
     // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
     // never from a sort-and-index of its own. The tokens are the shapes each hand-written
-    // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again.
+    // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again. The Tone
+    // curve study's lifted-black noise spread is the one allowed second home: it is a code-spread
+    // figure, not a timing, and `luxforge-reference` may depend on no workspace crate
+    // (`independent-references`), so it cannot reach `Distribution`; it uses the same nearest rank.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -834,7 +837,10 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &["crates/luxforge-testbase/src/distribution.rs"],
+        allowed: &[
+            "crates/luxforge-testbase/src/distribution.rs",
+            "crates/luxforge-reference/tests/studies/curve.rs",
+        ],
         mode: Match::Prefix,
         tests: true,
         once: false,
