@@ -821,6 +821,51 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`) so no lane edits the
     // imports above. A mutation declares `retries: Owner`.
     // ── catalog lane A: files ──
+    // The index lane (TASK-004): volumes, folders on disk, indexed folders and listings.
+    owner!(
+        "volume.list",
+        params::NoParams,
+        owner::files::volume_list,
+        "{volumes: [{volume: {id, mount_point, label, removable, platform_id?, last_seen_ms}, offline, card, startup}]}: the mounted volumes, the startup disk first, each with whether it is a card (a DCIM folder at its root), then the volumes the catalog knows that are not mounted, offline; reads the mount table without waiting on any file system"
+    ),
+    owner!(
+        "disk.folders",
+        crate::catalog_types::api::DiskFoldersParams,
+        owner::files::disk_folders,
+        "{path, folders: [{name, path}], truncated}: the immediate subfolders of an absolute folder in name order, without hidden and system folders, packages, other applications' caches and Luxforge's own directories, following no link; at most 2,000 folders from 50,000 entries, truncated past them; validation for a file, a package or a cache"
+    ),
+    owner!(
+        "card.list",
+        params::NoParams,
+        owner::files::card_list,
+        "{cards: [{volume, dcim, files?, cameras}]}: the mounted volumes with a DCIM folder at their root; files is what the last listing of the card found and cameras the bodies its headers name (at most 16)"
+    ),
+    owner!(
+        "index.folders",
+        params::NoParams,
+        owner::files::index_folders,
+        "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing"
+    ),
+    owner!(
+        "index.refresh",
+        crate::catalog_types::api::IndexRefresh,
+        owner::files::index_refresh,
+        "lists a source again — {kind: indexed-folder, path}, {kind: card, volume_id}, {kind: folder, path} or {kind: all-indexed} — as an index-refresh job, answering {job_id, status, deduplicated} at once (a source already waiting or running answers its job); the job reads the headers of new and changed files only, carries moved files' rows, drops vanished ones and reports {roots, files, added, changed, moved, removed, unreadable, headers_read, offline?, missing?}; follows no link, crosses no volume, skips packages, caches, hidden and system folders and Luxforge's own directories; resource-limit past 500,000 files or 16 waiting listings; source-unavailable for an offline or missing folder or card; progress on the activity board, cancelled with job.cancel keeping what was committed; each committed batch records one event naming the index_revision it left"
+    ),
+    owner!(
+        "index.add-folder",
+        crate::catalog_types::api::IndexAddFolder,
+        owner::files::index_add_folder,
+        "adds a folder, with its subfolders, to the indexed folders as one library change and starts listing it, answering {change: {outcome, change?, items, deduplicated}, folder: {path, volume_id, added_ms, actor, offline, files?, listed_ms?}, job_id?}; a folder already indexed changes nothing; validation for a relative path, a file, a package, another application's cache or Luxforge's own directories; conflict, naming it in data.folder, for a folder inside or around an indexed one; library.undo removes it and forgets its rows",
+        retries: Owner,
+    ),
+    owner!(
+        "index.remove-folder",
+        crate::catalog_types::api::IndexRemoveFolder,
+        owner::files::index_remove_folder,
+        "removes an indexed folder as one library change, answering {outcome, change?, items, deduplicated}: its listing stops and its rows are forgotten unless another root lists them; nothing on disk changes; a folder that is not indexed changes nothing; library.undo adds it back and lists it again",
+        retries: Owner,
+    ),
     // ── end lane A ──
     // ── catalog lane B: previews ──
     owner!(
