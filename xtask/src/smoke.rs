@@ -12,8 +12,8 @@ use crate::{
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
     presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
-    zoom_smoke as zoom, *,
+    select_smoke as select, viewport_smoke as viewport, vignette_smoke as vignette,
+    workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
 use std::{
     borrow::Borrow,
@@ -727,6 +727,16 @@ pub static SCENARIOS: &[Scenario] = &[
         window: None,
         note: Some(raw_editor::NOTE),
         own: Some(raw_editor::run),
+    },
+    Scenario {
+        name: select::SCENARIO,
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, and back to Develop",
+        launches: &[],
+        verify: select::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(select::NOTE),
+        own: Some(select::run),
     },
 ];
 
