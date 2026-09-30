@@ -689,7 +689,7 @@ pub(crate) struct RowCache {
     revision: u64,
     count: u32,
     blocks: BTreeMap<u32, Vec<ViewRow>>,
-    in_flight: Option<u32>,
+    in_flight: Option<RowsRequest>,
     failed: BTreeSet<u32>,
 }
 
@@ -717,10 +717,15 @@ impl RowCache {
         self.blocks.len()
     }
 
-    /// The block a request is reading, if one is in flight.
-    #[cfg(test)]
-    pub(crate) fn in_flight(&self) -> Option<u32> {
+    /// The request in flight, if one is.
+    pub(crate) fn in_flight(&self) -> Option<RowsRequest> {
         self.in_flight
+    }
+
+    /// Whether a block of `wanted` items is still to be read: neither held nor refused.
+    pub(crate) fn wants(&self, wanted: Range<u32>) -> bool {
+        wanted_blocks(wanted, self.count)
+            .any(|block| !self.blocks.contains_key(&block) && !self.failed.contains(&block))
     }
 
     pub(crate) fn row(&self, position: u32) -> Option<&ViewRow> {
@@ -742,13 +747,14 @@ impl RowCache {
         }
         let block = wanted_blocks(wanted, self.count)
             .find(|block| !self.blocks.contains_key(block) && !self.failed.contains(block))?;
-        self.in_flight = Some(block);
         let from = block * ROW_BLOCK;
-        Some(RowsRequest {
+        let request = RowsRequest {
             revision: self.revision,
             from,
             count: ROW_BLOCK.min(self.count - from),
-        })
+        };
+        self.in_flight = Some(request);
+        Some(request)
     }
 
     /// Keep the rows a request answered, if they belong to this revision, then drop the blocks
@@ -764,7 +770,7 @@ impl RowCache {
             return false;
         }
         let block = from / ROW_BLOCK;
-        if self.in_flight == Some(block) {
+        if self.in_flight.is_some_and(|request| request.from == from) {
             self.in_flight = None;
         }
         self.blocks.insert(block, rows);
@@ -797,7 +803,7 @@ impl RowCache {
             return;
         }
         let block = from / ROW_BLOCK;
-        if self.in_flight == Some(block) {
+        if self.in_flight.is_some_and(|request| request.from == from) {
             self.in_flight = None;
         }
         self.failed.insert(block);
@@ -1140,7 +1146,7 @@ pub(crate) fn title(state: &SelectState) -> SelectTitle {
                         .collect();
                     parts.push(format!("from {}", and_list(&roots)));
                 }
-                event.name.clone()
+                event_label(event)
             }
             None => {
                 parts.extend(count.map(photographs));
@@ -1293,13 +1299,34 @@ pub(crate) fn sources(state: &SelectState) -> SourcesModel {
     }
 }
 
+/// What an event is called in the sources panel and the title bar: its name without the dates it
+/// ends with, which the row and the summary give beside it, so "Konstanz · 12–13 Sep" reads
+/// "Konstanz", and an Undated event's without the "Undated · " its section already says. Any other
+/// name is kept whole.
+pub(crate) fn event_label(event: &Event) -> String {
+    // An Undated event is listed under Undated, so its row names its folder alone.
+    if event.undated
+        && let Some(folder) = event.name.strip_prefix("Undated \u{b7} ")
+        && !folder.trim().is_empty()
+    {
+        return folder.to_owned();
+    }
+    if let Some(dates) = dates(event.first_day, event.last_day, false)
+        && let Some(label) = event.name.strip_suffix(&format!(" \u{b7} {dates}"))
+        && !label.trim().is_empty()
+    {
+        return label.to_owned();
+    }
+    event.name.clone()
+}
+
 fn event_row(event: &Event, is: &impl Fn(&ViewSource) -> bool) -> SourceRow {
     let source = ViewSource::Event {
         event_id: event.id.clone(),
     };
     SourceRow {
         icon: SourceIcon::Event,
-        name: event.name.clone(),
+        name: event_label(event),
         secondary: dates(event.first_day, event.last_day, false),
         count: if event.picked > 0 {
             Count::Picks {

@@ -437,7 +437,12 @@ fn a_10000_file_select_view_reads_only_rows_near_the_screen() {
     let mut flat = summary(10_000);
     flat.groups = GroupLayout::default();
     let (mut editor, catalog) = viewing(flat, &[], None);
-    let first = editor.select.state.rows.in_flight();
+    let first = editor
+        .select
+        .state
+        .rows
+        .in_flight()
+        .map(|request| request.from);
     assert_eq!(first, Some(0), "the first screen is read first");
     // The owner refuses that block; then the grid is scrolled far down.
     let _ = editor.update(Message::Select(SelectMessage::Rows {
@@ -452,7 +457,15 @@ fn a_10000_file_select_view_reads_only_rows_near_the_screen() {
     let visible = layout.visible_cells(editor.select.scroll, 700.0, 700.0);
     let expected = layout.cell(visible.start).item / crate::state::select::ROW_BLOCK;
     assert!(expected > 20, "far into the view: block {expected}");
-    assert_eq!(editor.select.state.rows.in_flight(), Some(expected));
+    assert_eq!(
+        editor
+            .select
+            .state
+            .rows
+            .in_flight()
+            .map(|request| request.from),
+        Some(expected * crate::state::select::ROW_BLOCK)
+    );
     assert_eq!(editor.select.state.rows.len(), 0, "nothing else was read");
     finish(editor, catalog);
 }

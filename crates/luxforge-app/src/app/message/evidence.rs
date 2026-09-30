@@ -32,6 +32,10 @@ pub(crate) enum EvidenceMessage {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// The edit an `agent` step sent through the run's second client answered.
     AgentAnswered(Result<Value, String>),
+    // ── catalog lane D: views and desktop ──
+    /// The `pick.set` a Select `agent_pick` step sent through the run's second client answered.
+    SelectAgentAnswered(Result<Value, String>),
+    // ── end lane D ──
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
 }
