@@ -52,6 +52,7 @@ pub(crate) enum PaletteAction {
     Redo,
     ReturnCurrent,
     Restore,
+    Compare,
     /// Export the displayed entry as a JPEG, choosing where in the save dialog.
     Export {
         keep_metadata: bool,
@@ -174,6 +175,11 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             }),
     );
     entries.extend([
+        (
+            "Compare Before / After".to_owned(),
+            "preview.compare".to_owned(),
+            PaletteAction::Compare,
+        ),
         (
             toggle_label(workspace.state_panel, "state panel"),
             "workspace.set".to_owned(),

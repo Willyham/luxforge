@@ -84,6 +84,14 @@ impl PickTarget {
 impl Editor {
     /// One message about the pointer over the photograph.
     pub(super) fn pointer_update(&mut self, message: PointerMessage) -> Task<Message> {
+        if self.presentation.compare_after.is_some() {
+            if matches!(message, PointerMessage::Sampled { .. }) {
+                self.hover.sample.answered();
+            }
+            self.hover.readout = None;
+            self.hover.sample.drop_pending();
+            return Task::none();
+        }
         match message {
             PointerMessage::Sampled {
                 entry,

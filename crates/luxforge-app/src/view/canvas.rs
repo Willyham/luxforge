@@ -38,7 +38,8 @@ use luxforge_ui::{
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
 /// input stage all draw on it, so the photograph's textures stay while a draft shows the stage, and
 /// the pipeline releases them only at the end of a frame that draws none of them.
-const DEVELOP_SURFACE: luxforge_ui::SurfaceId = luxforge_ui::SurfaceId::new(0);
+pub(crate) const DEVELOP_SURFACE: luxforge_ui::SurfaceId = luxforge_ui::SurfaceId::new(0);
+pub(crate) const COMPARE_SURFACE: luxforge_ui::SurfaceId = luxforge_ui::SurfaceId::new(1);
 
 /// The surface the photograph is given around it at Fit, from the design's canvas rule: 20 pt at
 /// the top and sides, and at the bottom room for the mode strip, so at Fit no pixel of the
@@ -345,6 +346,9 @@ fn plain<'a>(
     surfaces: &Surfaces<'a>,
     (width, height): (u32, u32),
 ) -> Element<'a, Message> {
+    if let Some((after, position)) = surfaces.comparison {
+        return comparison(model, raster, surfaces, (width, height), after, position);
+    }
     let picking = model.picking;
     let pointer = model.pointer;
     let (clipping, coverage) = (surfaces.clipping, surfaces.coverage);
@@ -496,6 +500,91 @@ fn plain<'a>(
                     }
                 }
                 area.into()
+            })
+        }
+    }
+}
+
+/// Both photographs keep their complete placement; the right surface clips rather than fitting
+/// to its revealed width. The divider and both surfaces therefore share one photo rectangle.
+fn comparison<'a>(
+    model: &'a CanvasModel,
+    before: Option<&'a luxforge_ui::Frame>,
+    surfaces: &Surfaces<'a>,
+    dimensions: (u32, u32),
+    after: &'a luxforge_ui::Frame,
+    position: f32,
+) -> Element<'a, Message> {
+    let surfaces = *surfaces;
+    let layers = move |size: Size, placement, rect: Rectangle, percent: bool| {
+        let before: Element<'a, Message> = if percent {
+            luxforge_ui::viewport_surface(
+                DEVELOP_SURFACE,
+                before.zip(surfaces.photo_content),
+                surfaces.region,
+                surfaces.current_content,
+                dimensions,
+                placement,
+                Length::Fixed(size.width),
+                Length::Fixed(size.height),
+            )
+            .into()
+        } else {
+            match before {
+                Some(frame) => luxforge_ui::photo_surface(
+                    DEVELOP_SURFACE,
+                    frame,
+                    placement,
+                    Length::Fixed(size.width),
+                    Length::Fixed(size.height),
+                )
+                .exact_stage(dimensions)
+                .into(),
+                None => empty("Rendering Before…"),
+            }
+        };
+        let after: Element<'a, Message> = luxforge_ui::photo_surface(
+            COMPARE_SURFACE,
+            after,
+            placement,
+            Length::Fixed(size.width),
+            Length::Fixed(size.height),
+        )
+        .exact_stage(dimensions)
+        .reveal_from(if position == 1.0 { 0.0 } else { position })
+        .into();
+        let divider = canvas(super::compare_canvas::CompareCanvas {
+            photo: rect,
+            position,
+        })
+        .width(Length::Fixed(size.width))
+        .height(Length::Fixed(size.height))
+        .into();
+        // At the Before endpoint, draw After underneath the opaque Before image. Keeping both
+        // surfaces drawn retains their textures, so dragging away from either edge uploads nothing.
+        if position == 1.0 {
+            stack([after, before, divider]).into()
+        } else {
+            stack([before, after, divider]).into()
+        }
+    };
+    match model.zoom {
+        ZoomView::Fit => responsive(move |available| {
+            let Some(rect) = fit_rect(dimensions, available) else {
+                return empty("Rendering Before…");
+            };
+            layers(available, luxforge_ui::Placement::Contain, rect, false)
+        })
+        .into(),
+        ZoomView::Percent(value) => {
+            let size = percent_size(dimensions, value, model.scale_factor);
+            scrolled(size, move || {
+                layers(
+                    size,
+                    luxforge_ui::Placement::Fill,
+                    Rectangle::new(Point::ORIGIN, size),
+                    true,
+                )
             })
         }
     }
@@ -922,6 +1011,7 @@ mod tests {
         let pixels = std::sync::Arc::new(vec![0u8; 4]);
         let frame = luxforge_ui::Frame::new(pixels, 1, 1, 1).expect("a one-pixel frame");
         let surfaces = Surfaces {
+            comparison: None,
             photo: Some(&frame),
             photo_content: None,
             current_content: 0,

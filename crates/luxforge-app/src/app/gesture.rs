@@ -98,8 +98,8 @@ pub(crate) enum Starting {
     /// The components gallery: one draft and no request in flight. The gallery is this desktop's
     /// own view, so a historical preview does not hold it back.
     Gallery,
-    /// Compare with the original: one draft only. It selects the Original entry, from the current
-    /// state or a previewed one, and never waits for a request.
+    /// Compare with the original: one draft and no request in flight. It selects the Original
+    /// entry from the current state or a previewed one.
     Compare,
     /// A preset applied to the photograph, as the section's rows read it: one draft only. The
     /// section's own enabled state carries the rest, and the apply itself is a
@@ -138,8 +138,8 @@ impl Starting {
                 (true, true, true)
             }
             Self::Slider => (true, true, false),
-            Self::Gallery | Self::History => (true, false, true),
-            Self::Mode | Self::Compare | Self::Preset | Self::Refit => (true, false, false),
+            Self::Gallery | Self::History | Self::Compare => (true, false, true),
+            Self::Mode | Self::Preset | Self::Refit => (true, false, false),
             Self::Export => (false, false, true),
         };
         Halves {

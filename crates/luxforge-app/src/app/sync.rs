@@ -322,6 +322,13 @@ impl Editor {
     pub(crate) fn adopt(&mut self, session: ClientSession) {
         if session.revision >= self.session.revision {
             self.session = session;
+            if self.presentation.compare_after.is_some()
+                && self.session.preview.comparison.is_none()
+            {
+                self.presentation.compare_after = None;
+                self.document.compare_return = None;
+                self.document.compare_hold = false;
+            }
         }
     }
 
