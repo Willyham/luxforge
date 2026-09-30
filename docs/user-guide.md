@@ -716,6 +716,18 @@ While a batch runs, `job.read` reports `progress.message` "3 of 18" with `progre
 {"id":"progress","method":"job.read","params":{"job_id":"job-…"}}
 ```
 
+### Removing photographs
+
+Removing a photograph from the catalog moves it to **Removed**; its file stays where it is and is never touched. The Select workspace's Remove from catalog…, Put back and Empty Removed… are to come; today the API does it. `asset.remove {targets, mutation}` removes the photographs `targets` names, as `asset.move` takes them, as one library change ("Removed DSC_0412.NEF", "Removed 5 photographs") answered as `{outcome, change?, items, deduplicated}`. A removed photograph keeps its edits, history, named versions, catalog folder and collections, but no view shows it except the `removed` source of `browse.view`, and no count includes it except `catalog.info`'s `removed`: All photographs, Recently developed, its folder, its collections, Missing originals, `folder.list`, `collection.list` and `source.missing` leave it out, a view of its folder on disk no longer shows its file as in the catalog, and a batch preset or export skips it. Removing one already removed keeps when it was removed. `asset.restore {targets, mutation}` puts photographs back ("Put back DSC_0412.NEF") exactly where they were; `library.undo` and `library.redo` undo and redo either, like any other library change.
+
+`catalog.empty-removed {mutation}` permanently deletes every removed photograph's catalog record: its history, named versions, collection memberships and everything else the catalog keeps of it, with the brush strokes and derived artifacts no other photograph uses. Their files on disk are not touched. It cannot be undone, so only a client with permission authority may send it: the desktop, or `luxforge-json --permission-authority`, which you pass yourself; any other client is refused with `forbidden`. It answers `{outcome, deleted, remaining, deduplicated}`: one call deletes at most 50,000 photographs, the earliest removed first, and `remaining` says how many are still in Removed for another call; with nothing removed it is a `no-op`. It records one event but is not a library change, and the journal keeps what it recorded: `library.undo` of a removal whose photographs have been deleted is refused with `conflict`.
+
+```json
+{"id":"remove","method":"asset.remove","params":{"targets":{"kind":"assets","asset_ids":["asset-…"]},"mutation":{"request_id":"remove-1","actor":"my-client"}}}
+{"id":"put-back","method":"asset.restore","params":{"targets":{"kind":"assets","asset_ids":["asset-…"]},"mutation":{"request_id":"restore-1","actor":"my-client"}}}
+{"id":"empty","method":"catalog.empty-removed","params":{"mutation":{"request_id":"empty-1","actor":"my-client"}}}
+```
+
 ### Volumes, folders and the index
 
 Luxforge reads the folders you browse into its **index**, beside the catalog, and never writes to them: it lists the supported files (JPEG and the RAW formats Luxforge develops, by extension) and reads each one's header, never its image. It skips hidden files and folders, macOS packages such as a Photos library, other applications' caches such as Lightroom's `.lrdata` and Capture One's `CaptureOne` folders, system folders, and its own index and artifact directories; it follows no symbolic link and does not cross into another volume.
