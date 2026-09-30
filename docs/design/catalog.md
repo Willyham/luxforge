@@ -1,6 +1,16 @@
 # Select, then develop: the catalog
 
-Status: proposal, 2026-09-30. Nothing here is built. It is a design for review: how photographs get from a camera card or a folder into development, and how the photographs you develop are kept and found. Each choice the owner has not made is a numbered proposal with a recommended default under [proposals](#proposals); none is a decision until the owner accepts it and it is recorded in [product decisions](../decisions.md). The implementation plan is [tasks/catalog.json](../../tasks/catalog.json). What the catalog does today is in [feature status](../features.md): it references one file at a time, and the desktop never lists or switches photographs.
+Status: implementation in progress, on the recorded defaults of the proposals. This design covers how photographs get from a camera card or a folder into development, and how the photographs you develop are kept and found. Each choice the owner has not made is a numbered proposal with a recommended default under [proposals](#proposals). The implementation follows those defaults, but none is a decision until the owner accepts it and it is recorded in [product decisions](../decisions.md). The implementation plan is [tasks/catalog.json](../../tasks/catalog.json).
+
+The contracts have landed:
+
+- catalog format 12 ([storage](versions-and-lineage.md#storage-catalog-format-12));
+- the index database;
+- the shared types and every method's declared shape ([API](#api));
+- generated data (`cargo xtask generate-catalog`);
+- module skeletons.
+
+No catalog method is registered yet, and nothing in the desktop uses them. What the catalog does today is in [feature status](../features.md): it references one file at a time, and the desktop never lists or switches photographs.
 
 ## Product
 
@@ -246,7 +256,7 @@ The catalog, format 12, adds:
 | `picks` | Per picked file: path, signature, actor, time and the request that picked it. Removed when the file is developed or the pick cleared |
 | `indexed_folders` | The folders on disk the person added for events |
 | `catalog_folders` | Catalog folders: name, parent, creation time and the event span they were made from, so later picks from the same event find them |
-| `assets` (new columns) | `catalog_folder_id`, `source_folder` (the directory on disk), `volume_id`, `file_name`, `developed_ms`, `removed_ms`, `availability`, `checked_ms` |
+| `assets` (new columns) | `catalog_folder_id`, `source_folder` (the directory on disk), `volume_id`, `file_name`, `developed_ms`, `removed_ms`, `availability`, `checked_ms`, `develop_moment` (the burst or bracket it was developed from); its `row_id` is the stable integer key a view holds |
 | `capture` | Per asset: capture time (UTC milliseconds and camera-local text with offset), position and place name when known, make, model, body serial, lens, exposure time, f-number, ISO, exposure bias, focal lengths |
 | `volumes` | Mount point, label, whether removable, and the platform's volume identifier where one exists |
 | `collections`, `collection_members` | Collections, smart collections (with their query) and groups |
@@ -258,7 +268,7 @@ A photograph's position is kept because places are how the catalog is searched; 
 
 `<catalog>.index/` beside the catalog holds everything disposable, and can be deleted while Luxforge is closed at the cost of time only:
 
-- `index.sqlite`: one row per file seen (path, signature, header metadata, preview state), its own database so rebuilding it never touches the catalog's, with events and moments computed from it on demand and cached in memory.
+- `index.sqlite`: one row per file seen (path, signature, header metadata, where its embedded thumbnail sits), the roots listed, and the preview records of files and developed photographs. It is its own database with its own format marker, opened on first use, so rebuilding it never touches the catalog's; a mismatched format, a database SQLite cannot read, or another catalog's index is discarded and recreated. Events and moments are computed from it on demand and cached in memory.
 - `previews/`: JPEG previews. **For a file**, keyed by signature: the **grid** tier from its EXIF thumbnail or embedded preview, and the **loupe** tier (the largest embedded preview, stored at up to 2560 px on the long edge). The 100% check reads the original's embedded full-size preview for the region it needs and caches nothing. **For a developed photograph**, keyed by asset, entry and tier: **grid** (512 px) and **large** (2048 px, for Develop's instant switch), rendered from the current entry through the proxy path; until the first render a RAW shows its camera preview, marked as such.
 
 Grid tiers are kept (about 40 KB each); loupe and large tiers share a byte budget with least-recently-used eviction ([P8](#proposals)). A changed renderer generation discards the rendered tiers.
@@ -274,36 +284,59 @@ Grid tiers are kept (about 40 KB each); loupe and large tiers share a byte budge
 
 ## API
 
-Proposed methods, in the one method table with declared parameters. Mutations carry `{request_id, actor}` and are deduplicated. Only **Empty Removed** needs permission authority. None of these exists yet.
+The methods, in the one method table with declared parameters. Every shape is declared once in the core's `catalog_types` module: each method's parameter struct, answer, envelope, job and error codes in `catalog_types/api.rs` (`CATALOG_METHODS`), and the types they name beside their concept (`identity`, `header`, `disk`, `organize`, `browse`, `library`, `previews`, `jobs`). None is registered yet: each lane adds its methods to the method table when they work, so `schema.list` never lists a method that does nothing, and a test holds every registered catalog method to its declaration. Mutations carry `{request_id, actor}` (`mutation`) and the owner answers their retries; only `catalog.empty-removed` needs permission authority. A method that starts a job answers `{job_id, status, deduplicated}` at once, and the job's result, read with `job.read` and cancelled with `job.cancel`, is the answer named here. Every method may also answer `protocol` and `internal`.
 
-| Method | Does |
-| --- | --- |
-| `index.add-folder {path}`, `index.remove-folder {path}`, `index.folders` | The folders on disk that events cover |
-| `card.list` | Mounted volumes with a `DCIM` folder |
-| `index.refresh {source}` | Re-lists a source's files and reads new headers; a job read through `job.read` |
-| `event.list {month?, query?}` | Events with their names, dates, place, cameras, counts, picks and availability |
-| `browse.view {source, filter, sort, grouping}` | Evaluates a query into the client's one **view**: an ordered list of files or photographs with day, camera and moment boundaries, held by the owner, with its count and revision. Sources are an event, a folder on disk, a card, All photographs, Recently developed, a catalog folder, a collection, Missing originals or Removed; grouping carries the moment thresholds |
-| `browse.rows {from, count}` | A window of the view by position: identity, file name, kind, dimensions, capture time, place, moment and its evidence, picked, in the catalog, edited, availability, preview state |
-| `browse.facets {source, filter, facets}` | Counts per date, place, camera, lens, kind and pick |
-| `browse.select {ids?, range?, all?, mode, active?}` | The session's selection and active item; `session.state` reports them |
-| `pick.set {targets, picked}`, `pick.list {source?}` | Pick or clear; the picks |
-| `pick.plan {targets?}` | What a Develop would do: the picks by event, the default catalog folder for each (new, named after the event, or the existing one), and any on removable media with or without verified copies |
-| `pick.develop {targets?, into, use_copies?, confirm_removable?}` | A job that brings the picks into the catalog, each event's into the folder `into` names (an existing folder id or a new name); replaces `catalog.import` |
-| `folder.list`, `folder.create`, `folder.rename`, `folder.move`, `folder.merge`, `folder.delete`, `asset.move {targets, folder_id}` | Catalog folders; delete refuses a folder that holds photographs |
-| `asset.send-back {targets}` | Deletes unedited photographs' catalog records and picks their files again |
-| `collection.*` | Collections, smart collections and groups |
-| `library.journal {after?}`, `library.undo`, `library.redo` | Library changes |
-| `asset.remove`, `asset.restore`, `catalog.empty-removed` | Removal; emptying needs permission authority |
-| `source.check {targets}` | Availability |
-| `source.missing {grouping}` | Missing photographs grouped by the folder on disk they were developed from, with reasons |
-| `source.find {targets \| source_folder, search_root}` | A job that looks for each photograph's file under `search_root` by name and size, then fingerprint, and reports a result per photograph |
-| `source.locate {asset_id, path}` | One photograph, one chosen file, fingerprint-checked |
-| `source.relink {pairs: [{asset_id, path}]}` | Commits verified results in one transaction |
-| `batch.apply-preset`, `batch.export` | Batch jobs with a per-photograph report |
-| `preview.read {item, tier}`, `preview.region {item, rect}` | A cached preview's path and identity, or a job that makes it; a 100% region |
-| `catalog.info` | Path, format, counts, index and previews size |
+`targets` is `{kind: paths, paths}`, `{kind: files, file_ids}`, `{kind: assets, asset_ids}` or `{kind: selection}` (the caller's selection in its current view), at most `MAX_LIBRARY_BATCH` (50,000) items; a larger request is `resource-limit`. A file is named by its index row (`file_id`, valid while the index exists) and always also by its `path`; a photograph by its `asset_id`.
 
-`catalog.list` is replaced by `browse.view` and `browse.rows`, and `catalog.import` by picks and `pick.develop`; opening a developed photograph in Develop uses the existing `source.prepare` with an adopt that accepts any preparation the client asked for. A library change records one event naming its sequence, and an index or develop batch one event naming the source or the assets, so no batch can overrun the 256-event log.
+| Method | Takes | Answers | Errors | Lane |
+| --- | --- | --- | --- | --- |
+| `index.add-folder` | `path`, `mutation` | `IndexFolderAnswer {change, folder, job_id?}`: a library change, and the `index.refresh` job that lists it | validation, read-error, resource-limit, conflict, catalog | A |
+| `index.remove-folder` | `path`, `mutation` | `LibraryAnswer {outcome, change?, items, deduplicated}` | validation, conflict, catalog | A |
+| `index.folders` | — | `IndexFolders {folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?}]}` | catalog | A |
+| `card.list` | — | `Cards {cards: [{volume, dcim, files?, cameras, events?}]}` | catalog | A |
+| `index.refresh` | `source`: `{kind: indexed-folder, path}`, `{kind: card, volume_id}`, `{kind: folder, path}` or `{kind: all-indexed}` | job `index-refresh` → `IndexReport {roots, files, added, changed, moved, removed, unreadable}` | validation, source-unavailable, read-error, resource-limit, cancelled | A |
+| `event.list` | `month?` (`YYYY-MM`), `query?` | `EventList {events: [Event {id, name, place?, first_day?, last_day?, months, cameras, count, picked, offline, roots, volumes, undated}], months: [{month, events, files, picked}]}`, newest first | validation, catalog | D |
+| `browse.view` | `source`, `filter?`, `sort?`, `grouping?`, `thresholds?` (a `ViewQuery`) | `ViewSummary {revision, query, count, picked, in_catalog, unavailable, groups: {days, cameras, moments}, library_sequence, index_revision}`: evaluates the query into the caller's one view, held by the owner | validation, resource-limit, catalog | D |
+| `browse.rows` | `from`, `count` (1–1000), `revision?` | `ViewRows {revision, from, rows: [ViewRow {position, item: file {file_id} or photo {asset_id}, path, file_name, kind, dimensions?, orientation?, capture?, place?, camera?, lens?, exposure, moment?: {index, frame}, picked, developed_as?, edited, availability, preview}]}` | validation, conflict | D |
+| `browse.facets` | `source`, `filter?`, `facets`: `[date, place, camera, lens, kind, pick]` | `Facets {counts: {facet: [{value?, label?, count}]}}`: each count the size of the view that value gives | validation, resource-limit, catalog | D |
+| `browse.select` | `mode?` (replace, add, remove, toggle), `items?`, `range?: {start, len}`, `all?`, `active?`, `revision?` | the session: `session.state`'s `browse {query?, revision, count, stale, selection: {count, ranges, active?}}` | validation, conflict | D |
+| `pick.set` | `targets`, `picked`, `mutation` | `LibraryAnswer` | validation, resource-limit, conflict, catalog | C |
+| `pick.list` | `source?`, `after?`, `limit?` | `PickPage {picks: [Pick {path, signature, volume_id, actor, request_id, picked_ms, file_id?}], next_after?}` | validation, catalog | C |
+| `pick.plan` | `targets?` | `DevelopPlan {events: [{event_id?, name, count, folder: {kind: existing, folder_id} or {kind: new, name, parent_id?}, folder_name?, removable: [{volume_id, label, count, with_copy}]}], count, offline}` | validation, catalog | C |
+| `pick.develop` | `into: [{event_id?, folder}]`, `mutation`, `targets?`, `use_copies?`, `confirm_removable?` | job `develop-picks` → `DevelopReport {developed: [{path, used?, asset_id, outcome: created, linked or relinked}], failed, changes}`; replaces `catalog.import` | validation, source-unavailable, resource-limit, conflict, catalog, cancelled | C |
+| `folder.list` | — | `CatalogFolders {folders: [{id, name, parent_id?, created_ms, event?: {start_ms, end_ms, event_id?}, count, year?}]}` | catalog | C |
+| `folder.create` | `name`, `mutation`, `parent_id?` | `FolderAnswer {change, folder}` | validation, conflict, catalog | C |
+| `folder.rename` | `folder_id`, `name`, `mutation` | `LibraryAnswer` | validation, conflict, catalog | C |
+| `folder.move` | `folder_id`, `mutation`, `parent_id?` (absent: the top level) | `LibraryAnswer` | validation, conflict, catalog | C |
+| `folder.merge` | `folder_id`, `into_id`, `mutation` | `LibraryAnswer` | validation, conflict, resource-limit, catalog | C |
+| `folder.delete` | `folder_id`, `mutation` | `LibraryAnswer`; conflict when the folder holds photographs or folders | validation, conflict, catalog | C |
+| `asset.move` | `targets`, `folder_id`, `mutation` | `LibraryAnswer` | validation, resource-limit, catalog | C |
+| `asset.send-back` | `targets`, `mutation` | `LibraryAnswer`: deletes unedited photographs' records and picks their files again; conflict for one with history beyond its Original | validation, conflict, resource-limit, catalog | C |
+| `collection.list` | — | `Collections {collections: [{id, name, parent_id?, kind: collection, smart or group, query?, created_ms, count?}]}` | catalog | C |
+| `collection.create` | `name`, `kind` (collection or group), `mutation`, `parent_id?` (a group) | `CollectionAnswer {change, collection}` | validation, conflict, catalog | C |
+| `collection.create-smart` | `name`, `query` (a `ViewQuery` over photographs, never naming a smart collection), `mutation`, `parent_id?` | `CollectionAnswer` | validation, conflict, catalog | C |
+| `collection.update-smart` | `collection_id`, `query`, `mutation` | `LibraryAnswer` | validation, catalog | C |
+| `collection.rename` | `collection_id`, `name`, `mutation` | `LibraryAnswer` | validation, conflict, catalog | C |
+| `collection.move` | `collection_id`, `mutation`, `parent_id?` | `LibraryAnswer` | validation, conflict, catalog | C |
+| `collection.delete` | `collection_id`, `mutation` | `LibraryAnswer`: a collection with its memberships, or an empty group | validation, conflict, catalog | C |
+| `collection.add`, `collection.remove` | `collection_id`, `targets`, `mutation` | `LibraryAnswer` | validation, resource-limit, catalog | C |
+| `library.journal` | `after?`, `limit?` (1–500) | `LibraryJournal {changes: [{sequence, actor, request_id, method, label, time_ms, item_count, undoes?, redoes?, undone_by?}], next_after?}`, oldest first | validation, catalog | C |
+| `library.inspect` | `sequence` | `LibraryChangeDetail {change, rows: [{item: {kind, …}, before, after}]}` | validation, catalog | C |
+| `library.undo`, `library.redo` | `mutation` | `LibraryAnswer`; conflict, naming the items, when a later change touched them | validation, conflict, resource-limit, catalog | C |
+| `asset.remove`, `asset.restore` | `targets`, `mutation` | `LibraryAnswer` | validation, resource-limit, catalog | C |
+| `catalog.empty-removed` | `mutation` | `EmptyRemovedAnswer {outcome, deleted, deduplicated}`; permission authority only | forbidden, catalog | C |
+| `source.check` | `targets` | job `source-check` → `AvailabilityReport {rows: [{asset_id, availability, checked_ms}]}` | validation, resource-limit, cancelled | C |
+| `source.missing` | `grouping?` (source-folder) | `MissingOriginals {groups: [{source_folder, volume_id, count, catalog_folders: [{id, name}], reason: {kind: volume-offline, label}, {kind: folder-gone}, {kind: files-gone} or {kind: changed}}], count}` | validation, catalog | C |
+| `source.find` | `search_root`, `targets?` or `source_folder?` | job `source-find` → `FindReport {rows: [{asset_id, file_name, result: found {path}, different-bytes {path}, several-identical {paths}, not-found, claimed {path, by} or checking}]}`; changes nothing | validation, read-error, source-unavailable, resource-limit, cancelled | C |
+| `source.locate` | `asset_id`, `path`, `mutation` | job `source-locate` → `LibraryAnswer` | validation, read-error, source-unavailable, conflict, cancelled, catalog | C |
+| `source.relink` | `pairs: [{asset_id, path}]`, `mutation` | `LibraryAnswer`: every verified pair in one transaction | validation, source-unavailable, conflict, resource-limit, catalog | C |
+| `batch.apply-preset` | `targets`, `preset_id`, `mutation` | job `batch-preset` → `BatchReport {done, written, skipped: [{asset_id, code, reason}]}` | validation, resource-limit, cancelled | C |
+| `batch.export` | `targets`, `destination` (a folder), `mutation`, `keep_metadata?` | job `batch-export` → `BatchReport` | validation, read-error, resource-limit, cancelled | C |
+| `preview.read` | `item`: `{kind: file, file_id}` or `{kind: photo, asset_id, entry_id?}`, `tier` (grid, loupe, large), `priority?` (look-ahead, visible, background) | `PreviewAnswer`: `{state: ready, preview: {item, tier, path, width, height, origin, bytes, key}}` or `{state: queued, job_id, fallback?}`, job `preview-extract` (or `preview-render` for a photograph) | validation, source-unavailable, unsupported-input, resource-limit | B |
+| `preview.region` | `item`, `rect: {x, y, width, height}` | job `preview-region` → `RegionAnswer {item, rect, path, width, height, origin}` | validation, source-unavailable, unsupported-input, resource-limit, cancelled | B |
+| `catalog.info` | — | `CatalogInfo {path, catalog_id, format, index_format, counts, index, previews}` | catalog | C |
+
+A preview's `origin` is `exif-thumbnail`, `embedded`, `developed` (a neutral Luxforge development) or `rendered` (a photograph's entry), which every surface that shows it names. `catalog.list` is replaced by `browse.view` and `browse.rows`, and `catalog.import` by picks and `pick.develop`; opening a developed photograph in Develop uses the existing `source.prepare` with an adopt that accepts any preparation the client asked for. A library change records one event naming its sequence, and an index or develop batch one event naming the source or the assets, so no batch can overrun the 256-event log.
 
 ## Architecture
 
@@ -326,7 +359,7 @@ One task fixes everything the lanes share before any lane starts, so no lane wai
 - **Types.** The shared shapes in one core module: file and photograph identities, header metadata, events and moments, view queries and rows, picks, library changes, job progress. Every lane codes against these.
 - **Method declarations.** The design's API written down as parameter and result shapes with error codes, in the design's [API](#api) table and the types module. Each method is registered in the method table by the lane that implements it, when it works, so `schema.list` never lists a method that does nothing.
 - **Generated data.** `cargo xtask generate-catalog` writes deterministic indexes and catalogs at the design scale — trips with positions, bursts, brackets with and without exposure bias, undated files, picks, catalog folders, collections, missing originals — with no image files, plus small generated image folders with real embedded thumbnails for the preview and desktop lanes. Every lane tests against these, so the desktop is built before the core lanes finish.
-- **Module skeletons.** Empty modules in the places each lane owns (below), and the hot shared files (`api/methods.rs`, `api/owner.rs`, `editor/catalog.rs`, the desktop's `app/keymap.rs` and `state/mod.rs`) given a marked section per lane, so parallel work rarely touches the same lines.
+- **Module skeletons.** Empty modules in the places each lane owns (below). The owner gets one file per lane for that lane's owner-side state, worker messages and handlers (`api/owner/files.rs`, `previews.rs`, `library.rs`, `views.rs`). The hot shared files get a marked section per lane, so parallel work rarely touches the same lines: `api/methods.rs`, `jobs.rs`, `editor/catalog.rs`, `editor/catalog_rows.rs`, `lib.rs`, and the desktop's `app/keymap.rs`, `app/message.rs`, `app/mod.rs` and `state/mod.rs`.
 
 ### Lanes
 

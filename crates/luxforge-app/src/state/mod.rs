@@ -13,6 +13,7 @@ pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
+pub(crate) mod select;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -319,6 +320,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance_expanded: bool,
     /// What the Performance section's sampler has read since it last started sampling.
     pub(crate) performance: &'a performance::PerformanceHistory,
+    // ── catalog lane D: views and desktop ──
+    // ── end lane D ──
 }
 
 impl Inputs<'_> {
@@ -343,6 +346,14 @@ pub(crate) struct Workspace {
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
+    // ── catalog lane D: views and desktop ──
+    /// The Select workspace.
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: lane D draws it when the switch lands"
+    )]
+    pub(crate) select: select::SelectModel,
+    // ── end lane D ──
 }
 
 impl Workspace {
@@ -360,6 +371,9 @@ impl Workspace {
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
+        // ── catalog lane D: views and desktop ──
+        self.select = select::derive(inputs);
+        // ── end lane D ──
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
