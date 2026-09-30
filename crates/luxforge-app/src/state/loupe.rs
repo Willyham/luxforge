@@ -302,6 +302,13 @@ pub(crate) fn region_size(scale: f32) -> (u32, u32) {
     )
 }
 
+/// The size in points a region of `rect`'s pixels takes at 100% on a display of `scale`: one of its
+/// pixels to one of the display's.
+pub(crate) fn region_points(rect: PixelRect, scale: f32) -> (f32, f32) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    (rect.width as f32 / scale, rect.height as f32 / scale)
+}
+
 /// The rectangle of `frame` under the pointer at `pointer` (fractions of the picture): `size`
 /// pixels centred there, moved back inside the frame and no larger than it.
 pub(crate) fn region_rect(frame: Dimensions, pointer: (f32, f32), size: (u32, u32)) -> PixelRect {
@@ -544,6 +551,9 @@ pub(crate) struct FocusModel {
     pub(crate) inset: Area,
     /// The region to draw: the active frame's own, cut from the frame named.
     pub(crate) region: Option<Region>,
+    /// The size in points the region's pixels take at 100% on this display: its pixel size over
+    /// the display's scale factor. The inset draws it at that size, never scaled.
+    pub(crate) region_points: (f32, f32),
     /// The region is a Luxforge development, which the inset says.
     pub(crate) developed: bool,
     pub(crate) pending: bool,
@@ -875,6 +885,9 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
             developed: region
                 .as_ref()
                 .is_some_and(|region| region.origin == PreviewOrigin::Developed),
+            region_points: region.as_ref().map_or(FOCUS_REGION, |region| {
+                region_points(region.rect, loupe.scale)
+            }),
             region,
             pending: loupe.held.region_pending,
             error: loupe.held.region_error.clone(),
@@ -1092,6 +1105,28 @@ mod tests {
             stand_in: false,
             approximate: false,
         }
+    }
+
+    /// The inset draws a region at 100%: its pixels over the display's scale, so a region the
+    /// inset's size fills it on a 2x display and a smaller one (cut at the frame's edge) takes fewer
+    /// points instead of being enlarged.
+    #[test]
+    fn loupe_region_is_drawn_at_one_pixel_to_one() {
+        let rect = |width, height| PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let (width, height) = region_size(2.0);
+        assert_eq!(region_points(rect(width, height), 2.0), (308.0, 209.0));
+        assert_eq!(region_points(rect(120, 80), 2.0), (60.0, 40.0));
+        assert_eq!(region_points(rect(120, 80), 1.0), (120.0, 80.0));
+        assert_eq!(
+            region_points(rect(120, 80), 0.0),
+            (120.0, 80.0),
+            "no scale yet"
+        );
     }
 
     /// The bar names what the picture is, and says so when a developed photograph's rendered tier
