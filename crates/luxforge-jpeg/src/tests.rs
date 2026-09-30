@@ -14,12 +14,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{io::Cursor, path::Path};
 
-const LIMITS: Limits = Limits {
+pub(crate) const LIMITS: Limits = Limits {
     max_side: 16384,
     max_pixels: 64_000_000,
 };
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(crate) fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/s0")
@@ -29,7 +29,7 @@ fn fixture(name: &str) -> Vec<u8> {
 }
 
 /// The whole image decoded through the crate, unoriented, as RGBA.
-fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), JpegError> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), JpegError> {
     let mut decoder = Decoder::new(bytes, LIMITS)?;
     let (width, height) = (decoder.width(), decoder.height());
     let mut rgba = vec![0; width as usize * height as usize * 4];
@@ -39,7 +39,7 @@ fn decode(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), JpegError> {
 }
 
 /// The warnings this thread's decodes went on past since the last call.
-fn accepted() -> Vec<i32> {
+pub(crate) fn accepted() -> Vec<i32> {
     decode::ACCEPTED.with(|accepted| std::mem::take(&mut *accepted.borrow_mut()))
 }
 
@@ -68,7 +68,7 @@ fn independent(bytes: &[u8]) -> (u32, u32, Vec<u8>) {
 
 /// A `width` × `height` pattern encoded by libjpeg at quality 85 and 4:2:0, baseline or with its
 /// simple progression script. The file starts with SOI and libjpeg's 16-byte JFIF APP0.
-fn pattern(width: usize, height: usize, progressive: bool) -> Vec<u8> {
+pub(crate) fn pattern(width: usize, height: usize, progressive: bool) -> Vec<u8> {
     let rgb: Vec<u8> = (0..width * height)
         .flat_map(|i| {
             let (x, y) = (i % width, i / width);
@@ -87,11 +87,73 @@ fn pattern(width: usize, height: usize, progressive: bool) -> Vec<u8> {
     started.finish().unwrap()
 }
 
+/// A small seeded generator (xorshift64*), so generated noise and rectangles are the same on every
+/// run.
+pub(crate) struct Seeded(pub(crate) u64);
+
+impl Seeded {
+    pub(crate) fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    /// A value in `0..bound`.
+    pub(crate) fn below(&mut self, bound: u32) -> u32 {
+        (self.next() % u64::from(bound)) as u32
+    }
+}
+
+/// A `width` × `height` image with smooth gradients, fine texture and hard edges, so the chroma
+/// upsampling and the IDCT see every kind of neighbourhood.
+pub(crate) fn scene(width: u32, height: u32) -> Vec<u8> {
+    let mut seeded = Seeded(0x5eed ^ u64::from(width) << 20 ^ u64::from(height));
+    (0..width * height)
+        .flat_map(|i| {
+            let (x, y) = ((i % width) as f32, (i / width) as f32);
+            let noise = (seeded.next() % 24) as f32;
+            let stripe = if ((i % width) / 7 + (i / width) / 5).is_multiple_of(2) {
+                60.0
+            } else {
+                0.0
+            };
+            [
+                (x * 255.0 / width as f32 + noise) as u8,
+                (128.0 + 100.0 * (x / 9.0 + y / 13.0).sin() + stripe * 0.5) as u8,
+                (y * 255.0 / height as f32 * 0.7 + stripe) as u8,
+                255,
+            ]
+        })
+        .collect()
+}
+
+/// `scene` encoded by the crate's baseline encoder at `chroma` sampling.
+pub(crate) fn baseline(width: u32, height: u32, chroma: (u8, u8)) -> Vec<u8> {
+    let settings = Settings {
+        quality: 88,
+        chroma,
+        segments: &[],
+        icc: None,
+    };
+    let mut out = Vec::new();
+    encode(
+        &mut out,
+        width,
+        height,
+        &scene(width, height),
+        &settings,
+        &mut |_| Ok::<_, JpegError>(()),
+    )
+    .unwrap();
+    out
+}
+
 /// Where the JFIF APP0 `pattern` writes ends: SOI, then `FF E0`, its length 16 and 14 bytes.
-const AFTER_APP0: usize = 2 + 2 + 16;
+pub(crate) const AFTER_APP0: usize = 2 + 2 + 16;
 
 /// The offset of the first SOS marker, and of its scan's entropy-coded data.
-fn first_scan(bytes: &[u8]) -> (usize, usize) {
+pub(crate) fn first_scan(bytes: &[u8]) -> (usize, usize) {
     let mut i = 2;
     loop {
         let marker = bytes[i + 1];
@@ -105,13 +167,13 @@ fn first_scan(bytes: &[u8]) -> (usize, usize) {
 
 /// The offset of the first marker at or after `from` in entropy-coded data: `FF` followed by
 /// neither a stuffed `00` nor a restart marker.
-fn next_marker(bytes: &[u8], from: usize) -> usize {
+pub(crate) fn next_marker(bytes: &[u8], from: usize) -> usize {
     (from..bytes.len() - 1)
         .find(|&i| bytes[i] == 0xff && !matches!(bytes[i + 1], 0x00 | 0xd0..=0xd7))
         .unwrap()
 }
 
-fn spliced(bytes: &[u8], at: usize, remove: usize, insert: &[u8]) -> Vec<u8> {
+pub(crate) fn spliced(bytes: &[u8], at: usize, remove: usize, insert: &[u8]) -> Vec<u8> {
     [&bytes[..at], insert, &bytes[at + remove..]].concat()
 }
 
@@ -405,6 +467,228 @@ fn rows_are_read_in_any_whole_strips_and_never_past_the_end() {
         early.finish().unwrap_err(),
         JpegError::Internal(_)
     ));
+}
+
+/// The whole image decoded through the crate at `scale`.
+fn decode_scaled(bytes: &[u8], scale: Scale) -> (u32, u32, Vec<u8>) {
+    let mut decoder = Decoder::new(bytes, LIMITS).unwrap();
+    decoder.set_scale(scale).unwrap();
+    let (width, height) = (decoder.width(), decoder.height());
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    decoder.read_rows(&mut rgba).unwrap();
+    decoder.finish().unwrap();
+    (width, height, rgba)
+}
+
+/// Each scale's output size, on odd and even sides and on sides smaller than a block, is the size
+/// libjpeg reports for it, and a scaled decode produces it (the decoder checks libjpeg's output
+/// size against [`Scale::output`] before the first row).
+#[test]
+fn scaled_output_sizes_are_libjpegs() {
+    assert_eq!(Scale::Full.output(61, 37), (61, 37));
+    assert_eq!(Scale::Half.output(61, 37), (31, 19));
+    assert_eq!(Scale::Quarter.output(61, 37), (16, 10));
+    assert_eq!(Scale::Eighth.output(61, 37), (8, 5));
+    assert_eq!(Scale::Eighth.output(1, 1), (1, 1));
+    for (width, height) in [
+        (1, 1),
+        (7, 9),
+        (8, 8),
+        (9, 17),
+        (61, 37),
+        (64, 48),
+        (130, 69),
+        (203, 117),
+    ] {
+        for progressive in [false, true] {
+            let bytes = pattern(width, height, progressive);
+            for scale in Scale::ALL {
+                let mut header = mozjpeg::Decompress::new_mem(&bytes).unwrap();
+                header.scale(scale.numerator());
+                let started = header.rgba().unwrap();
+                let libjpeg = (started.width() as u32, started.height() as u32);
+                let expected = scale.output(width as u32, height as u32);
+                assert_eq!(libjpeg, expected, "{width}x{height} {scale:?}");
+                let (decoded_width, decoded_height, rgba) = decode_scaled(&bytes, scale);
+                assert_eq!((decoded_width, decoded_height), expected);
+                assert!(rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
+            }
+        }
+    }
+}
+
+/// The frame fitted into a square of `long_edge`, never enlarged.
+fn fitted(frame: (u32, u32), long_edge: u32) -> (u32, u32) {
+    let longest = frame.0.max(frame.1);
+    if longest <= long_edge {
+        return frame;
+    }
+    let side = |length: u32| {
+        ((u64::from(length) * u64::from(long_edge) + u64::from(longest) / 2) / u64::from(longest))
+            .max(1) as u32
+    };
+    (side(frame.0), side(frame.1))
+}
+
+/// The chooser takes the most reducing scale whose output covers the target, and full scale when
+/// even the whole frame does not, at the grid (512 px) and loupe (2560 px) tiers of a 24 MP and a
+/// 45 MP camera preview and a small one.
+#[test]
+fn the_chooser_takes_the_most_reducing_scale_that_covers_the_target() {
+    for (frame, grid, loupe) in [
+        ((6000, 4000), Scale::Eighth, Scale::Half),
+        ((8256, 5504), Scale::Eighth, Scale::Half),
+        ((1620, 1080), Scale::Half, Scale::Full),
+        ((4000, 6000), Scale::Eighth, Scale::Half),
+    ] {
+        for (long_edge, expected) in [(512, grid), (2560, loupe)] {
+            let target = fitted(frame, long_edge);
+            let chosen = Scale::covering(frame, target);
+            assert_eq!(chosen, expected, "{frame:?} into {long_edge}: {target:?}");
+            let (width, height) = chosen.output(frame.0, frame.1);
+            assert!(width >= target.0 && height >= target.1, "it covers");
+            if let Some(next) = Scale::ALL.iter().skip_while(|&&s| s != chosen).nth(1) {
+                let (width, height) = next.output(frame.0, frame.1);
+                assert!(width < target.0 || height < target.1, "the next does not");
+            }
+        }
+    }
+    // The 6000 × 4000 frame at an eighth is 750 × 500: a 512 px square does not fit in it, the
+    // 512 × 341 grid tier does.
+    assert_eq!(Scale::covering((6000, 4000), (512, 512)), Scale::Quarter);
+    assert_eq!(Scale::covering((800, 600), (100, 75)), Scale::Eighth);
+    assert_eq!(Scale::covering((800, 600), (101, 75)), Scale::Quarter);
+    assert_eq!(Scale::covering((800, 600), (0, 0)), Scale::Eighth);
+    assert_eq!(Scale::covering((800, 600), (801, 10)), Scale::Full);
+    assert_eq!(Scale::covering((1620, 1080), (2560, 1707)), Scale::Full);
+}
+
+/// A scale does not relax the limits: the header is checked at the frame's full size in
+/// [`Decoder::new`], before a scale can be set and before libjpeg reads the file, since libjpeg's
+/// allocations follow the frame (a multi-scan frame's coefficients at full size, whatever the
+/// scale). Here the eighth of the frame would fit the limits; the frame does not.
+#[test]
+fn a_scaled_decode_is_checked_against_the_limits_at_full_size() {
+    let bytes = fixture("orientation-1.jpg");
+    assert_eq!(Scale::Eighth.output(480, 320), (60, 40));
+    let eighth_fits = Limits {
+        max_side: 100,
+        max_pixels: 10_000,
+    };
+    let error = Decoder::new(&bytes, eighth_fits).err().unwrap();
+    assert!(matches!(error, JpegError::Dimensions), "{error:?}");
+    let oversized = Decoder::new(&fixture("oversized.jpg"), LIMITS)
+        .err()
+        .unwrap();
+    assert!(matches!(oversized, JpegError::Dimensions), "{oversized:?}");
+}
+
+/// After a scale is set the decoder reports the scaled size and reads rows of it, whole and never
+/// past its end; the frame's own rows would be past it. A scale is set again from the frame's
+/// size, and only before the first row.
+#[test]
+fn a_scaled_decode_reads_rows_of_the_scaled_size() {
+    let bytes = fixture("orientation-1.jpg");
+    let mut decoder = Decoder::new(&bytes, LIMITS).unwrap();
+    decoder.set_scale(Scale::Eighth).unwrap();
+    decoder.set_scale(Scale::Quarter).unwrap();
+    assert_eq!((decoder.width(), decoder.height()), (120, 80));
+    let whole_frame = decoder.read_rows(&mut vec![0; 480 * 320 * 4]).unwrap_err();
+    assert!(
+        matches!(whole_frame, JpegError::Internal(_)),
+        "{whole_frame:?}"
+    );
+    let mut first = vec![0; 120 * 4 * 30];
+    decoder.read_rows(&mut first).unwrap();
+    let late = decoder.set_scale(Scale::Full).unwrap_err();
+    assert!(matches!(late, JpegError::Internal(_)), "{late:?}");
+    assert_eq!((decoder.width(), decoder.height()), (120, 80));
+    let mut rest = vec![0; 120 * 4 * 50];
+    decoder.read_rows(&mut rest).unwrap();
+    let past = decoder.read_rows(&mut vec![0; 120 * 4]).unwrap_err();
+    assert!(matches!(past, JpegError::Internal(_)));
+    decoder.finish().unwrap();
+    first.extend(rest);
+    assert!(first == decode_scaled(&bytes, Scale::Quarter).2);
+}
+
+/// `rgba` (`width` wide) averaged over boxes of `factor` pixels a side, the last boxes of a row or
+/// column over the pixels there are.
+fn box_downscale(rgba: &[u8], width: u32, height: u32, factor: u32) -> Vec<u8> {
+    let (out_width, out_height) = (width.div_ceil(factor), height.div_ceil(factor));
+    let mut out = Vec::with_capacity((out_width * out_height * 4) as usize);
+    for oy in 0..out_height {
+        for ox in 0..out_width {
+            let (xs, ys) = (
+                ox * factor..((ox + 1) * factor).min(width),
+                oy * factor..((oy + 1) * factor).min(height),
+            );
+            let count = (xs.len() * ys.len()) as u32;
+            let mut sums = [0_u32; 4];
+            for y in ys {
+                for x in xs.clone() {
+                    let at = ((y * width + x) * 4) as usize;
+                    for (sum, value) in sums.iter_mut().zip(&rgba[at..at + 4]) {
+                        *sum += u32::from(*value);
+                    }
+                }
+            }
+            out.extend(sums.map(|sum| ((sum + count / 2) / count) as u8));
+        }
+    }
+    out
+}
+
+/// A scaled decode is close to a box downscale of the full decode, not equal to it: libjpeg's
+/// reduced IDCT and the box are different filters, and at a reduced scale libjpeg decodes 4:2:0
+/// chroma by its IDCT at the output's size where the full decode upsamples it. The mean absolute
+/// difference per channel is bounded loosely, a check that the scaled picture is the same
+/// picture and not an exactness claim: 3 codes for the committed photographs' fixtures and a
+/// generated textured scene (measured at most 0.08 and 2.35, the scene at half scale in 4:2:0),
+/// and 6 codes for an XOR pattern of single-pixel detail, the worst case for any filter
+/// (measured at most 5.33).
+#[test]
+fn a_scaled_decode_is_close_to_a_box_downscale_of_the_full_decode() {
+    let mut files: Vec<(String, Vec<u8>, f64)> = [
+        "orientation-1.jpg",
+        "portrait.jpg",
+        "srgb.jpg",
+        "greyscale.jpg",
+    ]
+    .into_iter()
+    .map(|name| (name.to_owned(), fixture(name), 3.0))
+    .collect();
+    files.push((
+        "textured scene 4:2:0".into(),
+        baseline(611, 409, (2, 2)),
+        3.0,
+    ));
+    files.push((
+        "textured scene 4:4:4".into(),
+        baseline(611, 409, (1, 1)),
+        3.0,
+    ));
+    files.push(("XOR pattern 4:2:0".into(), pattern(611, 409, false), 6.0));
+    for (name, bytes, bound) in files {
+        let (width, height, whole) = decode(&bytes).unwrap();
+        for scale in [Scale::Half, Scale::Quarter, Scale::Eighth] {
+            let factor = 8 / u32::from(scale.numerator());
+            let (scaled_width, scaled_height, scaled) = decode_scaled(&bytes, scale);
+            let boxed = box_downscale(&whole, width, height, factor);
+            assert_eq!(boxed.len(), scaled.len(), "{name} {scale:?}");
+            let pixels = scaled_width as f64 * scaled_height as f64;
+            let mean = scaled
+                .iter()
+                .zip(&boxed)
+                .enumerate()
+                .filter(|(index, _)| index % 4 != 3)
+                .map(|(_, (a, b))| f64::from(a.abs_diff(*b)))
+                .sum::<f64>()
+                / (pixels * 3.0);
+            println!("{name} {scale:?}: mean absolute difference {mean:.3}");
+            assert!(mean <= bound, "{name} {scale:?}: {mean:.3}");
+        }
+    }
 }
 
 fn icc_segment(sequence: u8, count: u8, data: &[u8]) -> Vec<u8> {

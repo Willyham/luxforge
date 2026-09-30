@@ -361,6 +361,427 @@ pub(crate) fn insert_indexed_folder(
 // ── catalog lane B: previews ──
 // ── end lane B ──
 // ── catalog lane C: catalog ──
+/// The rows the library journal reads and writes one item at a time (`crate::library::items`).
+/// Readers answer what is stored; writers answer SQLite's own result, with how many rows they
+/// changed, so the journal can tell a refused value (a constraint) from a failure, and refuse an
+/// item that is no longer there to change rather than record a change that did nothing.
+pub(crate) mod library_rows {
+    use super::super::catalog::decode;
+    use super::*;
+    use crate::{
+        AssetId,
+        catalog_types::{
+            AssetSourceValue, CollectionKind, EventId, EventSpan, FileIdentity, FileSignature,
+        },
+    };
+
+    /// A stored value the catalog holds but this build cannot read, as a row mapping's error.
+    fn unreadable(column: usize) -> impl Fn(Error) -> rusqlite::Error {
+        move |error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                column,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        }
+    }
+
+    /// The columns [`read_pick`] maps, in its order.
+    pub(crate) const PICK_COLUMNS: &str =
+        "path, byte_len, modified_ns, device, inode, volume_id, actor, request_id, picked_ms";
+
+    /// One pick from a row of [`PICK_COLUMNS`], without its index row.
+    pub(crate) fn read_pick(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pick> {
+        Ok(Pick {
+            path: row.get::<_, String>(0)?.into(),
+            signature: FileSignature {
+                len: row.get::<_, i64>(1)? as u64,
+                modified_ns: row.get(2)?,
+                identity: FileIdentity::from_columns(row.get(3)?, row.get(4)?),
+            },
+            volume_id: VolumeId::parse(row.get::<_, String>(5)?).map_err(unreadable(5))?,
+            actor: row.get(6)?,
+            request_id: row.get(7)?,
+            picked_ms: row.get(8)?,
+            file_id: None,
+        })
+    }
+
+    /// The pick of the file at `path`, if it is picked.
+    pub(crate) fn pick_at(connection: &Connection, path: &Path) -> Result<Option<Pick>, Error> {
+        Ok(connection
+            .prepare_cached(&format!("SELECT {PICK_COLUMNS} FROM picks WHERE path = ?1"))?
+            .query_row([path.to_string_lossy()], read_pick)
+            .optional()?)
+    }
+
+    /// Record a pick, replacing whatever pick its path had.
+    pub(crate) fn put_pick(tx: &Transaction<'_>, pick: &Pick) -> rusqlite::Result<usize> {
+        let identity = pick.signature.identity.map(FileIdentity::to_columns);
+        tx.prepare_cached(
+            "INSERT OR REPLACE INTO picks (path, byte_len, modified_ns, device, inode, volume_id,
+                 actor, request_id, picked_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        )?
+        .execute(params![
+            pick.path.to_string_lossy(),
+            pick.signature.len as i64,
+            pick.signature.modified_ns,
+            identity.map(|(device, _)| device),
+            identity.map(|(_, inode)| inode),
+            pick.volume_id.as_str(),
+            pick.actor,
+            pick.request_id,
+            pick.picked_ms,
+        ])
+    }
+
+    /// Clear the pick of the file at `path`.
+    pub(crate) fn delete_pick(tx: &Transaction<'_>, path: &Path) -> rusqlite::Result<usize> {
+        tx.prepare_cached("DELETE FROM picks WHERE path = ?1")?
+            .execute([path.to_string_lossy()])
+    }
+
+    /// The catalog folder a photograph is in, or none when the catalog has no such photograph.
+    pub(crate) fn asset_folder(
+        connection: &Connection,
+        asset: &AssetId,
+    ) -> Result<Option<CatalogFolderId>, Error> {
+        connection
+            .prepare_cached("SELECT catalog_folder_id FROM assets WHERE id = ?1")?
+            .query_row([asset.as_str()], |row| row.get::<_, String>(0))
+            .optional()?
+            .map(CatalogFolderId::parse)
+            .transpose()
+    }
+
+    pub(crate) fn set_asset_folder(
+        tx: &Transaction<'_>,
+        asset: &AssetId,
+        folder: &CatalogFolderId,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached("UPDATE assets SET catalog_folder_id = ?1 WHERE id = ?2")?
+            .execute(params![folder.as_str(), asset.as_str()])
+    }
+
+    /// When a photograph was removed (`Some(None)` while it is not), or none when the catalog has
+    /// no such photograph.
+    pub(crate) fn asset_removed(
+        connection: &Connection,
+        asset: &AssetId,
+    ) -> Result<Option<Option<i64>>, Error> {
+        Ok(connection
+            .prepare_cached("SELECT removed_ms FROM assets WHERE id = ?1")?
+            .query_row([asset.as_str()], |row| row.get::<_, Option<i64>>(0))
+            .optional()?)
+    }
+
+    pub(crate) fn set_asset_removed(
+        tx: &Transaction<'_>,
+        asset: &AssetId,
+        removed_ms: Option<i64>,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached("UPDATE assets SET removed_ms = ?1 WHERE id = ?2")?
+            .execute(params![removed_ms, asset.as_str()])
+    }
+
+    /// Where the catalog looks for a photograph's original, or none when it has no such
+    /// photograph.
+    pub(crate) fn asset_source(
+        connection: &Connection,
+        asset: &AssetId,
+    ) -> Result<Option<AssetSourceValue>, Error> {
+        Ok(connection
+            .prepare_cached(
+                "SELECT locator, source_folder, volume_id, file_identity FROM assets
+                 WHERE id = ?1",
+            )?
+            .query_row([asset.as_str()], |row| {
+                Ok(AssetSourceValue {
+                    locator: row.get::<_, String>(0)?.into(),
+                    source_folder: row.get::<_, String>(1)?.into(),
+                    volume_id: VolumeId::parse(row.get::<_, String>(2)?).map_err(unreadable(2))?,
+                    file_identity: row.get(3)?,
+                })
+            })
+            .optional()?)
+    }
+
+    /// Point a photograph at the original `source` names: its locator (which is also its
+    /// canonical locator), source root and folder, file name, volume and file identity, as a
+    /// relocation writes them.
+    pub(crate) fn set_asset_source(
+        tx: &Transaction<'_>,
+        asset: &AssetId,
+        source: &AssetSourceValue,
+    ) -> rusqlite::Result<usize> {
+        let file_name = source
+            .locator
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        tx.prepare_cached(
+            "UPDATE assets SET locator = ?1, canonical_locator = ?1, source_root = ?2,
+                 source_folder = ?2, file_name = ?3, volume_id = ?4, file_identity = ?5
+             WHERE id = ?6",
+        )?
+        .execute(params![
+            source.locator.to_string_lossy(),
+            source.source_folder.to_string_lossy(),
+            file_name,
+            source.volume_id.as_str(),
+            source.file_identity,
+            asset.as_str(),
+        ])
+    }
+
+    /// The columns [`read_catalog_folder`] maps, in its order.
+    pub(crate) const CATALOG_FOLDER_COLUMNS: &str =
+        "id, name, parent_id, created_ms, event_start_ms, event_end_ms, event_key";
+
+    /// One catalog folder from a row of [`CATALOG_FOLDER_COLUMNS`], its counts left at zero.
+    pub(crate) fn read_catalog_folder(row: &rusqlite::Row<'_>) -> rusqlite::Result<CatalogFolder> {
+        let start: Option<i64> = row.get(4)?;
+        let end: Option<i64> = row.get(5)?;
+        let key: Option<String> = row.get(6)?;
+        let event_id = key.map(EventId::parse).transpose().map_err(unreadable(6))?;
+        Ok(CatalogFolder {
+            id: CatalogFolderId::parse(row.get::<_, String>(0)?).map_err(unreadable(0))?,
+            name: row.get(1)?,
+            parent_id: row
+                .get::<_, Option<String>>(2)?
+                .map(CatalogFolderId::parse)
+                .transpose()
+                .map_err(unreadable(2))?,
+            created_ms: row.get(3)?,
+            event: start.zip(end).map(|(start_ms, end_ms)| EventSpan {
+                start_ms,
+                end_ms,
+                event_id,
+            }),
+            count: 0,
+            year: None,
+        })
+    }
+
+    pub(crate) fn catalog_folder(
+        connection: &Connection,
+        id: &CatalogFolderId,
+    ) -> Result<Option<CatalogFolder>, Error> {
+        Ok(connection
+            .prepare_cached(&format!(
+                "SELECT {CATALOG_FOLDER_COLUMNS} FROM catalog_folders WHERE id = ?1"
+            ))?
+            .query_row([id.as_str()], read_catalog_folder)
+            .optional()?)
+    }
+
+    /// Record a catalog folder, or rewrite the one with its identity.
+    pub(crate) fn put_catalog_folder(
+        tx: &Transaction<'_>,
+        folder: &CatalogFolder,
+    ) -> rusqlite::Result<usize> {
+        let event = folder.event.as_ref();
+        tx.prepare_cached(
+            "INSERT INTO catalog_folders (id, name, parent_id, created_ms, event_start_ms,
+                 event_end_ms, event_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, parent_id = excluded.parent_id,
+                 created_ms = excluded.created_ms, event_start_ms = excluded.event_start_ms,
+                 event_end_ms = excluded.event_end_ms, event_key = excluded.event_key",
+        )?
+        .execute(params![
+            folder.id.as_str(),
+            folder.name,
+            folder.parent_id.as_ref().map(CatalogFolderId::as_str),
+            folder.created_ms,
+            event.map(|event| event.start_ms),
+            event.map(|event| event.end_ms),
+            event.and_then(|event| event.event_id.as_ref().map(|id| id.as_str().to_owned())),
+        ])
+    }
+
+    pub(crate) fn delete_catalog_folder(
+        tx: &Transaction<'_>,
+        id: &CatalogFolderId,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached("DELETE FROM catalog_folders WHERE id = ?1")?
+            .execute([id.as_str()])
+    }
+
+    /// The columns [`read_collection`] maps, in its order.
+    pub(crate) const COLLECTION_COLUMNS: &str = "id, name, parent_id, kind, query_json, created_ms";
+
+    /// One collection from a row of [`COLLECTION_COLUMNS`], its count left unknown.
+    pub(crate) fn read_collection(row: &rusqlite::Row<'_>) -> rusqlite::Result<Collection> {
+        let kind: String = row.get(3)?;
+        Ok(Collection {
+            id: CollectionId::parse(row.get::<_, String>(0)?).map_err(unreadable(0))?,
+            name: row.get(1)?,
+            parent_id: row
+                .get::<_, Option<String>>(2)?
+                .map(CollectionId::parse)
+                .transpose()
+                .map_err(unreadable(2))?,
+            kind: CollectionKind::parse(&kind).ok_or_else(|| {
+                unreadable(3)(Error::incompatible(format!(
+                    "collection kind {kind} is not supported"
+                )))
+            })?,
+            query: row
+                .get::<_, Option<String>>(4)?
+                .map(|query| decode("stored collection query", query))
+                .transpose()
+                .map_err(unreadable(4))?,
+            created_ms: row.get(5)?,
+            count: None,
+        })
+    }
+
+    pub(crate) fn collection(
+        connection: &Connection,
+        id: &CollectionId,
+    ) -> Result<Option<Collection>, Error> {
+        Ok(connection
+            .prepare_cached(&format!(
+                "SELECT {COLLECTION_COLUMNS} FROM collections WHERE id = ?1"
+            ))?
+            .query_row([id.as_str()], read_collection)
+            .optional()?)
+    }
+
+    /// Record a collection, or rewrite the one with its identity (never its kind, which the
+    /// schema keeps).
+    pub(crate) fn put_collection(
+        tx: &Transaction<'_>,
+        collection: &Collection,
+    ) -> rusqlite::Result<usize> {
+        let query = collection
+            .query
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        tx.prepare_cached(
+            "INSERT INTO collections (id, name, parent_id, kind, query_json, created_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name, parent_id = excluded.parent_id,
+                 kind = excluded.kind, query_json = excluded.query_json,
+                 created_ms = excluded.created_ms",
+        )?
+        .execute(params![
+            collection.id.as_str(),
+            collection.name,
+            collection.parent_id.as_ref().map(CollectionId::as_str),
+            collection.kind.as_str(),
+            query,
+            collection.created_ms,
+        ])
+    }
+
+    pub(crate) fn delete_collection(
+        tx: &Transaction<'_>,
+        id: &CollectionId,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached("DELETE FROM collections WHERE id = ?1")?
+            .execute([id.as_str()])
+    }
+
+    /// When a photograph joined a collection, or none when it is not a member.
+    pub(crate) fn membership(
+        connection: &Connection,
+        collection: &CollectionId,
+        asset: &AssetId,
+    ) -> Result<Option<i64>, Error> {
+        Ok(connection
+            .prepare_cached(
+                "SELECT m.added_ms FROM collection_members m
+                 JOIN assets a ON a.row_id = m.asset_row
+                 WHERE m.collection_id = ?1 AND a.id = ?2",
+            )?
+            .query_row([collection.as_str(), asset.as_str()], |row| row.get(0))
+            .optional()?)
+    }
+
+    /// Make a photograph a member of a collection since `added_ms`; 0 when there is no such
+    /// photograph.
+    pub(crate) fn put_membership(
+        tx: &Transaction<'_>,
+        collection: &CollectionId,
+        asset: &AssetId,
+        added_ms: i64,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached(
+            "INSERT OR REPLACE INTO collection_members (collection_id, asset_row, added_ms)
+             SELECT ?1, row_id, ?3 FROM assets WHERE id = ?2",
+        )?
+        .execute(params![collection.as_str(), asset.as_str(), added_ms])
+    }
+
+    pub(crate) fn delete_membership(
+        tx: &Transaction<'_>,
+        collection: &CollectionId,
+        asset: &AssetId,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached(
+            "DELETE FROM collection_members
+             WHERE collection_id = ?1 AND asset_row = (SELECT row_id FROM assets WHERE id = ?2)",
+        )?
+        .execute([collection.as_str(), asset.as_str()])
+    }
+
+    /// The indexed folder at `path`, if there is one.
+    pub(crate) fn indexed_folder(
+        connection: &Connection,
+        path: &Path,
+    ) -> Result<Option<IndexedFolder>, Error> {
+        Ok(connection
+            .prepare_cached(
+                "SELECT path, volume_id, added_ms, actor FROM indexed_folders WHERE path = ?1",
+            )?
+            .query_row([path.to_string_lossy()], |row| {
+                Ok(IndexedFolder {
+                    path: row.get::<_, String>(0)?.into(),
+                    volume_id: VolumeId::parse(row.get::<_, String>(1)?).map_err(unreadable(1))?,
+                    added_ms: row.get(2)?,
+                    actor: row.get(3)?,
+                })
+            })
+            .optional()?)
+    }
+
+    /// Record an indexed folder, replacing the one at its path.
+    pub(crate) fn put_indexed_folder(
+        tx: &Transaction<'_>,
+        folder: &IndexedFolder,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached(
+            "INSERT OR REPLACE INTO indexed_folders (path, volume_id, added_ms, actor)
+             VALUES (?1, ?2, ?3, ?4)",
+        )?
+        .execute(params![
+            folder.path.to_string_lossy(),
+            folder.volume_id.as_str(),
+            folder.added_ms,
+            folder.actor,
+        ])
+    }
+
+    pub(crate) fn delete_indexed_folder(
+        tx: &Transaction<'_>,
+        path: &Path,
+    ) -> rusqlite::Result<usize> {
+        tx.prepare_cached("DELETE FROM indexed_folders WHERE path = ?1")?
+            .execute([path.to_string_lossy()])
+    }
+
+    /// Whether the catalog records the volume `id`.
+    pub(crate) fn has_volume(connection: &Connection, id: &VolumeId) -> Result<bool, Error> {
+        Ok(connection
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM volumes WHERE id = ?1)")?
+            .query_row([id.as_str()], |row| row.get(0))?)
+    }
+}
 // ── end lane C ──
 // ── catalog lane D: views ──
 // ── end lane D ──

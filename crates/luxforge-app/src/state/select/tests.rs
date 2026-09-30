@@ -830,6 +830,7 @@ fn session(revision: u64, ranges: &[(u32, u32)], active: Option<u32>) -> BrowseS
                 .collect(),
             active,
         },
+        ..BrowseSession::default()
     }
 }
 

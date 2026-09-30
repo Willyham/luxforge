@@ -43,10 +43,6 @@ impl ViewsLane {
     /// The items selected in `client`'s current view, in view order: what a library method's
     /// `{kind: selection}` targets name. Refused with `validation` when the client holds no view,
     /// and with `conflict` when its view is stale.
-    #[allow(
-        dead_code,
-        reason = "the seam lane C's `{kind: selection}` targets call"
-    )]
     pub(super) fn selected(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
         let view = self.views.get(&client).ok_or_else(no_view)?;
         if view.stale {

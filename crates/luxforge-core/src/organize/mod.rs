@@ -22,6 +22,8 @@ use crate::catalog_types::{
 };
 use std::{cmp::Ordering, collections::BTreeMap};
 
+pub(crate) mod gazetteer;
+
 /// Sort `frames` into the order a view shows them under `grouping`, earliest first, or the reverse
 /// when `descending`; undated frames come last either way, by folder and file name.
 ///

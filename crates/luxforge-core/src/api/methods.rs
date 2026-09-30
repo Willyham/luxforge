@@ -825,6 +825,52 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // ── catalog lane B: previews ──
     // ── end lane B ──
     // ── catalog lane C: catalog ──
+    // Picks and the library journal (TASK-011).
+    owner!(
+        "pick.set",
+        crate::catalog_types::api::PickSet,
+        owner::library::pick_set,
+        "picks or clears files as one library change, answering {outcome, change?, items, deduplicated}; a pick keeps the file's path and signature with its actor, request and time until it is developed or cleared, and picking a file already picked keeps its pick; targets are files by path or index row, or the files selected in the caller's view; resource-limit past 50,000 files",
+        retries: Owner,
+    ),
+    owner!(
+        "pick.list",
+        crate::catalog_types::api::PickList,
+        owner::library::pick_list,
+        "{picks: [{path, signature, volume_id, actor, request_id, picked_ms, file_id?}], next_after?}: the picks in path order after the path after, every pick or those of a folder (with its subfolders when asked) or a card; file_id is the file's index row when the index lists it"
+    ),
+    owner!(
+        "library.journal",
+        crate::catalog_types::api::LibraryJournalParams,
+        owner::library::library_journal,
+        "{changes: [{sequence, actor, request_id, method, label, time_ms, item_count, undoes?, redoes?, undone_by?}], next_after?}: library changes after the sequence after, oldest first, without their rows; next_after continues a full page"
+    ),
+    owner!(
+        "library.inspect",
+        crate::catalog_types::api::LibraryInspect,
+        owner::library::library_inspect,
+        "{change, rows: [{item: {kind, ...}, before, after}]}: one library change with each item's value before and after, null for absent, in the order the change applied them"
+    ),
+    owner!(
+        "library.undo",
+        crate::catalog_types::api::LibraryRequest,
+        owner::library::library_undo,
+        "reverts the calling actor's latest library change not yet undone by appending its inverse, answering {outcome, change?, items, deduplicated}, no-op when there is none; conflict, naming the items in data.items, when a later change touched them or their values are no longer the ones it left",
+        retries: Owner,
+    ),
+    owner!(
+        "library.redo",
+        crate::catalog_types::api::LibraryRequest,
+        owner::library::library_redo,
+        "reverts the calling actor's latest undo not yet redone, made since its latest new change, under the same rule as library.undo",
+        retries: Owner,
+    ),
+    owner!(
+        "catalog.info",
+        params::NoParams,
+        owner::library::catalog_info,
+        "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days) and the index database's size and the files it lists"
+    ),
     // ── end lane C ──
     // ── catalog lane D: views ──
     owner!(

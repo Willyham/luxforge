@@ -13,7 +13,7 @@ pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 
-use crate::{AssetId, Draft, DraftId, Error, PreviewSession};
+use crate::{AssetId, Draft, DraftId, Error, PreviewSession, catalog_types::LibraryChangeSeq};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -83,7 +83,9 @@ impl ApiResponse {
 /// One change in the owner's event log: the request it was made under and, when the change has
 /// one, the asset it changed and the revision it left that asset at. A version names its asset but
 /// no revision, since naming an entry moves none; a change to the preset library, a module or the
-/// artifact store names no asset.
+/// artifact store names no asset. A library change (a pick or clear, a catalog folder or collection
+/// change, or the undo or redo of one) names the journal sequence it recorded and no asset: one
+/// event however many items it covered.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -94,6 +96,8 @@ pub struct ApiEvent {
     pub asset_id: Option<AssetId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_sequence: Option<LibraryChangeSeq>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -105,6 +109,7 @@ pub(crate) struct Origin {
     pub request_id: String,
     pub asset_id: Option<AssetId>,
     pub revision: Option<u64>,
+    pub library_sequence: Option<LibraryChangeSeq>,
 }
 
 impl Origin {
@@ -114,7 +119,14 @@ impl Origin {
             request_id: request_id.to_owned(),
             asset_id: None,
             revision: None,
+            library_sequence: None,
         }
+    }
+
+    /// The same request, naming the library change it recorded.
+    pub(crate) fn library(mut self, sequence: LibraryChangeSeq) -> Self {
+        self.library_sequence = Some(sequence);
+        self
     }
 
     /// The same request, naming the asset it changed and, when that moved it, the revision it left.
