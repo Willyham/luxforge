@@ -31,7 +31,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]` |
-| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, the `mask-range` scenario's own colour-chart patches and the `curve` scenario's grey ramp and colour patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Adding a camera: download selected CC0 samples from the raw.pixls.us index, verify their SHA-256 and read each with the RAW adapter, or see why it refuses them | `cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR [--max-source-mib N]` |
 | Adding a camera: a DNG or TIFF's IFDs, geometry and calibration tags and opcode-list layouts, read-only | `cargo xtask inspect-dng --source DNG [--json NEW_FILE]` |
 | Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
@@ -47,6 +47,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Tone curve over a generated grey ramp and the orientation fixture's four colours: section expand, three on-diagonal points through the API (identity bytes), a point drag held and released, a point added and one removed, the Points list opened, a fourth point added and an S-curve typed one coordinate per Enter, the module reset from the band, and a radial mask with the curve dragged through it (scope chip); against the neutral frame, no new decrease along the ramp rows, channel spread within one code, each unclipped patch's Oklab hue kept within 1°, the S-curve lowering the ramp's lower half and raising its upper half, and an identity curve drawing the neutral pixels exactly | `cargo xtask smoke --scenario curve --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered 100% viewport with two masks and a rotated crop: draft, pan, refinement, release, settled reuse, history and overlay identity; GPU draw counters must record no blank or stale photo | `cargo xtask smoke --scenario viewport-region --output NEW_DIR` |
@@ -286,7 +287,7 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and all 37 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -310,7 +311,7 @@ process of the release `xtask` executable with its console output in `<out>/<com
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
-generated fixture — 24 MP, 60 MP, hue-wheel, presence or range — is missing. A component that has
+generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component that has
 stopped making progress is killed after twenty minutes and recorded as `timed_out`. `quick` builds
 nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
 `xtask` executable running `verify`, and its summary names no editor binary.
@@ -753,6 +754,14 @@ Each step is an object with exactly one key.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
+- `curve` drives one curve editor gesture, named by `event` beside the control's `action` and
+  `parameter`: `move` drags point `index` through `points` (one pointer move each) and drafts, with
+  `finish` `open`, `release` or `cancel`; `add` (`point`) and `remove` (`index`) commit at once, as
+  the editor's own add and remove do; `channel` (`index`) selects a channel; `points` (`open`)
+  opens or closes the Points list, which sends nothing and captures the next frame; `type`
+  (`index`, `axis` 0 for the input or 1 for the output, `text`) types into that point's field and
+  presses Enter, which commits that one coordinate. A `type` into a closed list, a refused add or
+  remove, and a typed value the kind refuses fail the step with the status bar's text.
 - `reset` runs a declared reset: `{"module": "luxforge.basic"}` is the module's own header reset and
   `{"module": "luxforge.basic", "group": "Tone"}` is that control group's, found by its label.
 - `pick` clicks the photograph at a pixel of the raster on screen: `{"x": 120, "y": 80}`. What the

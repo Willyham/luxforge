@@ -2499,6 +2499,54 @@ impl Editor {
                 self.capture_next_frame();
                 task
             }
+            // The disclosure row's press: view state, so nothing is sent and the next frame is
+            // the one captured.
+            CurveStepEvent::Points(open) => {
+                let task = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                    event: CurveEditorEvent::Points(open),
+                }));
+                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
+                    != Some(open)
+                {
+                    return self.fail_step(if open {
+                        "the curve's Points list did not open"
+                    } else {
+                        "the curve's Points list did not close"
+                    });
+                }
+                self.capture_next_frame();
+                task
+            }
+            // A coordinate field exists only in the open list, so a person cannot type into a
+            // closed one and neither can a script. The text is typed as the field publishes it and
+            // Enter commits that one coordinate.
+            CurveStepEvent::Type { index, axis, text } => {
+                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
+                    != Some(true)
+                {
+                    return self.fail_step("the curve's Points list is not open");
+                }
+                self.begin_request();
+                let typed = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                    event: CurveEditorEvent::Text { index, axis, text },
+                }));
+                let submitted = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action,
+                    parameter: step.parameter,
+                    event: CurveEditorEvent::Submit { index, axis },
+                }));
+                if !self.busy {
+                    return self.fail_step(format!(
+                        "the curve coordinate was not committed: {}",
+                        self.status.text
+                    ));
+                }
+                Task::batch([typed, submitted])
+            }
         }
     }
 
@@ -3970,6 +4018,29 @@ fn selected_curve_channel(
                         .any(|channel| channel.parameter == parameter) =>
             {
                 Some(curve.selected_channel)
+            }
+            _ => None,
+        })
+    })
+}
+
+/// Whether the curve drawing `action`'s `parameter` shows its Points list, as the tools panel
+/// derives it; `None` when no such curve is drawn.
+fn curve_points_open(
+    tools: &crate::state::tools::ToolsModel,
+    action: &str,
+    parameter: &str,
+) -> Option<bool> {
+    tools.all().find_map(|section| {
+        walk(&section.controls).find_map(|control| match control {
+            crate::state::tools::ControlModel::Curve(curve)
+                if curve.action == action
+                    && curve
+                        .channels
+                        .iter()
+                        .any(|channel| channel.parameter == parameter) =>
+            {
+                Some(curve.points_open)
             }
             _ => None,
         })

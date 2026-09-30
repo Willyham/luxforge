@@ -331,6 +331,8 @@ pub enum Tolerance {
     Beyond(f64),
     /// The first above the second by more than this: brighter, lifted.
     Above(f64),
+    /// The first no more than this above the second, inclusive: a reading bounded by another.
+    AtMost(f64),
 }
 
 /// Reading `a` against reading `b` under `tolerance`; the error names `what`, both readings and the
@@ -356,6 +358,10 @@ pub fn compare(what: &str, a: f64, b: f64, tolerance: Tolerance) -> Result {
         Tolerance::Above(margin) => ensure(
             a > b + margin,
             format!("{what}: {a:.2} is not above {b:.2} by more than {margin}"),
+        ),
+        Tolerance::AtMost(margin) => ensure(
+            a <= b + margin,
+            format!("{what}: {a:.2} is more than {margin} above {b:.2}"),
         ),
     }
 }
