@@ -55,6 +55,9 @@ pub(crate) const MAX_GAIN: f32 = 32.0;
 pub enum RawError {
     InvalidInput(&'static str),
     UnsupportedMode(String),
+    /// A RAW compression no decoder here reads, refused before any unpack: the text names the
+    /// format and how to record a supported one instead.
+    UnsupportedCompression(&'static str),
     UnsupportedRequiredOpcodes(Vec<u32>),
     UnsupportedCfa,
     MissingCalibration(&'static str),
@@ -71,6 +74,7 @@ impl fmt::Display for RawError {
         match self {
             Self::InvalidInput(v) => write!(f, "invalid RAW input: {v}"),
             Self::UnsupportedMode(v) => write!(f, "unsupported RAW recording mode: {v}"),
+            Self::UnsupportedCompression(v) => write!(f, "unsupported RAW compression: {v}"),
             Self::UnsupportedRequiredOpcodes(ids) => {
                 write!(f, "unsupported mandatory DNG opcodes: {ids:?}")
             }
@@ -335,6 +339,9 @@ fn native_result(code: c_int, buffer: &[c_char]) -> Result<(), RawError> {
         )),
         Some(NativeStatus::UnsupportedCfa) => Err(RawError::UnsupportedCfa),
         Some(NativeStatus::UnsupportedMode) => Err(RawError::UnsupportedMode(c_text(buffer))),
+        Some(NativeStatus::NikonHighEfficiency) => Err(RawError::UnsupportedCompression(
+            format::NIKON_HIGH_EFFICIENCY,
+        )),
         Some(NativeStatus::InvalidInput | NativeStatus::Failed) | None => {
             Err(RawError::Native(c_text(buffer)))
         }
@@ -415,6 +422,9 @@ impl RawSource {
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
+        // No decoder here reads Nikon High Efficiency, and LibRaw misreads it on some bodies as
+        // lossless: refuse it from the container before the native open and unpack.
+        format::reject_nikon_high_efficiency(bytes)?;
         let mut native = Box::new(Self::blank_native());
         let mut handle = std::ptr::null_mut();
         let mut error = [0 as c_char; 256];
@@ -2319,7 +2329,7 @@ mod tests {
     fn native_statuses_map_to_their_errors() {
         assert_eq!(
             NativeStatus::ALL.map(|status| status as c_int),
-            [0, 1, 2, 3, 4, 5, 6, 7]
+            [0, 1, 2, 3, 4, 5, 6, 7, 8]
         );
         let text = [b'x' as c_char, 0];
         let native = || Err(RawError::Native("x".into()));
@@ -2337,6 +2347,9 @@ mod tests {
             Err(RawError::UnsupportedCfa),
             limit(),
             Err(RawError::UnsupportedMode("x".into())),
+            Err(RawError::UnsupportedCompression(
+                format::NIKON_HIGH_EFFICIENCY,
+            )),
         ];
         for (status, expected) in NativeStatus::ALL.into_iter().zip(expected) {
             assert_eq!(
@@ -2345,9 +2358,71 @@ mod tests {
                 "{status:?}"
             );
         }
-        for unknown in [-1, 8, c_int::MAX] {
+        for unknown in [-1, 9, c_int::MAX] {
             assert_eq!(native_result(unknown, &text), native());
         }
+    }
+
+    /// The adapter's own High Efficiency check, behind the container check that `decode` runs
+    /// first: opened directly, the bodies whose files LibRaw routes to its High Efficiency decoder
+    /// are refused before unpack. LibRaw routes the Z50II and Z5II files to its lossless decoder,
+    /// so only the container check catches them; here they stop at the catalog. Set
+    /// LUXFORGE_RAW_POPULAR_DIR to the directory of raw.pixls.us samples named `<id>.<EXT>`.
+    #[test]
+    #[ignore = "requires explicit local authentic popular-camera RAW samples"]
+    fn native_open_refuses_libraw_high_efficiency_decoder() {
+        let dir = std::env::var("LUXFORGE_RAW_POPULAR_DIR").expect("popular sample directory");
+        let cancel = AtomicBool::new(false);
+        for (id, expected) in [
+            ("5147", NativeStatus::NikonHighEfficiency),
+            ("6618", NativeStatus::NikonHighEfficiency),
+            ("6886", NativeStatus::NikonHighEfficiency),
+            ("7815", NativeStatus::NikonHighEfficiency),
+            ("7763", NativeStatus::UnsupportedMode),
+            ("7743", NativeStatus::UnsupportedMode),
+        ] {
+            let bytes = std::fs::read(format!("{dir}/{id}.NEF")).expect("read sample");
+            let mut native = Box::new(RawSource::blank_native());
+            let mut handle = std::ptr::null_mut();
+            let mut error = [0 as c_char; 256];
+            // SAFETY: bytes, metadata, handle and error outlive this synchronous call, and the
+            // guard closes any handle it returns.
+            let code = unsafe {
+                lf_raw_open(
+                    bytes.as_ptr(),
+                    bytes.len(),
+                    cancelled,
+                    (&cancel as *const AtomicBool).cast_mut().cast(),
+                    &mut handle,
+                    &mut *native,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            drop(NativeHandle(handle));
+            println!("{id}: status {code}, {}", c_text(&error));
+            assert_eq!(code, expected as c_int, "{id}");
+        }
+        // No other sample, of any brand or Nikon mode, is refused by the container check.
+        let mut others = 0;
+        for entry in std::fs::read_dir(&dir).expect("list samples") {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let he = ["5147", "6618", "6886", "7815", "7763", "7743"]
+                .iter()
+                .any(|id| name == format!("{id}.NEF"));
+            if he || name.ends_with(".tsv") {
+                continue;
+            }
+            let bytes = std::fs::read(&path).expect("read sample");
+            assert_eq!(
+                format::reject_nikon_high_efficiency(&bytes),
+                Ok(()),
+                "{name}"
+            );
+            others += 1;
+        }
+        println!("{others} other samples pass the High Efficiency check");
     }
 
     #[test]
