@@ -213,7 +213,8 @@ pub(super) struct Found {
     orientation: Option<u8>,
     /// By [`TimeSource`]: the time, its subsecond and its offset.
     times: [Option<DateTime>; 3],
-    subsecs: [Option<u32>; 3],
+    /// By [`TimeSource`]: the subsecond in nanoseconds and how many digits were written.
+    subsecs: [Option<(u32, u8)>; 3],
     offsets: [Option<i16>; 3],
     exposure_time: Option<Rational>,
     f_number: Option<Rational>,
@@ -350,7 +351,9 @@ impl Found {
     fn subsec(&mut self, source: &mut impl Source, tiff: &Tiff, entry: &Entry, time: TimeSource) {
         fill(&mut self.subsecs[time as usize], || {
             let mut buffer = [0; MAX_TEXT_BYTES];
-            parse_subsec(tiff.raw_text(source, entry, &mut buffer)?)
+            let text = tiff.raw_text(source, entry, &mut buffer)?;
+            // At most nine digits are read, so the count fits a byte.
+            parse_subsec(text).map(|nanos| (nanos, text.len().min(9) as u8))
         });
     }
 
@@ -453,7 +456,8 @@ impl Found {
             let index = source as usize;
             Some(CaptureTime {
                 local: self.times[index]?,
-                subsec_nanos: self.subsecs[index],
+                subsec_nanos: self.subsecs[index].map(|(nanos, _)| nanos),
+                subsec_digits: self.subsecs[index].map_or(0, |(_, digits)| digits),
                 offset_minutes: self.offsets[index],
                 source,
             })

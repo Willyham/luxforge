@@ -356,6 +356,7 @@ fn camera_header(
         capture_time: Some(CaptureTime {
             local: date_time(2026, 9, 27, 18, 4, 5),
             subsec_nanos: Some(420_000_000),
+            subsec_digits: 2,
             offset_minutes: Some(60),
             source: TimeSource::Original,
         }),
@@ -2004,4 +2005,129 @@ fn metadata_header_of_the_fixture_jpegs_is_bounded_and_agrees_with_the_codec_and
         count += 1;
     }
     assert!(count >= 20, "{count} fixtures");
+}
+
+// ---------------------------------------------------------------------------------------------
+// The catalog's shape.
+
+/// Every field reaches the catalog's `HeaderMetadata` through its own type's rules: the capture
+/// time through the catalog's EXIF parser with the subsecond digits as written, the position and
+/// orientation through their validating constructors, the thumbnail through `EmbeddedImage::new`.
+#[test]
+fn metadata_maps_every_field_to_the_catalog_header() {
+    use crate::catalog_types::{self, EmbeddedFormat, ExifOrientation};
+    let header = camera_header(
+        Container::Tiff,
+        4096,
+        Some(Dimensions {
+            width: 6048,
+            height: 4024,
+        }),
+    );
+    let metadata = header.metadata();
+    let capture = metadata.capture.as_ref().expect("a dated header");
+    assert_eq!(capture.text, "2026-09-27T18:04:05.42+01:00");
+    assert_eq!(capture.offset_minutes, Some(60));
+    assert_eq!(capture.local_ms.rem_euclid(1000), 420);
+    let expected =
+        catalog_types::CaptureTime::from_exif("2026:09:27 18:04:05", Some("42"), Some("+01:00"));
+    assert_eq!(metadata.capture, expected);
+    let position = metadata.position.expect("a position");
+    let gps = header.gps.unwrap();
+    assert_eq!(
+        (position.lat, position.lon, position.alt_m),
+        (gps.latitude, gps.longitude, Some(35.5))
+    );
+    let camera = metadata.camera.as_ref().expect("a camera");
+    assert_eq!(
+        (
+            camera.make.as_str(),
+            camera.model.as_str(),
+            camera.serial.as_deref()
+        ),
+        ("NIKON CORPORATION", "NIKON Z 6", Some("6012345"))
+    );
+    assert_eq!(metadata.lens.as_deref(), Some("NIKKOR Z 24-70mm f/4 S"));
+    let exposure = metadata.exposure;
+    assert_eq!(exposure.time_s, Some(1.0 / 250.0));
+    assert_eq!(exposure.f_number, Some(2.8));
+    assert_eq!(exposure.iso, Some(400));
+    assert_eq!(exposure.bias_ev, Some(-2.0 / 3.0));
+    assert_eq!(exposure.focal_mm, Some(35.0));
+    assert_eq!(exposure.focal_35mm_mm, Some(35.0));
+    assert_eq!(
+        metadata.dimensions,
+        Some(catalog_types::Dimensions {
+            width: 6048,
+            height: 4024
+        })
+    );
+    assert_eq!(metadata.orientation, ExifOrientation::new(6));
+    let thumbnail = metadata.thumbnail.expect("a thumbnail");
+    assert_eq!(
+        (
+            thumbnail.offset(),
+            thumbnail.len() as usize,
+            thumbnail.format(),
+            thumbnail.size()
+        ),
+        (4096, THUMB.len(), EmbeddedFormat::Jpeg, None)
+    );
+
+    // Subsecond digits as written, a western offset, and no subsecond at all.
+    let mut header = camera_header(Container::Jpeg, 4096, None);
+    let time = header.capture_time.as_mut().unwrap();
+    (time.subsec_nanos, time.subsec_digits, time.offset_minutes) =
+        (Some(300_000_000), 3, Some(-330));
+    assert_eq!(
+        header.metadata().capture.unwrap().text,
+        "2026-09-27T18:04:05.300-05:30"
+    );
+    let time = header.capture_time.as_mut().unwrap();
+    (time.subsec_nanos, time.subsec_digits, time.offset_minutes) = (None, 0, None);
+    let capture = header.metadata().capture.unwrap();
+    assert_eq!(
+        (capture.text.as_str(), capture.offset_minutes),
+        ("2026-09-27T18:04:05", None)
+    );
+
+    // A model alone is a camera; neither is none. An RGB strip carries its size; one whose length
+    // is not three bytes a pixel is refused, as the catalog's type refuses it.
+    header.make = None;
+    assert_eq!(header.metadata().camera.unwrap().make, "");
+    header.model = None;
+    assert_eq!(header.metadata().camera, None);
+    let rgb = |length| Thumbnail {
+        offset: 512,
+        length,
+        format: ThumbnailFormat::Rgb8 {
+            size: Dimensions {
+                width: 160,
+                height: 120,
+            },
+        },
+    };
+    header.thumbnail = Some(rgb(160 * 120 * 3));
+    let strip = header.metadata().thumbnail.unwrap();
+    assert_eq!(
+        (
+            strip.format(),
+            strip.size().map(|size| (size.width, size.height))
+        ),
+        (EmbeddedFormat::Rgb8, Some((160, 120)))
+    );
+    header.thumbnail = Some(rgb(160 * 120 * 3 + 1));
+    assert_eq!(header.metadata().thumbnail, None);
+    header.thumbnail = Some(Thumbnail {
+        offset: 0,
+        length: u64::from(u32::MAX) + 1,
+        format: ThumbnailFormat::Jpeg { size: None },
+    });
+    assert_eq!(header.metadata().thumbnail, None);
+
+    // An empty header is empty metadata.
+    assert_eq!(
+        FileHeader::from_bytes(b"not a photo").metadata(),
+        Default::default()
+    );
 }
