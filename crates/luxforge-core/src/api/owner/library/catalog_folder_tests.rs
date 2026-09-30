@@ -444,7 +444,10 @@ fn catalog_folders_are_created_renamed_nested_merged_and_deleted_with_undo_and_r
         "folder.merge",
         json!({"folder_id": fixture.konstanz, "into_id": alps, "mutation": envelope("f5")}),
     );
-    assert_eq!(merged["items"], 5, "four photographs and the folder");
+    assert_eq!(
+        merged["items"], 6,
+        "four photographs, Alps taking the event span it lacked, and the folder"
+    );
     let detail = ok(
         &owner,
         client,
@@ -464,8 +467,20 @@ fn catalog_folders_are_created_renamed_nested_merged_and_deleted_with_undo_and_r
             "asset-folder",
             "asset-folder",
             "asset-folder",
+            "catalog-folder",
             "catalog-folder"
         ]
+    );
+    let alps_now = ok(&owner, client, "folder.list", json!({}))["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|folder| folder["id"] == json!(alps))
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        alps_now["event"], initial["folders"][0]["event"],
+        "later picks from Konstanz's event still find its photographs' folder"
     );
     assert_eq!(
         tree(&owner, client),
