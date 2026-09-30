@@ -350,9 +350,9 @@ pub fn verify(
     let previews = &select(frame)["previews"];
     ensure(
         previews["photographs"].as_u64() > Some(0)
-            && previews["handles"].as_u64() >= previews["visible"].as_u64()
-            && previews["refused"] == 0
-            && previews["loading"] == 0,
+            && previews["visible"].as_u64() > Some(0)
+            && previews["visible_held"] == previews["visible"]
+            && previews["refused"] == 0,
         format!("catalog-folder: the cells on screen lack their previews: {previews}"),
     )?;
     checks.note(

@@ -109,9 +109,9 @@ fn facet_row<'a, M: Clone + 'a>(model: &FacetRowModel, on_press: Option<M>) -> E
         (false, true) => (theme::TEXT_LABEL, theme::TEXT_TERTIARY),
         (false, false) => (theme::TEXT_TERTIARY, theme::TEXT_TERTIARY),
     };
+    // The label takes what the count leaves, ending in its ellipsis.
     let content = row![
         truncated_text(model.label.clone(), theme::SIZE_FILTER, theme::FONT, ink),
-        Space::new().width(Length::Fill),
         text(model.count.clone())
             .size(theme::SIZE_SMALL_CAPTION)
             .wrapping(Wrapping::None)

@@ -778,6 +778,8 @@ pub(crate) struct PhotoInfo {
     pub(crate) metadata: Vec<(String, String)>,
     /// "Yes", "No" or "5 of 5".
     pub(crate) edited: Option<String>,
+    /// The Develop band's rows: whether they are edited.
+    pub(crate) develop: Vec<(String, String)>,
     /// Export's label ("Export 5…"), disabled until batch export is built.
     pub(crate) export: String,
 }
@@ -1836,6 +1838,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
             (catalog.menu == Some(CatalogMenu::MovePhotos)).then(|| move_choices(catalog, None));
         info.add_menu = (catalog.menu == Some(CatalogMenu::AddTo))
             .then(|| add_choices(catalog, &BTreeMap::new(), count));
+        info.develop = develop_rows(&info);
         return Some(info);
     };
     // Folders: how many of the selection each holds, most first.
@@ -1908,7 +1911,16 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         .collect();
     info.add_menu = (catalog.menu == Some(CatalogMenu::AddTo))
         .then(|| add_choices(catalog, &in_collections, count));
+    info.develop = develop_rows(&info);
     Some(info)
+}
+
+/// The Develop band's rows.
+fn develop_rows(info: &PhotoInfo) -> Vec<(String, String)> {
+    info.edited
+        .iter()
+        .map(|edited| ("Edited".to_owned(), edited.clone()))
+        .collect()
 }
 
 /// Move to…: every catalog folder, as a path; the one that holds the whole selection checked and

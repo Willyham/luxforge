@@ -42,6 +42,7 @@ impl Editor {
             return self.fail_step("Select is not shown");
         }
         self.select.evidence_after = None;
+        let pressed_source = matches!(step, CatalogStep::Source(_));
         let result = match step {
             CatalogStep::Source(name) => self
                 .catalog_row(&name)
@@ -123,7 +124,9 @@ impl Editor {
                         act(CatalogAction::NameText(name)),
                         act(CatalogAction::Submit),
                     ]),
-                    Some(Some(reason)) => Err(format!("Save as smart collection… is refused: {reason}")),
+                    Some(Some(reason)) => {
+                        Err(format!("Save as smart collection… is refused: {reason}"))
+                    }
                     None => Err("the view is not over the catalog".to_owned()),
                 }
             }
@@ -135,10 +138,17 @@ impl Editor {
                 return self.fail_step(reason);
             }
         };
-        let tasks: Vec<Task<Message>> = messages
+        let mut tasks: Vec<Task<Message>> = messages
             .into_iter()
             .map(|message| self.update(message))
             .collect();
+        // The Catalog section is at the foot of the sources panel: scrolled to, as a person
+        // scrolls to the row they press, so the frame shows it.
+        if pressed_source {
+            tasks.push(iced::widget::operation::snap_to_end(
+                iced::widget::Id::from(crate::view::select::SOURCES_SCROLL),
+            ));
+        }
         // A gesture that asked the owner for nothing (the Metadata browser opened over counts it
         // holds) is captured at once; any other once what it asked for has answered.
         if self.select_quiet() {

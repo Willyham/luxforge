@@ -48,6 +48,8 @@ use luxforge_ui::{
 
 /// The sources panel's search field, as a focus target.
 pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
+/// The sources panel's scrolling list, as a scroll target.
+pub(crate) const SOURCES_SCROLL: &str = "luxforge.select.sources";
 
 /// What is not built yet, as the controls waiting for it say on hover.
 const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
@@ -331,6 +333,7 @@ fn sources<'a>(
     .padding([0.0, theme::PANEL_PADDING_X]);
     column![
         scrollable(content)
+            .id(iced::widget::Id::from(SOURCES_SCROLL))
             .direction(theme::panel_scrollbar())
             .height(Length::Fill),
         rule,
