@@ -28,6 +28,11 @@
 //!   the workers skip the tasks of a cancelled job, and the coordinator commits the batch it holds
 //!   and stops. What was committed stays; the vanished rows and the root's listing are recorded only
 //!   when a listing completes.
+//! - **Its own listings are jobs too.** A listing the lane runs on its own — a rescan the watcher
+//!   asks for, a root listed again as it changed or as the catalog opened — is an `index-refresh`
+//!   job no request started ([`Run::own_job`]): the owner opens it in its job table before it shows
+//!   on the board, so `job.read` and `job.cancel` answer for it. One that does not complete leaves
+//!   its root stale on its row, listed again on its next change or as the catalog next opens.
 //! - **Visible.** Progress goes to the job's activity: a count while the walk is discovering the
 //!   root's extent ("1,204 of about 12,408 files" when an earlier listing knows it), then a fraction
 //!   of the headers read. Each committed batch advances the index's revision in the same transaction
@@ -44,9 +49,10 @@ use super::{
 };
 use crate::{
     Error, JobId,
-    activity::ActivityBoard,
+    activity::{ActivityBoard, ActivitySpec},
     catalog_types::{
         FileId, FileRecord, HeaderState, IndexReport, IndexRoot, RootKind, Volume, VolumeId,
+        jobs::INDEX_REFRESH,
     },
     editor::now_ms,
     jobs::JobControl,
@@ -157,6 +163,19 @@ pub(crate) enum LaneEvent {
         result: Result<IndexReport, Error>,
         revision: Option<u64>,
     },
+    /// The lane began a listing of its own as the `index-refresh` job `job_id`, whose cancel flag
+    /// and progress are `control`'s: the owner records it running. Posted before the job shows on
+    /// the activity board, so a client that saw it there finds it in the job table.
+    Began {
+        job_id: JobId,
+        control: Arc<JobControl>,
+    },
+    /// A listing of the lane's own ended, leaving the index at `revision` when it could be read.
+    Listed {
+        job_id: JobId,
+        result: Result<IndexReport, Error>,
+        revision: Option<u64>,
+    },
     /// A root was forgotten. One that could not be keeps its rows, a cache nothing lists.
     Forgotten,
     /// The roots of a [`Work::Watch`] are watched, or were refused as [`LaneEvent::Watching`] says.
@@ -173,7 +192,7 @@ pub(crate) enum LaneEvent {
 /// What made a batch, which decides under which request it is announced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Maker {
-    /// The `index.refresh` job listing.
+    /// The `index-refresh` job listing: the owner's, or one of the lane's own.
     Job(JobId),
     /// The owner's other work: forgetting a folder no longer indexed.
     Owner,
@@ -214,8 +233,9 @@ impl Mailbox {
 pub(crate) struct Lane {
     inputs: SyncSender<Input>,
     mailbox: Arc<Mailbox>,
-    /// The control of the lane's own work, the listings its notifications ask for, cancelled as it
-    /// stops.
+    /// Cancelled as the lane stops: what it applies from its notifications stops by it, and every
+    /// listing checks it beside its own job's control, so a listing the lane began on its own stops
+    /// too.
     keeping: Arc<JobControl>,
     threads: Vec<JoinHandle<()>>,
 }
@@ -436,6 +456,7 @@ impl Coordinator {
                     answers,
                     runs,
                     keeper,
+                    keeping,
                     ..
                 } = self;
                 let (result, revision) = match open(config, connection) {
@@ -446,7 +467,7 @@ impl Coordinator {
                             exclusions,
                             connection,
                             (tasks, answers),
-                            &refresh.control,
+                            (refresh.control.clone(), keeping),
                             Maker::Job(refresh.job_id.clone()),
                             stamp,
                         );
@@ -508,7 +529,8 @@ impl Coordinator {
     /// written, header reads included, each root's newest cursor is recorded in the same
     /// transaction as the last of them, so a restart resumes after what was applied and never
     /// before what was not. Nothing is recorded when the unit fails; its changes are then
-    /// reported again after a restart.
+    /// reported again after a restart, and every root it touched is stale until it is listed
+    /// again.
     fn keep_up(&mut self, first: Option<WatchEvent>) {
         self.runs += 1;
         let stamp = self.stamp();
@@ -536,7 +558,7 @@ impl Coordinator {
             exclusions,
             connection,
             (tasks, answers),
-            keeping,
+            (keeping.clone(), keeping),
             Maker::Watcher,
             stamp,
         );
@@ -562,13 +584,33 @@ impl Coordinator {
             run.batch.commit(run.connection, &config.post)
         }))
         .unwrap_or_else(|_| Err(Error::internal("applying changes failed unexpectedly")));
+        drop(run);
         match outcome {
             Ok(()) => keeper.recorded(),
             // What was written stays; the cursors are not recorded, and the roots the unit touched
-            // are listed again before any later cursor of theirs is.
-            Err(_) => keeper.unrecorded(),
+            // are stale, listed again before any later cursor of theirs is.
+            Err(_) => {
+                let stale = keeper.unrecorded();
+                mark_stale(connection, &stale);
+            }
         }
     }
+}
+
+/// Record each of `roots` stale on its row, so it is listed again on its next change or as the
+/// catalog next opens, and `index.folders` says so until then. Best effort: a root whose mark could
+/// not be written is still listed again on its next change while the lane runs.
+fn mark_stale(connection: &mut Connection, roots: &[PathBuf]) {
+    if roots.is_empty() {
+        return;
+    }
+    let _ = (|| -> Result<(), Error> {
+        let tx = connection.transaction()?;
+        for root in roots {
+            database::set_root_stale(&tx, root, true)?;
+        }
+        Ok(tx.commit()?)
+    })();
 }
 
 /// The lane's connection to the index, opening the index on the lane's first work: created when
@@ -606,6 +648,9 @@ enum Write {
     Gone(PathBuf),
     Vanished(Vec<FileId>),
     Root(IndexRoot),
+    /// The root at this path was listed in full: it is no longer stale. It changes no file or
+    /// root row the views read, so it advances no revision.
+    Current(PathBuf),
     /// Where a watched root's notifications resume, once every change before it is written: the
     /// batch's last write, so it commits with them. It changes no file or root, so a batch of
     /// cursors alone advances no revision.
@@ -696,6 +741,10 @@ impl Batch {
                 Write::Root(root) => {
                     database::upsert_root(&tx, &root)?;
                     true
+                }
+                Write::Current(root) => {
+                    database::set_root_stale(&tx, &root, false)?;
+                    false
                 }
                 Write::Cursor { root, cursor } => {
                     database::set_root_cursor(&tx, &root, cursor)?;
@@ -808,7 +857,11 @@ struct Run<'r> {
     connection: &'r mut Connection,
     tasks: &'r SyncSender<Task>,
     answers: &'r Receiver<Answer>,
-    control: &'r Arc<JobControl>,
+    /// The control of the work running now: the refresh job's, the unit's, or the job of a listing
+    /// the lane began on its own ([`Run::own_job`]) while that runs.
+    control: Arc<JobControl>,
+    /// The lane's own control, cancelled as the lane stops, which every listing also checks.
+    stop: &'r Arc<JobControl>,
     batch: Batch,
     in_flight: usize,
     report: IndexReport,
@@ -846,7 +899,7 @@ impl<'r> Run<'r> {
         exclusions: &'r Exclusions,
         connection: &'r mut Connection,
         (tasks, answers): (&'r SyncSender<Task>, &'r Receiver<Answer>),
-        control: &'r Arc<JobControl>,
+        (control, stop): (Arc<JobControl>, &'r Arc<JobControl>),
         by: Maker,
         stamp: i64,
     ) -> Self {
@@ -858,6 +911,7 @@ impl<'r> Run<'r> {
             tasks,
             answers,
             control,
+            stop,
             batch: Batch {
                 by,
                 ..Batch::default()
@@ -872,6 +926,74 @@ impl<'r> Run<'r> {
 }
 
 impl Run<'_> {
+    /// `Err(cancelled)` once the running work was cancelled or the lane is stopping.
+    fn checkpoint(&self) -> Result<(), Error> {
+        self.stop.checkpoint()?;
+        self.control.checkpoint()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.stop.is_cancelled() || self.control.is_cancelled()
+    }
+
+    /// Run `list`, a listing the lane runs on its own under `root` — a rescan the watcher asks
+    /// for, a root listed again as it changed, came back or as the catalog opened — as an
+    /// `index-refresh` job no request started, named on the board by `place`, the root or the
+    /// subtree it lists. The owner records the job before it shows on the activity board
+    /// ([`LaneEvent::Began`]), so `job.read` and `job.cancel` answer for it as for a client's
+    /// listing; it publishes its progress, its batches are announced as its own, it reports only
+    /// what it listed, and the owner ends it with its report ([`LaneEvent::Listed`]). A listing that
+    /// does not complete, cancelled or failed, leaves `root` stale on its row before the owner
+    /// hears how it ended, so a client that reads the job ended reads the folder stale.
+    fn own_job(
+        &mut self,
+        root: &Path,
+        place: &Path,
+        list: impl FnOnce(&mut Self) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        // What the unit read and wrote before is the unit's, not the job's: its reads in flight are
+        // answered under its own control, so a cancel of the job never drops one of them.
+        self.settle()?;
+        self.batch.commit(self.connection, &self.config.post)?;
+        let job_id = JobId::new();
+        let control = JobControl::new();
+        (self.config.post)(LaneEvent::Began {
+            job_id: job_id.clone(),
+            control: control.clone(),
+        });
+        control.begin_activity(self.config.board.begin(ActivitySpec {
+            kind: INDEX_REFRESH.activity,
+            label: INDEX_REFRESH.label,
+            detail: Some(place.display().to_string()),
+            asset_id: None,
+            job_id: Some(job_id.to_string()),
+        }));
+        let unit_control = std::mem::replace(&mut self.control, control);
+        let unit_maker = std::mem::replace(&mut self.batch.by, Maker::Job(job_id.clone()));
+        let unit_report = std::mem::take(&mut self.report);
+        let unit_progress = std::mem::take(&mut self.progress);
+        let listed = list(self);
+        // Its reads in flight are answered (unread once it was cancelled) and what it wrote is
+        // committed as its own.
+        let settled = self.settle();
+        let committed = self.batch.commit(self.connection, &self.config.post);
+        let result = listed.and(settled).and(committed);
+        self.control = unit_control;
+        self.batch.by = unit_maker;
+        self.progress = unit_progress;
+        let report = std::mem::replace(&mut self.report, unit_report);
+        if result.is_err() {
+            mark_stale(self.connection, &[root.to_path_buf()]);
+        }
+        let revision = database::revision(self.connection).ok();
+        (self.config.post)(LaneEvent::Listed {
+            job_id,
+            result: result.clone().map(|()| report),
+            revision,
+        });
+        result
+    }
+
     /// List every root in turn. A cancel or a failure commits what the batch holds, waits for the
     /// reads in flight and stops.
     fn refresh(
@@ -903,7 +1025,7 @@ impl Run<'_> {
         mounts: &[PlatformMount],
         strict: bool,
     ) -> Result<(), Error> {
-        self.control.checkpoint()?;
+        self.checkpoint()?;
         let canonical = match plan.path.canonicalize() {
             Ok(canonical) => canonical,
             Err(_) => {
@@ -966,6 +1088,7 @@ impl Run<'_> {
             file_count: Some(u32::try_from(walked.files).unwrap_or(u32::MAX)),
             offline: false,
         }));
+        self.batch.push(Write::Current(canonical.clone()));
         self.report.files += u32::try_from(walked.files).unwrap_or(u32::MAX);
         self.report.unreadable_folders +=
             u32::try_from(walked.unreadable_folders).unwrap_or(u32::MAX);
@@ -995,14 +1118,15 @@ impl Run<'_> {
             self.exclusions,
             self.config.limits,
         )?;
-        let control = self.control.clone();
+        let (control, stop) = (self.control.clone(), self.stop.clone());
         #[cfg(test)]
         let hold = self.config.hold.clone();
         let checkpoint = move || {
             #[cfg(test)]
             if let Some(hold) = &hold {
-                hold.pass_unless(|| control.is_cancelled());
+                hold.pass_unless(|| control.is_cancelled() || stop.is_cancelled());
             }
+            stop.checkpoint()?;
             control.checkpoint()
         };
         self.control.set_phase("listing");
@@ -1151,7 +1275,7 @@ impl Run<'_> {
         }
         self.in_flight -= 1;
         self.progress.answered += 1;
-        if self.control.is_cancelled() {
+        if self.cancelled() {
             return Ok(());
         }
         match answer.outcome {

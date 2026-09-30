@@ -82,7 +82,7 @@ impl Client {
                 "targets": {"kind": "paths", "paths": [path]},
                 "into": [],
                 "confirm_removable": true,
-                "mutation": {"request_id": format!("develop-{}", NEXT.fetch_add(1, Ordering::Relaxed)), "actor": "setup"},
+                "mutation": {"request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)), "actor": "setup"},
             }),
         );
         let settled = self.settle(&started["job_id"]);
