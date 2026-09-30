@@ -209,6 +209,32 @@ pub(crate) fn package(name: &OsStr) -> bool {
     has_extension(name, PACKAGE_EXTENSIONS)
 }
 
+/// Luxforge's own directories for one catalog as the owner names them, touching no file system:
+/// the index directory, and the catalog, whose artifact directory is beside it. The index lane's
+/// threads resolve them into [`Exclusions`].
+#[derive(Clone, Debug)]
+pub(crate) struct OwnDirs {
+    pub index_dir: PathBuf,
+    /// The catalog database's path, when it has one on disk.
+    pub catalog: Option<PathBuf>,
+}
+
+impl OwnDirs {
+    /// The rules for this catalog: its index and artifact directories, canonical where they
+    /// exist. Resolving them reads the file system, so never on the owner.
+    pub(crate) fn exclusions(&self) -> Exclusions {
+        let mut own = vec![self.index_dir.clone()];
+        if let Some(catalog) = &self.catalog {
+            own.push(crate::editor::default_artifact_root(catalog));
+        }
+        Exclusions::new(
+            own.into_iter()
+                .map(|dir| dir.canonicalize().unwrap_or(dir))
+                .collect(),
+        )
+    }
+}
+
 /// The rules one walk, listing or refusal applies: the fixed lists above and the directories of
 /// the catalog being served.
 #[derive(Clone, Debug, Default)]

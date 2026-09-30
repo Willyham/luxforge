@@ -14,11 +14,16 @@
 //!   folder — `index.add-folder`, `index.remove-folder`, and the undo or redo of one — reaches
 //!   [`indexed_folders_changed`]: a folder now indexed is listed, and a folder no longer indexed has
 //!   its listing stopped and its rows forgotten. The watchers of TASK-005 start and stop there too.
+//! - **Never on the disk.** Nothing here touches a file system beyond the platform's mount table,
+//!   which waits on none: what stats, canonicalizes or lists a path runs on the index lane's query
+//!   thread, and the volumes, cards and offline folders are learned by its survey thread, while the
+//!   call waits parked on the owner (`queries.rs`). The lane opens the index itself.
 //!
 //! One file per family of methods beside this one: `folders.rs` (`index.add-folder`,
-//! `index.remove-folder`, `index.folders`, `index.refresh`) and `volumes.rs` (`volume.list`,
-//! `card.list`, `disk.folders`).
+//! `index.remove-folder`, `index.folders`, `index.refresh`), `volumes.rs` (`volume.list`,
+//! `card.list`, `disk.folders`), and `queries.rs`, the calls parked on the lane's threads.
 mod folders;
+mod queries;
 #[cfg(test)]
 mod tests;
 mod volumes;
@@ -26,6 +31,7 @@ mod volumes;
 pub(in crate::api) use folders::{
     index_add_folder, index_folders, index_refresh, index_remove_folder,
 };
+pub(super) use queries::{Deferred, defer};
 pub(in crate::api) use volumes::{card_list, disk_folders, volume_list};
 
 use super::{Call, ClientId, Owner, catalog::Poster};
@@ -34,15 +40,16 @@ use crate::{
     activity::{ActivityBoard, ActivitySpec},
     api::{Origin, announce_once},
     catalog_types::{IndexSource, JobStarted, RootKind, jobs::INDEX_REFRESH},
-    editor::{default_artifact_root, folder_rows, now_ms},
+    editor::folder_rows,
     index::{
-        exclude::Exclusions,
+        exclude::OwnDirs,
         lane::{Lane, LaneConfig, LaneEvent, Refresh, RootPlan, Work},
         volumes::MountSource,
         walk::WalkLimits,
     },
     jobs::{CatalogOpened, JobControl, JobKind, Output},
 };
+use queries::{Queries, Resume, SurveyPost, Surveys};
 use std::{
     collections::VecDeque,
     path::{Path, PathBuf},
@@ -64,6 +71,10 @@ pub(super) struct FilesLane {
     /// Where the mount table comes from: the platform's, or a test's fixed one.
     mounts: MountSource,
     limits: WalkLimits,
+    /// The query thread and the calls parked on it.
+    queries: Queries,
+    /// The survey thread, what it learned, and the calls waiting for its first survey.
+    surveys: Surveys,
     #[cfg(test)]
     hold: Option<Arc<luxforge_testbase::Gate>>,
 }
@@ -98,9 +109,19 @@ struct Running {
 /// What lane A's workers post back, and what a test hands the lane through the owner's channel.
 pub(super) enum FilesMessage {
     Lane(LaneEvent),
+    /// The query thread answered the running call's question.
+    Answered(Resume),
+    /// The survey thread learned something.
+    Surveyed(Box<SurveyPost>),
     /// Stand in for the platform's mount table.
     #[cfg(test)]
     Mounts(MountSource),
+    /// Hold every question the query thread takes from now on while the gate is shut.
+    #[cfg(test)]
+    HoldQueries(Arc<luxforge_testbase::Gate>),
+    /// How many calls wait behind the query thread's running question.
+    #[cfg(test)]
+    QueriesWaiting(std::sync::mpsc::SyncSender<usize>),
     /// Hold every listing at each folder while the gate is shut, from the lane's next start.
     #[cfg(test)]
     Hold(Arc<luxforge_testbase::Gate>),
@@ -119,13 +140,18 @@ impl FilesLane {
             running: None,
             mounts: MountSource::default(),
             limits: WalkLimits::default(),
+            queries: Queries::default(),
+            surveys: Surveys::default(),
             #[cfg(test)]
             hold: None,
         }
     }
 
-    /// A client left: the lane's jobs belong to no client, so nothing changes.
-    pub(super) fn disconnect(&mut self, _: ClientId) {}
+    /// A client left: its calls parked on the lane's threads are dropped. The lane's jobs belong
+    /// to no client, so they run on.
+    pub(super) fn disconnect(&mut self, client: ClientId) {
+        self.forget_waiting(client);
+    }
 
     /// `job.cancel` cancelled one of this lane's jobs in the job table: a waiting one leaves the
     /// queue; a running one stops at its next checkpoint through its control, which the table set.
@@ -136,9 +162,11 @@ impl FilesLane {
     }
 
     /// Stop the lane as the owner stops: the running listing is cancelled, stopping at its next
-    /// checkpoint with what it committed, and the threads are joined. The owner's channel is closed
-    /// by then, so nothing the lane posts can block it.
-    pub(super) fn shutdown(self) {
+    /// checkpoint with what it committed, and the threads are joined, but for a query or survey
+    /// thread still reading a volume, which is not waited for. The owner's channel is closed by
+    /// then, so nothing the lane posts can block it.
+    pub(super) fn shutdown(mut self) {
+        self.stop_threads();
         if let Some(control) = self.running.and_then(|running| running.control) {
             control.cancel("the catalog closed");
         }
@@ -175,19 +203,14 @@ impl FilesLane {
     }
 }
 
-/// Luxforge's own directories for the catalog `owner` serves: its index and artifact
-/// directories, canonical where they exist.
-fn exclusions(owner: &Owner) -> Exclusions {
+/// Luxforge's own directories for the catalog `owner` serves, as named, touching no file system;
+/// the lane's threads resolve them ([`OwnDirs::exclusions`]).
+fn own_dirs(owner: &Owner) -> OwnDirs {
     let service = &owner.service;
-    let mut own = vec![service.index_dir().to_path_buf()];
-    if let Some(catalog) = service.connection.path() {
-        own.push(default_artifact_root(Path::new(catalog)));
+    OwnDirs {
+        index_dir: service.index_dir().to_path_buf(),
+        catalog: service.connection.path().map(PathBuf::from),
     }
-    Exclusions::new(
-        own.into_iter()
-            .map(|dir| dir.canonicalize().unwrap_or(dir))
-            .collect(),
-    )
 }
 
 /// Queue a listing of `source`, whose roots are `roots`, as an `index.refresh` job under `origin`,
@@ -306,18 +329,23 @@ fn dispatch(owner: &mut Owner) {
     }
 }
 
-/// Start the lane's threads, once: the owner opens the index first (creating it, or recreating one
-/// it cannot use), then the lane opens its own connection to it.
+/// Start the lane's threads, once. The lane opens the index itself on its first work (creating
+/// it, or recreating one it cannot use) and hands the owner a connection ([`LaneEvent::Opened`]),
+/// so nothing here touches the disk.
 fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
     if owner.catalog.files.lane.is_some() {
         return Ok(());
     }
-    let index_dir = owner.service.index()?.dir().to_path_buf();
-    let exclusions = exclusions(owner);
+    let own = own_dirs(owner);
+    let (index_dir, catalog_id) = (
+        owner.service.index_dir().to_path_buf(),
+        owner.service.catalog_id().to_owned(),
+    );
     let files = &mut owner.catalog.files;
     let lane = Lane::start(LaneConfig {
         index_dir,
-        exclusions,
+        catalog_id,
+        own,
         mounts: files.mounts.clone(),
         limits: files.limits,
         post: files.post(),
@@ -395,8 +423,20 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
             owner.catalog.files.running = None;
             dispatch(owner);
         }
+        FilesMessage::Lane(LaneEvent::Opened(index)) => owner.service.adopt_index(index),
+        FilesMessage::Answered(resume) => queries::answered(owner, resume),
+        FilesMessage::Surveyed(post) => queries::surveyed(owner, *post),
         #[cfg(test)]
-        FilesMessage::Mounts(mounts) => owner.catalog.files.mounts = mounts,
+        FilesMessage::Mounts(mounts) => {
+            owner.catalog.files.mounts = mounts;
+            owner.catalog.files.new_mount_source();
+        }
+        #[cfg(test)]
+        FilesMessage::HoldQueries(gate) => owner.catalog.files.queries.hold = Some(gate),
+        #[cfg(test)]
+        FilesMessage::QueriesWaiting(reply) => {
+            let _ = reply.send(owner.catalog.files.queries_waiting());
+        }
         #[cfg(test)]
         FilesMessage::Hold(gate) => owner.catalog.files.hold = Some(gate),
         #[cfg(test)]
@@ -404,9 +444,17 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
     }
 }
 
-/// The mount table now, as this owner reads it.
-fn mount_table(owner: &Owner) -> crate::index::volumes::MountTable {
-    owner.catalog.files.mounts.read(now_ms())
+/// Whether `path` is absolute, which a path a client names must be: checked on the owner, before
+/// anything reads the disk.
+fn absolute(path: &Path) -> Result<(), Error> {
+    if path.is_absolute() {
+        Ok(())
+    } else {
+        Err(Error::validation(format!(
+            "{} is not an absolute path",
+            path.display()
+        )))
+    }
 }
 
 /// The indexed folders, in path order.
