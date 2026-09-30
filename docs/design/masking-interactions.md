@@ -12,15 +12,17 @@ describes the panel.
 New mask and Add component → Linear or Radial arm an unplaced tool. Choosing the kind creates no
 core draft, initial geometry, handles, history entry or mask. One `render.transform` answer supplies
 the content map; pointer moves use that map locally. A valid drag opens the ordinary draft on the
-actual geometry. A click or invalid extent remains unplaced; Apply is disabled with a reason.
+actual geometry; if that draft cannot open, the tool stays in hand, unplaced. A click or invalid
+extent remains unplaced; Apply is disabled with a reason.
 Released gradients remain drafts until Apply/Enter or Cancel/Escape.
 
-New mask creation owns the tool from arming until its successful creation commit or cancellation.
-Unrelated mask selection, row editing, adjustment fields, history, presets, Open, Export, mode
-changes, zoom/pan, panel toggles and the palette are disabled and refused by desktop dispatch.
-The mask's own shape/brush controls, coverage controls, canvas and Apply/Cancel remain available.
-An existing gradient draft also keeps its target until Apply/Cancel. Active brush strokes refuse
-selection changes. Between strokes, selecting a different mask/component puts the old brush down;
+New mask creation owns the tool from arming until its successful creation commit or cancellation,
+and an Add or Edit gradient owns it from arming until Apply or Cancel. Unrelated mask selection,
+row editing, adjustment fields, history, presets, Open, Export, mode changes, zoom, panel toggles
+and the palette are disabled, and desktop dispatch refuses them through one message
+classification. The mask's own shape/brush controls, coverage controls, canvas, row hover, focus
+movement, native scrolling of a zoomed view and Apply/Cancel remain available. Active brush
+strokes refuse selection changes. Between strokes, selecting a different mask/component puts the old brush down;
 an explicit Paint more/Add/New action starts painting on the visible target.
 
 The first successful new-brush stroke completes creation. Each released stroke is one history
@@ -72,9 +74,9 @@ frame. Green/white tint and both black presentations paint that one grid once.
 Starting a drawn tool shows coverage automatically when the stored setting is Off. A setting
 already showing coverage is kept. Automatic visibility and the gesture's explicit manual choice
 are separate local view facts; the UI selection reflects the effective presentation, while
-captured state reports stored/effective/forced values. The automatic initial tint can show an
-existing mask whose eye had hidden its overlay. An explicit Off or `O` while drawing is honoured
-for the remainder of that tool interaction.
+captured state reports stored/effective/forced values. A held tool shows its own mask's coverage
+whatever that mask's eye says. An explicit Off or `O` while drawing is honoured for the remainder
+of that tool interaction.
 
 In Mask mode, `O` toggles coverage between Off and Tint during unplaced creation, placed gradients,
 armed brushes and held strokes. Both extra black presentations remain UI choices. Outside Mask
@@ -83,19 +85,25 @@ Cmd/Ctrl+O is Open when creation allows it. No auxiliary modifier binding is add
 
 ## Capture bounds and exact pointer readout
 
-Raw and grid captures retain at most 16,384 positions, the existing posted-input bound. A failed
-capture retains its earlier positions and stops growing, reports `ResourceLimit` or its original
-validation error, and cannot post/commit a truncated or empty successful stroke. Starting a new
-stroke is explicit recovery. The frozen grid and decimation rule are unchanged; the stored limit
+The grid capture retains at most 16,384 distinct positions, the existing posted-input bound;
+consecutive positions in one grid cell cost only a count. A failed capture stops growing, reports
+`ResourceLimit` or its original validation error, and cannot post/commit a truncated or empty
+successful stroke. Releasing it discards that stroke's draft and keeps the brush in hand on the
+same target, so the next press is the new stroke. The frozen grid and decimation rule are unchanged; the stored limit
 is still 1,024 positions and the existing 64-segment occupancy limit still applies. Decimation is
 cached per accepted capture/brush size, so summaries do not repeat whole-path work. No live path
 is tessellated to impersonate coverage.
 
 The hover repair preserves exact readout. A settled retained exact raster may answer a sample
 only when its displayed entry, pixel content and dimensions agree, no draft is open and no RAW
-white-balance approximation is active. It reads the existing bytes without another frame
-allocation. Other cases use exact `render.sample`. Delayed answers must still match the newest
-pointer coordinate and entry.
+white-balance approximation is active; a percentage view's region frame of the same content still
+reads it. It reads the existing bytes without another frame allocation. Other cases use exact
+`render.sample`, of the displayed draft when one is on screen. Delayed answers must still match
+the newest pointer coordinate, entry and draft. Per-move readout events are logged only for
+evidence runs.
+
+A value typed into a generated field but not submitted belongs to the mask and component it was
+typed for: when the fields address another target, the edit is dropped and the fields reseeded.
 
 ## Verification scope
 
@@ -153,7 +161,7 @@ small disclosure-widget enablement change. Sources still enter through the verif
 cache. Coverage workers receive the existing evaluation and release it after their job; the idle
 cache holds only a bounded grid. No new full-photo allocation, source hash/decode path or persistent
 pixel data is introduced. Retained exact readout borrows one pixel from the existing shared raster.
-Capture storage is capped at 16,384 raw/snapped positions and 1,024 posted reduced positions.
+Capture storage is capped at 16,384 snapped positions and 1,024 posted reduced positions.
 Coverage retains the existing 4,096-cell side limit (at most 16 MiB per byte grid); painted RGBA
 overlays and native backend staging remain outside the provisional photo-texture ceiling.
 
