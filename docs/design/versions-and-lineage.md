@@ -30,9 +30,41 @@ Restoring a version is the existing `history.restore` on the version's entry. Th
 
 `history.list` answers pages of **rows**, newest first: each entry's `id`, `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent` and `restore_target`, and no stack or parameters. The rows are read from the entry's own columns without decoding its JSON, so a page costs the same whatever the stacks hold, masks included. `history.inspect` answers one whole entry with its complete stack. The desktop's history panel reads only rows: an open or a change made elsewhere reads the newest page, and its own commit, undo, redo or restore merges the current entry's row into the loaded page instead.
 
-## Storage: catalog format 11
+## Storage: catalog format 12
 
-Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries. The current catalog format is 11. It holds what format 7 merged — the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive — plus the row columns and, in the request table, each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted, and each asset's source kind tag (`jpeg` or `raw`) in a column of its own beside its interpretation, so a `catalog.list` page reads columns only and decodes no interpretation. A format 7 catalog keeps the row fields only inside the entry JSON, so it is refused by name rather than read by decoding every entry, and a format 9 catalog stores only the mutation result of a request, so it is refused by name as well, as is a format 10 catalog, which has no kind column. History inserts name their columns explicitly.
+Entry JSON is the authoritative stored recipe snapshot. Beside it each entry's row fields have their own columns — `sequence`, `action_id`, `label`, `actor`, `timestamp_ms`, `undo_parent_id` and `restore_target_id` — written from the same entry by the one insert every commit and every import takes, so a history page and a lineage walk read columns only. Both are immutable. The `versions` table holds named references to entries. The catalog also holds the [preset library](presets.md#library), the [mask](masking.md) table and content-addressed stroke store, and the catalog's identity with the [derived-artifact](module-capabilities.md#derived-artifacts) tables, whose per-entry references keep every artifact a version or branch reaches alive. In the request table it holds each asset request's whole answer, so a retried `mask.*` command answers with the identities its first attempt minted. Each asset's source kind tag (`jpeg` or `raw`) has a column of its own beside its interpretation, so a `catalog.list` page reads columns only and decodes no interpretation. History inserts name their columns explicitly.
+
+The current catalog format is 12, the catalog of developed picks ([catalog](catalog.md#storage)). Beside history it adds these tables:
+
+| Table | Holds |
+| --- | --- |
+| `volumes` | The volumes picks and photographs live on: identity, mount point, label, whether removable, the platform's identifier and when last seen |
+| `picks` | One row per picked file: path, signature (length, modification time in nanoseconds, device and inode when known), volume, actor, request and time |
+| `indexed_folders` | The folders on disk the person added for events |
+| `catalog_folders` | Catalog folders (`folder-…`): name, optional parent, creation time, and the event span and key a Develop made them from |
+| `capture` | One row per asset: the sortable capture instant, the camera-local text and day, the offset, position and place, make, model, body serial and lens, exposure time, f-number, ISO, bias and focal lengths, and the stored size and orientation |
+| `collections`, `collection_members` | Collections, smart collections (with their stored view query) and groups (`collection-…`), and plain collections' members |
+| `library_changes`, `library_change_rows` | The journal of library changes, and each item's value before and after |
+
+Each asset gains its catalog folder, the folder on disk it was developed from, its volume, file name, develop time, removal time, its original's availability (`available`, `offline`, `missing` or `changed`) with the time it was checked, and the moment it was developed from. An asset's `row_id` is an `INTEGER PRIMARY KEY`: it is stable for the catalog's life, it is the 8-byte key a browse view holds, and `capture` and `collection_members` key on it. Its `id` stays the key every other table and every answer uses.
+
+The schema holds the invariants the lanes rely on:
+
+- Every asset is in exactly one catalog folder, on one recorded volume. A folder that holds a photograph or a subfolder cannot be deleted.
+- Folder and collection names are unique among their siblings, ignoring case; the top level counts as one parent.
+- Only a group holds collections, only a plain collection has members, each once, and only a smart collection has a query. A collection keeps its kind.
+- The journal is append-only: its rows are never updated or deleted, a change is undone at most once and an undo redone at most once, and each refers only to earlier changes.
+
+The single-file import puts a new photograph into the top-level catalog folder named after its folder on disk, and records its volume and what it knows of its capture, until `pick.develop` replaces it.
+
+Every earlier format is refused by name and left as it is:
+
+- A format 11 catalog has none of the catalog's tables.
+- A format 10 catalog has no kind column.
+- A format 9 catalog stores only the mutation result of a request.
+- A format 7 catalog keeps the row fields only inside the entry JSON.
+
+The catalog's index, `<catalog stem>.index/index.sqlite`, is a separate database with a format of its own (`INDEX_FORMAT`, 1). It is opened on first use. It is a cache, so where the catalog refuses, the index is discarded and recreated, never touching the catalog: a mismatched format, a file SQLite cannot read and another catalog's index are all discarded.
 
 An empty, unmarked database is initialized with the current schema. Existing catalogs must use the current format marker. Unsupported or nonempty unmarked catalogs are refused without rewriting their data, with an error directing the user to a new catalog path. Only current shapes are supported during pre-release development.
 

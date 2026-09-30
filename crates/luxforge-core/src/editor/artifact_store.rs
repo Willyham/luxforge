@@ -493,11 +493,4 @@ impl EditorService {
             rows: removed.len(),
         })
     }
-
-    /// This catalog's own identity, which its artifact root's manifest must name. Production code
-    /// has no caller; kept for a test that checks the manifest.
-    #[cfg(test)]
-    pub(crate) fn catalog_id(&self) -> &str {
-        &self.catalog_id
-    }
 }
