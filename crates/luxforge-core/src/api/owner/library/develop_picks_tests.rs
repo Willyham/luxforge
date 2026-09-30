@@ -1352,3 +1352,39 @@ fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
         "an existing folder keeps its own"
     );
 }
+
+/// On the owner's Mac: copies of the owner's RAW fixtures develop into photographs whose stored
+/// interpretation is the one their first preparation decodes again, so each opens in Develop, and
+/// the copies are unchanged. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding
+/// `nikon_z6.NEF`, `fujifilm_x100vi.RAF` and `mavic_air_2s.DNG`.
+#[test]
+#[ignore = "requires the owner's RAW fixtures: set LUXFORGE_RAW_OWNER_DIR"]
+fn develop_picks_develops_the_owners_raw_files_that_then_open() {
+    let owner = PathBuf::from(std::env::var("LUXFORGE_RAW_OWNER_DIR").expect("RAW directory"));
+    let harness = Harness::new("raw");
+    let copies: Vec<PathBuf> = ["nikon_z6.NEF", "fujifilm_x100vi.RAF", "mavic_air_2s.DNG"]
+        .iter()
+        .map(|name| {
+            let copy = harness.dir.join("raw").join(name);
+            fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            fs::copy(owner.join(name), &copy).unwrap();
+            copy.canonicalize().unwrap()
+        })
+        .collect();
+    let refs: Vec<&PathBuf> = copies.iter().collect();
+    let before: Vec<_> = refs.iter().map(|path| untouched(path)).collect();
+    let report = harness.develop_paths("develop-raw", &refs);
+    assert_eq!(report["failed"], json!([]), "{report}");
+    for path in &copies {
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        let asset = asset_of(&report, &name);
+        let state = harness.state(&asset);
+        assert_eq!(state["asset"]["source"]["kind"], "raw", "{name}");
+        assert_eq!(state["asset"]["fingerprint"], json!(untouched(path).0));
+        let started = harness.ok("source.prepare", json!({"asset_id": asset}));
+        let prepared = harness.settle(&started["job_id"]);
+        assert_eq!(prepared["status"], "ready", "{name}: {prepared}");
+    }
+    let after: Vec<_> = refs.iter().map(|path| untouched(path)).collect();
+    assert_eq!(after, before);
+}
