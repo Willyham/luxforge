@@ -440,6 +440,7 @@ impl Editor {
             }
             SelectMessage::Checked(result) => return self.checked(result),
             SelectMessage::Loupe(message) => return self.loupe_update(message),
+            SelectMessage::Missing(message) => return self.missing_update(message),
             SelectMessage::Previews(message) => {
                 return self
                     .select
@@ -470,6 +471,7 @@ impl Editor {
             && (select.state.query.is_none() || select.facets_answered == select.serial)
             && select.state.rows.in_flight().is_none()
             && (select.state.summary.is_none() || !select.state.rows.wants(self.wanted_items()))
+            && self.missing_quiet()
     }
 
     /// The Select workspace is on screen.

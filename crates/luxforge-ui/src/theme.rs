@@ -1428,6 +1428,110 @@ pub fn focus_inset_outline(_theme: &Theme) -> container::Style {
 
 // -- end Select chrome ---------------------------------------------------------------------------
 
+// -- Select: resolving missing originals ----------------------------------------------------------
+
+// The Missing originals view, from the resolve board's CSS (`.rg`, `.gh`, `.rr`, and the floating
+// bar under them). Each translucent fill over a group's surface is stored opaque, composited over
+// [`RESOLVE_GROUP`], for the reason [`RULE`] gives; the tests below recompute each.
+
+/// A group (`.rg`): this surface, rounded 9 pt, its 1 pt inset outline white at 7%, 10 pt apart.
+pub const RESOLVE_GROUP: Color = Color::from_rgb8(0x1f, 0x1f, 0x22);
+pub const RESOLVE_GROUP_OUTLINE: Color = Color::from_rgb8(47, 47, 49);
+pub const RESOLVE_GROUP_RADIUS: f32 = 9.0;
+pub const RESOLVE_GROUP_SPACING: f32 = 10.0;
+/// A group's header (`.gh`): at least 44 pt, inset 6 pt, 10 pt at the right and 12 pt at the left,
+/// its parts 10 pt apart and its two lines 2 pt apart, over a rule of white at 5%.
+pub const RESOLVE_HEADER_HEIGHT: f32 = 44.0;
+pub const RESOLVE_HEADER_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 10.0,
+    bottom: 6.0,
+    left: 12.0,
+};
+pub const RESOLVE_HEADER_SPACING: f32 = 10.0;
+pub const RESOLVE_HEADER_LINE_SPACING: f32 = 2.0;
+pub const RESOLVE_HEADER_RULE: Color = Color::from_rgb8(42, 42, 45);
+/// A header's folder glyph, and a row's catalog folder glyph and result glyph.
+pub const RESOLVE_FOLDER_ICON_SIZE: f32 = 14.0;
+pub const RESOLVE_ROW_ICON_SIZE: f32 = 11.0;
+/// A photograph's row (`.rr`): 44 pt, inset 10 pt at the right and 12 pt at the left, its columns
+/// 12 pt apart — the 48 × 32 pt preview in a 52 pt column, the file name and the catalog folder in
+/// 150 pt each, the result, and its action in 96 pt — over a rule of white at 4%, and white at 5%
+/// behind it while selected.
+pub const RESOLVE_ROW_HEIGHT: f32 = 44.0;
+pub const RESOLVE_ROW_PADDING: Padding = Padding {
+    top: 0.0,
+    right: 10.0,
+    bottom: 0.0,
+    left: 12.0,
+};
+pub const RESOLVE_ROW_SPACING: f32 = 12.0;
+pub const RESOLVE_PREVIEW_COLUMN: f32 = 52.0;
+pub const RESOLVE_PREVIEW_WIDTH: f32 = 48.0;
+pub const RESOLVE_PREVIEW_HEIGHT: f32 = 32.0;
+pub const RESOLVE_NAME_COLUMN: f32 = 150.0;
+pub const RESOLVE_ACTION_COLUMN: f32 = 96.0;
+pub const RESOLVE_ROW_RULE: Color = Color::from_rgb8(40, 40, 43);
+pub const RESOLVE_ROW_SELECTED: Color = Color::from_rgb8(42, 42, 45);
+/// A result's glyph 7 pt before its text, and its detail 5 pt after it.
+pub const RESOLVE_RESULT_SPACING: f32 = 7.0;
+pub const RESOLVE_DETAIL_SPACING: f32 = 5.0;
+/// The results' inks: verified in the connected green, a refusal in the clipping red, the rest in
+/// the identity grey.
+pub const RESOLVE_FOUND: Color = AGENT_CONNECTED;
+pub const RESOLVE_REFUSED: Color = CLIPPING_HIGHLIGHT;
+/// The view's heading (`252 photographs whose originals…`): inset 14 pt above, 10 pt under and 2 pt
+/// at the sides, its note 10 pt after it; the list inset 16 pt at the sides.
+pub const RESOLVE_HEADING_PADDING: Padding = Padding {
+    top: 14.0,
+    right: 2.0,
+    bottom: 10.0,
+    left: 2.0,
+};
+pub const RESOLVE_LIST_PADDING: f32 = 16.0;
+/// The floating bar (`Relink N`): rounded 10 pt, inset 6 pt with 14 pt at the left, its parts
+/// 12 pt apart, 12 pt above the centre's foot.
+pub const RESOLVE_BAR_RADIUS: f32 = 10.0;
+pub const RESOLVE_BAR_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 6.0,
+    bottom: 6.0,
+    left: 14.0,
+};
+pub const RESOLVE_BAR_SPACING: f32 = 12.0;
+pub const RESOLVE_BAR_BOTTOM: f32 = 12.0;
+
+/// A group's surface and outline.
+pub fn resolve_group(_theme: &Theme) -> container::Style {
+    surface(RESOLVE_GROUP).border(Border {
+        color: RESOLVE_GROUP_OUTLINE,
+        width: BORDER_WIDTH,
+        radius: RESOLVE_GROUP_RADIUS.into(),
+    })
+}
+
+/// A photograph's row: [`RESOLVE_ROW_SELECTED`] while selected or under the pointer, else no
+/// surface. The row names its own ink, so the style's text colour is unused.
+pub fn resolve_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        button::Style {
+            background: (selected || pointer).then_some(Background::Color(RESOLVE_ROW_SELECTED)),
+            text_color: TEXT_LABEL,
+            border: Border::default(),
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// A rule inside a group: under its header, or between its rows.
+pub fn resolve_rule(color: Color) -> impl Fn(&Theme) -> container::Style {
+    move |_theme| surface(color)
+}
+
+// -- end Select: resolving missing originals ------------------------------------------------------
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -2951,4 +3055,64 @@ mod tests {
     }
 
     // -- end Select chrome's token tests.
+
+    /// The resolve board's composites over a group's surface, recomputed from its CSS.
+    #[test]
+    fn resolve_composites_match_the_resolve_board() {
+        let white = Color::WHITE;
+        assert_eq!(code(RESOLVE_GROUP), [0x1f, 0x1f, 0x22], "`.rg` background");
+        assert_eq!(
+            code(RESOLVE_GROUP_OUTLINE),
+            composite(white, RESOLVE_GROUP, 0.07),
+            "`.rg` inset outline"
+        );
+        assert_eq!(
+            code(RESOLVE_HEADER_RULE),
+            composite(white, RESOLVE_GROUP, 0.05),
+            "`.gh` rule"
+        );
+        assert_eq!(
+            code(RESOLVE_ROW_RULE),
+            composite(white, RESOLVE_GROUP, 0.04),
+            "`.rr` rule"
+        );
+        assert_eq!(
+            code(RESOLVE_ROW_SELECTED),
+            composite(white, RESOLVE_GROUP, 0.05),
+            "`.rr.on`"
+        );
+        assert_eq!(code(RESOLVE_FOUND), [0x57, 0xb5, 0x6b], "`.ok`");
+        assert_eq!(code(RESOLVE_REFUSED), [0xe5, 0x53, 0x4b], "`.bad`");
+    }
+
+    /// The resolve board's sizes, pinned.
+    #[test]
+    fn resolve_sizes_match_the_resolve_board() {
+        assert_eq!(
+            (
+                RESOLVE_GROUP_RADIUS,
+                RESOLVE_GROUP_SPACING,
+                RESOLVE_HEADER_HEIGHT
+            ),
+            (9.0, 10.0, 44.0)
+        );
+        assert_eq!(
+            (
+                RESOLVE_ROW_HEIGHT,
+                RESOLVE_ROW_SPACING,
+                RESOLVE_PREVIEW_COLUMN,
+                RESOLVE_NAME_COLUMN,
+                RESOLVE_ACTION_COLUMN
+            ),
+            (44.0, 12.0, 52.0, 150.0, 96.0)
+        );
+        assert_eq!(
+            (RESOLVE_PREVIEW_WIDTH, RESOLVE_PREVIEW_HEIGHT),
+            (48.0, 32.0)
+        );
+        assert_eq!(
+            (RESOLVE_BAR_RADIUS, RESOLVE_BAR_SPACING, RESOLVE_BAR_BOTTOM),
+            (10.0, 12.0, 12.0)
+        );
+    }
 }

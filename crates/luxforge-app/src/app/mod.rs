@@ -97,6 +97,9 @@ pub(crate) mod waker;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod select;
+pub(crate) mod select_missing;
+#[cfg(test)]
+mod select_missing_tests;
 #[cfg(test)]
 mod select_owner_tests;
 pub(crate) mod select_previews;
@@ -369,7 +372,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 15] = [
+const AFTER_MESSAGE: [AfterMessage; 16] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -384,6 +387,7 @@ const AFTER_MESSAGE: [AfterMessage; 15] = [
     mask_coverage::after_message,
     // ── catalog lane D: views and desktop ──
     select::after_message,
+    select_missing::after_message,
     loupe::after_message,
     long_work::after_message,
     // ── end lane D ──
@@ -396,7 +400,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -407,6 +411,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
     export::subscription,
     // ── catalog lane D: views and desktop ──
     select::subscription,
+    select_missing::subscription,
     loupe::subscription,
     long_work::subscription,
     // ── end lane D ──
