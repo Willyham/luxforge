@@ -8,11 +8,11 @@ use super::{
     View,
     candidates::{exposure, position},
     json_list, places,
-    previews::{GridStates, photo_grid_states},
+    previews::GridStates,
     within,
 };
 use crate::{
-    AssetId, EditorService, EntryId, Error, SourceTag,
+    AssetId, EditorService, Error, SourceTag,
     catalog_types::{
         CameraBody, Dimensions, ExifOrientation, Exposure, FileAvailability, FileId, Moment,
         MomentRef, PreviewState, RowItem, ViewItem, ViewRow,
@@ -43,7 +43,7 @@ pub(crate) fn rows(
     if view.over_files {
         file_rows(service, window, from, &view.layout.moments, grid)
     } else {
-        photo_rows(service, window, from, &view.layout.moments)
+        photo_rows(service, window, from, &view.layout.moments, grid)
     }
 }
 
@@ -146,12 +146,12 @@ fn file_rows(
     }
     drop(rows);
     drop(statement);
-    let previews = grid(connection, &ids)?;
     let offline: Vec<String> = connection
         .prepare_cached("SELECT path FROM roots WHERE offline = 1")?
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
     drop(index);
+    let previews = grid(window)?;
     let paths: Vec<&str> = found.values().map(|facts| facts.path.as_str()).collect();
     let paths = json_list(&paths)?;
     let picked: std::collections::HashSet<String> = service
@@ -205,8 +205,6 @@ fn file_rows(
 
 /// What one photograph's rows give a view row.
 struct PhotoFacts {
-    asset_id: AssetId,
-    entry_id: Option<EntryId>,
     row: ViewRow,
 }
 
@@ -215,6 +213,7 @@ fn photo_rows(
     window: &[ViewItem],
     from: u32,
     moments: &[Moment],
+    grid: GridStates<'_>,
 ) -> Result<Vec<ViewRow>, Error> {
     let rows_ids: Vec<i64> = window
         .iter()
@@ -225,12 +224,11 @@ fn photo_rows(
         .collect();
     let mut statement = service.connection.prepare_cached(
         "SELECT a.row_id, a.id, a.locator, a.file_name, a.source_kind, a.width, a.height,
-             a.availability, s.current_entry_id, c.local_text, c.place, c.make, c.model, c.lens,
+             a.availability, NULL, c.local_text, c.place, c.make, c.model, c.lens,
              c.exposure_time_s, c.f_number, c.iso, c.exposure_bias_ev, c.focal_mm,
              c.focal_35mm_mm, c.width, c.height, c.orientation,
              EXISTS(SELECT 1 FROM entries e WHERE e.asset_id = a.id AND e.sequence > 0)
          FROM assets a LEFT JOIN capture c ON c.asset_row = a.row_id
-             LEFT JOIN asset_state s ON s.asset_id = a.id
          WHERE a.row_id IN (SELECT value FROM json_each(?1))",
     )?;
     let mut rows = statement.query([json_list(&rows_ids)?])?;
@@ -239,10 +237,6 @@ fn photo_rows(
         let asset_id = AssetId::parse(row.get::<_, String>(1)?)?;
         let kind: String = row.get(4)?;
         let availability: String = row.get(7)?;
-        let entry_id = row
-            .get::<_, Option<String>>(8)?
-            .map(EntryId::parse)
-            .transpose()?;
         let interpreted = dimensions(row, 5)?;
         let row_facts = ViewRow {
             position: 0,
@@ -269,34 +263,21 @@ fn photo_rows(
             })?,
             preview: PreviewState::Pending,
         };
-        found.insert(
-            row.get(0)?,
-            PhotoFacts {
-                asset_id,
-                entry_id,
-                row: row_facts,
-            },
-        );
+        found.insert(row.get(0)?, PhotoFacts { row: row_facts });
     }
     drop(rows);
     drop(statement);
     let mut answer = Vec::with_capacity(rows_ids.len());
-    let mut wanted = Vec::with_capacity(rows_ids.len());
     for (offset, row_id) in rows_ids.iter().enumerate() {
         let position = from + offset as u32;
         let facts = found.remove(row_id).ok_or_else(|| gone(position))?;
-        wanted.push((facts.asset_id, facts.entry_id));
         answer.push(ViewRow {
             position,
             moment: moment_of(moments, position),
             ..facts.row
         });
     }
-    let index = service.index()?;
-    for (row, preview) in answer
-        .iter_mut()
-        .zip(photo_grid_states(index.connection(), &wanted))
-    {
+    for (row, preview) in answer.iter_mut().zip(grid(window)?) {
         row.preview = preview;
     }
     Ok(answer)
