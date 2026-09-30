@@ -53,6 +53,13 @@ impl Editor {
         self.session.workspace.mode == MASK_MODE
     }
 
+    /// The Masks panel is on screen: in Mask mode, and in a pick taken from it or on a mask, as
+    /// the canvas model shows it.
+    pub(crate) fn mask_panel_shown(&self) -> bool {
+        crate::state::canvas::mask_workspace(&self.session.workspace.mode)
+            || self.section_target().is_some()
+    }
+
     /// The open mask gesture will still put a frame of its own on screen: a `draft.set` or a commit
     /// is in flight or queued. Until none is, the
     /// frame on screen is not rendered from the geometry the gesture holds, which is what a captured
@@ -512,6 +519,13 @@ impl Editor {
             MaskMessage::SetAddMode(index) => {
                 if let Some(mode) = luxforge_core::mask::rules::MODES.get(index) {
                     self.mask_panel.mode = *mode;
+                    // An Add brush in hand has not made its component yet, so it takes the mode
+                    // the row now shows.
+                    if let Some(armed) = &mut self.armed
+                        && let MaskDraftOp::Add(_) = armed.mask.shape.op
+                    {
+                        armed.mask.shape.op = MaskDraftOp::Add(*mode);
+                    }
                 }
                 Task::none()
             }
@@ -1377,8 +1391,14 @@ impl Editor {
     }
 
     /// A mask gesture's commit landed: merge it, open what it created and put the brush back in the
-    /// hand that painted.
-    pub(crate) fn mask_committed(&mut self, shape: MaskDraft, refresh: Refresh) -> Task<Message> {
+    /// hand that painted — unless Cancel or Escape was pressed while it was in flight, which the
+    /// commit's entry does not undo but which still puts the brush down.
+    pub(crate) fn mask_committed(
+        &mut self,
+        shape: MaskDraft,
+        refresh: Refresh,
+        cancelled: bool,
+    ) -> Task<Message> {
         let created = refresh.masks.masks.last().map(|report| report.id.clone());
         let was_create = shape.mask.is_none();
         // A stroke committed: which component it landed on is what the next stroke appends to, so
@@ -1398,7 +1418,11 @@ impl Editor {
         }
         self.status.text = "Mask committed".into();
         match painted {
-            Some(target) => self.rearm_brush(target),
+            Some(target) if !cancelled => self.rearm_brush(target),
+            Some(_) => {
+                self.status.text = "Stroke committed; brush put down".into();
+                Task::none()
+            }
             None => Task::none(),
         }
     }

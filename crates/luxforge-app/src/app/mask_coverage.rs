@@ -157,6 +157,7 @@ pub(crate) struct CoverageWorker {
     epoch: u64,
     spec: Option<Spec>,
     requested: Option<Stamp>,
+    /// The epoch that started the one owner plan in flight. Its answer serves the current spec.
     planning: Option<u64>,
     waiting: Option<Completion>,
     /// The latest accepted full-stack source, by identity only. A source planned before a
@@ -290,7 +291,6 @@ impl Editor {
         worker.epoch = worker.epoch.saturating_add(1);
         worker.spec = spec;
         worker.requested = None;
-        worker.planning = None;
         worker.waiting = None;
         worker.adopted = None;
         worker.unavailable = None;
@@ -356,8 +356,10 @@ impl Editor {
         let Some(state) = self.document.state.as_ref() else {
             return Task::none();
         };
+        // One plan in flight serves whichever spec is current when it lands, so sweeping the
+        // pointer across rows plans once rather than once per row.
         let epoch = self.coverage_worker.epoch;
-        if self.coverage_worker.planning == Some(epoch) {
+        if self.coverage_worker.planning.is_some() {
             return Task::none();
         }
         self.coverage_worker.planning = Some(epoch);
@@ -381,7 +383,7 @@ impl Editor {
         }
         self.coverage_worker.planning = None;
         self.reconcile_coverage_spec();
-        if self.coverage_worker.epoch != epoch || self.coverage_worker.spec.is_none() {
+        if self.coverage_worker.spec.is_none() {
             return;
         }
         match result {

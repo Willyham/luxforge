@@ -1,5 +1,5 @@
 //! The pointer over the photograph and canvas picks.
-use crate::state::histogram::Readout;
+use crate::{app::masks::FieldTarget, state::histogram::Readout};
 use luxforge_core::{ContentPoint, DraftId, EntryId};
 use serde_json::Value;
 
@@ -27,6 +27,8 @@ pub(crate) enum PointerMessage {
     Located {
         entry: EntryId,
         mode: String,
+        /// The mask and component the pick was made for; an answer for another is dropped.
+        target: FieldTarget,
         view: (u32, u32),
         result: Result<ContentPoint, String>,
     },
@@ -36,6 +38,8 @@ pub(crate) enum PointerMessage {
     /// travels with it, so an answer about a stack that has since been replaced is dropped.
     SampleQueried {
         entry: EntryId,
+        /// The mask and component the pick was made for; an answer for another is dropped.
+        target: FieldTarget,
         action: String,
         point: (u32, u32),
         result: Result<Value, String>,

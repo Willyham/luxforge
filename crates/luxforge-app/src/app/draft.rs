@@ -103,6 +103,12 @@ pub(crate) struct CoreDraft {
 }
 
 impl CoreDraft {
+    /// A Discard was pressed while the commit was in flight. The commit decided publication; the
+    /// gesture still ends as a cancelled one does.
+    pub(crate) fn cancel_requested(&self) -> bool {
+        self.finish == Some(Finish::Cancel)
+    }
+
     /// A gesture opens on the draft its synchronous `draft.begin` answered with. `fields` are what
     /// the gesture already holds, sent at once.
     pub(crate) fn open(gesture: GestureId, opened: Draft, fields: Option<Value>) -> (Self, Step) {

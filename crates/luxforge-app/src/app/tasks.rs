@@ -1350,6 +1350,7 @@ pub(crate) fn locate_task(
     asset_id: AssetId,
     entry: EntryId,
     mode: String,
+    target: super::masks::FieldTarget,
     x: u32,
     y: u32,
 ) -> Task<Message> {
@@ -1369,6 +1370,7 @@ pub(crate) fn locate_task(
             Message::Pointer(PointerMessage::Located {
                 entry: picked.clone(),
                 mode: picked_mode.clone(),
+                target: target.clone(),
                 view: (x, y),
                 result,
             })
@@ -1391,6 +1393,7 @@ pub(crate) fn query_task(
     client: ClientId,
     asset_id: AssetId,
     entry: EntryId,
+    target: super::masks::FieldTarget,
     method: String,
     action: String,
     coordinates: (String, String),
@@ -1412,6 +1415,7 @@ pub(crate) fn query_task(
         move |result| {
             Message::Pointer(PointerMessage::SampleQueried {
                 entry: answered.clone(),
+                target: target.clone(),
                 action: action.clone(),
                 point,
                 result,
