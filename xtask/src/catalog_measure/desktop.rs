@@ -15,7 +15,7 @@ use crate::*;
 pub struct DesktopContext {
     /// The release editor every launch runs (`--binary`).
     pub binary: PathBuf,
-    /// A directory the probes own: a catalog, evidence, logs.
+    /// A directory the probes own, which does not exist yet: their catalogs, evidence and logs.
     pub scratch: PathBuf,
     /// Samples a figure (`--samples`).
     pub samples: usize,
