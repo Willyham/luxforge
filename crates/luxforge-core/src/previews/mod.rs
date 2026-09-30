@@ -1,21 +1,50 @@
 //! The preview lane and cache. **Lane B (previews)** owns this module (`docs/design/catalog.md`,
 //! "The index and previews cache", "Browsing at speed", "Architecture").
 //!
-//! It will hold a priority queue — the loupe's look-ahead, then visible cells, then the rest of the
-//! view ([`PreviewPriority`](crate::catalog_types::PreviewPriority)) — that extracts embedded
-//! previews through `luxforge-raw` and makes scaled or cropped JPEG decodes through
-//! `luxforge-jpeg`, writing each through the atomic-file rule into `<catalog>.index/previews/`
-//! and recording it in the index database's `previews` and `photo_previews` tables; the grid tier
-//! kept, the loupe and large tiers under one byte budget with least-recently-used eviction; the
-//! 100% region, from the embedded full-size preview or a neutral development one RAW at a time;
-//! rendered grid and large previews of developed photographs from their current entry; and the
-//! preview-brightness bracket check, a
-//! [`BracketProbe`](crate::catalog_types::BracketProbe) over decoded grid previews. It never uses
-//! or evicts the editor's one-slot source cache, and publishes its progress on the activity board.
+//! Built:
+//! - `cache.rs`: the previews cache under `<catalog>.index/previews/` and its rows in the index's
+//!   `previews` table — validity by the file's signature, names from what made each file, writes
+//!   through a temporary file and a rename, the loupe and large tiers' shared byte budget with
+//!   least-recently-used eviction — and the reads other lanes use: [`grid_states`] (lane D's
+//!   `browse.rows`) and [`cache_bytes`] (lane C's `catalog.info`).
+//! - `extract.rs`: a file's grid tier, in two stages (its thumbnail, then its embedded preview),
+//!   and its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`,
+//!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a file
+//!   with no usable preview is developed instead (`develop_instead`, TASK-009's).
+//! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
+//!   the view — deduplicated by (file, tier) and bounded, the failures it remembers, and at most
+//!   two worker threads, each blocked on its channel while idle.
 //!
-//! Planned files: `cache.rs` (keys, budget and eviction), `lane.rs` (the queue and its workers),
-//! `extract.rs` (embedded previews per camera), `region.rs` (the 100% region and the development
-//! fallback), `rendered.rs` (previews of developed photographs) and `bracket.rs` (the brightness
-//! check).
-
+//! The owner's side — each request's job, each client's view job and its progress on the activity
+//! board, waking clients, `preview.read` — is `api/owner/previews.rs`. The lane never uses or
+//! evicts the editor's one-slot source cache.
+//!
+//! - `region.rs`: the 100% region's domain functions, from the embedded full-size preview for that
+//!   region alone or from a neutral development, one RAW at a time, off the editor's cache
+//!   (TASK-009); the lane wires them to `preview.region`.
+//!
+//! To come in this lane: `rendered.rs` (previews of developed photographs, TASK-010) and
+//! `bracket.rs` (the brightness check, a [`BracketProbe`](crate::catalog_types::BracketProbe) over
+//! decoded grid previews).
+mod cache;
+mod extract;
+mod lane;
 pub(crate) mod region;
+
+#[allow(
+    unused_imports,
+    reason = "lanes C and D read these as they land: browse.rows and catalog.info"
+)]
+pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
+pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};
+pub(crate) use lane::{
+    Failures, Outcome, PREVIEW_WORKERS, Post, Queue, Task, TaskKey, WorkerEvent, Workers,
+};
+
+/// A file's grid tier's long edge at most, in pixels, as a developed photograph's
+/// ([`PHOTO_GRID_SIDE`](crate::catalog_types::PHOTO_GRID_SIDE)).
+pub(crate) const FILE_GRID_SIDE: u32 = 512;
+
+#[cfg(test)]
+#[path = "tests.rs"]
+pub(crate) mod preview_cache;
