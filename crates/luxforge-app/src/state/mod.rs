@@ -7,6 +7,8 @@ pub(crate) mod control_tree;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod masks;
 pub(crate) mod number;
 pub(crate) mod palette;
@@ -352,6 +354,8 @@ pub(crate) struct Workspace {
     // ── catalog lane D: views and desktop ──
     /// The Select workspace, empty while Develop is shown.
     pub(crate) select: select::SelectModel,
+    /// Long-running work: the status bar's busiest job and Select's progress sheet.
+    pub(crate) long_work: long_work::LongWorkModel,
     // ── end lane D ──
 }
 
@@ -372,6 +376,7 @@ impl Workspace {
         self.palette = palette::derive(inputs);
         // ── catalog lane D: views and desktop ──
         self.select = select::derive(inputs);
+        self.long_work = long_work::derive(inputs);
         // ── end lane D ──
     }
 

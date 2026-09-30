@@ -439,6 +439,7 @@ impl Editor {
                 state.info_panel = show;
             }
             SelectMessage::Checked(result) => return self.checked(result),
+            SelectMessage::Loupe(message) => return self.loupe_update(message),
             SelectMessage::Previews(message) => {
                 return self
                     .select
