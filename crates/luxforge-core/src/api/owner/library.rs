@@ -7,7 +7,8 @@
 //!
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
-//! (`source.check`, `source.locate`) and `info.rs` (`catalog.info`). Every method that changes the
+//! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
+//! `source.relink`) and `info.rs` (`catalog.info`). Every method that changes the
 //! library records it through [`change`], which runs the journal in one catalog transaction and
 //! announces the change it recorded as one event.
 
