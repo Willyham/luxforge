@@ -4,6 +4,7 @@
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
+mod grid;
 mod long_work;
 mod loupe;
 mod select;
@@ -124,6 +125,9 @@ pub(crate) struct Evidence {
     /// A running loupe `arrows` step's presses still to send (catalog lane D). Its timer exists only
     /// while presses remain after the first.
     pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
+    /// A running `grid_scroll` step's frames still to scroll (catalog lane D). The window's frame
+    /// clock it rides is subscribed to only while it runs.
+    pub(crate) grid_scroll: Option<grid::GridScrolling>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -196,6 +200,7 @@ impl Evidence {
             agent_wait: None,
             long_work_wait: None,
             loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         }
@@ -902,6 +907,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
             EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
+            EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
             // ── end lane D ──
         }
         Task::none()
@@ -977,6 +983,7 @@ impl Editor {
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
             Step::Loupe(step) => self.loupe_step(step),
+            Step::GridScroll(step) => self.grid_scroll_step(step),
             // ── end lane D ──
         }
     }
@@ -4087,6 +4094,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
         }
         // A loupe `arrows` step's presses after its first, gated the same way (catalog lane D).
         subscriptions.extend(loupe::subscription(evidence));
+        // A `grid_scroll` step's frame clock, gated the same way (catalog lane D).
+        subscriptions.extend(grid::subscription(evidence));
     }
     Subscription::batch(subscriptions)
 }
@@ -4425,6 +4434,7 @@ mod tests {
             agent_wait: None,
             long_work_wait: None,
             loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         });

@@ -102,7 +102,7 @@ pub(crate) fn desktop_probes(context: &ProbeContext) -> Result<Vec<Value>> {
     });
     let mut rows = loupe::probe(&root, context, &images, raw.as_ref())?;
     rows.extend(focus::probe(&root, context, &images, raw.as_ref())?);
-    rows.extend(grid::probe(context));
+    rows.extend(grid::probe(&root, context)?);
     Ok(rows)
 }
 
