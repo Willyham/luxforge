@@ -31,9 +31,6 @@
 //! query whose rule few places satisfy walks further (about 1,000 nodes, under 10 µs, for capitals
 //! only), at most the whole tree.
 
-// The organizer that consumes the lookup is a later task; drop this when it does.
-#![allow(dead_code)]
-
 use std::sync::OnceLock;
 
 /// The bundled table: a header line, then one place per line with tab-separated fields in the
@@ -73,6 +70,7 @@ impl Place {
     }
 
     /// The capital of a country or other political entity (feature PPLC).
+    #[allow(dead_code, reason = "only the gazetteer's tests read it yet")]
     pub(crate) fn is_capital(&self) -> bool {
         self.feature == "PPLC"
     }
@@ -80,6 +78,7 @@ impl Place {
     /// The order of the administrative division this place is the seat of: 1 for PPLA (a state or
     /// province), 2 to 5 for PPLA2 to PPLA5 (a county, district, municipality, ...); `None` for a
     /// place that is not a seat, or a capital.
+    #[allow(dead_code, reason = "only the gazetteer's tests read it yet")]
     pub(crate) fn admin_seat(&self) -> Option<u8> {
         match self.feature.strip_prefix("PPLA")? {
             "" => Some(1),

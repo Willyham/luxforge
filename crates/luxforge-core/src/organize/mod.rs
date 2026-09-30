@@ -6,23 +6,33 @@
 //! the view's [`Thresholds`]; nothing is stored, so changing a threshold regroups at once. The
 //! preview-brightness bracket check is lane B's and plugs in through [`BracketProbe`].
 //!
-//! The signatures below are the contract lane D's views call. **Placeholder bodies** (catalog
-//! contracts), which lane A replaces: [`events`] makes one event per camera-local day and one
-//! Undated event per folder, named by date; [`group`] finds days and cameras exactly and no moments,
-//! so every frame is a single. [`order`] and [`metadata_steps`] are the rules as the design states
-//! them, which lane A may refine.
+//! - [`order`] sorts a view's frames; [`group`] finds its days, cameras and moments in that order
+//!   (`moments.rs`: runs, bursts and brackets, P5); [`events`] splits every frame into events and
+//!   names them (`events.rs`, the P3 rule; `names.rs`, P4's names and [`Gazetteer`]).
+//! - `gazetteer.rs` is the bundled offline place table and its index.
 //!
-//! Planned files: `events.rs` (the P3 event rule and naming), `moments.rs` (runs, bursts and
-//! brackets, P5), `gazetteer.rs` (the bundled offline place names, P4).
+//! The cost is a sort and a pass: `events` allocates its order vector and then per event, `group`
+//! per moment, and neither holds a string per frame.
 #![allow(dead_code, reason = "catalog contracts: called as lane D's views land")]
 
 use crate::catalog_types::{
-    BracketProbe, CameraGroup, DayGroup, EventGroup, EventId, EventSet, Exposure, FrameFacts,
-    FrameTables, GroupLayout, Grouping, PlaceNames, Thresholds,
+    BracketProbe, CameraGroup, DayGroup, EventSet, Exposure, FrameFacts, FrameTables, GroupLayout,
+    Grouping, PlaceNames, Thresholds,
 };
 use std::{cmp::Ordering, collections::BTreeMap};
 
+mod events;
 pub(crate) mod gazetteer;
+mod moments;
+mod names;
+#[cfg(test)]
+mod tests;
+
+#[allow(
+    unused_imports,
+    reason = "catalog contracts: used as lane D's views land"
+)]
+pub(crate) use names::Gazetteer;
 
 /// Sort `frames` into the order a view shows them under `grouping`, earliest first, or the reverse
 /// when `descending`; undated frames come last either way, by folder and file name.
@@ -95,21 +105,27 @@ fn caseless(a: &str, b: &str) -> Ordering {
 }
 
 /// The group layout of `frames`, already in [`order`]: their days, the camera groups of days with
-/// more than one body (under [`Grouping::DayCameraMoment`]), and their bursts and brackets, a
-/// bracket from metadata ([`metadata_steps`]) or, when the metadata cannot say, from `probe`.
+/// more than one body, and the bursts and brackets of each body's frames of a day (both under
+/// [`Grouping::DayCameraMoment`] only), a bracket from metadata ([`metadata_steps`]) or, when the
+/// metadata cannot say, from `probe`.
 ///
-/// **Placeholder**: days and cameras are exact; no moments are found, so every frame is a single.
+/// Undated frames are one group with no day, and have no camera groups or moments: they are ordered
+/// by folder and name, not by body. The moment rules (P5) are in `moments.rs`: runs of one body by
+/// time and settings; a run whose exposure steps in its metadata or its previews is a bracket, and
+/// a longer run that repeats one bracket's pattern is several; any other run of two or more frames
+/// is a burst. Frames may be in either direction ([`order`]'s `descending`).
 pub(crate) fn group(
     frames: &[FrameFacts],
     tables: &FrameTables,
     grouping: Grouping,
-    _thresholds: &Thresholds,
-    _probe: &dyn BracketProbe,
+    thresholds: &Thresholds,
+    probe: &dyn BracketProbe,
 ) -> GroupLayout {
     let mut layout = GroupLayout::default();
     if grouping == Grouping::None || frames.is_empty() {
         return layout;
     }
+    let mut moments = moments::Finder::new(thresholds, probe);
     let mut start = 0;
     while start < frames.len() {
         let day = frames[start].local_day;
@@ -123,10 +139,10 @@ pub(crate) fn group(
             len: len as u32,
         });
         let day_frames = &frames[start..start + len];
-        let several = day_frames
-            .iter()
-            .any(|frame| frame.body != day_frames[0].body);
-        if grouping == Grouping::DayCameraMoment && several {
+        if grouping == Grouping::DayCameraMoment && day.is_some() {
+            let several = day_frames
+                .iter()
+                .any(|frame| frame.body != day_frames[0].body);
             let mut run = 0;
             while run < len {
                 let body = day_frames[run].body;
@@ -134,12 +150,19 @@ pub(crate) fn group(
                     .iter()
                     .take_while(|frame| frame.body == body)
                     .count();
-                layout.cameras.push(CameraGroup {
-                    body: tables.body_key(body),
-                    label: tables.body_label(body),
-                    start: (start + run) as u32,
-                    len: run_len as u32,
-                });
+                if several {
+                    layout.cameras.push(CameraGroup {
+                        body: tables.body_key(body),
+                        label: tables.body_label(body),
+                        start: (start + run) as u32,
+                        len: run_len as u32,
+                    });
+                }
+                moments.find(
+                    &day_frames[run..run + run_len],
+                    start + run,
+                    &mut layout.moments,
+                );
                 run += run_len;
             }
         }
@@ -149,97 +172,29 @@ pub(crate) fn group(
 }
 
 /// Every event of `frames` (the files of the indexed folders and mounted cards), by the design's
-/// event rule: sorted by capture time across every camera and folder, a new event at a gap over
-/// `thresholds.event_gap_ms`, or where consecutive positioned frames are further apart than
-/// `thresholds.event_distance_km`; a calendar day is never split below that; frames with no capture
-/// time form an Undated event per folder. Events are named by their place (`places`), a user-named
-/// folder that holds most of them, or their dates and cameras.
+/// event rule (P3, `events.rs`), in [`EventSet`]'s order:
 ///
-/// **Placeholder**: one event per camera-local day and one Undated event per folder, each named by
-/// its date or folder; no place is looked up.
+/// - Dated frames are sorted by capture time across every camera and folder (ties by name, then
+///   item). A new event starts before a positioned frame more than `event_distance_km` from the
+///   last positioned frame of the current event (a **jump**), and at a gap longer than
+///   `event_gap_ms` between consecutive frames, unless the gap is a **stay**: under 24 hours, with
+///   the last positioned frame before it and the first positioned frame after it (before the next
+///   such gap) within `event_distance_km` of each other. So a trip stays one event across its
+///   nights, and without positions on both sides each outing is its own event.
+/// - Undated frames form one Undated event per folder, by file name, after every dated event.
+///
+/// An event is named (`names.rs`, P4) by the place `places` names at its positioned frames' median
+/// position, else by a user-named folder holding more than half of its frames, else by its dates
+/// and cameras: "Konstanz · 12–13 Sep", "Lake · 14 Sep", "16 Sep · LEICA Q3, Apple iPhone 15 Pro",
+/// "Undated · From Anna". [`Gazetteer`] is the bundled gazetteer; its first query builds its index,
+/// which the owner thread should not pay for ([`Gazetteer::warm`]).
 pub(crate) fn events(
     frames: &[FrameFacts],
     tables: &FrameTables,
-    _thresholds: &Thresholds,
-    _places: &dyn PlaceNames,
+    thresholds: &Thresholds,
+    places: &dyn PlaceNames,
 ) -> EventSet {
-    let mut order: Vec<u32> = (0..frames.len() as u32).collect();
-    let key = |index: &u32| {
-        let frame = &frames[*index as usize];
-        (
-            frame.instant_ms.is_none(),
-            frame.local_day,
-            frame.instant_ms,
-            frame
-                .instant_ms
-                .is_none()
-                .then(|| tables.folder_path(frame.folder).clone()),
-            frame.name.to_lowercase(),
-            frame.item,
-        )
-    };
-    order.sort_by_cached_key(key);
-    let mut set = EventSet {
-        order,
-        events: Vec::new(),
-    };
-    let mut start = 0;
-    while start < set.order.len() {
-        let first = &frames[set.order[start] as usize];
-        let same = |index: &u32| {
-            let frame = &frames[*index as usize];
-            match first.instant_ms {
-                Some(_) => frame.local_day == first.local_day && frame.instant_ms.is_some(),
-                None => frame.instant_ms.is_none() && frame.folder == first.folder,
-            }
-        };
-        let len = set.order[start..]
-            .iter()
-            .take_while(|index| same(index))
-            .count();
-        let members = &set.order[start..start + len];
-        let last = &frames[members[len - 1] as usize];
-        let mut bodies: Vec<_> = members
-            .iter()
-            .map(|index| frames[*index as usize].body)
-            .collect();
-        bodies.sort();
-        bodies.dedup();
-        let mut folders: Vec<_> = members
-            .iter()
-            .map(|index| frames[*index as usize].folder)
-            .collect();
-        folders.sort();
-        folders.dedup();
-        let folder = tables.folder_path(first.folder);
-        let name = match first.local_day {
-            Some(day) => day.to_string(),
-            None => format!(
-                "Undated · {}",
-                folder
-                    .file_name()
-                    .map_or_else(|| folder.to_string_lossy(), |name| name.to_string_lossy())
-            ),
-        };
-        set.events.push(EventGroup {
-            id: EventId::of(
-                &folder.join(&*first.name),
-                first.instant_ms.unwrap_or_default(),
-            ),
-            name,
-            place: None,
-            start_ms: first.instant_ms,
-            end_ms: last.instant_ms,
-            first_day: first.local_day,
-            last_day: last.local_day,
-            bodies,
-            folders,
-            start: start as u32,
-            len: len as u32,
-        });
-        start += len;
-    }
-    set
+    events::events(frames, tables, thresholds, places)
 }
 
 /// A run's per-frame exposure steps from its metadata, in stops relative to its metered frame
@@ -249,8 +204,10 @@ pub(crate) fn events(
 /// every frame and differ, the steps are theirs. Otherwise the recorded bias decides when it is on
 /// every frame and differs, since some drones and phones write a bracket's bias but not a changed
 /// shutter time. Adding the two would count a step twice, because a camera applies its bias through
-/// its settings. The metered frame is the one with no bias, or the median frame. Whether the steps
-/// make a bracket is the caller's rule (at least ⅓ EV between frames, 2 to 9 frames).
+/// its settings. The metered frame is the one frame with no bias; when no frame or several have
+/// none (a bracket of shutter times alone records 0 on every frame), it is the median frame.
+/// Whether the steps make a bracket is the caller's rule (at least ⅓ EV between frames, 2 to 9
+/// frames).
 pub(crate) fn metadata_steps(run: &[Exposure]) -> Option<Vec<f32>> {
     const SAME: f32 = 1e-3;
     fn varies(values: &[f32]) -> bool {
@@ -266,134 +223,20 @@ pub(crate) fn metadata_steps(run: &[Exposure]) -> Option<Vec<f32>> {
         (_, Some(bias)) if varies(bias) => bias.clone(),
         _ => return None,
     };
+    let unbiased = |value: &f32| value.abs() <= SAME;
     let metered = bias
         .as_ref()
-        .and_then(|bias| bias.iter().position(|value| value.abs() <= SAME))
-        .unwrap_or_else(|| {
-            let mut ranked: Vec<usize> = (0..values.len()).collect();
-            ranked.sort_by(|a, b| values[*a].total_cmp(&values[*b]));
-            ranked[(ranked.len() - 1) / 2]
-        });
+        .filter(|bias| bias.iter().filter(|value| unbiased(value)).count() == 1)
+        .and_then(|bias| bias.iter().position(unbiased))
+        .unwrap_or_else(|| middle_ranked(&values));
     let reference = values[metered];
     Some(values.iter().map(|value| value - reference).collect())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::catalog_types::{CameraBody, FileId, LocalDay, NoPlaces, NoProbe, ViewItem};
-
-    fn frame(
-        tables: &mut FrameTables,
-        id: i64,
-        folder: &str,
-        instant: Option<i64>,
-        body: Option<&CameraBody>,
-    ) -> FrameFacts {
-        FrameFacts {
-            item: ViewItem::File(FileId(id)),
-            folder: tables.folder(folder.into()),
-            name: format!("F{id:04}.JPG").into(),
-            instant_ms: instant,
-            local_day: instant.map(|instant| LocalDay(instant.div_euclid(86_400_000) as i32)),
-            position: None,
-            body: tables.body(body),
-            exposure: Exposure::default(),
-        }
-    }
-
-    /// Days and cameras are exact in the placeholder too: a day with two bodies is split by body,
-    /// each body in the order of its first frame, and undated frames come last.
-    #[test]
-    fn organize_orders_and_groups_days_and_cameras() {
-        let mut tables = FrameTables::default();
-        let z8 = CameraBody {
-            make: "NIKON CORPORATION".into(),
-            model: "NIKON Z 8".into(),
-            serial: Some("1".into()),
-        };
-        let q3 = CameraBody {
-            make: "LEICA CAMERA AG".into(),
-            model: "LEICA Q3".into(),
-            serial: None,
-        };
-        let day = 86_400_000;
-        let mut frames = vec![
-            frame(&mut tables, 1, "/card", Some(10 * day + 5_000), Some(&z8)),
-            frame(&mut tables, 2, "/dump", Some(10 * day + 1_000), Some(&q3)),
-            frame(&mut tables, 3, "/card", Some(10 * day + 2_000), Some(&z8)),
-            frame(&mut tables, 4, "/dump", Some(10 * day + 9_000), Some(&q3)),
-            frame(&mut tables, 5, "/card", None, Some(&z8)),
-            frame(&mut tables, 6, "/card", Some(11 * day), Some(&z8)),
-        ];
-        order(&mut frames, &tables, Grouping::DayCameraMoment, false);
-        let ids: Vec<_> = frames.iter().map(|frame| frame.item).collect();
-        let expected: Vec<_> = [2, 4, 3, 1, 6, 5]
-            .map(|id| ViewItem::File(FileId(id)))
-            .to_vec();
-        assert_eq!(ids, expected);
-        let layout = group(
-            &frames,
-            &tables,
-            Grouping::DayCameraMoment,
-            &Thresholds::default(),
-            &NoProbe,
-        );
-        assert_eq!(
-            layout
-                .days
-                .iter()
-                .map(|day| (day.start, day.len))
-                .collect::<Vec<_>>(),
-            [(0, 4), (4, 1), (5, 1)]
-        );
-        assert_eq!(layout.days[2].day, None, "undated last");
-        assert_eq!(
-            layout
-                .cameras
-                .iter()
-                .map(|camera| (camera.label.as_str(), camera.start, camera.len))
-                .collect::<Vec<_>>(),
-            [("LEICA Q3", 0, 2), ("NIKON Z 8", 2, 2)]
-        );
-        assert!(
-            layout.moments.is_empty(),
-            "the placeholder finds no moments"
-        );
-        let set = events(&frames, &tables, &Thresholds::default(), &NoPlaces);
-        assert_eq!(set.events.len(), 3, "two days and one undated folder");
-        assert!(set.events[2].undated());
-        assert_eq!(set.order.len(), frames.len());
-    }
-
-    #[test]
-    fn organize_metadata_steps_follow_settings_then_bias() {
-        let base = Exposure {
-            time_s: Some(1.0 / 60.0),
-            f_number: Some(8.0),
-            iso: Some(100),
-            bias_ev: Some(0.0),
-            ..Exposure::default()
-        };
-        let at = |time: f32, bias: f32| Exposure {
-            time_s: Some(time),
-            bias_ev: Some(bias),
-            ..base
-        };
-        // A shutter bracket with its bias recorded: steps from the settings, around the 0 frame.
-        let steps = metadata_steps(&[at(1.0 / 240.0, -2.0), base, at(1.0 / 15.0, 2.0)]).unwrap();
-        for (step, expected) in steps.iter().zip([-2.0, 0.0, 2.0]) {
-            assert!((step - expected).abs() < 1e-3, "{steps:?}");
-        }
-        // Settings unchanged, bias written: the bias says.
-        let drone = [
-            at(1.0 / 60.0, -1.0),
-            at(1.0 / 60.0, 0.0),
-            at(1.0 / 60.0, 1.0),
-        ];
-        assert_eq!(metadata_steps(&drone), Some(vec![-1.0, 0.0, 1.0]));
-        // Nothing changes: the metadata cannot say.
-        assert_eq!(metadata_steps(&[base, base, base]), None);
-        assert_eq!(metadata_steps(&[base]), None);
-    }
+/// The index of the median-ranked value (the lower of the two middle ones for an even count, the
+/// earlier of equal values): the metered frame of a run that records none.
+fn middle_ranked(values: &[f32]) -> usize {
+    let mut ranked: Vec<usize> = (0..values.len()).collect();
+    ranked.sort_by(|a, b| values[*a].total_cmp(&values[*b]).then(a.cmp(b)));
+    ranked[(ranked.len() - 1) / 2]
 }
