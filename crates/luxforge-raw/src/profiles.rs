@@ -606,12 +606,12 @@ mod tests {
             data
         };
         let profiles = parse(&padded(json!([6144, 4096]))).unwrap();
-        let mut native = crate::RawSource::blank_native();
+        let mut native = crate::NativeIdentity::blank();
         (native.width, native.height) = (6144, 4096);
         (native.cfa_width, native.cfa_height) = (2, 2);
         native.raw_count = 1;
         native.raw_bps = 14;
-        let classify = |n: &crate::NativeMetadata| {
+        let classify = |n: &crate::NativeIdentity| {
             crate::format::classify_mode(
                 &profiles,
                 n,

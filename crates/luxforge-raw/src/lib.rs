@@ -2540,9 +2540,8 @@ mod tests {
     /// The adapter's own High Efficiency check, behind the container check that `decode` runs
     /// first: opened directly, the bodies whose files LibRaw routes to its High Efficiency decoder
     /// are refused before unpack. LibRaw routes the Z50II and Z5II files to its lossless decoder,
-    /// so only the container check catches them: opened directly, past it, they unpack (to a
-    /// corrupt mosaic), and their catalog modes, which require maker-note compression 3, refuse
-    /// them only after unpack. Set
+    /// so the native open identifies them; past the container check, their catalog modes, which
+    /// require maker-note compression 3, still refuse them at classification, before unpack. Set
     /// LUXFORGE_RAW_POPULAR_DIR to the directory of raw.pixls.us samples named `<id>.<EXT>`.
     #[test]
     #[ignore = "requires explicit local authentic popular-camera RAW samples"]
@@ -2559,7 +2558,19 @@ mod tests {
         ] {
             let bytes = std::fs::read(format!("{dir}/{id}.NEF")).expect("read sample");
             let unpacks = native_counters::unpack_calls();
-            let refused = NativeHandle::open(&bytes, &cancel).map(|_| ()).unwrap_err();
+            let refused = match NativeHandle::open(&bytes, &cancel) {
+                Err(error) => error,
+                Ok((_handle, identity)) => format::classify_mode(
+                    camera_catalog(),
+                    &identity,
+                    &c_text(&identity.make),
+                    &c_text(&identity.model),
+                    &c_text(&identity.decoder),
+                    &bytes,
+                )
+                .map(|_| ())
+                .unwrap_err(),
+            };
             println!("{id}: {refused}");
             match expected {
                 NativeStatus::NikonHighEfficiency => assert_eq!(
