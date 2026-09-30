@@ -46,8 +46,10 @@
 //!       "step_ev": null,                 // the frame's step within its bracket, else null
 //!       "frame": 0,                      // index within the moment
 //!       "capture": "2026-09-12T10:15:02.130+02:00",  // DateTimeOriginal and SubSecTimeOriginal,
-//!                                        // with OffsetTimeOriginal when written; null undated
-//!       "utc_ms": 1789200902130,         // the capture's UTC milliseconds; null when undated
+//!                                        // with OffsetTimeOriginal when written; null undated.
+//!                                        // A body that writes no offset keeps UTC (see the plan)
+//!       "utc_ms": 1789200902130,         // the capture's UTC milliseconds, which is also the
+//!                                        // core's CaptureTime::instant_ms; null when undated
 //!       "gps": {"latitude": 47.66123, "longitude": 9.17601, "altitude_m": 412.3},  // or null
 //!       "exposure": {
 //!         "exposure_time": "1/250",      // as written, reduced
@@ -66,7 +68,7 @@
 //! Latitudes and longitudes are exactly what the written degrees, minutes and seconds come to.
 //! Same seed and count, same bytes: of every image and of the manifest.
 use super::metadata;
-use super::plan::{Event, Frame, Plan, Storage};
+use super::plan::{Event, Frame, MomentKind, Plan, Storage};
 use super::scene::{self, Encoder};
 use crate::{Result, write_json};
 use image::ImageEncoder;
@@ -122,15 +124,11 @@ pub fn write(dir: &Path, seed: u64, plan: Plan) -> Result<Written> {
 
 /// The file's path under `images/`, with `/` separators.
 pub fn path(event: &Event, frame: &Frame) -> String {
-    let body = frame.body();
-    let (folder_number, stem) = body.file_stem(frame.count);
-    let folder = match body.storage {
-        Storage::Card { suffix } => format!("card/DCIM/{folder_number}{suffix}"),
-        Storage::Dump => format!("Card dumps/{}", event.start),
-        Storage::Named => event.folder.clone(),
-        Storage::Phone => "iPhone export".into(),
-    };
-    format!("{folder}/{stem}.JPG")
+    let stem = frame.body().file_stem(frame.count).1;
+    match event.source_folder(frame) {
+        (true, folder) => format!("card/{folder}/{stem}.JPG"),
+        (false, folder) => format!("{folder}/{stem}.JPG"),
+    }
 }
 
 /// The file's bytes: the rendered frame with its EXIF and thumbnail.
@@ -174,7 +172,7 @@ fn entry(event: &Event, frame: &Frame, path: &str) -> Value {
     let body = frame.body();
     let exposure = frame.exposure;
     let bracket = match frame.kind {
-        super::plan::MomentKind::Bracket(kind) => Some(kind.evidence()),
+        MomentKind::Bracket(kind) => Some(kind.evidence()),
         _ => None,
     };
     let bias = metadata::bias(exposure.bias);
