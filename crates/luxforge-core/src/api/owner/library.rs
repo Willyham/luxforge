@@ -35,6 +35,9 @@ mod worker_tests;
 pub(in crate::api) mod develop;
 #[cfg(test)]
 mod develop_picks_tests;
+/// Opening a file as every client does — develop, prepare, adopt — for the core's tests.
+#[cfg(test)]
+pub(in crate::api) mod opening;
 
 // Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
 pub(in crate::api) mod missing;
@@ -337,6 +340,15 @@ impl LibraryLane {
         self.waiting.retain(|queued| queued.job_id != *job_id);
     }
 
+    /// Whether `job_id` is this lane's, waiting or running: a job a client may block on until it
+    /// ends ([`OwnerHandle::wait_source`](crate::api::OwnerHandle::wait_source)).
+    pub(super) fn holds(&self, job_id: &JobId) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|(running, _)| running == job_id)
+            || self.waiting.iter().any(|queued| queued.job_id == *job_id)
+    }
+
     /// Stop as the owner stops: the running job is cancelled and the worker's channel closed, so
     /// the thread ends at its job's next checkpoint. It is not waited for, since its last post may
     /// be waiting for room in the owner's channel, which the owner drops after the lanes stop.
@@ -396,6 +408,10 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
             };
             owner.jobs.finish(&job_id, result.map(Output::Value));
             owner.record_announced();
+            // A client blocked until this job ended ([`OwnerHandle::wait_source`]) reads it now.
+            //
+            // [`OwnerHandle::wait_source`]: crate::api::OwnerHandle::wait_source
+            owner.release_waiters(|waiter| waiter.job.as_ref() == Some(&job_id));
             owner.catalog.library.dispatch(&mut owner.jobs);
         }
         LibraryMessage::Partial {

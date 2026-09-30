@@ -17,7 +17,7 @@ use std::{
 /// collections and their members, and the append-only journal of library changes. An asset's
 /// `row_id` is an `INTEGER PRIMARY KEY`, the stable 8-byte key views hold ([`crate::AssetRowId`]).
 /// Format 11 stored each asset's source kind tag in a column of its own beside the interpretation,
-/// so a `catalog.list` page reads columns only and decodes no interpretation. Format 10 stored each
+/// so a list of photographs reads columns only and decodes no interpretation. Format 10 stored each
 /// asset request's whole answer in the request table — for a `mask.*` command
 /// the label it committed and the mask and component it addressed or minted beside the mutation
 /// result — so a retry answers with the identities the first attempt created. Format 9 kept each
@@ -32,12 +32,6 @@ use std::{
 pub(crate) const CATALOG_FORMAT: i64 = 12;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
-
-/// Assets per `catalog.list` page, and the page a request that names no `limit` gets. A page reads
-/// `limit + 1` rows of the asset table's own columns and decodes nothing, so its cost is bounded by
-/// the limit however large the catalog is.
-pub(crate) const MAX_ASSET_PAGE: usize = 500;
-pub(crate) const DEFAULT_ASSET_PAGE: usize = 100;
 
 /// A catalog failure: `conflict` while another connection holds the database, `catalog` otherwise.
 impl From<rusqlite::Error> for Error {
@@ -865,29 +859,17 @@ mod tests {
     };
     use serde_json::{Value, json};
 
-    /// A page of assets reads the asset table's own columns: it decodes no stored value, whatever
-    /// the interpretations hold, and its kinds are the tags imported beside them.
+    /// The bounded read of photographs reads their identities alone, decoding nothing, in the
+    /// order they were developed.
     #[test]
-    fn an_asset_page_decodes_nothing() {
-        let catalog = temp("asset-page.sqlite");
+    fn asset_ids_decode_nothing() {
+        let catalog = temp("asset-ids.sqlite");
         let mut service = EditorService::open(&catalog).unwrap();
         let asset = service.import(&fixture()).unwrap().asset;
         crate::editor::read_counts::take();
-        let page = service.assets(None, MAX_ASSET_PAGE).unwrap();
+        assert_eq!(service.asset_ids(10).unwrap(), [asset.id]);
         assert_eq!(crate::editor::read_counts::take(), (0, 0));
-        assert_eq!(
-            page.assets,
-            [crate::AssetSummary {
-                id: asset.id.clone(),
-                locator: asset.locator.clone(),
-                kind: asset.source.tag(),
-                width: asset.width,
-                height: asset.height,
-            }]
-        );
-        assert_eq!(page.next, None);
-        assert!(service.assets(None, 0).is_err());
-        assert!(service.assets(None, MAX_ASSET_PAGE + 1).is_err());
+        assert!(service.asset_ids(0).unwrap().is_empty());
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -1114,8 +1096,7 @@ mod tests {
         assert_eq!(header.orientation.map(|value| value.get()), Some(1));
         // A second file of the same folder joins the same catalog folder.
         let dir = luxforge_testbase::paths::temp_dir("format-import");
-        let copy = dir.join("copy.jpg");
-        std::fs::copy(fixture(), &copy).unwrap();
+        let copy = crate::editor::distinct_jpeg(&fixture(), &dir.join("copy.jpg"));
         service.import(&copy).unwrap();
         let folders: i64 = service
             .connection
@@ -1232,46 +1213,46 @@ mod tests {
             .execute_batch(
                 "INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
                      label, time_ms, item_count)
-                     VALUES (1, 'desktop', 'desktop', 'r1', 'pick.set', 'Picked a.jpg', 1, 1);
+                     VALUES (1001, 'desktop', 'desktop', 'r1', 'pick.set', 'Picked a.jpg', 1, 1);
                  INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key,
                      before_json, after_json)
-                     VALUES (1, 0, 'pick', '/a.jpg', NULL, '{}');
+                     VALUES (1001, 0, 'pick', '/a.jpg', NULL, '{}');
                  INSERT INTO library_changes (sequence, actor, client_key, request_id, method,
                      label, time_ms, item_count, undoes)
-                     VALUES (2, 'desktop', 'desktop', 'r2', 'library.undo', 'Undo', 2, 1, 1);",
+                     VALUES (1002, 'desktop', 'desktop', 'r2', 'library.undo', 'Undo', 2, 1, 1001);",
             )
             .unwrap();
         refused(
-            "UPDATE library_changes SET label = 'x' WHERE sequence = 1",
+            "UPDATE library_changes SET label = 'x' WHERE sequence = 1001",
             "library changes are immutable",
         );
         refused(
-            "DELETE FROM library_changes WHERE sequence = 1",
+            "DELETE FROM library_changes WHERE sequence = 1001",
             "library changes are permanent",
         );
         refused(
-            "UPDATE library_change_rows SET after_json = NULL WHERE change_seq = 1",
+            "UPDATE library_change_rows SET after_json = NULL WHERE change_seq = 1001",
             "library changes are immutable",
         );
         refused(
-            "DELETE FROM library_change_rows WHERE change_seq = 1",
+            "DELETE FROM library_change_rows WHERE change_seq = 1001",
             "library changes are permanent",
         );
         refused(
             "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
                  time_ms, item_count, undoes)
-                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1)",
+                 VALUES (1003, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1001)",
             "UNIQUE constraint failed",
         );
         refused(
             "INSERT INTO library_changes (sequence, actor, client_key, request_id, method, label,
                  time_ms, item_count, undoes)
-                 VALUES (3, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 4)",
+                 VALUES (1003, 'desktop', 'desktop', 'r3', 'library.undo', 'Undo', 3, 1, 1004)",
             "CHECK constraint failed",
         );
         refused(
             "INSERT INTO library_change_rows (change_seq, ordinal, item_kind, item_key)
-                 VALUES (2, 0, 'rating', 'x')",
+                 VALUES (1002, 0, 'rating', 'x')",
             "CHECK constraint failed",
         );
         drop(service);
