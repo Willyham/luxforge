@@ -951,7 +951,9 @@ impl Run<'_> {
         place: &Path,
         list: impl FnOnce(&mut Self) -> Result<(), Error>,
     ) -> Result<(), Error> {
-        // What the unit wrote before is the unit's, not the job's.
+        // What the unit read and wrote before is the unit's, not the job's: its reads in flight are
+        // answered under its own control, so a cancel of the job never drops one of them.
+        self.settle()?;
         self.batch.commit(self.connection, &self.config.post)?;
         let job_id = JobId::new();
         let control = JobControl::new();
