@@ -15,9 +15,12 @@ The post-consolidation programme is complete and its plans are deleted; its outc
 
 | Plan | Purpose |
 | --- | --- |
+| [Catalog](catalog.json) | Proposed browse, pick, develop flow: auto-organized events and moments, the loupe, developing picks into the catalog, collections, Develop's development set, Locate and resolving missing originals |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
+
+The Catalog plan is a planning proposal: its first task asks the owner to settle the [catalog design](../docs/design/catalog.md#proposals)'s proposals and to authorize implementation.
 
 The Corrections plan is a planning proposal. Its AI implementation builds on the implemented [module capabilities](../docs/design/module-capabilities.md) and depends on owner acceptance of the scope and consequential product choices in the [Corrections design](../docs/design/corrections.md).
 

@@ -13,13 +13,16 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Library
 
-**Source recovery.** Keep edits reachable when originals move.
-- Manual Locate through the UI and API, with verification
-
-**Small library.** Work across many photos, not one ([decisions](decisions.md)).
-- Multi-image import and virtualized browsing
-- Filtering, tagging and collections
-- Multi-selection and stacking
+**Browse, pick, develop** (proposal, [design](design/catalog.md), [plan](../tasks/catalog.json)). Browse cards and folders fast, pick a few, develop only those into the catalog.
+- Owner decisions on the design's proposals
+- Catalog format 12 with picks, collections and the library journal; a disposable index; capture metadata from headers
+- Browsing cards and folders; events by time and place; days, cameras and moments (bursts by speed, brackets by exposure from metadata or previews); the previews cache
+- Owner-held browse views and selection; picks with undo; catalog folders made from events at develop time; collections and smart collections
+- Developing picks into the catalog in place of import
+- The Select workspace, the loupe with a 100% focus check and compare, catalog browsing, and Develop's development-set filmstrip
+- Availability by volume, manual Locate through the UI and API, and resolving missing originals per photograph, grouped by their source folder on disk
+- Removal, batch preset and batch export
+- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
