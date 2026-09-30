@@ -265,13 +265,27 @@ Selected on 2026-09-30 under the owner's explicit delegation to plan the module,
 - Reuse mask targets, native field-patch presets, drafts and immutable history. Keep Lightroom Detail imports explicitly unsupported with per-setting reports until a mapping is separately qualified. Pre-tone spatial sampling, including Basic's neutral patch, must run off the catalog owner through bounded workers.
 - Capture sharpening is part of the recipe and export evaluates it once. Output sharpening after destination resizing, tuned to medium and size, remains separate future export scope. Photographic quality and native performance remain unmeasured; the plan carries their gates and evidence.
 
+Decided by the owner on 2026-09-30, when the plan was made prescriptive; these are design decisions, not implementation authorization:
+
+- **16-bit hand-off on the JPEG path.** A spatial frame on the byte path that feeds a colour run or another spatial unit holds 16-bit encoded sRGB; 8-bit quantization happens only at a resample, a point replacement or the terminal output. An 8-bit hand-off between Detail and Basic bands under exposure and shadow lifts. This also settles Presence's JPEG spatial precision the same way.
+- **A display-bounded restoration-prefix proxy cache.** The motion proxy after the leading restoration layers is kept and reused while only later layers change, so downstream drags do not re-run Detail each frame. It is a cache under [performance rule 14](engineering/performance-rules.md#rules).
+- **Value-based mask overlays keep working behind Detail** through a bounded input-grid cache on the overlay worker, rather than the refusal that applies to a spatial prefix today.
+- **No pixel work on the catalog owner.** A mutation that must read pixels through a spatial prefix, such as the colour-limited brush's seed, goes owner → point worker → owner with its revision and draft identity checked on return; performance rule 5 gains no exception.
+
 ## Lens and perspective planning
 
 Lens and perspective scope and approach are selected for planning under the owner's delegation on 2026-09-30: [design and rationale](design/lens-and-perspective.md#scope-and-decisions). The initial scope is explicit offline Lensfun profile distortion plus manual two-axis perspective, with fixed-canvas coverage and no duplicate embedded DNG correction. These are planning decisions, not implemented or verified behavior; the plan adds no owner-review gate.
 
+Decided by the owner on 2026-09-30, when the plan was made prescriptive:
+
+- **RAW mosaics need no acknowledgement.** A RAW source whose development applies no luminance warp (NEF, RAF, and the Air 2S DNG, whose WarpRectilinear corrects only lateral chromatic aberration) has distortion `known-unapplied`, so a profile applies without an acknowledgement. A JPEG's status stays unknown and needs the explicit assume-uncorrected acknowledgement.
+- **Perspective is not presettable**, like crop and transforms; Lightroom's Perspective and Upright settings stay unsupported as a different perspective model.
+- **Strong minification is refused.** A combined lens and perspective map whose local minification exceeds 1.8× is refused with its reason, because the bilinear sampler would alias; the limit is documented.
+
 ## Tone curve
 
 - The curve editor removes a point on a double-click on that point, beside Delete for the selected point, and keeps its numeric point list closed behind a Points disclosure until the person opens it (owner, 2026-09-30). Both are changes to the shared curve editor, made with the Tone curve module; the other [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) remain open below.
+- Below black the curve uses a floor-subtracted luminance ratio (owner, 2026-09-30): with `L_floor` the linear output of the curve at encoded zero, `rgb_out = L_floor + rgb·(L_out − L_floor)/L`, which equals Basic's frozen ratio rule whenever the curve keeps black at zero. A lifted black then fades the deepest shadows toward grey instead of turning their noise into coloured speckle. Basic's Blacks keeps its frozen rule; changing it is a separate follow-up.
 
 ## Open product questions
 
@@ -286,7 +300,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above.
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
-- Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the frozen ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, and the Lightroom `ToneCurvePV2012` transfer — and when does the module start? The plan runs on these defaults.
-- Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, JPEG spatial precision, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
+- Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a double-click add that snaps to the drawn curve, end points the desktop does not remove, and the delivered point rows — and when does the module start? The plan runs on these defaults.
+- Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorized the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
