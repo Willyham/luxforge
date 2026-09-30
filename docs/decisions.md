@@ -268,6 +268,10 @@ Selected on 2026-09-30 under the owner's explicit delegation to plan the module,
 
 Lens and perspective scope and approach are selected for planning under the owner's delegation on 2026-09-30: [design and rationale](design/lens-and-perspective.md#scope-and-decisions). The initial scope is explicit offline Lensfun profile distortion plus manual two-axis perspective, with fixed-canvas coverage and no duplicate embedded DNG correction. These are planning decisions, not implemented or verified behavior; the plan adds no owner-review gate.
 
+## Tone curve
+
+- The curve editor removes a point on a double-click on that point, beside Delete for the selected point, and keeps its numeric point list closed behind a Points disclosure until the person opens it (owner, 2026-09-30). Both are changes to the shared curve editor, made with the Tone curve module; the other [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) remain open below.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
