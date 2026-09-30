@@ -18,6 +18,7 @@ use crate::{
     },
     state::{
         Workspace,
+        long_work::LongWorkModel,
         performance::PerformanceModel,
         select::{
             Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, ChipModel, Count,
@@ -110,7 +111,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         );
         middle = middle.push(vertical_divider());
     }
-    middle = middle.push(centre(select, grid));
+    middle = middle.push(centre(select, grid, &model.long_work));
     if select.title.info_open {
         middle = middle.push(vertical_divider());
         middle = middle.push(
@@ -120,7 +121,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
                 .style(theme::panel_surface),
         );
     }
-    let status = container(status_bar(&select.status))
+    let status = container(status_bar(&select.status, &model.long_work))
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
         .padding([0.0, theme::TITLE_BAR_INSET])
         .align_y(Vertical::Center)
@@ -364,7 +365,14 @@ fn source(model: &SourceRow) -> Element<'_, Message> {
 
 /// The filter bar over the grid, the grid on the canvas surface, a note over it when there is
 /// nothing to draw, and the floating strip at its foot.
-fn centre<'a>(model: &'a SelectModel, grid: Grid<'a>) -> Element<'a, Message> {
+fn centre<'a>(
+    model: &'a SelectModel,
+    grid: Grid<'a>,
+    work: &'a LongWorkModel,
+) -> Element<'a, Message> {
+    if model.loupe.open {
+        return crate::view::loupe::loupe(&model.loupe);
+    }
     let Grid {
         layout,
         scroll,
@@ -389,6 +397,10 @@ fn centre<'a>(model: &'a SelectModel, grid: Grid<'a>) -> Element<'a, Message> {
     ];
     if let Some(note) = &model.note {
         layers = layers.push(container(caption(note.clone())).center(Length::Fill));
+    }
+    // The progress sheet of a view with nothing to show yet: in this view only.
+    if let Some(sheet) = crate::view::long_work::sheet(work) {
+        layers = layers.push(container(sheet).center(Length::Fill));
     }
     layers = layers.push(
         container(strip(&model.strip))
@@ -640,7 +652,7 @@ fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a, Message> {
 // -- Status bar ------------------------------------------------------------------------------------
 
 /// What last happened with Copy, then the connected agents and the Select line.
-fn status_bar(model: &SelectStatus) -> Element<'_, Message> {
+fn status_bar<'a>(model: &'a SelectStatus, work: &'a LongWorkModel) -> Element<'a, Message> {
     let message = row![
         truncated_text(
             model.message.clone(),
@@ -682,14 +694,19 @@ fn status_bar(model: &SelectStatus) -> Element<'_, Message> {
             .color(theme::TEXT_TERTIARY)
             .wrapping(text::Wrapping::None)
     };
-    let facts = row![
-        row![dot, fact(&model.clients)]
-            .spacing(theme::STATUS_DOT_SIZE)
-            .align_y(Alignment::Center),
-        fact(&model.line),
-    ]
-    .spacing(theme::STATUS_FACT_SPACING)
-    .align_y(Alignment::Center);
+    let mut facts = row![]
+        .spacing(theme::STATUS_FACT_SPACING)
+        .align_y(Alignment::Center);
+    if let Some(job) = crate::view::long_work::busiest(work) {
+        facts = facts.push(job);
+    }
+    let facts = facts
+        .push(
+            row![dot, fact(&model.clients)]
+                .spacing(theme::STATUS_DOT_SIZE)
+                .align_y(Alignment::Center),
+        )
+        .push(fact(&model.line));
     row![
         container(container(message).width(Length::Shrink)).width(Length::Fill),
         facts,

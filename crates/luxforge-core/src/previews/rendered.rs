@@ -4,9 +4,10 @@
 //! tier is the entry approximated at that size and labelled as the Fit preview labels it.
 //!
 //! These are the domain functions the preview lane runs `preview.read {item: photo}` and its
-//! render queue with. The lane writes the files and their `photo_previews` rows, collects stale ones
-//! and keeps the large tier within the byte budget it shares with the loupe tier; this module plans
-//! a render, renders it, and names the keys, files and stale rows.
+//! render worker with (`renders.rs`, `photos.rs`, and the owner's `api/owner/previews/renders.rs`),
+//! which write the files and their `photo_previews` rows, collect stale ones and keep the large
+//! tier within the byte budget it shares with the loupe tier; this module plans a render, renders
+//! it, and names the keys, files and stale rows.
 //!
 //! # Planned on the owner, rendered on a worker
 //!
@@ -39,7 +40,9 @@
 //! the Fit preview presents its exact phase. A stack that is not proxy-eligible (a pixel-stage
 //! layer), or whose proxy fails, takes the exact path and says why ([`TierPath::Exact`]): the entry
 //! is rendered exactly once and area-averaged to each tier. Both tiers come from one preparation;
-//! the exact frame, when one is needed, is rendered once for both.
+//! the exact frame, when one is needed, is rendered once for both. A tier is labelled
+//! `approximate` exactly when its proxy render is ([`RenderedTier::approximate`]); the lane stores
+//! the label in its row, so a tier read from the cache says the same.
 //!
 //! A tier is upright sRGB display bytes, encoded as a baseline JPEG at [`RENDERED_JPEG_QUALITY`]
 //! with 4:2:0 chroma and no metadata or profile.
@@ -51,9 +54,9 @@
 //! rendered from other bytes. A layer whose provider is missing or unavailable is refused naming
 //! its layers ([`Error::unavailable_effect`]), and an artifact that cannot be bound or read is
 //! refused naming the layers that reference it; no tier is ever rendered without an effect. A
-//! cancelled render is `cancelled`. Until a photograph's tiers are rendered, the lane shows a RAW's
-//! camera preview, marked as such; [`is_current`] and [`RenderedKey`] tell it whether a cached tier
-//! is the entry's at this [`RENDERER_GENERATION`].
+//! cancelled render is `cancelled`. Until a photograph's tiers are rendered, the lane shows its
+//! camera preview, labelled `embedded` (`camera.rs`); [`is_current`] and [`RenderedKey`] tell it
+//! whether a cached tier is the entry's at this [`RENDERER_GENERATION`].
 //!
 //! # Never delaying Develop
 //!
@@ -78,16 +81,12 @@
 //! bytes and mosaic and 460 MiB of planes for a 40 MP RAW, plus a proxy of at most 48 MiB of planes
 //! at 2048 px and its frame. The exact path adds one exact frame (within the evaluated-frame limit)
 //! while both tiers are made from it. The render is synchronous, so a lane worker holds at most one
-//! preparation at a time; the design's one RAW at a time off the editor's cache is the lane's to
-//! keep, by running rendered previews on one worker.
+//! preparation at a time; the lane keeps the design's one RAW at a time off the editor's cache by
+//! running every render on its one render worker (`renders.rs`).
 //!
 //! Every pass checks the caller's [`Cancel`]: the reads and the RAW decode and development through
 //! its flag, the proxy downscale per row, every rendering pass per row or chunk, and the JPEG
 //! encode per strip. A cancelled render returns `cancelled` and nothing else.
-#![allow(
-    dead_code,
-    reason = "rendered previews' domain functions: the preview lane wires them to `preview.read`"
-)]
 
 use crate::{
     AssetId, Cancel, EditorService, EntryId, Error, ErrorKind, HistoryEntry, LinearSettings,
@@ -205,7 +204,8 @@ impl RenderedKey {
 
 /// Whether a cached preview whose key is `preview_key` is `tier` of `entry_id` rendered at this
 /// build's generation: the comparison the lane makes before answering `preview.read` from the cache
-/// or queueing a render (and, for a RAW not yet rendered, showing its camera preview meanwhile).
+/// or queueing a render (and, for a photograph not yet rendered, showing its camera preview
+/// meanwhile).
 pub(crate) fn is_current(
     preview_key: &str,
     asset_id: &AssetId,
@@ -215,7 +215,8 @@ pub(crate) fn is_current(
     RenderedKey::new(asset_id, entry_id, tier).is_ok_and(|key| key.preview_key() == preview_key)
 }
 
-/// How one tier was rendered, which the lane reports beside it.
+/// How one tier was rendered, which its `approximate` label is read from
+/// ([`RenderedTier::approximate`]) and the lane stores with its row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TierPath {
     /// Against a proxy source fitted to the tier: the Fit preview's proxy frame at the tier's
@@ -239,6 +240,13 @@ pub(crate) struct RenderedTier {
 }
 
 impl RenderedTier {
+    /// Whether the tier approximates its entry: rendered through a proxy whose render is
+    /// approximate ([`ProxyApproximation::is_approximate`]: a spatial layer, a thin mask), as the
+    /// Fit preview labels the same frame. An exact render, area-averaged to the tier, is not.
+    pub(crate) fn approximate(&self) -> bool {
+        matches!(self.path, TierPath::Proxy { approximation } if approximation.is_approximate())
+    }
+
     /// The preview this tier is once the lane has written it at `path`, under
     /// `<catalog>.index/previews/`.
     pub(crate) fn info(&self, path: PathBuf) -> PreviewInfo {
@@ -249,6 +257,7 @@ impl RenderedTier {
             width: self.width,
             height: self.height,
             origin: PreviewOrigin::Rendered,
+            approximate: self.approximate(),
             bytes: self.jpeg.len() as u64,
             key: self.key.preview_key(),
         }

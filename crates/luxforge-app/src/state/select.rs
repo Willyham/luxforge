@@ -146,6 +146,8 @@ pub(crate) struct SelectState {
     /// view state, kept while the same query is evaluated again and cleared with a new one.
     pub(crate) collapsed: BTreeSet<u32>,
     pub(crate) menu: Option<SelectMenu>,
+    /// The loupe over the centre ([`super::loupe`]).
+    pub(crate) loupe: super::loupe::LoupeState,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
     pub(crate) catalog_cell_width: f32,
@@ -172,6 +174,7 @@ impl Default for SelectState {
             content: GridContent::default(),
             collapsed: BTreeSet::new(),
             menu: None,
+            loupe: super::loupe::LoupeState::default(),
             files_cell_width: FILES_CELL_WIDTH,
             catalog_cell_width: CATALOG_CELL_WIDTH,
             home: None,
@@ -1040,6 +1043,8 @@ pub(crate) struct SelectModel {
     pub(crate) note: Option<String>,
     /// The catalog's larger cells.
     pub(crate) catalog_cells: bool,
+    /// The loupe, drawn in place of the grid while it is open.
+    pub(crate) loupe: super::loupe::LoupeModel,
 }
 
 /// The Select workspace's model, derived from the inputs.
@@ -1084,6 +1089,7 @@ pub(crate) fn model(
         selection,
         note: note(state),
         catalog_cells: state.over_catalog(),
+        loupe: super::loupe::derive(state.summary.as_ref(), browse, &state.loupe),
     }
 }
 
