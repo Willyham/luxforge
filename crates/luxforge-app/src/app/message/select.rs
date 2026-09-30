@@ -114,4 +114,6 @@ pub(crate) enum SelectMessage {
     Loupe(crate::app::message::loupe::LoupeMessage),
     /// Missing originals, shown in place of the grid, and Develop's Locate original….
     Missing(crate::app::message::select_missing::MissingMessage),
+    /// The catalog: its folders and collections, filter bar, Metadata browser and Info panel.
+    Catalog(crate::app::message::select_catalog::CatalogMessage),
 }
