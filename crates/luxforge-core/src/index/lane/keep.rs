@@ -8,7 +8,9 @@
 //!   moved within its volume, read when new); a folder the index knows nothing under is listed with
 //!   everything under it; a path that is gone, a link, on another volume or one the index skips
 //!   (hidden, a package, another application's cache, a system folder, Luxforge's own) has its row
-//!   and every row under it dropped. What is gone is dropped last, once the moves are written.
+//!   and every row under it dropped. A rename can arrive as two reports, its old path in one and
+//!   its new path in the next, so a path gone waits [`GONE_AFTER`] for the path it may have moved
+//!   to, which carries its row by file identity, before it is looked at again and its rows go.
 //! - **Rescans are listings.** A subtree whose changes were not all reported is listed again and
 //!   reconciled by signature; the whole root when the root itself is named. A root that changed
 //!   (moved, removed, its volume gone) is dropped from the watcher, listed again if it is there and
@@ -39,9 +41,10 @@ use crate::{
 use luxforge_watch::{RescanReason, Resume, VolumeEvent, WatchEvent, WatchRoot, Watcher};
 use rusqlite::Connection;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::mpsc::SyncSender,
+    time::{Duration, Instant},
 };
 
 /// Why a folder on a network volume is not watched.
@@ -51,6 +54,11 @@ const ON_NETWORK: &str =
 const OFFLINE: &str = "it is offline: its volume is not connected";
 /// What the activity board calls the lane's own listings.
 const ACTIVITY: &str = "index.watch";
+/// How long a path reported gone waits, before its rows go, for the path it may have moved to:
+/// longer than the platform takes between the reports of a rename's two halves.
+pub(crate) const GONE_AFTER: Duration = Duration::from_millis(500);
+/// Paths reported gone that may wait at once; past it the oldest go at once.
+pub(crate) const GONE_WAITING: usize = luxforge_watch::MAX_PATHS;
 
 /// The watcher and the roots it follows.
 #[derive(Default)]
@@ -60,6 +68,12 @@ pub(super) struct Keeper {
     unavailable: Option<String>,
     roots: Vec<Kept>,
     next_id: u64,
+    /// The files the running unit has applied, with the signature it applied: a path reported
+    /// again in the same unit with the same signature is not read twice, since its row is not
+    /// committed yet for the reconciler to find.
+    applied: HashMap<PathBuf, FileSignature>,
+    /// Paths reported gone, each with its root's id and when its rows go ([`GONE_AFTER`]).
+    gone: VecDeque<(u64, PathBuf, Instant)>,
 }
 
 /// One indexed folder the lane keeps current.
@@ -228,15 +242,71 @@ impl Keeper {
     pub(super) fn forget(&mut self, path: &Path) {
         if let Some(index) = self.index_at(path) {
             self.remove(index);
-            self.roots.remove(index);
+            let id = self.roots.remove(index).id;
+            self.gone.retain(|(root, ..)| *root != id);
         }
+    }
+
+    /// When the next path reported gone is due to be looked at again, if one waits: how long the
+    /// coordinator may sleep on its channel.
+    pub(super) fn next_gone(&self) -> Option<Instant> {
+        self.gone.front().map(|(.., due)| *due)
+    }
+
+    /// Look again at each path reported gone whose wait is over (every one, with `all`), after
+    /// writing what the unit wrote so far, so a row a move carried is not dropped: a path still
+    /// gone, or one the listing now skips, has its row and every row under it dropped.
+    pub(super) fn drop_gone(
+        &mut self,
+        run: &mut Run<'_>,
+        mounts: &[PlatformMount],
+        all: bool,
+    ) -> Result<(), Error> {
+        let now = Instant::now();
+        let mut due = Vec::new();
+        while let Some((_, _, when)) = self.gone.front() {
+            if !all && *when > now {
+                break;
+            }
+            let (root, path, _) = self.gone.pop_front().expect("the front was looked at");
+            due.push((root, path));
+        }
+        if due.is_empty() {
+            return Ok(());
+        }
+        run.batch.commit(run.connection, &run.config.post)?;
+        for (id, path) in due {
+            let Some(index) = self.index_of(id) else {
+                continue;
+            };
+            let root = self.roots[index].path.clone();
+            let still_gone = match volume_in(mounts, &root, run.stamp) {
+                Ok(volume) => match root.symlink_metadata() {
+                    Ok(metadata) => {
+                        let mut look = Look::new(&root, &metadata, &volume.mount_point, run);
+                        matches!(look.at(&path), Seen::Gone)
+                    }
+                    Err(_) => false,
+                },
+                // The root is not there: its root change lists it.
+                Err(_) => false,
+            };
+            if still_gone {
+                drop_under(run, &[path])?;
+            }
+        }
+        Ok(())
     }
 
     /// Record each root's newest cursor in the run's batch, its last writes. A stale root records
     /// none until it has been listed again.
     pub(super) fn record_cursors(&mut self, run: &mut Run<'_>) {
+        let gone = &self.gone;
         for root in &mut self.roots {
-            root.touched = false;
+            // A root whose gone paths still wait keeps its cursor until they have been applied.
+            if gone.iter().any(|(id, ..)| *id == root.id) {
+                continue;
+            }
             if let Some(cursor) = root.cursor.take()
                 && !root.stale
             {
@@ -248,9 +318,18 @@ impl Keeper {
         }
     }
 
+    /// The unit committed, its cursors with it.
+    pub(super) fn recorded(&mut self) {
+        self.applied.clear();
+        for root in &mut self.roots {
+            root.touched = false;
+        }
+    }
+
     /// The unit failed: its cursors are not recorded, and every root it touched is listed again
     /// before a later cursor of its own is.
     pub(super) fn unrecorded(&mut self) {
+        self.applied.clear();
         for root in &mut self.roots {
             root.cursor = None;
             root.stale |= std::mem::take(&mut root.touched);
@@ -358,6 +437,7 @@ impl Keeper {
         last_stamp: &mut i64,
     ) -> Result<(), Error> {
         let root = self.roots[index].path.clone();
+        let id = self.roots[index].id;
         // A root that is not there is reported as a root change, which lists it.
         let Ok(volume) = volume_in(mounts, &root, run.stamp) else {
             return Ok(());
@@ -365,14 +445,7 @@ impl Keeper {
         let Ok(root_metadata) = root.symlink_metadata() else {
             return Ok(());
         };
-        let mut look = Look {
-            root: &root,
-            device: device(&root_metadata),
-            mount_point: &volume.mount_point,
-            exclusions: run.exclusions,
-            limits: run.config.limits,
-            folders: HashMap::new(),
-        };
+        let mut look = Look::new(&root, &root_metadata, &volume.mount_point, run);
         let mut files: BTreeMap<PathBuf, Vec<ListedFile>> = BTreeMap::new();
         let mut folders = Vec::new();
         let mut gone = Vec::new();
@@ -382,7 +455,12 @@ impl Keeper {
                 continue;
             }
             match look.at(path) {
-                Seen::File(folder, file) => files.entry(folder).or_default().push(file),
+                Seen::File(folder, file) => {
+                    if self.applied.insert(path.clone(), file.signature) == Some(file.signature) {
+                        continue;
+                    }
+                    files.entry(folder).or_default().push(file);
+                }
                 Seen::Folder => folders.push(path.clone()),
                 Seen::Gone => gone.push(path.clone()),
             }
@@ -414,10 +492,24 @@ impl Keeper {
             run.list(&folder, &volume, None)?;
             listed.push(folder);
         }
-        // What is gone, last, once the moves above are written, so a moved row is not dropped.
-        if !gone.is_empty() {
+        // What is gone waits for the path it may have moved to.
+        let due = Instant::now() + GONE_AFTER;
+        for path in gone {
+            if !self
+                .gone
+                .iter()
+                .any(|(root, waiting, _)| *root == id && *waiting == path)
+            {
+                self.gone.push_back((id, path, due));
+            }
+        }
+        if self.gone.len() > GONE_WAITING {
+            let over = self.gone.len() - GONE_WAITING;
+            let oldest: Vec<_> = self.gone.drain(..over).collect();
             run.batch.commit(run.connection, &run.config.post)?;
-            drop_under(run, &gone)?;
+            for (_, path, _) in oldest {
+                drop_under(run, &[path])?;
+            }
         }
         Ok(())
     }
@@ -602,6 +694,26 @@ struct Look<'a> {
     limits: WalkLimits,
     /// Whether the listing enters each folder looked at so far.
     folders: HashMap<PathBuf, bool>,
+}
+
+impl<'a> Look<'a> {
+    /// A look under the root at `root`, whose own metadata is `metadata`, on the volume mounted
+    /// at `mount_point`, with the run's exclusions and limits.
+    fn new(
+        root: &'a Path,
+        metadata: &std::fs::Metadata,
+        mount_point: &'a Path,
+        run: &Run<'a>,
+    ) -> Self {
+        Self {
+            root,
+            device: device(metadata),
+            mount_point,
+            exclusions: run.exclusions,
+            limits: run.config.limits,
+            folders: HashMap::new(),
+        }
+    }
 }
 
 impl Look<'_> {

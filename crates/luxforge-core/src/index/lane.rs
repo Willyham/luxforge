@@ -380,10 +380,22 @@ impl Coordinator {
                 self.work(work);
                 continue;
             }
-            match self.inputs.recv() {
+            // Asleep until an input arrives, or, while a path reported gone waits for the path it
+            // may have moved to, until that wait is over.
+            let input = match self.keeper.next_gone() {
+                None => self
+                    .inputs
+                    .recv()
+                    .map_err(|_| RecvTimeoutError::Disconnected),
+                Some(due) => self
+                    .inputs
+                    .recv_timeout(due.saturating_duration_since(Instant::now())),
+            };
+            match input {
                 Ok(Input::Wake) => {}
-                Ok(Input::Watch(event)) => self.keep_up(event),
-                Err(_) => break,
+                Ok(Input::Watch(event)) => self.keep_up(Some(event)),
+                Err(RecvTimeoutError::Timeout) => self.keep_up(None),
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
         // The watcher stops before the thread ends, and the header workers once `tasks` drops.
@@ -480,12 +492,13 @@ impl Coordinator {
     }
 
     /// Apply what the watcher reports: `first`, and the events already waiting behind it, as one
-    /// unit whose writes commit in batches, as a listing's do. Once every change of the unit is
+    /// unit whose writes commit in batches, as a listing's do, with the paths reported gone whose
+    /// wait is over; with no `first`, only those. Once every change of the unit is
     /// written, header reads included, each root's newest cursor is recorded in the same
     /// transaction as the last of them, so a restart resumes after what was applied and never
     /// before what was not. Nothing is recorded when the unit fails; its changes are then
     /// reported again after a restart.
-    fn keep_up(&mut self, first: WatchEvent) {
+    fn keep_up(&mut self, first: Option<WatchEvent>) {
         self.runs += 1;
         let stamp = self.stamp();
         let mounts = self.config.mounts.list();
@@ -517,7 +530,7 @@ impl Coordinator {
             stamp,
         );
         let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<(), Error> {
-            let mut next = Some(first);
+            let mut next = first;
             let mut applied = 0;
             while let Some(event) = next.take() {
                 keeper.apply(&mut run, event, &mounts, last_stamp)?;
@@ -532,15 +545,17 @@ impl Coordinator {
                     Ok(Input::Wake) | Err(_) => break,
                 }
             }
+            keeper.drop_gone(&mut run, &mounts, false)?;
             run.settle()?;
             keeper.record_cursors(&mut run);
             run.batch.commit(run.connection, &config.post)
         }))
         .unwrap_or_else(|_| Err(Error::internal("applying changes failed unexpectedly")));
-        if outcome.is_err() {
-            // What was written stays; the cursors are not recorded, so what this unit did not
-            // finish is reported again after a restart.
-            keeper.unrecorded();
+        match outcome {
+            Ok(()) => keeper.recorded(),
+            // What was written stays; the cursors are not recorded, and the roots the unit touched
+            // are listed again before any later cursor of theirs is.
+            Err(_) => keeper.unrecorded(),
         }
     }
 }

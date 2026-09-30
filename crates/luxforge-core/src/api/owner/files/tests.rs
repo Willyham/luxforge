@@ -3,6 +3,7 @@
 //! events, cancellation, the file limit, a rebuilt index, volumes, cards, folders on disk, indexed
 //! folders as library changes with undo and redo, and offline folders.
 use super::{super::catalog::CatalogMessage, FilesMessage};
+use crate::index::lane::{VolumeEvent, WatchEvent};
 use crate::{
     ModuleRegistry,
     api::{ApiRequest, ApiResponse, ClientId, OwnerHandle, owner::OwnerMessage},
@@ -19,6 +20,8 @@ use std::{
     sync::{Arc, Mutex},
     thread::JoinHandle,
 };
+
+mod watching;
 
 fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> ApiResponse {
     owner
@@ -1163,8 +1166,9 @@ fn stopping_the_owner_does_not_wait_for_a_held_question() {
 }
 
 /// The volume list answers from what the survey learned against the mount table read now: a
-/// volume taken out is gone from the very next answer, one mounted since appears once a survey has
-/// learned it, and its card can be listed before that, found on the query thread.
+/// volume taken out is gone from the very next answer, one mounted since appears once the
+/// watcher's report of it has had it surveyed, and its card can be listed before that, found on
+/// the query thread.
 #[test]
 fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk() {
     let fixture = Fixture::new("survey");
@@ -1177,15 +1181,13 @@ fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk()
     );
     let lumix = fixture.dir.join("LUMIX");
     put(&lumix.join("DCIM/100_PANA/P1000001.JPG"), &camera_jpeg());
+    let mount = crate::index::volumes::tests::mount_at(&lumix, "LUMIX", 4, true);
     {
         let mut table = table.lock().unwrap();
         table.retain(|mount| mount.mount_point != drive);
-        table.push(crate::index::volumes::tests::mount_at(
-            &lumix, "LUMIX", 4, true,
-        ));
+        table.push(mount.clone());
     }
-    // This answer asks for a survey and answers before it: the drive is gone, the card not yet
-    // learned.
+    // Nothing has reported the card yet: the drive is gone, the card not learned.
     assert_eq!(mounted_labels(owner, client), [json!("NIKON Z 6")]);
     let report = refresh(
         owner,
@@ -1193,6 +1195,11 @@ fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk()
         json!({"kind": "card", "volume_id": format!("volume-{}", "04".repeat(16))}),
     );
     assert_eq!(report["files"], 1, "{report}");
+    // The watcher reports it: the volumes are surveyed again.
+    tell(
+        owner,
+        FilesMessage::Inject(WatchEvent::Volume(VolumeEvent::Mounted { mount })),
+    );
     wait_for("the survey to learn the new card", || {
         (mounted_labels(owner, client) == [json!("NIKON Z 6"), json!("LUMIX")]).then_some(())
     });
