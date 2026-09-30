@@ -1058,7 +1058,7 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         ((ViewItem::File(_), PreviewTier::Grid), Ok(info))
             if matches!(info.origin, PreviewOrigin::Embedded | PreviewOrigin::Developed)
     );
-    let mut advance = false;
+    let mut written = Vec::new();
     for client in &wanted.views {
         let Some(view) = lane.views.get_mut(client) else {
             continue;
@@ -1075,23 +1075,29 @@ fn finished(owner: &mut Owner, worker: usize, key: TaskKey, outcome: Outcome) {
         view.progress();
         if view.pending.is_empty() {
             let view = lane.views.remove(client).expect("the view is held");
-            advance |= view.fingerprinted;
+            if view.fingerprinted {
+                written.push(view.job_id.clone());
+            }
             owner.jobs.finish(&view.job_id, Ok(view.result()));
         }
     }
-    if advance {
-        fingerprints_written(owner);
-    }
+    fingerprints_written(owner, &written);
     dispatch(owner);
 }
 
-/// A view job that wrote grid fingerprints has ended: advance the index's revision once and record
-/// one index event naming it, as a batch of the index lane does, so a browse view grouped before
-/// the fingerprints existed is stale and groups its metadata-less runs again with them. Only a
-/// view job's end does this, never each tier or a replaced view, so a view that regroups on the
-/// event and asks for its missing tiers again cannot keep itself busy: the view job it starts
-/// holds only the tiers still missing, and ends with one more revision only when it wrote some.
-fn fingerprints_written(owner: &mut Owner) {
+/// The view jobs `jobs` ended having written grid fingerprints: advance the index's revision once
+/// and record one index event naming each job and that revision, as a batch of the index lane does,
+/// so a browse view grouped before the fingerprints existed is stale and groups its metadata-less
+/// runs again with them. Several view jobs that end in one pass — clients whose views waited on the
+/// same last tier — share the one revision, each named by its own event, so every client learns
+/// its job's end from the log. Only a view job's end does this, never each tier or a replaced
+/// view, so a view that regroups on the event and asks for its missing tiers again cannot keep
+/// itself busy: the view job it starts holds only the tiers still missing, and ends with one more
+/// revision only when it wrote some. None ended so: nothing is written.
+fn fingerprints_written(owner: &mut Owner, jobs: &[JobId]) {
+    if jobs.is_empty() {
+        return;
+    }
     let revision = owner.service.index().and_then(|mut index| {
         let tx = index.connection_mut().transaction()?;
         let revision = crate::index::database::advance_revision(&tx)?;
@@ -1101,10 +1107,14 @@ fn fingerprints_written(owner: &mut Owner) {
     // The index is a cache: a revision that could not be written leaves views as they are until
     // the next change, never an error for a finished job.
     if let Ok(revision) = revision {
-        announce_once(
-            &mut owner.announced,
-            &Origin::new(PREVIEW_EXTRACT.job_kind, "").index(revision),
-        );
+        for job in jobs {
+            announce_once(
+                &mut owner.announced,
+                &Origin::new(PREVIEW_EXTRACT.job_kind, "")
+                    .job(job.clone())
+                    .index(revision),
+            );
+        }
         owner.record_announced();
     }
 }
@@ -1153,7 +1163,7 @@ pub(super) fn forget_photographs(owner: &mut Owner, assets: &[crate::AssetId]) {
     }
     let forgotten: HashSet<crate::AssetId> = assets.iter().cloned().collect();
     let lane = &mut owner.catalog.previews;
-    let (mut woken, advance) = lane.forget_tasks(&forgotten, &mut owner.jobs);
+    let (mut woken, written) = lane.forget_tasks(&forgotten, &mut owner.jobs);
     woken.extend(lane.renders.forget(&forgotten, &mut owner.jobs));
     lane.wake(woken.into_iter());
     let files = owner
@@ -1163,9 +1173,7 @@ pub(super) fn forget_photographs(owner: &mut Owner, assets: &[crate::AssetId]) {
     if let Ok(files) = files {
         previews::remove_files(files);
     }
-    if advance {
-        fingerprints_written(owner);
-    }
+    fingerprints_written(owner, &written);
     dispatch(owner);
     renders::dispatch(owner);
 }
@@ -1174,12 +1182,12 @@ impl PreviewsLane {
     /// Forget the camera-preview tasks of `assets` on the extraction lane, and what the lane
     /// remembers of them: a waiting task leaves the queue; a running one is cancelled and kept,
     /// forgotten, until its worker answers, so the worker is not handed a second task of its key.
-    /// Answers the clients to wake, and whether a view job that ended wrote fingerprints.
+    /// Answers the clients to wake, and the view jobs that ended having written fingerprints.
     fn forget_tasks(
         &mut self,
         assets: &HashSet<crate::AssetId>,
         jobs: &mut Jobs,
-    ) -> (Vec<ClientId>, bool) {
+    ) -> (Vec<ClientId>, Vec<JobId>) {
         let keys: Vec<TaskKey> = self
             .tasks
             .iter()
@@ -1192,7 +1200,7 @@ impl PreviewsLane {
             .map(|(key, _)| *key)
             .collect();
         let mut woken = Vec::new();
-        let mut advance = false;
+        let mut written = Vec::new();
         for key in keys {
             let wanted = self.tasks.get_mut(&key).expect("the task is held");
             wanted.control.cancel(LEFT_THE_CATALOG);
@@ -1211,34 +1219,32 @@ impl PreviewsLane {
                 self.tasks.remove(&key);
             }
             for client in views {
-                advance |= self.unpend(client, key, jobs);
+                written.extend(self.unpend(client, key, jobs));
             }
         }
         self.failures.forget_photographs(assets);
         self.deferred.forget_photographs(assets);
-        (woken, advance)
+        (woken, written)
     }
 
     /// `client`'s view job no longer reads `key`, whose photograph left the catalog: it counts it
-    /// no more, and ends when nothing else is pending. Whether it ended having written
+    /// no more, and ends when nothing else is pending. The job, when it ended having written
     /// fingerprints.
-    fn unpend(&mut self, client: ClientId, key: TaskKey, jobs: &mut Jobs) -> bool {
-        let Some(view) = self.views.get_mut(&client) else {
-            return false;
-        };
+    fn unpend(&mut self, client: ClientId, key: TaskKey, jobs: &mut Jobs) -> Option<JobId> {
+        let view = self.views.get_mut(&client)?;
         if !view.pending.remove(&key) {
-            return false;
+            return None;
         }
         view.total -= 1;
         if view.total > 0 {
             view.progress();
         }
         if !view.pending.is_empty() {
-            return false;
+            return None;
         }
         let view = self.views.remove(&client).expect("the view is held");
         jobs.finish(&view.job_id, Ok(view.result()));
-        view.fingerprinted
+        view.fingerprinted.then_some(view.job_id)
     }
 }
 
