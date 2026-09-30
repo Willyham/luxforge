@@ -93,6 +93,9 @@ mod view_state;
 #[cfg(test)]
 mod view_state_tests;
 pub(crate) mod waker;
+// ── catalog lane D: views and desktop ──
+pub(crate) mod select;
+// ── end lane D ──
 
 pub(crate) use lifecycle::{Boot, run};
 
@@ -306,6 +309,14 @@ pub(crate) struct Editor {
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
+    // ── catalog lane D: views and desktop ──
+    /// The Select workspace: what it last read and what is in flight.
+    #[allow(
+        dead_code,
+        reason = "catalog contracts: lane D reads it as the seam lands"
+    )]
+    pub(crate) select: select::Select,
+    // ── end lane D ──
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -447,6 +458,9 @@ impl Editor {
             capability_started: Vec::new(),
             performance: performance::Sampler::open(),
             export: Default::default(),
+            // ── catalog lane D: views and desktop ──
+            select: Default::default(),
+            // ── end lane D ──
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -667,6 +681,9 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
+            // ── catalog lane D: views and desktop ──
+            // `Message::Select(message) => self.select_update(message)`.
+            // ── end lane D ──
             Message::Close => self.close(),
         }
     }
