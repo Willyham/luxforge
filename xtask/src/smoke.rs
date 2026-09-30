@@ -668,6 +668,16 @@ pub static SCENARIOS: &[Scenario] = &[
         own: Some(capabilities::run),
     },
     Scenario {
+        name: select::SCENARIO,
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a folder of real images, and back to Develop",
+        launches: &[],
+        verify: select::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(select::NOTE),
+        own: Some(select::run),
+    },
+    Scenario {
         name: "unavailable",
         about: "A committed crop reopened with the crop module disabled: reported, never omitted",
         launches: &[
@@ -727,16 +737,6 @@ pub static SCENARIOS: &[Scenario] = &[
         window: None,
         note: Some(raw_editor::NOTE),
         own: Some(raw_editor::run),
-    },
-    Scenario {
-        name: select::SCENARIO,
-        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, and back to Develop",
-        launches: &[],
-        verify: select::verify,
-        source: Source::Fixtures(&[]),
-        window: Some(PANELLED),
-        note: Some(select::NOTE),
-        own: Some(select::run),
     },
 ];
 
