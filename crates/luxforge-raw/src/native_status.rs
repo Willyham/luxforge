@@ -7,7 +7,8 @@
 #[repr(i32)]
 pub(crate) enum NativeStatus {
     Ok = 0,
-    /// Missing or mismatched arguments or buffers.
+    /// Missing or mismatched arguments or buffers, an unknown unpacker, or a handle unpacked
+    /// twice or copied before unpack.
     InvalidInput = 1,
     /// The caller's cancel callback asked to stop.
     Cancelled = 2,

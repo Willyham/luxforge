@@ -35,7 +35,9 @@ file. No runtime file lookup, environment override, download or JSON parsing is
 introduced. Build-generated native allowlist entries come from the same
 validated catalog, and a public recording mode is a reference to one of its
 modes, serialized as the mode's identifier; an identifier the catalog does not
-declare fails to deserialize. Unknown cameras still fail before unpack.
+declare fails to deserialize. Unknown cameras, and unknown recording modes of
+catalogued cameras, fail before unpack: the adapter classifies the mode from
+LibRaw's identify-time metadata and the container before it unpacks.
 Nikon High Efficiency (maker-note NEF compression 13 or 14, or JPEG XS markers at
 the raw strip) is refused before the catalog is consulted, whatever the model, so
 no mode can admit it ([popular camera support](popular-camera-support.md)).
@@ -117,6 +119,6 @@ Profiles add a bounded immutable catalog. Sensor repairs add at most 65,536
 sorted sparse patches shared with the source, with no additional full-frame
 mosaic copy. Neutral sampling validates the bounded patch list and uses binary
 search per sampled site; it never develops or renders a frame. Owner work,
-desktop refreshes and timers gain no frame processing. Native allowlist lookup remains before unpack. Existing
+desktop refreshes and timers gain no frame processing. Native allowlist lookup and mode classification run before unpack. Existing
 exact mosaic, correction, geometry and sharing tests remain applicable. Timing
 verification covers photo-sized workloads; this refactor claims no speedup.

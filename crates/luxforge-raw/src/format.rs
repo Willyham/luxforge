@@ -2,7 +2,7 @@
 //! owns decompression; these reads validate recording-mode and crop semantics.
 use super::opcodes::{OPCODE_LIST1, OPCODE_LIST2, OPCODE_LIST3};
 use super::profiles::{Camera, Catalog, CompressionProbe, Dng, DngCalibration, DngContainer, Mode};
-use super::{DngCalibrationMetadata, NativeMetadata, RawError, RawRect};
+use super::{DngCalibrationMetadata, NativeIdentity, NativeMetadata, RawError, RawRect};
 use sha2::{Digest, Sha256};
 
 /// The most IFDs one [`Tiff::walk`] visits: the root chain, its SubIFDs and theirs.
@@ -830,9 +830,12 @@ pub(super) fn dng_color_calibration(
     ))
 }
 
+/// The catalogued camera and recording mode of an identified, not yet unpacked, file: its
+/// identity from LibRaw's identify, and the container's compression marker where the mode
+/// declares one.
 pub(super) fn classify_mode<'a>(
     catalog: &'a Catalog,
-    native: &NativeMetadata,
+    native: &NativeIdentity,
     make: &str,
     model: &str,
     decoder: &str,
