@@ -296,7 +296,10 @@ pub fn run(root: &Path, out: &Path, options: &Options) -> Result {
                 "first_browse_card",
                 &measures::FIRST_BROWSE,
                 "no --card: a first browse from a card reader needs a trip on a mounted card",
-            ))
+            )
+            .into_iter()
+            .map(|row| row.target(measures::CARD_TARGET))
+            .collect())
         }),
     }
     report.step(root, "idle-watchers", || measures::idle_watchers(&cx));

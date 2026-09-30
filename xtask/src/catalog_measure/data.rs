@@ -193,7 +193,8 @@ impl DataSet {
                 Ok(trip) => json!({
                     "path": trip.dir,
                     "frames": trip.frames.len(),
-                    "sources": corpus.len(),
+                    "corpus_files": corpus.len(),
+                    "sources_used": trip.frames.iter().map(|frame| &frame.source).collect::<std::collections::HashSet<_>>().len(),
                     "corpus": corpus_dir,
                     "burst": BURST,
                     "first_capture": trip.frames.first().map(|frame| frame.capture.clone()),

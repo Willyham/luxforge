@@ -166,6 +166,10 @@ pub enum Browsed<'a> {
     Card(&'a Path),
 }
 
+/// A first browse's target from a card reader, in place of the internal SSD's.
+pub const CARD_TARGET: &str =
+    "Browsing a 1,000-frame card for the first time from a card reader: reported";
+
 pub const FIRST_BROWSE: [Figure; 4] = [
     Figure {
         name: "listed",
@@ -267,18 +271,20 @@ pub fn first_browse(
         }));
         *kept = Some(core);
     }
-    let what = match browsed {
-        Browsed::Folder(path) | Browsed::Card(path) => path,
+    let (what, card) = match browsed {
+        Browsed::Folder(path) => (path, false),
+        Browsed::Card(path) => (path, true),
     };
     let detail = json!({"browsed": what, "samples": details});
     Ok(FIRST_BROWSE
         .iter()
         .zip(figures)
         .map(|(figure, samples)| {
-            figure
+            let row = figure
                 .row(prefix, samples)
                 .cache("the first sample reads files the set-up had just written (a card: whatever the OS still holds of it); later samples read the same files again; the OS file cache is never purged")
-                .detail(detail.clone())
+                .detail(detail.clone());
+            if card { row.target(CARD_TARGET) } else { row }
         })
         .collect())
 }
