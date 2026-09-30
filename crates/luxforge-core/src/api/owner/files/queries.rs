@@ -95,12 +95,10 @@ pub(super) fn learned(owner: &mut Owner) -> bool {
 
 /// Wait for the first survey, which is started if none is running: the handler's answer.
 pub(super) fn wait_for_survey(owner: &mut Owner) -> Result<Value, Error> {
-    let surveys = &mut owner.catalog.files.surveys;
-    match surveys.running {
-        // The survey running is of this generation: its first post answers the call.
-        Some(generation) if generation == surveys.generation => {}
-        Some(_) => surveys.again = true,
-        None => start_survey(owner),
+    let surveys = &owner.catalog.files.surveys;
+    // A survey of this generation already running answers the call with its first post.
+    if surveys.running != Some(surveys.generation) {
+        request_survey(owner);
     }
     owner.deferred = Some(Deferred::Survey);
     Ok(Value::Null)
@@ -311,10 +309,11 @@ fn answer(owner: &mut Owner, parked: Parked, result: Result<Value, Error>) {
     owner.notify_watchers(Some(client));
 }
 
-/// Start a survey on the survey thread, starting the thread on first use. It reads the mount
-/// table and the indexed folders as they are now, and opens the index when the owner has none
-/// open. A survey that cannot start refuses the calls waiting for it.
+/// Start a survey on the survey thread, starting the thread on first use; only while none runs.
+/// It reads the mount table and the indexed folders as they are now, and opens the index when the
+/// owner has none open. A survey that cannot start refuses the calls waiting for it.
 fn start_survey(owner: &mut Owner) {
+    debug_assert!(owner.catalog.files.surveys.running.is_none());
     let folders: Vec<_> = indexed_folders(owner)
         .unwrap_or_default()
         .into_iter()
@@ -417,8 +416,10 @@ pub(super) fn surveyed(owner: &mut Owner, post: SurveyPost) {
             owner.catalog.files.surveys.waiting = waiting;
         }
     }
+    // A call answered again above may have started a survey already, which serves the one asked
+    // for meanwhile.
     let surveys = &mut owner.catalog.files.surveys;
-    if last && std::mem::take(&mut surveys.again) {
+    if last && std::mem::take(&mut surveys.again) && surveys.running.is_none() {
         start_survey(owner);
     }
 }
