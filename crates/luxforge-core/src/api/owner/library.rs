@@ -32,6 +32,9 @@ mod worker_tests;
 // Developing picks (TASK-013): `pick.plan`, `pick.develop`, `asset.send-back`.
 
 // Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
+pub(in crate::api) mod missing;
+#[cfg(test)]
+mod resolve_missing_tests;
 
 // Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
 
@@ -170,6 +173,9 @@ pub(super) struct LibraryLane {
     /// The worker's one-slot channel; it is sent to only while the worker is idle.
     worker: Option<SyncSender<Dispatch>>,
     hold: Option<Hold>,
+    // Resolving missing originals (TASK-017): the files finished finds verified, which
+    // `source.relink` commits.
+    verified: crate::library::missing::Verifications,
 }
 
 /// What lane C's worker posts back.
@@ -207,6 +213,7 @@ impl LibraryLane {
             running: None,
             worker: None,
             hold: None,
+            verified: Default::default(),
         }
     }
 

@@ -1005,7 +1005,25 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // Developing picks (TASK-013).
 
     // Resolving missing originals (TASK-017).
-
+    owner!(
+        "source.missing",
+        crate::catalog_types::api::SourceMissing,
+        owner::library::missing::source_missing,
+        "{groups: [{source_folder, volume_id, count, catalog_folders: [{id, name}], reason: {kind: volume-offline, label} | {kind: folder-gone} | {kind: files-gone} | {kind: changed}}], count}: every photograph not removed whose original was last recorded offline, missing or changed (by source.check or a refusal; one never checked is not listed), grouped by the folder on disk it was developed from, in folder order, with the catalog folders its photographs are in now; the reason is volume-offline when the group's volume is not mounted (one look at its mount point), folder-gone when the volume is and the folder is not, changed when every photograph in it was recorded changed, and files-gone otherwise, a group mixing missing and changed originals included; nothing is looked at per file"
+    ),
+    owner!(
+        "source.find",
+        crate::catalog_types::api::SourceFind,
+        owner::library::missing::source_find,
+        "starts a source-find job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, file_name, result: found {path} | several-identical {paths} | different-bytes {path} | claimed {path, by} | not-found}]} and which changes nothing: search_root (an absolute folder) is walked with its subfolders, following no symbolic link, entering no other volume and skipping hidden folders, packages and other applications' caches, for files of each photograph's original's name (ignoring case on macOS and Windows) and length, and each candidate's SHA-256 is streamed off the owner, cancellable, one file at a time; found is one file with the original's bytes, several-identical more than one (a choice to make), claimed a file with its bytes that another photograph already names (never taken), different-bytes a file of the same name whose bytes differ, left as it is; while the job runs, job.read's result is the report so far with result checking for photographs not yet looked at, and its progress counts files looked at, then photographs checked; the files found and several-identical name are remembered for source.relink; exactly one of targets (photographs, as source.check's) and source_folder (every missing photograph developed from that folder, as source.missing lists it) is validation otherwise; a relative path or a file as search_root is validation and one that cannot be read read-error; the job fails with read-error for a folder or file it cannot read, source-unavailable when the folder's drive is disconnected, and resource-limit past 500,000 files or 100,000 folders; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+    ),
+    owner!(
+        "source.relink",
+        crate::catalog_types::api::SourceRelink,
+        owner::library::missing::source_relink,
+        "points every photograph of pairs at its file in one transaction as one library change (asset-source items, labelled Relinked <file> or Relinked N originals, undone with library.undo), answering {outcome, change?, items, deduplicated}: each photograph's source folder becomes its file's folder, its volume is recorded and its original recorded available, and its history, edits and fingerprint are unchanged; a pair whose photograph already names its file needs nothing; every other pair must be a file a finished source.find verified for that photograph, still with the signature it had then and named by no other photograph, or nothing changes and the request is refused naming every such pair in data.pairs [{asset_id, path, reason: not-verified | changed | gone | claimed | same-file, by?}] (the first 100, with data.count): source-unavailable when a file is gone, conflict otherwise; a relative path, an unknown photograph, and a photograph or file named twice are validation; more than 50,000 pairs is resource-limit",
+        retries: Owner,
+    ),
     // Removing (TASK-014).
 
     // Batch preset and export (TASK-015).
