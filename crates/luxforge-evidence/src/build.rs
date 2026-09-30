@@ -36,6 +36,7 @@ step_from! {
     CapabilityStep => Capability,
     MaskStep => Mask,
     ExportStep => Export,
+    SelectStep => Select,
 }
 
 impl Step {

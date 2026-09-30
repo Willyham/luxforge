@@ -117,6 +117,12 @@ pub(crate) enum Starting {
     /// An export of the displayed entry: no request in flight only. The one-draft rule does not
     /// apply, since an open draft does not change the displayed entry an export writes.
     Export,
+    // ── catalog lane D: views and desktop ──
+    /// Switching to the Select workspace, which does not show the photograph: one draft only, so
+    /// an open draft is applied or cancelled first. Neither a previewed entry nor a request in
+    /// flight holds it back, and switching pauses neither.
+    Workspace,
+    // ── end lane D ──
 }
 
 /// Which halves of the one refusal answer a start.
@@ -139,7 +145,9 @@ impl Starting {
             }
             Self::Slider => (true, true, false),
             Self::Gallery | Self::History => (true, false, true),
-            Self::Mode | Self::Compare | Self::Preset | Self::Refit => (true, false, false),
+            Self::Mode | Self::Compare | Self::Preset | Self::Refit | Self::Workspace => {
+                (true, false, false)
+            }
             Self::Export => (false, false, true),
         };
         Halves {
@@ -163,6 +171,7 @@ impl Starting {
             Self::History => "before undoing, redoing or restoring",
             Self::Refit => "before refitting the preview",
             Self::Export => "before exporting",
+            Self::Workspace => "before switching to Select",
         }
     }
 }
