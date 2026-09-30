@@ -40,7 +40,7 @@ use std::process::Command;
 pub const SCENARIO: &str = "resolve-missing";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates real JPEGs with `cargo xtask generate-catalog \
-    --images 60 --seed 1`, copies them onto two disk images made with `hdiutil` and attached with \
+    --images 120 --seed 1`, copies them onto two disk images made with `hdiutil` and attached with \
     `-nobrowse` inside the run (a scratch folder elsewhere than macOS) and into a scratch folder, \
     develops them into `generated/catalog.sqlite` with `catalog.import`, reorganizes them (moved, \
     rewritten, duplicated, deleted, a drive detached), records them missing with `source.check`, \
@@ -52,7 +52,7 @@ pub const GENERATED: &str = "generated";
 pub const EXPECTED: &str = "resolve-missing-expected.json";
 pub const AFTER: &str = "resolve-missing-after.json";
 const SEED: u64 = 1;
-const IMAGES: u32 = 60;
+const IMAGES: u32 = 120;
 /// The folders developed from, as their groups are named.
 const KONSTANZ: &str = "2026-09 Konstanz";
 const LAKE: &str = "2026-09 Lake";

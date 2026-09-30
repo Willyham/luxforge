@@ -426,16 +426,17 @@ pub(crate) struct GroupModel {
     pub(crate) detail: String,
     pub(crate) status: Option<String>,
     pub(crate) find: Option<ActionModel>,
-    /// The first [`MAX_GROUP_ROWS`] rows under the filter.
+    /// Its rows under the filter, within [`MAX_DRAWN_ROWS`] across the groups.
     pub(crate) rows: Vec<RowModel>,
-    /// What the rows leave out past [`MAX_GROUP_ROWS`]: "1,200 more: narrow them with the filters".
+    /// What the rows leave out past [`MAX_DRAWN_ROWS`]: "1,200 more: narrow them with the filters".
     pub(crate) more: Option<String>,
 }
 
-/// The most rows a group draws. A search may answer for tens of thousands of photographs, and the
-/// view draws every row it is given, so a group draws its first rows and says how many more there
-/// are; Relink still sends every verified pair, and the filters narrow what is drawn.
-pub(crate) const MAX_GROUP_ROWS: usize = 500;
+/// The most rows the groups draw together. A search may answer for tens of thousands of
+/// photographs, and the view draws every row it is given, so the groups draw their first rows, in
+/// order, and each says how many more it has; Relink still sends every verified pair, and the
+/// filters narrow what is drawn.
+pub(crate) const MAX_DRAWN_ROWS: usize = 500;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct BarModel {
@@ -542,11 +543,14 @@ pub(crate) fn derive(state: &SelectState) -> MissingModel {
         };
     };
     let live = missing.live_search().map(|(folder, _)| folder.clone());
+    let mut budget = MAX_DRAWN_ROWS;
     let groups: Vec<GroupModel> = list
         .groups
         .iter()
-        .map(|group| group_model(missing, group, live.as_ref(), home))
-        .filter(|group| missing.filter == MissingFilter::All || !group.rows.is_empty())
+        .map(|group| group_model(missing, group, live.as_ref(), home, &mut budget))
+        .filter(|group| {
+            missing.filter == MissingFilter::All || !group.rows.is_empty() || group.more.is_some()
+        })
         .collect();
     let heading = (list.count > 0).then(|| {
         (
@@ -709,11 +713,58 @@ fn choice_label(root: &Path, path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// The characters a path takes before its middle gives way: in a group's header, in a status and
+/// in the Info panel, whose value column is narrow.
+const HEADER_PATH: usize = 64;
+const STATUS_PATH: usize = 48;
+const INFO_PATH: usize = 36;
+
+/// `path` as the view shows it (under `~` for the home folder), and, past `most` characters, its
+/// first component and as many of its last as fit, with `…` between: the folder a path ends in is
+/// what tells two groups apart, and an ellipsis at the end would drop it.
+pub(crate) fn short_path(path: &Path, home: Option<&Path>, most: usize) -> String {
+    let shown = shown_path(path, home);
+    if shown.chars().count() <= most {
+        return shown;
+    }
+    let separator = std::path::MAIN_SEPARATOR_STR;
+    let parts: Vec<&str> = shown.split(['/', '\\']).collect();
+    // An absolute path's first part is empty: its head is the root and its first folder.
+    let head_len = if parts.first().is_some_and(|part| part.is_empty()) {
+        2
+    } else {
+        1
+    };
+    if parts.len() <= head_len + 1 {
+        return shown;
+    }
+    let head = parts[..head_len].join(separator);
+    let mut used = head.chars().count() + 2;
+    let mut tail = Vec::new();
+    for part in parts[head_len..].iter().rev() {
+        let len = part.chars().count() + 1;
+        if !tail.is_empty() && used + len > most {
+            break;
+        }
+        used += len;
+        tail.push(*part);
+    }
+    if tail.len() == parts.len() - head_len {
+        return shown;
+    }
+    tail.reverse();
+    format!(
+        "{head}{separator}\u{2026}{separator}{}",
+        tail.join(separator)
+    )
+}
+
 fn group_model(
     state: &MissingState,
     group: &MissingGroup,
     live: Option<&PathBuf>,
     home: Option<&Path>,
+    budget: &mut usize,
 ) -> GroupModel {
     let search = state.searches.get(&group.source_folder);
     let names: Vec<String> = group
@@ -733,7 +784,7 @@ fn group_model(
         reason
     });
     let status = search.map(|search| {
-        let root = shown_path(&search.root, home);
+        let root = short_path(&search.root, home, STATUS_PATH);
         match &search.status {
             SearchStatus::Starting => format!("Searching {root}\u{2026}"),
             SearchStatus::Running { .. } => match &search.progress {
@@ -770,7 +821,8 @@ fn group_model(
                 continue;
             }
             admitted += 1;
-            if rows.len() < MAX_GROUP_ROWS {
+            if *budget > 0 {
+                *budget -= 1;
                 rows.push(row_model(state, search, row, folder.clone(), home));
             }
         }
@@ -783,7 +835,7 @@ fn group_model(
     });
     GroupModel {
         folder: group.source_folder.clone(),
-        path: shown_path(&group.source_folder, home),
+        path: short_path(&group.source_folder, home, HEADER_PATH),
         detail: detail.join(" \u{b7} "),
         status,
         find,
@@ -845,21 +897,21 @@ fn row_model(
                 ),
             }
         }
-        FindResult::DifferentBytes { path } => (
+        FindResult::DifferentBytes { .. } => (
             ResultGlyph::Refused,
             "Different bytes at the same name".to_owned(),
-            Some(under_root(root, path, home)),
+            Some("left as it is".to_owned()),
             locate,
         ),
-        FindResult::Claimed { path, .. } => (
+        FindResult::Claimed { .. } => (
             ResultGlyph::Refused,
             "Another photograph uses this file".to_owned(),
-            Some(under_root(root, path, home)),
+            Some("never taken".to_owned()),
             locate,
         ),
         FindResult::NotFound => (
             ResultGlyph::NotFound,
-            format!("Not found under {}", shown_path(root, home)),
+            format!("Not found under {}", short_path(root, home, STATUS_PATH)),
             None,
             locate,
         ),
@@ -948,19 +1000,19 @@ fn info(state: &MissingState, list: &MissingOriginals, home: Option<&Path>) -> M
         .filter(|(held, _)| held == asset)
         .map(|(_, facts)| facts);
     let was = match facts {
-        Some(Ok(facts)) => shown_path(&facts.was, home),
-        _ => shown_path(&folder.join(&row.file_name), home),
+        Some(Ok(facts)) => short_path(&facts.was, home, INFO_PATH),
+        _ => short_path(&folder.join(&row.file_name), home, INFO_PATH),
     };
     let chosen = search.chosen.get(asset);
     let (found, check, verified) = match &row.result {
         FindResult::Found { path } => (
-            shown_path(path, home),
+            short_path(path, home, INFO_PATH),
             "Same size and fingerprint".to_owned(),
             true,
         ),
         FindResult::SeveralIdentical { paths } => match chosen {
             Some(path) => (
-                shown_path(path, home),
+                short_path(path, home, INFO_PATH),
                 "Same size and fingerprint".to_owned(),
                 true,
             ),
@@ -971,18 +1023,18 @@ fn info(state: &MissingState, list: &MissingOriginals, home: Option<&Path>) -> M
             ),
         },
         FindResult::DifferentBytes { path } => (
-            shown_path(path, home),
+            short_path(path, home, INFO_PATH),
             "Same name, different bytes".to_owned(),
             false,
         ),
         FindResult::Claimed { path, .. } => (
-            shown_path(path, home),
+            short_path(path, home, INFO_PATH),
             "Same bytes, another photograph's file".to_owned(),
             false,
         ),
         FindResult::NotFound => (
             "\u{2014}".to_owned(),
-            format!("Not under {}", shown_path(&search.root, home)),
+            format!("Not under {}", short_path(&search.root, home, INFO_PATH)),
             false,
         ),
         FindResult::Checking => ("\u{2014}".to_owned(), "Checking\u{2026}".to_owned(), false),

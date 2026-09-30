@@ -296,7 +296,7 @@ fn resolve_missing_rows_say_each_result_with_its_action() {
             (
                 ResultGlyph::Refused,
                 "Different bytes at the same name",
-                Some("\u{2026}/Photographs/2026-08 Lake/")
+                Some("left as it is")
             ),
             (
                 ResultGlyph::Several,
@@ -311,7 +311,7 @@ fn resolve_missing_rows_say_each_result_with_its_action() {
             (
                 ResultGlyph::Refused,
                 "Another photograph uses this file",
-                Some("\u{2026}/c/")
+                Some("never taken")
             ),
             (ResultGlyph::Checking, "Checking\u{2026}", None),
         ]
@@ -558,10 +558,13 @@ fn resolve_missing_info_describes_the_selected_row() {
     assert_eq!(
         info.rows,
         vec![
-            ("Was".into(), format!("{LAKE}/DSC_6617.NEF")),
+            (
+                "Was".into(),
+                "/Volumes/\u{2026}/2026-08 Lake/DSC_6617.NEF".into()
+            ),
             (
                 "Found".into(),
-                "/Volumes/Archive/Photographs/2026-08 Lake/DSC_6617.NEF".into()
+                "/Volumes/\u{2026}/2026-08 Lake/DSC_6617.NEF".into()
             ),
             ("Check".into(), "Same size and fingerprint".into()),
             (
@@ -668,13 +671,13 @@ fn resolve_missing_derives_nothing_unless_shown() {
     );
 }
 
-/// A group draws at most its first rows under the filter and says how many more there are, while
-/// Relink still sends every verified pair.
+/// The groups draw at most their first rows under the filter together, each saying how many more it
+/// has, while Relink still sends every verified pair.
 #[test]
 fn resolve_missing_draws_a_bounded_window_of_rows() {
     let (mut state, _) = searched(SearchStatus::Ended);
     let search = state.missing.searches.get_mut(Path::new(LAKE)).unwrap();
-    search.rows = (0..MAX_GROUP_ROWS + 250)
+    search.rows = (0..MAX_DRAWN_ROWS + 250)
         .map(|index| FindRow {
             asset_id: AssetId::new(),
             file_name: format!("DSC_{index:05}.NEF"),
@@ -685,11 +688,40 @@ fn resolve_missing_draws_a_bounded_window_of_rows() {
         .collect();
     let model = derive(&state);
     let group = lake(&model);
-    assert_eq!(group.rows.len(), MAX_GROUP_ROWS);
+    assert_eq!(group.rows.len(), MAX_DRAWN_ROWS);
     assert_eq!(
         group.more.as_deref(),
         Some("250 more: narrow them with the filters")
     );
-    assert_eq!(relink_pairs(&state.missing).len(), MAX_GROUP_ROWS + 250);
-    assert_eq!(model.bar.unwrap().pairs, MAX_GROUP_ROWS + 250);
+    assert_eq!(relink_pairs(&state.missing).len(), MAX_DRAWN_ROWS + 250);
+    assert_eq!(model.bar.unwrap().pairs, MAX_DRAWN_ROWS + 250);
+}
+
+/// A long path keeps its first component and its last ones, which tell folders apart.
+#[test]
+fn resolve_missing_shortens_long_paths_in_the_middle() {
+    let home = Path::new("/Users/anna");
+    assert_eq!(
+        short_path(Path::new(LAKE), None, 96),
+        LAKE,
+        "a path that fits is whole"
+    );
+    assert_eq!(
+        short_path(
+            Path::new(
+                "/Users/anna/projects/work/target/run/generated/volumes/Photos SSD/2026/2026-09 Konstanz"
+            ),
+            Some(home),
+            48
+        ),
+        "~/\u{2026}/volumes/Photos SSD/2026/2026-09 Konstanz"
+    );
+    assert_eq!(
+        short_path(
+            Path::new("/Volumes/Photos SSD/a/b/c/d/e/f/g/2026-09 Konstanz/DSC_0101.JPG"),
+            None,
+            30
+        ),
+        "/Volumes/\u{2026}/DSC_0101.JPG"
+    );
 }
