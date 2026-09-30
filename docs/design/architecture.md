@@ -98,8 +98,9 @@ Paths are under `crates/luxforge-app/src`.
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
 - The Select workspace of the [catalog](catalog.md#workspaces) is one seam across the three layers: `app/select.rs` (with `app/message/select.rs`: the switch, the owner's view tasks, the synchronous `browse.select` and the grid's layout, scroll and viewport), `state/select.rs` (what Select last read, its rows window, and every region's model) and `view/select.rs` (the Select screen, and the workspace switch both title bars draw).
+- The loupe is Select's centre while it is open, on the same three layers: `app/loupe.rs` (its keys, stepping through `browse.select`, the pick hook and P7, and what it mirrors for the model) with `app/loupe_frames.rs` (its reads, the decode worker and the decoded frames' handles, made once) and `app/loupe_region.rs` (the 100% focus check's regions), `state/loupe.rs` (navigation, the look-ahead, compare, the focus check's rectangle and the model) and `view/loupe.rs`.
 - `layout.rs`: the window's framework-free layout: the bar and panel sizes, the rules between them, the Fit inset and the photo surface they leave.
-- `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync and the Performance sampler share.
+- `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync, the Performance sampler and the loupe's 100% region share.
 - `crop_draft.rs`: the crop frame's geometry, whose draft is a core draft like every other gesture's.
 - `mask_draft.rs` and `mask_draft/`: the mask draft, with one shape editor per drawn kind.
 - Native adapters and diagnostics.
@@ -316,6 +317,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A histogram `Report`, before protocol encoding | 16 KiB | `REPORT_BOUND_BYTES`, `crates/luxforge-core/src/analysis.rs` |
 | View rows the desktop's Select workspace holds | 16 blocks of 200, the blocks nearest the screen | `ROW_BLOCKS_KEPT` and `ROW_BLOCK`, `crates/luxforge-app/src/state/select.rs` |
 | Decoded grid previews the desktop's Select workspace holds | 192 MiB of RGBA8 and 4,096 handles, the least recently wanted out first and never a cell on screen | `DECODED_BUDGET_BYTES` and `MAX_HANDLES`, `crates/luxforge-app/src/app/select_previews.rs` |
+| Decoded frames the desktop's loupe holds | 256 MiB of RGBA8 and 48 handles, the least recently wanted out first and never a frame on screen; one plan of at most 12 decodes whose bytes fit the same budget | `DECODED_BUDGET_BYTES`, `MAX_HANDLES` and `MAX_PLAN`, `crates/luxforge-app/src/app/loupe_frames.rs` |
+| The loupe's reads and regions | One batch of at most 8 `preview.read`s in flight; one 100% region out, the newest rectangle waiting | `READ_BATCH`, `crates/luxforge-app/src/app/loupe_frames.rs`; `crates/luxforge-app/src/app/loupe_region.rs` |
 | The Select grid's preview reads and decodes | 64 `preview.read`s to one owner task, one task at a time; 512 decodes a plan on one worker, 8 decoded previews waiting for the update loop, each at most 1024 px a side | `READ_BATCH`, `MAX_PLAN`, `DECODED_WAITING` and `MAX_SIDE`, as above |
 
 **The index lane** (`crates/luxforge-core/src/index/`, `crates/luxforge-core/src/api/owner/files.rs`)
