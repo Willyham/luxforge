@@ -700,7 +700,6 @@ impl Editor {
                     || (!photo_ready && !evidence.allow_unready_capture)
                     || (!clipping_ready && !evidence.allow_unready_capture)
                     || (!mask_ready && !evidence.allow_unready_capture)
-                    || self.presentation.overlay_awaited.is_some()
                 {
                     return Task::none();
                 }
@@ -999,7 +998,7 @@ impl Editor {
             .is_some_and(crate::mask_draft::MaskDraft::owns_creation)
             && self.mask_mode_active()
             && self.session.workspace.mask_overlay != luxforge_core::MaskOverlayMode::Off;
-        if created_coverage || self.settled_mask_overlay_request().is_some() {
+        if created_coverage || self.settled_mask_overlay_wanted() {
             Settle::MaskOverlay
         } else {
             Settle::Preview
