@@ -511,3 +511,36 @@ fn a_performance_row_of_catalog_work_names_its_job_count_and_estimate() {
     );
     assert!(indexing.running && indexing.detail.is_none());
 }
+
+/// A cancelled catalog job's row, once nothing long runs, keeps its place and says it was
+/// cancelled: what happened is the row's recent state.
+#[test]
+fn a_cancelled_catalog_job_reads_cancelled_in_the_section() {
+    use crate::state::performance::{Work, jobs};
+    let mut cancelled = finished(
+        indexing(1, 0, None, "5,120 files found"),
+        Outcome::Cancelled,
+        2_400,
+    );
+    cancelled.ended_ms_ago = 1_200;
+    let snapshot = ActivitySnapshot {
+        recent: vec![cancelled],
+        ..ActivitySnapshot::default()
+    };
+    let listed = jobs(
+        Some(&snapshot),
+        Work {
+            rates: &Rates::EMPTY,
+            home: home(),
+        },
+    );
+    let [row] = listed.rows.as_slice() else {
+        panic!("one row: {:?}", listed.rows);
+    };
+    assert_eq!(row.label, "Indexing ~/Pictures");
+    assert_eq!(row.detail.as_deref(), Some("Cancelled 1 s ago"));
+    assert!(
+        !row.running && row.work.is_none(),
+        "a finished job has no Cancel"
+    );
+}
