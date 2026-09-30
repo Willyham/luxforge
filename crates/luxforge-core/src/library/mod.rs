@@ -45,3 +45,11 @@ pub(crate) mod tree;
 pub(crate) mod availability;
 pub(crate) mod locate;
 pub(crate) mod worker;
+
+// Developing picks (TASK-013).
+
+// Resolving missing originals (TASK-017).
+
+// Removing (TASK-014).
+
+// Batch preset and export (TASK-015).
