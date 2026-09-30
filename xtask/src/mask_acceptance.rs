@@ -13,7 +13,7 @@
 //! a masked layer of Basic, Presence and the colour mixer, and a brush's strokes in the artifact
 //! store, stops the owner that wrote it, and asks a fresh owner over the same file for all of it.
 //! The panel's own evidence is the `mask-*` smoke scenarios.
-use crate::basic_acceptance::{import, mutation};
+use crate::basic_acceptance::{mutation, open};
 use crate::*;
 use luxforge_core::OwnerHandle;
 use luxforge_testkit::client::{Checked, as_str, as_u64, call, prepare};
@@ -117,7 +117,7 @@ fn identities(listed: &Value) -> Result<Vec<Value>> {
 /// The catalog the reopen is asked about, written by `owner` as an independent client.
 fn write_catalog(owner: &OwnerHandle, fixture: &Path) -> Result<Written> {
     let editor = owner.register();
-    let imported = import(owner, editor, fixture)?;
+    let imported = open(owner, editor, fixture)?;
     let asset = imported["asset"]["id"].clone();
     prepare(owner, editor, &asset)?;
     let mut revision = as_u64(
