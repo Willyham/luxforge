@@ -165,7 +165,7 @@
     {
       "id": "TASK-003",
       "description": "Build the luxforge.curve field-patch module: Values::curve, the floor-subtracted reconstruction in colour.rs, the unit, the sample query, registration after Basic, conformance enrolment and exactness against the frozen fixture on both paths.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -260,7 +260,7 @@
     {
       "id": "TASK-004",
       "description": "Prove the module through the method table in release: the conformance suite inside editor-acceptance and a Tone curve acceptance chapter for placement, masked order and the sample query.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -319,7 +319,7 @@
     {
       "id": "TASK-005",
       "description": "Show the section in the desktop and capture native rendered evidence: the tone-ramp fixture, the evidence curve steps for the Points list and typed coordinates, and the curve smoke scenario.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-002",
         "TASK-003"
@@ -394,7 +394,7 @@
     {
       "id": "TASK-006",
       "description": "Carry the curve through presets: capture and apply of set-curve, the Lightroom ToneCurvePV2012 transfer with the sibling rows re-worded, and the presets smoke's patch model over curve fields.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Verify the masked tone curve: the masking acceptance chapter's curve binding, reorder and duplicate, the Masks panel's scope chip and coverage input, and the masking design's maskable list.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -530,7 +530,7 @@
     {
       "id": "TASK-008",
       "description": "Prepare the measurement harnesses without timing: editor-latency drives a named module's curve from a seeded mid-tone point, and editor-performance gains a Tone curve row.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
