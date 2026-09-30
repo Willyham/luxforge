@@ -1,6 +1,6 @@
 # Popular camera support
 
-Status: authorized by the owner on 2026-09-30; implementation in progress ([plan](../../tasks/raw-cameras.json)).
+Status: implemented and verified on the M4 Mac (2026-09-30).
 
 Luxforge should open the RAW files most photographers actually make. The [popularity study](../research/popular-cameras.md) ranks the cameras most in use and records which of their recording modes the adapter rejected. Most rejections are catalog gaps: LibRaw decodes the file, but the [camera catalog](raw-camera-profiles.md) does not list the mode, often the camera's factory default. This design closes those gaps and turns the one unsupported default, Nikon High Efficiency, into an explicit refusal.
 

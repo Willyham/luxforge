@@ -1,6 +1,6 @@
 # RawSpeed unpacking
 
-Status: authorized by the owner on 2026-09-30; implementation in progress ([plan](../../tasks/raw-cameras.json)). 64 catalog modes are routed ([routed and unrouted decoders](#routed-modes)), every one exact and at least 1.3× faster to unpack ([measurements](../specs/performance.md#rawspeed-unpacking)).
+Status: implemented and verified on the M4 Mac (2026-09-30). 64 catalog modes are routed ([routed and unrouted decoders](#routed-modes)), every one exact and at least 1.3× faster to unpack ([measurements](../specs/performance.md#rawspeed-unpacking)).
 
 For the recording modes where it is exact and faster, the RAW adapter fills the sensor mosaic with [RawSpeed](https://github.com/darktable-org/rawspeed) instead of LibRaw's own decoder. LibRaw still identifies the file, reads every piece of metadata, and runs every step of its unpack after the pixels are read. The [RawSpeed evaluation](../research/rawspeed-evaluation.md) measured 2.5–3.7× faster unpacking on Nikon lossless and lossy NEF, Canon CR2, Fujifilm lossless compressed RAF, ORF, PEF and lossless and packed DNG, with byte-identical samples and metadata. Those families are about a third of popular-camera files and save 130–550 ms per open. CR3 and Sony ARW stay on LibRaw.
 
