@@ -364,6 +364,10 @@ fn plain<'a>(
                     Length::Fill,
                     Length::Fill,
                 )
+                // Placed by the exact stage, not the raster, which may be the display proxy: the
+                // rectangle `drawn_photo` records, the pointer's `fit_pick` and the mask handles
+                // all fit these dimensions.
+                .exact_stage((width, height))
                 .overlays(clipping, coverage)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
@@ -950,6 +954,16 @@ mod tests {
             drawn_photo(&model, &surfaces, canvas, (40.0, 9.0)),
             Some(fit)
         );
+        // The record follows the exact stage, never the texture on screen, which the photo surface
+        // is told to place by the same stage: a committed 6558 × 3688 crop is recorded where its
+        // exact render lands, whatever its display proxy measures (the surface's own test,
+        // `a_fit_proxy_lands_on_its_exact_stage_rectangle`, draws both there).
+        let cropped = CanvasModel {
+            dimensions: Some((6558, 3688)),
+            ..model.clone()
+        };
+        let crop = drawn_photo(&cropped, &surfaces, canvas, (0.0, 0.0)).expect("a photograph");
+        assert_eq!(snapped(crop, 2.0), [522, 399, 2238, 1365]);
 
         // 100% at scale 2: 240 × 160 logical, smaller than the canvas, so centred and never moved.
         let percent = CanvasModel {
