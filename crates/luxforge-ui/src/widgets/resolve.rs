@@ -227,11 +227,15 @@ pub fn resolve_group<'a, M: Clone + 'a>(
         ))
         .push(lines);
     if let Some(status) = &model.status {
+        // At most its column, ending in an ellipsis, so the path and detail keep their room.
         header = header.push(
-            text(status.clone())
-                .size(theme::SIZE_CAPTION)
-                .color(theme::TEXT_LABEL)
-                .wrapping(Wrapping::None),
+            container(truncated_text(
+                status.clone(),
+                theme::SIZE_CAPTION,
+                theme::FONT,
+                theme::TEXT_LABEL,
+            ))
+            .width(Length::Fixed(theme::RESOLVE_STATUS_WIDTH)),
         );
     }
     if let Some(action) = action {

@@ -1449,6 +1449,9 @@ pub const RESOLVE_HEADER_PADDING: Padding = Padding {
     left: 12.0,
 };
 pub const RESOLVE_HEADER_SPACING: f32 = 10.0;
+/// A header's status (`Searching /Volumes/Archive · 164 of 212`), before its action: at most this
+/// wide, ending in an ellipsis.
+pub const RESOLVE_STATUS_WIDTH: f32 = 300.0;
 pub const RESOLVE_HEADER_LINE_SPACING: f32 = 2.0;
 pub const RESOLVE_HEADER_RULE: Color = Color::from_rgb8(42, 42, 45);
 /// A header's folder glyph, and a row's catalog folder glyph and result glyph.
