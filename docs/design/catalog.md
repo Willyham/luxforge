@@ -273,6 +273,15 @@ A photograph's position is kept because places are how the catalog is searched; 
 
 Grid tiers are kept (about 40 KB each); loupe and large tiers share a byte budget with least-recently-used eviction ([P8](#proposals)). A changed renderer generation discards the rendered tiers.
 
+**What cameras embed** ([inventory](../research/embedded-previews.md), 120 files from 103 cameras). `luxforge-raw` lists a RAW file's embedded images and extracts one by positional reads, without unpacking it ([its README](../../crates/luxforge-raw/README.md#embedded-previews)); listing read 17 to 205 KB a file. Which tier needs the development fallback follows from the camera:
+
+| Cameras | Largest embedded preview | Needs a development for |
+| --- | --- | --- |
+| 53: every Nikon, Pentax, Ricoh and Leica; every Canon but the EOS R5 Mark II and R8; Sony A1, A7 IV, A7C II, A7CR, A7R V, A7S III and a6700 | Full-size JPEG | Nothing: the 100% check reads the preview |
+| 43: every Fujifilm, OM System, Olympus and Panasonic; Sony A7 III, A7R II–IV, A7C, A9 and a6000–a6600 | JPEG of 1616–4416 px | The 100% check |
+| 5: the DJI drones, the owner's Air 2S among them | JPEG of 960 px | The loupe and the 100% check |
+| 2: Canon EOS R5 Mark II and R8 | H.265 only, which is not extracted | Every tier, the grid included |
+
 ## API
 
 The methods, in the one method table with declared parameters. Every shape is declared once in the core's `catalog_types` module: each method's parameter struct, answer, envelope, job and error codes in `catalog_types/api.rs` (`CATALOG_METHODS`), and the types they name beside their concept (`identity`, `header`, `disk`, `organize`, `browse`, `library`, `previews`, `jobs`). None is registered yet: each lane adds its methods to the method table when they work, so `schema.list` never lists a method that does nothing, and a test holds every registered catalog method to its declaration. Mutations carry `{request_id, actor}` (`mutation`) and the owner answers their retries; only `catalog.empty-removed` needs permission authority. A method that starts a job answers `{job_id, status, deduplicated}` at once, and the job's result, read with `job.read` and cancelled with `job.cancel`, is the answer named here. Every method may also answer `protocol` and `internal`.
