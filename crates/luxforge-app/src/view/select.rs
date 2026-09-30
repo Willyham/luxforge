@@ -114,10 +114,14 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
     if select.title.info_open {
         middle = middle.push(vertical_divider());
         middle = middle.push(
-            container(info(&select.info))
-                .width(Length::Fixed(TOOLS_PANEL_WIDTH))
-                .height(Length::Fill)
-                .style(theme::panel_surface),
+            container(if select.missing.shown {
+                crate::view::select_missing::info(&select.missing)
+            } else {
+                info(&select.info)
+            })
+            .width(Length::Fixed(TOOLS_PANEL_WIDTH))
+            .height(Length::Fill)
+            .style(theme::panel_surface),
         );
     }
     let status = container(status_bar(&select.status, &model.long_work))
@@ -394,6 +398,9 @@ fn centre<'a>(
 ) -> Element<'a, Message> {
     if model.loupe.open {
         return crate::view::loupe::loupe(&model.loupe);
+    }
+    if model.missing.shown {
+        return crate::view::select_missing::centre(&model.missing);
     }
     let Grid {
         layout,

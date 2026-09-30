@@ -218,6 +218,11 @@ fn notice_view(notice: &Notice) -> Element<'_, Message> {
                     NoticeAction::DenyConsent => {
                         Message::Capability(CapabilityMessage::Consent(false))
                     }
+                    NoticeAction::LocateOriginal => {
+                        Message::Select(crate::app::message::select::SelectMessage::Missing(
+                            crate::app::message::select_missing::MissingMessage::LocateOriginal,
+                        ))
+                    }
                 },
             )
         })
