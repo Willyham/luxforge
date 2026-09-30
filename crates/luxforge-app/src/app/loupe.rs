@@ -430,30 +430,19 @@ impl Editor {
         }
     }
 
-    /// `P`: pick or clear the active frame.
-    ///
-    /// HOOK (lane D, TASK-019): picks are lane D's, and `Editor::select_pick(items, picked)` with its
-    /// completion `SelectMessage::Picked { items, picked, result }` is not on this branch yet. Once
-    /// it is, this sends it for the active frame and the completion calls
-    /// [`Self::loupe_picked`]. Until then `P` picks nothing and says so.
+    /// `P`: pick or clear the active frame, through [`Self::select_pick`] as the grid's `P` does;
+    /// its answer, in this update, reaches [`Self::loupe_picked`].
     fn loupe_pick(&mut self) -> Task<Message> {
-        if self.loupe_open() {
-            self.status.text = "Picking from the loupe comes with picks (not yet available)".into();
+        if !self.loupe_open() {
+            return Task::none();
         }
-        Task::none()
+        self.pick_active()
     }
 
     /// A pick lane D's `select_pick` answered: P7. When it picked the loupe's active frame and that
     /// frame is a burst's, the loupe moves on to the next moment's first frame; a clear, a
     /// bracket's frame, a single, a failed pick or another frame's pick stay where they are.
     /// `positions` are the view positions the pick named.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "lane D's pick answer (TASK-019) calls it; not on this branch yet"
-        )
-    )]
     pub(crate) fn loupe_picked(&mut self, positions: &[u32], picked: bool, succeeded: bool) {
         if !succeeded || !self.loupe_open() {
             return;

@@ -1384,7 +1384,20 @@ impl Fixture {
                 sorted
             }
         };
-        let layout = organize::group(&frames, &tables, grouping, &query.thresholds, &NoProbe);
+        let mut layout = organize::group(&frames, &tables, grouping, &query.thresholds, &NoProbe);
+        // Each day's and moment's picks, counted over the model's own ordered items.
+        let picks = |start: u32, len: u32| {
+            ordered[start as usize..(start + len) as usize]
+                .iter()
+                .filter(|item| item.picked)
+                .count() as u32
+        };
+        for day in &mut layout.days {
+            day.picked = picks(day.start, day.len);
+        }
+        for moment in &mut layout.moments {
+            moment.picked = picks(moment.start, moment.len);
+        }
         Expected {
             picked: ordered.iter().filter(|item| item.picked).count() as u32,
             in_catalog: ordered.iter().filter(|item| item.in_catalog).count() as u32,
