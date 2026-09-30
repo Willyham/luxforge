@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
+members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -61,6 +61,17 @@ url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }
 # Zeroes a module secret's buffer when the value is dropped.
 zeroize = "=1.9.0"
+# The folder watcher's macOS bindings, in `luxforge-watch`: FSEvents through `objc2-core-services`,
+# the one package the watcher adds to the lockfile, with only its FSEvents bindings built; and the
+# CoreFoundation strings, arrays and UUIDs and the dispatch queue those take, already in the
+# lockfile through rfd and winit and pinned to the versions they resolve to.
+objc2-core-services = { version = "=0.3.2", default-features = false, features = ["std", "FSEvents", "dispatch2", "libc"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFString", "CFUUID"] }
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
+# inotify, `poll` and `eventfd` for the folder watcher on Linux, already in the lockfile through the
+# desktop's portal dialogs and pinned to that version. They are safe calls, so the Linux watcher
+# writes no `unsafe`.
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "event"] }
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14
 # does not re-export it (`iced::widget::renderer` is hidden), so it is named here and pinned to the
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the
