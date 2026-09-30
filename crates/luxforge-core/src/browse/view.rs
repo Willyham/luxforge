@@ -53,8 +53,41 @@ pub(crate) struct Evaluation {
 pub(crate) struct Context<'a> {
     pub service: &'a EditorService,
     pub events: &'a mut EventCache,
-    pub probe: &'a dyn BracketProbe,
+    pub probe: Probe<'a>,
     pub limit: usize,
+}
+
+/// The bracket check a view groups files with, for the runs their metadata cannot classify.
+#[derive(Clone, Copy)]
+pub(crate) enum Probe<'a> {
+    /// The preview lane's brightness check over the index ([`crate::previews::bracket_probe`]),
+    /// made for each grouping so the index is borrowed only while organizing asks about runs; it
+    /// reads a run's fingerprints only when asked about that run. Photographs group without it.
+    Previews,
+    /// A check of the caller's: the tests' and a model's.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Given(&'a dyn BracketProbe),
+}
+
+impl Probe<'_> {
+    /// Run `group` with this check: the preview lane's over the index for a view of files, none
+    /// for photographs, or the one given.
+    pub(crate) fn with<T>(
+        self,
+        service: &EditorService,
+        over_files: bool,
+        group: impl FnOnce(&dyn BracketProbe) -> T,
+    ) -> Result<T, Error> {
+        match self {
+            Self::Given(probe) => Ok(group(probe)),
+            Self::Previews if over_files => {
+                let index = service.index()?;
+                let probe = crate::previews::bracket_probe(index.connection());
+                Ok(group(&probe))
+            }
+            Self::Previews => Ok(group(&crate::catalog_types::NoProbe)),
+        }
+    }
 }
 
 /// Evaluate `query`. Refused with `validation` for a query no view can answer and a source that
@@ -81,13 +114,15 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
     let mut facts = std::mem::take(&mut candidates.facts);
     facts.retain(|fact| filter.failing(fact, candidates.extra(fact.item)) == 0);
     order(&mut facts, &candidates, query);
-    let layout = organize::group(
-        &facts,
-        &candidates.names.tables,
-        query.effective_grouping(),
-        &query.thresholds,
-        cx.probe,
-    );
+    let layout = cx.probe.with(cx.service, candidates.over_files, |probe| {
+        organize::group(
+            &facts,
+            &candidates.names.tables,
+            query.effective_grouping(),
+            &query.thresholds,
+            probe,
+        )
+    })?;
     let (mut picked, mut in_catalog, mut unavailable) = (0, 0, 0);
     for fact in &facts {
         let extra = candidates.extra(fact.item);
@@ -112,11 +147,14 @@ pub(super) fn prepare(
     source: &ViewSource,
     filter: &crate::catalog_types::ViewFilter,
     needs: Needs,
-    probe: &dyn BracketProbe,
+    probe: Probe<'_>,
 ) -> Result<Candidates, Error> {
     let mut candidates = candidates::read(reader, source, needs)?;
     if filter.without_pick && candidates.over_files {
-        decide(&mut candidates, reader.thresholds, probe);
+        let service = reader.service;
+        probe.with(service, true, |probe| {
+            decide(&mut candidates, reader.thresholds, probe)
+        })?;
     }
     Ok(candidates)
 }

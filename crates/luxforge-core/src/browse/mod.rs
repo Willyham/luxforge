@@ -48,7 +48,7 @@ pub(crate) use events::{EventCache, event_list};
 pub(crate) use facets::facets;
 pub(crate) use rows::rows;
 pub(crate) use select::{SelectRequest, carry_over, select, selected_items};
-pub(crate) use view::{Context, View, evaluate};
+pub(crate) use view::{Context, Probe, View, evaluate};
 
 use crate::{
     EditorService, Error,

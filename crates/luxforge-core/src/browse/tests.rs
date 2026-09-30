@@ -1,7 +1,7 @@
 //! Views, facets, rows, selection and events over a generated catalog and index, each against the
 //! plain model in [`super::testing`].
 use super::{
-    Context, EventCache, SelectRequest, View, current_stamp, evaluate, event_list, facets,
+    Context, EventCache, Probe, SelectRequest, View, current_stamp, evaluate, event_list, facets,
     previews::grid_states,
     refresh_stale, rows, select, selected_items, source_files,
     testing::{self, Fixture, Item},
@@ -34,7 +34,7 @@ fn try_run(
         Context {
             service,
             events,
-            probe: &NoProbe,
+            probe: Probe::Given(&NoProbe),
             limit,
         },
         query,
@@ -696,7 +696,7 @@ fn browse_facets_equal_the_views_they_predict() {
                 Context {
                     service: &service,
                     events: &mut events,
-                    probe: &NoProbe,
+                    probe: Probe::Given(&NoProbe),
                     limit: MAX_VIEW_ITEMS,
                 },
                 &source,
@@ -814,7 +814,7 @@ fn browse_facets_equal_the_views_they_predict() {
         Context {
             service: &service,
             events: &mut events,
-            probe: &NoProbe,
+            probe: Probe::Given(&NoProbe),
             limit: MAX_VIEW_ITEMS,
         },
         &ViewSource::Card {
@@ -848,7 +848,7 @@ fn browse_facets_equal_the_views_they_predict() {
         Context {
             service: &service,
             events: &mut events,
-            probe: &NoProbe,
+            probe: Probe::Given(&NoProbe),
             limit: MAX_VIEW_ITEMS,
         },
         &ViewSource::AllPhotographs,
@@ -1761,7 +1761,7 @@ fn browse_works_at_the_design_scale() {
         Context {
             service: &service,
             events: &mut events,
-            probe: &NoProbe,
+            probe: Probe::Given(&NoProbe),
             limit: MAX_VIEW_ITEMS,
         },
         &ViewSource::AllPhotographs,
