@@ -5557,6 +5557,14 @@ mod tests {
                     IdentityKind::Mask => crate::MaskId::new().to_string(),
                     IdentityKind::Component => crate::ComponentId::new().to_string(),
                     IdentityKind::Stroke => "0".repeat(32),
+                    IdentityKind::CatalogFolder => {
+                        crate::catalog_types::CatalogFolderId::new().to_string()
+                    }
+                    IdentityKind::Collection => {
+                        crate::catalog_types::CollectionId::new().to_string()
+                    }
+                    IdentityKind::Volume => crate::catalog_types::VolumeId::new().to_string(),
+                    IdentityKind::Event => crate::catalog_types::EventId::new().to_string(),
                 };
                 (json!(valid), json!("x"))
             }
