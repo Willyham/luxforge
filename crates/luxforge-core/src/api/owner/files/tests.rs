@@ -421,12 +421,20 @@ fn every_batch_advances_the_revision_and_records_one_event() {
         events.len(),
         "only index events: {events:?}"
     );
+    // One event per batch, each naming the revision it left, then one as the job ended, naming
+    // the revision the job left.
+    let (ended, batches) = revisions.split_last().unwrap();
     assert_eq!(
-        revisions,
-        (1..=revisions.len() as u64).collect::<Vec<_>>(),
+        batches,
+        (1..=batches.len() as u64).collect::<Vec<_>>(),
         "one revision per batch, one event per revision"
     );
-    assert_eq!(fixture.revision(), *revisions.last().unwrap());
+    assert_eq!(
+        ended,
+        batches.last().unwrap(),
+        "the job's end names the last"
+    );
+    assert_eq!(fixture.revision(), *ended);
     assert!(
         events
             .iter()
