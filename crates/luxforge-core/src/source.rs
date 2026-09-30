@@ -31,8 +31,8 @@ pub(crate) const MAX_JPEG_BYTES: usize = 128 * 1024 * 1024;
 
 /// The largest JPEG original decoded: [`luxforge_raw::MAX_SIDE`] px per side (the same side limit
 /// every other source obeys) and 64 megapixels, so its RGBA frame stays inside the 512 MiB
-/// evaluated-frame limit. A 100% region of a JPEG, an original or a RAW's embedded preview, is
-/// decoded under the same limits.
+/// evaluated-frame limit. The preview lane decodes files' JPEGs within the same limits, the 100%
+/// region included, from an original or a RAW's embedded preview.
 pub(crate) const JPEG_LIMITS: luxforge_jpeg::Limits = luxforge_jpeg::Limits {
     max_side: luxforge_raw::MAX_SIDE,
     max_pixels: 64_000_000,
@@ -124,7 +124,7 @@ const UPRIGHT_STRIP_ROWS: usize = 16;
 
 /// Where the decoded pixel `(x, y)` of a `width` × `height` image lands once EXIF `orientation`
 /// turns it upright: the inverse of the orientation's upright-to-stored mapping, so 5 to 8 swap
-/// the dimensions. The 100% region turns its decoded rectangle upright through it too.
+/// the dimensions. The preview lane turns its tiers and its 100% regions upright through it too.
 #[inline]
 pub(crate) fn upright_position(
     orientation: u8,

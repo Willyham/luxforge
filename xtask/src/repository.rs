@@ -577,9 +577,11 @@ const SOURCE_RULES: &[SourceRule] = &[
     // (`EditorService::import`, `EditorService::prepare`) share. No service mode reads inline on a
     // cache miss, test code included: a test prepares through the helpers, never by hand. The
     // bounded read and the verified read are defined in `source.rs` and `artifacts/`, and `lib.rs`
-    // re-exports the first. The one other reader is the catalog's 100% region, whose design has
-    // it read a browsed file off the editor's source cache, on the preview lane's worker, one RAW
-    // development at a time (`docs/design/catalog.md`, "The 100% region").
+    // re-exports the first. The other readers are the catalog's preview lane, whose design has
+    // it read browsed files off the editor's source cache on its own workers: its extraction reads
+    // a browsed JPEG for its grid and loupe tiers, and its 100% region a JPEG or a RAW, one RAW
+    // development at a time (`docs/design/catalog.md`, "The index and previews cache" and "The
+    // 100% region").
     SourceRule {
         name: "one-source-preparation",
         tokens: &[
@@ -595,6 +597,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/artifacts",
             "crates/luxforge-core/src/lib.rs",
+            "crates/luxforge-core/src/previews/extract.rs",
             "crates/luxforge-core/src/previews/region.rs",
         ],
         mode: Match::Whole,
@@ -602,9 +605,10 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "only the source work (SourceWork::run in crates/luxforge-core/src/editor/source.rs) \
                  reads an original or an artifact for the editor, for the source worker and the \
-                 blocking helpers alike, and only the catalog's 100% region \
-                 (crates/luxforge-core/src/previews/region.rs) reads a browsed file off the \
-                 editor's cache; prepare through EditorService::prepare or import, never inline",
+                 blocking helpers alike, and only the catalog's preview lane \
+                 (crates/luxforge-core/src/previews/extract.rs and region.rs) reads a browsed \
+                 file off the editor's cache; prepare through EditorService::prepare or import, \
+                 never inline",
     },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
