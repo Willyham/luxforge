@@ -169,7 +169,7 @@ Every job the catalog owner runs is one record in one table (`crates/luxforge-co
 | `cancelled` | Stopped before it finished; `error` names why |
 | `superseded` | Replaced before it ran: a pending analysis a newer request displaced |
 
-Only `ready` carries `result`. Each kind keeps its own admission, scheduling and cancel rule:
+Only `ready` carries `result`, apart from a running job that reports its answer as it goes: a `source-find` job's `result` is its report so far ([missing originals](catalog.md#missing-originals)). Each kind keeps its own admission, scheduling and cancel rule:
 
 | Kind | Scheduled by | A second request | `job.cancel` | A client disconnecting |
 | --- | --- | --- | --- | --- |

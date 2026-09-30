@@ -195,6 +195,10 @@ impl Editor {
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
             SyncMessage::Changed => {
                 self.sync.poll.offer(());
+                // ── catalog lane D: views and desktop ──
+                // The Select workspace reads the session to see whether its view went stale.
+                self.select_woken();
+                // ── end lane D ──
             }
             SyncMessage::Synced(result) => {
                 self.sync.poll.answered();
@@ -592,8 +596,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 /// open photograph with nothing happening to it wakes nothing, and a signal posted while no
 /// photograph is open is buffered and read once one is. An evidence run is woken the same way.
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    if editor.document.state.is_none() {
+    // ── catalog lane D: views and desktop ──
+    // The Select workspace listens too while it is shown, for a view gone stale.
+    if editor.document.state.is_none() && !editor.select_shown() {
         return Subscription::none();
     }
+    // ── end lane D ──
     waker::events_subscription()
 }

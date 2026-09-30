@@ -7,7 +7,8 @@
 //!
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
-//! (`source.check`, `source.locate`) and `info.rs` (`catalog.info`). Every method that changes the
+//! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
+//! `source.relink`) and `info.rs` (`catalog.info`). Every method that changes the
 //! library records it through [`change`], which runs the journal in one catalog transaction and
 //! announces the change it recorded as one event.
 
@@ -26,6 +27,22 @@ pub(in crate::api) mod organize;
 #[cfg(test)]
 mod locate_tests;
 pub(in crate::api) mod sources;
+#[cfg(test)]
+mod worker_tests;
+
+// Developing picks (TASK-013): `pick.plan`, `pick.develop`, `asset.send-back`.
+pub(in crate::api) mod develop;
+#[cfg(test)]
+mod develop_picks_tests;
+
+// Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
+pub(in crate::api) mod missing;
+#[cfg(test)]
+mod resolve_missing_tests;
+
+// Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
+
+// Batch preset and export (TASK-015): `batch.apply-preset`, `batch.export`.
 
 pub(in crate::api) use info::catalog_info;
 pub(in crate::api) use journal::{library_inspect, library_journal, library_redo, library_undo};
@@ -60,9 +77,45 @@ use std::{
 };
 
 /// What the lane's worker runs for one job, off the owner: everything the job needs, moved to the
-/// worker, given the job's control (its cancel flag and the activity it publishes to) and where it
-/// may be held. It answers the owner's half.
-pub(super) type Work = Box<dyn FnOnce(&JobControl, &dyn Fn(Phase)) -> Commit + Send>;
+/// worker, given the job's [`JobContext`]. It answers the owner's half.
+pub(super) type Work = Box<dyn FnOnce(&JobContext<'_>) -> Commit + Send>;
+
+/// What a job's work is given on the worker: its control (its cancel flag and the activity it
+/// publishes to), where a test may hold it, and a way to commit part of its result as it goes.
+pub(super) struct JobContext<'a> {
+    pub control: &'a JobControl,
+    job_id: &'a JobId,
+    hold: Option<&'a Hold>,
+    poster: &'a Poster,
+}
+
+impl JobContext<'_> {
+    /// Let a test hold the job as it reaches `phase`; nothing otherwise.
+    pub(super) fn pause(&self, phase: Phase) {
+        if let Some(hold) = self.hold {
+            hold(phase);
+        }
+    }
+
+    /// Run `commit` on the owner now, before the job ends, and answer what it answered: a job that
+    /// commits in batches, as a Develop does, keeps every batch it committed whatever happens to
+    /// the rest. The worker waits for the owner, which runs the commit between two messages and
+    /// records what it announced. A job cancelled by then commits nothing and answers `cancelled`,
+    /// as does a job whose owner has stopped.
+    pub(super) fn commit(&self, commit: Commit) -> Result<Value, Error> {
+        self.control.checkpoint()?;
+        let (reply, answer) = std::sync::mpsc::sync_channel(1);
+        self.poster
+            .post(CatalogMessage::Library(LibraryMessage::Partial {
+                job_id: self.job_id.clone(),
+                commit,
+                reply,
+            }));
+        answer
+            .recv()
+            .unwrap_or_else(|_| Err(self.control.cancelled_error()))
+    }
+}
 
 /// The owner's half of a job: it records what the worker found and answers the job's result, which
 /// `job.read` reads.
@@ -110,12 +163,22 @@ pub(super) struct LibraryLane {
     /// The worker's one-slot channel; it is sent to only while the worker is idle.
     worker: Option<SyncSender<Dispatch>>,
     hold: Option<Hold>,
+    // Resolving missing originals (TASK-017): the files finished finds verified, which
+    // `source.relink` commits.
+    verified: crate::library::missing::Verifications,
 }
 
 /// What lane C's worker posts back.
 pub(super) enum LibraryMessage {
     /// The worker finished a job's work: the owner runs its commit and records the result.
     Done { job_id: JobId, commit: Commit },
+    /// The running job commits part of its result now and waits for the answer
+    /// ([`JobContext::commit`]).
+    Partial {
+        job_id: JobId,
+        commit: Commit,
+        reply: SyncSender<Result<Value, Error>>,
+    },
     /// Hold every job dispatched from now on at each phase it reaches, or stop holding them.
     #[cfg(test)]
     Hold(Option<Hold>),
@@ -133,6 +196,7 @@ impl LibraryLane {
             running: None,
             worker: None,
             hold: None,
+            verified: Default::default(),
         }
     }
 
@@ -285,16 +349,17 @@ fn run(dispatch: Dispatch, poster: &Poster) {
         work,
         hold,
     } = dispatch;
-    let pause = |phase: Phase| {
-        if let Some(hold) = &hold {
-            hold(phase);
-        }
+    let context = JobContext {
+        control: &control,
+        job_id: &job_id,
+        hold: hold.as_ref(),
+        poster,
     };
     let commit: Commit = if control.is_cancelled() {
         let error = control.cancelled_error();
         Box::new(move |_| Err(error))
     } else {
-        panic::catch_unwind(AssertUnwindSafe(|| work(&control, &pause)))
+        panic::catch_unwind(AssertUnwindSafe(|| work(&context)))
             .unwrap_or_else(|_| Box::new(|_| Err(Error::internal("the job stopped unexpectedly"))))
     };
     poster.post(CatalogMessage::Library(LibraryMessage::Done {
@@ -325,6 +390,27 @@ pub(super) fn handle(owner: &mut Owner, message: LibraryMessage) {
             owner.jobs.finish(&job_id, result.map(Output::Value));
             owner.record_announced();
             owner.catalog.library.dispatch(&mut owner.jobs);
+        }
+        LibraryMessage::Partial {
+            job_id,
+            commit,
+            reply,
+        } => {
+            let running = match &owner.catalog.library.running {
+                Some((running, control)) if *running == job_id => Some(control.clone()),
+                _ => None,
+            };
+            let result = match running {
+                Some(control) if !control.is_cancelled() => {
+                    panic::catch_unwind(AssertUnwindSafe(|| commit(owner))).unwrap_or_else(|_| {
+                        Err(Error::internal("part of the job could not be recorded"))
+                    })
+                }
+                Some(control) => Err(control.cancelled_error()),
+                None => Err(Error::internal("the job is no longer running")),
+            };
+            owner.record_announced();
+            let _ = reply.send(result);
         }
         #[cfg(test)]
         LibraryMessage::Hold(hold) => owner.catalog.library.hold = hold,

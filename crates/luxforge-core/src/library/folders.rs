@@ -109,8 +109,9 @@ pub(crate) fn move_to(
 }
 
 /// `folder.merge`: every photograph in the folder, removed ones too, moves into `into`, then its
-/// subfolders move under `into`, then the folder is deleted, as one change whose reverse (the folder
-/// again, its subfolders back, its photographs back) is its undo. A subfolder whose name one of
+/// subfolders move under `into`, then `into` takes the folder's event span when it has none, then the
+/// folder is deleted, as one change whose reverse (the folder again, `into`'s span as it was, its
+/// subfolders back, its photographs back) is its undo. A subfolder whose name one of
 /// `into`'s folders already has is refused naming it; a merge into itself or a folder inside it is
 /// refused; more than [`MAX_LIBRARY_BATCH`] items is `resource-limit`.
 pub(crate) fn merge(
@@ -132,7 +133,10 @@ pub(crate) fn merge(
     }
     let (photographs, _) = held(connection, id)?;
     let subfolders = children(connection, Some(id))?;
-    let items = photographs as usize + subfolders.len() + 1;
+    // The receiving folder takes the merged folder's event span when it has none, so later picks
+    // from that event still propose it.
+    let carried = merged.event.clone().filter(|_| target.event.is_none());
+    let items = photographs as usize + subfolders.len() + 1 + usize::from(carried.is_some());
     if items > MAX_LIBRARY_BATCH {
         return Err(Error::resource_limit(format!(
             "merging {} changes {items} items, more than the {MAX_LIBRARY_BATCH} a library change covers",
@@ -165,13 +169,19 @@ pub(crate) fn merge(
             ..FolderValue::from(sub)
         })?);
     }
+    let label = format!("Merged {} into {}", merged.name, target.name);
+    if let Some(event) = carried {
+        changes.push(set(&FolderValue {
+            event: Some(event),
+            ..FolderValue::from(target)
+        })?);
+    }
     changes.push((
         LibraryItem::CatalogFolder {
             folder_id: id.clone(),
         },
         Desired::Value(None),
     ));
-    let label = format!("Merged {} into {}", merged.name, target.name);
     Ok(Planned::labelled(changes, label))
 }
 

@@ -61,11 +61,31 @@ pub enum Icon {
     OverlayTint,
     OverlayMask,
     OverlayImage,
+    // The Select workspace: cells, moments, sources, the filter bar and the floating strip.
+    Check,
+    Stack,
+    Bracket,
+    Sliders,
+    Warning,
+    Drive,
+    Photos,
+    Clock,
+    Collection,
+    SmartCollection,
+    FolderGroup,
+    Search,
+    Camera,
+    Grid,
+    Loupe,
+    SideBySide,
+    Sort,
+    ChevronLeft,
+    Close,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 50] = [
+    pub const NAMED: [(&'static str, Icon); 69] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -119,6 +139,26 @@ impl Icon {
         ("overlay-tint", Self::OverlayTint),
         ("overlay-mask", Self::OverlayMask),
         ("overlay-image", Self::OverlayImage),
+        // The Select workspace, drawn from the catalog boards' glyphs.
+        ("check", Self::Check),
+        ("stack", Self::Stack),
+        ("bracket", Self::Bracket),
+        ("sliders", Self::Sliders),
+        ("warning", Self::Warning),
+        ("drive", Self::Drive),
+        ("photos", Self::Photos),
+        ("clock", Self::Clock),
+        ("collection", Self::Collection),
+        ("smart-collection", Self::SmartCollection),
+        ("folder-group", Self::FolderGroup),
+        ("search", Self::Search),
+        ("camera", Self::Camera),
+        ("grid", Self::Grid),
+        ("loupe", Self::Loupe),
+        ("side-by-side", Self::SideBySide),
+        ("sort", Self::Sort),
+        ("chevron-left", Self::ChevronLeft),
+        ("close", Self::Close),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -329,6 +369,11 @@ fn arc_points(cx: f32, cy: f32, radius: f32, start: f32, end: f32) -> Vec<(f32, 
 /// aligns a chevron's ink rather than its square to the edge of its row.
 pub(crate) const CHEVRON_DOWN: [(f32, f32); 3] = [(3.5, 6.0), (8.0, 10.5), (12.5, 6.0)];
 pub(crate) const CHEVRON_RIGHT: [(f32, f32); 3] = [(6.0, 3.5), (10.5, 8.0), (6.0, 12.5)];
+pub(crate) const CHEVRON_LEFT: [(f32, f32); 3] = [(10.0, 3.5), (5.5, 8.0), (10.0, 12.5)];
+
+/// A pick's check is drawn heavier than every other glyph, as the boards draw it, so it still
+/// reads at 10 pt in dark ink on the accent disc.
+const CHECK_STROKE_WIDTH: f32 = 1.6;
 
 /// Draws `icon` into `frame` as a `size` point square at the frame's origin, so a canvas can place
 /// an icon anywhere within itself by translating first.
@@ -847,6 +892,211 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
                     ..theme::MASK_GLYPH_PHOTO
                 },
             );
+        }
+        // The Select workspace's glyphs, each from the catalog boards' own icons.
+        // A pick: a short check, heavier than the other strokes so it reads at 10 pt on the
+        // accent disc.
+        Icon::Check => {
+            let heavy = canvas::Stroke {
+                width: CHECK_STROKE_WIDTH,
+                ..stroke
+            };
+            let mut path = canvas::path::Builder::new();
+            path.move_to(p(3.0, 8.5));
+            path.line_to(p(6.0, 11.5));
+            path.line_to(p(13.0, 4.5));
+            frame.stroke(&path.build(), heavy);
+        }
+        // A burst: a square with the corner of another behind it.
+        Icon::Stack => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.0, 5.0),
+                    iced::Size::new(9.0 * s, 9.0 * s),
+                    (1.0 * s).into(),
+                ),
+                stroke,
+            );
+            poly(frame, &[(5.0, 2.5), (13.5, 2.5), (13.5, 11.0)]);
+        }
+        // A bracket: three exposures, dark, middle and bright, the middle one taller.
+        Icon::Bracket => {
+            let bar = |x: f32, y: f32, h: f32| {
+                canvas::Path::rounded_rectangle(
+                    p(x, y),
+                    iced::Size::new(4.0 * s, h * s),
+                    (1.0 * s).into(),
+                )
+            };
+            let (dark, middle, bright) =
+                (bar(1.5, 4.0, 8.0), bar(6.0, 3.0, 10.0), bar(10.5, 4.0, 8.0));
+            frame.fill(
+                &middle,
+                Color {
+                    a: color.a * 0.35,
+                    ..color
+                },
+            );
+            frame.fill(&bright, color);
+            for bar in [&dark, &middle, &bright] {
+                frame.stroke(bar, stroke);
+            }
+        }
+        // Three sliders, each knob hollow over its rail: in the catalog, developed.
+        Icon::Sliders => {
+            for (y, knob) in [(4.0, 6.0), (8.0, 10.0), (12.0, 5.0)] {
+                line(frame, (3.0, y), (knob - 1.3, y));
+                line(frame, (knob + 1.3, y), (13.0, y));
+                frame.stroke(&canvas::Path::circle(p(knob, y), 1.3 * s), stroke);
+            }
+        }
+        // A warning: a triangle with its exclamation mark.
+        Icon::Warning => {
+            poly(frame, &[(8.0, 2.0), (14.5, 13.5), (1.5, 13.5), (8.0, 2.0)]);
+            line(frame, (8.0, 6.5), (8.0, 9.7));
+            frame.fill(&canvas::Path::circle(p(8.0, 11.7), 0.8 * s), color);
+        }
+        // A drive or card: a flat rounded body with its light.
+        Icon::Drive => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(1.5, 5.0),
+                    iced::Size::new(13.0 * s, 6.0 * s),
+                    (1.5 * s).into(),
+                ),
+                stroke,
+            );
+            line(frame, (11.0, 8.0), (12.0, 8.0));
+        }
+        // Photographs (an event, All photographs): a frame with hills and a sun.
+        Icon::Photos => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.0, 3.0),
+                    iced::Size::new(12.0 * s, 10.0 * s),
+                    (1.5 * s).into(),
+                ),
+                stroke,
+            );
+            poly(
+                frame,
+                &[
+                    (2.5, 11.5),
+                    (6.0, 8.0),
+                    (8.5, 10.5),
+                    (10.5, 8.5),
+                    (13.5, 11.5),
+                ],
+            );
+            frame.stroke(&canvas::Path::circle(p(10.5, 6.0), 1.0 * s), stroke);
+        }
+        // Recently developed: a clock face.
+        Icon::Clock => {
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.0), 6.0 * s), stroke);
+            poly(frame, &[(8.0, 4.5), (8.0, 8.0), (10.5, 9.5)]);
+        }
+        // A collection: a tray with a card over it; a smart collection adds a bolt.
+        Icon::Collection | Icon::SmartCollection => {
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(2.5, 5.0),
+                    iced::Size::new(11.0 * s, 8.0 * s),
+                    (1.2 * s).into(),
+                ),
+                stroke,
+            );
+            line(frame, (4.0, 3.0), (12.0, 3.0));
+            if icon == Icon::SmartCollection {
+                poly(frame, &[(8.6, 6.5), (6.8, 9.3), (9.2, 9.3), (7.4, 12.1)]);
+            }
+        }
+        // A year of catalog folders: a folder with a rule across it.
+        Icon::FolderGroup => {
+            poly(
+                frame,
+                &[
+                    (2.0, 12.6),
+                    (2.0, 4.0),
+                    (6.0, 4.0),
+                    (7.2, 5.2),
+                    (14.0, 5.2),
+                    (14.0, 12.6),
+                    (2.0, 12.6),
+                ],
+            );
+            line(frame, (5.0, 9.0), (11.0, 9.0));
+        }
+        // Search: a lens and its handle.
+        Icon::Search => {
+            frame.stroke(&canvas::Path::circle(p(7.0, 7.0), 4.5 * s), stroke);
+            line(frame, (10.5, 10.5), (14.0, 14.0));
+        }
+        // A camera body with its lens.
+        Icon::Camera => {
+            poly(
+                frame,
+                &[
+                    (2.0, 13.0),
+                    (2.0, 4.5),
+                    (5.0, 4.5),
+                    (6.0, 3.0),
+                    (10.0, 3.0),
+                    (11.0, 4.5),
+                    (14.0, 4.5),
+                    (14.0, 13.0),
+                    (2.0, 13.0),
+                ],
+            );
+            frame.stroke(&canvas::Path::circle(p(8.0, 8.5), 2.3 * s), stroke);
+        }
+        // The grid view: four rounded squares.
+        Icon::Grid => {
+            for (x, y) in [(2.0, 2.0), (9.0, 2.0), (2.0, 9.0), (9.0, 9.0)] {
+                frame.stroke(
+                    &canvas::Path::rounded_rectangle(
+                        p(x, y),
+                        iced::Size::new(5.0 * s, 5.0 * s),
+                        (1.0 * s).into(),
+                    ),
+                    stroke,
+                );
+            }
+        }
+        // The loupe: one frame.
+        Icon::Loupe => frame.stroke(
+            &canvas::Path::rounded_rectangle(
+                p(2.0, 3.0),
+                iced::Size::new(12.0 * s, 10.0 * s),
+                (1.5 * s).into(),
+            ),
+            stroke,
+        ),
+        // Compare frames side by side: two frames.
+        Icon::SideBySide => {
+            for x in [1.5, 8.5] {
+                frame.stroke(
+                    &canvas::Path::rounded_rectangle(
+                        p(x, 3.0),
+                        iced::Size::new(6.0 * s, 10.0 * s),
+                        (1.0 * s).into(),
+                    ),
+                    stroke,
+                );
+            }
+        }
+        // Sort: a downward arrow beside three shortening lines.
+        Icon::Sort => {
+            line(frame, (5.0, 3.0), (5.0, 13.0));
+            poly(frame, &[(2.5, 10.5), (5.0, 13.0), (7.5, 10.5)]);
+            line(frame, (9.0, 4.0), (14.0, 4.0));
+            line(frame, (9.0, 7.0), (13.0, 7.0));
+            line(frame, (9.0, 10.0), (12.0, 10.0));
+        }
+        Icon::ChevronLeft => poly(frame, &CHEVRON_LEFT),
+        // Clear or close: a cross.
+        Icon::Close => {
+            line(frame, (4.0, 4.0), (12.0, 12.0));
+            line(frame, (12.0, 4.0), (4.0, 12.0));
         }
     }
 }

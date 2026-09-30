@@ -321,6 +321,9 @@ pub(crate) struct Inputs<'a> {
     /// What the Performance section's sampler has read since it last started sampling.
     pub(crate) performance: &'a performance::PerformanceHistory,
     // ── catalog lane D: views and desktop ──
+    /// The Select workspace's state: which workspace is shown, what Select last read and its own
+    /// choices.
+    pub(crate) select: &'a select::SelectState,
     // ── end lane D ──
 }
 
@@ -347,11 +350,7 @@ pub(crate) struct Workspace {
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
     // ── catalog lane D: views and desktop ──
-    /// The Select workspace.
-    #[allow(
-        dead_code,
-        reason = "catalog contracts: lane D draws it when the switch lands"
-    )]
+    /// The Select workspace, empty while Develop is shown.
     pub(crate) select: select::SelectModel,
     // ── end lane D ──
 }
@@ -548,6 +547,9 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         version_form: VersionForm,
+        // ── catalog lane D: views and desktop ──
+        select: select::SelectState,
+        // ── end lane D ──
     }
 
     impl Scene {
@@ -588,6 +590,9 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 version_form: VersionForm::default(),
+                // ── catalog lane D: views and desktop ──
+                select: select::SelectState::default(),
+                // ── end lane D ──
             }
         }
 
@@ -696,6 +701,9 @@ mod tests {
                 capabilities: &self.capabilities,
                 performance_expanded: self.performance_expanded,
                 performance: &self.performance,
+                // ── catalog lane D: views and desktop ──
+                select: &self.select,
+                // ── end lane D ──
             }
         }
 

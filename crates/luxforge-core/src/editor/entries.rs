@@ -21,8 +21,13 @@
 //! [`EditorService::library_write`](crate::EditorService::library_write)), so the next read sees
 //! the new locator without reopening the catalog.
 //!
-//! No other write moves a head. An import inserts a new asset under a new identity, which no head or
-//! entry here can name, so there is nothing to update, and a repeated import writes nothing; naming
+//! One write removes a head: sending a photograph back (a `developed-asset` item going absent, from
+//! `asset.send-back` or a Develop's undo) deletes its records, and after it commits the head and
+//! entries of that asset are forgotten ([`EntryCache::forget`]).
+//!
+//! No other write moves a head. An import or a Develop inserts a new asset under a new identity,
+//! which no head or entry here can name, so there is nothing to update, and a repeated import writes
+//! nothing; naming
 //! or removing a version touches neither an entry nor a head; and reopening builds a new service,
 //! whose cache starts empty.
 //!
@@ -141,6 +146,13 @@ impl EntryCache {
         if let Some(head) = self.heads.iter_mut().find(|head| head.asset.id == asset.id) {
             head.asset = asset;
         }
+    }
+
+    /// A committed write deleted this asset's records (a photograph sent back): its head and every
+    /// entry read for it are dropped, so nothing cached answers for an asset that is gone.
+    pub(super) fn forget(&mut self, asset_id: &AssetId) {
+        self.heads.retain(|head| head.asset.id != *asset_id);
+        self.entries.retain(|(asset, _)| asset != asset_id);
     }
 
     /// How many entries and heads are held.
