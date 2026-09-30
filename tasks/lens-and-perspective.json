@@ -806,7 +806,7 @@
         "Record 24/60 MP JPEG and qualified NEF/RAF/Air 2S release p50/p95 for profile preparation, Fit draft/commit, 100% pan/refinement, crop opening, mask/pick, export and cancellation, plus RSS, scratch/cache high-water, GPU residency and idle.",
         "Measure serial versus shared-pool mapping/resample thresholds on 0.025 to 2 MP inputs; choose a measured named threshold for the new pass.",
         "Demonstrate row/chunk cancellation latency, bounded active/pending work and owner responsiveness under simultaneous preview/export/analysis; report regressions against current budgets and qualify the measured support range.",
-        "Answer all eight performance-rule checklist questions with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
+        "Answer every performance-rule checklist question with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
         "Final full tier with authentic manifest and background native M4 evidence passes before a milestone claim; skipped/unavailable platform or RAW checks keep qualification incomplete. Record current results and limits, then remove the completed plan per repository convention."
       ],
       "test_strategy": {
@@ -826,7 +826,7 @@
           "Record 24/60 MP JPEG and qualified NEF/RAF/Air 2S release p50/p95 for profile preparation, Fit draft/commit, 100% pan/refinement, crop opening, mask/pick, export and cancellation, plus RSS, scratch/cache high-water, GPU residency and idle.",
           "Measure serial versus shared-pool mapping/resample thresholds on 0.025 to 2 MP inputs; choose a measured named threshold for the new pass.",
           "Demonstrate row/chunk cancellation latency, bounded active/pending work and owner responsiveness under simultaneous preview/export/analysis; report regressions against current budgets and qualify the measured support range.",
-          "Answer all eight performance-rule checklist questions with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
+          "Answer every performance-rule checklist question with paths/evidence; frame/cache limits and live-job pins are enforced, while spatial/colour targets and unmeasured backend allocations are not called process-wide bounds.",
           "Final full tier with authentic manifest and background native M4 evidence passes before a milestone claim; skipped/unavailable platform or RAW checks keep qualification incomplete. Record current results and limits, then remove the completed plan per repository convention."
         ]
       }
