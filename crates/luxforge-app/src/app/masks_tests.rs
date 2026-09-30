@@ -2122,6 +2122,24 @@ fn a_create_opens_the_mask_it_made_and_nothing_else_moves_the_selection() {
 
 /// The Add row offers each kind with its mode chosen up front, and the gesture that follows creates
 /// exactly that component — not one whose role was guessed from a modifier key afterwards.
+/// An Add brush in hand has not made its component yet, so a change of the Add row's mode reaches
+/// the component its first stroke will make.
+#[test]
+fn an_armed_add_brush_follows_the_add_rows_mode() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    masking.message(MaskMessage::Add(BRUSH.to_owned()));
+    assert!(masking.editor.armed_brush());
+    masking.message(MaskMessage::SetAddMode(crate::state::masks::mode_index(
+        ComponentMode::Subtract,
+    )));
+    assert_eq!(
+        masking.editor.mask_shape().expect("the brush in hand").op,
+        MaskDraftOp::Add(ComponentMode::Subtract)
+    );
+}
+
 #[test]
 fn the_add_row_chooses_the_mode_before_the_gesture() {
     let mut masking = Masking::opened();
@@ -3289,6 +3307,31 @@ fn race_c_discard_during_a_commit_sends_no_racing_cancel() {
     );
     assert_eq!(masking.editor.status.text, "Mask committed");
     assert_eq!(masking.listing().masks.len(), 1);
+}
+
+/// Escape during a stroke's commit lets the commit decide its entry and still puts the brush down.
+#[test]
+fn a_discard_during_a_stroke_commit_puts_the_brush_down() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.6, y: 0.5 }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.draft(DraftMessage::Cancel);
+    masking.commit_open_draft();
+    assert!(masking.editor.gesture.is_none());
+    assert!(!masking.editor.armed_brush(), "the brush is down");
+    assert!(masking.editor.mask_tool_refusal().is_none());
+    assert_eq!(
+        masking.listing().masks.len(),
+        1,
+        "the commit decided its entry"
+    );
 }
 
 /// (e) A slider's Discard holds back the drafted frames still queued, exactly as a mask gesture's

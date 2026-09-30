@@ -943,6 +943,7 @@ impl Editor {
         let Some(open) = self.gesture.take() else {
             return Task::none();
         };
+        let cancelled = open.draft.cancel_requested();
         self.session.draft = None;
         self.presentation.displayed_draft_id = None;
         self.presentation.displayed_draft_revision = None;
@@ -965,7 +966,9 @@ impl Editor {
                     }
                 }
             }
-            (Kind::Mask(mask), Some(refresh)) => self.mask_committed(mask.shape, refresh),
+            (Kind::Mask(mask), Some(refresh)) => {
+                self.mask_committed(mask.shape, refresh, cancelled)
+            }
             (Kind::Mask(_), None) => {
                 self.status.text = "The mask gesture changed nothing; nothing was committed".into();
                 self.refresh_mask_coverage()

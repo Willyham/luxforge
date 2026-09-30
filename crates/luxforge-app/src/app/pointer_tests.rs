@@ -25,6 +25,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
 
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id.clone(),
+        target: editor.field_target(),
         mode: mode.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -58,6 +59,7 @@ fn a_sample_apply_pick_queries_the_located_pixel_and_submits_the_answer_once() {
     answer.insert("patch".into(), json!({"x": 98, "y": 40}));
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
+        target: editor.field_target(),
         action: action.clone(),
         point: (100, 42),
         result: Ok(Value::Object(answer)),
@@ -140,6 +142,7 @@ fn a_neutral_pick_on_a_mask_asks_about_that_mask_and_sets_its_white_balance() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id.clone(),
+        target: editor.field_target(),
         mode: mode.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -210,8 +213,19 @@ fn a_committed_module_pick_puts_itself_away() {
         .expect("the declared action")
         .clone();
     let field = declared.parameters[0].name.clone();
+    // An answer sampled for a mask the selection has since left is dropped, not applied here.
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: editor.displayed_entry().expect("a displayed entry"),
+        target: (Some(luxforge_core::MaskId::new()), None),
+        action: action.clone(),
+        point: (100, 42),
+        result: Ok(json!({ field.clone(): -12.0 })),
+    }));
+    assert!(!editor.busy, "a retargeted answer was submitted");
+    assert!(editor.status.text.contains("selection changed"));
+    let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
+        entry: editor.displayed_entry().expect("a displayed entry"),
+        target: editor.field_target(),
         action,
         point: (100, 42),
         result: Ok(json!({ field: -12.0 })),
@@ -239,6 +253,7 @@ fn a_refused_sample_shows_its_reason_and_commits_nothing() {
     let log = attach_log(&mut editor);
     let _ = editor.update(Message::Pointer(PointerMessage::SampleQueried {
         entry: entry_id,
+        target: editor.field_target(),
         action,
         point: (100, 42),
         result: Err(
@@ -286,6 +301,7 @@ fn a_pick_answers_only_to_the_mode_on_screen_and_is_refused_during_a_draft() {
     editor.session.workspace.mode = sample_module.clone();
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: sample_module.clone(),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -556,6 +572,7 @@ fn a_canvas_pick_fills_the_located_content_coordinate_without_committing() {
     assert_eq!(editor.controls.fields.get(&action, &y), Some("0"));
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -609,6 +626,7 @@ fn a_located_point_for_another_entry_is_dropped() {
     // The canvas moved to another stack while the mapping was in flight.
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: EntryId::new(),
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Ok(ContentPoint {
@@ -638,6 +656,7 @@ fn a_point_outside_the_content_stage_reports_and_fills_nothing() {
     let refusal = "validation: point (7, 9) is outside the 4x3 rendered image";
     let _ = editor.update(Message::Pointer(PointerMessage::Located {
         entry: entry_id,
+        target: editor.field_target(),
         mode: pick_mode(&editor),
         view: (7, 9),
         result: Err(refusal.into()),
@@ -677,10 +696,12 @@ fn a_point_pick_commits_only_when_its_module_declares_it() {
         .expect("a module whose point pick commits");
     editor.session.workspace.mode = mode.clone();
     let entry_id = editor.displayed_entry().expect("a displayed entry");
+    let target = editor.field_target();
     let located = |entry: EntryId| {
         Message::Pointer(PointerMessage::Located {
             entry,
             mode: mode.clone(),
+            target: target.clone(),
             view: (7, 9),
             result: Ok(ContentPoint {
                 content_x: 100,

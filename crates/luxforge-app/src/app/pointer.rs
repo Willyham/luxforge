@@ -180,6 +180,7 @@ impl Editor {
                     state.asset.id.clone(),
                     entry,
                     self.session.workspace.mode.clone(),
+                    self.field_target(),
                     x,
                     y,
                 );
@@ -187,6 +188,7 @@ impl Editor {
             PointerMessage::Located {
                 entry,
                 mode,
+                target: picked_for,
                 view: (view_x, view_y),
                 result,
             } => {
@@ -196,6 +198,9 @@ impl Editor {
                     // The canvas has moved to another stack or another mode; this answer
                     // describes the one it left.
                     return Task::none();
+                }
+                if self.field_target() != picked_for {
+                    return self.pick_retargeted();
                 }
                 let Some(target) = PickTarget::of(&self.modules, &mode) else {
                     return Task::none();
@@ -300,6 +305,7 @@ impl Editor {
                             self.client,
                             asset,
                             entry,
+                            picked_for.clone(),
                             format!("query.{query}"),
                             action,
                             (x_parameter, y_parameter),
@@ -338,6 +344,7 @@ impl Editor {
                             self.client,
                             asset,
                             entry,
+                            picked_for.clone(),
                             query,
                             action,
                             (x_parameter, y_parameter),
@@ -349,12 +356,17 @@ impl Editor {
             }
             PointerMessage::SampleQueried {
                 entry,
+                target,
                 action,
                 point: (x, y),
                 result,
             } => {
                 if self.displayed_entry() != Some(entry) {
                     return Task::none();
+                }
+                // The answer was sampled for, and would land on, the target the pick was made for.
+                if self.field_target() != target {
+                    return self.pick_retargeted();
                 }
                 let answer = match result {
                     Ok(answer) => answer,
@@ -455,6 +467,14 @@ impl Editor {
                 };
             }
         }
+        Task::none()
+    }
+
+    /// The selection moved while a pick was out: its answer belongs to the mask it left and is
+    /// dropped rather than applied to the new one.
+    fn pick_retargeted(&mut self) -> Task<Message> {
+        self.status.text = "The selection changed while picking; nothing was applied".into();
+        self.outcome(Outcome::PickEnded);
         Task::none()
     }
 
