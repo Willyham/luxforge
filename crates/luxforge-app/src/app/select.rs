@@ -985,7 +985,9 @@ impl Editor {
                 // Whether the active item was on screen, which decides whether the scroll follows
                 // it or stays where the person left it.
                 let active_shown = self.active_on_screen();
+                let was_active = self.session.browse.selection.active;
                 self.adopt(session);
+                let now_active = self.session.browse.selection.active;
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
                 let same_source = previous
@@ -1008,7 +1010,17 @@ impl Editor {
                 {
                     state.folder = Some(path.clone());
                 }
-                state.rows.reset(summary.revision, summary.count);
+                // The same source read again keeps the active item's row, and its neighbours' when
+                // they kept their places, until the new revision's rows arrive: the loupe's frame
+                // never goes without one.
+                let carried = if same_source {
+                    model::carried_rows(&state.rows, was_active, now_active, summary.count)
+                } else {
+                    Vec::new()
+                };
+                state
+                    .rows
+                    .reset_carrying(summary.revision, summary.count, carried);
                 state.query = Some(summary.query.clone());
                 let count = model::thousands(summary.count);
                 state.summary = Some(summary);
@@ -1380,7 +1392,8 @@ impl Editor {
         let Some(active) = self.selection().active else {
             return Task::none();
         };
-        let Some(row) = self.select.state.rows.row(active) else {
+        // Whether it is picked now, from this revision's own row.
+        let Some(row) = self.select.state.rows.read(active) else {
             self.status.text = "Reading the frame\u{2026}".into();
             return Task::none();
         };
