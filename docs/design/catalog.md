@@ -305,6 +305,40 @@ Proposed methods, in the one method table with declared parameters. Mutations ca
 - **Views on the owner.** One ordered id list per client, 16 bytes an item, evaluated over the index and the catalog, so a window, a range selection, the loupe's next frame and the filmstrip's neighbours cost no query. If evaluation at the design scale misses its budget, catalog views move to a read-only connection, which needs the catalog's exclusive locking revisited ([P13](#proposals)).
 - **Desktop.** New `state/select` and `view/select` modules within the enforced layering; a virtualized, grouped grid widget in `luxforge-ui` that creates each thumbnail's image handle once and keeps it while the cell is on screen (a handle created in `view()` uploads again every frame, as the Develop surface learned); the loupe as its own surface with the look-ahead cache. Develop keeps one document; switching photographs replaces it through the open path with the large preview drawn first, and neighbouring photographs are not prepared ahead in the first version.
 
+## Delivery plan
+
+The work divides into four lanes that run in parallel after one contracts task, so at most four implementers work at once, each in its own worktree, integrated on one branch. The task list is [tasks/catalog.json](../../tasks/catalog.json); its first task is the owner's answers to the [proposals](#proposals).
+
+### Contracts first
+
+One task fixes everything the lanes share before any lane starts, so no lane waits on another's internals:
+
+- **Storage.** Catalog format 12 (picks, indexed folders, catalog folders, capture, volumes, collections, the journal, the new asset columns) and the index database's schema, created and refused as the design says.
+- **Types.** The shared shapes in one core module: file and photograph identities, header metadata, events and moments, view queries and rows, picks, library changes, job progress. Every lane codes against these.
+- **Method declarations.** The design's API written down as parameter and result shapes with error codes, in the design's [API](#api) table and the types module. Each method is registered in the method table by the lane that implements it, when it works, so `schema.list` never lists a method that does nothing.
+- **Generated data.** `cargo xtask generate-catalog` writes deterministic indexes and catalogs at the design scale — trips with positions, bursts, brackets with and without exposure bias, undated files, picks, catalog folders, collections, missing originals — with no image files, plus small generated image folders with real embedded thumbnails for the preview and desktop lanes. Every lane tests against these, so the desktop is built before the core lanes finish.
+- **Module skeletons.** Empty modules in the places each lane owns (below), and the hot shared files (`api/methods.rs`, `api/owner.rs`, `editor/catalog.rs`, the desktop's `app/keymap.rs` and `state/mod.rs`) given a marked section per lane, so parallel work rarely touches the same lines.
+
+### Lanes
+
+| Lane | Delivers | Owns | Consumes |
+| --- | --- | --- | --- |
+| **A · Files** | Header metadata, the index lane with reconciliation and exclusions, watchers and cards, events and moments from metadata | `core/src/index/`, `core/src/organize/`, `export/metadata` (typed accessors), the gazetteer asset | Contracts |
+| **B · Previews** | The preview lane and cache, embedded extraction per camera, the preview-brightness bracket check, the 100% region and development fallback, rendered previews of developed photographs | `core/src/previews/`, `luxforge-raw` (embedded previews), `luxforge-jpeg` (scaled and cropped decode) | Contracts; the index's file identities (A) |
+| **C · Catalog** | Picks and the library journal, catalog folders and collections, developing picks, removal, batch jobs, availability, Locate and resolving missing originals | `core/src/library/`, the develop lane, `editor/source.rs` changes | Contracts; header metadata (A) for developing |
+| **D · Views and desktop** | Browse views, facets and selection; the Select workspace, loupe and compare, the Develop confirmation and filmstrip, catalog browsing, missing-originals UI, long-running-work UI | `core/src/browse/`, `app/select*`, `state/select*`, `view/select*`, new `luxforge-ui` widgets, the new smoke scenarios | Contracts and generated data first; each core lane's methods as they land |
+
+Each lane works through its tasks in order: A reads metadata, then builds the index lane, events and moments, then the watchers; B builds the preview lane, the 100% region and rendered previews, then the bracket check once events and moments exist; C does picks and the journal, folders and collections, developing picks, availability and Locate, resolving missing originals, then removal and batch jobs; D builds browse views once events and moments exist, then the Select workspace, long-running work, the loupe, the Develop confirmation and filmstrip, catalog browsing and the missing-originals view. The plan lists the order with its task IDs.
+
+A lane's task says what it consumes and produces. A lane that needs another's result before it has landed works against the generated data and the declared shapes, and replaces its fake with the real call when the other task is merged.
+
+### Integration
+
+- An integration branch holds the contracts and every merged task; each implementer starts from it and rebases on it.
+- While building, each task runs only its own tests (`cargo test -p CRATE FILTER`); `verify --tier quick` once at hand-off. The integrator reviews every diff and runs `rendered` when a desktop task merges.
+- Timing runs, the design's performance targets included, happen once, in the last task, on the integrated build.
+- Every task answers the performance-rules checklist for what it changed; any new dependency (a watcher crate, the gazetteer data) is pinned and noted in the dependency policy, with the manual review still deferred.
+
 ## Performance
 
 Provisional targets, measured once on the owner's M4 when the feature is complete, with a real 1,000-frame RAW trip on the internal SSD and on an SD card reader, a generated 10,000-file folder and a generated 100,000-photograph catalog, and recorded with their scope in [performance](../specs/performance.md). Nothing is claimed until measured; misses are reported with figures.

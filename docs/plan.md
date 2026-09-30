@@ -13,7 +13,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Library
 
-**Browse, pick, develop** (proposal, [design](design/catalog.md), [plan](../tasks/catalog.json)). Browse cards and folders fast, pick a few, develop only those into the catalog.
+**Browse, pick, develop** (proposal, [design](design/catalog.md), [plan](../tasks/catalog.json)). Browse cards and folders fast, pick a few, develop only those into the catalog. Delivered as one contracts step and four parallel lanes (files, previews, catalog, views and desktop), as the [delivery plan](design/catalog.md#delivery-plan) sets out.
 - Owner decisions on the design's proposals
 - Catalog format 12 with picks, collections and the library journal; a disposable index; capture metadata from headers
 - Browsing cards and folders; events by time and place; days, cameras and moments (bursts by speed, brackets by exposure from metadata or previews); the previews cache

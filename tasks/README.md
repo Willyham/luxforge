@@ -15,7 +15,7 @@ The post-consolidation programme is complete and its plans are deleted; its outc
 
 | Plan | Purpose |
 | --- | --- |
-| [Catalog](catalog.json) | Proposed browse, pick, develop flow: auto-organized events and moments, the loupe, developing picks into the catalog, collections, Develop's development set, Locate and resolving missing originals |
+| [Catalog](catalog.json) | Proposed browse, pick, develop flow, as one contracts task and four parallel lanes: files (index, watchers, events and moments), previews, catalog (picks, folders, developing, recovery) and views and desktop |
 | [Corrections](corrections.json) | Proposed offline Clone/Heal and optional provider-agnostic AI Remove, with a qualified local-model path and explicit owner decisions |
 | [Dependency advisories](dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](product-decisions.json) | Open product questions |
