@@ -115,6 +115,35 @@ impl JsonProcess {
         })
     }
 
+    /// Open the file at `path` as a client does: develop it at once (`pick.develop` of its path
+    /// into the plan's folder, confirming removable media, since the person chose it), prepare the
+    /// photograph the Develop answers (`source.prepare`) and adopt it as this client's current
+    /// photograph (`job.adopt`), answering the adopted photograph's state. `actor` names the
+    /// Develop.
+    pub fn open(&mut self, path: &Path, actor: &str) -> Value {
+        self.next += 1;
+        let request_id = format!("{}-open-{}", self.tag, self.next);
+        let started = self.call(
+            "pick.develop",
+            json!({
+                "targets": {"kind": "paths", "paths": [path]},
+                "into": [],
+                "confirm_removable": true,
+                "mutation": {"request_id": request_id, "actor": actor},
+            }),
+        );
+        let developed = self.settle("job.read", &started["job_id"]);
+        assert_eq!(developed["status"], "ready", "the Develop: {developed}");
+        let report = &developed["result"];
+        assert_eq!(report["failed"], json!([]), "the Develop: {report}");
+        let asset = report["developed"][0]["asset_id"].clone();
+        let prepared = self.call("source.prepare", json!({"asset_id": asset}));
+        let ready = self.settle("job.read", &prepared["job_id"]);
+        assert_eq!(ready["status"], "ready", "the preparation: {ready}");
+        let adopted = self.call("job.adopt", json!({"job_id": prepared["job_id"]}));
+        adopted["asset"].clone()
+    }
+
     /// Every answer line so far, in order.
     pub fn transcript(&self) -> String {
         self.transcript.concat()

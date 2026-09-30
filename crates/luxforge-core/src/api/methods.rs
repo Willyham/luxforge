@@ -29,7 +29,7 @@ use crate::{
         },
         resources, settings,
     },
-    editor::{DEFAULT_ASSET_PAGE, MAX_ASSET_PAGE, MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
+    editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
     jobs::{JOB_CANCEL, JOB_READ},
     path,
     presets::MAX_PRESET_GROUP,
@@ -271,13 +271,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |service, _, _| Ok(schemas(service.registry())),
         "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
     ),
-    owner!(
-        "catalog.import",
-        owner::Import,
-        owner::catalog_import,
-        "queues bounded source preparation; returns a job to inspect with job.read; commits only on verified success, which emits the event",
-        retries: Owner,
-    ),
     // The one job table belongs to the catalog owner, so the owner answers for every kind.
     owner!(
         JOB_READ,
@@ -297,7 +290,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "job.adopt",
         owner::JobParams,
         owner::job_adopt,
-        "select the ready result of this client's latest import as current; stale imports are refused"
+        "selects the ready result of this client's latest source.prepare as its current photograph, answering {asset, session}: the state it prepared and the session; a job that is not the client's latest preparation (one it asked for since supersedes it) is conflict, one still preparing is preparation-required naming it, a failed one is its error; opening a file is pick.develop of it (targets its path, into [], confirm_removable, as the person chose it), then source.prepare of the photograph the Develop answers, then job.adopt"
     ),
     owner!(
         JOB_CANCEL,
@@ -309,15 +302,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "source.prepare",
         owner::SourcePrepare,
         owner::source_prepare,
-        "queue signature-verified preparation of an imported source after reopen or cache eviction"
-    ),
-    service!(
-        "catalog.list",
-        CatalogList,
-        |service, _, p| value(
-            service.assets(p.after.as_ref(), p.limit.unwrap_or(DEFAULT_ASSET_PAGE))?
-        ),
-        "{assets, next}: one page of referenced assets in import order, each {id, locator, kind, width, height} read from the asset's own row without decoding its source interpretation; next is the after cursor of the following page, or null on the last; source.inspect reads one asset's full interpretation"
+        "queues signature-verified preparation of a photograph's original — to open it after it is developed, after a reopen or after cache eviction — answering {job_id, status}; job.adopt takes its ready result as the client's current photograph"
     ),
     service!(
         "asset.state",
@@ -1570,13 +1555,6 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
 
 /// The history page `history.list` and `history.lineage` answer when the request names no `limit`.
 const DEFAULT_HISTORY_PAGE: usize = 50;
-
-host_params! {
-    pub(super) struct CatalogList {
-        limit: Option<usize> = integer(1, MAX_ASSET_PAGE as i64).default(DEFAULT_ASSET_PAGE),
-        after: Option<AssetId> = asset().notes("the last asset of the previous page, its next cursor; default the first page"),
-    }
-}
 
 host_params! {
     pub(super) struct AssetParams {

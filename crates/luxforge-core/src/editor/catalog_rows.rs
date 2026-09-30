@@ -62,36 +62,6 @@ pub(crate) fn insert_catalog_folder(
     Ok(())
 }
 
-/// The top-level catalog folder named `name` (ignoring case), made now when there is none: where
-/// the single-file import puts a photograph until picks are developed into chosen folders.
-pub(crate) fn top_level_folder(
-    tx: &Transaction<'_>,
-    name: &str,
-    now_ms: i64,
-) -> Result<CatalogFolderId, Error> {
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT id FROM catalog_folders WHERE parent_id IS NULL AND name = ?1 COLLATE NOCASE",
-            [name],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(id) = existing {
-        return CatalogFolderId::parse(id);
-    }
-    let folder = CatalogFolder {
-        id: CatalogFolderId::new(),
-        name: name.to_owned(),
-        parent_id: None,
-        created_ms: now_ms,
-        event: None,
-        count: 0,
-        year: None,
-    };
-    insert_catalog_folder(tx, &folder)?;
-    Ok(folder.id)
-}
-
 /// Everything an asset row holds beside its record: where it lives in the catalog and on disk, when
 /// it was developed, whether it is removed, and its original's availability.
 pub(crate) struct NewAsset<'a> {

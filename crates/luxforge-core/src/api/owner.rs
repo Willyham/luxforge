@@ -330,8 +330,8 @@ struct SourceTask {
 
 /// What a completed source job leaves for its clients to read.
 enum Completed {
-    /// A prepared asset, and whether this job created it.
-    Asset(Box<EditorState>, bool),
+    /// A prepared photograph.
+    Asset(Box<EditorState>),
     Value(Value),
 }
 
@@ -382,11 +382,8 @@ impl SourceQueue {
                 SourceFlightKey {
                     path: path.clone(),
                     signature: Some(signature.clone()),
-                    expected_fingerprint: target.as_ref().map(|target| target.fingerprint.clone()),
-                    gains_bits: target
-                        .as_ref()
-                        .and_then(|target| target.raw.as_ref())
-                        .map(|raw| raw.gains.map(f32::to_bits)),
+                    expected_fingerprint: Some(target.fingerprint.clone()),
+                    gains_bits: target.raw.as_ref().map(|raw| raw.gains.map(f32::to_bits)),
                     artifacts: flight_artifacts(&artifacts),
                 },
                 None,
@@ -713,14 +710,6 @@ fn source_worker(
 }
 
 host_params! {
-    /// `catalog.import`.
-    pub(super) struct Import {
-        path: PathBuf = path().notes("the photo to import"),
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
     /// `job.read`, `job.cancel` and `job.adopt`.
     pub(super) struct JobParams {
         job_id: JobId = job(),
@@ -1009,9 +998,10 @@ impl OwnerHandle {
         let _ = self.sender.send(OwnerMessage::WatchEvents { client, wake });
     }
 
-    /// Block the calling thread until `job`, a source job of `client`'s, is no longer queued or
-    /// running — it finished, failed, or `client` left it through `job.cancel` — or, with no job
-    /// named, until any source job finishes, which is what makes room after a full source queue.
+    /// Block the calling thread until `job`, a source job of `client`'s or a library job (such as
+    /// the Develop that opens a file), is no longer queued or running — it finished, failed, or
+    /// `client` left or cancelled it through `job.cancel` — or, with no job named, until any source
+    /// job finishes, which is what makes room after a full source queue.
     /// It answers at once when there is nothing to wait for and reports nothing about the job: the
     /// caller reads `job.read` afterwards. A blocking receive on the caller's thread rather than
     /// a poll, so a client waiting on a decode costs nothing until it ends. Never call it on the
@@ -1105,7 +1095,7 @@ fn owner_loop(
         sessions: HashMap::new(),
         queue,
         activity,
-        latest_import: HashMap::new(),
+        latest_preparation: HashMap::new(),
         log: EventLog::default(),
         requests: RequestTable::default(),
         announced: Vec::new(),
@@ -1231,11 +1221,13 @@ fn owner_loop(
         catalog,
         ..
     } = owner;
-    // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it, and the catalog lanes, whose
-    // workers post into it too, stop after it. Every live job is asked to stop, the source
-    // worker's included, and the lanes are joined; a running export stops at its next row or block
-    // and removes its temporary file.
+    // Every live job is asked to stop first, the source worker's included, so a running export
+    // stops at its next row or block and removes its temporary file however long the lanes below
+    // take to stop, and before a caller can see the owner gone. The lanes post into the receiver,
+    // so it goes next: a lane finishing as it stops is never left waiting on a full channel while
+    // the owner waits for it, and the catalog lanes, whose workers post into it too, stop after
+    // it. Then the job lanes are joined.
+    jobs.cancel_live();
     drop(receiver);
     catalog.shutdown();
     jobs.shutdown();
@@ -1340,7 +1332,8 @@ pub(super) struct Owner {
     /// The analysis worker: one running job and one replaceable pending job.
     queue: AnalysisQueue,
     activity: Arc<ActivityBoard>,
-    latest_import: HashMap<ClientId, JobId>,
+    /// Each client's latest `source.prepare`, whose ready result `job.adopt` takes.
+    latest_preparation: HashMap<ClientId, JobId>,
     log: EventLog,
     requests: RequestTable,
     /// What the message being handled changed, each change once. The owner records them as events
@@ -1503,10 +1496,12 @@ impl Owner {
     fn await_source(&mut self, client: ClientId, job: Option<JobId>, reply: SyncSender<()>) {
         let pending = match &job {
             Some(id) => {
-                self.jobs
+                (self
+                    .jobs
                     .kind(id)
                     .is_some_and(|kind| kind.family() == Family::Source)
-                    && self.jobs.wanted_by(id, client)
+                    && self.jobs.wanted_by(id, client))
+                    || self.catalog.library.holds(id)
             }
             None => self.jobs.any_live(Family::Source),
         };
@@ -1735,7 +1730,7 @@ impl Owner {
         for (job_id, kind) in self.jobs.disconnect(client) {
             self.stop(&job_id, kind);
         }
-        self.latest_import.remove(&client);
+        self.latest_preparation.remove(&client);
         self.points.disconnect(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
@@ -1744,8 +1739,7 @@ impl Owner {
         self.catalog.disconnect(client, &mut self.jobs);
     }
 
-    /// A source job finished on the worker: commit what it prepared for the clients still waiting,
-    /// and record the import event when it created an asset.
+    /// A source job finished on the worker: adopt what it prepared for the clients still waiting.
     fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
         let interested = self.jobs.wanted(id);
         #[cfg(test)]
@@ -1758,8 +1752,8 @@ impl Owner {
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
                 SourceResult::Prepared(prepared) => {
-                    let (state, created) = service.complete_preparation(*prepared)?;
-                    Ok(Completed::Asset(Box::new(state), created))
+                    let state = service.complete_preparation(*prepared)?;
+                    Ok(Completed::Asset(Box::new(state)))
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
@@ -1768,20 +1762,10 @@ impl Owner {
         } else {
             Err(Error::conflict("source job cancelled"))
         };
-        // An import is announced when it commits an asset, under the request that asked for it,
-        // naming the asset it created.
-        if let Ok(Completed::Asset(state, true)) = &outcome
-            && let Some(origin) = self.jobs.origin(id)
-        {
-            let origin = origin
-                .clone()
-                .changed(state.asset.id.clone(), Some(state.revision));
-            self.log.record(&origin);
-        }
         self.jobs.finish(
             id,
             outcome.map(|completed| match completed {
-                Completed::Asset(state, _) => Output::Asset(state),
+                Completed::Asset(state) => Output::Asset(state),
                 Completed::Value(value) => Output::Value(value),
             }),
         );
@@ -1857,35 +1841,6 @@ impl Owner {
     }
 }
 
-/// `catalog.import`: queue the preparation, or answer from the verified cache. The import is
-/// announced when it commits an asset, not here.
-pub(super) fn catalog_import(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: Import,
-) -> Result<Value, Error> {
-    let (id, status) = match owner.service.importing(&params.path)? {
-        Preparing::Ready(state) => (
-            owner.sources.ready(&mut owner.jobs, call.client, *state)?,
-            JobStatus::Ready,
-        ),
-        Preparing::Work(work, reads) => (
-            queue_work(
-                &owner.service,
-                &mut owner.sources,
-                &mut owner.jobs,
-                call.client,
-                work,
-                reads,
-            )?,
-            JobStatus::Queued,
-        ),
-    };
-    owner.jobs.set_origin(&id, call.origin.clone());
-    owner.latest_import.insert(call.client, id.clone());
-    Ok(json!({"job_id": id, "status": status}))
-}
-
 /// `job.read`: any job of any kind, in the one shape. A source or analysis job is read by the
 /// clients that requested it; a capability or export job by any client.
 pub(super) fn job_read(
@@ -1913,8 +1868,8 @@ pub(super) fn job_cancel(
     let kind = owner.jobs.kind_for(job_id, client)?;
     match kind.family() {
         Family::Source | Family::Analysis => {
-            if owner.latest_import.get(&client) == Some(job_id) {
-                owner.latest_import.remove(&client);
+            if owner.latest_preparation.get(&client) == Some(job_id) {
+                owner.latest_preparation.remove(&client);
             }
             if owner.jobs.release(job_id, client)? == Release::Stopped {
                 owner.stop(job_id, kind);
@@ -1934,35 +1889,43 @@ pub(super) fn job_cancel(
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);
             owner.catalog.cancelled(job_id, kind, &mut owner.jobs);
+            // A waiting library job has ended with its cancel; a running one ends when its worker
+            // posts back.
+            if !owner.catalog.library.holds(job_id) {
+                owner.release_waiters(|waiter| waiter.job.as_ref() == Some(job_id));
+            }
         }
     }
     owner.read_job(job_id, client)
 }
 
-/// `job.adopt`: the ready result of this client's latest import becomes its current asset.
+/// `job.adopt`: the ready result of this client's latest preparation (`source.prepare`) becomes
+/// its current photograph; a preparation it asked for since supersedes it.
 pub(super) fn job_adopt(
     owner: &mut Owner,
     call: &Call<'_>,
     params: JobParams,
 ) -> Result<Value, Error> {
-    if owner.latest_import.get(&call.client) != Some(&params.job_id) {
-        return Err(Error::conflict("a newer import superseded this job"));
+    if owner.latest_preparation.get(&call.client) != Some(&params.job_id) {
+        return Err(Error::conflict(
+            "this is not the latest preparation this client asked for",
+        ));
     }
     let state = match owner.jobs.outcome_for(&params.job_id, call.client)? {
         (JobStatus::Ready, Some(Output::Asset(state)), _) => (**state).clone(),
         (JobStatus::Queued | JobStatus::Running, ..) => {
             return Err(
-                Error::preparation_required("the import is still being prepared")
+                Error::preparation_required("the photograph is still being prepared")
                     .with_preparation(Preparation::Queued(params.job_id.clone())),
             );
         }
         (_, _, Some(error)) => return Err(error.clone()),
-        _ => return Err(Error::validation("this job is not an import")),
+        _ => return Err(Error::validation("this job is not a preparation")),
     };
     let session = owner.sessions.entry(call.client).or_default();
     session.preview.return_current();
     session.touch();
-    owner.latest_import.remove(&call.client);
+    owner.latest_preparation.remove(&call.client);
     Ok(json!({"asset": state, "session": session}))
 }
 
@@ -1981,7 +1944,13 @@ pub(super) fn source_prepare(
         call.client,
         &needs,
     )?;
-    Ok(json!({"job_id": id, "status": JobStatus::Queued}))
+    owner.latest_preparation.insert(call.client, id.clone());
+    // A photograph whose original the verified cache already holds is ready at once.
+    let status = owner
+        .jobs
+        .read(&id)
+        .map_or(JobStatus::Queued, |record| record.status);
+    Ok(json!({"job_id": id, "status": status}))
 }
 
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
@@ -2150,44 +2119,32 @@ mod tests {
         })
     }
 
-    /// `catalog.import` of one file, as a new request.
-    fn import_params(path: impl serde::Serialize) -> Value {
-        json!({"path": path, "mutation": envelope()})
+    /// The photograph a Develop of the file at `path` makes (or links), not yet prepared: how a
+    /// client brings a file in before it opens it.
+    fn developed(
+        owner: &OwnerHandle,
+        client: ClientId,
+        path: impl AsRef<std::path::Path>,
+    ) -> Value {
+        super::library::opening::develop(owner, client, path.as_ref())
+            .unwrap_or_else(|error| panic!("the file was not developed: {error:?}"))
+            .1
     }
 
-    /// Import a fixture the way every client must now: the owner acknowledges with a job id, the
-    /// bounded source worker prepares the original, and `job.adopt` hands back the asset state.
+    /// `source.prepare` of the photograph the file at `path` develops into: what a client asks to
+    /// open a file, after its Develop.
+    fn prepare_params(
+        owner: &OwnerHandle,
+        client: ClientId,
+        path: impl AsRef<std::path::Path>,
+    ) -> Value {
+        json!({"asset_id": developed(owner, client, path)})
+    }
+
+    /// Open a file the way every client must now: a Develop brings it in, the bounded source
+    /// worker prepares its original, and `job.adopt` hands back the photograph's state.
     fn import_asset(owner: &OwnerHandle, client: ClientId, path: &std::path::Path) -> Value {
-        let queued = ok(
-            owner,
-            client,
-            "import",
-            "catalog.import",
-            import_params(path),
-        );
-        let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
-        luxforge_testbase::wait_until("the import to become ready", || {
-            let status = ok(
-                owner,
-                client,
-                "status",
-                "job.read",
-                json!({"job_id": job_id}),
-            );
-            match status["status"].as_str() {
-                Some("ready") => true,
-                Some("queued" | "running") => false,
-                other => panic!("unexpected import job {other:?}: {status}"),
-            }
-        });
-        ok(
-            owner,
-            client,
-            "adopt",
-            "job.adopt",
-            json!({"job_id": job_id}),
-        )["asset"]
-            .clone()
+        super::library::opening::open(owner, client, path)
     }
 
     fn failure(
@@ -2397,14 +2354,19 @@ mod tests {
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let first = owner.register();
         let second = owner.register();
-        let a = request(&owner, first, "catalog.import", import_params(&first_path))
-            .result
-            .unwrap();
+        let a = request(
+            &owner,
+            first,
+            "source.prepare",
+            prepare_params(&owner, first, &first_path),
+        )
+        .result
+        .unwrap();
         let b = request(
             &owner,
             second,
-            "catalog.import",
-            import_params(&second_path),
+            "source.prepare",
+            prepare_params(&owner, second, &second_path),
         )
         .result
         .unwrap();
@@ -2424,13 +2386,11 @@ mod tests {
                 a_status["status"] == "ready" && b_status["status"] == "ready"
             },
         );
-        let assets = request(&owner, first, "catalog.list", json!({}))
-            .result
-            .unwrap()["assets"]
-            .as_array()
-            .unwrap()
-            .clone();
-        assert_eq!(assets.len(), 2);
+        let assets = [
+            wait_source(&owner, first, a_id)["result"]["asset"].clone(),
+            wait_source(&owner, second, b_id)["result"]["asset"].clone(),
+        ];
+        assert_ne!(assets[0]["id"], assets[1]["id"]);
         for (client, asset) in [(first, &assets[0]), (second, &assets[1])] {
             let asset_id = &asset["id"];
             luxforge_testbase::wait_until("the evicted RAW to become sampleable", || {
@@ -2610,7 +2570,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 first,
-                SourceWork::file(&fixture(), None).unwrap(),
+                SourceWork::unrun_file(&fixture()).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2619,7 +2579,7 @@ mod tests {
                 .enqueue(
                     &mut jobs,
                     second,
-                    SourceWork::file(&fixture(), None).unwrap(),
+                    SourceWork::unrun_file(&fixture()).unwrap(),
                     Vec::new()
                 )
                 .unwrap(),
@@ -2642,7 +2602,7 @@ mod tests {
                 .enqueue(
                     &mut jobs,
                     first,
-                    SourceWork::file(&fixture(), None).unwrap(),
+                    SourceWork::unrun_file(&fixture()).unwrap(),
                     Vec::new()
                 )
                 .unwrap(),
@@ -2675,7 +2635,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 client,
-                SourceWork::file(&fixture(), None).unwrap(),
+                SourceWork::unrun_file(&fixture()).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2703,7 +2663,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 ClientId(1),
-                SourceWork::file(&path.clone(), None).unwrap(),
+                SourceWork::unrun_file(&path).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2714,7 +2674,7 @@ mod tests {
             .enqueue(
                 &mut jobs,
                 ClientId(2),
-                SourceWork::file(&path.clone(), None).unwrap(),
+                SourceWork::unrun_file(&path).unwrap(),
                 Vec::new(),
             )
             .unwrap();
@@ -2722,22 +2682,34 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
 
+    /// `job.adopt` takes only the client's latest `source.prepare`: an older one, ready, is refused
+    /// once a newer one was asked for.
     #[test]
-    fn a_newer_import_refuses_adoption_of_an_older_completed_job() {
+    fn a_newer_preparation_refuses_adoption_of_an_older_completed_job() {
         let catalog = temp("source-adopt.sqlite");
         let older = temp("source-adopt-older.jpg");
         let newer = temp("source-adopt-newer.jpg");
         let _ = std::fs::remove_file(&catalog);
-        std::fs::copy(fixture(), &older).unwrap();
-        std::fs::copy(fixture(), &newer).unwrap();
+        super::library::opening::distinct_copy(&fixture(), &older);
+        super::library::opening::distinct_copy(&fixture(), &newer);
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let client = owner.register();
-        let a = request(&owner, client, "catalog.import", import_params(&older))
-            .result
-            .unwrap();
-        let b = request(&owner, client, "catalog.import", import_params(&newer))
-            .result
-            .unwrap();
+        let a = request(
+            &owner,
+            client,
+            "source.prepare",
+            prepare_params(&owner, client, &older),
+        )
+        .result
+        .unwrap();
+        let b = request(
+            &owner,
+            client,
+            "source.prepare",
+            prepare_params(&owner, client, &newer),
+        )
+        .result
+        .unwrap();
         let first = a["job_id"].as_str().unwrap();
         let second = b["job_id"].as_str().unwrap();
         assert_eq!(wait_source(&owner, client, first)["status"], "ready");
@@ -2991,8 +2963,8 @@ mod tests {
             &owner,
             agent,
             "import",
-            "catalog.import",
-            import_params(fixture()),
+            "source.prepare",
+            prepare_params(&owner, agent, fixture()),
         );
         let job = JobId::parse(queued["job_id"].as_str().unwrap()).unwrap();
         owner.wait_source(agent, Some(&job)).unwrap();
@@ -3064,8 +3036,8 @@ mod tests {
             &owner,
             client,
             "import",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         let job = JobId::parse(queued["job_id"].as_str().unwrap()).unwrap();
         let wait = |job: Option<JobId>| {
@@ -3115,12 +3087,22 @@ mod tests {
         let (owner, join) = OwnerHandle::start(&catalog).unwrap();
         let first = owner.register();
         let second = owner.register();
-        let a = request(&owner, first, "catalog.import", import_params(fixture()))
-            .result
-            .unwrap();
-        let b = request(&owner, second, "catalog.import", import_params(fixture()))
-            .result
-            .unwrap();
+        let a = request(
+            &owner,
+            first,
+            "source.prepare",
+            prepare_params(&owner, first, fixture()),
+        )
+        .result
+        .unwrap();
+        let b = request(
+            &owner,
+            second,
+            "source.prepare",
+            prepare_params(&owner, second, fixture()),
+        )
+        .result
+        .unwrap();
         let first_id = a["job_id"].as_str().unwrap();
         let second_id = b["job_id"].as_str().unwrap();
         assert_ne!(
@@ -3153,9 +3135,14 @@ mod tests {
         let ready = wait_source(&owner, second, second_id);
         assert_eq!(ready["status"], "ready");
         let asset = ready["result"]["asset"]["id"].clone();
-        let again = request(&owner, second, "catalog.import", import_params(fixture()))
-            .result
-            .unwrap();
+        let again = request(
+            &owner,
+            second,
+            "source.prepare",
+            prepare_params(&owner, second, fixture()),
+        )
+        .result
+        .unwrap();
         assert_eq!(
             again["status"], "ready",
             "a matching signature uses cached pixels"
@@ -3164,21 +3151,22 @@ mod tests {
             wait_source(&owner, second, again["job_id"].as_str().unwrap())["result"]["asset"]["id"],
             asset
         );
-        assert_eq!(
-            request(&owner, second, "catalog.list", json!({}))
-                .result
-                .unwrap()["assets"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
+        assert_eq!(photographs(&owner, second), 1, "the second Develop linked");
         owner.stop();
         join.join().unwrap();
     }
 
+    /// How many photographs the catalog holds.
+    fn photographs(owner: &OwnerHandle, client: ClientId) -> u64 {
+        request(owner, client, "catalog.info", json!({}))
+            .result
+            .unwrap()["counts"]["photographs"]
+            .as_u64()
+            .unwrap()
+    }
+
     #[test]
-    fn reopened_sample_prepares_off_owner_and_failed_import_never_creates_an_asset() {
+    fn reopened_sample_prepares_off_owner_and_failed_develop_never_creates_an_asset() {
         let catalog = temp("source-reopen.sqlite");
         let source = temp("source-reopen.jpg");
         let invalid = temp("source-invalid.jpg");
@@ -3226,20 +3214,13 @@ mod tests {
             .error
             .is_none()
         );
-        let queued = request(&owner, client, "catalog.import", import_params(&invalid))
-            .result
-            .unwrap();
-        let failed = wait_source(&owner, client, queued["job_id"].as_str().unwrap());
-        assert_eq!(failed["status"], "failed");
-        assert_eq!(
-            request(&owner, client, "catalog.list", json!({}))
-                .result
-                .unwrap()["assets"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
+        let refused = super::library::opening::develop(&owner, client, &invalid)
+            .expect_err("a file that is not a photograph is not developed");
+        assert!(
+            matches!(refused.code.as_str(), "invalid-input" | "unsupported-input"),
+            "{refused:?}"
         );
+        assert_eq!(photographs(&owner, client), 1);
         std::fs::remove_file(&source).unwrap();
         assert_eq!(
             request(
@@ -3324,7 +3305,12 @@ mod tests {
             assert!(response.error.is_none(), "{id}: {:?}", response.error);
             response.result.unwrap()
         };
-        let queued = call(viewer, "import", "catalog.import", import_params(fixture()));
+        let queued = call(
+            viewer,
+            "prepare",
+            "source.prepare",
+            prepare_params(&owner, viewer, fixture()),
+        );
         let job_id = queued["job_id"].as_str().unwrap();
         let imported = luxforge_testbase::wait_for("the import job to finish", || {
             let status = call(viewer, "status", "job.read", json!({"job_id":job_id}));
@@ -4333,8 +4319,8 @@ mod tests {
             &owner,
             client,
             "import",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         let job_id = queued["job_id"].clone();
         let running = listed(&owner, client, |list| active_kind(list, "source.prepare"));
@@ -4455,7 +4441,12 @@ mod tests {
             .collect();
         assert_eq!(
             kinds,
-            ["preview.render", "analysis.histogram", "source.prepare"],
+            [
+                "preview.render",
+                "analysis.histogram",
+                "source.prepare",
+                "pick.develop"
+            ],
             "newest first"
         );
         assert_eq!(captured["active"], json!([]));
@@ -4584,8 +4575,8 @@ mod tests {
             &owner,
             client,
             "import",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         )["job_id"]
             .clone();
         until_listed(&prepare);
@@ -4746,8 +4737,8 @@ mod tests {
             &owner,
             client,
             "import",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         let job_id = queued["job_id"].clone();
         let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
@@ -4786,15 +4777,19 @@ mod tests {
             &owner,
             client,
             "again",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         assert_ne!(again["job_id"], job_id, "a new job");
         assert_eq!(
             wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
             json!("ready")
         );
-        assert!(ok(&owner, other, "list", "catalog.list", json!({}))["assets"].is_array());
+        assert_eq!(
+            photographs(&owner, other),
+            1,
+            "every other client is served"
+        );
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -4822,19 +4817,16 @@ mod tests {
                 }
             })
         };
-        let assets =
-            |client| ok(&owner, client, "list", "catalog.list", json!({}))["assets"].clone();
-
         // A handler that panics answers its own request `internal`, and the owner serves on.
-        owner.fault(Some(panicking("catalog.list")));
-        let error = failure(&owner, client, "panics", "catalog.list", json!({}));
+        owner.fault(Some(panicking("catalog.info")));
+        let error = failure(&owner, client, "panics", "catalog.info", json!({}));
         assert_eq!(error.code, "internal", "{}", error.message);
         assert!(
             ok(&owner, other, "state", "session.state", json!({}))["revision"].is_u64(),
             "another client is served"
         );
         owner.fault(None);
-        assert_eq!(assets(client), json!([]), "and so is the same client");
+        assert_eq!(photographs(&owner, client), 0, "and so is the same client");
 
         // A completion that panics as it commits fails its job and releases its waiters.
         owner.fault(Some(panicking("source.complete")));
@@ -4842,8 +4834,8 @@ mod tests {
             &owner,
             client,
             "import",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         let job_id = queued["job_id"].clone();
         let job = JobId::parse(job_id.as_str().unwrap()).unwrap();
@@ -4860,7 +4852,11 @@ mod tests {
         );
         assert_eq!(status["status"], json!("failed"), "{status}");
         assert_eq!(status["error"]["code"], json!("internal"), "{status}");
-        assert_eq!(assets(other), json!([]), "the failed commit added nothing");
+        assert_eq!(
+            photographs(&owner, other),
+            1,
+            "the Develop brought the photograph in; its failed preparation changed nothing"
+        );
 
         // The next source job commits.
         owner.fault(None);
@@ -4868,14 +4864,14 @@ mod tests {
             &owner,
             client,
             "again",
-            "catalog.import",
-            import_params(&photo),
+            "source.prepare",
+            prepare_params(&owner, client, &photo),
         );
         assert_eq!(
             wait_source(&owner, client, again["job_id"].as_str().unwrap())["status"],
             json!("ready")
         );
-        assert_eq!(assets(other).as_array().map(Vec::len), Some(1));
+        assert_eq!(photographs(&owner, other), 1);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
@@ -5063,8 +5059,8 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// Every event names what it changed when the change has a subject: an import names the asset
-    /// it created and its revision, a commit, a navigation and a drafted commit name the asset and
+    /// Every event names what it changed when the change has a subject: a Develop names its library
+    /// change, a commit, a navigation and a drafted commit name the asset and
     /// the revision they left it at, and a version names its asset but no revision, because naming
     /// an entry moves none. A change to the preset library names no asset. So a client with one
     /// photograph open can tell another client's change to a second photograph from one to its
@@ -5108,10 +5104,10 @@ mod tests {
         assert_eq!(
             subjects(0),
             [
-                ("catalog.import".to_owned(), first.clone(), json!(0)),
-                ("catalog.import".to_owned(), second.clone(), json!(0)),
+                ("pick.develop".to_owned(), Value::Null, Value::Null),
+                ("pick.develop".to_owned(), Value::Null, Value::Null),
             ],
-            "an import names the asset it created"
+            "a Develop is announced as the library change it recorded, and a preparation not at all"
         );
         let (_, before) = events_after(&owner, desktop, 0);
 
@@ -5265,25 +5261,40 @@ mod tests {
         };
         let request = |request_id: &str| json!({"request_id": request_id, "actor": "test"});
 
-        // catalog: the import commits its asset, and its event, once. The event is recorded when
-        // the worker's preparation commits, so the retry is sent after that.
-        let import = json!({"path": photo, "mutation": request("import-1")});
-        let queued = ok(&owner, client, "import", "catalog.import", import.clone());
+        // catalog: a Develop commits its photograph, and its event, once. The event is recorded
+        // when its batch commits, so the retry is sent after the job ends.
+        let develop = json!({
+            "targets": {"kind": "paths", "paths": [photo]},
+            "into": [],
+            "mutation": request("develop-1"),
+        });
+        let queued = ok(&owner, client, "develop", "pick.develop", develop.clone());
         assert_eq!(queued["deduplicated"], json!(false));
         let job_id = queued["job_id"].as_str().unwrap().to_owned();
         let ready = wait_source(&owner, client, &job_id);
         assert_eq!(ready["status"], "ready");
-        let asset = ready["result"]["asset"]["id"].clone();
-        let (events, imported_at) = events_after(&owner, client, 0);
-        assert_eq!(events, [("catalog.import".to_owned(), "import".to_owned())]);
-        let retried = ok(&owner, client, "import", "catalog.import", import);
+        let asset = ready["result"]["developed"][0]["asset_id"].clone();
+        let (events, developed_at) = events_after(&owner, client, 0);
+        assert_eq!(events, [("pick.develop".to_owned(), "develop".to_owned())]);
+        let retried = ok(&owner, client, "develop", "pick.develop", develop);
         assert_eq!(retried["deduplicated"], json!(true));
         assert_eq!(retried["job_id"], json!(job_id));
         assert_eq!(retried["status"], queued["status"], "the first answer");
-        assert_eq!(events_after(&owner, client, 0).1, imported_at);
+        assert_eq!(events_after(&owner, client, 0).1, developed_at);
         conflict(
-            "catalog.import",
-            json!({"path": fixture(), "mutation": request("import-1")}),
+            "pick.develop",
+            json!({"targets": {"kind": "paths", "paths": [fixture()]}, "into": [], "mutation": request("develop-1")}),
+        );
+        let prepared = ok(
+            &owner,
+            client,
+            "prepare",
+            "source.prepare",
+            json!({"asset_id": asset}),
+        );
+        assert_eq!(
+            wait_source(&owner, client, prepared["job_id"].as_str().unwrap())["status"],
+            "ready"
         );
 
         // preset: create, update, import and delete.
@@ -5811,7 +5822,7 @@ mod tests {
             );
         }
         for name in [
-            "catalog.import",
+            "pick.develop",
             "artifact.collect",
             "export.jpeg",
             "draft.commit",
