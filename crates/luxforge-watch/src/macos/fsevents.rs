@@ -339,11 +339,9 @@ impl Root {
         for &(raw, flags, id) in events {
             if flags & kFSEventStreamEventFlagHistoryDone != 0 {
                 out.extend(changed(self.id, std::mem::take(&mut paths), None));
-                let at = if id != 0 {
-                    id
-                } else {
-                    latest.unwrap_or(self.since)
-                };
+                // `FullHistory` replays the whole chunk the start falls in, so the replay can end
+                // before where the stream started; the cursor never goes back past that.
+                let at = if id != 0 { id } else { latest.unwrap_or(0) }.max(self.since);
                 *caught_up = true;
                 latest = None;
                 out.push(WatchEvent::CaughtUp {
@@ -469,7 +467,30 @@ mod tests {
                 (b"Users/me/Pictures/e.jpg", FILE, 118),
             ],
         );
-        assert!(matches!(&events[..], [WatchEvent::Changed { cursor, .. }] if *cursor == cursor(120)));
+        assert!(
+            matches!(&events[..], [WatchEvent::Changed { cursor: at, .. }] if *at == cursor(120)),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_replay_that_ends_before_its_start_keeps_the_start_as_its_cursor() {
+        let root = root();
+        let mut caught_up = false;
+        let events = root.interpret(
+            &mut caught_up,
+            &[
+                (b"Users/me/Pictures/old.jpg", FILE, 97),
+                (b"Users/me/Pictures", kFSEventStreamEventFlagHistoryDone, 97),
+            ],
+        );
+        assert_eq!(
+            events.last(),
+            Some(&WatchEvent::CaughtUp {
+                root: 3,
+                cursor: cursor(100)
+            })
+        );
     }
 
     #[test]
