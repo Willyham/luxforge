@@ -5,6 +5,7 @@ use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
 mod select;
+mod select_missing;
 // ── end lane D ──
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
@@ -437,6 +438,8 @@ pub(crate) enum Settle {
     /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
     /// the view has been evaluated again.
     Select,
+    /// Missing originals' search has started, for Stop search to be pressed; then as `Select`.
+    MissingStop,
     // ── end lane D ──
 }
 
@@ -462,6 +465,7 @@ impl Settle {
             Self::Export => "export",
             Self::Agent => "agent",
             Self::Select => "select",
+            Self::MissingStop => "missing_stop",
         }
     }
 
@@ -957,6 +961,7 @@ impl Editor {
             Step::Export(step) => self.export_step(step),
             // ── catalog lane D: views and desktop ──
             Step::Select(step) => self.select_step(step),
+            Step::Missing(step) => self.missing_step(step),
             // ── end lane D ──
         }
     }

@@ -112,4 +112,6 @@ pub(crate) enum SelectMessage {
     Previews(crate::app::select_previews::SelectPreviewMessage),
     /// The loupe, entered from the grid.
     Loupe(crate::app::message::loupe::LoupeMessage),
+    /// Missing originals, shown in place of the grid, and Develop's Locate original….
+    Missing(crate::app::message::select_missing::MissingMessage),
 }

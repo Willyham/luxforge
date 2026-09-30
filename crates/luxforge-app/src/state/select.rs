@@ -151,6 +151,9 @@ pub(crate) struct SelectState {
     pub(crate) menu: Option<SelectMenu>,
     /// The loupe over the centre ([`super::loupe`]).
     pub(crate) loupe: super::loupe::LoupeState,
+    /// Missing originals, drawn in place of the grid while it is the source
+    /// ([`super::select_missing`]).
+    pub(crate) missing: super::select_missing::MissingState,
     /// The size slider's cell widths, one per preset.
     pub(crate) files_cell_width: f32,
     pub(crate) catalog_cell_width: f32,
@@ -189,6 +192,7 @@ impl Default for SelectState {
             collapsed: BTreeSet::new(),
             menu: None,
             loupe: super::loupe::LoupeState::default(),
+            missing: super::select_missing::MissingState::default(),
             files_cell_width: FILES_CELL_WIDTH,
             catalog_cell_width: CATALOG_CELL_WIDTH,
             home: None,
@@ -1360,6 +1364,8 @@ pub(crate) struct SelectModel {
     pub(crate) catalog_cells: bool,
     /// The loupe, drawn in place of the grid while it is open.
     pub(crate) loupe: super::loupe::LoupeModel,
+    /// Missing originals, drawn in place of the grid while it is the source.
+    pub(crate) missing: super::select_missing::MissingModel,
 }
 
 /// The Select workspace's model, derived from the inputs.
@@ -1385,7 +1391,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
-    SelectModel {
+    super::select_missing::over(SelectModel {
         shown: state.shown,
         title: SelectTitle {
             fullscreen,
@@ -1405,7 +1411,8 @@ pub(crate) fn model(
         note: note(state),
         catalog_cells: state.over_catalog(),
         loupe: super::loupe::derive(state.summary.as_ref(), browse, &state.loupe),
-    }
+        missing: super::select_missing::derive(state),
+    })
 }
 
 /// The source being viewed, or asked for.
