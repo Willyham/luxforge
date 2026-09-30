@@ -635,6 +635,31 @@ A **collection** holds any photographs you add, across folders; a **smart collec
 
 The journal labels each change as you would say it: "Created folder Konstanz · Sep 2026", "Moved 5 photographs to Konstanz · Sep 2026", "Merged Konstanz · Sep 2026 into Travel", "Added 5 to Portfolio › Landscapes", naming a collection by its path through its groups.
 
+### Batch preset and export
+
+A batch applies one preset to many developed photographs, or exports them into one folder, exactly as applying or exporting each one alone would, one photograph at a time, with one report; the Select workspace's batch form that sends these is to come. `targets` names photographs as `asset.move` takes them, at most 50,000. Each answers `{job_id, status, deduplicated}` at once: read the job with `job.read {job_id}` and stop it with `job.cancel`.
+
+`batch.apply-preset {targets, preset_id, mutation}` reads the library preset once and applies it to each photograph as `edit.apply-preset` does with that preset's settings, name and id: each gets its own history entry, "Preset: Warm", by your `actor`, which undoes like any other edit, and each records an event naming the photograph and its new revision. The entry's request is `<request_id>/<asset_id>`, so a retry of the batch applies nothing twice, after a restart too. A ready job's `result` is `{done, skipped, settings_skipped?}`: `done` lists the photographs that got an entry, and `settings_skipped` lists, for each of them, the preset's settings that do not apply to it, such as a RAW white balance on a JPEG, with the reason `edit.apply-preset` gives. An unknown preset is refused with `validation`.
+
+`batch.export {targets, destination, mutation, keep_metadata?}` writes each photograph's current entry into `destination`, an existing folder, as `export.jpeg` writes it: the same quality-90 sRGB JPEG, with or without the original's supported metadata, named from its original's name by the export's rule, `DSC_0042-edited.jpg`, or `DSC_0042-edited-2.jpg` and so on when that name is taken (two originals of one name get two names), and never replacing a file. A photograph whose original is not prepared is prepared first, one at a time, which reads and decodes it as opening it would; the photograph open in Develop is then prepared again when you return to it. Each written file records an event, as a single export does. A ready job's `result` is `{done, written, skipped}`, with `written` the files in the order written. A relative path or a file as `destination` is refused with `validation`, and a folder that is not there with `read-error`. A retry is answered with the first job; after a restart the export keeps no record of what it wrote, as a single export keeps none, so the same request exports again under the next free names.
+
+`skipped` lists every photograph left out, `{asset_id, code, reason}`, and nothing is written for it:
+
+- `removed`: it is in Removed;
+- `draft-open`, for a preset: you hold an unapplied draft on it;
+- `history-selected`, for a preset: you are previewing its history;
+- `unchanged`, for a preset: it already has the preset's settings;
+- `not-applicable`, for a preset: none of the preset's settings apply to it;
+- otherwise the code and message the single call refuses it with, such as `source-unavailable` naming why its original is missing or offline (for an export: a preset reads no pixels), or `conflict` when every name the export's rule tries is taken.
+
+While a batch runs, `job.read` reports `progress.message` "3 of 18" with `progress.fraction`, and its `result` is the report so far; the activity board shows the same. `job.cancel` stops it between photographs, or within the photograph being exported, whose temporary file is removed; every photograph finished stays finished, and a cancel while an original is being prepared takes effect when that preparation ends. A cancelled job reports `cancelled` rather than its report. At most four library jobs wait behind a running one; another is refused with `resource-limit`.
+
+```json
+{"id":"preset","method":"batch.apply-preset","params":{"targets":{"kind":"assets","asset_ids":["asset-…","asset-…"]},"preset_id":"preset-…","mutation":{"request_id":"batch-1","actor":"my-client"}}}
+{"id":"export","method":"batch.export","params":{"targets":{"kind":"selection"},"destination":"/Users/me/Pictures/Konstanz","keep_metadata":false,"mutation":{"request_id":"export-1","actor":"my-client"}}}
+{"id":"progress","method":"job.read","params":{"job_id":"job-…"}}
+```
+
 ### Volumes, folders and the index
 
 Luxforge reads the folders you browse into its **index**, beside the catalog, and never writes to them: it lists the supported files (JPEG and the RAW formats Luxforge develops, by extension) and reads each one's header, never its image. It skips hidden files and folders, macOS packages such as a Photos library, other applications' caches such as Lightroom's `.lrdata` and Capture One's `CaptureOne` folders, system folders, and its own index and artifact directories; it follows no symbolic link and does not cross into another volume.
