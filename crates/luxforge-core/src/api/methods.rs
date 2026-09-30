@@ -844,13 +844,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "index.folders",
         params::NoParams,
         owner::files::index_folders,
-        "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing"
+        "{folders: [{path, volume_id, added_ms, actor, offline, files?, listed_ms?, watching, unwatched?}]}: the indexed folders in path order; offline when a folder is not there and its volume is not mounted; files and listed_ms from its last complete listing; watching when the platform's change notifications keep its rows current, else unwatched says why (not yet listed, offline, on a network volume, a platform limit)"
     ),
     owner!(
         "index.refresh",
         crate::catalog_types::api::IndexRefresh,
         owner::files::index_refresh,
-        "lists a source again — {kind: indexed-folder, path}, {kind: card, volume_id}, {kind: folder, path} or {kind: all-indexed} — as an index-refresh job, answering {job_id, status, deduplicated} at once (a source already waiting or running answers its job); the job reads the headers of new and changed files only, carries moved files' rows, drops vanished ones and reports {roots, files, added, changed, moved, removed, unreadable, headers_read, offline?, missing?}; follows no link, crosses no volume, skips packages, caches, hidden and system folders and Luxforge's own directories; resource-limit past 500,000 files or 16 waiting listings; source-unavailable for an offline or missing folder or card; progress on the activity board, cancelled with job.cancel keeping what was committed; each committed batch records one event naming the index_revision it left"
+        "lists a source again — {kind: indexed-folder, path}, {kind: card, volume_id}, {kind: folder, path} or {kind: all-indexed} — as an index-refresh job, answering {job_id, status, deduplicated} at once (a source already waiting or running answers its job); the job reads the headers of new and changed files only, carries moved files' rows, drops vanished ones and reports {roots, files, added, changed, moved, removed, unreadable, headers_read, offline?, missing?}; follows no link, crosses no volume, skips packages, caches, hidden and system folders and Luxforge's own directories; resource-limit past 500,000 files or 16 waiting listings; source-unavailable for an offline or missing folder or card; progress on the activity board, cancelled with job.cancel keeping what was committed; each committed batch records one event naming the index_revision it left, and the job one more as it ends, however it ends, naming its request and the index_revision it left"
     ),
     owner!(
         "index.add-folder",
