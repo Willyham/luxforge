@@ -1095,7 +1095,27 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     // Removing (TASK-014).
-
+    owner!(
+        "asset.remove",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::remove::asset_remove,
+        "moves the photographs targets names to Removed as one library change of asset-removal items (labelled Removed <file> or Removed N photographs), answering {outcome, change?, items, deduplicated}: each keeps its edits, history, versions, collections and catalog folder, and leaves every browse source but removed and every count; a photograph already removed keeps when it was removed, and none to remove is a no-op; library.undo puts them back; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "asset.restore",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::remove::asset_restore,
+        "puts the removed photographs targets names back as one library change (labelled Put back <file> or Put back N photographs), answering {outcome, change?, items, deduplicated}: each returns to its catalog folder, collections and every view as it was; a photograph not removed is left out, and none to put back is a no-op; library.undo removes them again; targets as asset.move's; an unknown photograph is validation; resource-limit past 50,000; nothing on disk changes",
+        retries: Owner,
+    ),
+    owner!(
+        "catalog.empty-removed",
+        crate::catalog_types::api::LibraryRequest,
+        owner::library::remove::catalog_empty_removed,
+        "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, remaining, deduplicated} (remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references and asset row, then the strokes and artifact rows no remaining entry names (the artifacts' files are removed by a collect job it queues); not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
+        retries: Owner,
+    ),
     // Batch preset and export (TASK-015).
     owner!(
         "batch.apply-preset",

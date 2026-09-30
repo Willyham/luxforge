@@ -8,7 +8,8 @@
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
 //! (`source.check`, `source.locate`), `missing.rs` (`source.missing`, `source.find`,
-//! `source.relink`) and `info.rs` (`catalog.info`). Every method that changes the
+//! `source.relink`), `remove.rs` (`asset.remove`, `asset.restore`, `catalog.empty-removed`) and
+//! `info.rs` (`catalog.info`). Every method that changes the
 //! library records it through [`change`], which runs the journal in one catalog transaction and
 //! announces the change it recorded as one event.
 
@@ -41,6 +42,9 @@ pub(in crate::api) mod missing;
 mod resolve_missing_tests;
 
 // Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
+pub(in crate::api) mod remove;
+#[cfg(test)]
+mod remove_tests;
 
 // Batch preset and export (TASK-015): `batch.apply-preset`, `batch.export`.
 pub(in crate::api) mod batch;
