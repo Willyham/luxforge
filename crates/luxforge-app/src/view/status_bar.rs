@@ -4,7 +4,7 @@
 //! current zoom comes to on this display.
 use crate::{
     app::message::{Message, view::ViewMessage},
-    state::status::StatusBarModel,
+    state::{long_work::LongWorkModel, status::StatusBarModel},
 };
 use iced::{
     Alignment, Element, Length, Theme,
@@ -22,7 +22,10 @@ const DOT: &str = "\u{00b7}";
 /// coordinates of five digits, the 16384 px side limit — with its separator.
 pub(crate) const READOUT_WIDTH: f32 = 240.0;
 
-pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
+pub(crate) fn status_bar<'a>(
+    model: &'a StatusBarModel,
+    work: &'a LongWorkModel,
+) -> Element<'a, Message> {
     // The sentence hugs its text, so Copy follows it, and ends in an ellipsis before it would push
     // the readout or the facts along.
     let message = row![
@@ -83,15 +86,21 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
             .color(theme::TEXT_TERTIARY)
             .wrapping(text::Wrapping::None)
     };
-    let facts = row![
-        row![dot, fact(&model.clients)]
-            .spacing(theme::STATUS_DOT_SIZE)
-            .align_y(Alignment::Center),
-        fact(&model.render),
-        fact(&model.view),
-    ]
-    .spacing(theme::STATUS_FACT_SPACING)
-    .align_y(Alignment::Center);
+    // Long-running work's busiest job leads the facts while any job runs.
+    let mut facts = row![]
+        .spacing(theme::STATUS_FACT_SPACING)
+        .align_y(Alignment::Center);
+    if let Some(job) = crate::view::long_work::busiest(work) {
+        facts = facts.push(job);
+    }
+    let facts = facts
+        .push(
+            row![dot, fact(&model.clients)]
+                .spacing(theme::STATUS_DOT_SIZE)
+                .align_y(Alignment::Center),
+        )
+        .push(fact(&model.render))
+        .push(fact(&model.view));
     // A shrinking container lays the sentence out at its own width, where a filling one would give
     // it the whole slot and push Copy to the slot's far end.
     row![
