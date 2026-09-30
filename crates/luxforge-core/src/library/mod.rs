@@ -39,3 +39,6 @@ pub(crate) mod folders;
 pub(crate) mod tree;
 
 // Availability and Locate (TASK-016).
+pub(crate) mod availability;
+pub(crate) mod locate;
+pub(crate) mod worker;
