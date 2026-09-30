@@ -4,7 +4,9 @@
 //! has evaluated its view again, which it learns of only through its own event sync. Each settled
 //! step records the owner's own answer for this client's session (`session.state`'s `browse`), so
 //! a frame's selection can be checked against what the owner holds. A folder is browsed as Browse a
-//! folder… does, bypassing only the native dialog.
+//! folder… does, bypassing only the native dialog. Library undo and redo are pressed through the key
+//! table, and a bracket's Pick all through its header's message once the grid is scrolled to it;
+//! each is captured once the view it made stale has been evaluated again.
 use super::{AGENT_ACTOR, Settle};
 use crate::app::{
     Editor,
@@ -13,10 +15,12 @@ use crate::app::{
     select::session_now,
     tasks::{call, owner_task, request},
 };
-use crate::state::select::{PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
+use crate::state::select::{Block, PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
 use iced::Task;
 use luxforge_core::{MutationRequest, catalog_types::RowItem};
-use luxforge_evidence::{ArrowKey, SelectMenu as ScriptMenu, SelectStep, SelectWorkspace};
+use luxforge_evidence::{
+    ArrowKey, LibraryKey, SelectMenu as ScriptMenu, SelectStep, SelectWorkspace,
+};
 use luxforge_ui::{GridPress, PressModifiers};
 use serde_json::{Value, json};
 
@@ -56,6 +60,8 @@ impl Editor {
                 command,
             } => self.click_step(position, PressModifiers { shift, command }),
             SelectStep::AgentPick { positions, picked } => self.agent_pick_step(&positions, picked),
+            SelectStep::Library(key) => self.library_step(key),
+            SelectStep::PickAll { position } => self.pick_all_step(position),
         }
     }
 
@@ -87,14 +93,96 @@ impl Editor {
             })
             .map(|row| row.press.clone());
         match found {
-            Some(SourcePress::View(source)) => {
+            Some(Some(SourcePress::View(source))) => {
                 let task = self.update(Message::Select(SelectMessage::Source(source)));
                 self.await_select(task)
             }
-            Some(SourcePress::BrowseFolder) => self.fail_step(
+            Some(Some(SourcePress::Read(source))) => {
+                let task = self.update(Message::Select(SelectMessage::Read(source)));
+                self.await_select(task)
+            }
+            Some(Some(SourcePress::Toggle(path))) => {
+                let task = self.update(Message::Select(SelectMessage::Toggle(path)));
+                self.await_select(task)
+            }
+            Some(Some(SourcePress::BrowseFolder)) => self.fail_step(
                 "Browse a folder… opens the native dialog, which a script cannot answer",
             ),
+            Some(None) => self.fail_step(format!("the source row {name:?} does nothing")),
             None => self.fail_step(format!("no source row shows {name:?}")),
+        }
+    }
+
+    /// Press `Cmd+Z` or `Shift+Cmd+Z` through the key table, as the keyboard does.
+    fn library_step(&mut self, key: LibraryKey) -> Task<Message> {
+        use iced::keyboard::{
+            Event as KeyEvent, Key, Location, Modifiers,
+            key::{NativeCode, Physical},
+        };
+        let pressed = Key::Character("z".into());
+        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+            key: pressed.clone(),
+            modified_key: pressed,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: match key {
+                LibraryKey::Undo => Modifiers::COMMAND,
+                LibraryKey::Redo => Modifiers::COMMAND | Modifiers::SHIFT,
+            },
+            text: None,
+            repeat: false,
+        });
+        let status = iced::event::Status::Ignored;
+        match keymap(&event, status, &self.key_context()) {
+            Some(Message::Select(SelectMessage::Undo | SelectMessage::Redo)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.await_select(task)
+            }
+            _ => self.fail_step("the key does not undo or redo here"),
+        }
+    }
+
+    /// Press the Pick all action of the bracket holding view position `position`, as its header
+    /// does: the grid's moment number is its place among the grid's moments.
+    fn pick_all_step(&mut self, position: u32) -> Task<Message> {
+        let state = &self.select.state;
+        let Some(summary) = &state.summary else {
+            return self.fail_step("Select holds no view");
+        };
+        let found = state
+            .content
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Moment { index, action, .. } => Some((*index, action.is_some())),
+                _ => None,
+            })
+            .enumerate()
+            .find(|(_, (index, _))| {
+                summary
+                    .groups
+                    .moments
+                    .get(*index as usize)
+                    .is_some_and(|moment| {
+                        (moment.start..moment.start + moment.len).contains(&position)
+                    })
+            });
+        match found {
+            Some((number, (_, true))) => {
+                // Scrolled to the bracket first, as a person scrolls to the header they press.
+                let scroll = self.select.layout.reveal(
+                    position,
+                    self.select.scroll,
+                    self.select.viewport.height,
+                );
+                let scrolled = self.update(Message::Select(SelectMessage::Scrolled(scroll)));
+                let task = self.update(Message::Select(SelectMessage::PickAll(number as u32)));
+                self.await_select(Task::batch([scrolled, task]))
+            }
+            Some(_) => self.fail_step(format!(
+                "the moment holding position {position} offers no Pick all"
+            )),
+            None => self.fail_step(format!("no moment holds position {position}")),
         }
     }
 

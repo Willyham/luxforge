@@ -114,7 +114,7 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
     let mut facts = std::mem::take(&mut candidates.facts);
     facts.retain(|fact| filter.failing(fact, candidates.extra(fact.item)) == 0);
     order(&mut facts, &candidates, query);
-    let layout = cx.probe.with(cx.service, candidates.over_files, |probe| {
+    let mut layout = cx.probe.with(cx.service, candidates.over_files, |probe| {
         organize::group(
             &facts,
             &candidates.names.tables,
@@ -123,6 +123,7 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
             probe,
         )
     })?;
+    count_picks(&mut layout, |at| candidates.extra(facts[at].item).picked);
     let (mut picked, mut in_catalog, mut unavailable) = (0, 0, 0);
     for fact in &facts {
         let extra = candidates.extra(fact.item);
@@ -138,6 +139,23 @@ pub(crate) fn evaluate(cx: Context<'_>, query: &ViewQuery) -> Result<Evaluation,
         unavailable,
         stamp,
     })
+}
+
+/// Fill each day's and each moment's pick count from whether the ordered view's frame at each
+/// position is picked. Days partition the view and moments are disjoint, so each frame is asked
+/// about at most twice.
+pub(super) fn count_picks(layout: &mut GroupLayout, picked: impl Fn(usize) -> bool) {
+    let count = |start: u32, len: u32| {
+        (start as usize..start as usize + len as usize)
+            .filter(|&at| picked(at))
+            .count() as u32
+    };
+    for day in &mut layout.days {
+        day.picked = count(day.start, day.len);
+    }
+    for moment in &mut layout.moments {
+        moment.picked = count(moment.start, moment.len);
+    }
 }
 
 /// Read a source's items and decide, when the filter asks for Moments without a pick, which of
@@ -259,6 +277,7 @@ mod tests {
             span_ms: 0,
             start,
             len,
+            picked: 0,
         }
     }
 
@@ -273,5 +292,27 @@ mod tests {
             [true, true, true, true, false, false, true, false]
         );
         assert_eq!(decided(&[], &[]), Vec::<bool>::new());
+    }
+
+    /// Each day and moment counts the picked frames it covers, and nothing outside it.
+    #[test]
+    fn browse_days_and_moments_count_their_picks() {
+        let picked = [false, true, true, false, true, false, false, true];
+        let day = |start, len| crate::catalog_types::DayGroup {
+            day: None,
+            start,
+            len,
+            picked: 99,
+        };
+        let mut layout = GroupLayout {
+            days: vec![day(0, 5), day(5, 3)],
+            cameras: Vec::new(),
+            moments: vec![moment(0, 3), moment(3, 2), moment(5, 2)],
+        };
+        count_picks(&mut layout, |at| picked[at]);
+        let days: Vec<u32> = layout.days.iter().map(|day| day.picked).collect();
+        let moments: Vec<u32> = layout.moments.iter().map(|moment| moment.picked).collect();
+        assert_eq!(days, [3, 1]);
+        assert_eq!(moments, [2, 1, 0]);
     }
 }

@@ -54,8 +54,9 @@ fn query(source: ViewSource, filter: ViewFilter, sort: ViewSort, grouping: Group
     }
 }
 
-/// The view agrees with the model: its items in order, its layout, its counts; and the layout
-/// keeps the promises its signature makes whatever lane A's rules become.
+/// The view agrees with the model: its items in order, its layout with its days' and moments' pick
+/// counts, its counts; and the layout keeps the promises its signature makes whatever lane A's
+/// rules become.
 fn agree(fx: &Fixture, service: &EditorService, events: &mut EventCache, query: &ViewQuery) {
     let got = run(service, events, query);
     let want = fx.view(query);
@@ -83,6 +84,25 @@ fn agree(fx: &Fixture, service: &EditorService, events: &mut EventCache, query: 
                 assert_eq!(by_item(item).camera_key(), camera.body, "{query:?}");
             }
         }
+        // Each day and moment counts exactly the picked frames it covers, and together the days
+        // count the view's picks.
+        let picked = |start: u32, len: u32| {
+            got.items[start as usize..(start + len) as usize]
+                .iter()
+                .filter(|item| by_item(item).picked)
+                .count() as u32
+        };
+        for group in &got.layout.days {
+            assert_eq!(group.picked, picked(group.start, group.len), "{query:?}");
+        }
+        for moment in &got.layout.moments {
+            assert_eq!(moment.picked, picked(moment.start, moment.len), "{query:?}");
+        }
+        assert_eq!(
+            got.layout.days.iter().map(|day| day.picked).sum::<u32>(),
+            got.picked,
+            "{query:?}"
+        );
     } else {
         assert_eq!(got.layout, Default::default(), "{query:?}");
     }
@@ -428,6 +448,15 @@ fn browse_a_file_carries_its_pick_catalog_state_and_availability() {
         }),
     );
     assert_eq!(card.picked, 2);
+    // The burst DSC_0001–0003 has its pick in DSC_0002, and the first day holds both picks.
+    let burst = card
+        .layout
+        .moments
+        .iter()
+        .find(|moment| moment.start == 0)
+        .expect("the card's burst");
+    assert_eq!((burst.len, burst.picked), (3, 1));
+    assert_eq!(card.layout.days[0].picked, 2);
     assert_eq!(
         card.in_catalog, 1,
         "DSC_0003; DSC_0005's photograph is removed"
@@ -1003,6 +1032,7 @@ fn browse_rows_read_windows_by_position() {
         span_ms: 600,
         start: 1,
         len: 3,
+        picked: 0,
     }];
     let window = rows(&service, &grouped, 0, 5, &|items| {
         index_grid_states(&service, items)

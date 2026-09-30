@@ -1661,7 +1661,11 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// view positions with `pick.set` (`"picked": false` clears them); the step waits until the
 /// desktop has evaluated its view again, which it learns of only through its own event sync.
 /// `{"folder": "/path"}` browses that folder on disk as Browse a folder… does, bypassing only the
-/// native dialog: the index lane reads it and the step waits until it is viewed.
+/// native dialog: the index lane reads it and the step waits until it is viewed. `{"library":
+/// "undo"}` presses `Cmd+Z` (`"redo"`: `Shift+Cmd+Z`) through the key table: library undo or redo
+/// of the desktop's own changes. `{"pick_all": {"position": 12}}` presses the Pick all action of
+/// the bracket holding that view position. `P` itself is a `key` step. Each waits until the view
+/// the change made stale has been evaluated again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -1689,6 +1693,18 @@ pub enum SelectStep {
         #[serde(default = "yes", skip_serializing_if = "is_true")]
         picked: bool,
     },
+    Library(LibraryKey),
+    PickAll {
+        position: u32,
+    },
+}
+
+/// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryKey {
+    Undo,
+    Redo,
 }
 
 /// A workspace the switch shows.
@@ -1735,7 +1751,11 @@ impl SelectStep {
                 }
                 Ok(())
             }
-            Self::Switch(_) | Self::Arrow { .. } | Self::Click { .. } => Ok(()),
+            Self::Switch(_)
+            | Self::Arrow { .. }
+            | Self::Click { .. }
+            | Self::Library(_)
+            | Self::PickAll { .. } => Ok(()),
         }
     }
 }

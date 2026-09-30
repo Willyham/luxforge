@@ -704,6 +704,7 @@ fn reference_moments(
         span_ms: span(run),
         start: start as u32,
         len: run.len() as u32,
+        picked: 0,
     };
     let mut start = 0;
     while start < view.len() {
@@ -798,6 +799,7 @@ fn reference_layout(
             day,
             start: start as u32,
             len: (end - start) as u32,
+            picked: 0,
         });
         let bodies: Vec<BodyIndex> = view[start..end].iter().map(|f| f.body).collect();
         if day.is_some() && bodies.iter().any(|b| *b != bodies[0]) {
