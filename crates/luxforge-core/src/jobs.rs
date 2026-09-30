@@ -108,6 +108,34 @@ pub enum JobKind {
     Task,
     /// A JPEG export.
     Export,
+    // The catalog's long-running work (`crate::catalog_types::jobs`), each scheduled by its own
+    // catalog lane, one marked section per lane.
+    // ── catalog lane A: files ──
+    /// Listing a card or folder and reading its headers.
+    IndexRefresh,
+    // ── end lane A ──
+    // ── catalog lane B: previews ──
+    /// Extracting a file's embedded previews into the grid and loupe tiers.
+    PreviewExtract,
+    /// A 100% region.
+    PreviewRegion,
+    /// Rendering a developed photograph's grid and large previews.
+    PreviewRender,
+    // ── end lane B ──
+    // ── catalog lane C: catalog ──
+    /// Bringing picks into the catalog.
+    DevelopPicks,
+    /// Checking originals' availability.
+    SourceCheck,
+    /// Searching a folder for missing originals.
+    SourceFind,
+    /// Verifying one chosen file before relinking it.
+    SourceLocate,
+    /// Applying a preset to many photographs.
+    BatchPreset,
+    /// Exporting many photographs.
+    BatchExport,
+    // ── end lane C ──
 }
 
 /// How a kind is scheduled and cancelled.
@@ -121,6 +149,9 @@ pub(crate) enum Family {
     Capability,
     /// The export lane; a cancel stops the job for everyone.
     Export,
+    /// A catalog lane, which schedules the job itself; a cancel stops it for everyone, as an
+    /// export's does, and the lane hears of it (`CatalogLanes::cancelled`).
+    Catalog,
 }
 
 impl Family {
@@ -128,7 +159,7 @@ impl Family {
     fn retained(self) -> usize {
         match self {
             Self::Source => FINISHED_SOURCE_RECORDS,
-            Self::Analysis | Self::Capability | Self::Export => FINISHED_RECORDS,
+            Self::Analysis | Self::Capability | Self::Export | Self::Catalog => FINISHED_RECORDS,
         }
     }
 }
@@ -140,6 +171,16 @@ impl JobKind {
             Self::Analysis => Family::Analysis,
             Self::Install | Self::Remove | Self::Task => Family::Capability,
             Self::Export => Family::Export,
+            Self::IndexRefresh
+            | Self::PreviewExtract
+            | Self::PreviewRegion
+            | Self::PreviewRender
+            | Self::DevelopPicks
+            | Self::SourceCheck
+            | Self::SourceFind
+            | Self::SourceLocate
+            | Self::BatchPreset
+            | Self::BatchExport => Family::Catalog,
         }
     }
 
@@ -152,6 +193,17 @@ impl JobKind {
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect | Self::Analysis => {
                 None
             }
+            // A catalog lane runs its own workers.
+            Self::IndexRefresh
+            | Self::PreviewExtract
+            | Self::PreviewRegion
+            | Self::PreviewRender
+            | Self::DevelopPicks
+            | Self::SourceCheck
+            | Self::SourceFind
+            | Self::SourceLocate
+            | Self::BatchPreset
+            | Self::BatchExport => None,
         }
     }
 }
