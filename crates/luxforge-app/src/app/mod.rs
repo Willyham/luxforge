@@ -320,6 +320,8 @@ pub(crate) struct Editor {
     /// The Select workspace: which workspace is shown, what Select last read, its grid and what is
     /// in flight.
     pub(crate) select: select::Select,
+    /// Long-running work: the watch on the owner's activity board and what it last read.
+    pub(crate) long_work: long_work::LongWork,
     // ── end lane D ──
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
@@ -474,6 +476,7 @@ impl Editor {
             export: Default::default(),
             // ── catalog lane D: views and desktop ──
             select: Default::default(),
+            long_work: long_work::LongWork::watching(&owner),
             // ── end lane D ──
             workspace: Default::default(),
         };
@@ -655,6 +658,7 @@ impl Editor {
             performance: &self.performance.history,
             // ── catalog lane D: views and desktop ──
             select: &self.select.state,
+            long_work: &self.long_work.state,
             // ── end lane D ──
         };
         workspace.derive(&inputs);

@@ -311,6 +311,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A `source.find` walk | 500,000 files, 100,000 folders, 64 levels | `MAX_SEARCH_FILES`, `MAX_SEARCH_FOLDERS` and `MAX_SEARCH_DEPTH`, `crates/luxforge-core/src/library/missing/search.rs` |
 | Verified files `source.relink` may commit, remembered by the owner | 100,000, oldest forgotten first | `MAX_REMEMBERED_FILES` (twice `MAX_LIBRARY_BATCH`), `crates/luxforge-core/src/library/missing.rs` |
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
+| Activity board watchers | 8 per board | `MAX_WATCHERS`, `crates/luxforge-core/src/activity.rs` |
 | Items one browse view's source may hold; the owner keeps 16 bytes per item of each client's view | 1,000,000 | `MAX_VIEW_ITEMS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
 | Rows per `browse.rows` window | 1000 | `MAX_VIEW_ROWS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
 | Items one `browse.select` names | 50,000 | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/catalog_types/library.rs` |

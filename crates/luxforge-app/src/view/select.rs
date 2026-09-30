@@ -381,26 +381,34 @@ fn centre<'a>(
         content,
         images,
     } = grid;
-    let selection = &model.selection;
-    let widget = thumbnail_grid(layout, scroll, move |cell: GridCell| {
-        cell_view(cell, rows, content, selection, images)
-    })
-    .on_press(|press| Message::Select(SelectMessage::Press(press)))
-    .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
-    .viewport(viewport)
-    .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)));
+    // The progress sheet of a view with nothing to show yet, in this view only: over the empty
+    // canvas of the view that waits, never over the view it is replacing.
+    let sheet = crate::view::long_work::sheet(work);
+    let canvas: Element<'a, Message> = if sheet.is_some() {
+        Space::new().width(Length::Fill).height(Length::Fill).into()
+    } else {
+        let selection = &model.selection;
+        thumbnail_grid(layout, scroll, move |cell: GridCell| {
+            cell_view(cell, rows, content, selection, images)
+        })
+        .on_press(|press| Message::Select(SelectMessage::Press(press)))
+        .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
+        .viewport(viewport)
+        .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)))
+        .into()
+    };
     let mut layers = stack![
-        container(widget)
+        container(canvas)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(theme::canvas_surface)
     ];
-    if let Some(note) = &model.note {
-        layers = layers.push(container(caption(note.clone())).center(Length::Fill));
-    }
-    // The progress sheet of a view with nothing to show yet: in this view only.
-    if let Some(sheet) = crate::view::long_work::sheet(work) {
-        layers = layers.push(container(sheet).center(Length::Fill));
+    match (sheet, &model.note) {
+        (Some(sheet), _) => layers = layers.push(container(sheet).center(Length::Fill)),
+        (None, Some(note)) => {
+            layers = layers.push(container(caption(note.clone())).center(Length::Fill));
+        }
+        (None, None) => {}
     }
     layers = layers.push(
         container(strip(&model.strip))
