@@ -81,4 +81,6 @@ pub(crate) enum SelectMessage {
     Checked(Result<Box<ClientSession>, String>),
     /// The grid's decoded previews: a batch of `preview.read` answers, or their signal.
     Previews(crate::app::select_previews::SelectPreviewMessage),
+    /// The loupe, entered from the grid.
+    Loupe(crate::app::message::loupe::LoupeMessage),
 }

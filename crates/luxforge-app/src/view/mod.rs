@@ -13,6 +13,8 @@ mod capabilities;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 mod gallery;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
 pub(crate) mod palette;
@@ -104,7 +106,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
         );
     }
 
-    let status = container(status_bar::status_bar(&model.status))
+    let status = container(status_bar::status_bar(&model.status, &model.long_work))
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
         .padding([0.0, theme::TITLE_BAR_INSET])
         .align_y(iced::alignment::Vertical::Center)

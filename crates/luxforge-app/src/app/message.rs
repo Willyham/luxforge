@@ -14,6 +14,8 @@ pub(crate) mod draft;
 pub(crate) mod evidence;
 pub(crate) mod export;
 pub(crate) mod history;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod mask;
 pub(crate) mod overlay;
 pub(crate) mod palette;
@@ -58,6 +60,8 @@ pub(crate) enum Message {
     // ── catalog lane D: views and desktop ──
     /// One Select workspace gesture or owner answer.
     Select(select::SelectMessage),
+    /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
+    LongWork(long_work::LongWorkMessage),
     // ── end lane D ──
     Close,
 }
