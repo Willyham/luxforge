@@ -234,6 +234,7 @@ impl Editor {
             })
             .collect();
         tasks.push(self.reading_followed(first || read.changed));
+        tasks.push(self.missing_followed());
         Task::batch(tasks)
     }
 
