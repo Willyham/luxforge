@@ -106,9 +106,9 @@ impl PreviewOrigin {
     }
 }
 
-/// A cached preview: where its JPEG is, its size, what it is and how many bytes it holds. `key` names
-/// exactly what it was made from (the file's signature, or the asset, entry and renderer
-/// generation), so a client never shows it for anything else.
+/// A cached preview: where its JPEG is, its size, what it is, whether it is an approximation, and
+/// how many bytes it holds. `key` names exactly what it was made from (the file's signature, or the
+/// asset, entry and renderer generation), so a client never shows it for anything else.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewInfo {
@@ -119,6 +119,13 @@ pub struct PreviewInfo {
     pub width: u32,
     pub height: u32,
     pub origin: PreviewOrigin,
+    /// Whether the pixels approximate the entry they are labelled with, as the Fit preview's proxy
+    /// frame at the same bounds does: true only for a developed photograph's rendered tier made
+    /// through a proxy whose render is approximate — a spatial layer's neighbourhoods scaled with
+    /// the tier, a mask thinner than two proxy pixels supersampled. A file's tiers, a camera
+    /// preview and an exact render (a stage that already fits the tier, or a stack the proxy
+    /// cannot take) are not. Always present.
+    pub approximate: bool,
     pub bytes: u64,
     pub key: String,
 }
@@ -206,6 +213,7 @@ mod tests {
             width: 160,
             height: 107,
             origin: PreviewOrigin::ExifThumbnail,
+            approximate: false,
             bytes: 5120,
             key: "file:4:sig".into(),
         };
@@ -215,6 +223,20 @@ mod tests {
         let json = serde_json::to_value(&answer).unwrap();
         assert_eq!(json["state"], "ready");
         assert_eq!(json["preview"]["origin"], "exif-thumbnail");
+        assert_eq!(
+            json["preview"]["approximate"], false,
+            "serialized even when false"
+        );
+        assert_eq!(
+            serde_json::from_value::<PreviewAnswer>(json.clone()).unwrap(),
+            answer
+        );
+        let mut without = json["preview"].clone();
+        without.as_object_mut().unwrap().remove("approximate");
+        assert!(
+            serde_json::from_value::<PreviewInfo>(without).is_err(),
+            "every preview says whether it is approximate"
+        );
         assert_eq!(
             json["preview"]["item"],
             json!({"kind": "file", "file_id": 4})
