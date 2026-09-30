@@ -32,6 +32,10 @@ mod authentic;
 #[cfg(test)]
 mod tests;
 
+use crate::catalog_types::{
+    self, CameraBody, EmbeddedFormat, EmbeddedImage, ExifOrientation, Exposure, GeoPosition,
+    HeaderMetadata,
+};
 use std::io::{self, Read, Seek};
 
 /// The first read of every file. What organizing needs is usually within a file's first 64 KiB
@@ -107,6 +111,9 @@ pub struct CaptureTime {
     /// The fraction of the second in nanoseconds (below 1,000,000,000), from the source's
     /// SubSecTime digits read as a decimal fraction: "42" is 0.42 s.
     pub subsec_nanos: Option<u32>,
+    /// How many SubSecTime digits were written, at most the nine read: 2 for "42", 3 for "420";
+    /// 0 when there is no subsecond.
+    pub subsec_digits: u8,
     /// Minutes east of UTC from the source's OffsetTime ("+01:00" is 60, "-02:30" is -150). `None`
     /// is unknown, never UTC.
     pub offset_minutes: Option<i16>,
@@ -220,6 +227,89 @@ impl FileHeader {
     /// The exposure time in seconds.
     pub fn exposure_seconds(&self) -> Option<f64> {
         self.exposure_time.map(Rational::value)
+    }
+
+    /// The catalog's shape of this header, which the index stores and organizing, developing and
+    /// the Info panel read. Nothing is inferred: a field the header lacks, or one the catalog's
+    /// type refuses (a year outside 1 to 9999, an RGB thumbnail whose length is not three bytes a
+    /// pixel), is `None`.
+    ///
+    /// - The capture time keeps its source's subsecond digits as written and its offset only when
+    ///   one was recorded.
+    /// - The camera is present when the make or the model is, with the body serial.
+    /// - The lens is the Exif LensModel; LensMake names only the maker.
+    pub fn metadata(&self) -> HeaderMetadata {
+        HeaderMetadata {
+            capture: self.capture_time.as_ref().and_then(CaptureTime::catalog),
+            position: self
+                .gps
+                .and_then(|gps| GeoPosition::new(gps.latitude, gps.longitude, gps.altitude)),
+            camera: (self.make.is_some() || self.model.is_some()).then(|| CameraBody {
+                make: self.make.clone().unwrap_or_default(),
+                model: self.model.clone().unwrap_or_default(),
+                serial: self.body_serial.clone(),
+            }),
+            lens: self.lens_model.clone(),
+            exposure: Exposure {
+                time_s: self.exposure_time.map(|time| time.value() as f32),
+                f_number: self.f_number.map(|f_number| f_number.value() as f32),
+                iso: self.iso,
+                bias_ev: self.exposure_bias.map(|bias| bias.value() as f32),
+                focal_mm: self.focal_length.map(|focal| focal.value() as f32),
+                focal_35mm_mm: self.focal_length_35mm.map(|focal| focal as f32),
+            },
+            dimensions: self.dimensions.map(|size| catalog_types::Dimensions {
+                width: size.width,
+                height: size.height,
+            }),
+            orientation: self.orientation.and_then(ExifOrientation::new),
+            thumbnail: self.thumbnail.and_then(Thumbnail::catalog),
+        }
+    }
+}
+
+impl CaptureTime {
+    /// The catalog's capture time, through its own EXIF parser so both agree on every rule.
+    fn catalog(&self) -> Option<catalog_types::CaptureTime> {
+        let DateTime {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        } = self.local;
+        let datetime = format!("{year:04}:{month:02}:{day:02} {hour:02}:{minute:02}:{second:02}");
+        let digits = usize::from(self.subsec_digits.min(9));
+        let subsec = self
+            .subsec_nanos
+            .filter(|_| digits > 0)
+            .map(|nanos| format!("{nanos:09}")[..digits].to_owned());
+        let offset = self.offset_minutes.map(|minutes| {
+            let sign = if minutes < 0 { '-' } else { '+' };
+            let minutes = minutes.unsigned_abs();
+            format!("{sign}{:02}:{:02}", minutes / 60, minutes % 60)
+        });
+        catalog_types::CaptureTime::from_exif(&datetime, subsec.as_deref(), offset.as_deref())
+    }
+}
+
+impl Thumbnail {
+    /// The catalog's embedded image, when its type accepts this one.
+    fn catalog(self) -> Option<EmbeddedImage> {
+        let len = u32::try_from(self.length).ok()?;
+        let (format, size) = match self.format {
+            ThumbnailFormat::Jpeg { size } => (EmbeddedFormat::Jpeg, size),
+            ThumbnailFormat::Rgb8 { size } => (EmbeddedFormat::Rgb8, Some(size)),
+        };
+        EmbeddedImage::new(
+            self.offset,
+            len,
+            format,
+            size.map(|size| size.width),
+            size.map(|size| size.height),
+        )
+        .ok()
     }
 }
 

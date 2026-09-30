@@ -102,6 +102,35 @@ fn check(path: &Path, libraw: Option<&LibRaw>) -> Row {
     if let Some(libraw) = libraw {
         disagreements.extend(compare_libraw(&read.header, libraw));
     }
+    // The catalog's shape keeps every field the header found: its types refuse nothing a real
+    // camera wrote.
+    let metadata = read.header.metadata();
+    for (field, found, kept) in [
+        (
+            "capture time",
+            read.header.capture_time.is_some(),
+            metadata.capture.is_some(),
+        ),
+        (
+            "position",
+            read.header.gps.is_some(),
+            metadata.position.is_some(),
+        ),
+        (
+            "thumbnail",
+            read.header.thumbnail.is_some(),
+            metadata.thumbnail.is_some(),
+        ),
+        (
+            "orientation",
+            read.header.orientation.is_some(),
+            metadata.orientation.is_some(),
+        ),
+    ] {
+        if found != kept {
+            disagreements.push(format!("the catalog's header dropped the {field}"));
+        }
+    }
     let format = path
         .extension()
         .map(|ext| ext.to_string_lossy().to_uppercase())
