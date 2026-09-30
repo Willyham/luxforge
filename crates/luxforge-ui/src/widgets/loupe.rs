@@ -545,7 +545,7 @@ mod tests {
         }
         // A region the inset's size, a smaller one (drawn at 100% on the canvas, never enlarged)
         // and a larger one (cropped about its centre).
-        let pixels = Handle::from_rgba(2, 2, vec![128; 16]);
+        let pixels = Handle::from_path("region.png");
         for size in [
             Size::new(theme::FOCUS_INSET_WIDTH, theme::FOCUS_REGION_HEIGHT),
             Size::new(120.0, 80.0),
