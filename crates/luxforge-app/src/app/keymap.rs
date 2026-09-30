@@ -288,21 +288,16 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if character(key, "1") {
         return Some(Message::View(ViewMessage::HundredPercent));
     }
+    // O is the mask overlay in Mask mode and the thirds guide elsewhere; modified, it is neither.
     if character(key, "o") {
-        return Some(
-            if context.mask_brush && !modifiers.alt() && !modifiers.control() && !modifiers.shift()
-            {
-                Message::Mask(MaskMessage::ToggleOverlay)
-            } else if !context.mask_brush
-                && !modifiers.alt()
-                && !modifiers.control()
-                && !modifiers.shift()
-            {
-                Message::View(ViewMessage::ToggleThirds)
-            } else {
-                return None;
-            },
-        );
+        if modifiers.alt() || modifiers.control() || modifiers.shift() || modifiers.logo() {
+            return None;
+        }
+        return Some(if context.mask_brush {
+            Message::Mask(MaskMessage::ToggleOverlay)
+        } else {
+            Message::View(ViewMessage::ToggleThirds)
+        });
     }
     // Both clipping overlays at once. The histogram's triangles toggle them one at a time; this
     // key and the title bar's Clipping button move the pair together.

@@ -2997,7 +2997,7 @@ impl Editor {
                 Settle::Session
             });
             let session = workspace_task(self.owner.clone(), self.client, Value::Object(diff));
-            let frame = self.refresh_mask_overlay();
+            let frame = self.refresh_mask_coverage();
             return Task::batch([session, frame]);
         }
         self.await_step(if overlay {

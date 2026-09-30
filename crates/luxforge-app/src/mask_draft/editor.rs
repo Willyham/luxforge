@@ -326,6 +326,13 @@ pub(super) fn finite(point: (f64, f64)) -> bool {
     point.0.is_finite() && point.1.is_finite()
 }
 
+/// Both ends of a placing drag are legal stored positions.
+pub(super) fn placeable(from: (f64, f64), to: (f64, f64)) -> bool {
+    [from.0, from.1, to.0, to.1].into_iter().all(|value| {
+        (luxforge_core::mask::POSITION_MIN..=luxforge_core::mask::POSITION_MAX).contains(&value)
+    })
+}
+
 /// The draft bar's decimals for a position or a mask-space distance: a thousandth of the frame's
 /// height, which is finer than a handle can be placed by pointer at Fit.
 pub(super) const DISTANCE_DECIMALS: usize = 3;

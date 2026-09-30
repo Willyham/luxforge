@@ -1,6 +1,6 @@
 //! The pointer over the photograph and canvas picks.
 use crate::state::histogram::Readout;
-use luxforge_core::{ContentPoint, EntryId};
+use luxforge_core::{ContentPoint, DraftId, EntryId};
 use serde_json::Value;
 
 /// The pointer over the photograph: the hover readout and canvas picks. Handled in
@@ -10,10 +10,12 @@ pub(crate) enum PointerMessage {
     /// The last pointer position over the photo, already mapped to the displayed raster's pixels.
     /// That is the view pixel; the content pixel behind it is asked for only when a pick happens.
     Moved(Option<(u32, u32)>),
-    /// One sampled pixel of the displayed stack, as `render.sample` answered it. The entry it was
-    /// asked for travels with it, so an answer for a stack the canvas has left is dropped.
+    /// One sampled pixel of the displayed stack, as `render.sample` answered it. The entry and
+    /// draft it was asked for travel with it, so an answer for a stack the canvas has left is
+    /// dropped.
     Sampled {
         entry: EntryId,
+        draft: Option<DraftId>,
         result: Result<Readout, String>,
     },
     /// A canvas pick asks the core where that view pixel lands in the content stage; it never
