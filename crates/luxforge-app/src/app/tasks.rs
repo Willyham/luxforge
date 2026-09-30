@@ -1562,21 +1562,20 @@ pub(crate) fn sync_task(
     )
 }
 
-/// One read by the Performance section's sampler: the counters, then the activity board, as the
-/// owner answered them.
+/// One read of the counters by the Performance section's sampler, as the owner answered it. The
+/// board its job rows show is long-running work's, read on the update loop (`app/performance.rs`).
 #[derive(Clone, Debug)]
 pub(crate) struct PerformanceRead {
     pub(crate) resources: Value,
-    pub(crate) activity: Value,
     /// Milliseconds since the Unix epoch, taken the moment `resources.read` answered, so evidence
     /// can place the sample beside a reading of this process that another program took.
     pub(crate) wall_ms: u64,
 }
 
-/// One sampler read off the UI thread: `resources.read` and then `activity.list`, through the same
-/// method table as any API client, answered as one message tagged with the sampling epoch that
-/// asked for it. Neither method mutates anything or emits an event, so a sampling section never
-/// makes this or any other client resynchronise.
+/// One sampler read off the UI thread: `resources.read`, through the same method table as any API
+/// client, answered as one message tagged with the sampling epoch that asked for it. It mutates
+/// nothing and emits no event, so a sampling section never makes this or any other client
+/// resynchronise.
 pub(crate) fn performance_task(owner: OwnerHandle, client: ClientId, epoch: u64) -> Task<Message> {
     owner_task(
         move || read_performance(&owner, client),
@@ -1595,12 +1594,7 @@ fn read_performance(owner: &OwnerHandle, client: ClientId) -> Result<Performance
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or_default();
-    let (activity, _) = call(owner, client, "activity.list", json!({}))?;
-    Ok(PerformanceRead {
-        resources,
-        activity,
-        wall_ms,
-    })
+    Ok(PerformanceRead { resources, wall_ms })
 }
 
 /// A method whose event changes the preset library rather than an asset.

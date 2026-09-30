@@ -25,8 +25,8 @@
 //! - **Locate…** on a row (or the Info panel's Locate a different file…, or Develop's Locate
 //!   original…) asks the native file dialog and sends `source.locate {asset_id, path}`, a
 //!   `source-locate` job. When Develop asked, a located photograph is opened again from its new file
-//!   through the Open path the desktop already has (`pick.develop` of that file, which the
-//!   catalog knows as the photograph's original).
+//!   through the Open path the desktop already has (a `pick.develop` of that file, which links it
+//!   to the photograph whose original it now is).
 use crate::app::{
     Before, Editor,
     message::{Message, select::SelectMessage, select_missing::MissingMessage},

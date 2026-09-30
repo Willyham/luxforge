@@ -74,8 +74,12 @@ pub(crate) fn followed(entry: &ActivityEntry) -> bool {
 /// What long-running work has read and chosen, which the model is derived from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct LongWorkState {
-    /// The board as the desktop last read it.
+    /// The board as the desktop last read it: the one snapshot the status bar, the progress sheet
+    /// and the Performance section's job rows are all derived from, so they never disagree.
     pub(crate) board: Option<ActivitySnapshot>,
+    /// Moves with every read of the board, and never otherwise: what the Performance section is
+    /// rebuilt on beside its own samples.
+    pub(crate) version: u64,
     /// Each running job's recent progress, for its estimate.
     pub(crate) rates: Rates,
     /// The Select view waiting on a job before it can show anything.
@@ -90,6 +94,7 @@ impl LongWorkState {
     pub(crate) fn observe(&mut self, snapshot: ActivitySnapshot) {
         self.rates.observe(&snapshot);
         self.board = Some(snapshot);
+        self.version = self.version.wrapping_add(1);
     }
 
     /// The followed jobs running now, oldest first, as the board lists them.
