@@ -191,9 +191,17 @@ impl Editor {
         self.select_shown() && self.select.state.loupe.open
     }
 
-    /// Show the active frame in the loupe; with none active, the view's first.
+    /// Show the active frame in the loupe; with none active, the view's first. An empty view has
+    /// nothing to show.
     fn loupe_show(&mut self) -> Task<Message> {
-        if !self.select_shown() || self.select.state.summary.is_none() {
+        if !self.select_shown()
+            || self
+                .select
+                .state
+                .summary
+                .as_ref()
+                .is_none_or(|summary| summary.count == 0)
+        {
             return Task::none();
         }
         let loupe = &mut self.select.state.loupe;

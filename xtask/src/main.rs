@@ -20,6 +20,7 @@ mod generate_catalog;
 mod histogram_smoke;
 mod inspect_dng;
 mod launch;
+mod loupe_smoke;
 mod mask_acceptance;
 mod mask_brush_smoke;
 mod mask_combine_smoke;

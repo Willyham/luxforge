@@ -265,7 +265,7 @@ pub(crate) fn compare_frames(summary: &ViewSummary, active: u32) -> Option<Range
 }
 
 /// Which of `total` frames to draw, at most `capacity` of them, keeping `active` in view and as near
-/// the middle as the ends allow (the strip widget's own rule, `luxforge_ui::visible_window`).
+/// the middle as the ends allow: the frame strip widget's own rule (its `visible_window`).
 pub(crate) fn window(total: u32, active: u32, capacity: u32) -> Range<u32> {
     let count = total.min(capacity);
     let active = active.min(total.saturating_sub(1));

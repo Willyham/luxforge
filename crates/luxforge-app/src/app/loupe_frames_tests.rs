@@ -211,6 +211,13 @@ fn loupe_frames_draw_the_stand_in_until_the_tier_lands() {
     assert!(!picture.stand_in && picture.key.contains(":loupe:"));
     assert_eq!((picture.width, picture.height), (2560, 1707));
     assert!(frames.settled(&wanting(5, &[])));
+    // The look-ahead's reads go on without unsettling the frame on screen.
+    let ahead = frames.want(wanting(5, &[6])).expect("frame 6 is read");
+    assert_eq!(ids(&ahead), vec![6]);
+    assert!(
+        frames.settled(&wanting(5, &[6])),
+        "a look-ahead read is in flight"
+    );
     assert_accounted(&frames);
 }
 
