@@ -181,8 +181,7 @@ impl Editor {
                     entry,
                     self.session.workspace.mode.clone(),
                     self.field_target(),
-                    x,
-                    y,
+                    (x, y),
                 );
             }
             PointerMessage::Located {

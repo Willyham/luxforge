@@ -1351,8 +1351,7 @@ pub(crate) fn locate_task(
     entry: EntryId,
     mode: String,
     target: super::masks::FieldTarget,
-    x: u32,
-    y: u32,
+    (x, y): (u32, u32),
 ) -> Task<Message> {
     let picked = entry.clone();
     let picked_mode = mode.clone();
