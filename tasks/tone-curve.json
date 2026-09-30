@@ -394,7 +394,7 @@
     {
       "id": "TASK-006",
       "description": "Carry the curve through presets: capture and apply of set-curve, the Lightroom ToneCurvePV2012 transfer with the sibling rows re-worded, and the presets smoke's patch model over curve fields.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Verify the masked tone curve: the masking acceptance chapter's curve binding, reorder and duplicate, the Masks panel's scope chip and coverage input, and the masking design's maskable list.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
