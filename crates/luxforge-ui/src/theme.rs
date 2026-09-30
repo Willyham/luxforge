@@ -636,6 +636,8 @@ pub const CELL_FOOTER_TOP: f32 = 98.0;
 pub const CELL_FOOTER_HEIGHT: f32 = 24.0;
 pub const CELL_FOOTER_INSET: f32 = 9.0;
 pub const SIZE_CELL_LABEL: f32 = 10.5;
+/// Between a footer's label and the edited dot (the catalog cell's `.ft` gap).
+pub const CELL_FOOTER_SPACING: f32 = 6.0;
 /// Where a Select cell's badges sit from its corner (`.tk`, `.cnt`: 11 pt from the top and side).
 pub const CELL_BADGE_INSET: f32 = 11.0;
 /// A catalog cell (`.cell`): 168 × 176 pt, its image box 142 pt tall with 10/10/4 pt padding and a
@@ -1598,7 +1600,10 @@ mod tests {
         assert_eq!(CELL_FOOTER_TOP, 98.0);
         assert_eq!(CELL_FOOTER_TOP + CELL_FOOTER_HEIGHT, CELL_SIZE.height);
         assert_eq!((CELL_IMAGE_MAX.width, CELL_IMAGE_MAX.height), (120.0, 86.0));
-        assert_eq!((CELL_FOOTER_INSET, SIZE_CELL_LABEL), (9.0, 10.5));
+        assert_eq!(
+            (CELL_FOOTER_INSET, SIZE_CELL_LABEL, CELL_FOOTER_SPACING),
+            (9.0, 10.5, 6.0)
+        );
         assert_eq!(CELL_BADGE_INSET, 11.0);
         assert_eq!(CELL_SURFACE, Color::from_rgb8(0x1d, 0x1d, 0x20));
         assert_eq!(CELL_SELECTED, Color::from_rgb8(0x34, 0x34, 0x3a));
@@ -1710,33 +1715,22 @@ mod tests {
         );
     }
 
-    fn linear(channel: f32) -> f32 {
-        if channel <= 0.04045 {
-            channel / 12.92
-        } else {
-            ((channel + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    fn encoded(channel: f32) -> f32 {
-        if channel <= 0.003_130_8 {
-            channel * 12.92
-        } else {
-            1.055 * channel.powf(1.0 / 2.4) - 0.055
-        }
-    }
-
     /// `colour` at `opacity` over `background` as Iced draws it: blended in linear light, then
-    /// encoded, to the 8-bit code a capture samples.
+    /// encoded, to the 8-bit code a capture samples. The transfer function is the shared
+    /// reference's.
     fn linear_composite(colour: Color, background: Color, opacity: f32) -> [u8; 3] {
+        use luxforge_reference::srgb;
         [
             (colour.r, background.r),
             (colour.g, background.g),
             (colour.b, background.b),
         ]
         .map(|(c, b)| {
-            let mixed = linear(b) + (linear(c) - linear(b)) * opacity;
-            (encoded(mixed) * 255.0).round() as u8
+            let (c, b) = (
+                srgb::decode_encoded(f64::from(c)),
+                srgb::decode_encoded(f64::from(b)),
+            );
+            srgb::code(b + (c - b) * f64::from(opacity))
         })
     }
 

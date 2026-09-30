@@ -135,8 +135,14 @@ impl Recorder {
 
 // -- Inputs -------------------------------------------------------------------------------------
 
-fn handle(width: u32, height: u32) -> Handle {
-    Handle::from_rgba(width, height, vec![0; (width * height * 4) as usize])
+/// A 240 × 160 photograph: the gallery's first stand-in, a handle made once.
+fn landscape() -> Handle {
+    let handle = crate::gallery_thumbnails::thumbnail(0);
+    let Handle::Rgba { width, height, .. } = &handle else {
+        panic!("the stand-ins are RGBA");
+    };
+    assert_eq!((*width, *height), (240, 160));
+    handle
 }
 
 fn colours() -> ScrollbarColours {
@@ -218,7 +224,7 @@ fn many(items: u32) -> Vec<GridBlock> {
 fn the_closure_is_asked_only_for_visible_cells() {
     let layout = GridLayout::new(many(10_000), GridMetrics::select(136.0), 1100.0);
     let size = Size::new(1100.0, 760.0);
-    let image = handle(240, 160);
+    let image = landscape();
     for scroll in [0.0, 333.0, layout.height() / 2.0, layout.height() - 760.0] {
         let asked = RefCell::new(Vec::new());
         let cell = |grid: GridCell| {
@@ -261,7 +267,7 @@ fn each_cell_state_draws_as_the_board() {
         metrics,
         32.0 + 9.0 * 136.0 + 8.0 * 6.0,
     );
-    let landscape = handle(240, 160);
+    let landscape = landscape();
     let cell = |grid: GridCell| {
         let mut view = CellView {
             image: Some(&landscape),
@@ -439,7 +445,8 @@ fn the_catalog_badge_follows_the_pick_and_keeps_its_icon_when_crowded() {
             Size::new(97.5, 16.0)
         )]
     );
-    // After the check (11 + 18 + 4) its words would pass the cell's inset, so it keeps its icon.
+    // After the check (11 + 18 + 4) its words, measured here at 5.25 pt a character, would pass
+    // the photograph's box (8 pt in), so it keeps its icon.
     assert_eq!(
         badges(1),
         [Rectangle::new(
@@ -484,7 +491,7 @@ fn the_footer_draws_its_label_and_the_edited_dot() {
     assert!(recorder.ops.contains(&(0, Op::Fill(dot))));
     let texts = recorder.texts();
     assert_eq!(texts[0], "−2 EV");
-    // 168 − 2 × 10 − 6 − 7 = 135 pt for the label, at 5.5 pt a character: 23 characters and the
+    // 168 − 2 × 10 − 6 − 6 = 136 pt for the label, at 5.5 pt a character: 23 characters and the
     // ellipsis.
     assert_eq!(texts[1], "L1003206-a-very-long-fi\u{2026}");
     assert!(recorder.ops.contains(&(
