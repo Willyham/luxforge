@@ -1899,6 +1899,7 @@ dependencies = [
  "luxforge-raw",
  "luxforge-reference",
  "luxforge-testbase",
+ "luxforge-watch",
  "moxcms",
  "rayon",
  "roxmltree",

@@ -108,7 +108,10 @@ mod tests {
         ]);
         let records = parse(&bytes);
         assert_eq!(
-            records.iter().map(|record| record.action).collect::<Vec<_>>(),
+            records
+                .iter()
+                .map(|record| record.action)
+                .collect::<Vec<_>>(),
             [1, 4, 5]
         );
         let root = Path::new("/photos");
