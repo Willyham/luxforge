@@ -50,8 +50,8 @@ pub(crate) const NAMING_FIELD: &str = "luxforge.select.catalog.name";
 const MENU_MAX_HEIGHT: f32 = 360.0;
 /// The Info panel's preview box, as the event board draws it: 276 × 176 pt.
 const PREVIEW_BOX: (f32, f32) = (276.0, 176.0);
-/// The width of an Organize band's labels.
-const ORGANIZE_LABEL_WIDTH: f32 = 86.0;
+/// The width of an Organize band's labels: the Metadata band's, so the bands' values line up.
+const ORGANIZE_LABEL_WIDTH: f32 = 96.0;
 
 fn act(action: CatalogAction) -> Message {
     Message::Select(SelectMessage::Catalog(CatalogMessage::Act(action)))
@@ -298,7 +298,12 @@ pub(crate) fn filter_bar<'a>(
         None => save,
     };
     let save = popover(save, model.naming.as_deref().map(smart_naming), close());
-    bar(leading, vec![save, caption(model.count.clone())])
+    let count = text(model.count.clone())
+        .size(theme::SIZE_CAPTION)
+        .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
+        .color(theme::TEXT_TERTIARY)
+        .wrapping(Wrapping::None);
+    bar(leading, vec![save, count.into()])
 }
 
 /// The smart collection's name, typed under Save as smart collection…: Return or Save saves the
@@ -409,6 +414,7 @@ pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<
             .map(|handle| {
                 image(handle.clone())
                     .content_fit(ContentFit::Contain)
+                    .width(Length::FillPortion(1))
                     .height(Length::Fixed(theme::BATCH_PREVIEW_HEIGHT))
                     .into()
             })
@@ -418,7 +424,7 @@ pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<
                 Row::with_children(thumbs)
                     .spacing(theme::BATCH_PREVIEW_SPACING)
                     .align_y(Alignment::Center)
-                    .clip(true),
+                    .width(Length::Fill),
             );
         }
         let mut title = row![
@@ -573,21 +579,8 @@ fn develop(model: &PhotoInfo) -> Element<'_, Message> {
             tooltip::Position::Top,
         )
     };
-    let rows: Vec<(String, String)> = model
-        .edited
-        .iter()
-        .map(|edited| ("Edited".to_owned(), edited.clone()))
-        .collect();
     let mut content = Column::new().spacing(theme::SPACING);
-    content = content.push(if rows.is_empty() {
-        text("Develop")
-            .size(theme::SIZE_TITLE)
-            .font(theme::FONT_SEMIBOLD)
-            .color(theme::TEXT_PRIMARY)
-            .into()
-    } else {
-        owned_band("Develop", rows)
-    });
+    content = content.push(band("Develop", &model.develop));
     content
         .push(
             row![
@@ -608,32 +601,4 @@ fn develop(model: &PhotoInfo) -> Element<'_, Message> {
         )
         .width(Length::Fill)
         .into()
-}
-
-/// A band of rows the caller made for the frame.
-fn owned_band<'a>(title: &str, rows: Vec<(String, String)>) -> Element<'a, Message> {
-    let heading = text(title.to_owned())
-        .size(theme::SIZE_TITLE)
-        .font(theme::FONT_SEMIBOLD)
-        .color(theme::TEXT_PRIMARY);
-    Column::with_children(std::iter::once(heading.into()).chain(rows.into_iter().map(
-        |(label, value)| {
-            row![
-                text(label)
-                    .size(theme::SIZE_CONTROL)
-                    .color(theme::TEXT_TERTIARY)
-                    .wrapping(Wrapping::None)
-                    .width(Length::Fixed(ORGANIZE_LABEL_WIDTH)),
-                text(value)
-                    .size(theme::SIZE_CONTROL)
-                    .color(theme::TEXT_LABEL)
-                    .wrapping(Wrapping::None),
-            ]
-            .align_y(Alignment::Center)
-            .into()
-        },
-    )))
-    .spacing(theme::SPACING)
-    .width(Length::Fill)
-    .into()
 }

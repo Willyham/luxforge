@@ -320,6 +320,40 @@ fn select_previews_a_wake_during_a_read_is_not_lost() {
     assert!(previews.woken().is_none());
 }
 
+/// A photograph whose camera preview (the fallback while its render is queued) fails to decode is
+/// not settled until the render it waits for answers: a failed decode settles a cell only when
+/// nothing newer is coming.
+#[test]
+fn select_previews_a_failed_fallback_waits_for_the_queued_render() {
+    let mut previews = paused(DECODED_BUDGET_BYTES);
+    let want = wanted(REVISION, &[1], &[]);
+    let batch = previews.plan_for(want).expect("a batch");
+    let fallback = info(1, PreviewOrigin::Embedded, 512, 341);
+    previews.answered(answer(&batch, |_| queued(Some(fallback.clone()))));
+    let decode = planned(&previews, 1).expect("the fallback is decoded meanwhile");
+    previews.adopt(Decoded {
+        decode,
+        result: Err("the file was collected".into()),
+    });
+    assert!(previews.entries[&file(1)].failed.is_some());
+    assert!(!previews.settled(), "its render is still queued");
+    // The render is written: the wake reads it again, and a failure of that one would settle.
+    previews.woken.store(true, Ordering::Release);
+    let batch = previews.woken().expect("read again after the wake");
+    previews.answered(answer(&batch, |_| {
+        Ok(PreviewAnswer::Ready {
+            preview: info(1, PreviewOrigin::Rendered, 512, 341),
+        })
+    }));
+    let decode = planned(&previews, 1).expect("the render is decoded");
+    assert!(decode.key.ends_with(":rendered"));
+    previews.adopt(Decoded {
+        decode,
+        result: Err("unreadable".into()),
+    });
+    assert!(previews.settled(), "nothing newer is coming");
+}
+
 /// A file the lane is still reading is answered with the same job and waits for the next wake; one
 /// answered with another job after a wake had its read end without a preview (the file is gone or
 /// its volume is not connected): it is not asked again under the revision, so a missing file is not

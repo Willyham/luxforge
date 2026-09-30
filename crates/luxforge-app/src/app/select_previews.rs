@@ -586,17 +586,20 @@ impl SelectPreviews {
         })
     }
 
-    /// Every file on screen has what it will draw for now: a decoded preview, or nothing to wait for
-    /// (refused, reported unavailable, or its decode failed). An evidence run waits for it before a
+    /// Every item on screen has what it will draw for now: a decoded preview, or nothing to wait for
+    /// (refused, reported unavailable, or its decode failed with no newer preview on its way). An
+    /// evidence run waits for it before a
     /// capture, so a frame shows the previews of the cells it captures rather than whichever
     /// decodes happened to land first.
     pub(crate) fn settled(&self) -> bool {
+        // A failed decode is all there is to wait for only when nothing newer is coming: a
+        // photograph whose camera preview failed while its render is still queued waits for it.
         self.on_screen.iter().all(|file| {
             !self.loading(file)
-                || self
-                    .entries
-                    .get(file)
-                    .is_some_and(|entry| entry.failed.is_some())
+                || self.entries.get(file).is_some_and(|entry| {
+                    entry.failed.is_some()
+                        && !matches!(entry.read, Read::Asking | Read::Queued | Read::Recheck)
+                })
         })
     }
 
@@ -632,6 +635,12 @@ impl SelectPreviews {
             "budget": self.budget,
             "side": self.wanted.side,
             "visible": self.wanted.visible.len(),
+            // The cells on screen drawing a decoded preview.
+            "visible_held": self
+                .on_screen
+                .iter()
+                .filter(|item| self.held(item).is_some())
+                .count(),
             "margin": self.wanted.margin.len(),
             "loading": self.entries.keys().filter(|file| self.loading(file)).count(),
             "photographs": self.entries.keys().filter(|item| matches!(item, Item::Photo(_))).count(),
