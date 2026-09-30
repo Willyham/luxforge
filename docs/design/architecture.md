@@ -280,6 +280,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | RAW developments for the 100% region and the developed tiers, process-wide | 1 running, 4 callers waiting | The one slot `DEVELOPMENTS` and `MAX_DEVELOPMENT_WAITERS`, as above |
 | Developed frames kept | 1, upright RGBA8 within the evaluated-frame limit, released before another is developed | The one slot `DEVELOPMENTS`, as above |
 | A developed preview's long edge | 2560 px | `MAX_DEVELOPED_PREVIEW_SIDE`, as above |
+| A rendered tier of a developed photograph, long edge | 512 px grid, 2048 px large | `PHOTO_GRID_SIDE` and `PHOTO_LARGE_SIDE`, `crates/luxforge-core/src/catalog_types/previews.rs` |
+| Originals one rendered-preview render prepares | 1, for every tier it makes, held by the render alone and never adopted by the editor | No constant: `render` in `crates/luxforge-core/src/previews/rendered.rs` prepares once and is synchronous on its worker |
 
 **Catalog and API**
 

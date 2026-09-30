@@ -19,3 +19,4 @@
 //! check).
 
 pub(crate) mod region;
+pub(crate) mod rendered;
