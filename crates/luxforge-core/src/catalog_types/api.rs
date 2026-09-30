@@ -462,7 +462,7 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         Files,
         "IndexFolders",
         &[ResourceLimit, CatalogError],
-        "the indexed folders, whether each is offline, and what its last listing found",
+        "the indexed folders, whether each is offline, watched or stale, and what its last listing found",
     ),
     method::<NoParams>(
         "card.list",
