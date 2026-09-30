@@ -45,6 +45,12 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Conformance, placement, the `curve` smoke scenario, presets with the Lightroom composite-curve transfer, masks, and photo-sized measurement
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit and the Lightroom transfer
 
+**Detail** (planned, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
+- Bounded numerical kernels and shared restoration/scale contracts
+- Generated controls/API, masks, native presets and history
+- Approximate motion, exact-derived settled Fit and 100% inspection
+- Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
+
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
 - Owner decisions: behaviour, repair-stage order, scope
 - Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow

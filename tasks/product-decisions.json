@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, where Detail's sharpening and noise reduction run, and interactive-preview quality levels beyond the authorized baseline.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -280,46 +280,42 @@
     },
     {
       "id": "TASK-006",
-      "description": "Decide where Detail's sharpening and noise reduction run in the stage order, and whether they show at Fit, before the Detail module is designed.",
-      "status": "ready",
+      "description": "Record the delegated Detail processing-order and Fit-preview decisions.",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Every spatial layer is placed after all colour work today (`EffectStage` order and the placement rule in modules/registry/placement.rs), so noise reduction or sharpening before tone cannot be expressed; proxy eligibility is decided per stage (`ModuleRegistry::proxy_eligible`), with no per-effect policy, so a non-neutral spatial layer makes the proxy approximate at Fit.",
-        "Lightroom-style noise reduction usually runs early on scene-referred data while output sharpening runs late; the choice decides whether Detail needs a new stage or an ordering rule inside the spatial stage.",
-        "It is the one question the post-consolidation programme left open."
+        "The owner delegated sensible Detail choices in the 2026-09-30 planning request and explicitly excluded implementation and owner review.",
+        "Selected: restoration before Basic/Presence; denoise then capture sharpening; approximate moving previews and an exact-derived settled Fit image. These are design decisions, not delivered behaviour or measured quality."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Owner decisions",
+          "label": "Detail decisions",
           "target": "docs/decisions.md",
-          "locator": "Open product questions",
-          "relevance": "Where the answer is recorded."
+          "relevance": "Delegated choices and rationale.",
+          "locator": "Detail"
         },
         {
           "kind": "file",
-          "label": "Placement",
-          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
-          "relevance": "The effect-stage order that places spatial layers after colour."
-        },
-        {
-          "kind": "file",
-          "label": "Presence, mixer and vignette design",
-          "target": "docs/design/presence-mixer-vignette.md",
-          "relevance": "The spatial primitive, its stage and its proxy behaviour."
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "Placement, preview and acceptance contracts."
         }
       ],
       "acceptance_criteria": [
-        "The owner chooses where Detail's operations run and how they show at Fit, and the decision is recorded in docs/decisions.md before a Detail design starts."
+        "Processing order and Fit behaviour are selected with rationale in docs/decisions.md and docs/design/detail.md under explicit owner delegation.",
+        "The design distinguishes planning from implementation and capture sharpening from output sharpening; no owner-review prerequisite remains."
       ],
       "test_strategy": {
-        "approach": "manual",
+        "approach": "inspection",
         "steps": [
-          "Review the stage order and proxy behaviour with the owner."
+          "Check the design and decision record against the delegated planning request and current host contracts."
         ],
-        "commands": [],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
         "expected_results": [
-          "The Detail design starts from a recorded decision."
+          "The Detail design has recorded decisions without claiming implementation or photographic qualification."
         ]
       }
     },
