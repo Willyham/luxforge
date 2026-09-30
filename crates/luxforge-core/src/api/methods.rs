@@ -1053,6 +1053,51 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait",
         retries: Owner,
     ),
+    // Developing picks (TASK-013).
+    owner!(
+        "pick.plan",
+        crate::catalog_types::api::PickPlan,
+        owner::library::develop::pick_plan,
+        "{events: [{event_id?, name, count, folder: {kind: existing, folder_id} | {kind: new, name, parent_id?}, folder_name?, removable?: [{volume_id, label, count, with_copy}]}], count, offline}: what developing the files targets names, picked or not, would do (without targets, every pick in the caller's view, which is validation until views land): the files by event, the events organized over every file the index lists in their folders (a file it does not list is an undated frame of its folder), chronological and undated last; each event's proposed folder, the newest catalog folder made from it (its stored event key, else an overlapping stored span; for an undated event, the folder its folder's undated photographs went into) with its folder_name, or else a new top-level folder named after the event (its place with the month and year of its first day, \"Konstanz · Sep 2026\", else the event's name), unique among the top-level folders; the picks on each removable volume and how many have a file of the same name and length in an indexed folder on a fixed volume (with_copy); and offline, the files whose volume is not connected; reads nothing but the catalog, the index and one stat a file"
+    ),
+    owner!(
+        "pick.develop",
+        crate::catalog_types::api::PickDevelop,
+        owner::library::develop::pick_develop,
+        "starts a develop-picks job, answering {job_id, status, deduplicated}, whose result is {developed: [{path, used?, asset_id, outcome: created | linked | relinked}], failed: [{path, asset_id?, code, message}], changes}: the files are planned as pick.plan plans them and each event goes into the folder its into entry names by event_id, else the entry with no event_id, else the plan's proposal, so into: [] accepts the plan; an existing folder must exist and a new one's name is checked as folder.create's (validation, conflict), and events given the same new folder share it, made with their span; each file is read once off the owner, bounded, its SHA-256 streamed, its header read and its interpretation read without developing, and must keep its signature while it is read and until it commits; a file whose bytes are a photograph's is linked to it, one whose name, length and fingerprint match a photograph whose original is not there relinks it (asset-source, its folder and history unchanged), a file another photograph names with other bytes fails with conflict, and any other becomes a photograph with its Original, capture row, source folder and moment in its event's folder; the job commits in batches, the first of one file, then up to 100 files or 5 s, never across an event, each one library change (developed-asset, catalog-folder, asset-source and pick items) announced as one event, clearing its picks; a file that fails is listed in failed and stays picked; picks on a removable volume are conflict (naming it in data) unless use_copies finds each a copy to verify or confirm_removable is set, and with use_copies a card's pick is developed from the first copy whose fingerprint matches (used), else from the card only with confirm_removable; an offline file fails with source-unavailable; nothing to develop is validation; job.cancel stops between files and keeps every batch committed; library.undo of a batch sends its photographs back and picks their files again; a retry answers the first job, and after a restart a finished job with the report its changes record; resource-limit when 4 library jobs already wait",
+        retries: Owner,
+    ),
+    owner!(
+        "asset.send-back",
+        crate::catalog_types::api::AssetTargets,
+        owner::library::develop::asset_send_back,
+        "sends the photographs targets names back as one library change, answering {outcome, change?, items, deduplicated}: each one's catalog record (asset, capture, Original entry, state and requests) is deleted and its file picked again with its signature now (kept as picked when it already is); refused with conflict, naming the item in data.items and changing nothing, for a photograph with history beyond its Original, a named version or a collection (it leaves only by removal) and for one whose original is not at its locator (it could not be picked again); a sent-back photograph is developed again with pick.develop, so undoing a send-back is conflict; targets as asset.move's; the file is never touched",
+        retries: Owner,
+    ),
+    // Resolving missing originals (TASK-017).
+    owner!(
+        "source.missing",
+        crate::catalog_types::api::SourceMissing,
+        owner::library::missing::source_missing,
+        "{groups: [{source_folder, volume_id, count, catalog_folders: [{id, name}], reason: {kind: volume-offline, label} | {kind: folder-gone} | {kind: files-gone} | {kind: changed}}], count}: every photograph not removed whose original was last recorded offline, missing or changed (by source.check or a refusal; one never checked is not listed), grouped by the folder on disk it was developed from, in folder order, with the catalog folders its photographs are in now; the reason is volume-offline when the group's volume is not mounted (one look at its mount point), folder-gone when the volume is and the folder is not, changed when every photograph in it was recorded changed, and files-gone otherwise, a group mixing missing and changed originals included; nothing is looked at per file"
+    ),
+    owner!(
+        "source.find",
+        crate::catalog_types::api::SourceFind,
+        owner::library::missing::source_find,
+        "starts a source-find job, answering {job_id, status, deduplicated}, whose result is {rows: [{asset_id, file_name, result: found {path} | several-identical {paths} | different-bytes {path} | claimed {path, by} | not-found}]} and which changes nothing: search_root (an absolute folder) is walked with its subfolders, following no symbolic link, entering no other volume and skipping hidden folders, packages and other applications' caches, for files of each photograph's original's name (ignoring case on macOS and Windows) and length, and each candidate's SHA-256 is streamed off the owner, cancellable, one file at a time; found is one file with the original's bytes, several-identical more than one (a choice to make), claimed a file with its bytes that another photograph already names (never taken), different-bytes a file of the same name whose bytes differ, left as it is; while the job runs, job.read's result is the report so far with result checking for photographs not yet looked at, and its progress counts files looked at, then photographs checked; the files found and several-identical name are remembered for source.relink; exactly one of targets (photographs, as source.check's) and source_folder (every missing photograph developed from that folder, as source.missing lists it) is validation otherwise; a relative path or a file as search_root is validation and one that cannot be read read-error; the job fails with read-error for a folder or file it cannot read, source-unavailable when the folder's drive is disconnected, and resource-limit past 500,000 files or 100,000 folders; resource-limit past 50,000 photographs or when 4 library jobs already wait"
+    ),
+    owner!(
+        "source.relink",
+        crate::catalog_types::api::SourceRelink,
+        owner::library::missing::source_relink,
+        "points every photograph of pairs at its file in one transaction as one library change (asset-source items, labelled Relinked <file> or Relinked N originals, undone with library.undo), answering {outcome, change?, items, deduplicated}: each photograph's source folder becomes its file's folder, its volume is recorded and its original recorded available, and its history, edits and fingerprint are unchanged; a pair whose photograph already names its file needs nothing; every other pair must be a file a finished source.find verified for that photograph, still with the signature it had then and named by no other photograph, or nothing changes and the request is refused naming every such pair in data.pairs [{asset_id, path, reason: not-verified | changed | gone | claimed | same-file, by?}] (the first 100, with data.count): source-unavailable when a file is gone, conflict otherwise; a relative path, an unknown photograph, and a photograph or file named twice are validation; more than 50,000 pairs is resource-limit",
+        retries: Owner,
+    ),
+    // Removing (TASK-014).
+
+    // Batch preset and export (TASK-015).
+
     // ── end lane C ──
     // ── catalog lane D: views ──
     // ── end lane D ──

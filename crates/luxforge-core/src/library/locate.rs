@@ -160,10 +160,8 @@ pub(crate) fn verify(
 
 /// Stream the SHA-256 of the file at `path`, which must still have `expected`, from one open
 /// handle in [`CHUNK`]s, and answer its signature when the digest is `fingerprint` and the file
-/// kept that signature throughout: its handle's and its path's are taken before the first read
-/// and after the last, so a file replaced, rewritten or touched while it is read is refused
-/// (`conflict`), as is one that is not the original (`source-unavailable`). Cancellable between
-/// chunks; `progress` hears the bytes read so far and the length. Reads nothing but this file.
+/// kept that signature throughout ([`digest_file`]); one that is not the original is refused
+/// (`source-unavailable`).
 pub(crate) fn verify_file(
     path: &Path,
     expected: &SourceSignature,
@@ -172,6 +170,26 @@ pub(crate) fn verify_file(
     pause: &dyn Fn(Phase),
     progress: &dyn Fn(u64, u64),
 ) -> Result<SourceSignature, Error> {
+    let (digest, signature) = digest_file(path, expected, control, pause, progress)?;
+    if digest != fingerprint {
+        return Err(not_the_original(path, "its bytes differ"));
+    }
+    Ok(signature)
+}
+
+/// Stream the SHA-256 of the file at `path`, which must still have `expected`, from one open
+/// handle in [`CHUNK`]s, and answer the digest (lowercase hex, as fingerprints are stored) with the
+/// file's signature, when the file kept that signature throughout: its handle's and its path's are
+/// taken before the first read and after the last, so a file replaced, rewritten or touched while
+/// it is read is refused (`conflict`). Cancellable between chunks; `progress` hears the bytes read
+/// so far and the length. Reads nothing but this file.
+pub(crate) fn digest_file(
+    path: &Path,
+    expected: &SourceSignature,
+    control: &JobControl,
+    pause: &dyn Fn(Phase),
+    progress: &dyn Fn(u64, u64),
+) -> Result<(String, SourceSignature), Error> {
     let unreadable =
         |error: std::io::Error| file_error(format!("cannot read {}", path.display()), error.kind());
     let mut file = File::open(path).map_err(unreadable)?;
@@ -206,10 +224,7 @@ pub(crate) fn verify_file(
     if after != before || read != len {
         return Err(changed(path, "while it was being verified"));
     }
-    if format!("{:x}", hash.finalize()) != fingerprint {
-        return Err(not_the_original(path, "its bytes differ"));
-    }
-    Ok(before)
+    Ok((format!("{:x}", hash.finalize()), before))
 }
 
 /// The signature of the file open at `path`, which must be the same as the file at `path` now.

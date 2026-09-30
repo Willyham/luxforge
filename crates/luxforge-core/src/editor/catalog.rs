@@ -276,6 +276,7 @@ const LIBRARY_SCHEMA: &str = "
     CREATE INDEX assets_by_developed ON assets(developed_ms);
     CREATE INDEX assets_by_volume ON assets(volume_id);
     CREATE INDEX assets_by_file_name ON assets(file_name COLLATE NOCASE);
+    CREATE INDEX assets_by_fingerprint ON assets(fingerprint);
     CREATE INDEX assets_by_moment ON assets(develop_moment) WHERE develop_moment IS NOT NULL;
     CREATE TABLE capture (
         asset_row INTEGER PRIMARY KEY REFERENCES assets(row_id),
@@ -750,7 +751,9 @@ impl EditorService {
     /// One library change in one catalog transaction ([`write`]): `change` reads and writes
     /// through the library journal (`crate::library::journal`), and once it commits, each cached
     /// head of a photograph whose original it moved carries that photograph's row as stored, as a
-    /// relocation's does ([`EntryCache::row_changed`](super::entries::EntryCache::row_changed)).
+    /// relocation's does ([`EntryCache::row_changed`](super::entries::EntryCache::row_changed)),
+    /// and a photograph it sent back (a `developed-asset` gone absent) is forgotten: its head, its
+    /// entries and its prepared source ([`EntryCache::forget`](super::entries::EntryCache::forget)).
     pub(crate) fn library_write(
         &mut self,
         change: impl FnOnce(&Transaction<'_>) -> Result<crate::library::journal::Outcome, Error>,
@@ -760,6 +763,21 @@ impl EditorService {
             if self.entries.borrow().revision(asset_id).is_some() {
                 let head = head_from(&self.connection, asset_id)?;
                 self.entries.borrow_mut().row_changed(head.asset);
+            }
+        }
+        for item in outcome.items() {
+            if let crate::catalog_types::LibraryItem::DevelopedAsset { asset_id } = item
+                && !super::library_rows::has_asset(&self.connection, asset_id)?
+            {
+                self.entries.borrow_mut().forget(asset_id);
+                let cached = self
+                    .source_cache
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|cached| cached.asset_id == *asset_id);
+                if cached {
+                    self.source_cache.replace(None);
+                }
             }
         }
         Ok(outcome)
@@ -878,6 +896,7 @@ mod tests {
                 "assets_by_availability",
                 "assets_by_developed",
                 "assets_by_file_name",
+                "assets_by_fingerprint",
                 "assets_by_folder",
                 "assets_by_moment",
                 "assets_by_removed",

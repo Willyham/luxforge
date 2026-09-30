@@ -55,8 +55,9 @@ pub(in crate::api) fn source_check(
             count => format!("{count} photographs"),
         }),
         origin: origin.clone(),
-        work: Box::new(move |control, pause| {
-            let observed = availability::observe(plan, index.as_ref(), control, pause);
+        work: Box::new(move |job| {
+            let observed =
+                availability::observe(plan, index.as_ref(), job.control, &|phase| job.pause(phase));
             Box::new(move |owner: &mut Owner| checked(owner, &origin, &job_id, observed))
         }),
     };
@@ -154,8 +155,8 @@ pub(in crate::api) fn source_locate(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned()),
         origin: origin.clone(),
-        work: Box::new(move |control, pause| {
-            let verified = locate::verify(&candidate, control, pause);
+        work: Box::new(move |job| {
+            let verified = locate::verify(&candidate, job.control, &|phase| job.pause(phase));
             Box::new(move |owner: &mut Owner| {
                 let request = Request::new(&method, &mutation);
                 located(owner, &origin, request, verified)

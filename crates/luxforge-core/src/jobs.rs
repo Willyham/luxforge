@@ -243,7 +243,8 @@ impl From<&Error> for JobError {
 /// about: `asset_id` for work on one photo, `module_id` and `resource_id` for capability work, and
 /// `identity` for an analysis. `result` is the kind's result once it is `ready`: a prepared
 /// asset's state, a collection's counts, an analysis report, a capability job's value or an
-/// export's written file.
+/// export's written file. While a job that reports its answer as it goes runs, `result` is that
+/// partial answer ([`JobControl::update_partial`]), such as a `source-find` job's rows so far.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobRecord {
     pub job_id: JobId,
@@ -291,6 +292,9 @@ pub struct JobControl {
     /// A clone of the socket of the network request the job is making, if any: its cancel shuts
     /// the socket down, so a read or write blocked on it returns at once.
     connection: Mutex<Option<TcpStream>>,
+    /// The answer so far of a job that reports one while it runs, which `job.read` answers as its
+    /// `result` until the job ends; none for every other job.
+    partial: Mutex<Option<Value>>,
 }
 
 impl JobControl {
@@ -386,6 +390,24 @@ impl JobControl {
         if let Some(activity) = self.activity.lock().expect("job activity").as_ref() {
             activity.phase(phase);
         }
+    }
+
+    /// Change the answer so far that `job.read` reports as the running job's `result`, starting
+    /// from `null`: a job whose answer grows as it works, a row at a time, updates it in place.
+    /// Called from the job's own worker thread; forgotten once the job ends, when its result, or
+    /// its error, is what is read.
+    pub(crate) fn update_partial(&self, update: impl FnOnce(&mut Value)) {
+        update(
+            self.partial
+                .lock()
+                .expect("job partial answer")
+                .get_or_insert(Value::Null),
+        );
+    }
+
+    /// The answer so far, for `job.read` while the job runs.
+    fn partial(&self) -> Option<Value> {
+        self.partial.lock().expect("job partial answer").clone()
     }
 
     /// The progress this job currently reports on the board, for `job.read` to answer with while it
@@ -547,10 +569,15 @@ impl Entry {
 
     fn read(&self) -> JobRecord {
         let mut record = self.record.clone();
-        if !record.status.is_finished() {
+        let live = !record.status.is_finished();
+        if live {
             record.progress = self.control.progress();
         }
-        record.result = self.output.as_ref().map(Output::value);
+        record.result = match &self.output {
+            Some(output) => Some(output.value()),
+            None if live => self.control.partial(),
+            None => None,
+        };
         record.error = self.error.as_ref().map(JobError::from);
         record.request_id = self.origin.as_ref().map(|origin| origin.request_id.clone());
         record
