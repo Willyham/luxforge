@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(labels(&posts[0].0), ["CARD"], "local first");
         assert!(!posts[0].1);
         assert_eq!(posts[0].0.checked, [gone.join("trip"), there.clone()]);
-        assert_eq!(posts[0].0.present, [there.clone()]);
+        assert_eq!(posts[0].0.present, std::slice::from_ref(&there));
         assert_eq!(labels(&posts[1].0), ["share"]);
         assert!(posts[1].1, "the last post");
         assert_eq!(posts[1].0.checked, [share.join("album")]);

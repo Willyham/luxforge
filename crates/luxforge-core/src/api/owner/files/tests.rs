@@ -967,6 +967,232 @@ fn an_offline_folder_keeps_its_rows() {
     assert!(!database::root(&connection, &trip).unwrap().unwrap().offline);
 }
 
+/// Call `method` as `client` on a thread of its own, which blocks until it is answered.
+fn call_on_thread(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &'static str,
+    params: Value,
+) -> JoinHandle<Result<ApiResponse, crate::Error>> {
+    let owner = owner.clone();
+    std::thread::spawn(move || {
+        owner.call(
+            client,
+            ApiRequest {
+                id: method.into(),
+                method: method.into(),
+                params,
+                token: None,
+            },
+        )
+    })
+}
+
+/// Hold every question the query thread takes from now on, as a volume that does not answer would.
+fn hold_queries(owner: &OwnerHandle) -> Arc<Gate> {
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    tell(owner, FilesMessage::HoldQueries(gate.clone()));
+    gate
+}
+
+/// How many calls wait behind the question the query thread is answering.
+fn queries_waiting(owner: &OwnerHandle) -> usize {
+    let (reply, answer) = std::sync::mpsc::sync_channel(1);
+    tell(owner, FilesMessage::QueriesWaiting(reply));
+    answer.recv().unwrap()
+}
+
+/// The labels of the mounted volumes `volume.list` names, in its order.
+fn mounted_labels(owner: &OwnerHandle, client: ClientId) -> Vec<Value> {
+    ok(owner, client, "volume.list", json!({}))["volumes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|volume| volume["offline"] == false)
+        .map(|volume| volume["volume"]["label"].clone())
+        .collect()
+}
+
+/// A question held on the query thread, as a hung network volume holds one, holds only the call
+/// that asked it: the owner answers every other call meanwhile — lane A's lists from what the
+/// survey learned, an index job, other lanes' reads — and the held call is answered once its
+/// question returns. Reading the lists opens no index on the owner.
+#[test]
+fn a_question_stuck_on_the_disk_never_holds_the_owner() {
+    let fixture = Fixture::new("held");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let (_, _, drive) = mounts(&fixture);
+    std::fs::create_dir_all(drive.join("2025")).unwrap();
+    // The first list waits for the survey; from then on the owner knows the volumes.
+    let volumes = ok(owner, client, "volume.list", json!({}))["volumes"].clone();
+    assert_eq!(volumes.as_array().unwrap().len(), 2, "{volumes}");
+    let card_id = volumes[0]["volume"]["id"].clone();
+
+    let gate = hold_queries(owner);
+    let asker = owner.register();
+    let held = call_on_thread(owner, asker, "disk.folders", json!({"path": drive}));
+    gate.wait_reached(1, "the disk.folders question");
+    for (method, params) in [
+        ("index.folders", json!({})),
+        ("volume.list", json!({})),
+        ("card.list", json!({})),
+        ("pick.list", json!({})),
+        ("activity.list", json!({})),
+    ] {
+        ok(owner, client, method, params);
+    }
+    assert!(
+        !fixture.index_dir().join(crate::INDEX_FILE).exists(),
+        "lane A's reads opened no index"
+    );
+    ok(owner, client, "catalog.info", json!({}));
+    for source in [
+        json!({"kind": "all-indexed"}),
+        json!({"kind": "card", "volume_id": card_id}),
+    ] {
+        ok(owner, client, "index.refresh", json!({"source": source}));
+    }
+    assert!(gate.holding(), "the question is still held");
+    assert_eq!(queries_waiting(owner), 0);
+    gate.open();
+    let answer = held.join().unwrap().expect("the owner answered");
+    assert!(answer.error.is_none(), "{:?}", answer.error);
+    let names: Vec<Value> = answer.result.unwrap()["folders"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|folder| folder["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("2025"), json!("2026")]);
+}
+
+/// Behind a held question at most `MAX_WAITING_QUERIES` calls wait, and one more is refused with
+/// `resource-limit` at once. A client that leaves takes its waiting call with it, and the call
+/// whose question is held is dropped too; the others are answered once the question returns, and
+/// the thread answers on.
+#[test]
+fn a_full_query_queue_refuses_and_a_client_that_leaves_takes_its_call() {
+    use super::queries::MAX_WAITING_QUERIES;
+    let fixture = Fixture::new("queue");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let folder = fixture.dir.join("photos");
+    std::fs::create_dir_all(folder.join("a")).unwrap();
+    let gate = hold_queries(owner);
+    let held_client = owner.register();
+    let held = call_on_thread(owner, held_client, "disk.folders", json!({"path": folder}));
+    gate.wait_reached(1, "the first question");
+    let mut waiting: Vec<_> = (0..MAX_WAITING_QUERIES)
+        .map(|_| {
+            let waiter = owner.register();
+            let call = call_on_thread(owner, waiter, "disk.folders", json!({"path": folder}));
+            (waiter, call)
+        })
+        .collect();
+    wait_for("every call to wait for the thread", || {
+        (queries_waiting(owner) == MAX_WAITING_QUERIES).then_some(())
+    });
+    let (code, _) = refused(owner, client, "disk.folders", json!({"path": folder}));
+    assert_eq!(code, "resource-limit");
+    let (code, _) = refused(
+        owner,
+        client,
+        "index.add-folder",
+        json!({"path": folder, "mutation": envelope("full")}),
+    );
+    assert_eq!(
+        code, "resource-limit",
+        "every question waits in the one queue"
+    );
+
+    let (gone, gone_call) = waiting.remove(0);
+    owner.disconnect(gone);
+    assert!(gone_call.join().unwrap().is_err(), "dropped unanswered");
+    assert_eq!(queries_waiting(owner), MAX_WAITING_QUERIES - 1);
+    owner.disconnect(held_client);
+    assert!(held.join().unwrap().is_err(), "the held call is dropped");
+    gate.open();
+    for (_, call) in waiting {
+        let answer = call.join().unwrap().expect("the owner answered");
+        assert!(answer.error.is_none(), "{:?}", answer.error);
+    }
+    assert_eq!(
+        ok(owner, client, "disk.folders", json!({"path": folder}))["folders"][0]["name"],
+        "a"
+    );
+}
+
+/// Stopping the owner while a question is held does not wait for it: the owner's thread ends and
+/// the held call is dropped unanswered, while the question's thread ends by itself once the
+/// question returns.
+#[test]
+fn stopping_the_owner_does_not_wait_for_a_held_question() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut fixture = Fixture::new("stop");
+    let (owner, join) = fixture.owner.take().unwrap();
+    let gate = hold_queries(&owner);
+    let client = owner.register();
+    let held = call_on_thread(&owner, client, "disk.folders", json!({"path": fixture.dir}));
+    gate.wait_reached(1, "the question");
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stopper = {
+        let stopped = stopped.clone();
+        std::thread::spawn(move || {
+            owner.stop();
+            join.join().unwrap();
+            stopped.store(true, Ordering::SeqCst);
+        })
+    };
+    luxforge_testbase::wait_until("the owner to stop with the question held", || {
+        stopped.load(Ordering::SeqCst)
+    });
+    assert!(gate.holding(), "the question was not waited for");
+    assert!(held.join().unwrap().is_err(), "dropped unanswered");
+    gate.open();
+    stopper.join().unwrap();
+}
+
+/// The volume list answers from what the survey learned against the mount table read now: a
+/// volume taken out is gone from the very next answer, one mounted since appears once a survey has
+/// learned it, and its card can be listed before that, found on the query thread.
+#[test]
+fn the_volume_list_follows_the_mount_table_and_a_new_card_is_found_on_the_disk() {
+    let fixture = Fixture::new("survey");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let (table, _, drive) = mounts(&fixture);
+    assert_eq!(
+        mounted_labels(owner, client),
+        [json!("NIKON Z 6"), json!("Photos SSD")]
+    );
+    let lumix = fixture.dir.join("LUMIX");
+    put(&lumix.join("DCIM/100_PANA/P1000001.JPG"), &camera_jpeg());
+    {
+        let mut table = table.lock().unwrap();
+        table.retain(|mount| mount.mount_point != drive);
+        table.push(crate::index::volumes::tests::mount_at(
+            &lumix, "LUMIX", 4, true,
+        ));
+    }
+    // This answer asks for a survey and answers before it: the drive is gone, the card not yet
+    // learned.
+    assert_eq!(mounted_labels(owner, client), [json!("NIKON Z 6")]);
+    let report = refresh(
+        owner,
+        client,
+        json!({"kind": "card", "volume_id": format!("volume-{}", "04".repeat(16))}),
+    );
+    assert_eq!(report["files"], 1, "{report}");
+    wait_for("the survey to learn the new card", || {
+        (mounted_labels(owner, client) == [json!("NIKON Z 6"), json!("LUMIX")]).then_some(())
+    });
+    let cards = ok(owner, client, "card.list", json!({}))["cards"].clone();
+    assert_eq!(cards.as_array().unwrap().len(), 2, "{cards}");
+    assert_eq!(cards[1]["files"], 1);
+}
+
 /// Run `hdiutil` with `args`, failing the test with its output when it fails.
 #[cfg(target_os = "macos")]
 fn hdiutil(args: &[&std::ffi::OsStr]) {
