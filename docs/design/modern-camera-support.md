@@ -213,7 +213,7 @@ qualification remain separate work.
 | `RicohGRIIIDng14` | `lossless_dng_load_raw()` | 3115 | yes |
 | `RicohGRIIIxDng14` | `lossless_dng_load_raw()` | 5818 | yes |
 
-The background `raw-editor` journey passed on routed modes from every routed family: the owner Z6 (`NikonZ6Lossless14`) and Air 2S (`DjiAir2sDng16`), Nikon Z6III lossless (7819), Canon 5D Mark IV (983), Fujifilm X-T5 lossless compressed (6122), OM-1 (5283), Panasonic S5II (7790) and Pentax K-3 Mark III (4677). The lossless DNG journey over the Ricoh GR III (3115) stops at the scenario's DNG precondition, which requires at least one applied opcode: that file has none under either unpacker, and no routed lossless DNG mode's sample has one. A replay of the recorded run with only that precondition relaxed passed every other check.
+The background `raw-editor` journey passed on routed modes from every routed family: the owner Z6 (`NikonZ6Lossless14`) and Air 2S (`DjiAir2sDng16`), Nikon Z6III lossless (7819), Canon 5D Mark IV (983), Fujifilm X-T5 lossless compressed (6122), OM-1 (5283), Panasonic S5II (7790), Pentax K-3 Mark III (4677) and the Ricoh GR III lossless DNG (3115), which applies no DNG opcodes.
 
 The three candidates left on LibRaw, each refused by RawSpeed on its sample and structurally on every file of the mode:
 

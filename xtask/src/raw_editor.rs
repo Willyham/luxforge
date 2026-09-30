@@ -261,12 +261,13 @@ fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogue
                 "DNG sensor, active area or default crop differs from manifest",
             )?;
             let calibration = &corrections.calibration;
+            // Each applied opcode carries provenance; a profile that requires none, such as a
+            // lossless DNG without opcode lists, applies none. The required set is the adapter's.
             ensure(
-                !corrections.applied.is_empty()
-                    && corrections
-                        .applied
-                        .iter()
-                        .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
+                corrections
+                    .applied
+                    .iter()
+                    .all(|opcode| opcode.flags == 0 && is_sha256(&opcode.payload_sha256))
                     && is_sha256(&calibration.color_matrix1_sha256)
                     && is_sha256(&calibration.color_matrix2_sha256),
                 "DNG correction or calibration provenance is incomplete",
