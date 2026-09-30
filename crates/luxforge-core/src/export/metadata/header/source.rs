@@ -21,8 +21,10 @@ pub(super) trait Source {
 }
 
 /// A whole file in memory: the reference every bounded read is tested against.
+#[cfg(test)]
 pub(super) struct Whole<'a>(pub(super) &'a [u8]);
 
+#[cfg(test)]
 impl Source for Whole<'_> {
     fn len(&self) -> u64 {
         self.0.len() as u64

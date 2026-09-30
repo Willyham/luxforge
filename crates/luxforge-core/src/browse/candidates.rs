@@ -213,7 +213,9 @@ pub(super) struct Reader<'a> {
 /// Read `source`'s items. Refused with `resource-limit` past the reader's limit, and with
 /// `validation` for an event, card, catalog folder or collection that does not exist, a folder
 /// that is not an absolute path, a collection group, and a smart collection whose stored query is
-/// over files or names another smart collection.
+/// over files or names another smart collection. A smart collection's stored query that names a
+/// catalog folder or collection since merged away or deleted finds nothing from it, so the smart
+/// collection answers an empty view rather than an error its sources panel would show.
 pub(super) fn read(
     reader: &mut Reader<'_>,
     source: &ViewSource,
@@ -275,7 +277,7 @@ fn read_source(
                 [folder_id.as_str()],
                 |row| row.get(0),
             )?;
-            if !exists {
+            if !exists && !in_smart {
                 return Err(Error::validation(format!(
                     "unknown catalog folder {folder_id}"
                 )));
@@ -290,7 +292,13 @@ fn read_source(
             )
         }
         ViewSource::Collection { collection_id } => {
-            let (kind, stored) = collection(reader.service, collection_id)?;
+            let (kind, stored) = match collection(reader.service, collection_id) {
+                // Named by a smart collection and deleted since: its members are none.
+                Err(error) if in_smart && error.kind == crate::ErrorKind::Validation => {
+                    return read_photos(reader, PhotoScope::Collection(collection_id), needs);
+                }
+                found => found?,
+            };
             match kind {
                 CollectionKind::Collection => {
                     read_photos(reader, PhotoScope::Collection(collection_id), needs)
