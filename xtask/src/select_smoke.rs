@@ -41,8 +41,9 @@ pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
 pub const NOTE: &str = "The run first generates its catalog and index into `generated/` with \
     `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, asks the core for the \
-    answers the frames are checked against over a pristine copy (`select-expected.json`), and \
-    launches the editor over that catalog with `--catalog`.";
+    answers the frames are checked against over a pristine copy (`select-expected.json`), writes \
+    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, and launches \
+    the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and index.
 pub const GENERATED: &str = "generated";
 /// The core's answers from before the run.

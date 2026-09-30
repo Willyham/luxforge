@@ -374,7 +374,7 @@ fn places_read_from_home_and_long_ones_by_their_name() {
     );
     assert_eq!(
         place(
-            "/Users/someone/projects/lightwell/target/smoke/generated/images",
+            "/Users/someone/projects/archive/target/smoke/generated/images",
             home()
         ),
         "\u{2026}/images"
