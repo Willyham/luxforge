@@ -29,6 +29,7 @@ mod gallery;
 mod gallery_components;
 mod gallery_masks;
 mod gallery_performance;
+mod gallery_select_grid;
 mod gallery_thumbnails;
 
 /// Builds one instance of every widget in every state shown on the components board
@@ -209,6 +210,22 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
         ],
     ),
     // -- Select: the thumbnail grid's pages.
+    (
+        "Select grid · cells and moments",
+        &[
+            "Cells · resting, selected, active, picked, in the catalog, a collapsed burst, offline, unreadable, loading",
+            "Burst · wider than the view, wrapping in one frame, then a single",
+            "Day and camera · a burst with its pick, a bracket from metadata with Pick all 3",
+            "Bracket from previews · a collapsed burst beside it, singles under it",
+        ],
+    ),
+    (
+        "Select grid · 10,000 files and the catalog's cells",
+        &[
+            "10,000 files · scrolled to the middle",
+            "Catalog cells · edited, selected, active, offline",
+        ],
+    ),
     // -- end Select: the thumbnail grid's pages.
     //
     // -- Select: chrome's pages.
@@ -259,7 +276,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 99);
+        assert_eq!(next - 1, 105);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

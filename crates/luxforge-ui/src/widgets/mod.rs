@@ -48,6 +48,7 @@ mod toggle;
 mod truncated_text;
 
 // -- Select: the thumbnail grid.
+mod thumbnail_grid;
 // -- end Select: the thumbnail grid.
 
 // -- Select: chrome.
@@ -114,6 +115,13 @@ pub use toggle::{ToggleModel, compact_toggle, toggle};
 pub use truncated_text::truncated_text;
 
 // -- Select: the thumbnail grid's exports.
+#[cfg(test)]
+pub(crate) use thumbnail_grid::paint_for_tests;
+pub use thumbnail_grid::{
+    CellAvailability, CellView, GridBlock, GridCell, GridDirection, GridHeading, GridHit,
+    GridLayout, GridMetrics, GridPress, MomentHeader, MomentKind, PressModifiers, ThumbnailGrid,
+    thumbnail_grid,
+};
 // -- end Select: the thumbnail grid's exports.
 
 // -- Select: chrome's exports.

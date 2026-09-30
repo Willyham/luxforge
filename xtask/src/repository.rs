@@ -972,12 +972,13 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["Handle::from_rgba"],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &[],
+        allowed: &["crates/luxforge-ui/src/gallery_thumbnails.rs"],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "an image handle made from pixels uploads a new texture each time it is made; the \
-                 photo surface owns the photograph's GPU uploads",
+                 photo surface owns the photograph's GPU uploads, and the components gallery's \
+                 stand-in photographs are made once in gallery_thumbnails.rs",
     },
     SourceRule {
         name: "project-name",
@@ -3034,13 +3035,18 @@ mod tests {
     fn no_image_handle_is_made_from_pixels() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // Another constructor may, and the rules file names the token without being read.
+        // Another constructor may, the gallery's stand-ins made once may, and the rules file names
+        // the token without being read.
         write_all(
             root,
             &[
                 (
                     "crates/luxforge-ui/src/photo.rs",
                     "let h = image::Handle::from_path(p);\nlet g = Handle::from_rgba8(p);\n",
+                ),
+                (
+                    "crates/luxforge-ui/src/gallery_thumbnails.rs",
+                    "Handle::from_rgba(w, h, render(&scene, ev))\n",
                 ),
                 (RULES_FILE, "tokens: &[\"Handle::from_rgba\"],\n"),
             ],
