@@ -264,6 +264,12 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
         .ok_or_else(|| "The stack has no RAW layer".into())
 }
 
+/// The sensor gains the frame's RAW layer develops at.
+fn development_gains(frame: &Value) -> Result<[f32; 3]> {
+    serde_json::from_value(raw_payload(frame)?["gains"].clone())
+        .map_err(|error| format!("The RAW layer's gains are unreadable: {error}").into())
+}
+
 /// The most the released exact frame may differ from the tested draft view state, as a share of
 /// the drag's own change from the frame before it (owner decision, 2026-09-27).
 const MAX_WB_ACCURACY_SHARE: f64 = 0.1;
@@ -305,6 +311,91 @@ fn check_white_balance_accuracy(
             ),
         )?;
         Ok("held_full_detail")
+    }
+}
+
+/// The exception the owner recorded on 2026-09-30 for the white-balance accuracy gates: a Bayer
+/// scene with enough sites at sensor white keeps the approved `W` draft, whose first-order
+/// `diag(g'/g)` cannot follow the demosaic's input clamp there. See
+/// `docs/decisions.md#raw-white-balance-drafts`.
+const HIGHLIGHT_CLIP_EXCEPTION: &str = "highlight-clipped Bayer scene";
+/// A site counts as clipped when its normalized, gained value reaches this share of sensor white.
+const CLIP_FRACTION: f32 = 0.99;
+/// The share of the default crop's sites, clipped at any of the drags' developments, from which a
+/// Bayer scene qualifies. Chosen from the 2026-09-30 measurement of 33 sources (see
+/// `docs/design/instant-preview.md#popular-cameras`): the five that miss a limit clip 1.25% to
+/// 4.07%, and the next Bayer scene below 1% clips 0.61%. Two passing scenes (2.50%, 1.42%) also
+/// qualify, which changes nothing for them while their figures stay within the limits.
+const MIN_HIGHLIGHT_CLIP_SHARE: f64 = 0.01;
+
+/// How much of the scene the drags' developments clip, from the source itself: the share of its
+/// Bayer sites at [`CLIP_FRACTION`] of sensor white or above under the channel-wise largest of the
+/// gains the scenario develops at (as shot and each committed temperature), since a site clipped
+/// at any of them is one the draft's `diag(g'/g)` cannot follow. `share` is `None` for a
+/// development without one clip ceiling: X-Trans, or a DNG corrected after the demosaic.
+#[derive(Debug, Clone, PartialEq)]
+struct Highlights {
+    gains: [f32; 3],
+    share: Option<f64>,
+}
+
+impl Highlights {
+    fn of(source: &Path, developments: &[[f32; 3]]) -> Result<Self> {
+        let gains = developments.iter().fold([0.0_f32; 3], |most, gains| {
+            std::array::from_fn(|c| most[c].max(gains[c]))
+        });
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let raw = luxforge_raw::RawSource::decode(std::fs::read(source)?, &cancel)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        let share = raw
+            .highlight_clip_share(gains, CLIP_FRACTION, &cancel)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        Ok(Self { gains, share })
+    }
+
+    fn qualifies(&self) -> bool {
+        self.share
+            .is_some_and(|share| share >= MIN_HIGHLIGHT_CLIP_SHARE)
+    }
+
+    fn record(&self) -> Value {
+        json!({
+            "gains": self.gains,
+            "clip_fraction_of_sensor_white": CLIP_FRACTION,
+            "clipped_share": self.share,
+            "uniform_clip_ceiling": self.share.is_some(),
+            "minimum_share": MIN_HIGHLIGHT_CLIP_SHARE,
+            "exception": self.qualifies().then_some(HIGHLIGHT_CLIP_EXCEPTION),
+        })
+    }
+}
+
+/// The white-balance accuracy verdict for one drag: the gate of [`check_white_balance_accuracy`],
+/// except that a limit a highlight-clipped Bayer scene misses is recorded, not failed. A missing
+/// held capture is never excused.
+fn white_balance_accuracy_verdict(
+    fit: bool,
+    moving_mean: f64,
+    moving_ratio: f64,
+    held: Option<(f64, f64)>,
+    change_mean: f64,
+    highlights: &Highlights,
+) -> Result<Value> {
+    ensure(
+        fit || held.is_some(),
+        "The 100% draft has no held full-detail capture",
+    )?;
+    let view_state = if fit { "moving" } else { "held_full_detail" };
+    match check_white_balance_accuracy(fit, moving_mean, moving_ratio, held, change_mean) {
+        Ok(checked) => Ok(json!({"checked": checked, "held": true, "exception": null})),
+        Err(failure) if highlights.qualifies() => Ok(json!({
+            "checked": view_state,
+            "held": false,
+            "exception": HIGHLIGHT_CLIP_EXCEPTION,
+            "clipped_share": highlights.share,
+            "failed_limit": failure.to_string(),
+        })),
+        Err(failure) => Err(failure),
     }
 }
 
@@ -400,7 +491,7 @@ fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
 /// What each frame shows beyond its plan, once the plan has held: every frame ready with Basic's
 /// section and no RAW section, the drags' drafted and committed frames, each double-click's events
 /// and As shot fields, Basic's dot, the sensor pick `W` enters and the crop on screen.
-pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
     for (step, frame) in launch.names().iter().zip(&launch.frames) {
@@ -432,11 +523,29 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "Basic's White balance group, the RAW development's own",
         white_balance_group(opened)?,
     );
+    // Whether the scene is a highlight-clipped Bayer one, from the source at the gains the drags
+    // develop at, recorded before any gate can fail.
+    let developments = std::iter::once(names::OPENED)
+        .chain(DRAGS.iter().map(|drag| drag.release))
+        .map(|step| development_gains(launch.at(step)?))
+        .collect::<Result<Vec<_>>>()?;
+    let source = run
+        .sources()
+        .first()
+        .ok_or("The raw-panel run records no source")?
+        .clone();
+    let highlights = Highlights::of(&source, &developments)?;
+    run.record("highlight_clip", highlights.record());
+    checks.note(
+        opened,
+        "how much of the scene the drags' developments clip at sensor white",
+        highlights.record(),
+    );
     for drag in &DRAGS {
         checks.note(
             launch.at(drag.release)?,
             "a temperature drag's approximate draft and its exact release",
-            white_balance_drag(launch, drag)?,
+            white_balance_drag(launch, drag, &highlights)?,
         );
     }
 
@@ -1190,7 +1299,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
 /// 100% capture with the release, within a tenth of the drag's own image change; Fit is also within
 /// a code. Moving 100% differences remain reported for independent visual assessment. The plan
 /// checks one history entry.
-fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
+fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) -> Result<Value> {
     let kelvin = drag.kelvin;
     let (before, drafted, released) = (
         frame_before(launch, drag.drag)?,
@@ -1542,12 +1651,13 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     let moving_ratio = moving_mean / change_mean;
     let held_accuracy = held_difference.map(|(mean, _)| (mean, mean / change_mean));
     let held_ratio = held_accuracy.map(|(_, ratio)| ratio);
-    let checked_view_state = check_white_balance_accuracy(
+    let accuracy = white_balance_accuracy_verdict(
         drag.fit,
         moving_mean,
         moving_ratio,
         held_accuracy,
         change_mean,
+        highlights,
     )?;
     let accuracy_ratio = if drag.fit {
         moving_ratio
@@ -1573,7 +1683,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "released_against_before": {"mean_codes": change_mean},
         "moving_share_of_change": moving_ratio,
         "held_full_detail_share_of_change": held_ratio,
-        "accuracy_checked_view_state": checked_view_state,
+        "accuracy_checked_view_state": accuracy["checked"],
+        "accuracy": accuracy,
         "accuracy_share_of_change": accuracy_ratio,
         "surface_versions": [versions.0, versions.1],
     }))
@@ -1623,6 +1734,29 @@ fn keeps_the_tint_in_force(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measurement, not a gate: the highlight clip share of recorded runs, one `RUN_DIR SOURCE`
+    /// pair per line of the file `RAW_PANEL_CLIP_RUNS` names, from each run's opened and released
+    /// frames' RAW gains. `RAW_PANEL_CLIP_RUNS=list cargo test -p xtask clip_share_of_recorded
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads recorded runs and their RAW sources"]
+    fn clip_share_of_recorded_runs() {
+        let list = std::fs::read_to_string(std::env::var("RAW_PANEL_CLIP_RUNS").unwrap()).unwrap();
+        for line in list.lines().filter(|line| !line.trim().is_empty()) {
+            let (run, source) = line.split_once(' ').unwrap();
+            let state = |index: usize| -> Value {
+                let path = Path::new(run).join(format!("app/state-{index}.json"));
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+            };
+            // The opened frame and the two releases: frames 1, 3 and 7 of the plan.
+            let gains: Vec<[f32; 3]> = [1, 3, 7]
+                .map(|index| development_gains(&state(index)).unwrap())
+                .into();
+            let highlights = Highlights::of(Path::new(source), &gains).unwrap();
+            println!("{run} {}", highlights.record());
+        }
+    }
 
     /// The draft dimming this check undoes is the app's own: xtask does not link the app, so the
     /// copy is held to `DIM_OPACITY` in the crop canvas source.
@@ -1682,6 +1816,87 @@ mod tests {
         // A step that never settled keeps every event as its own.
         let (all, none) = split_at_settle(&drag[..3]);
         assert_eq!((all.len(), none.len()), (3, 0));
+    }
+
+    /// A scene qualifies as highlight-clipped Bayer from its clip share alone: at or above the
+    /// minimum, and only with one clip ceiling. The lowest failing source measured, the A7 IV
+    /// (6932), clipped 1.25%; the highest below it, the A6700 (6735), 0.61%.
+    #[test]
+    fn a_highlight_clipped_bayer_scene_is_decided_by_its_clip_share() {
+        let scene = |share| Highlights {
+            gains: [2.0, 1.0, 2.5],
+            share,
+        };
+        assert!(scene(Some(0.012_54)).qualifies());
+        assert!(scene(Some(MIN_HIGHLIGHT_CLIP_SHARE)).qualifies());
+        assert!(!scene(Some(0.006_11)).qualifies());
+        assert!(!scene(Some(0.0)).qualifies());
+        assert!(
+            !scene(None).qualifies(),
+            "X-Trans or a corrected DNG never qualifies"
+        );
+        let record = scene(Some(0.04)).record();
+        assert_eq!(record["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+        assert_eq!(record["uniform_clip_ceiling"], true);
+        assert!(scene(None).record()["exception"].is_null());
+    }
+
+    /// A qualifying scene's missed limits are recorded with the exception, its share and the limit
+    /// it failed; a non-qualifying scene fails exactly as the gate does; figures within the limits
+    /// carry no exception either way; a missing held capture is never excused.
+    #[test]
+    fn a_highlight_clipped_scene_records_its_missed_accuracy_limits_and_others_fail() {
+        let clipped = Highlights {
+            gains: [2.4, 1.0, 2.6],
+            share: Some(0.0407),
+        };
+        let unclipped = Highlights {
+            gains: [2.0, 1.0, 1.8],
+            share: Some(0.0),
+        };
+        // The OM-1's Fit drag and the S5II's held 100% drag, as measured on 2026-09-30.
+        let om1 = |highlights| {
+            white_balance_accuracy_verdict(true, 1.133, 0.0618, None, 18.335, highlights)
+        };
+        let s5ii = |highlights| {
+            white_balance_accuracy_verdict(
+                false,
+                12.0,
+                0.5134,
+                Some((11.142, 0.4758)),
+                23.42,
+                highlights,
+            )
+        };
+        for verdict in [om1(&clipped).unwrap(), s5ii(&clipped).unwrap()] {
+            assert_eq!(verdict["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+            assert_eq!(verdict["held"], false);
+            assert_eq!(verdict["clipped_share"], 0.0407);
+            assert!(
+                verdict["failed_limit"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the limit is")
+            );
+        }
+        assert_eq!(om1(&clipped).unwrap()["checked"], "moving");
+        assert_eq!(s5ii(&clipped).unwrap()["checked"], "held_full_detail");
+        assert!(
+            om1(&unclipped)
+                .unwrap_err()
+                .to_string()
+                .contains("the limit is 1 code")
+        );
+        assert!(
+            s5ii(&unclipped)
+                .unwrap_err()
+                .to_string()
+                .contains("held full-detail")
+        );
+        let within = white_balance_accuracy_verdict(true, 0.5, 0.05, None, 10.0, &clipped).unwrap();
+        assert_eq!(within["held"], true);
+        assert!(within["exception"].is_null());
+        assert!(white_balance_accuracy_verdict(false, 0.5, 0.05, None, 10.0, &clipped).is_err());
     }
 
     #[test]
