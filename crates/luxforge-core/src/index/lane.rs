@@ -172,14 +172,18 @@ impl Lane {
     }
 }
 
-/// One header read for a worker.
+/// One header read for a worker, tagged with the listing that asked for it.
 struct Task {
+    run: u64,
     control: Arc<JobControl>,
     file: FileTask,
 }
 
-/// A worker's answer: the outcome, or none when the job was cancelled before the read.
+/// A worker's answer: the outcome, or none when the job was cancelled before the read, tagged
+/// with the listing that asked, so an answer a failed listing left behind is never taken for the
+/// next one's.
 struct Answer {
+    run: u64,
     outcome: Option<HeaderOutcome>,
 }
 
@@ -200,7 +204,13 @@ fn header_worker(queued: &Mutex<Receiver<Task>>, answers: &SyncSender<Answer>) {
                 }))
             })
         });
-        if answers.send(Answer { outcome }).is_err() {
+        if answers
+            .send(Answer {
+                run: task.run,
+                outcome,
+            })
+            .is_err()
+        {
             return;
         }
     }
@@ -215,9 +225,11 @@ fn coordinator(
 ) {
     let mut connection = database::connect_at(&config.index_dir);
     let mut last_stamp = 0;
+    let mut runs = 0;
     while let Ok(work) = commands.recv() {
         match work {
             Work::Refresh(refresh) => {
+                runs += 1;
                 // Every listing's time is later than the last one's, so a row it wrote is never
                 // taken for one the next listing did not see.
                 let stamp = now_ms().max(last_stamp + 1);
@@ -225,6 +237,7 @@ fn coordinator(
                 let result = match &mut connection {
                     Ok(connection) => {
                         let mut run = Run {
+                            id: runs,
                             config: &config,
                             connection,
                             tasks: &tasks,
@@ -236,7 +249,16 @@ fn coordinator(
                             stamp,
                             progress: Progress::default(),
                         };
-                        run.refresh(&refresh.roots, refresh.strict)
+                        // A panic ends the job `internal`, never the lane: the owner still hears
+                        // how it ended, the transaction it held rolls back as it unwinds, and the
+                        // workers skip what it left queued.
+                        catch_unwind(AssertUnwindSafe(|| {
+                            run.refresh(&refresh.roots, refresh.strict)
+                        }))
+                        .unwrap_or_else(|_| {
+                            refresh.control.cancel("indexing failed unexpectedly");
+                            Err(Error::internal("indexing failed unexpectedly"))
+                        })
                     }
                     Err(error) => Err(error.clone()),
                 };
@@ -404,6 +426,8 @@ fn count(value: usize) -> String {
 
 /// One refresh as the coordinator runs it.
 struct Run<'r> {
+    /// Which of the lane's listings this is, which its tasks and their answers carry.
+    id: u64,
     config: &'r LaneConfig,
     connection: &'r mut Connection,
     tasks: &'r SyncSender<Task>,
@@ -593,6 +617,7 @@ impl Run<'_> {
         }
         self.tasks
             .send(Task {
+                run: self.id,
                 control: self.control.clone(),
                 file,
             })
@@ -641,8 +666,12 @@ impl Run<'_> {
         Ok(())
     }
 
-    /// One worker's answer: its record joins the batch unless the job was cancelled.
+    /// One worker's answer: its record joins the batch unless the job was cancelled. An answer to
+    /// an earlier listing, which failed before it took it, is dropped.
     fn answered(&mut self, answer: Answer) -> Result<(), Error> {
+        if answer.run != self.id {
+            return Ok(());
+        }
         self.in_flight -= 1;
         self.progress.answered += 1;
         if self.control.is_cancelled() {
