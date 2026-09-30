@@ -32,7 +32,7 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 - `crates/luxforge-net`: the host's network transport and secure secret store, behind the core's `Transport` and `SecretStore` traits. The desktop and `luxforge-json` build both and give them to the catalog owner through `HostConfig`. Only this crate may depend on `ureq`, and only it frames HTTP *(enforced)*. Its files are listed [below](#the-transports-files).
 - `crates/luxforge-ui`: the widget library and theme tokens of the Develop workspace. It depends on Iced only, never on the core, so a widget cannot hold editing logic.
 - `crates/luxforge-jpeg`: the one JPEG codec, libjpeg-turbo through `mozjpeg`, and the JPEG container around it; described [below](#the-jpeg-codec). It depends on no workspace crate, and only `luxforge-core` depends on it *(enforced)*.
-- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)); its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
+- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)) that develops a qualified RAW and, for any RAW LibRaw identifies, lists and extracts its embedded previews by positional reads without unpacking it; its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
 - `crates/luxforge-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API.
 - `crates/luxforge-app`: the desktop and the `luxforge` desktop binary; its layers are listed [below](#the-desktops-files), with the boundaries between them *(enforced)*.
 - `crates/luxforge-cli`: the headless `luxforge-json` binary (`json.rs`), which serves one JSON-lines client on its standard streams, and `Paths` (`paths.rs`), where the application keeps its configuration, data and logs, which the desktop resolves once at startup through the same type. Its normal dependencies hold no GUI crate (Iced, wgpu, rfd, `luxforge-ui` or `luxforge-app`) *(enforced)*, so building the headless binary builds no window, renderer or dialog stack. Its process tests (`tests/`) drive the built binary.
@@ -86,6 +86,8 @@ Paths are under `crates/luxforge-core/src`.
 
 `luxforge-jpeg` holds the bounded marker walk and frame header, the decode and encode sessions with the safety around the C library (every call under `catch_unwind`, a failed session destroyed and never called again, the writer's I/O error kept, bounded segments), which libjpeg warnings refuse a decode (the table in `warnings.rs`: missing, corrupt or guessed data and any unlisted code refuse, harmless irregularities do not), and the ICC profile's APP2 chunks read and written, numbered from 1. It exposes a safe API and its own `JpegError`, which the core maps to its error kinds in one place. The core keeps the policy: the limits it passes in, EXIF orientation, which metadata to keep, the sRGB profile check and the export's quality, sampling, progress and cancellation.
 
+Two decodes serve previews. `Decoder::set_scale` decodes a whole frame at 1/2, 1/4 or 1/8 on each side by libjpeg's reduced inverse DCT, and `Scale::covering` picks the most reducing scale whose output still covers a target size, so the resample after it only shrinks. `RegionDecoder` decodes one rectangle at full scale, streaming its rows like `Decoder`: libjpeg crops a window of whole iMCU columns around it (`jpeg_crop_scanline`), three left and one right of the rectangle because libjpeg takes a crop's edges for the frame's in its chroma upsampling and progressive block smoothing, and skips the rows above it (`jpeg_skip_scanlines`); its rows equal the same rectangle cut from a whole decode, byte for byte. It stops after the rectangle's last row, so warnings about data after what the rectangle needs (below it, or after the last scan of a single-scan file) are not seen. Both check the frame against the caller's limits at its full size: libjpeg's row buffers are a few dozen rows of the output (for a region, of the full width, allocated before the crop), and a multi-scan frame's coefficients are held for the whole frame at up to 6 bytes a pixel. A region allocates the caller's rectangle and one window row. `mozjpeg`'s safe API does not expose the session's `cinfo` that cropping and skipping need, so the region decode runs its own libjpeg session over `mozjpeg-sys` in `session.rs`, with the same error manager and warning table, libjpeg's memory source over the caller's bytes, and a guard that destroys the session on every path.
+
 ### The desktop's files
 
 Paths are under `crates/luxforge-app/src`.
@@ -106,7 +108,7 @@ Test support is split by whether it names a core type. `luxforge-testbase`, whic
 
 ### Unsafe code
 
-Only `luxforge-raw`, `luxforge-process` and `luxforge-jpeg` override the workspace's `forbid(unsafe_code)` in their manifests. `luxforge-jpeg` denies it and allows it on the one function that reads libjpeg's warning code through the error manager's pointer, beside its `SAFETY:` comment.
+Only `luxforge-raw`, `luxforge-process` and `luxforge-jpeg` override the workspace's `forbid(unsafe_code)` in their manifests. `luxforge-jpeg` denies it and allows it by name only on the functions that need it, each block beside its `SAFETY:` comment: the one that reads libjpeg's warning code through the error manager's pointer (`decode.rs`), and those of the region decode's libjpeg session over `mozjpeg-sys` (`session.rs`: creating and destroying it, reading the header and the segments it saved, starting, cropping, skipping and reading rows), which exist because `mozjpeg`'s safe API cannot crop or skip.
 
 ## Boundaries
 
@@ -236,6 +238,9 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | RAW planar RGB float allocation, per buffer | 1.5 GiB | `MAX_RGB_BYTES` (1536 MiB), `crates/luxforge-raw/src/limits.rs` |
 | A retained second RAW development | 600 MiB of planes | `RETAINED_DEVELOPMENT_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | LibRaw's native scratch | 512 MiB | No named constant: the literal `max_raw_memory_mb = 512` in `crates/luxforge-raw/native/adapter.cpp` |
+| One embedded RAW preview extracted, LibRaw's buffer and the copy returned each (the caller's own limit goes below it) | 64 MiB | `MAX_EMBEDDED_IMAGE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| Bytes an embedded-preview handle reads from its source over its life (the caller's own budget goes below it) | 128 MiB | `MAX_EMBEDDED_READ_BUDGET`, `crates/luxforge-raw/src/limits.rs` |
+| An embedded-preview handle's read cache | 8 blocks of 16 KiB | `READ_BLOCKS` and `READ_BLOCK`, `crates/luxforge-raw/src/embedded.rs` |
 
 **Rendering**
 
