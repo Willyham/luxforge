@@ -32,6 +32,12 @@ pub(crate) enum SelectMessage {
     /// Browse a folder…: the native folder dialog, and what it chose.
     BrowseFolder,
     FolderPicked(Option<PathBuf>),
+    /// `index.refresh` of the folder answered with its job, or refused.
+    Reading(Result<String, String>),
+    /// The reading folder's job is read again: the timer that exists while the job runs.
+    ReadPoll,
+    /// `job.read` for the reading folder's job answered.
+    ReadAnswered(Result<serde_json::Value, String>),
     /// One change of the filter bar, the Group chip or the sort.
     Change(QueryChange),
     /// Open a chip's or the sort's menu, or close the one open.

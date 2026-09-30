@@ -30,16 +30,17 @@ use crate::app::{
         Message,
         select::{SelectMessage, Step},
     },
+    outcome::Outcome,
     tasks::{call, owner_task},
 };
 use crate::coalesce::Coalesce;
 use crate::state::select::{
-    self as model, Block, GridContent, SelectGesture, SelectPanel, SelectState, SelectionModel,
-    Shown,
+    self as model, Block, GridContent, RowsRequest, SelectGesture, SelectPanel, SelectState,
+    SelectionModel, Shown,
 };
 use iced::{Size, Task};
 use luxforge_core::{
-    ClientSession,
+    ClientId, ClientSession, OwnerHandle,
     catalog_types::{EventList, Facets, ViewQuery, ViewRows, ViewSummary},
 };
 use luxforge_ui::{
@@ -74,7 +75,30 @@ pub(crate) struct Select {
     pub(crate) check: Coalesce<()>,
     /// The owner woke the desktop while Develop was shown, so showing Select checks once.
     pub(crate) check_on_show: bool,
+    /// The evaluation whose facets have answered, successfully or not.
+    pub(crate) facets_answered: u64,
+    /// An evidence step that waits for the view to be evaluated again: the revision it must pass.
+    pub(crate) evidence_after: Option<u64>,
+    /// The evaluation in flight reads a stale view again, which the status bar says when it lands.
+    pub(crate) rereading: bool,
+    /// The folder being read before it is viewed: `index.refresh` lists it and reads its headers.
+    pub(crate) reading: Option<Reading>,
+    /// A `job.read` of the reading folder's job is in flight.
+    pub(crate) read_in_flight: bool,
 }
+
+/// A folder browsed on disk whose listing and headers the index lane is reading.
+#[derive(Clone, Debug)]
+pub(crate) struct Reading {
+    pub(crate) path: PathBuf,
+    /// The `index.refresh` job, once the owner has answered with it.
+    pub(crate) job: Option<String>,
+}
+
+/// How often the reading folder's job is read while it runs. The core pushes no client anything
+/// about a job, so a client waiting for one reads it, as export does; the timer exists only while
+/// a folder is being read.
+pub(crate) const READ_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
 impl Default for Select {
     fn default() -> Self {
@@ -94,6 +118,11 @@ impl Default for Select {
             events_read: false,
             check: Coalesce::default(),
             check_on_show: false,
+            facets_answered: 0,
+            evidence_after: None,
+            rereading: false,
+            reading: None,
+            read_in_flight: false,
         }
     }
 }
@@ -163,6 +192,96 @@ fn parse<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
     serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
+// -- The owner calls, each the body of one owner task (or, for `browse.select`, the one synchronous
+// call), so a test runs exactly what a task would against a real owner. --
+
+/// `event.list` for the sources panel's search text.
+pub(crate) fn events_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    search: &str,
+) -> Result<EventList, String> {
+    let (list, _) = call(owner, client, "event.list", model::events_params(search))?;
+    parse(list)
+}
+
+/// `browse.view` with the whole query, then `session.state` for the selection the owner carried
+/// over to the new evaluation.
+pub(crate) fn evaluate_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    query: &ViewQuery,
+) -> Result<Box<(ViewSummary, ClientSession)>, String> {
+    let (summary, _) = call(owner, client, "browse.view", model::view_params(query))?;
+    let summary = parse::<ViewSummary>(summary)?;
+    Ok(Box::new((summary, session_now(owner, client)?)))
+}
+
+/// `browse.facets` for the chips' menus.
+pub(crate) fn facets_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    query: &ViewQuery,
+) -> Result<Facets, String> {
+    let (counts, _) = call(owner, client, "browse.facets", model::facets_params(query))?;
+    parse(counts)
+}
+
+/// `browse.rows` for one block.
+pub(crate) fn rows_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    request: &RowsRequest,
+) -> Result<ViewRows, String> {
+    let (rows, _) = call(owner, client, "browse.rows", model::rows_params(request))?;
+    parse(rows)
+}
+
+/// `session.state`: the session, whose `browse` says whether the view went stale.
+pub(crate) fn session_now(owner: &OwnerHandle, client: ClientId) -> Result<ClientSession, String> {
+    let (session, _) = call(owner, client, "session.state", json!({}))?;
+    parse(session)
+}
+
+/// `index.refresh` of a folder on disk with its subfolders: the job that lists it.
+pub(crate) fn refresh_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    path: &std::path::Path,
+) -> Result<String, String> {
+    let (started, _) = call(
+        owner,
+        client,
+        "index.refresh",
+        json!({"source": {"kind": "folder", "path": path}}),
+    )?;
+    started["job_id"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| format!("index.refresh answered no job: {started}"))
+}
+
+/// `job.read` for one job.
+pub(crate) fn job_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Result<Value, String> {
+    let (record, _) = call(
+        owner,
+        client,
+        luxforge_core::jobs::JOB_READ,
+        json!({ "job_id": job }),
+    )?;
+    Ok(record)
+}
+
+/// `browse.select`, answered with the session.
+pub(crate) fn select_call(
+    owner: &OwnerHandle,
+    client: ClientId,
+    params: Value,
+) -> Result<ClientSession, String> {
+    let (session, _) = call(owner, client, "browse.select", params)?;
+    parse(session)
+}
+
 impl Editor {
     /// One Select message.
     pub(crate) fn select_update(&mut self, message: SelectMessage) -> Task<Message> {
@@ -209,15 +328,26 @@ impl Editor {
             SelectMessage::FolderPicked(path) => {
                 self.view_state.picker_open = false;
                 if let Some(path) = path {
-                    self.select.state.folder = Some(path.clone());
-                    return self.evaluate(model::source_query(
-                        luxforge_core::catalog_types::ViewSource::Folder {
-                            path,
-                            subfolders: true,
-                        },
-                    ));
+                    return self.read_folder(path);
                 }
             }
+            SelectMessage::Reading(result) => match result {
+                Ok(job) => {
+                    if let Some(reading) = &mut self.select.reading {
+                        reading.job = Some(job);
+                    }
+                }
+                Err(error) => {
+                    if let Some(reading) = self.select.reading.take() {
+                        self.status.text = format!(
+                            "Could not read {}: {error}",
+                            model::shown_path(&reading.path, self.select.state.home.as_deref())
+                        );
+                    }
+                }
+            },
+            SelectMessage::ReadPoll => return self.poll_reading(),
+            SelectMessage::ReadAnswered(result) => return self.reading_answered(result),
             SelectMessage::Change(change) => {
                 self.select.state.menu = None;
                 if let Some(query) = &self.select.state.query {
@@ -231,6 +361,7 @@ impl Editor {
                 if serial == self.select.serial {
                     // A failure leaves the menus saying the counts are unavailable.
                     self.select.state.facets = result.ok();
+                    self.select.facets_answered = serial;
                 }
             }
             SelectMessage::Rows {
@@ -308,6 +439,21 @@ impl Editor {
         Task::none()
     }
 
+    /// Nothing Select asked the owner for is in flight or still wanted: the events, the view and
+    /// its facets, a staleness check and the rows near the screen have all answered.
+    pub(crate) fn select_quiet(&self) -> bool {
+        let select = &self.select;
+        select.reading.is_none()
+            && !select.state.loading
+            && !select.events.in_flight()
+            && select.events.pending().is_none()
+            && !select.check.in_flight()
+            && select.check.pending().is_none()
+            && (select.state.query.is_none() || select.facets_answered == select.serial)
+            && select.state.rows.in_flight().is_none()
+            && (select.state.summary.is_none() || !select.state.rows.wants(self.wanted_items()))
+    }
+
     /// The Select workspace is on screen.
     pub(crate) fn select_shown(&self) -> bool {
         self.select.state.shown == Shown::Select
@@ -351,6 +497,7 @@ impl Editor {
         self.palette.open = false;
         self.view_state.menu = None;
         self.select.state.shown = Shown::Select;
+        self.status.text = "Showing Select".into();
         if std::mem::take(&mut self.select.check_on_show) {
             self.select.check.offer(());
         }
@@ -358,6 +505,98 @@ impl Editor {
             return self.read_events();
         }
         Task::none()
+    }
+
+    /// Browse a folder on disk: the index lane lists it with its subfolders and reads each file's
+    /// header (`index.refresh`, a job), and the folder is viewed once the job has ended. The status
+    /// bar says it is reading until then.
+    pub(crate) fn read_folder(&mut self, path: PathBuf) -> Task<Message> {
+        self.select.state.folder = Some(path.clone());
+        self.select.state.menu = None;
+        self.status.text = format!(
+            "Reading {}\u{2026}",
+            model::shown_path(&path, self.select.state.home.as_deref())
+        );
+        self.select.reading = Some(Reading {
+            path: path.clone(),
+            job: None,
+        });
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || refresh_now(&owner, client, &path),
+            |result| Message::Select(SelectMessage::Reading(result)),
+        )
+    }
+
+    /// Read the reading folder's job, one read at a time.
+    fn poll_reading(&mut self) -> Task<Message> {
+        let Some(job) = self
+            .select
+            .reading
+            .as_ref()
+            .and_then(|reading| reading.job.clone())
+        else {
+            return Task::none();
+        };
+        if std::mem::replace(&mut self.select.read_in_flight, true) {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || job_now(&owner, client, &job),
+            |result| Message::Select(SelectMessage::ReadAnswered(result)),
+        )
+    }
+
+    /// The reading folder's job answered: still running, it says how far it has got; ended, the
+    /// folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
+    fn reading_answered(&mut self, result: Result<Value, String>) -> Task<Message> {
+        self.select.read_in_flight = false;
+        let Some(reading) = self.select.reading.clone() else {
+            return Task::none();
+        };
+        let name = model::shown_path(&reading.path, self.select.state.home.as_deref());
+        let record = match result {
+            Ok(record) => record,
+            Err(error) => {
+                self.select.reading = None;
+                self.status.text = format!("Could not read {name}: {error}");
+                return Task::none();
+            }
+        };
+        match record["status"].as_str() {
+            Some("queued" | "running") => {
+                self.status.text = match record["progress"]["message"].as_str() {
+                    Some(progress) => format!("Reading {name} \u{b7} {progress}"),
+                    None => format!("Reading {name}\u{2026}"),
+                };
+                Task::none()
+            }
+            Some("ready") => {
+                self.select.reading = None;
+                // The folder as the index listed it — its canonical path, which a symbolic link in
+                // the chosen one resolves to — is the one its files are indexed under.
+                let path = record["result"]["roots"][0]
+                    .as_str()
+                    .map_or(reading.path, PathBuf::from);
+                self.select.state.folder = Some(path.clone());
+                self.evaluate(model::source_query(
+                    luxforge_core::catalog_types::ViewSource::Folder {
+                        path,
+                        subfolders: true,
+                    },
+                ))
+            }
+            other => {
+                self.select.reading = None;
+                let reason = record["error"]["message"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("the listing ended {}", other.unwrap_or("unknown")));
+                self.status.text = format!("Could not read {name}: {reason}");
+                Task::none()
+            }
+        }
     }
 
     /// Ask `event.list` again for the search text.
@@ -372,10 +611,7 @@ impl Editor {
         };
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (list, _) = call(&owner, client, "event.list", model::events_params(&search))?;
-                parse::<EventList>(list)
-            },
+            move || events_now(&owner, client, &search),
             |result| Message::Select(SelectMessage::Events(result)),
         )
     }
@@ -392,28 +628,20 @@ impl Editor {
             state.facets = None;
         }
         self.select.serial += 1;
+        self.select.rereading = false;
         let serial = self.select.serial;
-        let view = model::view_params(&query);
-        let facets = model::facets_params(&query);
-        state.query = Some(query);
+        state.query = Some(query.clone());
         state.loading = true;
         state.view_error = None;
         let (owner, client) = (self.owner.clone(), self.client);
+        let counted_query = query.clone();
         let evaluated = owner_task(
-            move || {
-                let (summary, _) = call(&owner, client, "browse.view", view)?;
-                let summary = parse::<ViewSummary>(summary)?;
-                let (session, _) = call(&owner, client, "session.state", json!({}))?;
-                Ok(Box::new((summary, parse::<ClientSession>(session)?)))
-            },
+            move || evaluate_now(&owner, client, &query),
             move |result| Message::Select(SelectMessage::Viewed { serial, result }),
         );
         let owner = self.owner.clone();
         let counted = owner_task(
-            move || {
-                let (counts, _) = call(&owner, client, "browse.facets", facets)?;
-                parse::<Facets>(counts)
-            },
+            move || facets_now(&owner, client, &counted_query),
             move |result| Message::Select(SelectMessage::Faceted { serial, result }),
         );
         Task::batch([evaluated, counted])
@@ -449,8 +677,15 @@ impl Editor {
                 }
                 state.rows.reset(summary.revision, summary.count);
                 state.query = Some(summary.query.clone());
+                let count = model::thousands(summary.count);
                 state.summary = Some(summary);
                 state.view_error = None;
+                let name = model::title(state).name;
+                self.status.text = if std::mem::take(&mut self.select.rereading) {
+                    format!("{name} changed elsewhere and was read again \u{b7} {count} in view")
+                } else {
+                    format!("{name} \u{b7} {count} in view")
+                };
                 self.rebuild_grid();
                 if same_source {
                     self.select.scroll = self.near_active(self.select.scroll);
@@ -536,9 +771,7 @@ impl Editor {
             return false;
         };
         let params = model::select_params(gesture, Some(revision));
-        match call(&self.owner, self.client, "browse.select", params)
-            .and_then(|(session, _)| parse::<ClientSession>(session))
-        {
+        match select_call(&self.owner, self.client, params) {
             Ok(session) => {
                 self.adopt(session);
                 true
@@ -674,6 +907,7 @@ impl Editor {
                 .map(|summary| summary.query.clone())
         {
             tasks.push(self.evaluate(query));
+            self.select.rereading = true;
         }
         Task::batch(tasks)
     }
@@ -689,10 +923,7 @@ impl Editor {
         };
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (rows, _) = call(&owner, client, "browse.rows", model::rows_params(&request))?;
-                parse::<ViewRows>(rows)
-            },
+            move || rows_now(&owner, client, &request),
             move |result| {
                 Message::Select(SelectMessage::Rows {
                     revision: request.revision,
@@ -710,18 +941,17 @@ impl Editor {
         }
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || {
-                let (session, _) = call(&owner, client, "session.state", json!({}))?;
-                parse::<ClientSession>(session).map(Box::new)
-            },
+            move || session_now(&owner, client).map(Box::new),
             |result| Message::Select(SelectMessage::Checked(result)),
         )
     }
 
-    /// What the Select workspace shows, for correlated evidence. No path is recorded: a folder
-    /// source is named by its kind.
+    /// What the Select workspace shows, for correlated evidence: what it asked for and what the
+    /// owner answered, what the grid laid out, the session's selection and what each region says.
+    /// No path is recorded: a folder source is named by its kind.
     pub(crate) fn select_summary(&self) -> Value {
         let state = &self.select.state;
+        let model = &self.workspace.select;
         let source = state.query.as_ref().map(|query| {
             let mut source = serde_json::to_value(&query.source).unwrap_or_default();
             if let Some(object) = source.as_object_mut() {
@@ -730,6 +960,45 @@ impl Editor {
             source
         });
         let summary = state.summary.as_ref();
+        let blocks = |kind: fn(&Block) -> bool| {
+            state
+                .content
+                .blocks
+                .iter()
+                .filter(|block| kind(block))
+                .count()
+        };
+        let info = match &model.info {
+            model::InfoModel::Nothing => json!({"kind": "nothing"}),
+            model::InfoModel::Reading => json!({"kind": "reading"}),
+            model::InfoModel::One(item) => json!({
+                "kind": "one",
+                "name": item.name,
+                "moment": item.moment,
+                "metadata": item.metadata.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+            }),
+            model::InfoModel::Several { count, active } => {
+                json!({"kind": "several", "count": count, "active": active})
+            }
+        };
+        let listed: Vec<Value> = model
+            .sources
+            .months
+            .iter()
+            .map(|month| {
+                json!({
+                    "month": month.label,
+                    "events": month.rows.iter().map(|row| &row.name).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let facets = state.facets.as_ref().map(|facets| {
+            facets
+                .counts
+                .iter()
+                .map(|(facet, values)| (facet.as_str().to_owned(), json!(values.len())))
+                .collect::<serde_json::Map<_, _>>()
+        });
         json!({
             "shown": state.shown.as_str(),
             "source": source,
@@ -737,29 +1006,74 @@ impl Editor {
             "sort": state.query.as_ref().map(|query| query.sort),
             "grouping": state.query.as_ref().map(|query| query.grouping),
             "loading": state.loading,
+            "reading_folder": self.select.reading.is_some(),
+            "quiet": self.select_quiet(),
             "error": state.view_error,
             "revision": summary.map(|summary| summary.revision),
             "count": summary.map(|summary| summary.count),
             "picked": summary.map(|summary| summary.picked),
+            "groups": summary.map(|summary| json!({
+                "days": summary.groups.days.len(),
+                "cameras": summary.groups.cameras.len(),
+                "moments": summary.groups.moments.len(),
+            })),
+            "blocks": {
+                "days": blocks(|block| matches!(block, Block::Day { .. })),
+                "cameras": blocks(|block| matches!(block, Block::Camera { .. })),
+                "moments": blocks(|block| matches!(block, Block::Moment { .. })),
+                "singles": blocks(|block| matches!(block, Block::Singles(_))),
+            },
+            "labels": state.content.labels.len(),
             "events": state.events.as_ref().map(|list| list.events.len()),
+            "listed": listed,
+            "facets": facets,
             "rows": state.rows.len(),
             "row_blocks": state.rows.blocks(),
             "cells": self.select.layout.cell_count(),
+            "items": self.select.layout.item_count(),
             "content_height": self.select.layout.height(),
             "scroll": self.select.scroll,
             "viewport": [self.select.viewport.width, self.select.viewport.height],
             "selection": self.session.browse.selection,
             "stale": self.session.browse.stale,
+            "session_revision": self.session.browse.revision,
             "collapsed": state.collapsed,
             "sources_panel": state.sources_panel,
             "info_panel": state.info_panel,
             "cell_width": state.cell_width(),
+            "title": {
+                "name": model.title.name,
+                "summary": model.title.summary,
+                "picks": model.title.picks,
+            },
+            "status_line": model.status.line,
+            "note": model.note,
+            "info": info,
         })
     }
 }
 
 /// After every message: read the rows near the screen and start a staleness check a wake asked for.
+/// An evidence run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
-    Task::batch([rows, editor.start_check()])
+    let check = editor.start_check();
+    if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
+        editor.outcome(Outcome::SelectSettled);
+    }
+    Task::batch([rows, check])
+}
+
+/// The reading folder's job timer, which exists only while a folder browsed on disk is being read.
+pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
+    if editor
+        .select
+        .reading
+        .as_ref()
+        .is_some_and(|reading| reading.job.is_some())
+    {
+        iced::time::every(READ_POLL).map(|_| Message::Select(SelectMessage::ReadPoll))
+    } else {
+        iced::Subscription::none()
+    }
 }

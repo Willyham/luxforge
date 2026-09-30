@@ -297,7 +297,9 @@ fn sources<'a>(
     )
     .padding([0.0, theme::PANEL_PADDING_X]);
     column![
-        scrollable(content).height(Length::Fill),
+        scrollable(content)
+            .direction(theme::panel_scrollbar())
+            .height(Length::Fill),
         rule,
         state_panel::performance(performance, can_interact),
     ]
@@ -561,6 +563,7 @@ fn info(model: &InfoModel) -> Element<'_, Message> {
             .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
             .width(Length::Fill),
     )
+    .direction(theme::panel_scrollbar())
     .height(Length::Fill)
     .into()
 }

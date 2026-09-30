@@ -700,14 +700,15 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["crates/luxforge-app/src"],
         types: &["rs"],
-        allowed: &["crates/luxforge-app/src/app/evidence.rs"],
+        // The driver is `evidence.rs` and its own modules (`evidence/`), such as the Select steps.
+        allowed: &["crates/luxforge-app/src/app/evidence"],
         mode: Match::Whole,
         tests: false,
         once: false,
         reason: "a desktop seam reports what happened through Editor::outcome \
                  (crates/luxforge-app/src/app/outcome.rs); only the evidence driver \
-                 (crates/luxforge-app/src/app/evidence.rs) names a step's wait and settles, arms \
-                 or refuses it",
+                 (crates/luxforge-app/src/app/evidence.rs and its modules) names a step's wait and \
+                 settles, arms or refuses it",
     },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
