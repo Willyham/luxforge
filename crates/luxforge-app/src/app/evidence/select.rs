@@ -62,6 +62,9 @@ impl Editor {
             SelectStep::AgentPick { positions, picked } => self.agent_pick_step(&positions, picked),
             SelectStep::Library(key) => self.library_step(key),
             SelectStep::PickAll { position } => self.pick_all_step(position),
+            SelectStep::FirstLook(path) => self.first_look_step(path.into()),
+            SelectStep::ContinueInBackground => self.background_step(),
+            SelectStep::CancelWork => self.cancel_work_step(),
         }
     }
 
@@ -213,7 +216,8 @@ impl Editor {
         });
         let status = iced::event::Status::Ignored;
         match keymap(&event, status, &self.key_context()) {
-            Some(Message::Select(SelectMessage::Move { .. })) => {
+            // In the loupe the arrows step its frames and moments.
+            Some(Message::Select(SelectMessage::Move { .. } | SelectMessage::Loupe(_))) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.await_select(task)
             }

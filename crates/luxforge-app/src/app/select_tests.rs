@@ -449,7 +449,7 @@ fn the_select_keys_are_its_own() {
             pressed(letter("p"), Modifiers::empty()),
             Status::Ignored,
             &loupe,
-            None,
+            Some("Select(Loupe(Pick))"),
         ),
         (
             "open",

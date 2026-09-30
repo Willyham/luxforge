@@ -6,7 +6,7 @@
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
-    histogram_smoke as histogram, mask_brush_smoke as mask_brush,
+    histogram_smoke as histogram, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
@@ -670,7 +670,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: select::SCENARIO,
-        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a folder of real images, and back to Develop",
+        about: "The Select workspace over a generated catalog: G, an event's grouped grid, arrow selection, the Group chip, an agent's pick read again, a first look's progress sheet, Continue in background and Cancel, a folder of real images, and back to Develop",
         launches: &[],
         verify: select::verify,
         source: Source::Fixtures(&[]),
@@ -687,6 +687,16 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(resolve_missing::NOTE),
         own: Some(resolve_missing::run),
+    },
+    Scenario {
+        name: loupe::SCENARIO,
+        about: "The Select loupe over a folder of generated images: a burst stepped, jumped and left for the moments either side, a bracket, the 100% focus check, compare, P on the bracket and P on the burst moving on to the next moment, each picture its own frame's",
+        launches: &[],
+        verify: loupe::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(loupe::NOTE),
+        own: Some(loupe::run),
     },
     Scenario {
         name: "unavailable",

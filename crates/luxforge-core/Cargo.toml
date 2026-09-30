@@ -11,6 +11,7 @@ idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
+luxforge-watch = { path = "../luxforge-watch" }
 moxcms.workspace = true
 rayon.workspace = true
 roxmltree.workspace = true

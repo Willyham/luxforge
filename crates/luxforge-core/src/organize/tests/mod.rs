@@ -287,6 +287,7 @@ fn organize_a_positioned_two_day_trip_stays_one_event_across_the_night() {
     assert_eq!(set.events.len(), 1, "{:?}", names(&set));
     let event = &set.events[0];
     assert_eq!(event.name, "Konstanz · 12–13 Sep");
+    assert_eq!(event.label, "Konstanz", "the name without its dates");
     assert_eq!(event.place.as_deref(), Some("Konstanz"));
     assert_eq!(event.len as usize, frames.frames.len());
     assert_eq!(
@@ -529,6 +530,21 @@ fn organize_undated_frames_form_an_event_per_folder_last() {
         members[2],
         [ViewItem::File(FileId(2)), ViewItem::File(FileId(4))]
     );
+    let labels: Vec<&str> = set
+        .events
+        .iter()
+        .map(|event| event.label.as_str())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "From Anna",
+            "Undated · /",
+            "Undated · From Anna",
+            "Undated · Scans"
+        ],
+        "a folder-named event's label is the folder; an Undated one's is its whole name"
+    );
     let anna = &set.events[2];
     assert!(anna.undated() && anna.first_day.is_none() && anna.end_ms.is_none());
     assert_eq!(
@@ -734,13 +750,17 @@ fn organize_names_cameras_by_frame_count() {
             });
         }
     }
-    assert_eq!(
-        names(&frames.events(&Thresholds::default())),
-        ["12 Sep · NIKON Z 8, LEICA Q3 +1"]
-    );
+    let set = frames.events(&Thresholds::default());
+    assert_eq!(names(&set), ["12 Sep · NIKON Z 8, LEICA Q3 +1"]);
+    assert_eq!(set.events[0].label, "NIKON Z 8, LEICA Q3 +1");
     let mut frames = Frames::default();
     frames.add(shot(CARD, Some(day)));
-    assert_eq!(names(&frames.events(&Thresholds::default())), ["12 Sep"]);
+    let set = frames.events(&Thresholds::default());
+    assert_eq!(names(&set), ["12 Sep"]);
+    assert_eq!(
+        set.events[0].label, "",
+        "a name of dates alone has no label"
+    );
     // Without a gazetteer a positioned event falls back to its folder, then its dates and cameras.
     let mut frames = Frames::default();
     frames.add(
