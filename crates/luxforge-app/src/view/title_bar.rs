@@ -196,29 +196,17 @@ fn view_controls(model: &Workspace) -> Element<'_, Message> {
     .into()
 }
 
-/// The Compare control. Compare is held, not toggled, so it needs both the press and the release:
-/// a plain button would only report one of them, so the face carries no press of its own, which
-/// would swallow the one the `mouse_area` around it needs, and the area publishes both, treating
-/// the pointer leaving as a release so a drag off the button cannot leave the original preview
-/// stuck on screen.
+/// Toggle the persistent divider. Backslash provides the temporary whole-image comparison.
 fn compare(held: bool, can_view: bool) -> Element<'static, Message> {
-    let face = title_bar_icon_button(
+    title_bar_icon_button(
         &IconButtonModel {
             icon: Icon::Compare,
-            tooltip: "Compare with original (hold \\; Shift+\\ uncropped)".into(),
+            tooltip: "Tap \\ for Before / After slider; hold for Before".into(),
             enabled: can_view,
             selected: held,
         },
-        None,
-    );
-    if !can_view {
-        return face;
-    }
-    mouse_area(face)
-        .on_press(Message::History(HistoryMessage::CompareBegin))
-        .on_release(Message::History(HistoryMessage::CompareEnd))
-        .on_exit(Message::History(HistoryMessage::CompareEnd))
-        .into()
+        can_view.then_some(Message::History(HistoryMessage::CompareToggle)),
+    )
 }
 
 /// Undo and Redo, a short rule, then the two panel-visibility toggles, at the bar's trailing edge.

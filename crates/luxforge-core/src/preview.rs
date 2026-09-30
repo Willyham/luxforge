@@ -107,6 +107,17 @@ pub struct AssetSelection {
     pub geometry_from: Option<EntryId>,
 }
 
+/// A read-only comparison of the Original with one fixed entry. Divider motion is presentation
+/// state, never image content, so changing its position does not advance the preview generation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Comparison {
+    pub asset_id: AssetId,
+    pub after_entry: EntryId,
+    pub previous: Option<AssetSelection>,
+    pub position: f32,
+}
+
 /// What one client is looking at: per asset, the historical entry it previews, and the view it
 /// looks through. Selection is per asset, so previewing an entry of one photo neither pauses edits
 /// to another nor answers another's questions: an asset absent from `selections` is at its current
@@ -117,6 +128,7 @@ pub struct PreviewSession {
     /// Each asset this client previews a historical entry of, at most [`MAX_SELECTIONS`].
     #[serde(default)]
     pub selections: BTreeMap<AssetId, AssetSelection>,
+    pub comparison: Option<Comparison>,
     pub view: ViewState,
     pub generation: u64,
 }
@@ -139,6 +151,7 @@ impl PreviewSession {
         selection: HistorySelection,
         geometry_from: Option<EntryId>,
     ) -> Result<u64, crate::Error> {
+        // A new selection replaces the comparison; failed selection admission leaves it intact.
         match selection {
             HistorySelection::Current => {
                 self.selections.remove(asset_id);
@@ -160,11 +173,13 @@ impl PreviewSession {
                 );
             }
         }
+        self.comparison = None;
         Ok(self.advance())
     }
     /// Return every asset to its current entry.
     pub fn return_current(&mut self) -> u64 {
         self.selections.clear();
+        self.comparison = None;
         self.advance()
     }
     fn advance(&mut self) -> u64 {

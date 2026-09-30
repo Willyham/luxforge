@@ -602,13 +602,27 @@ impl Editor {
                     .then_some(self.presentation.presented_content),
             })
         });
-        expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
+        expected.is_some_and(|expected| {
+            photo_drawn(
+                expected,
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+            )
+        }) && self.surfaces().comparison.is_none_or(|(after, _)| {
+            photo_drawn(
+                ExpectedPhotoDraw::Full {
+                    version: after.version(),
+                    content: None,
+                },
+                luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+            )
+        })
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
     /// including after a mask-overlay toggle causes a new photo and a new clipping derivation.
     pub(super) fn capture_clipping_ready(&self) -> bool {
         if self.document.state.is_none()
+            || self.presentation.compare_after.is_some()
             || self.crop().is_some()
             || self.gallery_page().is_some()
             || self.presentation.render_error.is_some()
@@ -626,7 +640,8 @@ impl Editor {
             enabled,
             failed,
             current,
-            luxforge_ui::surface_diagnostics().drawn_clipping_version,
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+                .drawn_clipping_version,
             self.overlay_summary()["drawn"] == true,
         )
     }
@@ -925,6 +940,52 @@ impl Editor {
             Step::ViewIdle(step) => self.view_idle_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
+            Step::Compare(compare) => {
+                let mut press = Task::none();
+                if compare == luxforge_evidence::CompareStep::Tap {
+                    press = self.key_step("\\".into());
+                }
+                let previews = compare == luxforge_evidence::CompareStep::Tap
+                    || (matches!(
+                        compare,
+                        luxforge_evidence::CompareStep::Release
+                            | luxforge_evidence::CompareStep::FocusLoss
+                    ) && self.document.compare_return.is_some()
+                        && self.presentation.compare_after.is_none());
+                if previews {
+                    self.await_step(Settle::Preview);
+                }
+                let message = match compare {
+                    luxforge_evidence::CompareStep::Position(position) => {
+                        Message::History(HistoryMessage::ComparePosition(position))
+                    }
+                    luxforge_evidence::CompareStep::Tap
+                    | luxforge_evidence::CompareStep::Release => {
+                        let key = iced::keyboard::Key::Character("\\".into());
+                        Message::Key(
+                            iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                                key: key.clone(),
+                                modified_key: key,
+                                physical_key: iced::keyboard::key::Physical::Unidentified(
+                                    iced::keyboard::key::NativeCode::Unidentified,
+                                ),
+                                location: iced::keyboard::Location::Standard,
+                                modifiers: iced::keyboard::Modifiers::empty(),
+                            }),
+                            iced::event::Status::Ignored,
+                        )
+                    }
+                    luxforge_evidence::CompareStep::FocusLoss => Message::Key(
+                        iced::Event::Window(iced::window::Event::Unfocused),
+                        iced::event::Status::Ignored,
+                    ),
+                };
+                let task = self.update(message);
+                if !previews {
+                    self.capture_next_frame();
+                }
+                Task::batch([press, task])
+            }
             Step::Palette(palette) => self.palette_step(palette),
             Step::Hover { x, y } => self.hover_step(x, y),
             Step::CanvasHover { x, y } => self.canvas_hover_step(x, y),
@@ -2784,7 +2845,7 @@ impl Editor {
         if self.busy {
             return self.fail_step("a request is already in flight");
         }
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if let Some(evidence) = &mut self.evidence {
             evidence.capture_pending = false;
             evidence.awaiting = None;
@@ -2814,7 +2875,7 @@ impl Editor {
         if Instant::now() < observation.until {
             return Task::none();
         }
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         let blank_delta = gpu
             .blank_photo_draws
             .saturating_sub(observation.blank_before);
@@ -3155,6 +3216,16 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            Some(Message::History(HistoryMessage::CompareToggle | HistoryMessage::CompareExit)) => {
+                self.await_step(Settle::Preview);
+                self.dispatch(Message::Key(event, status))
+            }
+            Some(Message::History(HistoryMessage::CompareKeyPressed { uncropped: true }))
+                if self.presentation.compare_after.is_none() =>
+            {
+                self.await_step(Settle::Preview);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(_) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.capture_next_frame();
@@ -3201,7 +3272,9 @@ impl Editor {
             | PaletteAction::Restore => {
                 self.begin_request();
             }
-            PaletteAction::ReturnCurrent => self.await_step(Settle::Preview),
+            PaletteAction::ReturnCurrent | PaletteAction::Compare => {
+                self.await_step(Settle::Preview)
+            }
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
