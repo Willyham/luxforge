@@ -8,6 +8,7 @@ mod grid;
 mod long_work;
 mod loupe;
 mod select;
+mod select_catalog;
 mod select_missing;
 // ── end lane D ──
 use crate::state::MenuTarget;
@@ -984,6 +985,7 @@ impl Editor {
             Step::Missing(step) => self.missing_step(step),
             Step::Loupe(step) => self.loupe_step(step),
             Step::GridScroll(step) => self.grid_scroll_step(step),
+            Step::Catalog(step) => self.catalog_step(step),
             // ── end lane D ──
         }
     }

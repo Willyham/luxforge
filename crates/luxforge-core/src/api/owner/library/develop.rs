@@ -332,9 +332,9 @@ fn commit(
     files: Vec<Developed>,
 ) -> Result<Value, Error> {
     let now = now_ms();
-    let (decided, failed) = develop::decide(&owner.service, files, now)?;
+    let (decided, refused) = develop::decide(&owner.service, files, now)?;
     let mut report = DevelopReport {
-        failed,
+        failed: refused.iter().map(develop::Refused::failure).collect(),
         ..DevelopReport::default()
     };
     if decided.is_empty() {

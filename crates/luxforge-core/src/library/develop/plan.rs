@@ -306,7 +306,7 @@ fn propose(
             Some(name),
         ));
     }
-    let name = unique(&folder_name(event), taken);
+    let name = unique(&folder_name(event, folder), taken);
     taken.push(name.clone());
     Ok((
         FolderChoice::New {
@@ -319,10 +319,15 @@ fn propose(
 
 /// The name a new folder made from `event` is proposed with: its place with the month and year of
 /// its first day ("Konstanz · Sep 2026"), or else the event's own name ("Lake · 14 Sep", "16 Sep ·
-/// LEICA Q3", "Undated · From Anna"), as a catalog name keeps it.
-pub(crate) fn folder_name(event: &crate::catalog_types::EventGroup) -> String {
+/// LEICA Q3"), as a catalog name keeps it. An Undated event's folder is named after the folder on
+/// disk its files are in ("From Anna"), as a single opened file's has always been.
+pub(crate) fn folder_name(event: &crate::catalog_types::EventGroup, disk_folder: &Path) -> String {
     let name = match (&event.place, event.first_day) {
         (Some(place), Some(day)) => format!("{place} · {}", month_and_year(day)),
+        _ if event.undated() => disk_folder.file_name().map_or_else(
+            || event.name.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        ),
         _ => event.name.clone(),
     };
     let name: String = name

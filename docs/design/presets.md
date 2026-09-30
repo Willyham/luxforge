@@ -14,7 +14,7 @@ In scope:
 - **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
 - **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
 
-Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, Lightroom `Auto` and named white balances, a Copy/Paste Settings command, applying to several photos, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs.
+Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, Lightroom `Auto` and named white balances, a Copy/Paste Settings command, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-preset` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-preset`'s own path.
 
 ## Settings sets
 

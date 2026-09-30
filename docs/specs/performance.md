@@ -3106,10 +3106,11 @@ DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 u
 `cold_saved_white_balance_preparation_timing` in `luxforge-core` reproduces the method of
 [native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation):
 a catalog whose RAW has a saved custom red gain of 1.1 × as-shot, a new owner and empty source cache
-per observation with the filesystem warm, and the clock from immediately before `catalog.import`
-until a strict exact-source `PreviewJob` for the current entry is available, through the one source
-job's wait and adoption. The harness that produced the earlier figures is not in the repository, so
-this one was written to that description. Before is the same source built with the Z6's
+per observation with the filesystem warm, and the clock from immediately before the photograph's
+`source.prepare` (the figures below were taken through `catalog.import` of its file, which queued
+the same preparation) until a strict exact-source `PreviewJob` for the current entry is available,
+through the one source job's wait and adoption. The harness that produced the earlier figures is
+not in the repository, so this one was written to that description. Before is the same source built with the Z6's
 `NikonZ6Lossless14` and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed);
 after is the source as routed. The two builds differ only in those catalog lines, so each builds
 its own catalog. 15 observations per leg in before, after, after, before order give 30 per variant.

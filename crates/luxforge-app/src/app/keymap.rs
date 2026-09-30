@@ -13,8 +13,10 @@ use crate::state::palette::Panel;
 use crate::app::message::{
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
+    select_catalog::CatalogMessage,
 };
 use crate::state::select::{SelectPanel, Shown};
+use crate::state::select_catalog::CatalogAction;
 // ── end lane D ──
 use iced::{
     Event, Subscription,
@@ -372,7 +374,8 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// The Select workspace's keys: Escape closes an open menu whatever has focus; otherwise only a key
 /// no text field took acts. The arrows move the active item and repeat while held, with Shift
 /// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Cmd+Z` and `Shift+Cmd+Z`
-/// undo and redo this desktop's library changes; `Tab` toggles the side panels, and
+/// undo and redo this desktop's library changes; `Cmd+F` puts the focus in the search field (the
+/// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
 /// `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst; `P`
 /// picks or clears the selection. `D`, which will develop the active frame, waits for developing
 /// picks, and the loupe's keys for the loupe.
@@ -435,6 +438,11 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
         }
         if character(key, "d") {
             return Some(Message::Select(SelectMessage::SelectNone));
+        }
+        if character(key, "f") {
+            return Some(Message::Select(SelectMessage::Catalog(
+                CatalogMessage::Act(CatalogAction::FocusSearch),
+            )));
         }
         return None;
     }

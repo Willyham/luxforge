@@ -37,6 +37,7 @@
 //! Which workspace is shown, the panels, the collapsed bursts, the size slider and the selection's
 //! anchor are this desktop's own view state, like the developer gallery page: no other client sees
 //! them.
+use crate::app::select_catalog::SelectCatalog;
 use crate::app::select_previews::{GridWindow, SelectPreviewMessage, SelectPreviews};
 use crate::app::{
     Before, Editor,
@@ -131,6 +132,8 @@ pub(crate) struct Select {
     pub(crate) previews: SelectPreviews,
     /// The loupe's decoded frames and focus check (`app/loupe.rs`).
     pub(crate) loupe: crate::app::loupe::Loupe,
+    /// The catalog's reads in flight: its folders and collections, a total and a selection's rows.
+    pub(crate) catalog: SelectCatalog,
 }
 
 /// A card or a folder on disk whose listing and headers the index lane is reading.
@@ -191,6 +194,7 @@ impl Default for Select {
             read_again: false,
             previews: SelectPreviews::default(),
             loupe: crate::app::loupe::Loupe::default(),
+            catalog: SelectCatalog::default(),
         }
     }
 }
@@ -435,6 +439,7 @@ impl Editor {
             }
             SelectMessage::Source(source) => {
                 self.select.state.menu = None;
+                self.select.state.catalog.close();
                 // Another view chosen while a card or folder is being read: the reading goes on
                 // as the status bar's job, and its end no longer replaces the view.
                 self.select.reading = None;
@@ -532,7 +537,10 @@ impl Editor {
                     return self.evaluate(query);
                 }
             }
-            SelectMessage::Menu(menu) => self.select.state.menu = menu,
+            SelectMessage::Menu(menu) => {
+                self.select.state.menu = menu;
+                self.select.state.catalog.close();
+            }
             SelectMessage::Viewed { serial, result } => self.viewed(serial, result),
             SelectMessage::Faceted { serial, result } => {
                 if serial == self.select.serial {
@@ -616,6 +624,7 @@ impl Editor {
             SelectMessage::Checked(result) => return self.checked(result),
             SelectMessage::Loupe(message) => return self.loupe_update(message),
             SelectMessage::Missing(message) => return self.missing_update(message),
+            SelectMessage::Catalog(message) => return self.catalog_update(message),
             SelectMessage::Previews(message) => {
                 return self
                     .select
@@ -649,6 +658,7 @@ impl Editor {
             && select.state.rows.in_flight().is_none()
             && (select.state.summary.is_none() || !select.state.rows.wants(self.wanted_items()))
             && self.missing_quiet()
+            && self.catalog_quiet()
     }
 
     /// The Select workspace is on screen.
@@ -684,6 +694,7 @@ impl Editor {
         }
         if shown == Shown::Develop {
             self.select.state.menu = None;
+            self.select.state.catalog.close();
             self.select.state.shown = Shown::Develop;
             self.select.previews.release();
             return self.loupe_leave();
@@ -768,9 +779,11 @@ impl Editor {
         )
     }
 
-    /// Ask `catalog.info` again for the Catalog sources' counts.
+    /// Ask `catalog.info` again for the Catalog sources' counts, and the catalog's folders and
+    /// collections with them ([`crate::app::select_catalog`]).
     fn read_counts(&mut self) -> Task<Message> {
         self.select.counts.offer(());
+        self.select.catalog.lists.offer(());
         self.start_counts()
     }
 
@@ -929,7 +942,7 @@ impl Editor {
 
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
     /// else, then the session it left, in one owner task; and the chips' `browse.facets` beside it.
-    fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
+    pub(crate) fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
         let state = &mut self.select.state;
         if state
             .query
@@ -1444,7 +1457,7 @@ impl Editor {
     /// Otherwise the view it made stale is evaluated again (keeping the scroll and the active item),
     /// the events and the catalog's counts are read again, and the change's label is read for the
     /// status bar.
-    fn library_answered(
+    pub(crate) fn library_answered(
         &mut self,
         gesture: LibraryGesture,
         answer: &LibraryAnswer,
@@ -1481,7 +1494,7 @@ impl Editor {
     /// A library change refused: the status bar says why, naming the first item a refused undo or
     /// redo found changed since. A pick refused because the view went stale reads it again, so the
     /// next `P` acts on what is shown.
-    fn library_refused(&mut self, gesture: LibraryGesture, error: &CallError) {
+    pub(crate) fn library_refused(&mut self, gesture: LibraryGesture, error: &CallError) {
         let conflict = error.code == "conflict";
         self.status.text = conflict
             .then(|| model::refusal_text(gesture, error.data.as_ref()))
@@ -1735,6 +1748,7 @@ impl Editor {
             "groups_picked": groups_picked,
             "headers": headers,
             "library": self.select.library,
+            "catalog": self.catalog_summary(),
         })
     }
 }

@@ -1535,6 +1535,99 @@ pub fn resolve_rule(color: Color) -> impl Fn(&Theme) -> container::Style {
 
 // -- end Select: resolving missing originals ------------------------------------------------------
 
+// -- Select: the catalog ---------------------------------------------------------------------------
+
+// The catalog board's Metadata browser (`.col3`) and the Info panel's organize chips (`.kw`). Each
+// translucent fill is stored opaque, composited over the surface under it, for the reason [`RULE`]
+// gives; the tests below recompute each.
+
+/// The Metadata browser: 150 pt of [`SELECT_BAR`] under the filter bar, its four columns split by
+/// white at 6% and closed by the same rule.
+pub const FACET_BROWSER_HEIGHT: f32 = 150.0;
+pub const FACET_RULE: Color = SELECT_BAR_RULE;
+/// A column's heading (`.col3 .h`): 26 pt, inset 10 pt, over a rule of white at 5%.
+pub const FACET_HEADING_HEIGHT: f32 = 26.0;
+pub const FACET_HEADING_RULE: Color = Color::from_rgb8(40, 40, 43);
+/// A value's row (`.col3 .r`): 22 pt, inset 10 pt, a month under its year 22 pt in; chosen, the
+/// accent at 12% behind it, its label the current row's white and its count in the accent.
+pub const FACET_ROW_HEIGHT: f32 = 22.0;
+pub const FACET_ROW_PADDING: f32 = 10.0;
+pub const FACET_ROW_INDENT: f32 = 22.0;
+pub const FACET_ROW_SELECTED: Color = Color::from_rgb8(53, 47, 41);
+/// Under the pointer: white at 4%.
+pub const FACET_ROW_HOVER: Color = Color::from_rgb8(38, 38, 41);
+/// An organize chip (`.kw`): 20 pt, inset 7 pt, rounded 4 pt, its icon and count 5 pt apart, 4 pt
+/// from the next; a membership on [`CONTROL`], a partial one or an action (`Move to…`) with no
+/// surface and a 1 pt outline.
+pub const ORGANIZE_CHIP_HEIGHT: f32 = 20.0;
+pub const ORGANIZE_CHIP_PADDING: f32 = 7.0;
+pub const ORGANIZE_CHIP_RADIUS: f32 = 4.0;
+pub const ORGANIZE_CHIP_SPACING: f32 = 5.0;
+pub const ORGANIZE_CHIP_GAP: f32 = 4.0;
+pub const ORGANIZE_CHIP_OUTLINE: Color = Color::from_rgb8(0x3a, 0x3a, 0x40);
+pub const ORGANIZE_CHIP_ICON_SIZE: f32 = 10.0;
+/// A chip's count (`2 of 5`): 10 pt tertiary.
+pub const SIZE_ORGANIZE_COUNT: f32 = 10.0;
+/// The batch form's previews: 40 pt tall, 4 pt apart.
+pub const BATCH_PREVIEW_HEIGHT: f32 = 40.0;
+pub const BATCH_PREVIEW_SPACING: f32 = 4.0;
+
+/// A Metadata browser value's row: [`FACET_ROW_SELECTED`] while chosen, [`FACET_ROW_HOVER`] under
+/// the pointer, else no surface. The row names its own ink.
+pub fn facet_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = if selected {
+            Some(FACET_ROW_SELECTED)
+        } else if pointer {
+            Some(FACET_ROW_HOVER)
+        } else {
+            None
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: TEXT_LABEL,
+            border: Border::default(),
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// An organize chip's surface: [`CONTROL`] for a membership, else none with its outline; a
+/// pressable chip lightens under the pointer like every control.
+pub fn organize_chip(filled: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let pointer = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let background = match (filled, pointer) {
+            (true, false) => Some(CONTROL),
+            (true, true) => Some(ROW_HOVER_ON_CONTROL),
+            (false, true) => Some(FACET_ROW_HOVER),
+            (false, false) => None,
+        };
+        button::Style {
+            background: background.map(Background::Color),
+            text_color: TEXT_LABEL,
+            border: Border {
+                color: if filled {
+                    Color::TRANSPARENT
+                } else {
+                    ORGANIZE_CHIP_OUTLINE
+                },
+                width: if filled { 0.0 } else { BORDER_WIDTH },
+                radius: ORGANIZE_CHIP_RADIUS.into(),
+            },
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    }
+}
+
+/// A membership chip under the pointer: white at 4% over [`CONTROL`].
+pub const ROW_HOVER_ON_CONTROL: Color = Color::from_rgb8(52, 52, 57);
+
+// -- end Select: the catalog -----------------------------------------------------------------------
+
 /// Builds the dark, custom Luxforge theme from the tokens above. There is no light theme yet;
 /// see the [visual language](../../../docs/design/develop-workspace.md#visual-language) decision.
 pub fn theme() -> Theme {
@@ -3058,6 +3151,37 @@ mod tests {
     }
 
     // -- end Select chrome's token tests.
+
+    /// The catalog board's composites (`.col3`, `.kw`), recomputed from its CSS.
+    #[test]
+    fn catalog_composites_match_the_catalog_board() {
+        let white = Color::WHITE;
+        assert_eq!(
+            code(FACET_RULE),
+            composite(white, SELECT_BAR, 0.06),
+            "`.col3` rule"
+        );
+        assert_eq!(
+            code(FACET_HEADING_RULE),
+            composite(white, SELECT_BAR, 0.05),
+            "`.col3 .h` rule"
+        );
+        assert_eq!(
+            code(FACET_ROW_SELECTED),
+            composite(ACCENT, SELECT_BAR, 0.12),
+            "`.col3 .r.on`"
+        );
+        assert_eq!(code(FACET_ROW_HOVER), composite(white, SELECT_BAR, 0.04));
+        assert_eq!(code(ROW_HOVER_ON_CONTROL), composite(white, CONTROL, 0.04));
+        assert_eq!(
+            code(ORGANIZE_CHIP_OUTLINE),
+            [0x3a, 0x3a, 0x40],
+            "`.kw.part` outline"
+        );
+        assert_eq!(FACET_BROWSER_HEIGHT, 150.0);
+        assert_eq!((FACET_ROW_HEIGHT, FACET_ROW_INDENT), (22.0, 22.0));
+        assert_eq!((ORGANIZE_CHIP_HEIGHT, ORGANIZE_CHIP_PADDING), (20.0, 7.0));
+    }
 
     /// The resolve board's composites over a group's surface, recomputed from its CSS.
     #[test]

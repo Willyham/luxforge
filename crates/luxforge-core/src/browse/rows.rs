@@ -1,8 +1,8 @@
 //! Windows of a view by position (`browse.rows`): the window's items come from the held list with
 //! no query, and their rows are read in a fixed number of statements whatever the window's size —
 //! for files the index's rows and preview records, the offline roots, and the catalog's picks and
-//! developed originals among the window's paths; for photographs the catalog's rows and the
-//! index's rendered previews.
+//! developed originals among the window's paths; for photographs the catalog's rows, their
+//! collections and the index's rendered previews.
 
 use super::{
     View,
@@ -14,8 +14,8 @@ use super::{
 use crate::{
     AssetId, EditorService, Error, SourceTag,
     catalog_types::{
-        CameraBody, Dimensions, ExifOrientation, Exposure, FileAvailability, FileId, Moment,
-        MomentRef, PreviewState, RowItem, ViewItem, ViewRow,
+        CameraBody, CatalogFolderId, CollectionId, Dimensions, ExifOrientation, Exposure,
+        FileAvailability, FileId, Moment, MomentRef, PreviewState, RowItem, ViewItem, ViewRow,
     },
 };
 use rusqlite::Row;
@@ -196,6 +196,8 @@ fn file_rows(
             exposure: facts.exposure,
             moment: moment_of(moments, position),
             edited: false,
+            folder_id: None,
+            collections: Vec::new(),
             availability,
             preview,
         });
@@ -227,11 +229,13 @@ fn photo_rows(
              a.availability, NULL, c.local_text, c.place, c.make, c.model, c.lens,
              c.exposure_time_s, c.f_number, c.iso, c.exposure_bias_ev, c.focal_mm,
              c.focal_35mm_mm, c.width, c.height, c.orientation,
-             EXISTS(SELECT 1 FROM entries e WHERE e.asset_id = a.id AND e.sequence > 0)
+             EXISTS(SELECT 1 FROM entries e WHERE e.asset_id = a.id AND e.sequence > 0),
+             a.catalog_folder_id
          FROM assets a LEFT JOIN capture c ON c.asset_row = a.row_id
          WHERE a.row_id IN (SELECT value FROM json_each(?1))",
     )?;
-    let mut rows = statement.query([json_list(&rows_ids)?])?;
+    let window_rows = json_list(&rows_ids)?;
+    let mut rows = statement.query([&window_rows])?;
     let mut found: HashMap<i64, PhotoFacts> = HashMap::with_capacity(rows_ids.len());
     while let Some(row) = rows.next()? {
         let asset_id = AssetId::parse(row.get::<_, String>(1)?)?;
@@ -258,6 +262,8 @@ fn photo_rows(
             picked: false,
             developed_as: None,
             edited: row.get(23)?,
+            folder_id: Some(CatalogFolderId::parse(row.get::<_, String>(24)?)?),
+            collections: Vec::new(),
             availability: FileAvailability::parse(&availability).ok_or_else(|| {
                 Error::incompatible(format!("photograph: unknown availability {availability}"))
             })?,
@@ -267,6 +273,23 @@ fn photo_rows(
     }
     drop(rows);
     drop(statement);
+    // The window's memberships in one statement, each photograph's in collection order.
+    let mut members = service.connection.prepare_cached(
+        "SELECT asset_row, collection_id FROM collection_members
+         WHERE asset_row IN (SELECT value FROM json_each(?1))
+         ORDER BY asset_row, collection_id",
+    )?;
+    let mut memberships = members.query([&window_rows])?;
+    while let Some(member) = memberships.next()? {
+        if let Some(facts) = found.get_mut(&member.get::<_, i64>(0)?) {
+            facts
+                .row
+                .collections
+                .push(CollectionId::parse(member.get::<_, String>(1)?)?);
+        }
+    }
+    drop(memberships);
+    drop(members);
     let mut answer = Vec::with_capacity(rows_ids.len());
     for (offset, row_id) in rows_ids.iter().enumerate() {
         let position = from + offset as u32;

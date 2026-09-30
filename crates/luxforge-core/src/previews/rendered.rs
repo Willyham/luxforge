@@ -653,8 +653,7 @@ fn prepare(request: &RenderRequest, cancel: &Cancel) -> Result<PreparedRender, E
             _ => error,
         }
     };
-    let work =
-        SourceWork::file(&asset.locator, Some(request.target.clone())).map_err(unavailable)?;
+    let work = SourceWork::file(&asset.locator, request.target.clone()).map_err(unavailable)?;
     // The fingerprint is checked against the asset's inside the work, so another file's bytes are
     // `source-unavailable` before anything is rendered from them.
     let Prepared::File(file, _) = work.run(&[], cancel.flag()).map_err(unavailable)? else {

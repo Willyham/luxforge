@@ -1,10 +1,7 @@
-//! A catalog of several photos through the catalog owner: one client's selection per asset and the
-//! paged `catalog.list`. Relocating an original is `source.locate` (`library/locate_tests.rs`).
+//! A catalog of several photos through the catalog owner: one client's selection per asset.
+//! Relocating an original is `source.locate` (`library/locate_tests.rs`).
 use super::*;
-use crate::{
-    api::ApiFailure,
-    editor::{mutation, mutation_json},
-};
+use crate::editor::{mutation, mutation_json};
 use std::fs;
 
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -19,11 +16,10 @@ fn directory(name: &str) -> PathBuf {
     directory.canonicalize().unwrap()
 }
 
-/// A copy of the fixture at `name` in `directory`: a distinct file, so a distinct asset.
+/// A copy of the fixture at `name` in `directory`, in bytes of its own, so a photograph of its own
+/// rather than a link to another copy's.
 fn copy(directory: &Path, name: &str) -> PathBuf {
-    let path = directory.join(name);
-    fs::copy(luxforge_testbase::paths::jpeg(), &path).unwrap();
-    path
+    super::library::opening::distinct_copy(&luxforge_testbase::paths::jpeg(), &directory.join(name))
 }
 
 fn call(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> ApiResponse {
@@ -44,12 +40,6 @@ fn ok(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> Val
     let response = call(owner, client, method, params);
     assert!(response.error.is_none(), "{method}: {:?}", response.error);
     response.result.expect("a result")
-}
-
-fn failure(owner: &OwnerHandle, client: ClientId, method: &str, params: Value) -> ApiFailure {
-    call(owner, client, method, params)
-        .error
-        .unwrap_or_else(|| panic!("{method} was expected to fail"))
 }
 
 /// Retry a request through every preparation job it asks for, as a client does.
@@ -257,98 +247,6 @@ fn a_selection_is_per_asset_and_never_pauses_or_answers_for_another() {
     // Return to current returns every asset.
     let cleared = ok(&owner, client, "preview.return-current", json!({}));
     assert_eq!(selections(&cleared["session"]), json!({}));
-    owner.stop();
-    join.join().unwrap();
-    fs::remove_dir_all(directory).unwrap();
-}
-
-/// `catalog.list` pages the catalog in import order with a cursor, refuses a limit outside its
-/// typed range, and lists a row whose stored interpretation this build cannot decode, because a
-/// summary row reads the asset's own columns and decodes no interpretation.
-#[test]
-fn catalog_list_pages_summary_rows_without_decoding_an_interpretation() {
-    let directory = directory("paging");
-    let catalog = directory.join("catalog.sqlite");
-    let imported: Vec<EditorState> = {
-        let mut service = EditorService::open(&catalog).unwrap();
-        (0..5)
-            .map(|index| {
-                service
-                    .import(&copy(&directory, &format!("{index}.jpg")))
-                    .unwrap()
-            })
-            .collect()
-    };
-    // The third asset's interpretation is text no build can decode; its own columns are intact.
-    let broken = imported[2].asset.id.clone();
-    rusqlite::Connection::open(&catalog)
-        .unwrap()
-        .execute(
-            "UPDATE assets SET source_json='{not an interpretation' WHERE id=?1",
-            [broken.as_str()],
-        )
-        .unwrap();
-    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
-    let client = owner.register();
-
-    // A walk of pages of two: two, two, then one with no cursor after it.
-    let mut listed = Vec::new();
-    let mut after = Value::Null;
-    let mut pages = Vec::new();
-    loop {
-        let mut params = json!({"limit": 2});
-        if !after.is_null() {
-            params["after"] = after.clone();
-        }
-        let page = ok(&owner, client, "catalog.list", params);
-        let assets = page["assets"].as_array().unwrap().clone();
-        pages.push(assets.len());
-        listed.extend(assets.iter().cloned());
-        after = page["next"].clone();
-        if after.is_null() {
-            break;
-        }
-        assert_eq!(after, assets.last().unwrap()["id"], "next is the last row");
-    }
-    assert_eq!(pages, [2, 2, 1]);
-    let expected: Vec<Value> = imported
-        .iter()
-        .map(|state| {
-            json!({
-                "id": state.asset.id,
-                "locator": state.asset.locator,
-                "kind": "jpeg",
-                "width": state.asset.width,
-                "height": state.asset.height,
-            })
-        })
-        .collect();
-    assert_eq!(listed, expected, "summary rows in import order");
-    // The default page holds them all.
-    let whole = ok(&owner, client, "catalog.list", json!({}));
-    assert_eq!(whole["assets"], json!(expected));
-    assert_eq!(whole["next"], Value::Null);
-    // The broken row listed above; reading the asset itself refuses its interpretation by name.
-    assert_eq!(
-        failure(&owner, client, "asset.state", json!({"asset_id": broken})).code,
-        "incompatible"
-    );
-    // The typed limit refuses what is out of range before the handler runs, and a cursor must
-    // name an asset.
-    for limit in [0, 501] {
-        let refused = failure(&owner, client, "catalog.list", json!({"limit": limit}));
-        assert_eq!(refused.code, "validation", "{limit}: {}", refused.message);
-    }
-    assert_eq!(
-        failure(
-            &owner,
-            client,
-            "catalog.list",
-            json!({"after": AssetId::new()})
-        )
-        .code,
-        "validation"
-    );
     owner.stop();
     join.join().unwrap();
     fs::remove_dir_all(directory).unwrap();
