@@ -1,18 +1,30 @@
-//! `index.add-folder`, `index.remove-folder`, `index.folders` and `index.refresh` on the owner.
+//! `index.add-folder`, `index.remove-folder`, `index.folders` and `index.refresh` on the owner. A
+//! path a client names is resolved on the index lane's query thread — canonicalized, checked to
+//! be a folder that may be indexed, its volume read — and the call is answered on the owner once
+//! it has been; an indexed folder named exactly as it was added, every indexed folder, and a card
+//! the survey knows need no disk at all.
 use super::{
     super::library::{change, retried},
-    Call, Owner, exclusions, indexed_folders, mount_table, start_refresh,
+    Call, Owner, absolute, indexed_folders, own_dirs,
+    queries::{self, ask},
+    start_refresh,
 };
 use crate::{
-    Error, MutationOutcome,
-    api::methods::value,
+    Error, MutationOutcome, MutationRequest,
+    api::{Origin, methods::value},
     catalog_types::{
         IndexFolderAnswer, IndexFolders, IndexSource, IndexedFolder, IndexedFolderState,
-        LibraryAnswer, LibraryItem, RootKind,
+        LibraryAnswer, LibraryItem, RootKind, Volume, VolumeId,
         api::{IndexAddFolder, IndexRefresh, IndexRemoveFolder},
     },
     editor::{library_rows, now_ms, upsert_volume},
-    index::{database, lane::RootPlan, volumes::MountTable},
+    index::{
+        database,
+        exclude::OwnDirs,
+        lane::RootPlan,
+        query::existing_folder,
+        volumes::{card_of, volume_in},
+    },
     library::journal::{self, Desired, Request},
 };
 use serde_json::Value;
@@ -25,23 +37,47 @@ pub(in crate::api) fn index_add_folder(
     call: &Call<'_>,
     params: IndexAddFolder,
 ) -> Result<Value, Error> {
+    // The answer says whether the folder is offline, which the survey knows.
+    if !queries::learned(owner) {
+        return queries::wait_for_survey(owner);
+    }
     let request = Request::new(&call.request.method, &params.mutation);
     if let Some(answer) = retried(owner, request)? {
-        let folder = recorded_folder(owner, &answer)?;
-        return value(IndexFolderAnswer {
-            folder: state(owner, &mount_table(owner), folder)?,
-            deduplicated: answer.deduplicated,
-            change: answer,
-            job_id: None,
-        });
+        return value(recorded(owner, answer)?);
     }
-    let canonical = addable(owner, &params.path)?;
+    absolute(&params.path)?;
+    let (own, mounts) = (own_dirs(owner), owner.catalog.files.mounts.clone());
+    let (method, origin) = (call.request.method.clone(), call.origin.clone());
+    ask(owner, move || {
+        let found = browsable(&params.path, &own).and_then(|canonical| {
+            let volume = volume_in(&mounts.list(), &canonical, now_ms())?;
+            Ok((canonical, volume))
+        });
+        Box::new(move |owner| add(owner, &method, &origin, &params.mutation, found))
+    })
+}
+
+/// The owner's half of `index.add-folder`, with the folder the query thread found (its canonical
+/// path and volume) or why it cannot be added.
+fn add(
+    owner: &mut Owner,
+    method: &str,
+    origin: &Origin,
+    mutation: &MutationRequest,
+    found: Result<(PathBuf, Volume), Error>,
+) -> Result<Value, Error> {
+    let request = Request::new(method, mutation);
+    // A retry asked while this call waited finds the change its first attempt recorded.
+    if let Some(answer) = retried(owner, request)? {
+        return value(recorded(owner, answer)?);
+    }
+    let (canonical, volume) = found?;
     let source = IndexSource::IndexedFolder {
         path: canonical.clone(),
     };
     if let Some(folder) = library_rows::indexed_folder(&owner.service.connection, &canonical)? {
         return value(IndexFolderAnswer {
-            folder: state(owner, &mount_table(owner), folder)?,
+            folder: state(owner, folder, false)?,
             change: LibraryAnswer {
                 outcome: MutationOutcome::NoOp,
                 change: None,
@@ -52,18 +88,17 @@ pub(in crate::api) fn index_add_folder(
             deduplicated: false,
         });
     }
-    let table = mount_table(owner);
-    let volume = table.volume_of(&canonical)?;
+    unnested(owner, &canonical)?;
     let folder = IndexedFolder {
         path: canonical.clone(),
         volume_id: volume.id.clone(),
         added_ms: now_ms(),
-        actor: params.mutation.actor.clone(),
+        actor: mutation.actor.clone(),
     };
     let recorded = serde_json::to_value(&folder)
         .map_err(|error| Error::internal(format!("cannot encode an indexed folder: {error}")))?;
     let name = display_name(&canonical);
-    let answer = change(owner, &call.origin, |tx| {
+    let answer = change(owner, origin, |tx| {
         upsert_volume(tx, &volume)?;
         journal::apply(
             tx,
@@ -80,10 +115,23 @@ pub(in crate::api) fn index_add_folder(
     // The change reached `indexed_folders_changed`, which queued the folder's listing.
     let job_id = owner.catalog.files.live_job(&source);
     value(IndexFolderAnswer {
-        folder: state(owner, &table, folder)?,
+        folder: state(owner, folder, false)?,
         deduplicated: answer.deduplicated,
         change: answer,
         job_id,
+    })
+}
+
+/// The answer to a retried `index.add-folder`: the change its first attempt recorded, with the
+/// folder it added.
+fn recorded(owner: &Owner, answer: LibraryAnswer) -> Result<IndexFolderAnswer, Error> {
+    let folder = recorded_folder(owner, &answer)?;
+    let offline = queries::mounted(owner).offline(&folder.path, &folder.volume_id);
+    Ok(IndexFolderAnswer {
+        folder: state(owner, folder, offline)?,
+        deduplicated: answer.deduplicated,
+        change: answer,
+        job_id: None,
     })
 }
 
@@ -99,9 +147,34 @@ pub(in crate::api) fn index_remove_folder(
     if let Some(answer) = retried(owner, request)? {
         return value(answer);
     }
-    let path = indexed_path(owner, &params.path)?;
+    absolute(&params.path)?;
+    if library_rows::indexed_folder(&owner.service.connection, &params.path)?.is_some() {
+        return remove(owner, request, &call.origin, params.path);
+    }
+    // Not indexed as named: it may name one through a link, which only the disk can tell.
+    let (method, origin) = (call.request.method.clone(), call.origin.clone());
+    ask(owner, move || {
+        let canonical = params.path.canonicalize().ok();
+        Box::new(move |owner| {
+            let request = Request::new(&method, &params.mutation);
+            if let Some(answer) = retried(owner, request)? {
+                return value(answer);
+            }
+            let path = indexed_as(owner, canonical)?.unwrap_or(params.path);
+            remove(owner, request, &origin, path)
+        })
+    })
+}
+
+/// Remove the indexed folder `path` as one library change.
+fn remove(
+    owner: &mut Owner,
+    request: Request<'_>,
+    origin: &Origin,
+    path: PathBuf,
+) -> Result<Value, Error> {
     let name = display_name(&path);
-    value(change(owner, &call.origin, |tx| {
+    value(change(owner, origin, |tx| {
         journal::apply(
             tx,
             request,
@@ -117,10 +190,16 @@ pub(in crate::api) fn index_folders(
     _: &Call<'_>,
     _: crate::api::params::NoParams,
 ) -> Result<Value, Error> {
-    let table = mount_table(owner);
+    if !queries::learned(owner) {
+        return queries::wait_for_survey(owner);
+    }
+    let mounts = queries::mounted(owner);
     let folders = indexed_folders(owner)?
         .into_iter()
-        .map(|folder| state(owner, &table, folder))
+        .map(|folder| {
+            let offline = mounts.offline(&folder.path, &folder.volume_id);
+            state(owner, folder, offline)
+        })
         .collect::<Result<_, _>>()?;
     value(IndexFolders { folders })
 }
@@ -131,98 +210,143 @@ pub(in crate::api) fn index_refresh(
     call: &Call<'_>,
     params: IndexRefresh,
 ) -> Result<Value, Error> {
-    let (roots, detail) = roots_of(owner, &params.source)?;
-    value(start_refresh(
-        owner,
-        params.source,
-        roots,
-        detail,
-        &call.origin,
-    )?)
-}
-
-/// The roots a source names, and what the activity board says is being indexed.
-fn roots_of(owner: &Owner, source: &IndexSource) -> Result<(Vec<RootPlan>, String), Error> {
-    let plan = |folder: IndexedFolder| RootPlan {
-        path: folder.path,
-        kind: RootKind::Indexed,
-        volume_id: Some(folder.volume_id),
-    };
-    match source {
-        IndexSource::IndexedFolder { path } => {
-            let path = indexed_path(owner, path)?;
-            let folder = library_rows::indexed_folder(&owner.service.connection, &path)?
-                .ok_or_else(|| {
-                    Error::validation(format!("{} is not an indexed folder", path.display()))
-                })?;
-            Ok((vec![plan(folder)], path.display().to_string()))
-        }
+    let origin = call.origin.clone();
+    match params.source {
         IndexSource::AllIndexed => {
             let folders = indexed_folders(owner)?;
             let detail = match folders.len() {
                 1 => folders[0].path.display().to_string(),
                 count => format!("{count} indexed folders"),
             };
-            Ok((folders.into_iter().map(plan).collect(), detail))
+            let roots = folders.into_iter().map(indexed_root).collect();
+            value(start_refresh(
+                owner,
+                IndexSource::AllIndexed,
+                roots,
+                detail,
+                &origin,
+            )?)
+        }
+        IndexSource::IndexedFolder { path } => {
+            absolute(&path)?;
+            if let Some(folder) = library_rows::indexed_folder(&owner.service.connection, &path)? {
+                return refresh_indexed(owner, path, folder, &origin);
+            }
+            // Not indexed as named: it may name one through a link.
+            ask(owner, move || {
+                let canonical = path.canonicalize().ok();
+                Box::new(move |owner| {
+                    let named = indexed_as(owner, canonical)?.unwrap_or_else(|| path.clone());
+                    let folder = library_rows::indexed_folder(&owner.service.connection, &named)?
+                        .ok_or_else(|| {
+                        Error::validation(format!("{} is not an indexed folder", named.display()))
+                    })?;
+                    refresh_indexed(owner, path, folder, &origin)
+                })
+            })
         }
         IndexSource::Card { volume_id } => {
-            let table = mount_table(owner);
-            let (volume, dcim) = table
-                .get(volume_id)
-                .and_then(|mounted| {
-                    mounted
-                        .card_folder()
-                        .map(|dcim| (mounted.volume.clone(), dcim))
+            let known = queries::mounted(owner).get(&volume_id).and_then(|mounted| {
+                mounted
+                    .card_folder()
+                    .map(|dcim| (mounted.volume.clone(), dcim))
+            });
+            if let Some((volume, dcim)) = known {
+                return refresh_card(owner, volume_id, volume, dcim, &origin);
+            }
+            // Not a card the survey knows: perhaps one just inserted, which only the disk can tell.
+            let mounts = owner.catalog.files.mounts.clone();
+            ask(owner, move || {
+                let card = card_of(&mounts.list(), &volume_id, now_ms());
+                Box::new(move |owner| {
+                    let (volume, dcim) = card.ok_or_else(|| {
+                        Error::source_unavailable(format!("no card {volume_id} is connected"))
+                    })?;
+                    refresh_card(owner, volume_id, volume, dcim, &origin)
                 })
-                .ok_or_else(|| {
-                    Error::source_unavailable(format!("no card {volume_id} is connected"))
-                })?;
-            Ok((
-                vec![RootPlan {
-                    path: dcim,
-                    kind: RootKind::Card,
-                    volume_id: Some(volume.id),
-                }],
-                format!("the {} card", volume.label),
-            ))
+            })
         }
         IndexSource::Folder { path } => {
-            let canonical = browsable(owner, path)?;
-            // A folder already listed as an indexed folder or a card stays one.
-            let kind = database::root(owner.service.index()?.connection(), &canonical)?
-                .map_or(RootKind::Browsed, |root| root.kind);
-            let detail = canonical.display().to_string();
-            Ok((
-                vec![RootPlan {
-                    path: canonical,
-                    kind,
-                    volume_id: None,
-                }],
-                detail,
-            ))
+            absolute(&path)?;
+            let own = own_dirs(owner);
+            ask(owner, move || {
+                let found = browsable(&path, &own);
+                Box::new(move |owner| {
+                    let canonical = found?;
+                    let detail = canonical.display().to_string();
+                    // The lane keeps the kind of a folder it already lists as an indexed folder or
+                    // a card.
+                    let root = RootPlan {
+                        path: canonical,
+                        kind: RootKind::Browsed,
+                        volume_id: None,
+                    };
+                    value(start_refresh(
+                        owner,
+                        IndexSource::Folder { path },
+                        vec![root],
+                        detail,
+                        &origin,
+                    )?)
+                })
+            })
         }
     }
 }
 
-/// An existing folder a person may browse or add: absolute, a directory, and not a package,
-/// another application's cache or one of Luxforge's own directories. Answers its canonical path.
-fn browsable(owner: &Owner, path: &Path) -> Result<PathBuf, Error> {
-    if !path.is_absolute() {
-        return Err(Error::validation(format!(
-            "{} is not an absolute path",
-            path.display()
-        )));
+/// List the indexed folder `folder`, named `path` in the request.
+fn refresh_indexed(
+    owner: &mut Owner,
+    path: PathBuf,
+    folder: IndexedFolder,
+    origin: &Origin,
+) -> Result<Value, Error> {
+    let detail = folder.path.display().to_string();
+    value(start_refresh(
+        owner,
+        IndexSource::IndexedFolder { path },
+        vec![indexed_root(folder)],
+        detail,
+        origin,
+    )?)
+}
+
+/// List the card `volume`, whose `DCIM` folder is `dcim`: the card's folder alone.
+fn refresh_card(
+    owner: &mut Owner,
+    volume_id: VolumeId,
+    volume: Volume,
+    dcim: PathBuf,
+    origin: &Origin,
+) -> Result<Value, Error> {
+    let detail = format!("the {} card", volume.label);
+    value(start_refresh(
+        owner,
+        IndexSource::Card { volume_id },
+        vec![RootPlan {
+            path: dcim,
+            kind: RootKind::Card,
+            volume_id: Some(volume.id),
+        }],
+        detail,
+        origin,
+    )?)
+}
+
+fn indexed_root(folder: IndexedFolder) -> RootPlan {
+    RootPlan {
+        path: folder.path,
+        kind: RootKind::Indexed,
+        volume_id: Some(folder.volume_id),
     }
-    let canonical = path.canonicalize().map_err(|error| {
-        crate::atomic_file::file_error(format!("cannot find {}", path.display()), error.kind())
-    })?;
-    if !canonical.is_dir() {
-        return Err(Error::validation(format!(
-            "{} is a file, not a folder",
-            path.display()
-        )));
-    }
-    if let Some(skip) = exclusions(owner).refuse_root(&canonical) {
+}
+
+/// An existing folder a person may browse or add, off the owner: a directory that is not a
+/// package, another application's cache or one of Luxforge's own directories. Answers its
+/// canonical path.
+fn browsable(path: &Path, own: &OwnDirs) -> Result<PathBuf, Error> {
+    let canonical = existing_folder(path)?;
+    if let Some(skip) = own.exclusions().refuse_root(&canonical) {
         return Err(Error::validation(format!(
             "{} is {} and cannot be indexed",
             path.display(),
@@ -232,17 +356,15 @@ fn browsable(owner: &Owner, path: &Path) -> Result<PathBuf, Error> {
     Ok(canonical)
 }
 
-/// A folder that may be added to the indexed folders: browsable, and neither inside nor around an
-/// indexed folder, which `conflict` names.
-fn addable(owner: &Owner, path: &Path) -> Result<PathBuf, Error> {
-    let canonical = browsable(owner, path)?;
+/// Refuse a folder inside or around an indexed folder, naming it with `conflict`.
+fn unnested(owner: &Owner, canonical: &Path) -> Result<(), Error> {
     for folder in indexed_folders(owner)? {
         if folder.path == canonical {
             continue;
         }
         let relation = if canonical.starts_with(&folder.path) {
             "inside"
-        } else if folder.path.starts_with(&canonical) {
+        } else if folder.path.starts_with(canonical) {
             "around"
         } else {
             continue;
@@ -254,42 +376,36 @@ fn addable(owner: &Owner, path: &Path) -> Result<PathBuf, Error> {
         ))
         .with_data(serde_json::json!({ "folder": folder.path })));
     }
-    Ok(canonical)
+    Ok(())
 }
 
-/// The indexed folder `path` names: its canonical path when it exists and is indexed under it,
-/// otherwise the path as given (an offline folder cannot be resolved).
-fn indexed_path(owner: &Owner, path: &Path) -> Result<PathBuf, Error> {
-    if !path.is_absolute() {
-        return Err(Error::validation(format!(
-            "{} is not an absolute path",
-            path.display()
-        )));
+/// The canonical path a request named, when the query thread could resolve it and it is indexed
+/// under it.
+fn indexed_as(owner: &Owner, canonical: Option<PathBuf>) -> Result<Option<PathBuf>, Error> {
+    match canonical {
+        Some(canonical)
+            if library_rows::indexed_folder(&owner.service.connection, &canonical)?.is_some() =>
+        {
+            Ok(Some(canonical))
+        }
+        _ => Ok(None),
     }
-    if let Ok(canonical) = path.canonicalize()
-        && library_rows::indexed_folder(&owner.service.connection, &canonical)?.is_some()
-    {
-        return Ok(canonical);
-    }
-    Ok(path.to_path_buf())
 }
 
-/// An indexed folder as `index.folders` answers it: offline when it is not there and its volume is
-/// not mounted, and what the index's last listing of it found.
-fn state(
-    owner: &Owner,
-    table: &MountTable,
-    folder: IndexedFolder,
-) -> Result<IndexedFolderState, Error> {
-    let root = if owner.service.index_dir().join(crate::INDEX_FILE).exists() {
-        database::root(owner.service.index()?.connection(), &folder.path)?
-    } else {
-        None
+/// An indexed folder as `index.folders` answers it: whether it is `offline`, and what the index's
+/// last listing of it found.
+fn state(owner: &Owner, folder: IndexedFolder, offline: bool) -> Result<IndexedFolderState, Error> {
+    let root = match queries::index(owner)? {
+        Some(index) => database::root(index.connection(), &folder.path)?,
+        None => None,
     };
+    let (watching, unwatched) = super::watching(owner, &folder.path);
     Ok(IndexedFolderState {
-        offline: table.offline(&folder.path, &folder.volume_id),
+        offline,
         files: root.as_ref().and_then(|root| root.file_count),
         listed_ms: root.and_then(|root| root.listed_ms),
+        watching,
+        unwatched,
         folder,
     })
 }

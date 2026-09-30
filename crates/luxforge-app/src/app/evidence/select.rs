@@ -56,6 +56,9 @@ impl Editor {
                 command,
             } => self.click_step(position, PressModifiers { shift, command }),
             SelectStep::AgentPick { positions, picked } => self.agent_pick_step(&positions, picked),
+            SelectStep::FirstLook(path) => self.first_look_step(path.into()),
+            SelectStep::ContinueInBackground => self.background_step(),
+            SelectStep::CancelWork => self.cancel_work_step(),
         }
     }
 

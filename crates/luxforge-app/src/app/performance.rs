@@ -216,13 +216,24 @@ impl Editor {
                 "series_len": row.series.len(),
                 "tooltip": row.tooltip,
             })).collect::<Vec<_>>(),
-            "jobs": model.jobs.iter().map(|job| json!({
-                "label": job.label,
-                "trailing": job.trailing,
-                "detail": job.detail,
-                "running": job.running,
-                "progress": job.progress,
-            })).collect::<Vec<_>>(),
+            "jobs": model.jobs.iter().map(|job| {
+                let mut row = json!({
+                    "label": job.label,
+                    "trailing": job.trailing,
+                    "detail": job.detail,
+                    "running": job.running,
+                    "progress": job.progress,
+                });
+                // Catalog work's row, drawn as a work row with Cancel, says which job it stops.
+                if let Some(work) = &job.work {
+                    row["work"] = json!({
+                        "job_id": work.job_id,
+                        "count": work.count,
+                        "estimate": work.estimate,
+                    });
+                }
+                row
+            }).collect::<Vec<_>>(),
             "reserve_detail": model.reserve_detail,
             "more": model.more,
             "version": model.version,
