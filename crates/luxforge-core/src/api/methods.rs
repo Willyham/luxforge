@@ -674,6 +674,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "read-only session selection of one asset, kept per asset in session.preview.selections so a client may preview history on one photo while it edits another; an asset with a selection refuses edits from this client until it returns to current; the current entry selects current, not a historical preview, and returns only that asset; at most 16 assets have a selection at once (resource-limit past it); keep_geometry frames the selected entry with the geometry layers of the entry the session displays of that asset now, recorded as the selection's geometry_from, and the preview, render.sample, render.locate and render.transform of that asset's selection follow it; returns generation and session"
     ),
     service!(
+        "preview.compare",
+        PreviewCompare,
+        preview_compare,
+        "per-client before/after slider; enabled=true fixes the displayed After entry and selects the Original framed by its geometry; enabled=false restores the previous selection; position-only updates move the divider without rendering or advancing generation; position is the Before fraction from 0 to 1, initially 0.5; refuses an open draft; returns generation and session; changes no history"
+    ),
+    service!(
         "preview.return-current",
         NoParams,
         preview_return_current,
@@ -1251,6 +1257,14 @@ host_params! {
 }
 
 host_params! {
+    pub(super) struct PreviewCompare {
+        asset_id: AssetId = asset(),
+        enabled: Option<bool> = boolean().notes("true enters comparison, false restores the prior selection; omitted moves an active divider"),
+        position: Option<f32> = number(0.0, 1.0).notes("fraction occupied by Before; initial 0.5"),
+    }
+}
+
+host_params! {
     pub(super) struct SourceInspect {
         asset_id: AssetId = asset(),
         entry_id: Option<EntryId> = entry().notes("historical entry; default current"),
@@ -1700,6 +1714,77 @@ fn preview_select(
     )?;
     session.touch();
     Ok(json!({"generation": generation, "session": session_value(service, session)?}))
+}
+
+fn preview_compare(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    p: PreviewCompare,
+) -> Result<Value, Error> {
+    let active = session.preview.comparison.as_ref();
+    if active.is_some_and(|comparison| comparison.asset_id != p.asset_id) {
+        return Err(Error::validation("exit the other asset's comparison first"));
+    }
+    if p.enabled == Some(false) {
+        if let Some(comparison) = session.preview.comparison.clone() {
+            let (selection, geometry) = match comparison.previous {
+                Some(previous) => (
+                    HistorySelection::Entry(previous.entry_id),
+                    previous.geometry_from,
+                ),
+                None => (HistorySelection::Current, None),
+            };
+            session
+                .preview
+                .select_framed(&p.asset_id, selection, geometry)?;
+        }
+    } else if active.is_some() {
+        if let Some(position) = p.position {
+            session.preview.comparison.as_mut().unwrap().position = position;
+        }
+    } else if p.enabled == Some(true) {
+        if session.draft.is_some() {
+            return Err(Error::validation(
+                "finish or discard the draft before comparing",
+            ));
+        }
+        let previous = session.preview.selections.get(&p.asset_id).cloned();
+        let after_entry = previous
+            .as_ref()
+            .map(|selected| selected.entry_id.clone())
+            .unwrap_or(service.current_entry_id(&p.asset_id)?);
+        // One bounded row query; no history snapshots, source bytes or derived pixels are read.
+        let original = service
+            .history(&p.asset_id, Some(1), 1)?
+            .entries
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::validation("the asset has no Original entry"))?
+            .id;
+        let framing = previous
+            .as_ref()
+            .and_then(|selected| selected.geometry_from.clone())
+            .unwrap_or_else(|| after_entry.clone());
+        session.preview.select_framed(
+            &p.asset_id,
+            HistorySelection::Entry(original),
+            Some(framing),
+        )?;
+        session.preview.comparison = Some(crate::preview::Comparison {
+            asset_id: p.asset_id,
+            after_entry,
+            previous,
+            position: p.position.unwrap_or(0.5),
+        });
+    } else {
+        return Err(Error::validation(
+            "enter comparison before moving its divider",
+        ));
+    }
+    session.touch();
+    Ok(
+        json!({"generation": session.preview.generation, "session": session_value(service, session)?}),
+    )
 }
 
 fn preview_return_current(
@@ -2784,6 +2869,159 @@ mod tests {
         .expect("an unknown entry");
         assert_eq!(error.code, "validation");
 
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn comparison_preserves_geometry_history_and_the_previous_selection() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-comparison-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let source_bytes = std::fs::read(fixture()).unwrap();
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let mut session = ClientSession::default();
+        let original = service.current_entry_id(&asset).unwrap();
+        ok(
+            &mut service,
+            &mut session,
+            "edit.crop",
+            json!({"asset_id":asset,"mutation":mutation_json(0,"crop"),"x":0.0,"y":0.0,"width":0.5,"height":0.5}),
+        );
+        let after = service.current_entry_id(&asset).unwrap();
+        let schema = ok(&mut service, &mut session, "schema.list", json!({}));
+        assert_eq!(schema["methods"]["preview.compare"]["mutates"], false);
+        assert!(schema["methods"]["preview.compare"]["optional"]["position"].is_string());
+        let history = service.history(&asset, None, 10).unwrap();
+        let entered = ok(
+            &mut service,
+            &mut session,
+            "preview.compare",
+            json!({"asset_id":asset,"enabled":true}),
+        );
+        assert_eq!(
+            entered["session"]["preview"]["comparison"]["after_entry"],
+            json!(after)
+        );
+        assert_eq!(session.preview.selected_entry(&asset), Some(&original));
+        assert_eq!(session.preview.geometry_from(&asset), Some(&after));
+        assert!(!session.preview.can_edit(&asset));
+        assert_eq!(
+            ok(
+                &mut service,
+                &mut session,
+                "render.transform",
+                json!({"asset_id":asset})
+            )["output"],
+            json!({"width":240,"height":160})
+        );
+        let generation = session.preview.generation;
+        let before_revision = session.revision;
+        for position in [0.0, 0.23, 1.0] {
+            ok(
+                &mut service,
+                &mut session,
+                "preview.compare",
+                json!({"asset_id":asset,"position":position}),
+            );
+            assert_eq!(
+                session.preview.comparison.as_ref().unwrap().position,
+                position
+            );
+            assert_eq!(
+                session.preview.generation, generation,
+                "divider motion plans no new image"
+            );
+        }
+        assert!(session.revision > before_revision);
+        let valid = session.clone();
+        assert_eq!(
+            call(
+                &mut service,
+                &mut session,
+                "preview.compare",
+                json!({"asset_id":asset,"position":1.01})
+            )
+            .error
+            .unwrap()
+            .code,
+            "validation"
+        );
+        assert_eq!(session, valid);
+        let mut other = ClientSession::default();
+        assert!(other.preview.comparison.is_none() && other.preview.can_edit(&asset));
+        assert!(
+            call(
+                &mut service,
+                &mut other,
+                "preview.compare",
+                json!({"asset_id":asset,"position":0.2})
+            )
+            .error
+            .is_some()
+        );
+        ok(
+            &mut service,
+            &mut session,
+            "preview.compare",
+            json!({"asset_id":asset,"enabled":false}),
+        );
+        assert_eq!(session.preview.selection(&asset), HistorySelection::Current);
+        assert!(session.preview.comparison.is_none());
+        // A historical selection, including its independent framing, is restored exactly.
+        ok(
+            &mut service,
+            &mut session,
+            "preview.select",
+            json!({"asset_id":asset,"entry_id":original,"keep_geometry":true}),
+        );
+        let previous = session.preview.selections.clone();
+        ok(
+            &mut service,
+            &mut session,
+            "preview.compare",
+            json!({"asset_id":asset,"enabled":true}),
+        );
+        ok(
+            &mut service,
+            &mut session,
+            "preview.compare",
+            json!({"asset_id":asset,"enabled":false}),
+        );
+        assert_eq!(session.preview.selections, previous);
+        assert_eq!(service.current_entry_id(&asset).unwrap(), after);
+        assert_eq!(service.history(&asset, None, 10).unwrap(), history);
+        assert_eq!(std::fs::read(fixture()).unwrap(), source_bytes);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn comparison_refuses_a_draft_without_changing_it() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-comparison-draft-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&fixture()).unwrap().asset.id;
+        let mut session = ClientSession::default();
+        ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id":asset,"action":"set-basic"}),
+        );
+        let previous = session.clone();
+        let result = call(
+            &mut service,
+            &mut session,
+            "preview.compare",
+            json!({"asset_id":asset,"enabled":true}),
+        );
+        assert!(result.error.is_some());
+        assert_eq!(session, previous);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

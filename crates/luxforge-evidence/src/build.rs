@@ -31,6 +31,7 @@ step_from! {
     ViewIdleStep => ViewIdle,
     WorkspaceStep => Workspace,
     PreviewStep => Preview,
+    CompareStep => Compare,
     PaletteStep => Palette,
     PresetCreateStep => PresetCreate,
     CapabilityStep => Capability,

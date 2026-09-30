@@ -118,11 +118,30 @@ struct SurfaceFigures {
     upload_bytes: AtomicU64,
     retirement_pending: AtomicU64,
     diagnostics: Mutex<SurfaceDiagnostics>,
+    /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
+    draws: Mutex<HashMap<SurfaceId, SurfaceDiagnostics>>,
 }
 
 impl SurfaceFigures {
     fn diagnostics(&self) -> MutexGuard<'_, SurfaceDiagnostics> {
         self.diagnostics.lock().expect("surface diagnostics lock")
+    }
+
+    fn diagnostics_for(&self, surface: SurfaceId) -> SurfaceDiagnostics {
+        let mut overall = *self.diagnostics();
+        let draws = self.draws.lock().expect("surface draw identities lock");
+        let drawn = draws.get(&surface).copied().unwrap_or_default();
+        overall.drawn_content = drawn.drawn_content;
+        overall.drawn_full_version = drawn.drawn_full_version;
+        overall.drawn_region_version = drawn.drawn_region_version;
+        overall.drawn_region_generation = drawn.drawn_region_generation;
+        overall.drawn_region_quality = drawn.drawn_region_quality;
+        overall.drawn_regions = drawn.drawn_regions;
+        overall.drawn_clipping_version = drawn.drawn_clipping_version;
+        overall.drawn_photo_blank = drawn.drawn_photo_blank;
+        overall.drawn_stale_photo = drawn.drawn_stale_photo;
+        overall.drawn_fallback_content = drawn.drawn_fallback_content;
+        overall
     }
 }
 
@@ -205,8 +224,8 @@ pub fn surface_retirement_pending() -> bool {
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
 /// backend-owned upload staging are outside these photograph-slot byte counts. Counts and
-/// resident bytes cover every surface; the drawn identity describes the surface drawn last, which
-/// is the Develop canvas's while it is the only one.
+/// resident bytes cover every surface; [`surface_diagnostics`] returns the requested surface's
+/// own drawn identity, so a second comparison image cannot overwrite the first one's evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrawnRegion {
     pub version: u64,
@@ -251,8 +270,9 @@ pub struct SurfaceDiagnostics {
     pub drawn_clipping_version: Option<u64>,
 }
 
-pub fn surface_diagnostics() -> SurfaceDiagnostics {
-    *process_figures().diagnostics()
+/// Aggregate resource counters with the requested surface's own last draw identity.
+pub fn surface_diagnostics(surface: SurfaceId) -> SurfaceDiagnostics {
+    process_figures().diagnostics_for(surface)
 }
 
 /// Check a region before requesting it from the renderer. This accounts for each tile's linear
@@ -557,6 +577,7 @@ pub struct PhotoSurface {
     /// The exact stage a whole-frame photograph stands for, when its texture may be a display
     /// proxy of it; see [`PhotoSurface::exact_stage`].
     exact_stage: Option<(u32, u32)>,
+    reveal_from: f32,
     width: Length,
     height: Length,
 }
@@ -584,6 +605,7 @@ pub fn photo_surface(
         viewport: None,
         region_overlays: [None, None],
         exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
@@ -617,6 +639,7 @@ pub fn viewport_surface(
         }),
         region_overlays: [None, None],
         exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
@@ -639,12 +662,19 @@ pub fn stage_surface(
         viewport: None,
         region_overlays: [None, None],
         exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
 }
 
 impl PhotoSurface {
+    /// Reveal the right-hand fraction of the photograph without resampling or rewriting a texel.
+    /// Placement continues to use the whole image rectangle, including inside a scrollable.
+    pub fn reveal_from(mut self, position: f32) -> Self {
+        self.reveal_from = position.clamp(0.0, 1.0);
+        self
+    }
     /// Lay the clipping overlay and then a mask's coverage over the picture, each stretched over
     /// exactly the rectangle the picture is drawn into. Either may be absent.
     pub fn overlays(mut self, clipping: Option<&Frame>, coverage: Option<&Frame>) -> Self {
@@ -695,7 +725,23 @@ impl PhotoSurface {
     /// The visible part of the widget laid out at `bounds` and drawn in `viewport`, with the picture
     /// placed as [`PhotoSurface::placed_size`] says: what `draw` hands the renderer.
     fn visible(&self, bounds: Rectangle, viewport: Rectangle) -> Option<Visible> {
-        visible_placement(self.base, self.placed_size()?, bounds, viewport)
+        let mut visible = visible_placement(self.base, self.placed_size()?, bounds, viewport)?;
+        if self.reveal_from > 0.0 {
+            let destination =
+                Rectangle::new(visible.clip.position() + visible.offset, visible.size);
+            let reveal = Rectangle {
+                x: destination.x + destination.width * self.reveal_from,
+                width: destination.width * (1.0 - self.reveal_from),
+                ..destination
+            };
+            let clip = visible.clip.intersection(&reveal)?;
+            if clip.width <= 0.0 || clip.height <= 0.0 {
+                return None;
+            }
+            visible.offset = destination.position() - clip.position();
+            visible.clip = clip;
+        }
+        Some(visible)
     }
 }
 
@@ -1473,7 +1519,14 @@ impl shader::Primitive for PhotoPrimitive {
         } else if expects_photo {
             diagnostic.blank_photo_draws += 1;
         }
+        let drawn = *diagnostic;
         drop(diagnostic);
+        pipeline
+            .figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .insert(self.surface, drawn);
         if status_changed {
             // A draw can discover staleness after the app has built its status bar. One buffered
             // wake refreshes that label on the next update, and another clears it after recovery.
@@ -2211,6 +2264,11 @@ impl Drop for PhotoPipeline {
         for (_, surface) in std::mem::take(&mut self.surfaces) {
             self.release(surface);
         }
+        self.figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .clear();
         self.publish_diagnostics();
     }
 }
@@ -2479,6 +2537,11 @@ impl shader::Pipeline for PhotoPipeline {
                 self.release(surface);
             }
         }
+        self.figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .retain(|id, _| self.surfaces.contains_key(id));
         self.publish_diagnostics();
     }
 }
@@ -2632,6 +2695,57 @@ mod tests {
     fn raster(width: u32, height: u32, version: u64) -> Frame {
         let pixels = Arc::new(vec![0u8; (width * height * 4) as usize]);
         Frame::new(pixels, width, height, version).expect("a whole raster")
+    }
+
+    #[test]
+    fn comparison_reveal_clips_without_changing_image_placement() {
+        let pixels = Arc::new(vec![200u8; 4]);
+        let frame = Frame::new(pixels.clone(), 1, 1, 17).unwrap();
+        let surface = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Contain,
+            Length::Fill,
+            Length::Fill,
+        )
+        .exact_stage((6000, 4000));
+        let bounds = Rectangle::new(Point::new(20.0, 10.0), Size::new(600.0, 500.0));
+        let whole = surface.visible(bounds, bounds).unwrap();
+        let split = surface.reveal_from(0.25).visible(bounds, bounds).unwrap();
+        assert_eq!(split.clip.x, 170.0);
+        assert_eq!(
+            split.clip.position() + split.offset,
+            whole.clip.position() + whole.offset
+        );
+        assert_eq!(split.size, whole.size);
+        let hidden = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Fill,
+            Length::Fill,
+            Length::Fill,
+        )
+        .reveal_from(1.0);
+        assert!(hidden.visible(bounds, bounds).is_none());
+        let zoomed = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Fill,
+            Length::Fill,
+            Length::Fill,
+        )
+        .reveal_from(0.5);
+        let bounds = Rectangle::new(Point::new(-2400.0, -1000.0), Size::new(6000.0, 4000.0));
+        let viewport = Rectangle::new(Point::ORIGIN, Size::new(900.0, 700.0));
+        let split = zoomed.visible(bounds, viewport).unwrap();
+        assert_eq!(split.clip.x, 600.0);
+        assert_eq!(split.clip.position() + split.offset, bounds.position());
+        assert_eq!(split.size, bounds.size());
+        assert_eq!(frame.version(), 17);
+        assert!(
+            Arc::strong_count(&pixels) > 1,
+            "the raster allocation is shared"
+        );
     }
 
     #[test]
@@ -3936,7 +4050,7 @@ mod gpu_surface_tests {
         );
         let second = placed(
             b,
-            solid_raster(12, 20, 1, [255, 0, 0, 255]),
+            solid_raster(12, 20, 7, [255, 0, 0, 255]),
             Vector::new(16.0, 16.0),
             Size::new(32.0, 32.0),
         );
@@ -3948,6 +4062,14 @@ mod gpu_surface_tests {
         }
         // Two frames, one upload per surface: each upload is still gated on its own version.
         assert_eq!(writes(&pipeline), 2);
+        assert_eq!(
+            pipeline.figures.diagnostics_for(a).drawn_full_version,
+            Some(1)
+        );
+        assert_eq!(
+            pipeline.figures.diagnostics_for(b).drawn_full_version,
+            Some(7)
+        );
         let a_bytes = pipeline.surfaces[&a].full_bytes();
         let b_bytes = pipeline.surfaces[&b].full_bytes();
         assert!(a_bytes > 0 && b_bytes > 0);
@@ -3962,6 +4084,7 @@ mod gpu_surface_tests {
         pipeline.trim();
         assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
         assert!(!pipeline.surfaces.contains_key(&b));
+        assert_eq!(pipeline.figures.diagnostics_for(b).drawn_full_version, None);
         settle(&pipeline);
         assert_eq!(pipeline.retiring.bytes(), 0);
         assert_eq!(diagnostics(&pipeline).full_resident_bytes, a_bytes);

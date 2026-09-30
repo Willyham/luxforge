@@ -23,6 +23,8 @@ pub(crate) struct Document {
     pub(crate) original_entry: Option<EntryId>,
     /// What the selection was before Compare took it.
     pub(crate) compare_return: Option<HistorySelection>,
+    /// Backslash temporarily replaces the slider with Before while held.
+    pub(crate) compare_hold: bool,
     /// The displayed entry's layers as the recipe panel reads them. The idle crop section reads the
     /// committed crop, and the stage it receives, from these rows.
     pub(crate) recipe: Option<RecipeDescription>,
@@ -50,6 +52,7 @@ impl Default for Document {
             display_entry: None,
             original_entry: None,
             compare_return: None,
+            compare_hold: false,
             recipe: None,
             current_recipe: None,
             recipe_failed: false,

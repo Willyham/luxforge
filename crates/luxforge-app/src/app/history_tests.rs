@@ -9,11 +9,152 @@ use super::{
 };
 use luxforge_core::{AssetId, HistoryRow, HistorySelection};
 
+fn comparison_photo() -> (Editor, std::path::PathBuf, AssetId) {
+    let catalog = std::env::temp_dir().join(format!(
+        "luxforge-compare-ui-{}-{}.sqlite",
+        std::process::id(),
+        tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let (mut editor, asset, _) = testing::real_photo(&catalog);
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    let refreshed = tasks::command_now(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        "edit.transform",
+        json!({"asset_id":asset,"transform":"rotate-left","mutation":tasks::mutation(revision)}),
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    (editor, catalog, asset)
+}
+
+#[test]
+fn compare_hold_restores_before_a_late_preview_answer() {
+    let (mut editor, catalog, asset) = comparison_photo();
+    let original = editor.document.original_entry.clone().unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
+    assert_eq!(editor.shown_selection(), HistorySelection::Entry(original));
+    let stale = tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        tasks::Scope::Open,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
+    assert_eq!(editor.shown_selection(), HistorySelection::Current);
+    assert!(editor.session.preview.generation > stale.session.preview.generation);
+    let requested = editor.presentation.preview_generation;
+    let _ = editor.update(Message::Preview(
+        super::message::preview::PreviewMessage::Loaded(Ok(Box::new(tasks::PreviewPayload {
+            job: stale.job,
+            session: stale.session,
+        }))),
+    ));
+    assert_eq!(editor.presentation.preview_generation, requested);
+    assert_eq!(editor.shown_selection(), HistorySelection::Current);
+    let (session, _) =
+        tasks::call(&editor.owner, editor.client, "session.state", json!({})).unwrap();
+    assert_eq!(session["preview"]["selections"], json!({}));
+    finish(editor, catalog);
+}
+
+#[test]
+fn compare_slider_shares_after_and_restores_before_a_late_answer() {
+    let catalog = std::env::temp_dir().join(format!(
+        "luxforge-compare-ui-{}-{}.sqlite",
+        std::process::id(),
+        tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let (mut editor, asset, _) = testing::real_photo(&catalog);
+    let pixels = std::sync::Arc::new(vec![40u8, 60, 80, 255]);
+    let raster = luxforge_core::Raster {
+        width: 1,
+        height: 1,
+        rgba: pixels.clone(),
+        source_fingerprint: "comparison-test".into(),
+        snapshot_id: luxforge_core::SnapshotId::new(),
+    };
+    editor.presentation.presenter.show_proxy(&raster, 7);
+    editor.presentation.presented_content = 7;
+    editor.presentation.presented_entry = editor.document.display_entry.clone();
+    let previous = editor.shown_selection();
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyPressed {
+        uncropped: false,
+    }));
+    let tapped = editor.compare_key.pending().unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyReleased));
+    assert!(editor.compare_key.pending().is_none());
+    let _ = editor.update(Message::History(HistoryMessage::CompareHoldElapsed(tapped)));
+    assert!(
+        editor.presentation.compare_after.is_some(),
+        "{}",
+        editor.status.text
+    );
+    assert!(
+        std::sync::Arc::strong_count(&pixels) >= 4,
+        "After shares the existing allocation"
+    );
+    let generation = editor.session.preview.generation;
+    tasks::owner_calls::take();
+    let moved = editor.update(Message::History(HistoryMessage::ComparePosition(0.8)));
+    assert_eq!(moved.units(), 0);
+    assert_eq!(tasks::owner_calls::take(), vec!["preview.compare"]);
+    assert_eq!(editor.session.preview.generation, generation);
+    assert_eq!(editor.snapshot()["comparison"]["position"], json!(0.8f32));
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyPressed {
+        uncropped: false,
+    }));
+    let held = editor.compare_key.pending().unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareHoldElapsed(held)));
+    assert!(editor.document.compare_hold);
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyReleased));
+    assert!(!editor.document.compare_hold && editor.presentation.compare_after.is_some());
+    // A planned Before answer arrives after Escape. Its session generation is rejected whole.
+    let stale = tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset,
+        tasks::Scope::Open,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyPressed {
+        uncropped: false,
+    }));
+    let cancelled = editor.compare_key.pending().unwrap();
+    let _ = editor.update(Message::History(HistoryMessage::CompareExit));
+    let _ = editor.update(Message::History(HistoryMessage::CompareHoldElapsed(
+        cancelled,
+    )));
+    let _ = editor.update(Message::History(HistoryMessage::CompareKeyReleased));
+    assert!(!editor.compare_key.is_down());
+    assert_eq!(editor.shown_selection(), previous);
+    assert!(
+        editor.document.compare_return.is_none() && editor.presentation.compare_after.is_none()
+    );
+    assert!(editor.session.preview.generation > generation);
+    let requested = editor.presentation.preview_generation;
+    let _ = editor.update(Message::Preview(
+        super::message::preview::PreviewMessage::Loaded(Ok(Box::new(tasks::PreviewPayload {
+            job: stale.job,
+            session: stale.session,
+        }))),
+    ));
+    assert_eq!(editor.presentation.preview_generation, requested);
+    assert!(editor.session.preview.comparison.is_none());
+    finish(editor, catalog);
+}
+
 #[test]
 fn compare_remembers_the_selection_it_replaced() {
-    let (mut editor, catalog, asset, entry_id) = opened(Vec::new(), 1);
-    let original = luxforge_core::EntryId::new();
-    editor.document.original_entry = Some(original.clone());
+    let (mut editor, catalog, asset) = comparison_photo();
+    let entry_id = editor.document.original_entry.clone().unwrap();
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
         editor.document.compare_return,
@@ -23,17 +164,21 @@ fn compare_remembers_the_selection_it_replaced() {
     let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
     assert!(editor.document.compare_return.is_none());
     // From a historical preview Compare returns to that entry, not to current.
-    crate::state::testing::show(
-        &mut editor.session,
-        editor.document.state.as_ref(),
-        HistorySelection::Entry(entry_id.clone()),
-    );
+    let (session, _) = tasks::call(
+        &editor.owner,
+        editor.client,
+        "preview.select",
+        json!({"asset_id":asset,"entry_id":entry_id}),
+    )
+    .unwrap();
+    editor.adopt(serde_json::from_value(session["session"].clone()).unwrap());
     let _ = editor.update(Message::History(HistoryMessage::CompareBegin));
     assert_eq!(
         editor.document.compare_return,
-        Some(HistorySelection::Entry(entry_id))
+        Some(HistorySelection::Entry(entry_id.clone()))
     );
-    let _ = std::hint::black_box(&asset);
+    let _ = editor.update(Message::History(HistoryMessage::CompareEnd));
+    assert_eq!(editor.shown_selection(), HistorySelection::Entry(entry_id));
     finish(editor, catalog);
 }
 
@@ -41,8 +186,7 @@ fn compare_remembers_the_selection_it_replaced() {
 /// it replaced, a second press while held changes nothing, and the one release ends either hold.
 #[test]
 fn the_uncropped_compare_is_the_same_hold() {
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
-    editor.document.original_entry = Some(luxforge_core::EntryId::new());
+    let (mut editor, catalog, _) = comparison_photo();
     let _ = editor.update(Message::History(HistoryMessage::CompareUncropped));
     assert_eq!(
         editor.document.compare_return,
@@ -65,8 +209,7 @@ fn the_uncropped_compare_is_the_same_hold() {
 /// nothing at all rather than restoring a selection Compare never took.
 #[test]
 fn compare_is_refused_while_a_crop_draft_is_open() {
-    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
-    editor.document.original_entry = Some(luxforge_core::EntryId::new());
+    let (mut editor, catalog, _) = comparison_photo();
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let selection = editor.shown_selection();
 

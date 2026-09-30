@@ -71,6 +71,9 @@ impl Editor {
                     Some(PaletteAction::Restore) => {
                         self.dispatch(Message::History(HistoryMessage::Restore))
                     }
+                    Some(PaletteAction::Compare) => {
+                        self.dispatch(Message::History(HistoryMessage::CompareToggle))
+                    }
                     Some(PaletteAction::Export { keep_metadata }) => {
                         self.dispatch(Message::Export(ExportMessage::Start { keep_metadata }))
                     }

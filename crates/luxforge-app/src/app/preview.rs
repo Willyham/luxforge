@@ -211,6 +211,8 @@ pub(crate) struct Presentation {
     /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
     /// overlays over the photograph.
     pub(crate) presenter: Presenter,
+    /// The slider's immutable After frame, sharing the existing render allocation.
+    pub(crate) compare_after: Option<luxforge_ui::Frame>,
     /// One active and one replaceable pending preview job, off the UI thread.
     pub(crate) queue: PreviewQueue,
     /// The generation of the newest preview requested for the photograph.
@@ -653,6 +655,7 @@ impl Presentation {
     /// mask draft and the crop draft are the caller's to add.
     pub(crate) fn surfaces(&self, clipping: Option<&OverlayRequest>) -> view::Surfaces<'_> {
         view::Surfaces {
+            comparison: None,
             photo: self.presenter.photo_for(self.presented_content),
             photo_content: self.presenter.full_content(),
             current_content: self.presented_content,
@@ -862,10 +865,16 @@ impl Editor {
     /// last draw without polling or scheduling another render.
     pub(crate) fn surface_photo_updating(&self) -> bool {
         surface_photo_needs_update(
-            &luxforge_ui::surface_diagnostics(),
+            &luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
             self.presentation.has_picture(),
             self.presentation.render_error.is_some(),
-        )
+        ) || self.surfaces().comparison.is_some_and(|_| {
+            surface_photo_needs_update(
+                &luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+                true,
+                false,
+            )
+        })
     }
 
     pub(crate) fn visible_detail_updating(&self) -> bool {
