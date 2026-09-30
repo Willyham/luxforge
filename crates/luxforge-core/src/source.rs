@@ -1480,6 +1480,251 @@ mod tests {
             .unwrap()
         );
     }
+
+    /// The `raw-panel` smoke scenario's two white-balance drags, reproduced on the core with the
+    /// scenario's geometry, and where their error lies. At Fit, planes developed at the camera's
+    /// as-shot gains are approximated at 3500 K (the as-shot tint kept) on the 1716 × 1508 display
+    /// proxy; at 100%, planes developed at that 3500 K are approximated at 2500 K at full size over
+    /// the stage rectangle the scenario's capture reads (x 0..1796, y 92..1532, zero pan). Each
+    /// case prints the mean |Δ| of `W` against the exact redevelopment, the drag's own change and
+    /// its share, the same split between pixels with a camera channel at or near the sensor clip
+    /// ceiling (developed or exact, `>= 0.98` of sensor white) and the rest, and, for comparison,
+    /// a clip-aware candidate applied per pixel in camera space: a channel clipped where the planes
+    /// were developed stays clipped, and any other is scaled by `g'/g` and clamped at sensor white,
+    /// as the Bayer demosaic's input clamp would. X-Trans has no input clamp, so its candidate is
+    /// `W`; a DNG gain map moves the ceiling per pixel, which the candidate does not model. Each
+    /// case also bins the error of `W` by the largest camera channel of either development. It is
+    /// a measurement, not a gate (see the instant-preview design's popular-camera measurements):
+    ///
+    /// ```text
+    /// LUXFORGE_RAW_FIXTURE=/path/to/file.ORF \
+    ///   cargo test --release -p luxforge-core --lib source::tests::measure_the_raw_panel \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "requires a photo-sized RAW fixture and is a measurement, not a gate"]
+    fn measure_the_raw_panel_white_balance_drags() {
+        use crate::{colour::mat3, temperature_tint_from_gains};
+        const NEAR_CLIP: f64 = 0.98;
+        const CLIPPED: f64 = 0.99;
+        let path =
+            std::path::PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("fixture path"));
+        let bytes = std::fs::read(&path).unwrap();
+        let fingerprint = format!("{:x}", Sha256::digest(&bytes));
+        let cancel = AtomicBool::new(false);
+        let as_shot = RawPrepared::decode(bytes, fingerprint.clone(), None, &cancel).unwrap();
+        let metadata = as_shot.sensor.metadata().clone();
+        let camera = metadata
+            .rgb_cam
+            .map(|row| [row[0], row[1], row[2]].map(f64::from));
+        let to_camera = mat3::inverse(&camera);
+        let [_, tint] = temperature_tint_from_gains(as_shot.gains, metadata.cam_xyz).unwrap();
+        let at = |kelvin| gains_from_temperature_tint(kelvin, tint, metadata.cam_xyz).unwrap();
+        let (warm, warmer) = (at(3500.0), at(2500.0));
+        let develop = |gains| {
+            RawPrepared::develop(
+                as_shot.sensor.clone(),
+                as_shot.capture.clone(),
+                fingerprint.clone(),
+                gains,
+                &cancel,
+            )
+            .unwrap()
+            .linear
+            .unwrap()
+        };
+        let developed_warm = develop(warm);
+        let developed_warmer = develop(warmer);
+        let registry = ModuleRegistry::builtin();
+        let recipe = Recipe::default();
+        let render = |image: &LinearImage, white_balance| {
+            PreviewSource::Raw {
+                image: image.clone(),
+                settings: LinearSettings { white_balance },
+            }
+            .render(&registry, SnapshotId::new(), &recipe)
+            .unwrap()
+        };
+        let camera_of = |pixel: [f32; 3]| mat3::matvec_f64(&to_camera, pixel.map(f64::from));
+        let near_clip = |pixel: [f32; 3]| camera_of(pixel).iter().any(|value| *value >= NEAR_CLIP);
+        // Only the Bayer demosaic clamps its input at sensor white; Markesteijn (X-Trans) keeps
+        // gained values over white, so the candidate is `W` itself there.
+        let bayer = metadata.cfa_width == 2;
+        let clip_aware = |from: [f32; 3], to: [f32; 3]| {
+            let ratio: [f64; 3] = std::array::from_fn(|c| f64::from(to[c]) / f64::from(from[c]));
+            move |pixel: [f32; 3]| {
+                let sensor = camera_of(pixel);
+                let target: [f64; 3] = std::array::from_fn(|c| {
+                    let scaled = sensor[c] * ratio[c];
+                    if !bayer {
+                        scaled
+                    } else if sensor[c] >= CLIPPED {
+                        sensor[c]
+                    } else if ratio[c] > 1.0 {
+                        scaled.min(1.0)
+                    } else {
+                        scaled
+                    }
+                });
+                mat3::matvec_f64(&camera, target).map(|value| value as f32)
+            }
+        };
+        // Mean |Δ| per channel in codes over `rect`, and over the pixels `mask` selects and the rest.
+        let difference = |a: &crate::Raster, b: &crate::Raster, rect: [u32; 4], mask: &[bool]| {
+            let [x0, y0, x1, y1] = rect;
+            let (mut all, mut inside, mut count, mut masked) = (0_u64, 0_u64, 0_u64, 0_u64);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let index = (y * a.width + x) as usize;
+                    let sum: u64 = (0..3)
+                        .map(|c| u64::from(a.rgba[index * 4 + c].abs_diff(b.rgba[index * 4 + c])))
+                        .sum();
+                    all += sum;
+                    count += 1;
+                    if mask[index] {
+                        inside += sum;
+                        masked += 1;
+                    }
+                }
+            }
+            let mean = |total: u64, pixels: u64| total as f64 / (3 * pixels.max(1)) as f64;
+            json!({
+                "mean": mean(all, count),
+                "near_clip_pixels": masked as f64 / count as f64,
+                "near_clip_share_of_error": inside as f64 / all.max(1) as f64,
+                "mean_elsewhere": mean(all - inside, count - masked),
+            })
+        };
+        let case = |base: &LinearImage,
+                    exact: &LinearImage,
+                    from: [f32; 3],
+                    to: [f32; 3],
+                    proxy: Option<ProxyBounds>,
+                    rect: Option<[u32; 4]>| {
+            let balance = WhiteBalanceApproximation::between(camera, from, to).unwrap();
+            let (base, exact) = match proxy {
+                Some(bounds) => {
+                    let source = PreviewSource::Raw {
+                        image: base.clone(),
+                        settings: LinearSettings::default(),
+                    };
+                    let plan = source
+                        .proxy_plan(&registry, &recipe, bounds)
+                        .unwrap()
+                        .unwrap();
+                    let image = |image: &LinearImage| match (PreviewSource::Raw {
+                        image: image.clone(),
+                        settings: LinearSettings::default(),
+                    })
+                    .proxy(plan)
+                    .unwrap()
+                    {
+                        PreviewSource::Raw { image, .. } => image,
+                        PreviewSource::Jpeg(_) => unreachable!(),
+                    };
+                    (image(base), image(exact))
+                }
+                None => (base.clone(), exact.clone()),
+            };
+            let (width, height) = (base.width(), base.height());
+            let rect = rect.unwrap_or([0, 0, width, height]);
+            let mut mask = vec![false; (width * height) as usize];
+            for y in 0..height {
+                for x in 0..width {
+                    mask[(y * width + x) as usize] = near_clip(base.pixel(x, y).unwrap())
+                        || near_clip(exact.pixel(x, y).unwrap());
+                }
+            }
+            // The error of `W` by the largest camera channel of either development, in bins.
+            let exact_frame = render(&exact, None);
+            let approximate = render(&base, Some(balance));
+            let bins = [0.5, 0.8, 0.9, 0.95, 0.98, 0.995, f64::INFINITY];
+            let mut binned = [(0_u64, 0_u64); 7];
+            for y in rect[1]..rect[3] {
+                for x in rect[0]..rect[2] {
+                    let largest = camera_of(base.pixel(x, y).unwrap())
+                        .into_iter()
+                        .chain(camera_of(exact.pixel(x, y).unwrap()))
+                        .fold(f64::MIN, f64::max);
+                    let bin = bins.iter().position(|edge| largest < *edge).unwrap();
+                    let index = ((y * width + x) * 4) as usize;
+                    binned[bin].0 += 1;
+                    binned[bin].1 += (0..3)
+                        .map(|c| {
+                            u64::from(
+                                approximate.rgba[index + c].abs_diff(exact_frame.rgba[index + c]),
+                            )
+                        })
+                        .sum::<u64>();
+                }
+            }
+            let pixels: u64 = binned.iter().map(|bin| bin.0).sum();
+            let error: u64 = binned.iter().map(|bin| bin.1).sum();
+            let by_largest_camera_channel: Vec<Value> = bins
+                .iter()
+                .zip(binned)
+                .map(|(edge, (count, sum))| {
+                    json!({"below": edge.min(9.0), "pixels": count as f64 / pixels as f64, "share_of_error": sum as f64 / error.max(1) as f64})
+                })
+                .collect();
+            let before = render(&base, None);
+            let candidate = render(&base.map_pixels(clip_aware(from, to)).unwrap(), None);
+            let change = difference(&before, &exact_frame, rect, &mask);
+            let approximation = difference(&approximate, &exact_frame, rect, &mask);
+            let clip_aware = difference(&candidate, &exact_frame, rect, &mask);
+            let share = |result: &Value| {
+                result["mean"].as_f64().unwrap() / change["mean"].as_f64().unwrap()
+            };
+            json!({
+                "compared": [rect[2] - rect[0], rect[3] - rect[1]],
+                "approximation_by_largest_camera_channel": by_largest_camera_channel,
+                "change": change,
+                "approximation": approximation,
+                "approximation_share_of_change": share(&approximation),
+                "clip_aware_candidate": clip_aware,
+                "clip_aware_share_of_change": share(&clip_aware),
+            })
+        };
+        let fit = case(
+            as_shot.linear.as_ref().unwrap(),
+            &developed_warm,
+            as_shot.gains,
+            warm,
+            Some(ProxyBounds {
+                width: 1716,
+                height: 1508,
+            }),
+            None,
+        );
+        let hundred = case(
+            &developed_warm,
+            &developed_warmer,
+            warm,
+            warmer,
+            None,
+            Some([
+                0,
+                92,
+                1796.min(developed_warm.width()),
+                1532.min(developed_warm.height()),
+            ]),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "source": path.file_name().unwrap().to_string_lossy(),
+                "model": metadata.model,
+                "bayer": bayer,
+                "as_shot_gains": as_shot.gains,
+                "tint": tint,
+                "gains_3500": warm,
+                "gains_2500": warmer,
+                "fit_3500": fit,
+                "hundred_2500": hundred,
+            }))
+            .unwrap()
+        );
+    }
 }
 
 /// The JPEG decode's input contract as the core applies it: its refusals, declared sizes,
