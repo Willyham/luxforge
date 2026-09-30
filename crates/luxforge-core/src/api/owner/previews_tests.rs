@@ -225,6 +225,52 @@ fn preview_cache_owner_wakes_only_what_a_request_waits_on() {
     assert_eq!(woken.load(Ordering::SeqCst), 3, "a region wakes its client");
 }
 
+/// A view job that wrote grid fingerprints advances the index's revision once when it ends, with
+/// one index event naming it, so a view grouped before the fingerprints existed goes stale; a view
+/// with nothing left to write starts no job and records nothing.
+#[test]
+fn preview_cache_owner_a_view_that_wrote_fingerprints_advances_the_index_revision() {
+    let mut setup = Setup::new("preview-owner-revision");
+    let files: Vec<FileId> = (0..3)
+        .map(|index| setup.jpeg(&format!("R{index}.JPG")))
+        .collect();
+    let revision =
+        |setup: &Setup| crate::index::database::revision(setup.index.connection()).unwrap();
+    let before = revision(&setup);
+    let start = setup.ok("events.since", json!({"after": 0}))["current_sequence"]
+        .as_u64()
+        .unwrap();
+    let job = setup
+        .owner
+        .want_view(setup.client, files.clone())
+        .unwrap()
+        .unwrap();
+    assert_eq!(setup.settled(&json!(job))["status"], "ready");
+    let events = setup.ok("events.since", json!({"after": start}))["events"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(events.len(), 1, "one event for the view: {events:?}");
+    assert_eq!(events[0]["index_revision"], before + 1);
+    assert_eq!(events[0]["method"], "preview-extract");
+    assert_eq!(revision(&setup), before + 1, "once, not once a tier");
+
+    let start = setup.ok("events.since", json!({"after": 0}))["current_sequence"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(
+        setup.owner.want_view(setup.client, files).unwrap(),
+        None,
+        "every grid tier is there"
+    );
+    let events = setup.ok("events.since", json!({"after": start}))["events"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(events.is_empty(), "{events:?}");
+    assert_eq!(revision(&setup), before + 1);
+}
+
 /// The grid can draw the file's thumbnail before its embedded preview arrives: while the task is
 /// held after its thumbnail stage, a read answers the same job with that stage as the fallback, and
 /// the grid state is `thumbnail`; then `ready` with the embedded preview.
