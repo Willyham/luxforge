@@ -81,10 +81,8 @@ pub(crate) fn read(
         jpeg(&bytes)?
     } else {
         // The bytes go to the decoder as read, and are dropped with the mosaic it unpacks.
-        let sensor =
-            luxforge_raw::RawSource::decode(bytes, control.flag()).map_err(|error| {
-                cancelled(raw_error(error))
-            })?;
+        let sensor = luxforge_raw::RawSource::decode(bytes, control.flag())
+            .map_err(|error| cancelled(raw_error(error)))?;
         let metadata = RawInterpretation::new(sensor.metadata().clone())?;
         drop(sensor);
         let crop = metadata.default_crop;
@@ -167,7 +165,7 @@ pub(crate) fn from_copy(
 
 /// The file's canonical path, its signature, its bytes and their SHA-256: one read from one open
 /// handle, in [`CHUNK`]s, bounded by the file kind's limit once its first bytes say which it is.
-fn read_bytes(
+pub(super) fn read_bytes(
     path: &Path,
     control: &JobControl,
     pause: &dyn Fn(Phase),

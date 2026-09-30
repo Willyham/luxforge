@@ -3,7 +3,9 @@
 //! ([`LibraryLane`](super::LibraryLane)), one at a time, and committed back here in batches
 //! ([`JobContext::commit`]), each one library change announced as one event. The library side is
 //! `crate::library::develop`.
-use super::{Call, ClientId, Commit, JobContext, LibraryLane, Owner, Task, change, retried, selected};
+use super::{
+    Call, ClientId, Commit, JobContext, LibraryLane, Owner, Task, change, retried, selected,
+};
 use crate::{
     Error, ErrorKind, JobId, MutationRequest,
     api::{Origin, methods::value},
@@ -161,7 +163,12 @@ fn planned(
     volumes: &mut HashMap<VolumeId, Volume>,
 ) -> Result<Plan, Error> {
     let index = owner.service.index()?;
-    develop::plan(&owner.service.connection, index.connection(), files, volumes)
+    develop::plan(
+        &owner.service.connection,
+        index.connection(),
+        files,
+        volumes,
+    )
 }
 
 /// Refuse a Develop with picks on a removable volume that nothing covers: not offline, and with no
@@ -203,10 +210,11 @@ fn uncovered(
         "they have no copy in an indexed folder; confirm_removable develops them from the volume \
          itself"
     };
-    Err(Error::conflict(format!(
-        "{picks} on the removable volume {label}: {remedy}"
-    ))
-    .with_data(json!({"volume_id": volume, "label": label, "count": count, "with_copy": with_copy})))
+    Err(
+        Error::conflict(format!("{picks} on the removable volume {label}: {remedy}")).with_data(
+            json!({"volume_id": volume, "label": label, "count": count, "with_copy": with_copy}),
+        ),
+    )
 }
 
 /// A Develop's work on the lane's worker: its planned files, event by event, each event's folder,

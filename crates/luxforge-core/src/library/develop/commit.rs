@@ -6,8 +6,9 @@
 //!   available; or no photograph with its fingerprint can take it (below). Nothing is added.
 //! - **Relinked**: a photograph with its fingerprint, file name and length whose original is not
 //!   where the catalog looks for it (missing, offline or changed) now points at it, as Locate
-//!   points a photograph at a file (`asset-source`). Its catalog folder, collections and history
-//!   stay as they are.
+//!   points a photograph at a file (`asset-source`); so does a photograph whose original this very
+//!   file is, by its file identity and bytes, moved within its volume, as a check finds it again.
+//!   Its catalog folder, collections and history stay as they are.
 //! - **Created**: a new photograph in the batch's catalog folder, with its fingerprint, its
 //!   interpretation, its Original entry, its capture row and the folder on disk it came from.
 //!
@@ -23,8 +24,7 @@ use crate::{
     },
     editor::{NewAsset, NewPhotograph, insert_photograph, source_signature, upsert_volume},
     library::{
-        availability,
-        items,
+        availability, items,
         journal::{self, Desired, Outcome, Request},
         locate,
     },
@@ -112,7 +112,7 @@ pub(crate) fn decide(
                     continue;
                 }
                 Match::Available(asset) | Match::Unavailable(asset) => Becomes::Linked(asset),
-                Match::Relink(asset) => {
+                Match::Moved(asset) | Match::Relink(asset) => {
                     relinked.push(asset.clone());
                     Becomes::Relinked {
                         asset,
@@ -157,7 +157,13 @@ pub(crate) fn decide(
 enum Match {
     /// A photograph whose original is this very file (its path or its file identity), with the
     /// same bytes or not.
-    Named { asset: AssetId, same_bytes: bool },
+    Named {
+        asset: AssetId,
+        same_bytes: bool,
+    },
+    /// A photograph whose original this file is — its file identity and bytes — moved within its
+    /// volume from where the catalog looks for it, which is found again as a check finds it.
+    Moved(AssetId),
     /// A photograph with its fingerprint whose original is where the catalog looks for it.
     Available(AssetId),
     /// A photograph with its fingerprint, name and length whose original is not.
@@ -176,21 +182,36 @@ fn matching(
     file: &super::ReadFile,
     relinked: &[AssetId],
 ) -> Result<Match, Error> {
-    let named: Option<(String, String)> = catalog
+    let named: Option<(String, String, String, String, i64)> = catalog
         .prepare_cached(
-            "SELECT id, fingerprint FROM assets WHERE canonical_locator = ?1 OR file_identity = ?2
-             ORDER BY row_id LIMIT 1",
+            "SELECT id, fingerprint, locator, file_identity, byte_len FROM assets
+             WHERE canonical_locator = ?1 OR file_identity = ?2 ORDER BY row_id LIMIT 1",
         )?
         .query_row(
             params![file.path.to_string_lossy(), file.signature.file_identity()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
-    if let Some((asset, fingerprint)) = named {
-        return Ok(Match::Named {
-            asset: AssetId::parse(asset)?,
-            same_bytes: fingerprint == file.fingerprint,
-        });
+    if let Some((asset, fingerprint, locator, identity, byte_len)) = named {
+        let asset = AssetId::parse(asset)?;
+        let same_bytes = fingerprint == file.fingerprint;
+        let elsewhere = Path::new(&locator) != file.path;
+        if same_bytes
+            && elsewhere
+            && !relinked.contains(&asset)
+            && !original_available(Path::new(&locator), &identity, byte_len as u64)
+        {
+            return Ok(Match::Moved(asset));
+        }
+        return Ok(Match::Named { asset, same_bytes });
     }
     let same: Vec<(String, String, String, i64, String)> = catalog
         .prepare_cached(
@@ -198,7 +219,13 @@ fn matching(
              WHERE fingerprint = ?1 ORDER BY row_id",
         )?
         .query_map([&file.fingerprint], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
         })?
         .collect::<Result<_, _>>()?;
     let mut candidates = Vec::with_capacity(same.len());
@@ -239,7 +266,7 @@ fn original_available(locator: &Path, identity: &str, byte_len: u64) -> bool {
 }
 
 /// Record a batch in the owner's transaction, as one part of the Develop's request: the batch's
-/// new catalog folder when it is the first to go into it, each new photograph's rows, each
+/// new catalog folder when it is the first to put a photograph in it, each new photograph's rows, each
 /// relinked photograph's source, and each file's pick cleared, in that order per file, so the
 /// change's undo — which writes its rows back in reverse — re-picks each file before sending its
 /// photograph back and deletes the folder last. A new photograph and the folder are written here
@@ -254,7 +281,10 @@ pub(crate) fn write(
     now_ms: i64,
 ) -> Result<Outcome, Error> {
     let mut changes = Vec::with_capacity(1 + 2 * decided.len());
-    if let Destination::New { folder, .. } = destination {
+    let creates = decided
+        .iter()
+        .any(|decided| matches!(decided.becomes, Becomes::Created(_)));
+    if let (Destination::New { folder, .. }, true) = (destination, creates) {
         let item = LibraryItem::CatalogFolder {
             folder_id: folder.id.clone(),
         };
