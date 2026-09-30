@@ -995,14 +995,7 @@ mod tests {
         // Another photograph: its original's preparation retains no development of this one.
         let jpeg = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/s0/orientation-1.jpg");
-        let (queued, _) = tasks::call(
-            &owner,
-            client,
-            "catalog.import",
-            json!({"path": jpeg, "mutation": tasks::request()}),
-        )
-        .expect("an import");
-        let job = queued["job_id"].as_str().expect("a source job").to_owned();
+        let (_, job) = crate::app::testing::develop_and_prepare(&owner, client, &jpeg);
         let (import_owner, started) = (owner.clone(), Instant::now());
         let (sender, receiver) = std::sync::mpsc::channel();
         std::thread::spawn(move || {

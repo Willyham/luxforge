@@ -212,14 +212,14 @@ fn is_sha256(text: &str) -> bool {
 /// applied, and otherwise none. Returns its Original entry, current entry and revision.
 fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogued> {
     let service = EditorService::open(path)?;
-    // A page of two says whether a second asset exists; the one asset's whole record, with its RAW
-    // interpretation, is read by itself.
-    let page = service.assets(None, 2)?;
+    // Two identities say whether a second photograph exists; the one photograph's whole record,
+    // with its RAW interpretation, is read by itself.
+    let assets = service.asset_ids(2)?;
     ensure(
-        page.assets.len() == 1,
-        "RAW run imported unexpected asset count",
+        assets.len() == 1,
+        "RAW run developed an unexpected photograph count",
     )?;
-    let listed = service.state(&page.assets[0].id)?;
+    let listed = service.state(&assets[0])?;
     let asset = &listed.asset;
     ensure(asset.locator == source, "RAW catalog locator changed")?;
     ensure(

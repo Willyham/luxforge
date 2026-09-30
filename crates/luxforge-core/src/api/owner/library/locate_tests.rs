@@ -141,15 +141,16 @@ impl Harness {
         path.canonicalize().unwrap()
     }
 
+    /// A copy of the fixture `name` (`s0/…`) at `path` in bytes no other copy has, so it develops
+    /// into a photograph of its own rather than linking to another copy's
+    /// ([`super::opening::distinct_copy`]).
+    fn distinct(&self, name: &str, path: &Path) -> PathBuf {
+        super::opening::distinct_copy(&fixture(&format!("s0/{name}")), path)
+    }
+
+    /// Develop the file at `path` and prepare its photograph, as a client opens a file.
     fn import(&self, path: &Path) -> AssetId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let started = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": envelope(&format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)))}),
-        );
-        let settled = self.settle(&started["job_id"]);
-        assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        serde_json::from_value(super::opening::import(&self.owner, self.client, path)).unwrap()
     }
 
     fn state(&self, asset: &AssetId) -> Value {
@@ -233,6 +234,19 @@ impl Harness {
             .as_array()
             .unwrap()
             .clone()
+    }
+
+    /// The events after `after` that changed something, leaving out a job's end: an event that
+    /// names a job and nothing it changed.
+    fn changes_after(&self, after: u64) -> Vec<Value> {
+        self.events_after(after)
+            .into_iter()
+            .filter(|event| {
+                event.get("job_id").is_none()
+                    || event.get("library_sequence").is_some()
+                    || event.get("asset_id").is_some()
+            })
+            .collect()
     }
 
     /// The newest library change, with its rows.
@@ -399,9 +413,23 @@ fn a_moved_original_is_located_and_exports_the_same_edits() {
         json!(moved_dir.canonicalize().unwrap())
     );
     let events = harness.events_after(sequence);
-    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(
+        events.len(),
+        2,
+        "the change, then the job's end: {events:?}"
+    );
     assert_eq!(events[0]["method"], "source.locate");
     assert_eq!(events[0]["library_sequence"], change);
+    assert_eq!(events[0]["job_id"], job["job_id"]);
+    assert_eq!(
+        (
+            &events[1]["method"],
+            &events[1]["job_id"],
+            events[1].get("library_sequence")
+        ),
+        (&json!("source.locate"), &job["job_id"], None),
+        "the job's end"
+    );
     assert_eq!(
         events[0]["asset_id"],
         json!(asset),
@@ -539,7 +567,7 @@ fn what_is_not_the_original_is_refused_and_changes_nothing() {
 
     assert_eq!(harness.state(&asset), before);
     assert_eq!(harness.ok("library.journal", json!({})), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 }
 
 /// A file another photograph already names is refused, naming that photograph, and neither is
@@ -547,8 +575,8 @@ fn what_is_not_the_original_is_refused_and_changes_nothing() {
 #[test]
 fn a_file_another_photograph_names_is_refused_without_a_merge() {
     let harness = Harness::new("claimed");
-    let a = harness.copy("orientation-1.jpg", &harness.dir.join("a.jpg"));
-    let b = harness.copy("orientation-1.jpg", &harness.dir.join("b.jpg"));
+    let a = harness.distinct("orientation-1.jpg", &harness.dir.join("a.jpg"));
+    let b = harness.distinct("orientation-1.jpg", &harness.dir.join("b.jpg"));
     let first = harness.import(&a);
     let second = harness.import(&b);
     harness.expose(&second, 1.0);
@@ -610,13 +638,30 @@ fn a_file_changed_around_its_verification_is_refused() {
         "{settled}"
     );
 
-    // Imported as another photograph after it was verified: taken, so refused, naming it. An edit
-    // committed while the Locate was held stands.
+    // Taken by another photograph after it was verified — that photograph relinked to it — so
+    // refused, naming it. An edit committed while the Locate was held stands.
+    let other = harness.import(&harness.distinct(
+        "orientation-1.jpg",
+        &harness.dir.join("c").join("other.jpg"),
+    ));
     let taken = candidate("taken.jpg");
     let gate = harness.hold_at(Phase::Verified);
     let job = harness.locate(&asset, &taken, "taken").result.unwrap();
     gate.wait_reached(1, "the verification");
-    let other = harness.import(&taken);
+    let (path, signature) = EditorService::request_signature(&taken).unwrap();
+    let source = crate::library::locate::source_value(
+        &path,
+        crate::index::volume_of(&path, 0).unwrap().id,
+        signature.file_identity(),
+    );
+    let relinked = other.clone();
+    harness.on_owner(move |owner| {
+        crate::editor::write(&mut owner.service.connection, |tx| {
+            crate::editor::library_rows::set_asset_source(tx, &relinked, &source)?;
+            Ok(())
+        })
+        .unwrap();
+    });
     harness.expose(&asset, 0.25);
     gate.open();
     let settled = harness.settle(&job["job_id"]);
@@ -696,7 +741,7 @@ fn a_cancel_and_a_failed_commit_leave_the_last_state() {
     assert_eq!(job["status"], "failed", "{job}");
     assert_eq!(harness.state(&asset), before);
     assert_eq!(harness.ok("library.journal", json!({})), journal);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
 
     harness.on_owner(|owner| {
         owner
@@ -804,22 +849,77 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
     assert_eq!(detail["change"]["label"], "Found renamed.jpg again");
     assert_eq!(detail["rows"].as_array().unwrap().len(), 1);
     assert_eq!(detail["rows"][0]["item"]["asset_id"], json!(assets[0]));
-    let events = harness.events_after(sequence);
+    let events = harness.changes_after(sequence);
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(events[0]["method"], "source.check");
     assert_eq!(events[0]["library_sequence"], detail["change"]["sequence"]);
+    assert_eq!(harness.events_after(sequence).len(), 2, "and the job's end");
     // The unavailable count follows what was recorded, and a check that changes nothing announces
-    // nothing.
+    // only its end.
     assert_eq!(
         harness.ok("catalog.info", json!({}))["counts"]["unavailable"],
         3
     );
     let sequence = harness.sequence();
     assert_eq!(harness.check(&asset_refs), rows);
-    assert!(harness.events_after(sequence).is_empty());
+    assert!(harness.changes_after(sequence).is_empty());
+    assert_eq!(harness.events_after(sequence).len(), 1, "its end");
     // The relink is the system's: a client's undo does not take it back.
     let undone = harness.ok("library.undo", json!({"mutation": envelope("undo")}));
     assert_eq!(undone["outcome"], "no-op");
+}
+
+/// A volume mounted again after another disk may be given another device number, which renumbers
+/// the file identity of every file on it: a check finds each photograph's own file still at its
+/// locator, confirms it by its fingerprint and records its identity now, as one change by the
+/// system, so the photograph is available again without a Locate.
+#[test]
+fn a_check_locates_an_original_whose_file_identity_was_renumbered() {
+    let harness = Harness::new("renumbered");
+    let path = harness.copy(
+        "orientation-1.jpg",
+        &harness.dir.join("Photos").join("one.jpg"),
+    );
+    let asset = harness.import(&path);
+    let catalog = harness.catalog.clone();
+    let recorded = std::cell::RefCell::new(String::new());
+    let harness = harness.restart(|_| {
+        let connection = rusqlite::Connection::open(&catalog).unwrap();
+        let identity: String = connection
+            .query_row(
+                "SELECT file_identity FROM assets WHERE id = ?1",
+                [asset.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let inode = identity.rsplit(':').next().unwrap().to_owned();
+        connection
+            .execute(
+                "UPDATE assets SET file_identity = ?1 WHERE id = ?2",
+                [format!("unix:1:{inode}"), asset.to_string()],
+            )
+            .unwrap();
+        *recorded.borrow_mut() = identity;
+    });
+    let sequence = harness.sequence();
+    assert_eq!(
+        harness.check(&[&asset]),
+        json!({asset.as_str(): "available"})
+    );
+    assert_eq!(locator(&harness.state(&asset)), path);
+    let detail = harness.last_change();
+    assert_eq!(
+        (&detail["change"]["actor"], &detail["change"]["label"]),
+        (&json!("system"), &json!("Found one.jpg again"))
+    );
+    assert_eq!(
+        detail["rows"][0]["after"]["file_identity"],
+        json!(*recorded.borrow()),
+        "the identity it has now"
+    );
+    assert_eq!(harness.changes_after(sequence).len(), 1);
+    // The photograph exports as before.
+    assert!(!harness.export(&asset, "after.jpg").is_empty());
 }
 
 /// Availability across a disk image, on the Mac: a detached image makes every photograph on it
@@ -829,70 +929,7 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_detached_disk_image_makes_its_photographs_offline() {
-    use std::process::Command;
-
-    /// A 16 MB HFS+ disk image in a scratch directory, mounted at a folder beside it, never
-    /// shown in the Finder.
-    struct DiskImage {
-        image: PathBuf,
-        mount: PathBuf,
-        attached: bool,
-    }
-
-    impl DiskImage {
-        fn create(dir: &Path, label: &str) -> Self {
-            let image = dir.join(format!("{label}.dmg"));
-            let status = Command::new("hdiutil")
-                .args([
-                    "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", label,
-                ])
-                .arg(&image)
-                .status()
-                .expect("hdiutil runs; this test needs it");
-            assert!(status.success(), "hdiutil create: {status}");
-            let mount = dir.join(label);
-            fs::create_dir_all(&mount).unwrap();
-            let mut disk = Self {
-                image,
-                mount,
-                attached: false,
-            };
-            disk.attach();
-            disk
-        }
-
-        fn attach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
-                .arg(&self.mount)
-                .arg(&self.image)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil attach: {status}");
-            self.attached = true;
-        }
-
-        fn detach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["detach", "-quiet", "-force"])
-                .arg(&self.mount)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil detach: {status}");
-            self.attached = false;
-        }
-    }
-
-    impl Drop for DiskImage {
-        fn drop(&mut self) {
-            if self.attached {
-                let _ = Command::new("hdiutil")
-                    .args(["detach", "-quiet", "-force"])
-                    .arg(&self.mount)
-                    .status();
-            }
-        }
-    }
+    use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");
     let mut disk = DiskImage::create(&harness.dir, "LuxforgeTest");
@@ -952,7 +989,9 @@ fn a_detached_disk_image_makes_its_photographs_offline() {
 
     // Re-attached: available again, and the edits export.
     disk.attach();
-    assert_eq!(harness.check(&all), available);
+    luxforge_testbase::wait_until("every photograph available again", || {
+        harness.check(&all) == available
+    });
     assert!(!harness.export(&images[0], "edited.jpg").is_empty());
 
     // A Locate onto the image, another volume: refused when the image is detached while the file

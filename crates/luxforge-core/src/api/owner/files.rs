@@ -313,19 +313,20 @@ pub(super) fn start_refresh(
 /// which the table set, and its end is announced when the lane reports it.
 pub(super) fn cancelled(owner: &mut Owner, job_id: &JobId) {
     if let Some(origin) = owner.catalog.files.unqueue(job_id) {
-        ended(owner, origin, None);
+        ended(owner, origin, job_id, None);
     }
 }
 
-/// Announce that an `index.refresh` job made under `origin` ended: one event naming its request and
-/// the index revision it left, `revision` as the lane read it, else the index's revision now.
-fn ended(owner: &mut Owner, origin: Origin, revision: Option<u64>) {
+/// Announce that an `index.refresh` job made under `origin` ended: one event naming its request, the
+/// job and the index revision it left, `revision` as the lane read it, else the index's revision now.
+fn ended(owner: &mut Owner, origin: Origin, job_id: &JobId, revision: Option<u64>) {
     let revision = revision.or_else(|| {
         queries::index(owner)
             .ok()
             .flatten()
             .and_then(|index| database::revision(index.connection()).ok())
     });
+    let origin = origin.job(job_id.clone());
     let event = match revision {
         Some(revision) => origin.index(revision),
         None => origin,
@@ -367,7 +368,7 @@ fn dispatch(owner: &mut Owner) {
         if let Err(error) = ensure_lane(owner) {
             if let Task::Refresh { job_id, .. } = task {
                 owner.jobs.finish(&job_id, Err(error));
-                ended(owner, origin, None);
+                ended(owner, origin, &job_id, None);
             }
             continue;
         }
@@ -414,7 +415,7 @@ fn dispatch(owner: &mut Owner) {
             Err(error) => {
                 if let Some((job_id, _)) = job {
                     owner.jobs.finish(&job_id, Err(error));
-                    ended(owner, origin, None);
+                    ended(owner, origin, &job_id, None);
                 }
             }
         }
@@ -500,13 +501,13 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
             // the watcher's notifications made as work no request made.
             let running = owner.catalog.files.running.as_ref();
             let origin = match by {
-                Maker::Job(job) => {
-                    running.filter(|running| running.job.as_ref().map(|(id, _)| id) == Some(&job))
-                }
-                Maker::Owner => running,
+                Maker::Job(job) => running
+                    .filter(|running| running.job.as_ref().map(|(id, _)| id) == Some(&job))
+                    .map(|running| running.origin.clone().job(job)),
+                Maker::Owner => running.map(|running| running.origin.clone()),
                 Maker::Watcher => None,
             }
-            .map_or_else(unrequested, |running| running.origin.clone());
+            .unwrap_or_else(unrequested);
             announce_once(&mut owner.announced, &origin.index(revision));
             owner.record_announced();
         }
@@ -529,7 +530,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
                 .running
                 .take()
                 .map_or_else(unrequested, |running| running.origin);
-            ended(owner, origin, revision);
+            ended(owner, origin, &job_id, revision);
             owner.record_announced();
             dispatch(owner);
         }
