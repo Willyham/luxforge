@@ -1,4 +1,4 @@
-//! The loupe ([catalog design](../../../../docs/design/catalog.md#browsing-at-speed), TASK-020): the
+//! The loupe ([catalog design](../../../../docs/design/catalog.md#browsing-at-speed)): the
 //! active frame of Select's view fitted to the screen with the moment's frames under it, the 100%
 //! focus check and compare, with a look-ahead in the direction of travel.
 //!
@@ -18,9 +18,9 @@
 //! - **Waking.** The loupe's signal carries a decode landing and the owner's previews wake, which
 //!   the Select grid registers for this client and passes on here ([`owner_woke`]); the
 //!   subscription exists only while the loupe is open. Nothing polls.
-//! - **Picking.** `P` is lane D's pick (TASK-019), not yet on this branch: [`Editor::loupe_pick`]
-//!   is the one hook that calls it, and [`Editor::loupe_picked`] is P7, which the pick's answer
-//!   calls to move on from a picked burst frame to the next moment.
+//! - **Picking.** `P` is Select's own pick of the active frame ([`Editor::loupe_pick`] through
+//!   [`Editor::select_pick`]), and [`Editor::loupe_picked`] is P7, which the pick's answer calls in
+//!   the same update to move on from a picked burst frame to the next moment.
 use crate::app::{
     Before, Editor,
     loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Want},

@@ -1,4 +1,4 @@
-//! Evidence steps on the catalog in Select (**lane D**, TASK-022): each gesture sent through the
+//! Evidence steps on the catalog in Select (**lane D**): each gesture sent through the
 //! message its control sends, as the model offers it — a source row's press, a menu's choice, a
 //! Metadata browser value, the search field's text — and captured once nothing Select asked the
 //! owner for is in flight, a library change's view evaluated again.

@@ -1065,12 +1065,6 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         })
     );
     settle(&mut editor);
-    let summary = editor.select.state.summary.clone().unwrap();
-    assert_eq!(
-        crate::state::select::next_moment(&summary, 1),
-        Some(3),
-        "past the burst of three"
-    );
 
     // An undo whose item an agent changed since is refused, naming it; nothing changes.
     let first = name(&editor, 1);

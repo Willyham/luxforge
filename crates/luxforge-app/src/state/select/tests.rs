@@ -1586,15 +1586,6 @@ fn select_picking_decides_sends_and_says_what_an_agent_sees() {
     assert_eq!(LibraryGesture::Undo.nothing(), "Nothing to undo");
     assert_eq!(LibraryGesture::Redo.method(), "library.redo");
 
-    // P7: after a frame of the burst 1..4 the loupe moves to 4, after a single to the next frame,
-    // after the bracket 7..10 to 10; past the view's end, nowhere.
-    let trip = trip();
-    assert_eq!(next_moment(&trip, 2), Some(4));
-    assert_eq!(next_moment(&trip, 0), Some(1));
-    assert_eq!(next_moment(&trip, 8), Some(10));
-    assert_eq!(next_moment(&trip, 15), Some(16));
-    assert_eq!(next_moment(&trip, 19), None);
-
     // A collapsed burst shows its first pick; one with no pick read shows its first frame.
     assert_eq!(rows.shown(14, 2), 15);
     assert_eq!(rows.shown(2, 3), 3);

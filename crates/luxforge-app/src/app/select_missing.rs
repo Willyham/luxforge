@@ -1,7 +1,7 @@
-//! Missing originals in the Select workspace ([catalog design](../../../../docs/design/catalog.md#missing-originals),
-//! TASK-023), and Locate original… in Develop's Original not found notice. **Lane D (views and
-//! desktop)** owns this seam; its model is `state/select_missing.rs` and its region
-//! `view/select_missing.rs`.
+//! Missing originals in the Select workspace ([catalog
+//! design](../../../../docs/design/catalog.md#missing-originals)), and Locate original… in
+//! Develop's Original not found notice. **Lane D (views and desktop)** owns this seam; its model is
+//! `state/select_missing.rs` and its region `view/select_missing.rs`.
 //!
 //! The desktop holds no catalog logic: every gesture sends the request an API client sends, and
 //! every row shows what the owner answered.
@@ -25,7 +25,7 @@
 //! - **Locate…** on a row (or the Info panel's Locate a different file…, or Develop's Locate
 //!   original…) asks the native file dialog and sends `source.locate {asset_id, path}`, a
 //!   `source-locate` job. When Develop asked, a located photograph is opened again from its new file
-//!   through the Open path the desktop already has (`catalog.import` of that file, which the
+//!   through the Open path the desktop already has (`pick.develop` of that file, which the
 //!   catalog knows as the photograph's original).
 use crate::app::{
     Before, Editor,

@@ -1,5 +1,5 @@
 //! The catalog in the Select workspace ([catalog design](../../../../docs/design/catalog.md#the-catalog),
-//! [catalog board](../../../../docs/design/catalog/catalog.png), TASK-022): the Catalog sources'
+//! [catalog board](../../../../docs/design/catalog/catalog.png)): the Catalog sources'
 //! folders by year and collections, the filter bar over the catalog (search, Kind and Edited, the
 //! metadata conditions and the view's count), the Metadata browser, Save as smart collection…, and
 //! the Info panel over photographs — one photograph's Organize band, or the batch form. **Lane D
