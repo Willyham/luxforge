@@ -25,15 +25,22 @@
 //! - `rendered.rs`: developed photographs' grid and large tiers, planned on the owner and rendered
 //!   through the Fit preview's proxy path off the editor's cache (TASK-010); the lane wires them to
 //!   `preview.read` of a photograph.
-//!
-//! To come in this lane: `bracket.rs` (the brightness check, a
-//! [`BracketProbe`](crate::catalog_types::BracketProbe) over decoded grid previews).
+//! - `bracket.rs`: the brightness check for brackets the metadata cannot show (TASK-008): a
+//!   fingerprint of each complete grid tier, kept in its row, and [`PreviewProbe`], a
+//!   [`BracketProbe`](crate::catalog_types::BracketProbe) over a view's fingerprints that
+//!   [`bracket_probe`] loads in one query for lane D's `browse.view` to hand to `organize::group`.
+mod bracket;
 mod cache;
 mod extract;
 mod lane;
 pub(crate) mod region;
 pub(crate) mod rendered;
 
+#[allow(
+    unused_imports,
+    reason = "lane D's browse.view loads the probe as it lands"
+)]
+pub(crate) use bracket::{PreviewProbe, bracket_probe};
 #[allow(
     unused_imports,
     reason = "lanes C and D read these as they land: browse.rows and catalog.info"
