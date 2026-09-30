@@ -76,6 +76,14 @@ pub enum RawError {
     ResourceLimit(&'static str),
     Cancelled,
     Native(String),
+    /// Reading the source failed: the file is gone, unreadable, or shorter than when it was
+    /// opened, as when a card is removed mid-read. Kept apart from a corrupt file, which is
+    /// [`RawError::Native`] or [`RawError::InvalidInput`], so a caller can say the source is
+    /// unavailable rather than broken.
+    Io {
+        kind: std::io::ErrorKind,
+        message: String,
+    },
     /// A neutral pick whose point or sensor patch cannot give gains: outside the image, dark,
     /// clipped or otherwise unusable.
     NeutralPatch(String),
@@ -95,6 +103,7 @@ impl fmt::Display for RawError {
             Self::ResourceLimit(v) => write!(f, "RAW resource limit: {v}"),
             Self::Cancelled => write!(f, "RAW work cancelled"),
             Self::Native(v) => write!(f, "RAW native decoder: {v}"),
+            Self::Io { message, .. } => write!(f, "RAW source read: {message}"),
             Self::NeutralPatch(v) => write!(f, "{v}"),
         }
     }

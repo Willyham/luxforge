@@ -393,9 +393,12 @@ impl<R: RandomAccess> Source<R> {
                 .ok_or(RawError::InvalidInput("source offset overflow"))?;
             match self.reader.read_at(at, &mut dest[filled..]) {
                 Ok(0) => {
-                    return Err(RawError::Native(format!(
-                        "source read: the source ended at byte {at}, before its length at open"
-                    )));
+                    return Err(RawError::Io {
+                        kind: io::ErrorKind::UnexpectedEof,
+                        message: format!(
+                            "the source ended at byte {at}, before its length at open"
+                        ),
+                    });
                 }
                 Ok(n) => {
                     let n = n.min(dest.len() - filled);
@@ -422,7 +425,10 @@ impl<R: RandomAccess> Source<R> {
 }
 
 fn read_error(error: &io::Error) -> RawError {
-    RawError::Native(format!("source read: {error}"))
+    RawError::Io {
+        kind: error.kind(),
+        message: error.to_string(),
+    }
 }
 
 /// The native stream's read callback: fill `length` bytes at `offset` from the source `context`
@@ -1263,16 +1269,19 @@ mod tests {
     fn embedded_reader_failures_are_typed() {
         let (bytes, _) = sample();
         let cancel = AtomicBool::new(false);
-        for (action, text) in [
-            (Action::Fail, "source read: card removed"),
-            (Action::Panic, "source read: the reader panicked"),
-        ] {
-            let reader = Scripted::new(&bytes, 1, action);
-            assert_eq!(
+        let reader = Scripted::new(&bytes, 1, Action::Fail);
+        assert!(
+            matches!(
                 EmbeddedPreviews::open(&reader, BUDGET, &cancel).err(),
-                Some(RawError::Native(text.into()))
-            );
-        }
+                Some(RawError::Io { kind: io::ErrorKind::Other, message }) if message == "card removed"
+            ),
+            "a reader's I/O error is the source's, not a corrupt file's"
+        );
+        let reader = Scripted::new(&bytes, 1, Action::Panic);
+        assert_eq!(
+            EmbeddedPreviews::open(&reader, BUDGET, &cancel).err(),
+            Some(RawError::Native("source read: the reader panicked".into()))
+        );
         // A source that ends before the length it gave.
         struct Shrunk<'a>(&'a [u8], u64);
         impl RandomAccess for Shrunk<'_> {
@@ -1287,7 +1296,11 @@ mod tests {
             EmbeddedPreviews::open(Shrunk(&bytes[..1000], bytes.len() as u64), BUDGET, &cancel)
                 .err();
         assert!(
-            matches!(&error, Some(RawError::Native(text)) if text.contains("ended at byte")),
+            matches!(
+                &error,
+                Some(RawError::Io { kind: io::ErrorKind::UnexpectedEof, message })
+                    if message.contains("ended at byte")
+            ),
             "{error:?}"
         );
         assert_eq!(live_handles(), 0);
