@@ -530,6 +530,7 @@ fn every_listing_records_one_event_as_it_ends() {
     let last = events.last().expect("the job's end");
     assert_eq!(last["request_id"], "index.refresh");
     assert_eq!(last["index_revision"], fixture.revision());
+    assert_eq!(last["job_id"], started["job_id"], "the end names its job");
 }
 
 /// Stopping the owner with the watcher following a folder stops the watcher and joins every lane
