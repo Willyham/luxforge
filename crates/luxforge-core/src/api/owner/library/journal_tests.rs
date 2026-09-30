@@ -267,6 +267,21 @@ fn pick_set_over_paths_and_index_rows_is_journaled_and_survives_a_restart() {
     let (owner, join) = fixture.start();
     let client = owner.register();
     assert_eq!(ok(&owner, client, "pick.list", json!({})), list);
+    // A retry sent after the restart is answered by the journal, as a retry.
+    let retried = ok(
+        &owner,
+        client,
+        "pick.set",
+        json!({
+            "targets": {"kind": "files", "file_ids": [1]},
+            "picked": true,
+            "mutation": envelope("desktop", "p1"),
+        }),
+    );
+    assert_eq!(
+        (&retried["change"], &retried["deduplicated"]),
+        (&by_row["change"], &json!(true))
+    );
     let undone = ok(
         &owner,
         client,

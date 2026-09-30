@@ -19,7 +19,7 @@ use crate::{
 };
 use rusqlite::{Connection, ErrorCode, Transaction};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// The item's value now, or `None` when it is absent.
 pub(crate) fn read(connection: &Connection, item: &LibraryItem) -> Result<Option<Value>, Error> {
@@ -138,11 +138,43 @@ pub(crate) fn write(
             }
         },
         // A Develop brings a photograph in by writing its asset, entry and capture rows, which a
-        // value cannot carry, and its undo sends the photograph back: both are the develop lane's.
-        LibraryItem::DevelopedAsset { asset_id } => Err(Error::conflict(format!(
-            "photograph {asset_id} is brought in and sent back only by Develop"
-        ))),
+        // value cannot carry, and records them as written (`Desired::Written`); going absent sends
+        // it back, deleting a record that holds nothing but its Original.
+        LibraryItem::DevelopedAsset { asset_id } => match to {
+            None => send_back(tx, item, asset_id),
+            Some(to) => {
+                let DevelopedAssetValue { path } = typed(item, to)?;
+                Err(Error::conflict(format!(
+                    "{} was sent back to its picks; develop it again with pick.develop",
+                    file_name(&path)
+                ))
+                .with_data(json!({"items": [item], "count": 1})))
+            }
+        },
     }
+}
+
+/// Send a developed photograph back: delete its catalog record when it holds nothing but its
+/// Original entry, and otherwise refuse with `conflict` saying why, naming the item as an undo's
+/// refusal does. Its file is untouched.
+fn send_back(tx: &Transaction<'_>, item: &LibraryItem, asset: &AssetId) -> Result<(), Error> {
+    if let Some(why) = rows::kept_by(tx, asset)? {
+        let name = rows::asset_source(tx, asset)?
+            .map_or_else(|| asset.to_string(), |source| file_name(&source.locator));
+        return Err(Error::conflict(format!(
+            "{name} {why}: it leaves the catalog only by being removed"
+        ))
+        .with_data(json!({"items": [item], "count": 1})));
+    }
+    present(asset, refused(item, rows::delete_photograph(tx, asset))?)
+}
+
+/// A path's file name as a person reads it.
+fn file_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
 }
 
 /// A value as the journal stores it.

@@ -22,10 +22,11 @@
 //!   collections, smart collections and groups; what the two trees share.
 //! - `availability.rs`, `locate.rs` and `worker.rs`: where originals are, Locate, and the lane's
 //!   worker thread that checks and verifies off the owner.
+//! - `missing.rs` (with `missing/search.rs`): missing originals by source folder, the bounded
+//!   search, and relinking what it verified.
 //!
 //! Planned: `develop.rs` (the develop lane: fingerprint, RAW interpretation without developing,
-//! linking, relinking, card copies, sending back), `missing.rs` (find and relink), `remove.rs` and
-//! `batch.rs`.
+//! linking, relinking, card copies, sending back), `remove.rs` and `batch.rs`.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
@@ -45,3 +46,15 @@ pub(crate) mod tree;
 pub(crate) mod availability;
 pub(crate) mod locate;
 pub(crate) mod worker;
+
+// Developing picks (TASK-013).
+/// Developing picks: planning, the develop lane's reads, committing in batches, sending back.
+pub(crate) mod develop;
+
+// Resolving missing originals (TASK-017).
+/// What is missing, finding it in a chosen folder, and relinking what was verified.
+pub(crate) mod missing;
+
+// Removing (TASK-014).
+
+// Batch preset and export (TASK-015).
