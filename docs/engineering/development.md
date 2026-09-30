@@ -645,7 +645,7 @@ A RAW manifest has `format:1` and a `sources` array, and every tool reads one th
 Native and JSON authentic-file tests are opt-in, ignored in the normal test suite:
 
 ```sh
-LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw LUXFORGE_RAW_PUBLIC_DIR=/path/to/cc0/raw cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture
+LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw LUXFORGE_RAW_PUBLIC_DIR=/path/to/cc0/raw LUXFORGE_RAW_POPULAR_DIR=/path/to/popular/raw cargo test --release --locked -p luxforge-raw --test real_files -- --ignored --nocapture
 LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p luxforge-cli --test json_cli -- --ignored --nocapture raw::
 ```
 

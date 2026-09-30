@@ -22,11 +22,13 @@ pub(crate) enum NativeStatus {
     Allocation = 6,
     /// A camera or frame count outside the catalog.
     UnsupportedMode = 7,
+    /// LibRaw chose its Nikon High Efficiency decoder, which reads nothing.
+    NikonHighEfficiency = 8,
 }
 
 impl NativeStatus {
     /// Every status, in code order.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 9] = [
         Self::Ok,
         Self::InvalidInput,
         Self::Cancelled,
@@ -35,5 +37,6 @@ impl NativeStatus {
         Self::UnsupportedCfa,
         Self::Allocation,
         Self::UnsupportedMode,
+        Self::NikonHighEfficiency,
     ];
 }

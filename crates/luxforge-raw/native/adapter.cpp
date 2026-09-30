@@ -100,6 +100,14 @@ extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
     h->decoder.set_progress_handler(progress, &cd);
     int code=h->decoder.open_buffer(bytes, length);
     if (code != LIBRAW_SUCCESS) { error(err, err_len, libraw_strerror(code)); return code == LIBRAW_CANCELLED_BY_CALLBACK ? LF_STATUS_CANCELLED : LF_STATUS_FAILED; }
+    // Defence in depth behind Rust's container check: LibRaw's High Efficiency decoder reads
+    // nothing, so refuse the file for any model before unpack.
+    libraw_decoder_info_t opened{};
+    if (h->decoder.get_decoder_info(&opened) == LIBRAW_SUCCESS && opened.decoder_name &&
+        std::strcmp(opened.decoder_name, "nikon_he_load_raw()") == 0) {
+      error(err, err_len, "LibRaw selected its Nikon High Efficiency decoder");
+      return LF_STATUS_NIKON_HIGH_EFFICIENCY;
+    }
     const auto &identity=h->decoder.imgdata.idata;
     const auto *profile = std::find_if(std::begin(lf_cameras),std::end(lf_cameras),[&](const auto &camera){
       return std::strcmp(identity.make,camera.make)==0 && std::strcmp(identity.model,camera.model)==0;

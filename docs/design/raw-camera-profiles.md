@@ -36,6 +36,9 @@ introduced. Build-generated native allowlist entries come from the same
 validated catalog, and a public recording mode is a reference to one of its
 modes, serialized as the mode's identifier; an identifier the catalog does not
 declare fails to deserialize. Unknown cameras still fail before unpack.
+Nikon High Efficiency (maker-note NEF compression 13 or 14, or JPEG XS markers at
+the raw strip) is refused before the catalog is consulted, whatever the model, so
+no mode can admit it ([popular camera support](popular-camera-support.md)).
 
 ## Field reference
 

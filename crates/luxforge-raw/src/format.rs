@@ -197,6 +197,82 @@ fn nef_compression(bytes: &[u8]) -> Option<u16> {
     Some(nested.scalar(entry)? as u16)
 }
 
+/// What refusing Nikon High Efficiency says: the format, and the mode to record instead.
+pub(crate) const NIKON_HIGH_EFFICIENCY: &str =
+    "Nikon High Efficiency (HE/HE*) is not supported; record Lossless compressed RAW instead";
+/// The Nikon maker-note NEF compression values LibRaw documents for High Efficiency (13) and
+/// High Efficiency★ (14).
+const NEF_HIGH_EFFICIENCY: [u16; 2] = [13, 14];
+/// The JPEG XS start-of-codestream and capabilities markers that begin a High Efficiency raw
+/// strip, as LibRaw tests them at its raw IFD's data offset.
+const JPEG_XS_SOC_CAP: [u8; 4] = [0xff, 0x10, 0xff, 0x50];
+
+/// Refuse a Nikon High Efficiency NEF before any native open or unpack, whatever the camera
+/// model and whether or not the catalog lists it. A Nikon file is refused when its maker note
+/// records compression 13 or 14, or when its full-size raw data begins with the JPEG XS markers.
+/// Both reads are bounded: the maker note through [`nef_compression`], and four bytes at the
+/// largest image IFD's first strip or tile, found by a bounded [`Tiff::walk`]. A file whose
+/// structure these reads cannot follow is not refused here; the decoder then judges it.
+pub(super) fn reject_nikon_high_efficiency(bytes: &[u8]) -> Result<(), RawError> {
+    if nikon_high_efficiency(bytes) {
+        Err(RawError::UnsupportedCompression(NIKON_HIGH_EFFICIENCY))
+    } else {
+        Ok(())
+    }
+}
+
+fn nikon_high_efficiency(bytes: &[u8]) -> bool {
+    let Some((tiff, first)) = Tiff::header(bytes, 0) else {
+        return false;
+    };
+    if nef_compression(bytes).is_some_and(|value| NEF_HIGH_EFFICIENCY.contains(&value)) {
+        return true;
+    }
+    nikon_make(&tiff, first)
+        && raw_data_head(&tiff, first).is_some_and(|head| head == JPEG_XS_SOC_CAP)
+}
+
+/// Whether the root IFD's Make (271) names Nikon.
+fn nikon_make(tiff: &Tiff<'_>, first: u32) -> bool {
+    tiff.entries(first)
+        .and_then(|(entries, _)| {
+            let make = entries.into_iter().find(|e| e.tag == 271 && e.kind == 2)?;
+            tiff.payload(make)
+        })
+        .is_some_and(|make| make.starts_with(b"NIKON"))
+}
+
+/// The first four bytes of the image data of the largest IFD reachable from `first`, the one
+/// LibRaw decodes as the raw image: at its first StripOffsets (273) or TileOffsets (324) value.
+/// A walk that fails part way keeps the IFDs it read.
+fn raw_data_head(tiff: &Tiff<'_>, first: u32) -> Option<[u8; 4]> {
+    let mut raw: Option<(u64, u32)> = None;
+    let _ = tiff.walk(first, |_, entries| {
+        let get = |tag| entries.iter().copied().find(|e| e.tag == tag);
+        let dimension = |tag| get(tag).and_then(|e| tiff.scalar(e));
+        let (Some(width), Some(height)) = (dimension(256), dimension(257)) else {
+            return Ok(());
+        };
+        let offset = get(273).or_else(|| get(324)).and_then(|e| {
+            let values = tiff.payload(e)?;
+            match e.kind {
+                3 => u16_at(values, 0, tiff.endian).map(u32::from),
+                4 => u32_at(values, 0, tiff.endian),
+                _ => None,
+            }
+        });
+        let area = u64::from(width) * u64::from(height);
+        if let Some(offset) = offset.filter(|&offset| offset != 0)
+            && raw.is_none_or(|(largest, _)| area > largest)
+        {
+            raw = Some((area, offset));
+        }
+        Ok(())
+    });
+    let start = tiff.base.checked_add(raw?.1 as usize)?;
+    tiff.data.get(start..start.checked_add(4)?)?.try_into().ok()
+}
+
 pub(super) fn raf_default_crop(bytes: &[u8]) -> Option<RawRect> {
     if bytes.get(..8)? != b"FUJIFILM" || bytes.len() < 0x70 {
         return None;
@@ -814,6 +890,206 @@ mod tests {
         assert!(required_dng_opcodes(b"II*\0\x08\0\0").is_err());
         assert_eq!(nef_compression(b"II*\0\x08\0\0\0"), None);
     }
+    /// Where a synthetic NEF records its maker-note NEF compression, if anywhere.
+    #[derive(Clone, Copy)]
+    enum NefCompression {
+        /// No maker note: the Exif IFD's one entry is not tag 0x927c.
+        Absent,
+        /// Tag 0x93, a SHORT, as older bodies write it.
+        Tag93(u16),
+        /// Tag 0x51, the 24-byte block whose u16 at 10 Z bodies write.
+        Tag51(u16),
+    }
+    const NEF_RAW: usize = 512;
+    const NEF_PREVIEW: usize = 600;
+    const NEF_MAKER: usize = 256;
+    const LOSSLESS_HEAD: [u8; 4] = [0xd2, 0xc3, 0x50, 0xfc];
+
+    /// A little-endian NEF: a root IFD with Make, an Exif link, one SubIFD and a 2x2 preview strip
+    /// at [`NEF_PREVIEW`]; the Exif IFD's Nikon maker note; and the 8x4 raw SubIFD, whose strip at
+    /// [`NEF_RAW`] begins with `raw_head`.
+    fn nef_fixture(make: &[u8; 18], compression: NefCompression, raw_head: [u8; 4]) -> Vec<u8> {
+        let mut b = vec![0_u8; 1024];
+        b[..8].copy_from_slice(b"II*\0\x08\0\0\0");
+        b[8..10].copy_from_slice(&6_u16.to_le_bytes());
+        put_entry(&mut b, 8, 0, 271, 2, 18, 96);
+        put_entry(&mut b, 8, 1, 0x8769, 4, 1, 128);
+        put_entry(&mut b, 8, 2, 330, 4, 1, 160);
+        put_entry(&mut b, 8, 3, 256, 4, 1, 2);
+        put_entry(&mut b, 8, 4, 257, 4, 1, 2);
+        put_entry(&mut b, 8, 5, 273, 4, 1, NEF_PREVIEW as u32);
+        b[96..114].copy_from_slice(make);
+        b[128..130].copy_from_slice(&1_u16.to_le_bytes());
+        let maker_tag = if matches!(compression, NefCompression::Absent) {
+            0x927d
+        } else {
+            0x927c
+        };
+        put_entry(&mut b, 128, 0, maker_tag, 7, 96, NEF_MAKER as u32);
+        b[160..162].copy_from_slice(&4_u16.to_le_bytes());
+        put_entry(&mut b, 160, 0, 254, 4, 1, 0);
+        put_entry(&mut b, 160, 1, 256, 4, 1, 8);
+        put_entry(&mut b, 160, 2, 257, 4, 1, 4);
+        put_entry(&mut b, 160, 3, 273, 4, 1, NEF_RAW as u32);
+        // The maker note: signature, version, then a TIFF whose offsets are relative to it.
+        let nested = NEF_MAKER + 10;
+        b[NEF_MAKER..nested].copy_from_slice(b"Nikon\0\x02\x10\0\0");
+        b[nested..nested + 8].copy_from_slice(b"II*\0\x08\0\0\0");
+        b[nested + 8..nested + 10].copy_from_slice(&1_u16.to_le_bytes());
+        match compression {
+            NefCompression::Absent => {}
+            NefCompression::Tag93(value) => {
+                put_entry(&mut b, nested + 8, 0, 0x93, 3, 1, u32::from(value))
+            }
+            NefCompression::Tag51(value) => {
+                put_entry(&mut b, nested + 8, 0, 0x51, 7, 24, 40);
+                b[nested + 40..nested + 44].copy_from_slice(b"0102");
+                b[nested + 50..nested + 52].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        b[NEF_RAW..NEF_RAW + 4].copy_from_slice(&raw_head);
+        b[NEF_PREVIEW..NEF_PREVIEW + 4].copy_from_slice(&[0x80; 4]);
+        b
+    }
+    const NIKON: &[u8; 18] = b"NIKON CORPORATION\0";
+    fn refused(bytes: &[u8]) -> bool {
+        match reject_nikon_high_efficiency(bytes) {
+            Ok(()) => false,
+            Err(error) => {
+                assert_eq!(
+                    error,
+                    RawError::UnsupportedCompression(NIKON_HIGH_EFFICIENCY)
+                );
+                true
+            }
+        }
+    }
+
+    /// Maker-note compression 13 (High Efficiency) and 14 (High Efficiency★) are refused through
+    /// either tag Nikon writes it in; lossless (3) and other values pass to the decoder.
+    #[test]
+    fn nikon_high_efficiency_maker_note_values_are_refused() {
+        for tag in [NefCompression::Tag93, NefCompression::Tag51] {
+            for value in [13, 14] {
+                let bytes = nef_fixture(NIKON, tag(value), LOSSLESS_HEAD);
+                assert_eq!(nef_compression(&bytes), Some(value));
+                assert!(refused(&bytes), "compression {value}");
+            }
+            for value in [1, 2, 3, 4, 12, 15, 0xff0d] {
+                let bytes = nef_fixture(NIKON, tag(value), LOSSLESS_HEAD);
+                assert_eq!(nef_compression(&bytes), Some(value));
+                assert!(!refused(&bytes), "compression {value}");
+            }
+        }
+        assert_eq!(
+            RawError::UnsupportedCompression(NIKON_HIGH_EFFICIENCY).to_string(),
+            "unsupported RAW compression: Nikon High Efficiency (HE/HE*) is not supported; \
+             record Lossless compressed RAW instead"
+        );
+    }
+
+    /// The JPEG XS start-of-codestream and capabilities markers at the full-size raw strip refuse
+    /// a Nikon file whatever its maker note says. The same bytes in the smaller preview strip, or
+    /// in a file whose Make is not Nikon, do not.
+    #[test]
+    fn jpeg_xs_markers_at_the_nikon_raw_strip_are_refused() {
+        for compression in [
+            NefCompression::Absent,
+            NefCompression::Tag93(3),
+            NefCompression::Tag51(3),
+        ] {
+            assert!(refused(&nef_fixture(NIKON, compression, JPEG_XS_SOC_CAP)));
+            assert!(!refused(&nef_fixture(NIKON, compression, LOSSLESS_HEAD)));
+            let mut preview = nef_fixture(NIKON, compression, LOSSLESS_HEAD);
+            preview[NEF_PREVIEW..NEF_PREVIEW + 4].copy_from_slice(&JPEG_XS_SOC_CAP);
+            assert!(!refused(&preview));
+        }
+        let other = nef_fixture(
+            b"OTHER CORPORATION\0",
+            NefCompression::Absent,
+            JPEG_XS_SOC_CAP,
+        );
+        assert!(!refused(&other));
+        // A strip offset past the end reads nothing.
+        let mut outside = nef_fixture(NIKON, NefCompression::Absent, JPEG_XS_SOC_CAP);
+        put_entry(&mut outside, 160, 3, 273, 4, 1, 1022);
+        assert!(!refused(&outside));
+    }
+
+    /// Absent, truncated and malformed maker notes and containers are never refused and never
+    /// panic: whatever the bounded reads cannot follow passes to the decoder, which judges it.
+    #[test]
+    fn malformed_nikon_containers_are_not_refused() {
+        let lossless = nef_fixture(NIKON, NefCompression::Tag51(3), LOSSLESS_HEAD);
+        let absent = nef_fixture(NIKON, NefCompression::Absent, LOSSLESS_HEAD);
+        assert_eq!(nef_compression(&absent), None);
+        assert!(!refused(&absent));
+        for len in 0..lossless.len() {
+            assert!(!refused(&lossless[..len]), "prefix {len}");
+        }
+        // Every prefix of a High Efficiency file is either refused or passed, without a panic.
+        let he = nef_fixture(NIKON, NefCompression::Tag51(14), JPEG_XS_SOC_CAP);
+        for len in 0..he.len() {
+            let _ = refused(&he[..len]);
+        }
+        for position in 0..lossless.len() {
+            for value in [0x00, 0xff] {
+                let mut mutated = lossless.clone();
+                mutated[position] = value;
+                assert!(!refused(&mutated), "byte {position} = {value:#x}");
+            }
+        }
+        let malformed = |edit: &dyn Fn(&mut Vec<u8>)| {
+            let mut bytes = nef_fixture(NIKON, NefCompression::Tag93(13), LOSSLESS_HEAD);
+            edit(&mut bytes);
+            bytes
+        };
+        let nested = NEF_MAKER + 10;
+        for bytes in [
+            // Not a Nikon maker note signature.
+            malformed(&|b| b[NEF_MAKER..NEF_MAKER + 6].copy_from_slice(b"Nikoo\0")),
+            // A nested TIFF header that is not one.
+            malformed(&|b| b[nested..nested + 2].copy_from_slice(b"XX")),
+            // A nested IFD offset past the end, and an entry count past the bound.
+            malformed(&|b| b[nested + 4..nested + 8].copy_from_slice(&u32::MAX.to_le_bytes())),
+            malformed(&|b| b[nested + 8..nested + 10].copy_from_slice(&1000_u16.to_le_bytes())),
+            // A compression entry of the wrong type or count.
+            malformed(&|b| put_entry(b, nested + 8, 0, 0x93, 4, 2, 13)),
+            // An Exif link or maker-note payload past the end.
+            malformed(&|b| put_entry(b, 8, 1, 0x8769, 4, 1, u32::MAX)),
+            malformed(&|b| put_entry(b, 128, 0, 0x927c, 7, 96, 1000)),
+            // A maker note too short to hold its signature and nested header.
+            malformed(&|b| put_entry(b, 128, 0, 0x927c, 7, 12, NEF_MAKER as u32)),
+        ] {
+            assert!(!refused(&bytes));
+        }
+        assert!(refused(&malformed(&|_| {})));
+    }
+
+    /// The decoder refuses High Efficiency from the container, before the native open: LibRaw
+    /// could not open these synthetic bytes, so only the pre-check can give this error.
+    #[test]
+    fn decode_refuses_nikon_high_efficiency_before_the_native_open() {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        for bytes in [
+            nef_fixture(NIKON, NefCompression::Tag51(13), LOSSLESS_HEAD),
+            nef_fixture(NIKON, NefCompression::Tag93(14), LOSSLESS_HEAD),
+            nef_fixture(NIKON, NefCompression::Absent, JPEG_XS_SOC_CAP),
+        ] {
+            assert_eq!(
+                RawSource::decode(bytes, &cancel).err(),
+                Some(RawError::UnsupportedCompression(NIKON_HIGH_EFFICIENCY))
+            );
+        }
+        // The same container recording lossless passes the check and fails later, in LibRaw.
+        let lossless = nef_fixture(NIKON, NefCompression::Tag51(3), LOSSLESS_HEAD);
+        let error = RawSource::decode(lossless, &cancel).err().unwrap();
+        assert!(
+            !matches!(error, RawError::UnsupportedCompression(_)),
+            "{error}"
+        );
+    }
+
     fn opcode_tiff(flags: u32, payload_size: u32) -> Vec<u8> {
         let mut b = vec![0_u8; 46];
         b[..8].copy_from_slice(b"II*\0\x08\0\0\0");
