@@ -44,13 +44,30 @@ impl ViewsLane {
     /// `{kind: selection}` targets name. Refused with `validation` when the client holds no view,
     /// and with `conflict` when its view is stale.
     pub(super) fn selected(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
+        Ok(browse::selected_items(self.fresh(client)?))
+    }
+
+    /// Every item of `client`'s current view, in view order: what `pick.plan` and `pick.develop`
+    /// take by default, the picks among them. Refused as [`Self::selected`] is.
+    #[allow(
+        dead_code,
+        reason = "the seam lane C's pick.plan and pick.develop call"
+    )]
+    pub(super) fn items(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
+        Ok(self.fresh(client)?.items.clone())
+    }
+
+    /// `client`'s view, refused with `validation` when it holds none and with `conflict` when a
+    /// later library or index change left it stale, so a library change never acts on a view its
+    /// client has not seen since.
+    fn fresh(&self, client: ClientId) -> Result<&View, Error> {
         let view = self.views.get(&client).ok_or_else(no_view)?;
         if view.stale {
             return Err(Error::conflict(
                 "the view is stale: a later library or index change exists; evaluate it again",
             ));
         }
-        Ok(browse::selected_items(view))
+        Ok(view)
     }
 }
 
@@ -670,14 +687,18 @@ mod tests {
         join.join().unwrap();
     }
 
-    /// The seam lane C's selection targets call: the selected items in view order, refused without
-    /// a view and when the view is stale.
+    /// The seams lane C's selection targets and default develop targets call: the selected items
+    /// and every item, in view order, each refused without a view and when the view is stale.
     #[test]
     fn browse_the_selected_items_are_refused_when_stale() {
         let client = ClientId::testing(7);
         let mut lane = ViewsLane::default();
         assert_eq!(
             lane.selected(client).unwrap_err().kind,
+            crate::ErrorKind::Validation
+        );
+        assert_eq!(
+            lane.items(client).unwrap_err().kind,
             crate::ErrorKind::Validation
         );
         let item = |id| ViewItem::File(crate::catalog_types::FileId(id));
@@ -700,9 +721,17 @@ mod tests {
             },
         );
         assert_eq!(lane.selected(client).unwrap(), [item(1), item(4), item(5)]);
+        assert_eq!(
+            lane.items(client).unwrap(),
+            (1..=5).map(item).collect::<Vec<_>>()
+        );
         lane.views.get_mut(&client).unwrap().stale = true;
         assert_eq!(
             lane.selected(client).unwrap_err().kind,
+            crate::ErrorKind::Conflict
+        );
+        assert_eq!(
+            lane.items(client).unwrap_err().kind,
             crate::ErrorKind::Conflict
         );
         lane.disconnect(client);
