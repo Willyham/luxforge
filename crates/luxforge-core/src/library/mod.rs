@@ -56,3 +56,5 @@ pub(crate) mod missing;
 // Removing (TASK-014).
 
 // Batch preset and export (TASK-015).
+/// Batch preset and export: what both share, the naming, and the report as it grows.
+pub(crate) mod batch;
