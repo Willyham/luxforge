@@ -14,6 +14,7 @@ use std::{
 };
 mod develop;
 mod dng;
+mod embedded;
 mod format;
 mod limits;
 mod mat3;
@@ -26,12 +27,16 @@ mod profiles;
 mod rawspeed;
 mod unpacker;
 pub use dng::{DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance};
+pub use embedded::{
+    EmbeddedImage, EmbeddedPreview, EmbeddedPreviews, PreviewFormat, PreviewListing, RandomAccess,
+};
 use format::{classify_mode, raf_default_crop};
 pub use limits::{
-    MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES, MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS,
-    PARALLEL_HEAVY_COLOUR_PIXELS, PARALLEL_PIXELS, PARALLEL_PROXY_PIXELS, PARALLEL_RESAMPLE_PIXELS,
-    PARALLEL_SPATIAL_PIXELS, PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass,
-    SPATIAL_TILE, SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
+    MAX_EMBEDDED_IMAGE_BYTES, MAX_EMBEDDED_READ_BUDGET, MAX_FRAME_BYTES, MAX_PIXELS, MAX_RGB_BYTES,
+    MAX_SIDE, MAX_SOURCE_BYTES, PARALLEL_COLOUR_PIXELS, PARALLEL_HEAVY_COLOUR_PIXELS,
+    PARALLEL_PIXELS, PARALLEL_PROXY_PIXELS, PARALLEL_RESAMPLE_PIXELS, PARALLEL_SPATIAL_PIXELS,
+    PARALLEL_TRANSFORM_PIXELS, RETAINED_DEVELOPMENT_BYTES, RenderPass, SPATIAL_TILE,
+    SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE, parallel_pixels, spatial_tile,
 };
 use native_status::NativeStatus;
 pub use native_tiles::refill_each;
@@ -62,7 +67,8 @@ pub enum RawError {
     InvalidInput(&'static str),
     UnsupportedMode(String),
     /// A RAW compression no decoder here reads, refused before any unpack: the text names the
-    /// format and how to record a supported one instead.
+    /// format and how to record a supported one instead. Also an embedded preview in a format
+    /// [`EmbeddedPreviews::extract`] does not hand over: the text names the format.
     UnsupportedCompression(&'static str),
     UnsupportedRequiredOpcodes(Vec<u32>),
     UnsupportedCfa,
