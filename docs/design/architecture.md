@@ -79,6 +79,8 @@ Paths are under `crates/luxforge-core/src`.
 
 `luxforge-jpeg` holds the bounded marker walk and frame header, the decode and encode sessions with the safety around the C library (every call under `catch_unwind`, a failed session destroyed and never called again, the writer's I/O error kept, bounded segments), which libjpeg warnings refuse a decode (the table in `warnings.rs`: missing, corrupt or guessed data and any unlisted code refuse, harmless irregularities do not), and the ICC profile's APP2 chunks read and written, numbered from 1. It exposes a safe API and its own `JpegError`, which the core maps to its error kinds in one place. The core keeps the policy: the limits it passes in, EXIF orientation, which metadata to keep, the sRGB profile check and the export's quality, sampling, progress and cancellation.
 
+Two decodes serve previews. `Decoder::set_scale` decodes a whole frame at 1/2, 1/4 or 1/8 on each side by libjpeg's reduced inverse DCT, and `Scale::covering` picks the most reducing scale whose output still covers a target size, so the resample after it only shrinks. `RegionDecoder` decodes one rectangle at full scale, streaming its rows like `Decoder`: libjpeg crops a window of whole iMCU columns around it (`jpeg_crop_scanline`), three left and one right of the rectangle because libjpeg takes a crop's edges for the frame's in its chroma upsampling and progressive block smoothing, and skips the rows above it (`jpeg_skip_scanlines`); its rows equal the same rectangle cut from a whole decode, byte for byte. It stops after the rectangle's last row, so warnings about data after what the rectangle needs (below it, or after the last scan of a single-scan file) are not seen. Both check the frame against the caller's limits at its full size: libjpeg's row buffers are a few dozen rows of the output (for a region, of the full width, allocated before the crop), and a multi-scan frame's coefficients are held for the whole frame at up to 6 bytes a pixel. A region allocates the caller's rectangle and one window row. `mozjpeg`'s safe API does not expose the session's `cinfo` that cropping and skipping need, so the region decode runs its own libjpeg session over `mozjpeg-sys` in `session.rs`, with the same error manager and warning table, libjpeg's memory source over the caller's bytes, and a guard that destroys the session on every path.
+
 ### The desktop's files
 
 Paths are under `crates/luxforge-app/src`.
@@ -98,7 +100,7 @@ Test support is split by whether it names a core type. `luxforge-testbase`, whic
 
 ### Unsafe code
 
-Only `luxforge-raw`, `luxforge-process` and `luxforge-jpeg` override the workspace's `forbid(unsafe_code)` in their manifests. `luxforge-jpeg` denies it and allows it on the one function that reads libjpeg's warning code through the error manager's pointer, beside its `SAFETY:` comment.
+Only `luxforge-raw`, `luxforge-process` and `luxforge-jpeg` override the workspace's `forbid(unsafe_code)` in their manifests. `luxforge-jpeg` denies it and allows it by name only on the functions that need it, each block beside its `SAFETY:` comment: the one that reads libjpeg's warning code through the error manager's pointer (`decode.rs`), and those of the region decode's libjpeg session over `mozjpeg-sys` (`session.rs`: creating and destroying it, reading the header and the segments it saved, starting, cropping, skipping and reading rows), which exist because `mozjpeg`'s safe API cannot crop or skip.
 
 ## Boundaries
 
