@@ -506,10 +506,10 @@ impl Run<'_> {
         let canonical = match plan.path.canonicalize() {
             Ok(canonical) => canonical,
             Err(_) => {
-                let offline = plan
-                    .volume_id
-                    .as_ref()
-                    .is_some_and(|volume| mounted_in(mounts, volume, self.stamp).is_none());
+                let offline = plan.volume_id.as_ref().is_some_and(|volume| {
+                    plan.path.symlink_metadata().is_err()
+                        && mounted_in(mounts, volume, self.stamp).is_none()
+                });
                 if offline {
                     if let (Some(root), Some(volume_id)) = (
                         database::root(self.connection, &plan.path)?,

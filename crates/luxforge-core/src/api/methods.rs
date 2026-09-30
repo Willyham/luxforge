@@ -826,13 +826,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "volume.list",
         params::NoParams,
         owner::files::volume_list,
-        "{volumes: [{volume: {id, mount_point, label, removable, platform_id?, last_seen_ms}, offline, card, startup}]}: the mounted volumes, the startup disk first, each with whether it is a card (a DCIM folder at its root), then the volumes the catalog knows that are not mounted, offline; reads the mount table without waiting on any file system"
+        "{volumes: [{volume: {id, mount_point, label, removable, platform_id?, last_seen_ms}, offline, card, startup}]}: the mounted volumes, the startup disk first, each with whether it is a card (a DCIM folder at its root), then the volumes the catalog knows that are not mounted, offline; answered from what the index lane last surveyed of each volume still in the mount table, which is read without waiting on any file system, so a volume mounted since appears on a later call"
     ),
     owner!(
         "disk.folders",
         crate::catalog_types::api::DiskFoldersParams,
         owner::files::disk_folders,
-        "{path, folders: [{name, path}], truncated}: the immediate subfolders of an absolute folder in name order, without hidden and system folders, packages, other applications' caches and Luxforge's own directories, following no link; at most 2,000 folders from 50,000 entries, truncated past them; validation for a file, a package or a cache"
+        "{path, folders: [{name, path}], truncated}: the immediate subfolders of an absolute folder in name order, without hidden and system folders, packages, other applications' caches and Luxforge's own directories, following no link; at most 2,000 folders from 50,000 entries, truncated past them; validation for a file, a package or a cache; read on the index lane's query thread, resource-limit when 16 calls already wait for it"
     ),
     owner!(
         "card.list",
