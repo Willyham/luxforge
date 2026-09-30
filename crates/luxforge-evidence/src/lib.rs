@@ -190,6 +190,8 @@ pub enum Step {
     /// One gesture on the Select workspace's loupe that its timing needs: a warm press or a held
     /// arrow, or the pointer over the picture.
     Loupe(LoupeStep),
+    /// The Select grid scrolled continuously, one offset per display frame, for its timing.
+    GridScroll(GridScrollStep),
 }
 
 impl Step {
@@ -324,6 +326,7 @@ impl Step {
             Self::Select(step) => step.validate(),
             Self::Missing(step) => step.validate(),
             Self::Loupe(step) => step.validate(),
+            Self::GridScroll(step) => step.validate(),
         }
     }
 }
@@ -1839,6 +1842,34 @@ impl LoupeStep {
                 unit(f64::from(*y), "loupe pointer y")
             }
         }
+    }
+}
+
+/// The most display frames one `grid_scroll` step scrolls for.
+pub const MAX_GRID_SCROLL_FRAMES: u32 = 1000;
+
+/// `{"px_per_frame": 60, "frames": 240}` scrolls the Select grid down by `px_per_frame` logical
+/// pixels on each of the next `frames` display frames (1 to 1000), sending the offset the grid's
+/// scrollable publishes, as a steady trackpad scroll does, and is captured once Select has nothing
+/// in flight after the last, or after the frame that reached the end of the grid.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GridScrollStep {
+    pub px_per_frame: f32,
+    pub frames: u32,
+}
+
+impl GridScrollStep {
+    fn validate(&self) -> Result<(), String> {
+        if !(self.px_per_frame.is_finite() && (1.0..=2000.0).contains(&self.px_per_frame)) {
+            return Err("grid_scroll px_per_frame takes a number from 1 to 2000".into());
+        }
+        if !(1..=MAX_GRID_SCROLL_FRAMES).contains(&self.frames) {
+            return Err(format!(
+                "grid_scroll frames takes an integer from 1 to {MAX_GRID_SCROLL_FRAMES}"
+            ));
+        }
+        Ok(())
     }
 }
 

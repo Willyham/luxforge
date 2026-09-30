@@ -1024,3 +1024,27 @@ fn loupe_steps_round_trip_and_bound_their_presses() {
         "loupe pointer x needs a finite fraction",
     );
 }
+
+#[test]
+fn a_grid_scroll_round_trips_and_bounds_its_speed_and_frames() {
+    let steps = round_trip(json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 240}}]));
+    assert_eq!(
+        steps[0],
+        Step::GridScroll(GridScrollStep {
+            px_per_frame: 60.0,
+            frames: 240,
+        })
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 0.5, "frames": 240}}]),
+        "px_per_frame takes a number from 1 to 2000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 1001}}]),
+        "frames takes an integer from 1 to 1000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0}}]),
+        "missing field `frames`",
+    );
+}

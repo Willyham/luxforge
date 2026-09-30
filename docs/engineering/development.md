@@ -818,6 +818,14 @@ Each step is an object with exactly one key.
   (`loupe_presented`, under its own item and preview key, a stand-in said so) and each region the
   inset presents (`loupe_region_presented`). Presented means the update whose redraw draws it, as
   for `preview_displayed`, not scanout.
+- `grid_scroll` (`{"px_per_frame": 60, "frames": 240}`, 1 to 2000 logical pixels on each of 1 to
+  1000 frames) scrolls the Select grid down on each frame of the window's own frame clock, which it
+  subscribes to only while it scrolls, sending the offset the grid's scrollable publishes, as a
+  steady trackpad scroll does. Each frame is recorded as `grid_scroll_frame` (the frame's time, the
+  offset, and the cells on screen drawing a decoded preview, the placeholder while one loads, or
+  nothing ever), and the grid records `select_scrolled` in the update that adopts an offset, the
+  one whose redraw draws it. It is captured once Select has nothing in flight after its last frame,
+  or after the frame that reached the end of the grid; a grid that is not shown fails the step.
 - `missing` is one gesture on Select's Missing originals, sent through the message its control
   sends: `{"find": {"group": "2026-09 Konstanz", "folder": "/path"}}` presses Find in a folder… on
   the group developed from the folder of that name and answers the folder dialog with `folder`,
