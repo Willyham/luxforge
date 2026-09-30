@@ -38,6 +38,8 @@ step_from! {
     ExportStep => Export,
     SelectStep => Select,
     MissingStep => Missing,
+    LoupeStep => Loupe,
+    GridScrollStep => GridScroll,
 }
 
 impl Step {
