@@ -25,7 +25,9 @@ pub struct CatalogJob {
     pub lane: CatalogLane,
 }
 
-/// Listing a card or folder and reading headers (`index.refresh`, a card's mount, a first visit).
+/// Listing a card or folder and reading headers (`index.refresh`, a card's mount, a first visit, and
+/// the index lane's own listings: a rescan, a folder listed again as it moved or as the catalog
+/// opens).
 pub const INDEX_REFRESH: CatalogJob = CatalogJob {
     kind: JobKind::IndexRefresh,
     job_kind: "index-refresh",
