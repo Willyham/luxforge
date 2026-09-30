@@ -3,25 +3,33 @@
 //! the same kind of story.
 //!
 //! A plan is a sequence of **events**, the ground truth the event rule (P3 in
-//! `docs/design/catalog.md`) must find:
-//! photographs sorted by capture time with every gap inside an event under 3 hours and every
-//! positioned neighbour within 25 km, and consecutive events separated by a gap over 3 hours or,
-//! once, by a jump of over 25 km inside an hour on the same day. A trip of several days keeps
-//! shooting through the night (a tripod camera's night frames under 3 hours apart), because the
-//! gap rule alone would otherwise split it at every night. Inside an event each body shoots
-//! **moments** (P5): singles, bursts (3–8 frames under 1 s apart, one exposure) and brackets
-//! (3 frames 1 or 2 EV apart, or 5 frames 1 EV apart, 0.3–1.8 s apart, one aperture, ISO and focal
-//! length) of three kinds: with the exposure bias recording each step, with the exposure time
-//! alone changing, and with nothing in the metadata changing at all, as a drone writes it. One
-//! body's consecutive moments are always at least 6 s apart, so no rule merges them. Undated files,
-//! with no capture time at all, are an event of their own in one user-named folder.
+//! `docs/design/catalog.md`) must find: photographs sorted by capture time with every gap inside an
+//! event under 3 hours and every positioned neighbour within 25 km, and consecutive events
+//! separated by a gap over 3 hours or, once, by a jump of over 25 km inside an hour on the same day.
+//! A trip of several days keeps shooting through the night (a tripod camera's night frames under
+//! 3 hours apart), because the gap rule alone would otherwise split it at every night. Inside an
+//! event each body shoots **moments** (P5): singles, bursts (3–8 frames under 1 s apart, one
+//! exposure) and brackets (3 frames 1 or 2 EV apart, or 5 frames 1 EV apart, 0.3–1.8 s apart, one
+//! aperture, ISO and focal length) of three kinds: with the exposure bias recording each step, with
+//! the exposure time alone changing, and with nothing in the metadata changing at all, as a drone
+//! writes it. One body's consecutive moments are always at least 6 s apart, so no rule merges them.
+//! Undated files, with no capture time at all, are an event of their own in one user-named folder.
+//!
+//! **Clocks.** A body that writes `OffsetTimeOriginal` keeps local time; a body that writes none
+//! keeps UTC. Every recorded time therefore gives the frame's true instant under the core's reading
+//! (`CaptureTime::instant_ms`: the offset when written, the clock read as UTC otherwise), and the
+//! ground truth holds under that reading and in real time alike. Bodies without an offset that keep
+//! local time instead would skew by the zone's offset, which P3's 3-hour gap cannot absorb.
 //!
 //! Events are made one at a time, each from its own random stream, so a plan of a million frames
 //! never holds more than one event's frames.
-use super::clock::{CENTRAL, Date, HOUR, LocalTime, MINUTE, SECOND, Zone};
+use super::clock::{
+    CENTRAL, Date, EASTERN, HOUR, ICELAND, JAPAN, LocalTime, MINUTE, SECOND, SOUTH_AFRICA,
+    US_EASTERN, WESTERN, Zone,
+};
 use super::random::Random;
 
-/// Where a body's files are kept, which decides their folder in every mode.
+/// Where a body's files are kept in the September trips, which decides their folder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Storage {
     /// Read in place from the camera's card: `DCIM/<folder number><suffix>/`.
@@ -85,8 +93,15 @@ pub struct Body {
     pub folder_in_name: bool,
     /// The number of the body's first file in the plan.
     pub first_number: u32,
+    /// The extension of its RAW files (for the phone, of its only files) in the index and the
+    /// catalog; the image folders are JPEG throughout.
+    pub raw_extension: &'static str,
+    /// Its full-size image, in pixels.
+    pub size: (u32, u32),
+    /// The typical length of one of its files, in bytes.
+    pub bytes: u64,
     pub storage: Storage,
-    /// Whether it writes `OffsetTimeOriginal`.
+    /// Whether it writes `OffsetTimeOriginal`, and so keeps local time rather than UTC.
     pub writes_offset: bool,
     /// Whether every frame carries a GPS position.
     pub positioned: bool,
@@ -147,6 +162,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "DSC_",
         folder_in_name: false,
         first_number: 1,
+        raw_extension: "NEF",
+        size: (8256, 5504),
+        bytes: 52_000_000,
         storage: Storage::Card { suffix: "NZ8_1" },
         writes_offset: true,
         positioned: false,
@@ -167,6 +185,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "DSC_",
         folder_in_name: false,
         first_number: 1,
+        raw_extension: "NEF",
+        size: (8256, 5504),
+        bytes: 52_000_000,
         storage: Storage::Card { suffix: "NZ8_2" },
         writes_offset: true,
         positioned: false,
@@ -187,6 +208,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "L",
         folder_in_name: true,
         first_number: 3201,
+        raw_extension: "DNG",
+        size: (9520, 6336),
+        bytes: 88_000_000,
         storage: Storage::Dump,
         writes_offset: false,
         positioned: false,
@@ -207,6 +231,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "DSCF",
         folder_in_name: false,
         first_number: 1,
+        raw_extension: "RAF",
+        size: (7728, 5152),
+        bytes: 42_000_000,
         storage: Storage::Named,
         writes_offset: false,
         positioned: false,
@@ -227,6 +254,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "DJI_",
         folder_in_name: false,
         first_number: 1,
+        raw_extension: "DNG",
+        size: (5472, 3648),
+        bytes: 38_000_000,
         storage: Storage::Dump,
         writes_offset: false,
         positioned: true,
@@ -247,6 +277,9 @@ pub const BODIES: [Body; 6] = [
         prefix: "IMG_",
         folder_in_name: false,
         first_number: 4201,
+        raw_extension: "JPG",
+        size: (4032, 3024),
+        bytes: 3_200_000,
         storage: Storage::Phone,
         writes_offset: true,
         positioned: true,
@@ -261,30 +294,368 @@ pub const BODIES: [Body; 6] = [
     },
 ];
 
-/// A place a trip goes to: its position in microdegrees, its elevation and its zone.
+/// A place a trip goes to: its position in microdegrees, its elevation, its zone and the catalog
+/// folder its trips are developed under, when any.
 pub struct Place {
     pub name: &'static str,
+    /// Its name in ASCII, lower case, for event labels.
+    pub slug: &'static str,
     pub latitude: i32,
     pub longitude: i32,
     pub elevation: i32,
     pub zone: Zone,
+    pub parent: Option<Parent>,
 }
 
-const fn place(name: &'static str, latitude: i32, longitude: i32, elevation: i32) -> Place {
-    Place {
-        name,
-        latitude,
-        longitude,
-        elevation,
-        zone: CENTRAL,
+/// The catalog folders some trips' folders are nested in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parent {
+    Bodensee,
+    Travel,
+}
+
+impl Parent {
+    pub const ALL: [Parent; 2] = [Parent::Bodensee, Parent::Travel];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Parent::Bodensee => "Bodensee",
+            Parent::Travel => "Travel",
+        }
     }
 }
 
-pub const KONSTANZ: Place = place("Konstanz", 47_660_000, 9_175_000, 405);
-pub const REICHENAU: Place = place("Reichenau", 47_689_000, 9_062_000, 398);
-pub const ZURICH: Place = place("Zürich", 47_376_900, 8_541_700, 408);
-pub const LUZERN: Place = place("Luzern", 47_050_200, 8_309_300, 435);
-pub const LINDAU: Place = place("Lindau", 47_546_000, 9_684_000, 400);
+const fn place(
+    name: &'static str,
+    slug: &'static str,
+    (latitude, longitude, elevation): (i32, i32, i32),
+    zone: Zone,
+    parent: Option<Parent>,
+) -> Place {
+    Place {
+        name,
+        slug,
+        latitude,
+        longitude,
+        elevation,
+        zone,
+        parent,
+    }
+}
+
+const LAKE: Option<Parent> = Some(Parent::Bodensee);
+const AWAY: Option<Parent> = Some(Parent::Travel);
+
+pub const KONSTANZ: Place = place(
+    "Konstanz",
+    "konstanz",
+    (47_660_000, 9_175_000, 405),
+    CENTRAL,
+    LAKE,
+);
+pub const REICHENAU: Place = place(
+    "Reichenau",
+    "reichenau",
+    (47_689_000, 9_062_000, 398),
+    CENTRAL,
+    LAKE,
+);
+pub const ZURICH: Place = place(
+    "Zürich",
+    "zurich",
+    (47_376_900, 8_541_700, 408),
+    CENTRAL,
+    None,
+);
+pub const LUZERN: Place = place(
+    "Luzern",
+    "luzern",
+    (47_050_200, 8_309_300, 435),
+    CENTRAL,
+    None,
+);
+pub const LINDAU: Place = place(
+    "Lindau",
+    "lindau",
+    (47_546_000, 9_684_000, 400),
+    CENTRAL,
+    LAKE,
+);
+
+/// Where the older trips go, each with its weight: the lake most often, then home and away.
+const HISTORY_PLACES: &[(Place, u32)] = &[
+    (KONSTANZ, 6),
+    (LINDAU, 4),
+    (REICHENAU, 3),
+    (
+        place(
+            "Meersburg",
+            "meersburg",
+            (47_693_600, 9_271_000, 440),
+            CENTRAL,
+            LAKE,
+        ),
+        3,
+    ),
+    (
+        place(
+            "Bregenz",
+            "bregenz",
+            (47_503_100, 9_747_100, 398),
+            CENTRAL,
+            LAKE,
+        ),
+        3,
+    ),
+    (
+        place(
+            "Überlingen",
+            "uberlingen",
+            (47_767_600, 9_159_100, 403),
+            CENTRAL,
+            LAKE,
+        ),
+        2,
+    ),
+    (ZURICH, 3),
+    (LUZERN, 2),
+    (
+        place(
+            "St. Gallen",
+            "st-gallen",
+            (47_424_500, 9_376_700, 670),
+            CENTRAL,
+            None,
+        ),
+        2,
+    ),
+    (
+        place(
+            "Basel",
+            "basel",
+            (47_559_600, 7_588_600, 260),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place("Bern", "bern", (46_948_000, 7_447_400, 540), CENTRAL, None),
+        1,
+    ),
+    (
+        place(
+            "Zermatt",
+            "zermatt",
+            (46_020_700, 7_749_100, 1608),
+            CENTRAL,
+            None,
+        ),
+        2,
+    ),
+    (
+        place(
+            "Grindelwald",
+            "grindelwald",
+            (46_624_200, 8_041_400, 1034),
+            CENTRAL,
+            None,
+        ),
+        2,
+    ),
+    (
+        place(
+            "Lugano",
+            "lugano",
+            (46_003_700, 8_951_100, 273),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "München",
+            "munchen",
+            (48_135_100, 11_582_000, 519),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Salzburg",
+            "salzburg",
+            (47_809_500, 13_055_000, 424),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Innsbruck",
+            "innsbruck",
+            (47_269_200, 11_404_100, 574),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Hallstatt",
+            "hallstatt",
+            (47_562_200, 13_649_300, 511),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place("Wien", "wien", (48_208_200, 16_373_800, 190), CENTRAL, None),
+        1,
+    ),
+    (
+        place(
+            "Freiburg",
+            "freiburg",
+            (47_999_000, 7_842_100, 278),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Annecy",
+            "annecy",
+            (45_899_200, 6_129_400, 448),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Chamonix",
+            "chamonix",
+            (45_923_700, 6_869_400, 1035),
+            CENTRAL,
+            None,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Venezia",
+            "venezia",
+            (45_440_800, 12_315_500, 2),
+            CENTRAL,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Firenze",
+            "firenze",
+            (43_769_600, 11_255_800, 50),
+            CENTRAL,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place("Paris", "paris", (48_856_600, 2_352_200, 35), CENTRAL, AWAY),
+        1,
+    ),
+    (
+        place(
+            "Barcelona",
+            "barcelona",
+            (41_387_400, 2_168_600, 12),
+            CENTRAL,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "København",
+            "kobenhavn",
+            (55_676_100, 12_568_300, 14),
+            CENTRAL,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Lisboa",
+            "lisboa",
+            (38_722_300, -9_139_300, 50),
+            WESTERN,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "London",
+            "london",
+            (51_507_200, -127_600, 11),
+            WESTERN,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Reykjavík",
+            "reykjavik",
+            (64_146_600, -21_942_600, 20),
+            ICELAND,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "Athína",
+            "athina",
+            (37_983_800, 23_727_500, 70),
+            EASTERN,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place(
+            "New York",
+            "new-york",
+            (40_712_800, -74_006_000, 10),
+            US_EASTERN,
+            AWAY,
+        ),
+        1,
+    ),
+    (
+        place("Kyoto", "kyoto", (35_011_600, 135_768_100, 50), JAPAN, AWAY),
+        1,
+    ),
+    (
+        place(
+            "Cape Town",
+            "cape-town",
+            (-33_924_900, 18_424_100, 10),
+            SOUTH_AFRICA,
+            AWAY,
+        ),
+        1,
+    ),
+];
 
 /// A moment a spec asks for by name, beside the ones drawn at random.
 #[derive(Clone, Copy, Debug)]
@@ -324,14 +695,34 @@ pub enum Start {
     AfterPrevious,
 }
 
+/// Which drive an older trip's folder is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Drive {
+    /// The Mac's own disk, under the pictures folder.
+    Internal,
+    /// The external "Photos SSD", under its archive folder.
+    External,
+}
+
+/// How an event's files are filed on disk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Filing {
+    /// Where each body's [`Storage`] puts them: the September trips.
+    BySource,
+    /// Every body's files in one trip folder, `<year>/<first day> <title>`, on the drive: the
+    /// older trips.
+    Trip(Drive),
+}
+
 /// What one event is to hold, before its frames are drawn.
 pub struct Spec {
     pub label: String,
-    /// Where it happened; `None` for the undated event.
+    /// Where it happened; `None` for an undated event.
     pub place: Option<&'static Place>,
-    /// The user-named folder's name: the undated event's whole name, otherwise the part after
-    /// the first date (the place's name when `None`).
+    /// The user-named folder's name: an undated event's whole name, otherwise the part after the
+    /// first date (the place's name when `None`).
     pub folder: Option<&'static str>,
+    pub filing: Filing,
     pub start: Date,
     pub days: u8,
     /// The bodies and their weights for the moments drawn at random.
@@ -344,6 +735,11 @@ pub struct Spec {
     pub begins: Start,
     /// The longest one day's shooting may run.
     pub cap: Option<i64>,
+    /// Developed photographs rather than every frame shot: its moments are singles and brackets,
+    /// never bursts, whose one developed frame is a single.
+    pub developed: bool,
+    /// Its cameras wrote JPEG rather than RAW (in the index and the catalog).
+    pub jpeg: bool,
     /// Its share when a total is apportioned.
     pub weight: u32,
     /// Its frame count, set when the plan is apportioned.
@@ -386,12 +782,16 @@ impl Spec {
             return UNDATED_FILES;
         }
         let moments = self.required.iter().map(|r| r.moments()).sum::<u32>() + self.edges();
-        let needed = if self.days > 1 {
-            MOMENTS_A_DAY * u32::from(self.days)
-        } else {
-            1
-        };
-        self.fixed_frames() + needed.saturating_sub(moments)
+        self.fixed_frames() + needed_moments(self.days).saturating_sub(moments)
+    }
+}
+
+/// The fewest moments an event of `days` days holds.
+fn needed_moments(days: u8) -> u32 {
+    if days > 1 {
+        MOMENTS_A_DAY * u32::from(days)
+    } else {
+        1
     }
 }
 
@@ -460,9 +860,11 @@ pub struct Frame {
     pub index: u8,
     /// Its step in EV within a bracket.
     pub step: Option<i8>,
-    /// The camera's clock, `None` when undated.
+    /// The camera's clock, `None` when undated: local time for a body that writes its offset,
+    /// UTC for one that does not.
     pub time: Option<LocalTime>,
-    /// The zone's offset at the capture, in minutes (written only by bodies that write one).
+    /// How far the clock is ahead of UTC, in minutes: the zone's offset for a body that writes
+    /// it, 0 for one that does not.
     pub offset: i16,
     pub gps: Option<Gps>,
     pub exposure: Exposure,
@@ -489,11 +891,17 @@ impl Frame {
 /// frames in order (the two bursts of a pair overlap in time, one after the other here).
 pub struct Event {
     pub label: String,
-    /// Where it happened, whether or not any frame carries a position; `None` for the undated
+    /// Where it happened, whether or not any frame carries a position; `None` for an undated
     /// event.
     pub place: Option<&'static Place>,
-    /// The user-named folder its `Named` bodies' files go into.
+    /// What the person calls it: the user-named folder's name after its date, or the place's.
+    pub title: String,
+    /// The user-named folder its `Named` bodies' files (or, filed by trip, all its files) go into:
+    /// `<first day> <title>`, or the title alone when undated.
     pub folder: String,
+    pub filing: Filing,
+    /// Its cameras wrote JPEG rather than RAW.
+    pub jpeg: bool,
     pub start: Date,
     pub frames: Vec<Frame>,
 }
@@ -519,17 +927,48 @@ impl Event {
     pub fn moment_label(&self, moment: u32) -> String {
         format!("{}/{moment:04}", self.label)
     }
+
+    /// Where a September trip's frame is kept: whether on the card, and its folder there or under
+    /// the pictures folder.
+    pub fn source_folder(&self, frame: &Frame) -> (bool, String) {
+        let body = frame.body();
+        match body.storage {
+            Storage::Card { suffix } => (
+                true,
+                format!("DCIM/{}{suffix}", body.file_stem(frame.count).0),
+            ),
+            Storage::Dump => (false, format!("Card dumps/{}", self.start)),
+            Storage::Named => (false, self.folder.clone()),
+            Storage::Phone => (false, "iPhone export".into()),
+        }
+    }
+
+    /// A frame's file name in the index and the catalog: its RAW extension, or `JPG` for the
+    /// phone, on a trip shot in JPEG and for undated files, which are exports.
+    pub fn file_name(&self, frame: &Frame) -> String {
+        let body = frame.body();
+        let extension = if self.place.is_none() || self.jpeg {
+            "JPG"
+        } else {
+            body.raw_extension
+        };
+        format!("{}.{extension}", body.file_stem(frame.count).1)
+    }
 }
 
-/// The trips of September 2026 every mode starts from: a two-day Konstanz trip with both Nikon
-/// bodies, the Leica and the phone; a day at the lake with no GPS at all; Zürich and then Luzern on
-/// one day, over 25 km apart inside the hour; a three-day Lindau trip with the drone; and the
-/// undated files in "From Anna".
-pub fn september() -> Vec<Spec> {
-    let spec = |label: &str, place, start, days, bodies: &[(usize, u32)], weight| Spec {
+fn spec(
+    label: &str,
+    place: Option<&'static Place>,
+    start: Date,
+    days: u8,
+    bodies: &[(usize, u32)],
+    weight: u32,
+) -> Spec {
+    Spec {
         label: label.into(),
         place,
         folder: None,
+        filing: Filing::BySource,
         start,
         days,
         bodies: bodies.to_vec(),
@@ -538,9 +977,18 @@ pub fn september() -> Vec<Spec> {
         last: None,
         begins: Start::Morning,
         cap: None,
+        developed: false,
+        jpeg: false,
         weight,
         budget: 0,
-    };
+    }
+}
+
+/// The trips of September 2026 every mode starts from: a two-day Konstanz trip with both Nikon
+/// bodies, the Leica and the phone; a day at the lake with no GPS at all; Zürich and then Luzern on
+/// one day, over 25 km apart inside the hour; a three-day Lindau trip with the drone; and the
+/// undated files in "From Anna".
+pub fn september() -> Vec<Spec> {
     vec![
         Spec {
             required: vec![
@@ -624,6 +1072,9 @@ pub fn september() -> Vec<Spec> {
     ]
 }
 
+/// The first day of the September trips.
+pub const SEPTEMBER: Date = Date::new(2026, 9, 12);
+
 /// Shares `total` among `specs` by weight, never below a spec's minimum. Refuses a total under the
 /// sum of the minimums.
 pub fn apportion(specs: &mut [Spec], total: u32) -> Result<(), String> {
@@ -660,9 +1111,123 @@ pub fn apportion(specs: &mut [Spec], total: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// How a run of older trips is drawn.
+pub struct History {
+    /// The frames between them.
+    pub total: u32,
+    /// The mean frames of one trip.
+    pub mean: u32,
+    /// The whole days between one trip's last day and the next one's first.
+    pub gaps: (i64, i64),
+    /// The last trip ends at least a day before this date.
+    pub before: Date,
+    /// Developed photographs rather than every frame shot (see [`Spec::developed`]).
+    pub developed: bool,
+    /// Which trips' folders are on the external drive.
+    pub external: External,
+    /// Of `total`, the undated files that close the run, in "Scans" on the internal disk.
+    pub undated: u32,
+    /// The random stream its own draws come from, apart from every event's and another
+    /// history's.
+    pub stream: u64,
+}
+
+/// Which older trips are on the external drive; the rest are on the internal disk.
+#[derive(Clone, Copy, Debug)]
+pub enum External {
+    /// The older half.
+    OlderHalf,
+    /// Those that start in these years.
+    Years(i32, i32),
+}
+
+/// Older trips, in time order, that end before `history.before`: each at a place drawn from
+/// [`HISTORY_PLACES`], with a main camera, sometimes a second, often the phone and now and then
+/// the drone, lasting a day to three by its size.
+pub fn history(seed: u64, history: &History) -> Vec<Spec> {
+    let mut random = Random::stream(seed, history.stream);
+    let dated = history.total - history.undated.min(history.total);
+    let mut sizes = Vec::new();
+    let mut left = dated;
+    while left > 0 {
+        let size = ((f64::from(history.mean) * random.uniform(0.4, 1.6)).round() as u32).max(3);
+        let size = if left - size.min(left) < 3 {
+            left
+        } else {
+            size
+        };
+        sizes.push(size);
+        left -= size;
+    }
+    let weights: Vec<u32> = HISTORY_PLACES.iter().map(|&(_, w)| w).collect();
+    let mut specs = Vec::with_capacity(sizes.len() + 1);
+    let mut before = history.before;
+    // Drawn from the latest trip back, then turned into time order.
+    let count = sizes.len();
+    for (back, &size) in sizes.iter().rev().enumerate() {
+        let days: u8 = match size {
+            40.. => [1, 1, 1, 1, 1, 1, 1, 2, 2, 3][random.between(0, 9) as usize],
+            24.. => [1, 1, 1, 2][random.between(0, 3) as usize],
+            _ => 1,
+        };
+        let gap = random.between(history.gaps.0, history.gaps.1);
+        let start = before.add_days(-gap - i64::from(days));
+        before = start;
+        let place = &HISTORY_PLACES[random.weighted(&weights)].0;
+        let main = *random.pick(&[Z8_A, Z8_A, LEICA, FUJI]);
+        let mut bodies = vec![(main, 4)];
+        if random.chance(0.25) {
+            let second = *random.pick(&[Z8_A, LEICA, FUJI]);
+            if second != main {
+                bodies.push((second, 2));
+            }
+        }
+        if random.chance(0.6) {
+            bodies.push((PHONE, 2));
+        }
+        if random.chance(0.12) {
+            bodies.push((DRONE, 1));
+        }
+        let external = match history.external {
+            External::OlderHalf => back >= count / 2,
+            External::Years(first, last) => (first..=last).contains(&start.year),
+        };
+        specs.push(Spec {
+            filing: Filing::Trip(if external {
+                Drive::External
+            } else {
+                Drive::Internal
+            }),
+            jpeg: random.chance(0.35),
+            developed: history.developed,
+            budget: size,
+            ..spec(
+                &format!("{}-{start}", place.slug),
+                Some(place),
+                start,
+                days,
+                &bodies,
+                0,
+            )
+        });
+    }
+    specs.reverse();
+    if history.undated > 0 {
+        specs.push(Spec {
+            folder: Some("Scans"),
+            filing: Filing::Trip(Drive::Internal),
+            budget: history.undated.min(history.total),
+            ..spec("scans", None, history.before, 1, &[(FUJI, 1)], 0)
+        });
+    }
+    specs
+}
+
 /// A plan: its specs, made into events one at a time.
 pub struct Plan {
     seed: u64,
+    /// Where this plan's events' random streams start, so two plans of one run draw apart.
+    stream: u64,
     specs: std::vec::IntoIter<Spec>,
     made: u64,
     counters: [u32; BODIES.len()],
@@ -670,9 +1235,10 @@ pub struct Plan {
 }
 
 impl Plan {
-    pub fn new(seed: u64, specs: Vec<Spec>) -> Self {
+    pub fn new(seed: u64, stream: u64, specs: Vec<Spec>) -> Self {
         Plan {
             seed,
+            stream,
             specs: specs.into_iter(),
             made: 0,
             counters: BODIES.map(|body| body.first_number - 1),
@@ -689,7 +1255,62 @@ impl Plan {
         }
         let mut specs = september();
         apportion(&mut specs, total)?;
-        Ok(Plan::new(seed, specs))
+        Ok(Plan::new(seed, 0, specs))
+    }
+
+    /// What an index of `total` files holds: older trips, the later half on the internal disk and
+    /// the older half on the external drive, then the September trips with a third of the files,
+    /// at most 3,000.
+    pub fn files(seed: u64, total: u32) -> Result<Self, String> {
+        let mut specs = september();
+        let minimum: u32 = specs.iter().map(Spec::minimum).sum();
+        let recent = (total / 3).clamp(minimum, 3_000).min(total);
+        apportion(&mut specs, recent)?;
+        let mut all = history(
+            seed,
+            &History {
+                total: total - recent,
+                mean: 250,
+                gaps: (5, 40),
+                before: SEPTEMBER.add_days(-2),
+                developed: false,
+                external: External::OlderHalf,
+                undated: 0,
+                stream: 0x4849_5354_0000_0001,
+            },
+        );
+        all.extend(specs);
+        Ok(Plan::new(seed, 0, all))
+    }
+
+    /// `total` developed photographs from older trips over several years ending before `before`,
+    /// and a few undated scans: trips of up to 400 photographs, spaced so a million spans about
+    /// twenty years; those of 2020 to 2022 on the external drive.
+    pub fn developed(seed: u64, total: u32, before: Date) -> Self {
+        let mean = (total / 400).clamp(40, 400);
+        let trips = i64::from(total / mean).max(1);
+        let spacing = (2 * 3650 / trips).max(2);
+        let undated = if total >= 100 {
+            (total / 500).max(3)
+        } else {
+            0
+        };
+        let history = History {
+            total,
+            mean,
+            gaps: (1, spacing),
+            before,
+            developed: true,
+            external: External::Years(2020, 2022),
+            undated,
+            stream: 0x4849_5354_0000_0002,
+        };
+        Plan::new(seed, 1 << 40, self::history(seed, &history))
+    }
+
+    /// The first day of the plan's next event.
+    pub fn first_day(&self) -> Option<Date> {
+        self.specs.as_slice().first().map(|spec| spec.start)
     }
 }
 
@@ -699,26 +1320,36 @@ impl Iterator for Plan {
     fn next(&mut self) -> Option<Event> {
         let spec = self.specs.next()?;
         let mut maker = Maker {
-            random: Random::stream(self.seed, self.made),
+            random: Random::stream(self.seed, self.stream + self.made),
             spec: &spec,
+            zone: spec.place.map_or(0, |place| place.zone.offset(spec.start)),
             counters: &mut self.counters,
             frames: Vec::with_capacity(spec.budget as usize),
             moment: 0,
         };
-        maker.make(self.previous_end);
-        let frames = maker.frames;
-        self.made += 1;
-        if let Some(end) = frames.iter().filter_map(|frame| frame.time).max() {
+        if let Some(end) = maker.make(self.previous_end) {
             self.previous_end = Some(end);
         }
-        let folder = match (spec.place, spec.folder) {
-            (None, folder) => folder.unwrap_or("Undated").to_owned(),
-            (Some(place), folder) => format!("{} {}", spec.start, folder.unwrap_or(place.name)),
+        let frames = maker.frames;
+        self.made += 1;
+        let (title, folder) = match (spec.place, spec.folder) {
+            (None, folder) => {
+                let name = folder.unwrap_or("Undated").to_owned();
+                (name.clone(), name)
+            }
+            (Some(place), folder) => {
+                let title = folder.unwrap_or(place.name).to_owned();
+                let folder = format!("{} {title}", spec.start);
+                (title, folder)
+            }
         };
         Some(Event {
             label: spec.label,
             place: spec.place,
+            title,
             folder,
+            filing: spec.filing,
+            jpeg: spec.jpeg,
             start: spec.start,
             frames,
         })
@@ -768,6 +1399,8 @@ struct Draft {
 struct Maker<'a> {
     random: Random,
     spec: &'a Spec,
+    /// The zone's offset in minutes over the whole event, from its first day.
+    zone: i16,
     counters: &'a mut [u32; BODIES.len()],
     frames: Vec<Frame>,
     moment: u32,
@@ -789,14 +1422,16 @@ const BRACKET_TIMES: &[(u32, u32)] = &[(1, 1000), (1, 500), (1, 250), (1, 125), 
 const NIGHT_TIMES: &[(u32, u32)] = &[(15, 1), (20, 1), (25, 1), (30, 1)];
 
 impl Maker<'_> {
-    fn make(&mut self, previous_end: Option<LocalTime>) {
+    /// Lays out the event on the local wall clock of its place ([`Self::place`] turns each time
+    /// into its body's clock) and answers when, on that clock, its last frame was taken.
+    fn make(&mut self, previous_end: Option<LocalTime>) -> Option<LocalTime> {
         if self.spec.undated() {
             let body = self.spec.bodies[0].0;
             for _ in 0..self.spec.budget {
                 let drafts = self.realize(Draw::Single(body), false);
                 self.place(drafts, None);
             }
-            return;
+            return None;
         }
         let days = self.draws();
         let mut start = match self.spec.begins {
@@ -810,8 +1445,9 @@ impl Maker<'_> {
             Start::Morning => self.spec.start.at(8, 0) + self.random.between(0, 2 * HOUR),
         };
         let day_count = days.len();
+        let mut end = start;
         for (day, draws) in days.into_iter().enumerate() {
-            let end = self.day(start, &draws);
+            end = self.day(start, &draws);
             if day + 1 < day_count {
                 let next = self.spec.start.add_days(day as i64 + 1).at(7, 30)
                     + self.random.between(0, 10 * MINUTE);
@@ -819,6 +1455,7 @@ impl Maker<'_> {
                 start = next;
             }
         }
+        Some(end)
     }
 
     /// The event's moments, split into its days.
@@ -832,14 +1469,9 @@ impl Maker<'_> {
             draws.push(draw);
         }
         let required: u32 = spec.required.iter().map(|r| r.moments()).sum::<u32>() + spec.edges();
-        let needed = if spec.days > 1 {
-            MOMENTS_A_DAY * u32::from(spec.days)
-        } else {
-            1
-        };
         // A day of a multi-day event needs enough moments to span it: break the largest drawn
         // moments into singles until there are.
-        while (draws.len() as u32) + required < needed {
+        while (draws.len() as u32) + required < needed_moments(spec.days) {
             let (at, largest) = draws
                 .iter()
                 .enumerate()
@@ -875,13 +1507,23 @@ impl Maker<'_> {
 
     /// One moment drawn at random, of at most `remaining` frames.
     fn extra(&mut self, remaining: u32) -> Draw {
-        let weights: Vec<u32> = self.spec.bodies.iter().map(|&(_, w)| w).collect();
-        let body = self.spec.bodies[self.random.weighted(&weights)].0;
+        let bodies = &self.spec.bodies;
+        let total: u64 = bodies.iter().map(|&(_, w)| u64::from(w)).sum();
+        let mut target = self.random.next_u64() % total;
+        let mut body = bodies[0].0;
+        for &(candidate, weight) in bodies {
+            if target < u64::from(weight) {
+                body = candidate;
+                break;
+            }
+            target -= u64::from(weight);
+        }
         let (bracket, burst) = match BODIES[body].bracket {
             None => (0.0, 0.2),
             Some(BracketKind::MetadataLess) => (0.35, 0.0),
             Some(_) => (0.13, 0.25),
         };
+        let burst = if self.spec.developed { 0.0 } else { burst };
         let roll = self.random.unit();
         if roll < bracket && remaining >= 3 {
             if remaining >= 5 && self.random.chance(0.3) {
@@ -949,16 +1591,20 @@ impl Maker<'_> {
         }
     }
 
-    /// Gives a moment's drafts their times and file numbers and appends them.
+    /// Gives a moment's drafts their times (`start` is on the place's local wall clock) and file
+    /// numbers, and appends them.
     fn place(&mut self, drafts: Vec<Draft>, start: Option<LocalTime>) {
         let parts = drafts.iter().map(|d| d.part).max().unwrap_or(0) + 1;
         for draft in drafts {
             let mut frame = draft.frame;
             frame.moment = self.moment + draft.part;
-            frame.time = start.map(|start| start + draft.offset);
-            if let (Some(time), Some(place)) = (frame.time, self.spec.place) {
-                frame.offset = place.zone.offset(time.date());
-            }
+            frame.offset = if frame.body().writes_offset {
+                self.zone
+            } else {
+                0
+            };
+            let behind = i64::from(self.zone - frame.offset) * MINUTE;
+            frame.time = start.map(|start| start + (draft.offset - behind));
             self.counters[frame.body] += 1;
             frame.count = self.counters[frame.body];
             self.frames.push(frame);

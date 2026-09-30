@@ -358,17 +358,49 @@ fn distance_km(a: &Frame, b: &Frame) -> f64 {
 
 const THREE_HOURS: i64 = 3 * 3600 * 1000;
 
-/// Every property the plan promises the event and moment rules, checked over a whole plan.
-fn check_plan(events: &[Event]) {
-    let mut kinds = Vec::new();
-    let mut jumps = 0;
+/// What a whole plan holds, once [`check_events`] has checked it.
+#[derive(Default)]
+struct Found {
+    kinds: Vec<MomentKind>,
+    jumps: usize,
+    unpositioned: usize,
+    undated: usize,
+}
+
+/// Every property the plan promises the event and moment rules, over a whole plan in time order:
+/// gaps under 3 hours and positioned neighbours within 25 km inside an event; over 3 hours, or a
+/// jump of over 25 km inside an hour, between events; one body's moments over 2 s apart with its
+/// file numbers in time order; bursts and brackets as P5 reads them; moments in capture order; and
+/// every recorded time's instant, as the core reads it, the frame's true instant.
+fn check_events(events: &[Event]) -> Found {
+    let mut found = Found::default();
     let mut previous: Option<Frame> = None;
-    for event in events.iter().filter(|e| e.place.is_some()) {
+    for event in events {
+        if event.place.is_none() {
+            assert!(event.frames.iter().all(|f| f.time.is_none()));
+            found.undated += event.frames.len();
+            continue;
+        }
+        for frame in &event.frames {
+            let header = super::disk::header(frame, false, 0).unwrap();
+            assert_eq!(
+                header.capture.map(|time| time.instant_ms()),
+                frame.utc(),
+                "{}: the core reads another instant",
+                event.label
+            );
+        }
+        found.unpositioned += usize::from(!event.positioned());
         let mut frames = event.frames.clone();
         frames.sort_by_key(|f| f.utc().unwrap());
         let (first, last) = (frames[0], *frames.last().unwrap());
         if let Some(before) = previous {
             let gap = first.utc().unwrap() - before.utc().unwrap();
+            assert!(
+                gap > 0,
+                "{} starts before the event before ends",
+                event.label
+            );
             if gap <= THREE_HOURS {
                 assert!(
                     gap < 3600 * 1000,
@@ -383,7 +415,7 @@ fn check_plan(events: &[Event]) {
                     event.label
                 );
                 assert_eq!(before.time.unwrap().date(), first.time.unwrap().date());
-                jumps += 1;
+                found.jumps += 1;
             }
         }
         previous = Some(last);
@@ -394,7 +426,6 @@ fn check_plan(events: &[Event]) {
                 assert!(distance_km(&pair[0], &pair[1]) < 25.0, "{}", event.label);
             }
         }
-        // One body's consecutive moments are over 2 s apart.
         let mut by_body: BTreeMap<usize, Vec<Frame>> = BTreeMap::new();
         for frame in &frames {
             by_body.entry(frame.body).or_default().push(*frame);
@@ -416,9 +447,15 @@ fn check_plan(events: &[Event]) {
         for frame in &event.frames {
             moments.entry(frame.moment).or_default().push(*frame);
         }
+        let starts: Vec<i64> = moments.values().map(|m| m[0].utc().unwrap()).collect();
+        assert!(
+            starts.windows(2).all(|s| s[0] <= s[1]),
+            "{}: moments in capture order, so no day ran into the next",
+            event.label
+        );
         for frames in moments.values() {
             let kind = frames[0].kind;
-            kinds.push(kind);
+            found.kinds.push(kind);
             assert!(
                 frames
                     .iter()
@@ -467,53 +504,279 @@ fn check_plan(events: &[Event]) {
             }
         }
     }
-    assert_eq!(jumps, 1, "one same-day jump of over 25 km");
-    for kind in [
-        MomentKind::Single,
-        MomentKind::Burst,
-        MomentKind::Bracket(BracketKind::WithBias),
-        MomentKind::Bracket(BracketKind::WithoutBias),
-        MomentKind::Bracket(BracketKind::MetadataLess),
-    ] {
-        assert!(kinds.contains(&kind), "no {kind:?}");
-    }
-    assert!(
-        events
-            .iter()
-            .any(|e| e.place.is_some() && !e.positioned() && e.frames.len() > 1),
-        "an event with no GPS at all"
-    );
-    let undated = events.iter().find(|e| e.place.is_none()).unwrap();
-    assert!(undated.frames.iter().all(|f| f.time.is_none()));
+    found
 }
+
+const EVERY_KIND: [MomentKind; 5] = [
+    MomentKind::Single,
+    MomentKind::Burst,
+    MomentKind::Bracket(BracketKind::WithBias),
+    MomentKind::Bracket(BracketKind::WithoutBias),
+    MomentKind::Bracket(BracketKind::MetadataLess),
+];
 
 #[test]
 fn every_plan_keeps_the_event_and_moment_rules_and_its_count() {
+    let count = |events: &[Event]| events.iter().map(|e| e.frames.len() as u32).sum::<u32>();
     for seed in 1..=6 {
-        for count in [
+        for total in [
             super::plan::september().iter().map(|s| s.minimum()).sum(),
             150,
             700,
             super::plan::MOST_IMAGES,
         ] {
-            let events: Vec<Event> = Plan::images(seed, count).unwrap().collect();
-            assert_eq!(
-                events.iter().map(|e| e.frames.len() as u32).sum::<u32>(),
-                count
-            );
+            let events: Vec<Event> = Plan::images(seed, total).unwrap().collect();
+            assert_eq!(count(&events), total);
             let days: Vec<usize> = events.iter().map(|e| e.days().len()).collect();
-            assert_eq!(days, [2, 1, 1, 1, 3, 0], "seed {seed}, {count} frames");
-            for event in &events {
-                // Moments start in capture order, so no day ran into the next.
-                let mut starts: BTreeMap<u32, i64> = BTreeMap::new();
-                for frame in event.frames.iter().filter(|f| f.time.is_some()) {
-                    starts.entry(frame.moment).or_insert(frame.utc().unwrap());
-                }
-                let starts: Vec<i64> = starts.into_values().collect();
-                assert!(starts.windows(2).all(|s| s[0] <= s[1]), "{}", event.label);
-            }
-            check_plan(&events);
+            assert_eq!(days, [2, 1, 1, 1, 3, 0], "seed {seed}, {total} frames");
+            let found = check_events(&events);
+            assert_eq!(found.jumps, 1, "one same-day jump of over 25 km");
+            assert!(EVERY_KIND.iter().all(|kind| found.kinds.contains(kind)));
+            assert_eq!(
+                found.unpositioned, 1,
+                "the day at the lake has no GPS at all"
+            );
+            assert!(found.undated >= 3);
         }
+        let events: Vec<Event> = Plan::files(seed, 4_000).unwrap().collect();
+        assert_eq!(count(&events), 4_000);
+        let found = check_events(&events);
+        assert_eq!(found.jumps, 1);
+        assert!(EVERY_KIND.iter().all(|kind| found.kinds.contains(kind)));
+        let developed = Plan::developed(seed, 20_000, super::plan::SEPTEMBER);
+        let events: Vec<Event> = developed.collect();
+        assert_eq!(count(&events), 20_000);
+        let found = check_events(&events);
+        assert_eq!(found.jumps, 0);
+        assert!(
+            !found.kinds.contains(&MomentKind::Burst),
+            "developed: no bursts"
+        );
+        assert!(found.undated >= 3);
+        let years: Vec<i32> = events.iter().map(|e| e.start.year).collect();
+        assert!(
+            years[years.len() - 1] - years[0] >= 5,
+            "over several years: {years:?}"
+        );
     }
     assert!(Plan::images(1, super::plan::MOST_IMAGES + 1).is_err());
+    assert!(Plan::files(1, 50).is_err());
+}
+
+/// Every row of every table of `schema` on `index`'s connection (its own `main`, or a catalog
+/// attached to it), as text, in order.
+fn dump(index: &luxforge_core::IndexDb, schema: &str) -> Vec<String> {
+    let connection = index.connection();
+    let mut tables = connection
+        .prepare(&format!(
+            "SELECT name FROM {schema}.sqlite_master
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ))
+        .unwrap();
+    let tables: Vec<String> = tables
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    let mut rows = Vec::new();
+    for table in tables {
+        let mut columns = connection
+            .prepare("SELECT name FROM pragma_table_info(?1, ?2) ORDER BY cid")
+            .unwrap();
+        let columns: Vec<String> = columns
+            .query_map([table.as_str(), schema], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        let text = columns
+            .iter()
+            .map(|column| format!("quote(\"{column}\")"))
+            .collect::<Vec<_>>()
+            .join(" || '|' || ");
+        let mut select = connection
+            .prepare(&format!(
+                "SELECT {text} FROM {schema}.\"{table}\" ORDER BY 1"
+            ))
+            .unwrap();
+        rows.extend(
+            select
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .map(|row| format!("{table}: {}", row.unwrap())),
+        );
+    }
+    rows
+}
+
+/// A generated catalog and index in a scratch directory, removed when dropped.
+struct Seeded {
+    root: PathBuf,
+    seed: u64,
+}
+
+impl Seeded {
+    fn new(options: Options, label: &str) -> Self {
+        let root = temp_dir(label);
+        let seed = options.seed;
+        run(&root.join("out"), &options).unwrap();
+        Seeded { root, seed }
+    }
+
+    fn catalog(&self) -> PathBuf {
+        self.root.join("out").join(CATALOG)
+    }
+
+    /// The index, with the catalog attached as `catalog`.
+    fn index(&self) -> luxforge_core::IndexDb {
+        let (index, opened) = luxforge_core::IndexDb::open(
+            &luxforge_core::index_dir(&self.catalog()),
+            &catalog_id(self.seed),
+        )
+        .unwrap();
+        assert_eq!(opened, luxforge_core::IndexOpened::Opened);
+        index
+            .connection()
+            .execute(
+                "ATTACH DATABASE ?1 AS catalog",
+                [self.catalog().to_str().unwrap()],
+            )
+            .unwrap();
+        index
+    }
+
+    /// Every row of the index and the catalog.
+    fn rows(&self) -> Vec<String> {
+        let index = self.index();
+        let mut rows = dump(&index, "main");
+        rows.extend(dump(&index, "catalog"));
+        rows
+    }
+}
+
+impl Drop for Seeded {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn seeded(seed: u64, files: u32, assets: u32) -> Options {
+    Options {
+        seed,
+        files: Some(files),
+        assets: Some(assets),
+        images: None,
+    }
+}
+
+#[test]
+fn the_same_seed_seeds_the_same_rows_and_another_seed_does_not() {
+    let first = Seeded::new(seeded(7, 300, 900), "generate-catalog-rows-first");
+    let again = Seeded::new(seeded(7, 300, 900), "generate-catalog-rows-again");
+    let other = Seeded::new(seeded(8, 300, 900), "generate-catalog-rows-other");
+    let rows = first.rows();
+    assert!(rows.len() > 4 * 900 + 300, "{} rows", rows.len());
+    assert!(rows == again.rows(), "the same seed seeded different rows");
+    assert!(rows != other.rows());
+}
+
+/// One number the attached index and catalog answer.
+fn count(index: &luxforge_core::IndexDb, query: &str) -> i64 {
+    index
+        .connection()
+        .query_row(query, [], |row| row.get(0))
+        .unwrap_or_else(|error| panic!("{query}: {error}"))
+}
+
+#[test]
+fn a_generated_catalog_index_and_image_folder_open_with_the_core() {
+    let seeded = Seeded::new(
+        Options {
+            images: Some(100),
+            ..seeded(3, 400, 1_200)
+        },
+        "generate-catalog-open",
+    );
+    assert!(seeded.root.join("out/images/manifest.json").is_file());
+    let service = luxforge_core::EditorService::open(&seeded.catalog()).unwrap();
+    let page = service.assets(None, 10).unwrap();
+    assert_eq!(page.assets.len(), 10);
+    for asset in &page.assets {
+        let state = service.state(&asset.id).unwrap();
+        assert_eq!(state.current_entry.label, "Original");
+        assert_eq!(state.asset.locator, asset.locator);
+    }
+    let files: i64 = service
+        .index()
+        .unwrap()
+        .connection()
+        .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(files, 400);
+    drop(service);
+
+    let index = seeded.index();
+    let count = |query: &str| count(&index, query);
+    assert_eq!(count("SELECT count(*) FROM catalog.assets"), 1_200);
+    assert_eq!(
+        count("SELECT count(DISTINCT source_kind) FROM catalog.assets"),
+        2
+    );
+    for availability in ["available", "offline", "missing", "changed"] {
+        assert!(
+            count(&format!(
+                "SELECT count(*) FROM catalog.assets WHERE availability = '{availability}'"
+            )) > 0,
+            "{availability}"
+        );
+    }
+    assert!(count("SELECT count(*) FROM catalog.assets WHERE removed_ms IS NOT NULL") > 0);
+    assert!(count("SELECT count(*) FROM catalog.assets WHERE develop_moment IS NOT NULL") > 1);
+    // Some files are developed already: the same path, identity and capture header.
+    let developed = "FROM catalog.assets a JOIN files f ON f.path = a.locator
+                     JOIN catalog.capture c ON c.asset_row = a.row_id";
+    assert!(count(&format!("SELECT count(*) {developed}")) > 0);
+    assert_eq!(
+        count(&format!(
+            "SELECT count(*) {developed} WHERE a.file_identity
+                 IS NOT 'unix:' || f.device || ':' || f.inode
+             OR c.capture_ms IS NOT f.capture_ms OR c.local_text IS NOT f.local_text
+             OR c.offset_minutes IS NOT f.offset_minutes OR c.make IS NOT f.make
+             OR c.body_serial IS NOT f.body_serial OR c.lens IS NOT f.lens
+             OR c.latitude IS NOT f.latitude OR c.exposure_time_s IS NOT f.exposure_time_s
+             OR c.exposure_bias_ev IS NOT f.exposure_bias_ev OR c.width IS NOT f.width"
+        )),
+        0
+    );
+    // Picks are of indexed files not yet developed.
+    assert!(count("SELECT count(*) FROM catalog.picks") > 0);
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM catalog.picks p LEFT JOIN files f ON f.path = p.path
+             WHERE f.id IS NULL OR p.path IN (SELECT locator FROM catalog.assets)"
+        ),
+        0
+    );
+    assert!(count("SELECT count(*) FROM catalog.catalog_folders WHERE parent_id IS NOT NULL") > 0);
+    assert!(
+        count("SELECT count(*) FROM catalog.catalog_folders WHERE event_start_ms IS NOT NULL") > 0
+    );
+    assert_eq!(count("SELECT count(*) FROM catalog.collections"), 5);
+    assert_eq!(
+        count("SELECT count(*) FROM catalog.collections WHERE query_json IS NOT NULL"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(DISTINCT collection_id) FROM catalog.collection_members"),
+        3
+    );
+    assert_eq!(count("SELECT count(*) FROM catalog.indexed_folders"), 2);
+    assert_eq!(count("SELECT count(*) FROM catalog.volumes"), 3);
+    assert_eq!(count("SELECT sum(file_count) FROM roots"), 400);
+    assert_eq!(count("SELECT count(*) FROM roots WHERE offline = 1"), 1);
+    assert_eq!(
+        count("SELECT count(*) FROM files WHERE header_state = 'unreadable'"),
+        2
+    );
+    assert!(count("SELECT count(*) FROM files WHERE header_state = 'pending'") > 0);
+    assert!(count("SELECT count(*) FROM files WHERE thumb_len IS NOT NULL") > 0);
 }

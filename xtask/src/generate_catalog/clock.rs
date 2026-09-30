@@ -55,9 +55,17 @@ impl Date {
         Date::from_days(self.days() + days)
     }
 
-    /// The first millisecond of the date on a camera's clock.
+    /// `hour:minute` on the date, on a camera's clock.
     pub fn at(self, hour: i64, minute: i64) -> LocalTime {
         LocalTime(self.days() * DAY + hour * HOUR + minute * MINUTE)
+    }
+
+    /// The month's English abbreviation, `Sep`.
+    pub fn month_name(self) -> &'static str {
+        const NAMES: [&str; 12] = [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ];
+        NAMES[usize::from(self.month) - 1]
     }
 }
 
@@ -144,11 +152,27 @@ pub struct Zone {
     pub summer_time: bool,
 }
 
+const fn zone(standard: i16, summer_time: bool) -> Zone {
+    Zone {
+        standard,
+        summer_time,
+    }
+}
+
 /// Central European time: +01:00, +02:00 in summer.
-pub const CENTRAL: Zone = Zone {
-    standard: 60,
-    summer_time: true,
-};
+pub const CENTRAL: Zone = zone(60, true);
+/// Western European time: +00:00, +01:00 in summer.
+pub const WESTERN: Zone = zone(0, true);
+/// Eastern European time: +02:00, +03:00 in summer.
+pub const EASTERN: Zone = zone(120, true);
+/// Iceland: +00:00 all year.
+pub const ICELAND: Zone = zone(0, false);
+/// US Eastern time: −05:00, −04:00 in summer.
+pub const US_EASTERN: Zone = zone(-300, true);
+/// Japan: +09:00 all year.
+pub const JAPAN: Zone = zone(540, false);
+/// South Africa: +02:00 all year.
+pub const SOUTH_AFRICA: Zone = zone(120, false);
 
 impl Zone {
     /// Minutes ahead of UTC on `date`.
