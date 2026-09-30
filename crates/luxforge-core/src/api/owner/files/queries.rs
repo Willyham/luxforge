@@ -20,8 +20,9 @@
 //!   lane, whose watcher reports every volume mounted or taken out ([`volume`]), which asks for
 //!   the next survey. Where the platform offers no watcher, a call that reads what an earlier
 //!   call read asks for a survey instead ([`learned`]). A card mounted while the lane watches is
-//!   listed once a survey has found its `DCIM` folder, and so is every card already mounted as the
-//!   lane starts, once the first survey that begins after its watcher is found ([`lane_started`]).
+//!   listed once a survey has found its `DCIM` folder, and so is every card already mounted as a
+//!   catalog with indexed folders opens and starts the lane, once the first survey that begins
+//!   after its watcher has found it ([`lane_started`]).
 //! - **The index.** Lane A's reads use the service's index only once it is open: the survey opens
 //!   an index that is there, and the index lane hands over the one it creates, so neither opening
 //!   nor recreating it happens on the owner.
@@ -130,12 +131,16 @@ pub(super) fn volume(owner: &mut Owner, event: VolumeEvent) {
     request_survey(owner);
 }
 
-/// The index lane started, its watcher reporting every volume mounted from now on: the cards
-/// already mounted are listed as if they mounted now, as `index.refresh` jobs no request made, once
-/// the next survey — which begins after the watcher did, so no card falls between them — has found
-/// them. A test's lane lists only the cards of the mount table the test stands in with, never this
-/// machine's own.
+/// The index lane started, its watcher reporting every volume mounted from now on. When it started
+/// as the catalog opened, the cards already mounted are listed as if they mounted now, as
+/// `index.refresh` jobs no request made, once the next survey — which begins after the watcher did,
+/// so no card falls between them — has found them. A test's lane lists only the cards of the mount
+/// table the test stands in with, never this machine's own.
 pub(super) fn lane_started(owner: &mut Owner) {
+    let surveys = &mut owner.catalog.files.surveys;
+    if !std::mem::take(&mut surveys.opening) {
+        return;
+    }
     #[cfg(test)]
     if matches!(
         owner.catalog.files.mounts,
@@ -215,8 +220,11 @@ pub(super) struct Surveys {
     /// Volumes the watcher reported mounted, each with the first survey that learns it: once that
     /// survey has, one with a `DCIM` folder is listed as a card.
     mounted: Vec<(PathBuf, u64)>,
-    /// The first survey after the lane started, while it has still to post its last: each card it
-    /// learns is listed, as a card mounted then would be.
+    /// The lane is starting as the catalog opens: once its watcher runs, the cards mounted are
+    /// listed.
+    pub(super) opening: bool,
+    /// The first survey after the lane started as the catalog opened, while it has still to post
+    /// its last: each card it learns is listed, as a card mounted then would be.
     at_start: Option<u64>,
 }
 
@@ -531,8 +539,8 @@ fn cards_mounted(owner: &mut Owner, number: u64, last: bool) {
 }
 
 /// List each card post `cards` of survey `number` learned, when that survey is the first since the
-/// lane started (or a later one, should that one have ended without posting): the cards mounted as
-/// the lane started, each still mounted now, listed as a card mounted then would be.
+/// lane started as the catalog opened (or a later one, should that one have ended without posting):
+/// the cards mounted as it started, each still mounted now, listed as a card mounted then would be.
 fn cards_at_start(owner: &mut Owner, number: u64, last: bool, cards: Vec<(Volume, PathBuf)>) {
     let files = &mut owner.catalog.files;
     let Some(first) = files.surveys.at_start else {

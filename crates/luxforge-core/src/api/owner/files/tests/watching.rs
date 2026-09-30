@@ -1,8 +1,9 @@
 //! The index keeping up by itself through the platform's change notifications, over real scratch
 //! folders (canonical paths) and a fixed mount table: changes in an indexed folder applied by
 //! signature without a refresh, what indexing skips kept out, a rescan listing again what was not
-//! reported, a folder no longer indexed no longer watched, changes made while Luxforge was closed
-//! caught up as it opens (macOS), volumes mounted and taken out, the one event every listing
+//! reported, a rescan as a job a client cancels and the stale folder it leaves, a folder no longer
+//! indexed no longer watched, changes made while Luxforge was closed caught up as it opens (macOS),
+//! volumes mounted and taken out, a card mounted as the lane starts, the one event every listing
 //! records as it ends, and stopping with the watcher running.
 use super::*;
 use crate::index::lane::{VolumeEvent, WatchEvent};
@@ -285,6 +286,195 @@ fn a_rescan_lists_again_what_was_not_reported() {
             == paths(&photos, &["a.jpg", "sentinel.jpg", "sub/b.jpg"]))
         .then_some(())
     });
+}
+
+/// When the root at `path` was last listed in full.
+fn listed_ms(fixture: &Fixture, path: &Path) -> Option<i64> {
+    let connection = database::connect_at(&fixture.index_dir()).unwrap();
+    database::root(&connection, path)
+        .unwrap()
+        .and_then(|root| root.listed_ms)
+}
+
+/// Hold the lane's next listing at its first folder with `gate`, after a rescan of the whole of the
+/// first root it keeps, `photos`, and answer that listing's board entry once it is held.
+fn held_rescan(owner: &OwnerHandle, client: ClientId, gate: &Gate, photos: &Path) -> Value {
+    gate.shut();
+    let reached = gate.reached();
+    tell(
+        owner,
+        FilesMessage::Inject(WatchEvent::Rescan {
+            root: 1,
+            subtree: photos.to_path_buf(),
+            reason: RescanReason::Overflow,
+        }),
+    );
+    gate.wait_reached(reached + 1, "the rescan's first folder");
+    let board = ok(owner, client, "activity.list", json!({}));
+    let running: Vec<Value> = board["active"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "index.refresh")
+        .cloned()
+        .collect();
+    assert_eq!(running.len(), 1, "{board}");
+    running[0].clone()
+}
+
+/// The watcher's rescan is an `index-refresh` job no request started: on the board with its job,
+/// read with `job.read` while it runs and stopped by `job.cancel`, its end one event of work no
+/// request made naming it. Cancelled, it leaves its folder stale — on its row and in
+/// `index.folders` — until a listing of it completes: before its next change is applied, and as the
+/// catalog next opens.
+#[test]
+fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_listed() {
+    let mut fixture = Fixture::new("watch-rescan-job");
+    let photos = fixture.dir.join("photos");
+    let staging = fixture.dir.join("staging");
+    for name in ["a/1.jpg", "b/2.jpg", "c/3.jpg"] {
+        put(&photos.join(name), &camera_jpeg());
+    }
+    let gate = Arc::new(Gate::new());
+    {
+        let owner = fixture.owner();
+        let client = owner.register();
+        // Every listing is held at each folder while the gate is shut, from the lane's start.
+        tell(owner, FilesMessage::Hold(gate.clone()));
+        add_watched(owner, client, &photos, "add");
+        // A last change, so every earlier one the watcher delivers late has been applied first.
+        arrive(&staging, &photos.join("sentinel.jpg"), &camera_jpeg());
+        wait_for("the last change", || {
+            read_rows(&fixture, &photos)
+                .contains_key(&photos.join("sentinel.jpg"))
+                .then_some(())
+        });
+        let start = sequence(owner, client);
+
+        let entry = held_rescan(owner, client, &gate, &photos);
+        assert_eq!(
+            (&entry["label"], &entry["detail"]),
+            (&json!("Indexing"), &json!(photos)),
+            "{entry}"
+        );
+        let job_id = entry["job_id"].clone();
+        let job = ok(owner, client, "job.read", json!({"job_id": job_id}));
+        assert_eq!(
+            (&job["status"], &job["kind"]),
+            (&json!("running"), &json!("index-refresh")),
+            "{job}"
+        );
+        // Against the extent the folder's last listing found, before the sentinel arrived.
+        assert_eq!(
+            job["progress"]["message"], "0 of about 3 files",
+            "the listing's own count: {job}"
+        );
+        ok(owner, client, "job.cancel", json!({"job_id": job_id}));
+        let job = finished(owner, client, &job_id);
+        gate.open();
+        assert_eq!(job["status"], "cancelled", "{job}");
+        assert_eq!(folder(owner, client, &photos)["stale"], true);
+        let connection = database::connect_at(&fixture.index_dir()).unwrap();
+        assert!(database::root_stale(&connection, &photos).unwrap(), "on its row");
+        let events = events_after(owner, client, start);
+        let last = events.last().expect("the job's end");
+        assert_eq!(
+            (&last["method"], &last["request_id"], &last["job_id"]),
+            (&json!("index-watch"), &json!(""), &job_id),
+            "{events:?}"
+        );
+        assert!(last["index_revision"].is_u64(), "{last}");
+
+        // Its next change is applied after a listing of the whole folder, which makes it current.
+        let before = listed_ms(&fixture, &photos);
+        arrive(&staging, &photos.join("new.jpg"), &camera_jpeg());
+        wait_for("the stale folder to be listed on its next change", || {
+            let current = folder(owner, client, &photos).get("stale").is_none();
+            (current && read_rows(&fixture, &photos).contains_key(&photos.join("new.jpg")))
+                .then_some(())
+        });
+        assert!(listed_ms(&fixture, &photos) > before, "listed in full");
+        assert!(!database::root_stale(&connection, &photos).unwrap());
+
+        // Cancelled again, it is still stale as the catalog closes.
+        let entry = held_rescan(owner, client, &gate, &photos);
+        ok(owner, client, "job.cancel", json!({"job_id": entry["job_id"]}));
+        assert_eq!(
+            finished(owner, client, &entry["job_id"])["status"],
+            "cancelled"
+        );
+        gate.open();
+        assert_eq!(folder(owner, client, &photos)["stale"], true);
+    }
+    let before = listed_ms(&fixture, &photos);
+    fixture.stop();
+    fixture.start();
+    let owner = fixture.owner();
+    let client = owner.register();
+    wait_for("the stale folder to be listed as the catalog opens", || {
+        (folder(owner, client, &photos).get("stale").is_none()
+            && listed_ms(&fixture, &photos) > before)
+            .then_some(())
+    });
+    assert_eq!(folder(owner, client, &photos)["watching"], true);
+}
+
+/// A card already mounted as a catalog with an indexed folder opens is listed as one mounted while
+/// Luxforge runs would be: an `index.refresh` job no request started, once the first survey after
+/// the lane started has found it, with no client asking about the disk; opened again with more on
+/// the card, it is reconciled again.
+#[test]
+fn a_card_mounted_as_the_catalog_opens_is_listed() {
+    let mut fixture = Fixture::new("watch-card-at-open");
+    let (table, card, drive) = mounts(&fixture);
+    {
+        let owner = fixture.owner();
+        let client = owner.register();
+        add_watched(owner, client, &drive.join("2026/trip"), "add");
+    }
+    fixture.stop();
+    // The mount table from the catalog's opening: the lane starts as it opens, with the watch.
+    super::super::OPENING_MOUNTS
+        .lock()
+        .unwrap()
+        .push((fixture.catalog.clone(), MountSource::Fixed(table)));
+    let dcim = card.join("DCIM");
+    let listing = |fixture: &Fixture, files: u32| {
+        wait_for("the card to be listed as the catalog opens", || {
+            let connection = database::connect_at(&fixture.index_dir()).unwrap();
+            database::root(&connection, &dcim)
+                .unwrap()
+                .filter(|root| root.file_count == Some(files))
+                .map(|_| ())
+        })
+    };
+    for (files, request) in [(1, "first"), (2, "second")] {
+        if files == 2 {
+            put(&card.join("DCIM/100NZ6_1/DSC_0002.jpg"), &camera_jpeg());
+        }
+        fixture.start();
+        listing(&fixture, files);
+        let owner = fixture.owner();
+        let client = owner.register();
+        let events = events_after(owner, client, 0);
+        let ended = events
+            .iter()
+            .rev()
+            .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
+            .unwrap_or_else(|| panic!("{request}: the listing is work no request made: {events:?}"));
+        assert_eq!(ended["request_id"], "", "{ended}");
+        let job = finished(owner, client, &ended["job_id"]);
+        assert_eq!(
+            (&job["kind"], &job["status"], &job["result"]["roots"]),
+            (&json!("index-refresh"), &json!("ready"), &json!([dcim])),
+            "{request}: {job}"
+        );
+        fixture.stop();
+    }
+    super::super::OPENING_MOUNTS
+        .lock()
+        .unwrap()
+        .retain(|(catalog, _)| *catalog != fixture.catalog);
 }
 
 /// Removing an indexed folder stops its watch: what changes in it later is not indexed, while

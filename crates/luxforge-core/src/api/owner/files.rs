@@ -19,7 +19,8 @@
 //!   the disk. What it applies on its own is announced as work no request made: method
 //!   [`UNREQUESTED`] with no request id, one event per batch. A volume mounted or taken out has
 //!   the volumes surveyed again, and a card mounted is listed as an `index.refresh` job; so is
-//!   every card already mounted as the lane starts, once the first survey after it has found it.
+//!   every card already mounted as the catalog opens and starts the lane, once the first survey
+//!   after its watcher has found it.
 //!   The lane's own listings — rescans, and roots listed again — are `index-refresh` jobs no
 //!   request started, which the lane announces ([`LaneEvent::Began`]) and the owner records like
 //!   its own, so `job.read` and `job.cancel` answer for them.
@@ -348,8 +349,10 @@ fn ended(owner: &mut Owner, origin: Origin, job_id: &JobId, revision: Option<u64
 }
 
 /// Watch every indexed folder as the catalog opens, starting the lane: what changed while Luxforge
-/// was closed is caught up (replayed on macOS, listed elsewhere), and the volumes' notifications
-/// keep what `volume.list` answers current. A catalog without indexed folders starts nothing.
+/// was closed is caught up (replayed on macOS, listed elsewhere), the volumes' notifications keep
+/// what `volume.list` answers current, and the cards mounted already are listed once its watcher
+/// runs, as cards mounted then would be ([`queries::lane_started`]). A catalog without indexed
+/// folders starts nothing.
 pub(super) fn opened(owner: &mut Owner) {
     #[cfg(test)]
     opening_mounts(owner);
@@ -367,6 +370,7 @@ pub(super) fn opened(owner: &mut Owner) {
             volume_id: Some(folder.volume_id),
         })
         .collect();
+    owner.catalog.files.surveys.opening = true;
     owner.catalog.files.waiting.push_back(Queued {
         task: Task::Watch(roots),
         origin: unrequested(),
