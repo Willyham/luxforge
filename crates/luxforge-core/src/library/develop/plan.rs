@@ -87,14 +87,18 @@ impl Plan {
                     let (Some(volume), None) = (&file.removable, &file.offline) else {
                         continue;
                     };
-                    let at = match removable.iter().position(|group| group.volume_id == *volume) {
+                    let at = match removable
+                        .iter()
+                        .position(|group| group.volume_id == *volume)
+                    {
                         Some(at) => at,
                         None => {
                             removable.push(RemovablePicks {
                                 volume_id: volume.clone(),
-                                label: volumes
-                                    .get(volume)
-                                    .map_or_else(|| volume.to_string(), |known| known.label.clone()),
+                                label: volumes.get(volume).map_or_else(
+                                    || volume.to_string(),
+                                    |known| known.label.clone(),
+                                ),
                                 count: 0,
                                 with_copy: 0,
                             });
@@ -117,7 +121,11 @@ impl Plan {
         DevelopPlan {
             events,
             count: self.files.len() as u32,
-            offline: self.files.iter().filter(|file| file.offline.is_some()).count() as u32,
+            offline: self
+                .files
+                .iter()
+                .filter(|file| file.offline.is_some())
+                .count() as u32,
         }
     }
 }
@@ -220,11 +228,14 @@ pub(crate) fn plan(
             plan.events.push(PlanEvent {
                 id: group.id.clone(),
                 name: group.name.clone(),
-                span: group.start_ms.zip(group.end_ms).map(|(start_ms, end_ms)| EventSpan {
-                    start_ms,
-                    end_ms,
-                    event_id: Some(group.id.clone()),
-                }),
+                span: group
+                    .start_ms
+                    .zip(group.end_ms)
+                    .map(|(start_ms, end_ms)| EventSpan {
+                        start_ms,
+                        end_ms,
+                        event_id: Some(group.id.clone()),
+                    }),
                 files: start..start,
                 proposal,
                 folder_name,
@@ -241,7 +252,8 @@ pub(crate) fn plan(
 
 /// The folder a Develop proposes for `event`: the newest catalog folder made from it — whose
 /// stored key is its identity, else whose stored span overlaps its span — or, for an Undated
-/// event, the folder the newest undated photograph from its folder on disk went into; otherwise a
+/// event, which has no span, the folder the newest photograph developed from its folder on disk is
+/// in; otherwise a
 /// new top-level folder named after it, unique among the top-level folders and the plan's other
 /// new ones.
 fn propose(
@@ -271,12 +283,14 @@ fn propose(
                     .optional()?,
             }
         }
+        // Every availability, so the lookup reads `assets_by_availability` four times rather
+        // than every photograph.
         None => catalog
             .prepare_cached(
                 "SELECT f.id, f.name FROM assets a
-                 JOIN capture c ON c.asset_row = a.row_id
                  JOIN catalog_folders f ON f.id = a.catalog_folder_id
-                 WHERE a.source_folder = ?1 AND c.capture_ms IS NULL AND a.removed_ms IS NULL
+                 WHERE a.availability IN ('available', 'offline', 'missing', 'changed')
+                     AND a.source_folder = ?1 AND a.removed_ms IS NULL
                  ORDER BY a.developed_ms DESC, a.row_id DESC LIMIT 1",
             )?
             .query_row([folder.to_string_lossy()], |row| {
@@ -449,7 +463,10 @@ impl Resolver<'_> {
         file: NamedFile,
         event: usize,
     ) -> Result<PlannedFile, Error> {
-        let present = file.path.metadata().is_ok_and(|metadata| metadata.is_file());
+        let present = file
+            .path
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file());
         let recorded_id = match &file.volume_id {
             Some(id) => Some(id.clone()),
             None => library_rows::pick_at(self.catalog, &file.path)?.map(|pick| pick.volume_id),
@@ -575,9 +592,10 @@ pub(crate) fn destinations(
         let at = match choice {
             FolderChoice::Existing { folder_id } => {
                 folders::folder(catalog, folder_id)?;
-                match folders.iter().position(
-                    |known| matches!(known, Destination::Existing(id) if id == folder_id),
-                ) {
+                match folders
+                    .iter()
+                    .position(|known| matches!(known, Destination::Existing(id) if id == folder_id))
+                {
                     Some(at) => at,
                     None => {
                         folders.push(Destination::Existing(folder_id.clone()));

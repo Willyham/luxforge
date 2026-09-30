@@ -1023,7 +1023,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "sends the photographs targets names back as one library change, answering {outcome, change?, items, deduplicated}: each one's catalog record (asset, capture, Original entry, state and requests) is deleted and its file picked again with its signature now (kept as picked when it already is); refused with conflict, naming the item in data.items and changing nothing, for a photograph with history beyond its Original, a named version or a collection (it leaves only by removal) and for one whose original is not at its locator (it could not be picked again); a sent-back photograph is developed again with pick.develop, so undoing a send-back is conflict; targets as asset.move's; the file is never touched",
         retries: Owner,
     ),
-
     // Resolving missing originals (TASK-017).
 
     // Removing (TASK-014).

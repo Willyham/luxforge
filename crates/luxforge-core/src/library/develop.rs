@@ -31,7 +31,7 @@ mod read;
 pub(crate) mod send_back;
 
 #[cfg(test)]
-mod develop_picks_tests;
+pub(crate) mod develop_picks_tests;
 
 pub(crate) use commit::{Decided, decide, failure, write};
 #[allow(
@@ -136,8 +136,9 @@ pub(crate) fn recorded_report(parts: &[LibraryChangeDetail]) -> DevelopReport {
                     .map(PathBuf::from)
             };
             let developed = match &row.item {
-                LibraryItem::DevelopedAsset { asset_id } => located("path")
-                    .map(|path| (asset_id.clone(), path, DevelopOutcome::Created)),
+                LibraryItem::DevelopedAsset { asset_id } => {
+                    located("path").map(|path| (asset_id.clone(), path, DevelopOutcome::Created))
+                }
                 LibraryItem::AssetSource { asset_id } => located("locator")
                     .map(|path| (asset_id.clone(), path, DevelopOutcome::Relinked)),
                 LibraryItem::Pick { path } if row.after.is_none() => {

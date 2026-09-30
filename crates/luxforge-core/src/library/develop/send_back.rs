@@ -6,9 +6,7 @@
 //! (`crate::library::items`), and re-picks their files from what the Develop recorded.
 use crate::{
     AssetId, Error,
-    catalog_types::{
-        AssetRowId, FileSignature, LibraryChangeRow, LibraryItem, Pick, Volume,
-    },
+    catalog_types::{AssetRowId, FileSignature, LibraryChangeRow, LibraryItem, Pick, Volume},
     editor::library_rows,
     index::volume_of,
     library::journal::{Desired, Request},
