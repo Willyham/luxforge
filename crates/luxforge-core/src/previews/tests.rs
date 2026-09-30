@@ -181,6 +181,8 @@ fn task(key: TaskKey) -> Task {
         key,
         control: JobControl::new(),
         budget: SHARED_PREVIEW_BUDGET_BYTES,
+        develops: true,
+        develop: None,
         hold: None,
         stage_hold: None,
     }
@@ -610,31 +612,224 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// A file with no usable preview fails `unsupported-input` naming why, and the lane is told to
-/// remember it.
-#[test]
-fn preview_cache_a_file_with_no_usable_preview_is_unsupported_input() {
-    let mut fixture = Fixture::new("preview-cache-unusable");
+/// A JPEG cut short: its first half and an EOI marker.
+pub(crate) fn broken_jpeg() -> Vec<u8> {
     let (bytes, ..) = camera_jpeg((640, 427), (160, 107), 1);
     let mut broken = bytes[..bytes.len() / 2].to_vec();
     broken.extend_from_slice(&[0xff, 0xd9]);
-    let path = fixture.file("BROKEN.JPG", &broken);
+    broken
+}
+
+/// A corrupt JPEG original fails with its own kind, `invalid-input`, naming the file — never
+/// relabelled as unsupported — and the lane is told to remember it; nothing is developed.
+#[test]
+fn preview_cache_a_corrupt_jpeg_is_invalid_input_and_remembered() {
+    let mut fixture = Fixture::new("preview-cache-unusable");
+    let path = fixture.file("BROKEN.JPG", &broken_jpeg());
     let file = fixture.add(&path, SourceTag::Jpeg, HeaderState::Pending);
-    let outcome = run(&mut fixture.store(), &task((file, PreviewTier::Grid))).0;
+    let mut task = task((file, PreviewTier::Grid));
+    task.develop = Some(std::sync::Arc::new(
+        |_: &Path,
+         _: &FileSignature,
+         _: u32,
+         _: &crate::Cancel|
+         -> Result<super::region::DevelopedPreview, Error> {
+            panic!("a JPEG original is never developed")
+        },
+    ));
+    let outcome = run(&mut fixture.store(), &task).0;
     let error = outcome.result.unwrap_err();
-    assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+    assert_eq!(error.kind, ErrorKind::Decode);
+    assert_eq!(error.kind.code(), "invalid-input");
     assert!(
-        error.detail.contains("BROKEN.JPG has no usable preview"),
+        error.detail.contains("BROKEN.JPG does not decode"),
         "{}",
         error.detail
     );
     assert!(outcome.permanent);
+    assert!(!outcome.deferred);
     assert!(outcome.signature.is_some());
     let previews = fixture.index.previews_dir();
     assert!(
         !previews.exists() || walk(&previews).is_empty(),
         "nothing was written"
     );
+}
+
+/// A minimal uncompressed 16-bit RGGB DNG, `width` × `height`, that LibRaw identifies as `make`
+/// `model` and that carries no embedded preview at all: a RAW with no usable preview, as the Canon
+/// EOS R5 Mark II's and R8's H.265-only files are to the lane. No camera mode of the RAW catalog
+/// has its size, so it never develops.
+pub(crate) fn synthetic_dng(make: &str, model: &str, width: u32, height: u32) -> Vec<u8> {
+    let text = |value: &str| {
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(0);
+        bytes
+    };
+    let (make, model) = (text(make), text(model));
+    // Tag, type, count, inline value or payload, sorted by tag.
+    let entries: Vec<(u16, u16, u32, Vec<u8>)> = vec![
+        (254, 4, 1, 0_u32.to_le_bytes().to_vec()),
+        (256, 4, 1, width.to_le_bytes().to_vec()),
+        (257, 4, 1, height.to_le_bytes().to_vec()),
+        (258, 3, 1, 16_u32.to_le_bytes().to_vec()),
+        (259, 3, 1, 1_u32.to_le_bytes().to_vec()),
+        (262, 3, 1, 32_803_u32.to_le_bytes().to_vec()),
+        (271, 2, make.len() as u32, make),
+        (272, 2, model.len() as u32, model),
+        (273, 4, 1, Vec::new()),
+        (277, 3, 1, 1_u32.to_le_bytes().to_vec()),
+        (278, 4, 1, height.to_le_bytes().to_vec()),
+        (279, 4, 1, (width * height * 2).to_le_bytes().to_vec()),
+        (284, 3, 1, 1_u32.to_le_bytes().to_vec()),
+        (33_421, 3, 2, vec![2, 0, 2, 0]),
+        (33_422, 1, 4, vec![0, 1, 1, 2]),
+        (50_706, 1, 4, vec![1, 4, 0, 0]),
+        (50_717, 4, 1, 65_535_u32.to_le_bytes().to_vec()),
+    ];
+    let mut payload = 8 + 2 + entries.len() * 12 + 4;
+    let strings: usize = entries
+        .iter()
+        .filter(|entry| entry.3.len() > 4)
+        .map(|entry| entry.3.len())
+        .sum();
+    let data_offset = (payload + strings).next_multiple_of(2) as u32;
+    let mut out = b"II*\0\x08\0\0\0".to_vec();
+    out.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    let mut tail = Vec::new();
+    for (tag, kind, count, value) in &entries {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&kind.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        if *tag == 273 {
+            out.extend_from_slice(&data_offset.to_le_bytes());
+        } else if value.len() > 4 {
+            out.extend_from_slice(&(payload as u32).to_le_bytes());
+            payload += value.len();
+            tail.extend_from_slice(value);
+        } else {
+            let mut inline = [0_u8; 4];
+            inline[..value.len()].copy_from_slice(value);
+            out.extend_from_slice(&inline);
+        }
+    }
+    out.extend_from_slice(&0_u32.to_le_bytes());
+    out.extend_from_slice(&tail);
+    out.resize(data_offset as usize, 0);
+    for index in 0..width * height {
+        out.extend_from_slice(&((index * 37 % 60_000) as u16).to_le_bytes());
+    }
+    out
+}
+
+/// A development standing in for a neutral one, counting itself in `count`: a grey frame of
+/// 96 × 64 fitted within the side asked for, as `region::developed_preview` fits its own.
+pub(crate) fn counted_development(
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> lane::DevelopHook {
+    std::sync::Arc::new(
+        move |_: &Path,
+              _: &FileSignature,
+              side: u32,
+              _: &crate::Cancel|
+              -> Result<super::region::DevelopedPreview, Error> {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (width, height) = if side >= 96 {
+                (96, 64)
+            } else {
+                (side, (64 * side).div_ceil(96))
+            };
+            Ok(super::region::DevelopedPreview {
+                width,
+                height,
+                rgba: std::sync::Arc::new(vec![128; (width * height * 4) as usize]),
+                frame: super::region::FrameSize {
+                    width: 96,
+                    height: 64,
+                },
+            })
+        },
+    )
+}
+
+/// A RAW that carries no usable preview is developed at the seam for a task that may develop,
+/// labelled `developed` and written; a background task defers it instead — `not-ready`, not
+/// remembered as a failure, nothing developed or written; a development that fails keeps its
+/// kind, and one Luxforge cannot make is remembered.
+#[test]
+fn preview_cache_a_raw_with_no_usable_preview_is_developed_or_deferred() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let mut fixture = Fixture::new("preview-cache-develop");
+    let path = fixture.file("H265.DNG", &synthetic_dng("DJI", "FC3411", 64, 48));
+    let file = fixture.add(&path, SourceTag::Raw, HeaderState::Pending);
+    let mut store = fixture.store();
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let mut background = task((file, PreviewTier::Grid));
+    background.develops = false;
+    background.develop = Some(counted_development(count.clone()));
+    let (outcome, stages) = run(&mut store, &background);
+    let error = outcome.result.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::NotReady);
+    assert!(
+        error.detail.contains("H265.DNG has no usable preview"),
+        "{}",
+        error.detail
+    );
+    assert!(outcome.deferred);
+    assert!(!outcome.permanent);
+    assert_eq!(stages, 0, "the file carries no thumbnail");
+    assert_eq!(count.load(Ordering::SeqCst), 0, "nothing was developed");
+    assert_eq!(fixture.tiers(file).grid, None);
+
+    for (tier, side) in [(PreviewTier::Grid, 96), (PreviewTier::Loupe, 96)] {
+        let mut visible = task((file, tier));
+        visible.develop = Some(counted_development(count.clone()));
+        let made = run(&mut store, &visible)
+            .0
+            .result
+            .unwrap_or_else(|error| panic!("{tier:?}: {error:?}"));
+        assert_eq!(made.origin, PreviewOrigin::Developed);
+        assert_eq!((made.width, made.height), (side, 64));
+        assert_eq!(decoded(&made.path).dimensions(), (side, 64));
+        assert!(made.key.ends_with(":developed"), "{}", made.key);
+    }
+    assert_eq!(count.load(Ordering::SeqCst), 2);
+
+    // A camera the development cannot handle is remembered; a development that could not read the
+    // file is tried again.
+    let other = fixture.file("OTHER.DNG", &synthetic_dng("DJI", "FC3411", 64, 48));
+    let other = fixture.add(&other, SourceTag::Raw, HeaderState::Pending);
+    for (error, lasting) in [
+        (Error::unsupported_input("outside the RAW catalog"), true),
+        (Error::file_access("interrupted"), false),
+    ] {
+        let kind = error.kind;
+        let mut failing = task((other, PreviewTier::Grid));
+        failing.develop = Some(Arc::new(
+            move |_: &Path,
+                  _: &FileSignature,
+                  _: u32,
+                  _: &crate::Cancel|
+                  -> Result<super::region::DevelopedPreview, Error> {
+                Err(error.clone())
+            },
+        ));
+        let outcome = run(&mut store, &failing).0;
+        let failed = outcome.result.unwrap_err();
+        assert_eq!(failed.kind, kind);
+        assert!(
+            failed.detail.contains("OTHER.DNG has no usable preview")
+                && failed.detail.contains("cannot be developed"),
+            "{}",
+            failed.detail
+        );
+        assert_eq!(outcome.permanent, lasting, "{kind:?}");
+        assert!(!outcome.deferred);
+    }
 }
 
 /// A cancelled task stops and writes nothing.

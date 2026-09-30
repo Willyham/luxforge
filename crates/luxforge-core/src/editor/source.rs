@@ -113,26 +113,45 @@ impl SourceSignature {
     }
 }
 
-impl EditorService {
-    /// The signature an asset's original has now: the one stat every read of an original starts
-    /// from — a preparation, an evaluation, an export — and all a present original costs. Refused
-    /// as `source-unavailable`, naming why, when the file is gone or is no longer the file that was
-    /// developed ([`availability::refusal`]); only then is the catalog read, the volume looked at
-    /// and the observation recorded.
-    fn original_signature(&self, asset: &AssetRecord) -> Result<SourceSignature, Error> {
-        let changed = match asset.locator.metadata() {
-            Ok(metadata) => {
-                let signature = source_signature(&asset.locator, &metadata);
-                if signature.file_identity == asset.file_identity
-                    && signature.byte_len == asset.byte_len
-                {
-                    return Ok(signature);
-                }
-                true
+/// The one stat every read of an original starts from — a preparation, an evaluation, an export,
+/// a rendered preview — and all a present original costs: its signature now, or whether a file is
+/// there that is no longer the one developed (`Err(true)`) or none is (`Err(false)`).
+fn current_signature(asset: &AssetRecord) -> Result<SourceSignature, bool> {
+    match asset.locator.metadata() {
+        Ok(metadata) => {
+            let signature = source_signature(&asset.locator, &metadata);
+            if signature.file_identity == asset.file_identity
+                && signature.byte_len == asset.byte_len
+            {
+                Ok(signature)
+            } else {
+                Err(true)
             }
-            Err(_) => false,
-        };
-        Err(availability::refusal(&self.connection, asset, changed))
+        }
+        Err(_) => Err(false),
+    }
+}
+
+/// The signature an asset's original has now, off the owner (a preview worker): refused as
+/// `source-unavailable` when the file is gone or is no longer the file that was developed, without
+/// recording the observation, which only the owner's [`EditorService::original_signature`] does.
+pub(crate) fn original_signature(asset: &AssetRecord) -> Result<SourceSignature, Error> {
+    current_signature(asset).map_err(|changed| {
+        Error::source_unavailable(if changed {
+            "original source fingerprint changed"
+        } else {
+            "original source is unavailable"
+        })
+    })
+}
+
+impl EditorService {
+    /// The signature an asset's original has now. Refused as `source-unavailable`, naming why, when
+    /// the file is gone or is no longer the file that was developed ([`availability::refusal`]);
+    /// only then is the catalog read, the volume looked at and the observation recorded.
+    fn original_signature(&self, asset: &AssetRecord) -> Result<SourceSignature, Error> {
+        current_signature(asset)
+            .map_err(|changed| availability::refusal(&self.connection, asset, changed))
     }
 }
 
@@ -147,7 +166,7 @@ pub(crate) struct FilePreparation {
 impl FilePreparation {
     /// The preparation of `recipe`, a stack of `asset` its caller already admitted as one
     /// ([`EditorService::saved_entry`]).
-    fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
+    pub(crate) fn for_recipe(asset: &AssetRecord, recipe: &crate::Recipe) -> Result<Self, Error> {
         let raw = match &asset.source {
             SourceKind::Jpeg => None,
             SourceKind::Raw { metadata } => Some(RawPreparation {
@@ -397,7 +416,7 @@ impl EditorService {
     /// source kind ([`validate_source_recipe`]). What every question about a saved stack starts
     /// from, an evaluation of it included ([`Self::evaluation`]): a cached head and entry read,
     /// nothing copied but the asset record, and `O(layers)` checks.
-    pub(super) fn saved_entry(
+    pub(crate) fn saved_entry(
         &self,
         asset_id: &AssetId,
         entry_id: Option<&EntryId>,
