@@ -84,10 +84,12 @@ impl ApiResponse {
 /// one, the asset it changed and the revision it left that asset at. A version names its asset but
 /// no revision, since naming an entry moves none; a change to the preset library, a module or the
 /// artifact store names no asset. A library change (a pick or clear, a catalog folder or collection
-/// change, or the undo or redo of one) names the journal sequence it recorded and no asset: one
-/// event however many items it covered. A batch the index lane committed names the index revision
-/// it left, under the request that started the listing (`index.refresh`, `index.add-folder`, or the
-/// undo or redo of an indexed folder): one event however many files it wrote.
+/// change, a Locate, or the undo or redo of one) names the journal sequence it recorded, one event
+/// however many items it covered, and names an asset only when it moved exactly that one
+/// photograph's original, with no revision. A batch the index lane committed names the index
+/// revision it left, under the request that started the listing (`index.refresh`,
+/// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
+/// wrote.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {

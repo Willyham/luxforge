@@ -768,6 +768,13 @@ fn indexed_folders_are_library_changes_with_undo_and_redo() {
         (&added["deduplicated"], &retry["deduplicated"]),
         (&json!(false), &json!(true))
     );
+    // Both answers parse as the typed answer the method declares, the owner's top-level
+    // `deduplicated` included.
+    for answer in [&added, &retry] {
+        let typed: crate::catalog_types::IndexFolderAnswer =
+            serde_json::from_value(answer.clone()).expect("a typed index.add-folder answer");
+        assert_eq!(typed.deduplicated, answer["deduplicated"] == json!(true));
+    }
     let again = ok(
         owner,
         client,
@@ -879,6 +886,9 @@ fn a_retry_after_a_restart_is_answered_from_the_journal() {
     let retried = ok(owner, client, "index.add-folder", add);
     assert_eq!(retried["change"]["change"], added["change"]["change"]);
     assert_eq!(retried["change"]["deduplicated"], true, "{retried}");
+    let typed: crate::catalog_types::IndexFolderAnswer =
+        serde_json::from_value(retried.clone()).expect("a typed retried answer");
+    assert!(typed.change.deduplicated);
     assert_eq!(retried["folder"]["path"], json!(photos));
     assert_eq!(retried.get("job_id"), None, "nothing is listed again");
     let retried = ok(owner, client, "index.remove-folder", remove);
