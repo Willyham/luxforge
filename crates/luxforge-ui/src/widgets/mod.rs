@@ -56,6 +56,7 @@ mod filmstrip;
 mod filter_bar;
 mod long_work;
 mod loupe;
+mod select_strip;
 mod source_list;
 mod title_actions;
 // -- end Select: chrome.
@@ -144,6 +145,7 @@ pub use loupe::{
     focus_inset, frame_strip, key_hints, loupe_info_bar, region_box, visible_window,
 };
 pub use segmented::{filter_segment, filter_segment_track, keyed_segment};
+pub use select_strip::{STRIP_SLIDER_WIDTH, SelectStripModel, select_strip};
 pub use source_list::{
     SourceCount, SourceHeadingModel, SourceRowModel, Volume, source_heading, source_month,
     source_row, source_tag,
