@@ -44,11 +44,13 @@ pub const HEADER_HEAD_BYTES: usize = 64 * 1024;
 /// largest IFD table read (256 entries of 12 bytes).
 pub const CHUNK_BYTES: usize = 4 * 1024;
 
-/// The most bytes one header read takes, head included. The authentic corpus (117 RAW files of
-/// every admitted container, and camera JPEGs) needs at most 84 KiB: the head plus up to four
+/// The most bytes one header read takes, head included. The authentic corpus (120 RAW files of
+/// every admitted container, and a camera JPEG) needs at most 84 KiB: the head plus up to four
 /// chunks, for a NEF's GPS IFD, SubIFDs and maker-note preview IFD, an ARW's SubIFD, a PEF's IFD1
 /// or a RAF's directory past its embedded JPEG. Three times that leaves room for containers laid
-/// out less kindly while keeping two index workers' reads small.
+/// out less kindly while keeping two index workers' reads small. With today's requests (at most
+/// one IFD table, so at most two chunks a read) [`MAX_HEADER_READS`] binds first, at 184 KiB; this
+/// cap holds whatever a future request asks for.
 pub const MAX_HEADER_BYTES: usize = 256 * 1024;
 
 /// The most reads one header read makes, head included. The corpus needs at most five; past this
