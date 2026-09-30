@@ -850,7 +850,11 @@ mod tests {
             Vec::new(),
         ));
         workspace.derive(&scene.inputs());
-        let busiest = workspace.long_work.busiest.clone().expect("the status bar's job");
+        let busiest = workspace
+            .long_work
+            .busiest
+            .clone()
+            .expect("the status bar's job");
         let row = &workspace.performance.jobs[0];
         assert_eq!(
             (busiest.job_id.as_str(), busiest.label.as_str()),
