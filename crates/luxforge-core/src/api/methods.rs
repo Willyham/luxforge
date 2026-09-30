@@ -823,6 +823,12 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // ── catalog lane A: files ──
     // ── end lane A ──
     // ── catalog lane B: previews ──
+    owner!(
+        "preview.read",
+        crate::catalog_types::api::PreviewRead,
+        owner::previews::preview_read,
+        "a cached preview's path, size and origin, or the job that makes it and the best preview cached meanwhile; a file's tiers are grid (at most 512 px, first its thumbnail stage, origin exif-thumbnail, then its embedded preview) and loupe (its largest embedded preview, at most 2560 px, never enlarged), every one upright; the job (preview-extract) is shared by every request for the same file and tier, its result is the preview, and job.cancel removes or stops it; a file the index does not hold, or tier large, is validation; a file with no usable preview is unsupported-input naming why; resource-limit past 20,000 queued tasks; item photo is unsupported-input until rendered previews of developed photographs are built"
+    ),
     // ── end lane B ──
     // ── catalog lane C: catalog ──
     // ── end lane C ──
