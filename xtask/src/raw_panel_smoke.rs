@@ -1593,6 +1593,19 @@ fn keeps_the_tint_in_force(
 mod tests {
     use super::*;
 
+    /// The draft dimming this check undoes is the app's own: xtask does not link the app, so the
+    /// copy is held to `DIM_OPACITY` in the crop canvas source.
+    #[test]
+    fn draft_dim_opacity_is_the_crop_canvas_constant() {
+        let source = include_str!("../../crates/luxforge-app/src/view/crop_canvas.rs");
+        let value = source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("const DIM_OPACITY: f32 = "))
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("the crop canvas declares DIM_OPACITY");
+        assert_eq!(value.parse::<f64>().unwrap(), DRAFT_DIM_OPACITY);
+    }
+
     #[test]
     fn hundred_percent_accuracy_uses_held_full_detail_after_refinement() {
         // The Air 2S review's 17.33% moving difference is still evidence, while its 5.06%
