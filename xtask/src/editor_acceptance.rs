@@ -3,7 +3,8 @@
 //! A chapter exists only if no `cargo test` proves its property at that layer: the shared
 //! field-patch conformance suite in release, Basic's numerics on the photo fixture against the
 //! independent reference, the placement of Presence, the mixer and the vignette, and a masked
-//! catalog reopened through a fresh owner. The M1 through M4 journey of history, orientation, crop
+//! catalog, with the masked Tone curve's placement proved on the way, reopened through a fresh
+//! owner. The M1 through M4 journey of history, orientation, crop
 //! and reopen is the core's own tests (`editor::history`, `editor::plan`, `modules::transform` and
 //! `modules::crop`), and the host behaviour every module shares is the conformance suite's.
 use crate::*;
@@ -16,7 +17,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
     let fixture_hash = hash(&fixture)?;
     let mut result = json!({
         "status":"failed",
-        "scope":["Basic adjustments and histogram","Field-patch module conformance in release","Presence, mixer and vignette placement","Mask reopen through a fresh owner"],
+        "scope":["Basic adjustments and histogram","Field-patch module conformance in release","Presence, mixer and vignette placement","Mask reopen through a fresh owner, with the masked Tone curve's placement"],
         "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
         "platform":host(root)?,
         "fixture":"fixtures/s0/orientation-1.jpg",
@@ -69,7 +70,7 @@ pub fn run(root: &Path, out: &Path) -> Result {
             "Basic and histogram: the whole chapter under basic_and_histogram, driven through the JSON method table against the independent f64 reference",
             "Field-patch conformance: every field-patch module the registry holds (Basic, Presence, the colour mixer and the vignette, with the developer controls proof held to the payload rules over the non-numeric field kinds) passes one suite under field_patch_conformance, driven through the JSON method table and both evaluation paths, here in release",
             "Presence, mixer and vignette: each module's own placement under presence_mixer_vignette, driven through the JSON method table — Presence after the colour run and before the geometry tail in every touch order, the mixer after Basic in both touch orders with identical bytes, and the vignette last and recentred on the stage each crop update produces",
-            "Masks: a catalog holding every component kind and mode, a brush's strokes and a masked layer each of Basic, Presence and the colour mixer, reopened through a fresh owner under masks, returning the masks, components and bound layers by identity and the same sampled pixels",
+            "Masks: a catalog holding every component kind and mode, a brush's strokes and a masked layer each of Basic, Presence, the Tone curve and the colour mixer, reopened through a fresh owner under masks, returning the masks, components and bound layers by identity and the same sampled pixels; on the way, the masked Tone curve is listed before the mixer on its mask, copied by mask.duplicate, re-sorted by mask.reorder into the new mask order, and sampled equal to the rendered byte, under masks.masked_curve",
             "Source SHA-256 unchanged"
         ]);
         Ok(())
