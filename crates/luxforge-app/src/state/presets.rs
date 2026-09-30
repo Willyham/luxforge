@@ -566,6 +566,7 @@ mod tests {
                 "Basic \u{00b7} White balance",
                 "Basic \u{00b7} Tone",
                 "Basic \u{00b7} Colour",
+                "Tone curve \u{00b7} Tone curve",
                 "Presence \u{00b7} Presence",
                 "Colour mixer \u{00b7} Hue",
                 "Colour mixer \u{00b7} Saturation",
