@@ -450,9 +450,15 @@ impl Editor {
         Task::none()
     }
 
+    /// Nothing Select asked the owner for is in flight or still wanted, and the cells on screen have
+    /// their previews or nothing to wait for: what an evidence step settles on.
+    pub(crate) fn select_quiet(&self) -> bool {
+        self.select_reads_quiet() && self.select.previews.settled()
+    }
+
     /// Nothing Select asked the owner for is in flight or still wanted: the events, the view and
     /// its facets, a staleness check and the rows near the screen have all answered.
-    pub(crate) fn select_quiet(&self) -> bool {
+    pub(crate) fn select_reads_quiet(&self) -> bool {
         let select = &self.select;
         select.reading.is_none()
             && !select.state.loading
