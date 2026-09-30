@@ -28,11 +28,12 @@ use std::{
     time::Duration,
 };
 
-/// Format 2: files with their signatures and header columns, the roots listed, the preview records
+/// Format 3: files with their signatures and header columns, the roots listed with where each
+/// watched root's change notifications resume (`cursor_volume`, `cursor_event`), the preview records
 /// of files and developed photographs, and the brightness fingerprints of files' complete grid
 /// tiers (`grid_fingerprints`, the preview lane's bracket check). Any other marker, a database
 /// SQLite cannot read, and an index of another catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 2;
+pub const INDEX_FORMAT: i64 = 3;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
@@ -59,7 +60,10 @@ const SCHEMA: &str = "
         volume_id TEXT NOT NULL,
         listed_ms INTEGER,
         file_count INTEGER CHECK (file_count IS NULL OR file_count >= 0),
-        offline INTEGER NOT NULL DEFAULT 0 CHECK (offline IN (0, 1))
+        offline INTEGER NOT NULL DEFAULT 0 CHECK (offline IN (0, 1)),
+        cursor_volume BLOB CHECK (cursor_volume IS NULL OR length(cursor_volume) = 16),
+        cursor_event INTEGER,
+        CHECK ((cursor_volume IS NULL) = (cursor_event IS NULL))
     );
     CREATE TABLE files (
         id INTEGER PRIMARY KEY,
@@ -826,6 +830,82 @@ pub(crate) fn root(connection: &Connection, path: &Path) -> Result<Option<IndexR
     Ok(roots(connection)?
         .into_iter()
         .find(|root| root.path == path))
+}
+
+/// Where the change notifications of the root at `path` resume: the cursor recorded once every
+/// change before it was applied ([`set_root_cursor`]). None when the index lists no root there or
+/// has no cursor for it.
+pub(crate) fn root_cursor(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<luxforge_watch::Resume>, Error> {
+    let cursor: Option<(Option<Vec<u8>>, Option<i64>)> = connection
+        .prepare_cached("SELECT cursor_volume, cursor_event FROM roots WHERE path = ?1")?
+        .query_row([path.to_string_lossy()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()?;
+    Ok(match cursor {
+        Some((Some(volume), Some(event))) => {
+            let volume: [u8; 16] = volume
+                .try_into()
+                .map_err(|_| Error::incompatible("index root cursor: not 16 bytes"))?;
+            Some(luxforge_watch::Resume {
+                volume,
+                // Event IDs are stored as their bits.
+                event_id: event as u64,
+            })
+        }
+        _ => None,
+    })
+}
+
+/// Record where the change notifications of the root at `path` resume, in the transaction that
+/// applied every change before `cursor`, or forget it. A root the index does not list keeps none.
+pub(crate) fn set_root_cursor(
+    tx: &Transaction<'_>,
+    path: &Path,
+    cursor: Option<luxforge_watch::Resume>,
+) -> Result<(), Error> {
+    tx.prepare_cached("UPDATE roots SET cursor_volume = ?2, cursor_event = ?3 WHERE path = ?1")?
+        .execute(params![
+            path.to_string_lossy(),
+            cursor.map(|cursor| cursor.volume.to_vec()),
+            cursor.map(|cursor| cursor.event_id as i64),
+        ])?;
+    Ok(())
+}
+
+/// Mark every root at or under `mount_point` offline, or back online where its folder is there
+/// again, as a volume is taken out or mounted: the roots whose state changed.
+pub(crate) fn set_roots_offline_under(
+    tx: &Transaction<'_>,
+    mount_point: &Path,
+    offline: bool,
+) -> Result<Vec<PathBuf>, Error> {
+    let (from, to) = under(mount_point);
+    let mut changed = Vec::new();
+    {
+        let mut statement = tx.prepare_cached(
+            "SELECT path FROM roots WHERE (path = ?1 OR (path >= ?2 AND path < ?3)) AND offline != ?4",
+        )?;
+        let rows = statement.query_map(
+            params![mount_point.to_string_lossy(), from, to, offline],
+            |row| row.get::<_, String>(0),
+        )?;
+        for path in rows {
+            let path = PathBuf::from(path?);
+            // A root comes back online only when its folder is there again.
+            if offline || path.symlink_metadata().is_ok() {
+                changed.push(path);
+            }
+        }
+    }
+    let mut update = tx.prepare_cached("UPDATE roots SET offline = ?2 WHERE path = ?1")?;
+    for path in &changed {
+        update.execute(params![path.to_string_lossy(), offline])?;
+    }
+    Ok(changed)
 }
 
 /// Forget the root at `path`.

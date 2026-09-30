@@ -399,10 +399,13 @@ fn state(owner: &Owner, folder: IndexedFolder, offline: bool) -> Result<IndexedF
         Some(index) => database::root(index.connection(), &folder.path)?,
         None => None,
     };
+    let (watching, unwatched) = super::watching(owner, &folder.path);
     Ok(IndexedFolderState {
         offline,
         files: root.as_ref().and_then(|root| root.file_count),
         listed_ms: root.and_then(|root| root.listed_ms),
+        watching,
+        unwatched,
         folder,
     })
 }
