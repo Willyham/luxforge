@@ -6,7 +6,7 @@
 //! photograph, by asset, entry and tier, rendered from that entry through the proxy path. Files live
 //! under `<catalog>.index/previews/`; the index database's `previews` and `photo_previews` tables
 //! record them. The lane never touches the editor's one-slot source cache.
-use super::FileId;
+use super::{Dimensions, FileId};
 use crate::{AssetId, EntryId, JobId};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -180,7 +180,12 @@ pub struct PixelRect {
 #[serde(deny_unknown_fields)]
 pub struct RegionAnswer {
     pub item: PreviewItem,
+    /// The rectangle returned, in [`Self::frame`]: the request's, mapped into that frame and
+    /// clamped to it.
     pub rect: PixelRect,
+    /// The upright frame `rect` was cut from: the JPEG original's, the embedded preview's or the
+    /// development's, each at full resolution.
+    pub frame: Dimensions,
     pub path: PathBuf,
     pub width: u32,
     pub height: u32,
@@ -225,5 +230,38 @@ mod tests {
         ] {
             assert_eq!(PreviewOrigin::parse(origin.as_str()), Some(origin));
         }
+    }
+
+    /// A region names the rectangle it returns and the upright frame that rectangle is in.
+    #[test]
+    fn a_region_answer_names_its_rectangle_in_its_frame() {
+        let answer = RegionAnswer {
+            item: PreviewItem::File { file_id: FileId(4) },
+            rect: PixelRect {
+                x: 10,
+                y: 20,
+                width: 300,
+                height: 200,
+            },
+            frame: Dimensions {
+                width: 6048,
+                height: 4024,
+            },
+            path: "/c.index/previews/regions/1-1.jpg".into(),
+            width: 300,
+            height: 200,
+            origin: PreviewOrigin::Developed,
+        };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(
+            json["rect"],
+            json!({"x": 10, "y": 20, "width": 300, "height": 200})
+        );
+        assert_eq!(json["frame"], json!({"width": 6048, "height": 4024}));
+        assert_eq!(json["origin"], "developed");
+        assert_eq!(
+            serde_json::from_value::<RegionAnswer>(json).unwrap(),
+            answer
+        );
     }
 }

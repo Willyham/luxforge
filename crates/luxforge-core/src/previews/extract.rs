@@ -10,9 +10,11 @@
 //!   thumbnails are 160 × 120 bitmaps) when the file carries another; the grid and loupe tiers come
 //!   from the largest JPEG decoded at a scale, then the other JPEGs, then the largest bitmap.
 //!   OM System, Olympus and Panasonic files carry one preview only, and every tier comes from it.
-//! - **No usable preview.** A file whose listed images are none of them extractable, or none of
+//! - **No usable preview.** A RAW whose listed images are none of them extractable, or none of
 //!   which decodes (the Canon EOS R5 Mark II's and R8's H.265 previews), is [`Found::Unusable`]
-//!   with the reason, and the lane hands it to [`develop_instead`].
+//!   with the reason, and the lane hands it to [`develop_instead`], which develops it neutrally
+//!   ([`region::developed_preview`]) for a visible or look-ahead task. A JPEG original that does
+//!   not decode is no such case: it fails with its own kind (`invalid-input` for a corrupt one).
 //!
 //! Many camera JPEGs carry bytes after their last EOI marker (every Canon CR3's full-size preview,
 //! the Leica CL's, Q2's and SL2's, some DJI files'), which the strict codec refuses; each is cut
@@ -22,10 +24,14 @@
 //! and encoding. The decode is one frame at the scale that covers the tier, within the JPEG
 //! original's limits (`source::JPEG_LIMITS`); the downscale is the proxy's box downscale and its
 //! bands; each step checks the task's cancellation.
-use super::FILE_GRID_SIDE;
+use super::{
+    FILE_GRID_SIDE,
+    region::{self, DevelopedPreview},
+};
 use crate::{
-    Error, ErrorKind, PreviewSource, ProxyBounds, ProxyPlan, Raster, SourceImage, SourceTag,
-    catalog_types::{EmbeddedFormat, FileRecord, HeaderState, PreviewOrigin},
+    Cancel, Error, ErrorKind, PreviewSource, ProxyBounds, ProxyPlan, Raster, SourceImage,
+    SourceTag,
+    catalog_types::{EmbeddedFormat, FileRecord, FileSignature, HeaderState, PreviewOrigin},
     export::metadata::jpeg_orientation,
     jobs::JobControl,
     source::{JPEG_LIMITS, raw_error, upright_position},
@@ -35,7 +41,7 @@ use luxforge_raw::{
     EmbeddedImage, EmbeddedPreview, EmbeddedPreviews, MAX_EMBEDDED_IMAGE_BYTES,
     MAX_EMBEDDED_READ_BUDGET, PreviewFormat, RandomAccess, RawError,
 };
-use std::{borrow::Cow, fs::File, sync::Arc};
+use std::{borrow::Cow, fs::File, path::Path, sync::Arc};
 
 /// The quality every preview is encoded at.
 const QUALITY: u8 = 85;
@@ -54,32 +60,82 @@ pub(crate) struct Made {
     pub origin: PreviewOrigin,
 }
 
-/// What making a tier found: the tier, or why the file has no usable preview.
+/// What making a tier found: the tier, or why a RAW has no usable preview.
 #[derive(Debug)]
 pub(crate) enum Found {
     Made(Made),
     Unusable(String),
 }
 
-/// The seam for a file with no usable preview: the one function the lane's worker calls then,
-/// with the tier's long edge (`side`) and why the file's own images would not do. **TASK-009**
-/// (lane B) develops a RAW's frame here — neutrally, one RAW at a time, off the editor's source
-/// cache, through `region::developed_preview(&record.path, &record.signature, side,
-/// control.render_cancel())` — and encodes it upright as [`PreviewOrigin::Developed`]. Until then,
-/// and always for a JPEG original that does not decode, the tier fails `unsupported-input` naming
-/// why, which the lane remembers for the file's signature.
+/// How a RAW with no usable preview is developed into a tier: the file at a path, known by its
+/// signature, developed neutrally and fitted within a long edge, checking a cancel token.
+/// [`region::developed_preview`] in production: one development at a time in the process, off
+/// the editor's source cache.
+pub(crate) type Develop<'a> =
+    &'a (dyn Fn(&Path, &FileSignature, u32, &Cancel) -> Result<DevelopedPreview, Error> + Sync);
+
+/// The production [`Develop`].
+pub(crate) const DEVELOP: Develop<'static> = &region::developed_preview;
+
+/// The seam for a RAW with no usable preview, which the lane's worker calls for a visible or
+/// look-ahead task, with the tier's long edge (`side`) and why the file's own images would not
+/// do: the frame developed neutrally by `develop` (one RAW at a time, off the editor's source
+/// cache; the development stays kept for the file's 100% regions), fitted within `side` and
+/// encoded as the tier, upright, origin [`PreviewOrigin::Developed`]. A camera Luxforge cannot
+/// develop fails `unsupported-input` naming why, which the lane remembers for the file's
+/// signature; every other failure keeps its own kind.
 pub(crate) fn develop_instead(
     record: &FileRecord,
     side: u32,
     why: &str,
     control: &JobControl,
+    develop: Develop<'_>,
 ) -> Result<Made, Error> {
     control.checkpoint()?;
-    let _ = side;
-    Err(Error::unsupported_input(format!(
-        "{} has no usable preview: {why}",
-        record.name
-    )))
+    if record.kind != SourceTag::Raw {
+        return Err(Error::internal(format!(
+            "{} is a JPEG original, its own preview, and is never developed",
+            record.name
+        )));
+    }
+    let developed = develop(
+        &record.path,
+        &record.signature,
+        side,
+        control.render_cancel(),
+    )
+    .map_err(|error| match error.kind {
+        ErrorKind::Cancelled => control.cancelled_error(),
+        ErrorKind::SourceUnavailable => error,
+        kind => Error::new(
+            kind,
+            format!(
+                "{} has no usable preview ({why}) and cannot be developed: {}",
+                record.name, error.detail
+            ),
+        ),
+    })?;
+    control.checkpoint()?;
+    let mut jpeg = Vec::new();
+    luxforge_jpeg::encode(
+        &mut jpeg,
+        developed.width,
+        developed.height,
+        &developed.rgba,
+        &Settings {
+            quality: QUALITY,
+            chroma: CHROMA,
+            segments: &[],
+            icc: None,
+        },
+        &mut |_| control.checkpoint(),
+    )?;
+    Ok(Made {
+        jpeg,
+        width: developed.width,
+        height: developed.height,
+        origin: PreviewOrigin::Developed,
+    })
 }
 
 /// The images one file offers one task, opened once: the file, and for a RAW its listing.
@@ -104,7 +160,7 @@ pub(crate) enum FileImages {
 
 impl FileImages {
     /// Open `record`'s file. A file that cannot be opened — gone, or on an unmounted volume — is
-    /// `source-unavailable`; a RAW LibRaw cannot identify is `unsupported-input`.
+    /// `source-unavailable`; a RAW LibRaw cannot identify is `invalid-input`.
     pub(crate) fn open(record: &FileRecord, control: &JobControl) -> Result<Self, Error> {
         control.checkpoint()?;
         let file = File::open(&record.path).map_err(|error| unavailable(record, error.kind()))?;
@@ -241,8 +297,8 @@ impl FileImages {
     }
 
     /// The file's preview fitted within `side`, upright, origin `embedded`: the JPEG original
-    /// itself, or a RAW's largest usable embedded image. [`Found::Unusable`] names why there is
-    /// none.
+    /// itself, or a RAW's largest usable embedded image. [`Found::Unusable`] names why a RAW has
+    /// none; a JPEG original that does not decode fails with its own kind, naming the file.
     pub(crate) fn preview(
         &mut self,
         record: &FileRecord,
@@ -263,20 +319,18 @@ impl FileImages {
                     }
                 })?;
                 let orientation = jpeg_orientation(&bytes);
-                let made = decode_jpeg(&bytes, side, control).and_then(|pixels| {
-                    finish(pixels, side, orientation, PreviewOrigin::Embedded, control)
-                });
-                match made {
-                    Ok(made) => Ok(Found::Made(made)),
-                    Err(error) => {
-                        stop_on(error.clone())?;
-                        Ok(Found::Unusable(format!(
-                            "the JPEG does not decode ({}: {})",
-                            error.kind.code(),
-                            error.detail
-                        )))
-                    }
-                }
+                decode_jpeg(&bytes, side, control)
+                    .and_then(|pixels| {
+                        finish(pixels, side, orientation, PreviewOrigin::Embedded, control)
+                    })
+                    .map(Found::Made)
+                    .map_err(|error| match error.kind {
+                        ErrorKind::Cancelled | ErrorKind::SourceUnavailable => error,
+                        kind => Error::new(
+                            kind,
+                            format!("{} does not decode: {}", record.name, error.detail),
+                        ),
+                    })
             }
             Self::Raw {
                 previews,
@@ -353,21 +407,16 @@ fn unavailable(record: &FileRecord, kind: std::io::ErrorKind) -> Error {
 }
 
 /// What a RAW read's failure means for a task: a stopped read is the task's cancellation, a read
-/// that failed is the file unavailable, and anything else says the image or the file cannot be
-/// used.
+/// that failed is the file unavailable, and anything else keeps the kind the RAW crate's error
+/// has: a file LibRaw cannot open, or a corrupt image, is `invalid-input`, and one past a limit
+/// `resource-limit`.
 fn raw_failure(record: &FileRecord, error: RawError, control: &JobControl) -> Error {
     match error {
         RawError::Cancelled => control.cancelled_error(),
         RawError::Io { .. } => {
             Error::source_unavailable(format!("{} cannot be read: {error}", record.path.display()))
         }
-        error => {
-            let error = raw_error(error);
-            match error.kind {
-                ErrorKind::ResourceLimit => error,
-                _ => Error::unsupported_input(error.detail),
-            }
-        }
+        error => raw_error(error),
     }
 }
 
