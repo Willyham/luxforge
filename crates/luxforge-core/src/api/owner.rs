@@ -1115,6 +1115,7 @@ fn owner_loop(
         source_waiters: Vec::new(),
         event_waits: Vec::new(),
         parking: None,
+        deferred: None,
         catalog,
         #[cfg(test)]
         fault: None,
@@ -1359,6 +1360,10 @@ pub(super) struct Owner {
     /// Set by the `events.wait` handler when it cannot answer yet: the wait [`Owner::call`] parks
     /// with the call's own reply channel, which the handler does not hold. Empty between calls.
     parking: Option<PendingWait>,
+    /// Set by a lane A handler that handed its disk reads to the index lane's threads: the call
+    /// [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty between
+    /// calls.
+    deferred: Option<files::Deferred>,
     /// The catalog lanes' owner-side state, one field per lane, each in its own file.
     catalog: catalog::CatalogLanes,
     #[cfg(test)]
@@ -1391,6 +1396,18 @@ impl Owner {
             && result.is_ok()
         {
             self.park_event_wait(client, request.id, wait, response);
+            return;
+        }
+        // So is a call waiting for the index lane to read the disk for it.
+        if let Some(deferred) = self.deferred.take()
+            && result.is_ok()
+        {
+            let call = OwnerCall {
+                client,
+                request,
+                response,
+            };
+            files::defer(self, call, deferred);
             return;
         }
         let reply = point::Reply {
@@ -1477,6 +1494,14 @@ impl Owner {
         // names and answers with the job to wait for, whichever handler evaluated it.
         let result = result.map_err(|error| self.prepare(client, error));
         match (result, key) {
+            // A call waiting for the index lane records its first answer when it is answered;
+            // one waiting for a survey is answered again, as if just asked, which records it.
+            (Ok(Planned::Value(value)), Some(key)) if self.deferred.is_some() => {
+                if let Some(files::Deferred::Query { key: deferred, .. }) = &mut self.deferred {
+                    *deferred = Some(key);
+                }
+                Ok(Planned::Value(value))
+            }
             (Ok(Planned::Value(mut value)), Some(key)) => {
                 self.requests.record(key, &mut value);
                 Ok(Planned::Value(value))
@@ -1620,6 +1645,7 @@ impl Owner {
     /// answered, that answer stands; a source job it already settled keeps its state.
     fn contained(&mut self, owed: Owed) {
         self.record_announced();
+        self.deferred = None;
         let error = || Error::internal("the catalog owner failed while serving this message");
         match owed {
             Owed::Call(id, response) => {

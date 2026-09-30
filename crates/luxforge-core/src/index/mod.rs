@@ -17,6 +17,10 @@
 //!   files — with progress on the activity board. The catalog owner only schedules it
 //!   (`api/owner/files.rs`).
 //! - `disk.rs`: a folder's immediate subfolders for `disk.folders`, with the same exclusions.
+//! - `query.rs`: the lane's query and survey threads, which ask the file system what the owner must
+//!   not wait on (a folder's subfolders, a path to add or refresh, a card), one question at a time.
+//! - `survey.rs`: what the owner answers the volume and card lists and the indexed folders' offline
+//!   state from, learned on the survey thread, local volumes before network ones.
 //!
 //! Not built yet: the platform's change notifications for indexed folders and mount notifications
 //! for cards (TASK-005). They feed this lane what the owner already hands it: a root to list again
@@ -25,8 +29,10 @@ pub(crate) mod database;
 pub(crate) mod disk;
 pub(crate) mod exclude;
 pub(crate) mod lane;
+pub(crate) mod query;
 mod read;
 pub(crate) mod reconcile;
+pub(crate) mod survey;
 pub(crate) mod volumes;
 pub(crate) mod walk;
 

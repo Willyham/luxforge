@@ -12,6 +12,13 @@
 //! volume at `/System/Volumes/Data`, joined by firmlinks so `/Users` is on the data volume — and is
 //! one volume here: mounted at `/`, named as the system volume, identified by the data volume's
 //! UUID, since that is where a person's files are.
+//!
+//! Reading the mount table ([`MountSource::list`]) waits on no file system, so the catalog owner
+//! may read it. Everything else here stats: a mount point's device (the identity of a volume
+//! without a UUID, and which volume a path is on) and a card's `DCIM` folder. That runs on the
+//! index lane's threads (`super::survey`, `super::query`), never on the owner, and looks only at
+//! the mounts it needs: [`volume_in`] stats the mounts that could hold the path, and [`card_of`]
+//! the mounts that could carry the volume, so a hung network volume elsewhere is never touched.
 use crate::{
     Error,
     atomic_file::file_error,
@@ -22,6 +29,10 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
+
+/// The platform's entry for one mounted file system, as the index's other modules name it, so the
+/// platform crate is named in one place.
+pub(crate) type PlatformMount = Mount;
 
 /// Where the startup disk's data volume is mounted on macOS.
 const MACOS_DATA_VOLUME: &str = "/System/Volumes/Data";
@@ -43,14 +54,28 @@ pub(crate) enum MountSource {
 }
 
 impl MountSource {
-    /// The mount table now. A platform that cannot read its table gives an empty one, in which
+    /// The mounted file systems now, in the platform's order, read without waiting on any of them:
+    /// `getfsstat` with `MNT_NOWAIT` on macOS (reading a volume's name and UUID only when it is
+    /// local), `/proc/self/mountinfo` on Linux. So the catalog owner may read it. The system's own
+    /// mounts are left out, but for the macOS data volume, which names the startup disk: none is a
+    /// person's volume, and an automounter's trigger among them can mount, and wait on a network,
+    /// when it is looked at. A platform that cannot read its table gives an empty one, in which
     /// every path's volume is found by its device ([`MountTable::volume_of`]).
-    pub(crate) fn read(&self, now_ms: i64) -> MountTable {
+    pub(crate) fn list(&self) -> Vec<Mount> {
         let mounts = match self {
             Self::Platform => luxforge_process::mounts().unwrap_or_default(),
             Self::Fixed(mounts) => mounts.lock().expect("a fixed mount table").clone(),
         };
-        MountTable::of(mounts, now_ms)
+        mounts
+            .into_iter()
+            .filter(|mount| mount.browsable || mount.mount_point == Path::new(MACOS_DATA_VOLUME))
+            .collect()
+    }
+
+    /// The mount table now, with every mounted volume's identity: a stat of each mount point.
+    #[cfg(test)]
+    pub(crate) fn read(&self, now_ms: i64) -> MountTable {
+        MountTable::of(self.list(), now_ms)
     }
 }
 
@@ -60,22 +85,30 @@ pub(crate) struct Mounted {
     pub volume: Volume,
     /// The startup disk.
     pub startup: bool,
+    /// The platform's entry it was learned from, which says whether it is still mounted.
+    pub source: Mount,
     /// The path prefixes it serves, each with the device its files carry: its mount point, and for
     /// the macOS startup disk both of its file systems.
     serves: Vec<(PathBuf, Option<u64>)>,
+    /// Its `DCIM` folder, when [`MountTable::find_cards`] found one.
+    dcim: Option<PathBuf>,
 }
 
 impl Mounted {
-    /// Its `DCIM` folder, when it is a camera card: a volume other than the startup disk with a
-    /// `DCIM` directory at its root.
+    /// Its `DCIM` folder when it is a camera card, as [`MountTable::find_cards`] found it.
     pub(crate) fn card_folder(&self) -> Option<PathBuf> {
-        if self.startup {
-            return None;
-        }
+        self.dcim.clone()
+    }
+
+    /// Look for its `DCIM` folder: a camera card is a volume other than the startup disk with a
+    /// `DCIM` directory at its root. One stat.
+    fn find_card(&mut self) {
         let dcim = self.volume.mount_point.join(CARD_FOLDER);
-        dcim.symlink_metadata()
-            .is_ok_and(|metadata| metadata.is_dir())
-            .then_some(dcim)
+        let card = !self.startup
+            && dcim
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.is_dir());
+        self.dcim = card.then_some(dcim);
     }
 }
 
@@ -100,6 +133,7 @@ impl MountTable {
             if !mount.browsable || mount.mount_point == Path::new(MACOS_DATA_VOLUME) {
                 continue;
             }
+            let source = mount.clone();
             let device = device_of(&mount.mount_point);
             let mut serves = vec![(mount.mount_point.clone(), device)];
             let mut uuid = mount.uuid;
@@ -137,32 +171,25 @@ impl MountTable {
                     last_seen_ms: now_ms,
                 },
                 startup: mount.root,
+                source,
                 serves,
+                dcim: None,
             });
         }
         Self { mounted, now_ms }
     }
 
+    /// Look for each volume's `DCIM` folder, which makes it a camera card: one stat per volume.
+    pub(crate) fn find_cards(&mut self) {
+        for mounted in &mut self.mounted {
+            mounted.find_card();
+        }
+    }
+
     /// The volumes a person browses — the startup disk and every browsable mount — in the
-    /// table's order.
-    pub(crate) fn volumes(&self) -> impl Iterator<Item = &Mounted> {
-        self.mounted.iter()
-    }
-
-    /// Whether the volume `id` is mounted now.
-    pub(crate) fn is_mounted(&self, id: &VolumeId) -> bool {
-        self.mounted.iter().any(|mounted| mounted.volume.id == *id)
-    }
-
-    /// The mounted volume `id`, if it is mounted.
-    pub(crate) fn get(&self, id: &VolumeId) -> Option<&Mounted> {
-        self.mounted.iter().find(|mounted| mounted.volume.id == *id)
-    }
-
-    /// Whether the folder at `path`, last seen on volume `volume`, is offline: it is not there and
-    /// its volume is not mounted. A folder that is gone from a mounted volume is not offline.
-    pub(crate) fn offline(&self, path: &Path, volume: &VolumeId) -> bool {
-        path.symlink_metadata().is_err() && !self.is_mounted(volume)
+    /// table's order, taken out of the table.
+    pub(crate) fn into_volumes(self) -> Vec<Mounted> {
+        self.mounted
     }
 
     /// The volume the existing file or directory at `path` is on: the mounted volume whose served
@@ -220,9 +247,60 @@ impl MountTable {
 const STARTUP_LABEL: &str = "Startup disk";
 
 /// The volume the existing file or directory at `path` is on, seen now (`last_seen_ms`), by the
-/// platform's mount table ([`MountTable::volume_of`]).
+/// platform's mount table ([`volume_in`]).
 pub(crate) fn volume_of(path: &Path, now_ms: i64) -> Result<Volume, Error> {
-    MountSource::Platform.read(now_ms).volume_of(path)
+    volume_in(&MountSource::Platform.list(), path, now_ms)
+}
+
+/// The volume the existing file or directory at `path` is on, by the mounted file systems
+/// `mounts` ([`MountTable::volume_of`]), statting only the mounts that could hold it: those
+/// mounted at one of its ancestors, and the startup disk's file systems. A volume mounted
+/// elsewhere, a hung network volume among them, is not looked at.
+pub(crate) fn volume_in(mounts: &[Mount], path: &Path, now_ms: i64) -> Result<Volume, Error> {
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| file_error("cannot resolve the volume", error.kind()))?;
+    let candidates = mounts
+        .iter()
+        .filter(|mount| {
+            mount.root
+                || mount.mount_point == Path::new(MACOS_DATA_VOLUME)
+                || canonical.starts_with(&mount.mount_point)
+        })
+        .cloned()
+        .collect();
+    MountTable::of(candidates, now_ms).volume_of(&canonical)
+}
+
+/// The volume `id`, when it is mounted, by the mounted file systems `mounts`, statting only the
+/// mounts that could carry that identity: the startup disk's file systems, and the mount with that
+/// UUID for an identity made from one, or the mounts without a UUID for one made from a device.
+pub(crate) fn mounted_in(mounts: &[Mount], id: &VolumeId, now_ms: i64) -> Option<Mounted> {
+    let candidates = mounts
+        .iter()
+        .filter(|mount| {
+            mount.root
+                || mount.mount_point == Path::new(MACOS_DATA_VOLUME)
+                || match mount.uuid {
+                    Some(uuid) => volume_id_of_uuid(uuid) == *id,
+                    None => id.as_str().starts_with(DEVICE_ID_PREFIX),
+                }
+        })
+        .cloned()
+        .collect();
+    MountTable::of(candidates, now_ms)
+        .mounted
+        .into_iter()
+        .find(|mounted| mounted.volume.id == *id)
+}
+
+/// The mounted volume `id` with its `DCIM` folder, when it is a camera card, by the mounted file
+/// systems `mounts`, looking only at what [`mounted_in`] does and at that one `DCIM` folder.
+pub(crate) fn card_of(mounts: &[Mount], id: &VolumeId, now_ms: i64) -> Option<(Volume, PathBuf)> {
+    let mut mounted = mounted_in(mounts, id, now_ms)?;
+    mounted.find_card();
+    let dcim = mounted.card_folder()?;
+    Some((mounted.volume, dcim))
 }
 
 fn volume_id_of_uuid(uuid: [u8; 16]) -> VolumeId {
@@ -230,8 +308,11 @@ fn volume_id_of_uuid(uuid: [u8; 16]) -> VolumeId {
         .expect("32 hex digits make a volume identity")
 }
 
+/// How an identity made from a device number starts: `volume-dev`.
+const DEVICE_ID_PREFIX: &str = "volume-dev";
+
 fn volume_id_of_device(device: u64) -> VolumeId {
-    VolumeId::parse(format!("{}dev{device:016x}", VolumeId::PREFIX))
+    VolumeId::parse(format!("{DEVICE_ID_PREFIX}{device:016x}"))
         .expect("a device number makes a volume identity")
 }
 
@@ -262,6 +343,22 @@ pub(crate) fn device_of(path: &Path) -> Option<u64> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    impl MountTable {
+        fn volumes(&self) -> impl Iterator<Item = &Mounted> {
+            self.mounted.iter()
+        }
+
+        fn is_mounted(&self, id: &VolumeId) -> bool {
+            self.mounted.iter().any(|mounted| mounted.volume.id == *id)
+        }
+
+        /// The folder at `path`, last seen on volume `volume`, is not there and its volume is
+        /// not mounted.
+        fn offline(&self, path: &Path, volume: &VolumeId) -> bool {
+            path.symlink_metadata().is_err() && !self.is_mounted(volume)
+        }
+    }
 
     /// A mount entry for a scratch directory standing in as a volume.
     pub(crate) fn mount_at(path: &Path, name: &str, uuid: u8, removable: bool) -> Mount {
@@ -331,7 +428,14 @@ pub(crate) mod tests {
             ssd.uuid = None;
             ssd
         }];
-        let table = MountSource::Fixed(Arc::new(Mutex::new(mounts))).read(9);
+        let mut table = MountSource::Fixed(Arc::new(Mutex::new(mounts.clone()))).read(9);
+        assert!(
+            table
+                .volumes()
+                .all(|mounted| mounted.card_folder().is_none()),
+            "no card until one is looked for"
+        );
+        table.find_cards();
         let volume = table.volume_of(&photos).unwrap();
         assert_eq!(volume.label, "NIKON Z 8");
         assert_eq!(volume.mount_point, card);
@@ -350,6 +454,19 @@ pub(crate) mod tests {
         let unmounted = MountSource::Fixed(Arc::new(Mutex::new(Vec::new()))).read(10);
         assert!(unmounted.offline(&gone, &volume.id));
         assert!(!unmounted.offline(&photos, &volume.id), "still there");
+
+        // The same answers from only the mounts that could hold the path or carry the identity.
+        let within = volume_in(&mounts, &photos, 11).unwrap();
+        assert_eq!((within.id, within.last_seen_ms), (volume.id.clone(), 11));
+        assert_eq!(volume_in(&mounts, &plain, 11).unwrap().id, ssd.id);
+        let (found, dcim) = card_of(&mounts, &volume.id, 12).expect("the card");
+        assert_eq!(
+            (found.label.as_str(), dcim),
+            ("NIKON Z 8", card.join("DCIM"))
+        );
+        assert!(card_of(&mounts, &ssd.id, 12).is_none(), "no DCIM folder");
+        let absent = VolumeId::parse(format!("volume-{}", "09".repeat(16))).unwrap();
+        assert!(card_of(&mounts, &absent, 12).is_none(), "not mounted");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
