@@ -13,7 +13,9 @@ pub use owner::{ClientId, EventWake, OwnerHandle, PreviewRequest};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 
-use crate::{AssetId, Draft, DraftId, Error, PreviewSession, catalog_types::LibraryChangeSeq};
+use crate::{
+    AssetId, Draft, DraftId, Error, JobId, PreviewSession, catalog_types::LibraryChangeSeq,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -89,7 +91,9 @@ impl ApiResponse {
 /// photograph's original, with no revision. A batch the index lane committed names the index
 /// revision it left, under the request that started the listing (`index.refresh`,
 /// `index.add-folder`, or the undo or redo of an indexed folder): one event however many files it
-/// wrote.
+/// wrote. An event a job records — a batch it committed, and the one it records as it ends —
+/// also names the job (`job_id`), so a client tells the job's end and its progress apart by the
+/// job and reads `job.read` only for its own.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApiEvent {
@@ -104,6 +108,8 @@ pub struct ApiEvent {
     pub library_sequence: Option<LibraryChangeSeq>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<JobId>,
 }
 
 /// What a change is announced as: the method and request identity a client watching
@@ -117,6 +123,8 @@ pub(crate) struct Origin {
     pub revision: Option<u64>,
     pub library_sequence: Option<LibraryChangeSeq>,
     pub index_revision: Option<u64>,
+    /// The job that recorded the change, when a job did.
+    pub job_id: Option<JobId>,
 }
 
 impl Origin {
@@ -128,7 +136,14 @@ impl Origin {
             revision: None,
             library_sequence: None,
             index_revision: None,
+            job_id: None,
         }
+    }
+
+    /// The same request, naming the job that recorded the change.
+    pub(crate) fn job(mut self, job_id: JobId) -> Self {
+        self.job_id = Some(job_id);
+        self
     }
 
     /// The same request, naming the library change it recorded.
