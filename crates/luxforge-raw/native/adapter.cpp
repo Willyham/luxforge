@@ -4,8 +4,10 @@
 #include "libraw/libraw.h"
 #include "librtprocess.h"
 #include "camera_allowlist.h"
+#include "rawspeed_decoders.h"
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <memory>
@@ -54,7 +56,15 @@ static_assert(sizeof(LfDemosaicShape) == 100, "LfDemosaicShape layout differs fr
 
 // The decoder that fills the mosaic in lf_raw_unpack; Rust's NativeUnpacker has the same values.
 // Any other value is refused before unpack.
-enum LfUnpacker : uint32_t { LF_UNPACKER_LIBRAW = 0 };
+enum LfUnpacker : uint32_t { LF_UNPACKER_LIBRAW = 0, LF_UNPACKER_RAWSPEED = 1 };
+
+// What RawSpeed decoded (rawspeed_adapter.cpp).
+struct LfRawSpeedImage { uint32_t width, height, components, u16; };
+// RawSpeed's decode of the borrowed bytes into LibRaw's raw buffer (rawspeed_adapter.cpp).
+int lf_rawspeed_unpack(const uint8_t *bytes, size_t byte_length, uint16_t *dest, size_t stride,
+                       uint32_t width, uint32_t height, const uint16_t *map, LfCancel cancel,
+                       void *cancel_context, LfRawSpeedImage *image, char *err,
+                       size_t err_len) noexcept;
 }
 
 extern "C" bool lf_tile_cancel(void *context) noexcept {
@@ -63,7 +73,11 @@ extern "C" bool lf_tile_cancel(void *context) noexcept {
 }
 
 namespace {
-class CalibratingLibRaw final : public LibRaw {
+void error(char *dst, size_t len, const char *message) noexcept;
+
+// The LibRaw object each handle owns: LibRaw with the catalog's configured calibration and the
+// adapter's RawSpeed substitute for a replaceable LibRaw decoder.
+class AdapterLibRaw final : public LibRaw {
 public:
   bool apply_xyz_to_camera(const double configured[9]) {
     if (imgdata.idata.colors != 3) return false;
@@ -77,6 +91,143 @@ public:
     cam_xyz_coeff(imgdata.color.rgb_cam, cam_xyz);
     return true;
   }
+
+  // Why RawSpeed cannot replace `row`'s LibRaw decoder exactly on this identified file, or null.
+  // Every row needs a one-channel colour filter array mosaic (so LibRaw's unpack allocates its
+  // raw buffer the way it does for the replaced decoder, whatever decoder flags the substitute
+  // reports) and no Fujifilm SuperCCD rotation; the row's guard adds what its decoder needs.
+  const char *rawspeed_refusal(const LfReplaceable &row) const noexcept {
+    const auto &sizes = imgdata.sizes;
+    const auto &unpacker = libraw_internal_data.unpacker_data;
+    if (!imgdata.idata.filters)
+      return "RawSpeed replaces LibRaw's decoder only for a colour filter array mosaic";
+    if (libraw_internal_data.internal_output_params.fuji_width)
+      return "RawSpeed does not replace LibRaw's decoder for a rotated Fujifilm layout";
+    switch (row.guard) {
+    case LF_GUARD_NONE:
+      return nullptr;
+    case LF_GUARD_NIKON_ROWS:
+      return sizes.height == sizes.raw_height
+                 ? nullptr
+                 : "LibRaw's Nikon decoder leaves the rows below the image height unwritten";
+    case LF_GUARD_LOSSLESS_JPEG_PLACEMENT:
+      return (unpacker.load_flags & 1) || sizes.raw_width == 3984
+                 ? "LibRaw's lossless JPEG decoder interleaves or shifts this file's samples"
+                 : nullptr;
+    case LF_GUARD_DNG_SINGLE_FRAME:
+      return unpacker.tiff_samples == 1 && imgdata.idata.raw_count == 1
+                 ? nullptr
+                 : "LibRaw's DNG decoder selects one of several frames or samples";
+    case LF_GUARD_PANASONIC_C6_BLOCKS: {
+      const unsigned block = unpacker.pana_bpp == 12 ? 14 : 11;
+      return sizes.raw_height % 16 == 0 && sizes.raw_width % block == 0
+                 ? nullptr
+                 : "LibRaw's Panasonic C6 decoder leaves a partial strip or block unwritten";
+    }
+    }
+    return "unknown replaceable-decoder guard";
+  }
+
+  // LibRaw's unpack with RawSpeed in place of `row`'s decoder. LibRaw allocates its raw buffer,
+  // calls the substitute where it would call its decoder, and runs every later step unchanged.
+  // `bytes` are the encoded bytes this object opened, borrowed for the call. A RawSpeed failure
+  // is a LibRaw decode failure whose status and message rawspeed_status and rawspeed_message
+  // then report; there is no fallback to LibRaw's decoder.
+  int unpack_with_rawspeed(const LfReplaceable &row, const uint8_t *bytes, size_t length,
+                           LfCancel cancel, void *cancel_context) {
+    Substitution substitution{&row, bytes, length, cancel, cancel_context, load_raw};
+    // Restores LibRaw's decoder and forgets the substitution on every path, including an unpack
+    // that fails before it reaches the substitute.
+    struct Restore {
+      AdapterLibRaw &self;
+      ~Restore() {
+        if (self.substitution_) self.load_raw = self.substitution_->replaced;
+        self.substitution_ = nullptr;
+      }
+    } restore{*this};
+    substitution_ = &substitution;
+    load_raw = static_cast<void (LibRaw::*)()>(&AdapterLibRaw::rawspeed_load_raw);
+    return unpack();
+  }
+
+  int rawspeed_status() const noexcept { return rawspeed_status_; }
+  const char *rawspeed_message() const noexcept { return rawspeed_message_; }
+
+private:
+  struct Substitution {
+    const LfReplaceable *row;
+    const uint8_t *bytes;
+    size_t length;
+    LfCancel cancel;
+    void *cancel_context;
+    void (LibRaw::*replaced)();
+  };
+
+  // Runs inside LibRaw's unpack, in place of the replaced decoder, on the object's own raw
+  // buffer (raw_width x raw_height at raw_pitch, allocated by unpack).
+  void rawspeed_load_raw() {
+    // LibRaw's steps after its decoder compare load_raw with its own decoders
+    // (crop_masked_pixels' masked areas among them), so they must see the replaced one.
+    load_raw = substitution_->replaced;
+    const Substitution &substitution = *substitution_;
+    const auto &sizes = imgdata.sizes;
+    uint16_t *raw = imgdata.rawdata.raw_image;
+    if (!raw || sizes.raw_pitch != unsigned(sizes.raw_width) * 2) {
+      fail(LF_STATUS_FAILED, "RawSpeed: LibRaw's raw buffer is not one row of raw_width samples "
+                             "per raw_pitch");
+    }
+    // The replaced decoder's curve rule as one value map; null writes RawSpeed's values.
+    std::vector<uint16_t> clamped;
+    const uint16_t *map = nullptr;
+    switch (substitution.row->curve) {
+    case LF_CURVE_UNCHANGED:
+      break;
+    case LF_CURVE_LIBRAW:
+      map = imgdata.color.curve;
+      break;
+    case LF_CURVE_LIBRAW_CLAMPED_14:
+      clamped.resize(0x10000);
+      for (unsigned value = 0; value < 0x10000; ++value)
+        clamped[value] = imgdata.color.curve[std::min(value, 0x3fffu)];
+      map = clamped.data();
+      break;
+    default:
+      fail(LF_STATUS_FAILED, "RawSpeed: unknown curve rule");
+    }
+    LfRawSpeedImage image{};
+    char text[512] = {};
+    const int status = lf_rawspeed_unpack(
+        substitution.bytes, substitution.length, raw, sizes.raw_pitch / 2, sizes.raw_width,
+        sizes.raw_height, map, substitution.cancel, substitution.cancel_context, &image, text,
+        sizeof(text));
+    if (status == LF_STATUS_OK) return;
+    if (status == LF_STATUS_CANCELLED) throw LIBRAW_EXCEPTION_CANCELLED_BY_CALLBACK;
+    char decoded[96] = "nothing decoded";
+    if (image.width)
+      std::snprintf(decoded, sizeof(decoded), "decoded %ux%u with %u component(s) of %s",
+                    image.width, image.height, image.components, image.u16 ? "u16" : "float");
+    // RawSpeed prefixes its exception text with the throwing function's signature and line;
+    // the message keeps the text after them.
+    const char *what = text;
+    if (const char *line = std::strstr(text, ", line "))
+      if (const char *colon = std::strstr(line, ": ")) what = colon + 2;
+    char message[sizeof(rawspeed_message_)];
+    std::snprintf(message, sizeof(message), "RawSpeed: %s (%s; expected %ux%u u16)", what,
+                  decoded, unsigned(sizes.raw_width), unsigned(sizes.raw_height));
+    fail(status == LF_STATUS_ALLOCATION ? LF_STATUS_ALLOCATION : LF_STATUS_FAILED, message);
+  }
+
+  // Record the failure for lf_raw_unpack and end LibRaw's unpack with a decode failure.
+  [[noreturn]] void fail(int status, const char *message) {
+    rawspeed_status_ = status;
+    error(rawspeed_message_, sizeof(rawspeed_message_), message);
+    if (status == LF_STATUS_ALLOCATION) throw LIBRAW_EXCEPTION_ALLOC;
+    throw LIBRAW_EXCEPTION_DECODE_RAW;
+  }
+
+  Substitution *substitution_ = nullptr;
+  int rawspeed_status_ = LF_STATUS_OK;
+  char rawspeed_message_[256] = {};
 };
 using CameraEntry = std::remove_reference_t<decltype(lf_cameras[0])>;
 
@@ -86,10 +237,15 @@ thread_local long live_handles = 0;
 thread_local unsigned long long unpack_calls = 0;
 
 struct Handle {
-  CalibratingLibRaw decoder;
-  // Set by lf_raw_open: the catalog entry (static data) and the identify-time geometry that
-  // unpack must keep.
+  AdapterLibRaw decoder;
+  // Set by lf_raw_open: the caller's encoded bytes, borrowed until the handle closes; LibRaw's
+  // identified decoder name (static text); the catalog entry (static data, null only for the
+  // test-only uncatalogued open); and the identify-time geometry that unpack must keep.
+  const uint8_t *bytes = nullptr;
+  size_t length = 0;
+  const char *decoder_name = nullptr;
   const CameraEntry *profile = nullptr;
+  bool opened = false;
   unsigned width = 0, height = 0, pitch = 0;
   // One unpack attempt per handle, successful or not.
   bool unpack_started = false, unpacked = false;
@@ -157,14 +313,11 @@ bool read_cfa(LibRaw &decoder, uint32_t &width, uint32_t &height, uint8_t cfa[36
 }
 }
 
-// Identify without unpacking: open the caller's bytes, refuse what the adapter never unpacks
-// (LibRaw's High Efficiency decoder, a camera outside the catalog, a frame count or size outside
-// the bounds), and return what classification reads. On success the handle belongs to the caller,
-// who passes it to lf_raw_unpack and always to lf_raw_close; on failure no handle is returned.
-extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
-                            LfCancel cancel, void *cancel_context,
-                            void **handle_out, LfIdentity *identity,
-                            char *err, size_t err_len) noexcept {
+namespace {
+// lf_raw_open, with the catalog check only when `catalogued`.
+int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *cancel_context,
+                void **handle_out, LfIdentity *identity, char *err, size_t err_len,
+                bool catalogued) noexcept {
   if (!bytes || !length || !handle_out || !identity || length > LF_MAX_SOURCE_BYTES) {
     error(err, err_len, "invalid or oversized RAW input"); return LF_STATUS_INVALID_INPUT;
   }
@@ -196,7 +349,7 @@ extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
     const auto *profile = std::find_if(std::begin(lf_cameras),std::end(lf_cameras),[&](const auto &camera){
       return std::strcmp(d.idata.make,camera.make)==0 && std::strcmp(d.idata.model,camera.model)==0;
     });
-    if(profile == std::end(lf_cameras)){error(err,err_len,"camera model is outside the RAW catalog");return LF_STATUS_UNSUPPORTED_MODE;}
+    if(catalogued && profile == std::end(lf_cameras)){error(err,err_len,"camera model is outside the RAW catalog");return LF_STATUS_UNSUPPORTED_MODE;}
     if(d.idata.raw_count<1||d.idata.raw_count>2){error(err,err_len,"RAW frame count exceeds primary-frame mode bounds");return LF_STATUS_UNSUPPORTED_MODE;}
     const auto &s = d.sizes;
     const uint64_t n=uint64_t(s.raw_width)*s.raw_height;
@@ -213,7 +366,9 @@ extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
     identity->width = s.raw_width; identity->height = s.raw_height;
     identity->raw_bps = d.color.raw_bps; identity->dng_version = d.idata.dng_version;
     identity->decoder_flags = opened.decoder_flags; identity->raw_count = d.idata.raw_count;
-    h->profile = profile;
+    h->bytes = bytes; h->length = length; h->decoder_name = opened.decoder_name;
+    h->profile = profile == std::end(lf_cameras) ? nullptr : profile;
+    h->opened = true;
     h->width = s.raw_width; h->height = s.raw_height; h->pitch = s.raw_pitch;
     *handle_out = h.release();
     return LF_STATUS_OK;
@@ -221,27 +376,82 @@ extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
     catch (const std::exception &e) { std::memset(identity,0,sizeof(*identity));error(err,err_len,e.what());return LF_STATUS_FAILED; }
     catch (...) { std::memset(identity,0,sizeof(*identity));error(err,err_len,"unknown native decoder failure");return LF_STATUS_FAILED; }
 }
+}
+
+// Identify without unpacking: open the caller's bytes, refuse what the adapter never unpacks
+// (LibRaw's High Efficiency decoder, a camera outside the catalog, a frame count or size outside
+// the bounds), and return what classification reads. On success the handle belongs to the caller,
+// who passes it to lf_raw_unpack and always to lf_raw_close; on failure no handle is returned.
+// The bytes stay borrowed until the handle closes.
+extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
+                            LfCancel cancel, void *cancel_context,
+                            void **handle_out, LfIdentity *identity,
+                            char *err, size_t err_len) noexcept {
+  return open_handle(bytes, length, cancel, cancel_context, handle_out, identity, err, err_len,
+                     true);
+}
+
+// lf_raw_open without the catalog check, for crate tests that compare the two unpackers on
+// authentic files whose camera or mode the catalog does not yet hold. Production never calls it.
+extern "C" int lf_raw_open_uncatalogued(const uint8_t *bytes, size_t length,
+                                         LfCancel cancel, void *cancel_context,
+                                         void **handle_out, LfIdentity *identity,
+                                         char *err, size_t err_len) noexcept {
+  return open_handle(bytes, length, cancel, cancel_context, handle_out, identity, err, err_len,
+                     false);
+}
 
 // Unpack the opened file once with the selected decoder and fill the complete metadata. The
 // identify-time geometry and stride must be unchanged; Rust then compares every identity field,
 // the decoder among them, with the metadata filled here. On failure `meta` stays zeroed. Once
 // LibRaw's unpack has started, successfully or not, the handle is never unpacked again.
+//
+// LF_UNPACKER_RAWSPEED runs LibRaw's unpack with the adapter's RawSpeed decode in place of the
+// identified LibRaw decoder, which must be in the replaceable table (rawspeed_decoders.h) and
+// whose guard must hold; otherwise it is refused before unpack and the handle stays unpackable.
+// A RawSpeed failure fails the unpack with a message naming RawSpeed; LibRaw's own decoder is
+// never tried instead.
 extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
                               LfCancel cancel, void *cancel_context,
                               LfMetadata *meta, char *err, size_t err_len) noexcept {
   if (!handle || !meta) { error(err, err_len, "invalid unpack arguments"); return LF_STATUS_INVALID_INPUT; }
   std::memset(meta, 0, sizeof(*meta));
-  if (unpacker != LF_UNPACKER_LIBRAW) { error(err, err_len, "unknown RAW unpacker"); return LF_STATUS_INVALID_INPUT; }
+  if (unpacker != LF_UNPACKER_LIBRAW && unpacker != LF_UNPACKER_RAWSPEED) { error(err, err_len, "unknown RAW unpacker"); return LF_STATUS_INVALID_INPUT; }
   auto *h = static_cast<Handle *>(handle);
-  if (!h->profile || h->unpack_started) { error(err, err_len, "RAW handle was already unpacked"); return LF_STATUS_INVALID_INPUT; }
+  if (!h->opened || h->unpack_started) { error(err, err_len, "RAW handle was already unpacked"); return LF_STATUS_INVALID_INPUT; }
+  const LfReplaceable *replaceable = nullptr;
+  if (unpacker == LF_UNPACKER_RAWSPEED) {
+    for (const auto &row : lf_replaceable)
+      if (h->decoder_name && std::strcmp(row.decoder, h->decoder_name) == 0) replaceable = &row;
+    if (!replaceable) {
+      char message[160];
+      std::snprintf(message, sizeof(message), "RawSpeed does not replace LibRaw's %s",
+                    h->decoder_name ? h->decoder_name : "unnamed decoder");
+      error(err, err_len, message);
+      return LF_STATUS_INVALID_INPUT;
+    }
+    if (const char *refusal = h->decoder.rawspeed_refusal(*replaceable)) {
+      error(err, err_len, refusal);
+      return LF_STATUS_UNSUPPORTED_MODE;
+    }
+  }
   if (cancel && cancel(cancel_context)) { error(err, err_len, "cancelled"); return LF_STATUS_CANCELLED; }
   h->unpack_started = true;
   try {
     {
       ProgressScope scope(h->decoder, cancel, cancel_context);
       ++unpack_calls;
-      const int code = h->decoder.unpack();
-      if (code != LIBRAW_SUCCESS) { error(err, err_len, libraw_strerror(code)); return status_of(code); }
+      const int code = replaceable
+          ? h->decoder.unpack_with_rawspeed(*replaceable, h->bytes, h->length, cancel, cancel_context)
+          : h->decoder.unpack();
+      if (code != LIBRAW_SUCCESS) {
+        if (h->decoder.rawspeed_status() != LF_STATUS_OK) {
+          error(err, err_len, h->decoder.rawspeed_message());
+          return h->decoder.rawspeed_status();
+        }
+        error(err, err_len, libraw_strerror(code));
+        return status_of(code);
+      }
     }
     if (cancel && cancel(cancel_context)) { error(err, err_len, "cancelled"); return LF_STATUS_CANCELLED; }
     const auto &d=h->decoder.imgdata;
@@ -254,7 +464,7 @@ extern "C" int lf_raw_unpack(void *handle, uint32_t unpacker,
     if (!d.rawdata.raw_image || d.rawdata.float_image || d.rawdata.color4_image || d.rawdata.color3_image) {
       error(err, err_len, "decoder did not return a single-channel integer mosaic"); return LF_STATUS_UNSUPPORTED_CFA;
     }
-    if (h->profile->calibrated && !h->decoder.apply_xyz_to_camera(h->profile->xyz_to_camera)) {
+    if (h->profile && h->profile->calibrated && !h->decoder.apply_xyz_to_camera(h->profile->xyz_to_camera)) {
       error(err, err_len, "configured calibration requires three camera colours"); return LF_STATUS_UNSUPPORTED_CFA;
     }
     libraw_decoder_info_t decoder_info{};

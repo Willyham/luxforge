@@ -16,13 +16,23 @@ mod native_status;
 mod opcodes;
 #[path = "src/profiles.rs"]
 mod profiles;
+// The replaceable-decoder table: the catalog is validated against it and it is written into the
+// native adapter's header.
+#[path = "src/unpacker.rs"]
+mod unpacker;
 
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 
-fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
+/// Add every `extension` source under `root` except the `excluded` paths, given relative to
+/// `root`, each of which must exist.
+fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str, excluded: &[&str]) {
+    let excluded: Vec<PathBuf> = excluded.iter().map(|path| root.join(path)).collect();
+    for path in &excluded {
+        assert!(path.is_file(), "excluded native source missing: {path:?}");
+    }
     let mut dirs = vec![root.to_path_buf()];
     let mut sources = Vec::<PathBuf>::new();
     while let Some(dir) = dirs.pop() {
@@ -31,6 +41,7 @@ fn add_cpp_tree(build: &mut cc::Build, root: &Path, extension: &str) {
             if path.is_dir() {
                 dirs.push(path);
             } else if path.extension().is_some_and(|ext| ext == extension)
+                && !excluded.contains(&path)
                 && path
                     .file_name()
                     .is_none_or(|name| name != "postprocessing_ph.cpp" && name != "write_ph.cpp")
@@ -192,7 +203,7 @@ fn mode(mode: &profiles::Mode) -> String {
         },
     );
     format!(
-        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?} }}",
+        "Mode {{ id: {}, bits: {}, raw_count: {}, decoder: {}, dng_version: {:?}, validation: ModeValidation::{:?}, compression: {compression}, frame_size: {:?}, unpacker: Unpacker::{:?} }}",
         text(&mode.id),
         mode.bits,
         mode.raw_count,
@@ -200,6 +211,7 @@ fn mode(mode: &profiles::Mode) -> String {
         mode.dng_version,
         mode.validation,
         mode.frame_size,
+        mode.unpacker,
     )
 }
 
@@ -336,6 +348,8 @@ fn main() {
     shared.push_str("};\n");
     fs::write(out.join("native_limits.h"), shared).expect("write native limits");
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
+    fs::write(out.join("rawspeed_decoders.h"), unpacker::native_header())
+        .expect("write replaceable decoder table");
     fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
         .expect("write static camera catalog");
     let rt = out.join("librtprocess-9a858270");
@@ -362,7 +376,7 @@ fn main() {
         .file(manifest.join("native/adapter.cpp"));
     // No USE_ZLIB/JPEG/RAWSPEED/DNGSDK/LCMS or OpenMP features.
     // The qualified NEF/RAF/DNG decoding paths do not require them.
-    add_cpp_tree(&mut build, &libraw.join("src"), "cpp");
+    add_cpp_tree(&mut build, &libraw.join("src"), "cpp", &[]);
     for source in ["rcd.cc", "markesteijn.cc", "border.cc"] {
         build.file(rt.join("src/demosaic").join(source));
     }
@@ -374,6 +388,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/opcodes.rs");
     println!("cargo:rerun-if-changed=src/limits.rs");
     println!("cargo:rerun-if-changed=src/native_status.rs");
+    println!("cargo:rerun-if-changed=src/unpacker.rs");
     println!("cargo:rerun-if-changed=native/adapter.cpp");
     println!("cargo:rerun-if-changed=vendor/libraw-0.22.2");
     println!("cargo:rerun-if-changed=vendor/librtprocess-9a858270");
@@ -453,10 +468,13 @@ fn rawspeed(manifest: &Path, out: &Path) {
     rawspeed_settings(&mut library, manifest, false);
     // Upstream builds with its own warning set; its warnings are not Luxforge's to fix here.
     library.warnings(false);
+    // `common/Common.cpp` defines only `rawspeed::writeLog`, which prints to standard output; the
+    // adapter defines its own, which prints to standard error.
     add_cpp_tree(
         &mut library,
         &manifest.join(RAWSPEED).join("src/librawspeed"),
         "cpp",
+        &["common/Common.cpp"],
     );
     library.file(manifest.join(PUGIXML).join("src/pugixml.cpp"));
     library.compile("luxforge_rawspeed");
