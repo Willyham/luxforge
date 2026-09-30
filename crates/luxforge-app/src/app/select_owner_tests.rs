@@ -157,7 +157,7 @@ fn seeded() -> PathBuf {
 }
 
 /// The editor over the seeded catalog, with Select shown and the events read from the owner.
-fn selecting() -> (Editor, PathBuf) {
+pub(super) fn selecting() -> (Editor, PathBuf) {
     let catalog = seeded();
     let (owner, join) = OwnerHandle::start(&catalog).unwrap();
     let (mut editor, _) = Editor::new(Boot {
@@ -175,7 +175,7 @@ fn selecting() -> (Editor, PathBuf) {
     (editor, catalog)
 }
 
-fn finish(mut editor: Editor, catalog: PathBuf) {
+pub(super) fn finish(mut editor: Editor, catalog: PathBuf) {
     editor.owner.stop();
     editor.owner_join.take().unwrap().join().unwrap();
     drop(editor);
@@ -183,7 +183,7 @@ fn finish(mut editor: Editor, catalog: PathBuf) {
 }
 
 /// Run the evaluation the editor has in flight, as its tasks would, and hand the answers back.
-fn evaluate(editor: &mut Editor) {
+pub(super) fn evaluate(editor: &mut Editor) {
     let query = editor
         .select
         .state
@@ -204,7 +204,7 @@ fn evaluate(editor: &mut Editor) {
 }
 
 /// Read every block of rows the editor asks for, as its tasks would.
-fn read_rows(editor: &mut Editor) {
+pub(super) fn read_rows(editor: &mut Editor) {
     while let Some(request) = editor.select.state.rows.in_flight() {
         let rows = rows_now(&editor.owner, editor.client, &request);
         let _ = editor.update(Message::Select(SelectMessage::Rows {
