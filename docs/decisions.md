@@ -264,6 +264,10 @@ Selected on 2026-09-30 under the owner's explicit delegation to plan the module,
 - Reuse mask targets, native field-patch presets, drafts and immutable history. Keep Lightroom Detail imports explicitly unsupported with per-setting reports until a mapping is separately qualified. Pre-tone spatial sampling, including Basic's neutral patch, must run off the catalog owner through bounded workers.
 - Capture sharpening is part of the recipe and export evaluates it once. Output sharpening after destination resizing, tuned to medium and size, remains separate future export scope. Photographic quality and native performance remain unmeasured; the plan carries their gates and evidence.
 
+## Lens and perspective planning
+
+Lens and perspective scope and approach are selected for planning under the owner's delegation on 2026-09-30: [design and rationale](design/lens-and-perspective.md#scope-and-decisions). The initial scope is explicit offline Lensfun profile distortion plus manual two-axis perspective, with fixed-canvas coverage and no duplicate embedded DNG correction. These are planning decisions, not implemented or verified behavior; the plan adds no owner-review gate.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
