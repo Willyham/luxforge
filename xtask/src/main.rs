@@ -40,6 +40,7 @@ mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
 mod repository;
+mod resolve_missing_smoke;
 mod scenario;
 mod select_smoke;
 mod smoke;

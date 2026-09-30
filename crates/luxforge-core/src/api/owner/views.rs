@@ -20,7 +20,7 @@ use crate::{
     api::methods::session_value,
     browse::{self, Context, EventCache, Probe, SelectRequest, View},
     catalog_types::{
-        BrowseSession, FileId, MAX_VIEW_ITEMS, ViewItem, ViewQuery, ViewRows, ViewSummary,
+        BrowseSession, MAX_VIEW_ITEMS, ViewItem, ViewQuery, ViewRows, ViewSummary,
         api::{BrowseFacets, BrowseRows, BrowseSelect, BrowseView, EventListParams},
     },
 };
@@ -79,8 +79,8 @@ fn no_view() -> Error {
 /// cache, and a view whose background job was refused (a view past the lane's queue bound, or an
 /// index read that failed) still browses, its visible cells read through `preview.read` at their
 /// own priority as the client asks for them.
-fn want_view(owner: &mut Owner, client: ClientId, files: &[FileId]) {
-    let _ = super::previews::want_view(owner, client, files);
+fn want_view(owner: &mut Owner, client: ClientId, items: &[ViewItem]) {
+    let _ = super::previews::want_view_items(owner, client, items);
 }
 
 /// The owner recorded a change: mark every view the catalog or the index has moved on from stale,
@@ -211,17 +211,7 @@ pub(in crate::api) fn browse_view(
         library_sequence: evaluation.stamp.library_sequence,
         index_revision: evaluation.stamp.index_revision,
     };
-    if over_files {
-        let files: Vec<FileId> = evaluation
-            .items
-            .iter()
-            .filter_map(|item| match item {
-                ViewItem::File(file) => Some(*file),
-                ViewItem::Photo(_) => None,
-            })
-            .collect();
-        want_view(owner, client, &files);
-    }
+    want_view(owner, client, &evaluation.items);
     owner.catalog.views.views.insert(
         client,
         View {
@@ -254,8 +244,8 @@ pub(in crate::api) fn browse_rows(
     value(ViewRows {
         revision: view.revision,
         from: p.from,
-        rows: browse::rows(service, view, p.from, p.count, &|connection, files| {
-            previews.grid_states(connection, files)
+        rows: browse::rows(service, view, p.from, p.count, &|items| {
+            previews.view_grid_states(service, items)
         })?,
     })
 }
