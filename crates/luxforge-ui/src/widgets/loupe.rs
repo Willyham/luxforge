@@ -90,7 +90,7 @@ fn moment_frame<'a, M: Clone + 'a>(
             .align_bottom(Length::Fill),
     ];
     if frame.picked {
-        let inset = theme::PICK_CHECK_INSET - theme::PICK_CHECK_RING_WIDTH;
+        let inset = theme::PICK_CHECK_INSET - theme::CELL_PICK_RING_WIDTH;
         layers = layers.push(
             container(pick_check())
                 .padding([inset, inset])
@@ -133,14 +133,14 @@ fn frame_number<'a, M: 'a>(number: usize) -> Element<'a, M> {
     .into()
 }
 
-/// A pick's check (`.tk`): the accent disc and its dark check, ringed so it reads over any
-/// photograph. The ring is the disc's border, [`theme::PICK_CHECK_RING_WIDTH`] outside the
-/// [`theme::PICK_CHECK_SIZE`] disc.
+/// A pick's check (`.tk`), the grid cell's own: the accent disc and its dark check, ringed so it
+/// reads over any photograph. The ring is the disc's border, [`theme::CELL_PICK_RING_WIDTH`] outside the
+/// [`theme::CELL_PICK_SIZE`] disc.
 pub(crate) fn pick_check<'a, M: 'a>() -> Element<'a, M> {
-    let size = theme::PICK_CHECK_SIZE + 2.0 * theme::PICK_CHECK_RING_WIDTH;
+    let size = theme::CELL_PICK_SIZE + 2.0 * theme::CELL_PICK_RING_WIDTH;
     container(icon(
         Icon::Check,
-        theme::PICK_CHECK_GLYPH,
+        theme::CELL_CHECK_SIZE,
         theme::PRIMARY_INK,
     ))
     .center(Length::Fixed(size))
@@ -148,8 +148,8 @@ pub(crate) fn pick_check<'a, M: 'a>() -> Element<'a, M> {
         container::Style::default()
             .background(theme::ACCENT)
             .border(Border {
-                color: theme::PICK_CHECK_RING,
-                width: theme::PICK_CHECK_RING_WIDTH,
+                color: theme::CELL_PICK_RING,
+                width: theme::CELL_PICK_RING_WIDTH,
                 radius: (size / 2.0).into(),
             })
     })

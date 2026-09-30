@@ -1,6 +1,6 @@
 //! Gallery states for the Select workspace's thumbnail grid, each drawn by the grid widget itself
 //! from a layout made once: every cell state, moments with their headers, a moment wider than the
-//! view, a 10,000-file view scrolled to its middle, and the catalog's larger cells.
+//! view, a 10,000-file view scrolled to the day after its middle, and the catalog's larger cells.
 //!
 //! The gallery rebuilds its states in every `view()`, so each layout and each photograph's handle
 //! lives in a `LazyLock` and is borrowed, as the app holds its own: a handle made in `view()` would
@@ -9,8 +9,8 @@
 
 use crate::gallery_thumbnails::{SCENES, bracket, thumbnail};
 use crate::{
-    CellAvailability, CellView, GridBlock, GridCell, GridHeading, GridLayout, GridMetrics,
-    MomentHeader, MomentKind, caption, theme, thumbnail_grid,
+    CellAvailability, CellView, GridBlock, GridCell, GridHeading, GridLayout, GridLineKind,
+    GridMetrics, MomentHeader, MomentKind, caption, theme, thumbnail_grid,
 };
 use iced::widget::image::Handle;
 use iced::widget::{column, container};
@@ -380,13 +380,32 @@ static TEN_THOUSAND: LazyLock<GridLayout> = LazyLock::new(|| {
     )
 });
 
-/// The middle file, the active one, with a few selected around it.
-const MIDDLE: u32 = 5_000;
+/// Where the 10,000-file view is scrolled and which file is active: the first day that starts after
+/// the middle file, its heading at the top, so the window shows a day's heading, its cameras and
+/// moments in the middle of the view; the day's first file is active, with a few selected after it.
+static MIDDLE: LazyLock<(f32, u32)> = LazyLock::new(|| {
+    let layout = &*TEN_THOUSAND;
+    let middle = layout.item_rect(5_000).map_or(0.0, |rect| rect.y);
+    let lines = layout.lines();
+    let day = lines
+        .iter()
+        .position(|line| {
+            line.top >= middle
+                && matches!(line.kind, GridLineKind::Heading(block)
+                    if matches!(layout.block(block), GridBlock::Day(_)))
+        })
+        .unwrap_or(0);
+    let first = lines[day..]
+        .iter()
+        .find(|line| !line.cells.is_empty())
+        .map_or(0, |line| layout.cell(line.cells.start).item);
+    (layout.clamp_scroll(lines[day].top.round(), TALL), first)
+});
 
-/// The 10,000-file view's scroll offset: the middle file's cell centred, on a whole point.
+/// The 10,000-file view's scroll offset.
 pub(crate) fn middle(layout: &GridLayout) -> f32 {
-    let rect = layout.item_rect(MIDDLE).unwrap_or_default();
-    layout.clamp_scroll((rect.center_y() - TALL / 2.0).round(), TALL)
+    debug_assert!(std::ptr::eq(layout, &*TEN_THOUSAND));
+    MIDDLE.0
 }
 
 /// `n` with thousands separated by commas.
@@ -409,8 +428,8 @@ pub(crate) fn ten_thousand_cell(grid: GridCell) -> CellView<'static> {
     CellView {
         image: Some(photo(item.wrapping_mul(7) / 3)),
         picked: item % 17 == 3,
-        selected: (MIDDLE - 2..MIDDLE + 4).contains(&item),
-        active: item == MIDDLE,
+        selected: (MIDDLE.1..MIDDLE.1 + 5).contains(&item),
+        active: item == MIDDLE.1,
         count: (grid.span > 1).then_some(grid.span),
         ..CellView::default()
     }

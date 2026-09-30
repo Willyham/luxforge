@@ -223,7 +223,7 @@ pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     (
         "Select grid · 10,000 files and the catalog's cells",
         &[
-            "10,000 files · scrolled to the middle",
+            "10,000 files · scrolled to a day in the middle",
             "Catalog cells · edited, selected, active, offline",
         ],
     ),
