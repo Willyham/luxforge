@@ -71,7 +71,7 @@ fn catalog_measure_report_rows_carry_status_step_and_load() {
 fn catalog_measure_status_is_incomplete_until_every_row_is_measured() {
     let measured = Row::measured("a", "ms", [1.0]).value();
     let not = Row::not_measured("b", "ms", "not built").value();
-    assert_eq!(report::status(&[measured.clone()]), "passed");
+    assert_eq!(report::status(std::slice::from_ref(&measured)), "passed");
     assert_eq!(
         report::status(&[measured.clone(), not.clone()]),
         "incomplete"
@@ -109,7 +109,10 @@ fn catalog_measure_skipped_figures_keep_their_metric_names() {
     .into_iter()
     .map(Row::value)
     .collect();
-    let metrics: Vec<&str> = rows.iter().filter_map(|row| row["metric"].as_str()).collect();
+    let metrics: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["metric"].as_str())
+        .collect();
     assert_eq!(
         metrics,
         [
@@ -141,9 +144,13 @@ fn catalog_measure_desktop_probes_and_develop_switch_name_their_lane() {
         .map(Row::value)
         .collect();
     assert_eq!(desktop.len(), super::desktop::PROBES.len());
-    assert!(desktop.iter().all(|row| row["status"] == report::NOT_MEASURED
-        && row["reason"].as_str().unwrap().contains("lane B")
-        && row["target"].is_string()));
+    assert!(
+        desktop
+            .iter()
+            .all(|row| row["status"] == report::NOT_MEASURED
+                && row["reason"].as_str().unwrap().contains("lane B")
+                && row["target"].is_string())
+    );
     let switch: Vec<Value> = develop_switch(&context)
         .unwrap()
         .into_iter()
@@ -243,7 +250,14 @@ fn catalog_measure_trip_names_frames_and_rewrites_only_the_copies() {
     let names: Vec<String> = trip
         .frames
         .iter()
-        .map(|frame| frame.path.file_name().unwrap().to_string_lossy().into_owned())
+        .map(|frame| {
+            frame
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert_eq!(names[0], "DSC_0001.cr2");
     assert_eq!(names[BURST], "DSC_0005.NEF");
@@ -260,7 +274,10 @@ fn catalog_measure_trip_names_frames_and_rewrites_only_the_copies() {
     }
     // The originals are exactly as they were.
     assert_eq!(fs::read(corpus.join("b.NEF")).unwrap(), raw_bytes("b"));
-    assert_eq!(fs::read(corpus.join("nested/a.cr2")).unwrap(), raw_bytes("a"));
+    assert_eq!(
+        fs::read(corpus.join("nested/a.cr2")).unwrap(),
+        raw_bytes("a")
+    );
     assert!(
         fs::metadata(corpus.join("b.NEF"))
             .unwrap()
@@ -306,4 +323,32 @@ fn catalog_measure_finds_exif_dates_and_nothing_else() {
     assert_eq!(&bytes[found[1]..found[1] + 19], b"2020:01:02 03:04:05");
     assert!(data::datetimes(b"2019:05:04 12:00").is_empty());
     assert!(data::datetimes(b"2019-05-04 12:00:01").is_empty());
+}
+
+/// `--card` names any path on a mounted card; the card is the one whose mount point holds it,
+/// the longest when several do.
+#[test]
+fn catalog_measure_card_is_found_by_the_mount_point_holding_the_path() {
+    let cards = json!({"cards": [
+        {"volume": {"id": "volume-root", "mount_point": "/"}, "dcim": "/DCIM"},
+        {"volume": {"id": "volume-z8", "mount_point": "/Volumes/NIKON Z 8"}, "dcim": "/Volumes/NIKON Z 8/DCIM"},
+    ]});
+    assert_eq!(
+        measures::card_volume(&cards, Path::new("/Volumes/NIKON Z 8/DCIM/100NZ8_1")).unwrap(),
+        "volume-z8"
+    );
+    assert_eq!(
+        measures::card_volume(&cards, Path::new("/Volumes/NIKON Z 8")).unwrap(),
+        "volume-z8"
+    );
+    assert_eq!(
+        measures::card_volume(&cards, Path::new("/Users/someone")).unwrap(),
+        "volume-root"
+    );
+    assert!(
+        measures::card_volume(&json!({"cards": []}), Path::new("/Volumes/X"))
+            .unwrap_err()
+            .to_string()
+            .contains("no mounted camera card")
+    );
 }

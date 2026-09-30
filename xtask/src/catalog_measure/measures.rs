@@ -28,7 +28,7 @@ const WATCH_DEADLINE: Duration = Duration::from_secs(60);
 const ROUND_TRIP_EVERY: Duration = Duration::from_millis(100);
 /// How long the editor settles after its startup before its idle window's own settle: long
 /// enough for its owner to open the catalog and watch its indexed folders.
-const EDITOR_SETTLE: Duration = Duration::from_secs(2);
+const EDITOR_SETTLE: Duration = Duration::from_secs(5);
 /// One screen of the grid: the block of rows the desktop reads at a time.
 const SCREEN: u64 = 200;
 const MIB: f64 = 1024.0 * 1024.0;
@@ -105,63 +105,100 @@ fn view_of(listed: &Value) -> Value {
     json!({"source": {"kind": "folder", "path": listed, "subfolders": true}})
 }
 
-/// List `folder` with `index.refresh` and wait for the job: its record and when it ended.
-fn refresh(core: &Core, folder: &Path) -> Result<(Value, Instant)> {
-    let job = job_id(&core.ask("index.refresh", json!({"source": folder_source(folder)}))?)?;
-    let ended = core.wait_job(&job, JOB_DEADLINE)?;
+/// Wait for the listing job `job` a request began: its record and when it ended.
+fn listing(core: &Core, job: &str, what: &str) -> Result<(Value, Instant)> {
+    let ended = core.wait_job(job, JOB_DEADLINE)?;
     ensure(
         ended.record["status"] == "ready",
-        format!(
-            "the index could not list {}: {}",
-            folder.display(),
-            ended.record
-        ),
+        format!("the index could not list {what}: {}", ended.record),
     )?;
     Ok((ended.record, ended.at))
+}
+
+/// List `source` (an `index.refresh` source) and wait for the job.
+fn refresh(core: &Core, source: Value) -> Result<(Value, Instant)> {
+    let job = job_id(&core.ask("index.refresh", json!({"source": source}))?)?;
+    listing(core, &job, &source.to_string())
 }
 
 /// The root the index listed a folder as.
 fn listed_root(record: &Value) -> Result<Value> {
     let root = record["result"]["roots"][0].clone();
-    ensure(root.is_string(), format!("the listing names no root: {record}"))?;
+    ensure(
+        root.is_string(),
+        format!("the listing names no root: {record}"),
+    )?;
     Ok(root)
 }
 
-// ── Browsing a folder for the first time, and returning to it ────────────────────────────────
+/// The volume of the mounted camera card `path` is on, from `card.list`'s answer: the card whose
+/// mount point is the longest that holds `path`.
+pub fn card_volume(cards: &Value, path: &Path) -> Result<String> {
+    cards["cards"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|card| {
+            let mount = card["volume"]["mount_point"].as_str()?;
+            let id = card["volume"]["id"].as_str()?;
+            path.starts_with(mount).then_some((mount.len(), id))
+        })
+        .max_by_key(|(length, _)| *length)
+        .map(|(_, id)| id.to_owned())
+        .ok_or_else(|| {
+            format!(
+                "{} is on no mounted camera card (card.list: {cards})",
+                path.display()
+            )
+            .into()
+        })
+}
+
+// ── Browsing a folder or a card for the first time, and returning to it ─────────────────────
+
+/// What a first browse lists and views.
+#[derive(Clone, Copy)]
+pub enum Browsed<'a> {
+    /// A folder on disk, added as an indexed folder (`index.add-folder`): listed with its headers
+    /// read, organized into events, then watched.
+    Folder(&'a Path),
+    /// The mounted camera card this path is on, listed and viewed as a card (`{kind: card}`).
+    Card(&'a Path),
+}
 
 pub const FIRST_BROWSE: [Figure; 4] = [
     Figure {
         name: "listed",
         unit: "ms",
         target: "Every file within 5 s (internal SSD)",
-        scope: "index.refresh of the folder from the request to its job's end on the activity board: every file listed and its header read, into a new catalog each sample",
+        scope: "index.add-folder of the folder (a card: index.refresh of the card), from the request to its listing job's end on the activity board: every file listed and its header read, into a new catalog each sample",
     },
     Figure {
         name: "first_screen",
         unit: "ms",
         target: "The first screen of the grid within 1 s (internal SSD)",
-        scope: "from the index.refresh request to browse.view of the listed folder with its subfolders and browse.rows of its first 200 rows answered, as the desktop views a folder once its listing ends",
+        scope: "from the request to browse.view of the listed folder with its subfolders (a card: of the card) and browse.rows of its first 200 rows answered, as the desktop views a folder once its listing ends",
     },
     Figure {
         name: "known",
         unit: "ms",
         target: "Every file, event and moment within 5 s (internal SSD)",
-        scope: "from the index.refresh request, after the first screen, to event.list answered: every file, event and moment known",
+        scope: "from the request, after the first screen, to event.list answered over the index the listing left: every file, event and moment known",
     },
     Figure {
         name: "grid_previews",
         unit: "ms",
         target: "Grid previews for all: reported",
-        scope: "from the index.refresh request to the end, on the activity board, of the preview lane's view job browse.view began: a grid tier for every file the view lacked",
+        scope: "from the request to the end, on the activity board, of the preview lane's view job browse.view began: a grid tier for every file the view lacked",
     },
 ];
 
-/// Browse `folder` for the first time, `journeys` times, each into a new catalog; the last
+/// Browse `browsed` for the first time, `journeys` times, each into a new catalog; the last
 /// catalog's core is left in `kept` for the return and the Develop.
 pub fn first_browse(
     cx: &Context,
     prefix: &str,
-    folder: &Path,
+    browsed: Browsed,
     kept: &mut Option<Core>,
 ) -> Result<Vec<Row>> {
     let mut figures: [Vec<f64>; 4] = Default::default();
@@ -171,16 +208,35 @@ pub fn first_browse(
             core.close()?;
         }
         let core = Core::open(&cx.catalog(&format!("{prefix}-{sample}"))?)?;
+        // A card is in the sources panel before it is browsed, so finding it is not timed.
+        let card = match browsed {
+            Browsed::Folder(_) => None,
+            Browsed::Card(path) => Some(card_volume(&core.ask("card.list", json!({}))?, path)?),
+        };
         let started = Instant::now();
-        let (record, listed) = refresh(&core, folder)?;
+        let (record, listed) = match (&card, browsed) {
+            (Some(volume), _) => refresh(&core, json!({"kind": "card", "volume_id": volume}))?,
+            (None, Browsed::Folder(folder) | Browsed::Card(folder)) => {
+                let answer = core.ask(
+                    "index.add-folder",
+                    json!({"path": folder, "mutation": core.mutation()}),
+                )?;
+                listing(&core, &job_id(&answer)?, &folder.display().to_string())?
+            }
+        };
         figures[0].push(ms(listed.saturating_duration_since(started)));
+        let view = match &card {
+            Some(volume) => json!({"source": {"kind": "card", "volume_id": volume}}),
+            None => view_of(&listed_root(&record)?),
+        };
         let before = core.newest_entry();
-        let summary = core.ask("browse.view", view_of(&listed_root(&record)?))?;
-        let count = summary["count"]
-            .as_u64()
-            .ok_or("the folder's view has no count")?;
-        ensure(count > 0, "the folder's view holds nothing")?;
-        let rows = core.ask("browse.rows", json!({"from": 0, "count": count.min(SCREEN)}))?;
+        let summary = core.ask("browse.view", view)?;
+        let count = summary["count"].as_u64().ok_or("the view has no count")?;
+        ensure(count > 0, "the view holds nothing")?;
+        let rows = core.ask(
+            "browse.rows",
+            json!({"from": 0, "count": count.min(SCREEN)}),
+        )?;
         figures[1].push(ms(started.elapsed()));
         ensure(
             rows["rows"].as_array().map_or(0, Vec::len) as u64 == count.min(SCREEN),
@@ -211,14 +267,17 @@ pub fn first_browse(
         }));
         *kept = Some(core);
     }
-    let detail = json!({"folder": folder, "samples": details});
+    let what = match browsed {
+        Browsed::Folder(path) | Browsed::Card(path) => path,
+    };
+    let detail = json!({"browsed": what, "samples": details});
     Ok(FIRST_BROWSE
         .iter()
         .zip(figures)
         .map(|(figure, samples)| {
             figure
                 .row(prefix, samples)
-                .cache("the first sample reads files the set-up had just written; later samples read the same files again (the OS file cache is never purged)")
+                .cache("the first sample reads files the set-up had just written (a card: whatever the OS still holds of it); later samples read the same files again; the OS file cache is never purged")
                 .detail(detail.clone())
         })
         .collect())
@@ -229,7 +288,7 @@ pub const RETURN: [Figure; 2] = [
         name: "listed",
         unit: "ms",
         target: "Returning to a known 1,000-file folder: reconciled within 1 s",
-        scope: "index.refresh of the folder the index already holds, from the request to its job's end: reconciled by signature, no header read",
+        scope: "index.refresh of the indexed folder the first browse left, from the request to its job's end: every file reconciled by signature, as a card mounted again or a folder browsed again is, and no header read",
     },
     Figure {
         name: "drawn",
@@ -239,17 +298,20 @@ pub const RETURN: [Figure; 2] = [
     },
 ];
 
-/// Return to the folder the last first browse left in `core`, `samples` times.
+/// Return to the indexed folder the last first browse left in `core`, `samples` times.
 pub fn returning(cx: &Context, core: &Core, folder: &Path) -> Result<Vec<Row>> {
     let mut figures: [Vec<f64>; 2] = Default::default();
     let mut last = Value::Null;
     for _ in 0..cx.samples {
         let started = Instant::now();
-        let (record, listed) = refresh(core, folder)?;
+        let (record, listed) = refresh(core, json!({"kind": "indexed-folder", "path": folder}))?;
         figures[0].push(ms(listed.saturating_duration_since(started)));
         let summary = core.ask("browse.view", view_of(&listed_root(&record)?))?;
         let count = summary["count"].as_u64().unwrap_or(0);
-        core.ask("browse.rows", json!({"from": 0, "count": count.clamp(1, SCREEN)}))?;
+        core.ask(
+            "browse.rows",
+            json!({"from": 0, "count": count.clamp(1, SCREEN)}),
+        )?;
         figures[1].push(ms(started.elapsed()));
         last = record["result"].clone();
     }
@@ -299,10 +361,10 @@ pub fn develop(core: &Core, trip: &Trip, picks: usize) -> Result<Vec<Row>> {
         "pick.set",
         json!({"targets": targets, "picked": true, "mutation": core.mutation()}),
     )?;
-    let mut after = core.ask("events.wait", json!({"after": 0, "timeout_ms": 0}))?
-        ["current_sequence"]
-        .as_u64()
-        .ok_or("events.wait names no sequence")?;
+    let mut after =
+        core.ask("events.wait", json!({"after": 0, "timeout_ms": 0}))?["current_sequence"]
+            .as_u64()
+            .ok_or("events.wait names no sequence")?;
     let started = Instant::now();
     let job = job_id(&core.ask(
         "pick.develop",
@@ -312,10 +374,14 @@ pub fn develop(core: &Core, trip: &Trip, picks: usize) -> Result<Vec<Row>> {
     while first.is_none() {
         let answer = core.ask("events.wait", json!({"after": after, "timeout_ms": 1000}))?;
         let arrived = started.elapsed();
-        let committed = answer["events"].as_array().into_iter().flatten().any(|event| {
-            (event["job_id"] == job.as_str() || event["method"] == "pick.develop")
-                && event["library_sequence"].is_u64()
-        });
+        let committed = answer["events"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|event| {
+                (event["job_id"] == job.as_str() || event["method"] == "pick.develop")
+                    && event["library_sequence"].is_u64()
+            });
         if committed {
             first = Some(ms(arrived));
         }
@@ -455,9 +521,8 @@ pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
         let mut windows = Vec::with_capacity(cx.samples);
         for sample in 0..cx.samples as u64 {
             let from = sample * 7919 % (count - window + 1);
-            let (took, answer) = timed(|| {
-                core.ask("browse.rows", json!({"from": from, "count": window}))
-            })?;
+            let (took, answer) =
+                timed(|| core.ask("browse.rows", json!({"from": from, "count": window})))?;
             ensure(
                 answer["rows"].as_array().map_or(0, Vec::len) as u64 == window,
                 "a window of rows came back short",
@@ -518,13 +583,9 @@ pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
 
 fn bench_command(root: &Path) -> Command {
     let mut command = cargo_command();
-    command.current_dir(root).args([
-        "test",
-        "--locked",
-        "--package",
-        "luxforge-core",
-        "--lib",
-    ]);
+    command
+        .current_dir(root)
+        .args(["test", "--locked", "--package", "luxforge-core", "--lib"]);
     // The bench is built with the harness's own profile: a release harness times a release bench.
     if !cfg!(debug_assertions) {
         command.arg("--release");
@@ -549,7 +610,7 @@ pub fn build_bench(root: &Path, log: &Path) -> Result {
 pub fn bracket(cx: &Context) -> Result<Vec<Row>> {
     let catalog = cx.catalog("bracket")?;
     let core = Core::open(&catalog)?;
-    let (record, _) = refresh(&core, &cx.data.images)?;
+    let (record, _) = refresh(&core, folder_source(&cx.data.images))?;
     let root = listed_root(&record)?;
     let before = core.newest_entry();
     core.ask("browse.view", view_of(&root))?;
@@ -577,7 +638,8 @@ pub fn bracket(cx: &Context) -> Result<Vec<Row>> {
     let bench = read_json(&out)?;
     let runs = bench["runs"].as_array().cloned().unwrap_or_default();
     let samples: Vec<f64> = runs.iter().filter_map(|run| run["ms"].as_f64()).collect();
-    let target = "Bracket detection from previews: under 1 ms a run, from the grid tiers' fingerprints";
+    let target =
+        "Bracket detection from previews: under 1 ms a run, from the grid tiers' fingerprints";
     let scope = format!(
         "the core's ignored bench {BENCH} (in process, since the probe is internal to the core), built with the harness's profile: the generated JPEGs' folder, its grid tiers and fingerprints written by the preview lane, viewed {} times through the browse lane's evaluation; each run organizing asked the preview lane's probe about, timed from the probe's call to its answer (one indexed query for the run's fingerprints and the measure)",
         cx.samples
@@ -641,8 +703,7 @@ pub fn idle_watchers(cx: &Context) -> Result<Vec<Row>> {
     let indexed = loop {
         let answer = core.ask("index.folders", json!({}))?;
         let listed = answer["folders"].as_array().cloned().unwrap_or_default();
-        if listed.len() == folders.len() && listed.iter().all(|folder| folder["watching"] == true)
-        {
+        if listed.len() == folders.len() && listed.iter().all(|folder| folder["watching"] == true) {
             break listed;
         }
         ensure(
@@ -662,13 +723,33 @@ pub fn idle_watchers(cx: &Context) -> Result<Vec<Row>> {
     .into_iter()
     .map(|row| row.detail(detail.clone()))
     .collect();
-    rows.extend(idle_editor(cx, &catalog)?);
+    rows.extend(idle_editor(
+        cx,
+        &catalog,
+        "idle-editor",
+        "idle_watchers.editor",
+        "over the same catalog with nothing open (Develop, the Performance section at its default): its owner watches both indexed folders from their cursors as it opens",
+    )?);
+    rows.extend(idle_editor(
+        cx,
+        &cx.catalog("idle-baseline")?,
+        "idle-editor-baseline",
+        "idle_watchers.editor_baseline",
+        "over a new catalog with no indexed folder and nothing open, so no index lane or watcher starts: the editor's own idle, the figure the watched run compares with",
+    )?);
     Ok(rows)
 }
 
-/// The editor over the idle catalog, with nothing open: its idle window once it has started.
-fn idle_editor(cx: &Context, catalog: &Path) -> Result<Vec<Row>> {
-    let out = cx.out.join("idle-editor");
+/// The editor over `catalog`, with nothing open: its idle window once it has started, into
+/// `<out>/<dir>` and as `<prefix>.<figure>` rows.
+fn idle_editor(
+    cx: &Context,
+    catalog: &Path,
+    dir: &str,
+    prefix: &str,
+    over: &str,
+) -> Result<Vec<Row>> {
+    let out = cx.out.join(dir);
     let data = out.join("data");
     let events = data.join("logs/events.jsonl");
     let root = cx.root.to_path_buf();
@@ -718,10 +799,10 @@ fn idle_editor(cx: &Context, catalog: &Path) -> Result<Vec<Row>> {
     })?;
     let rows = window.as_array().cloned().unwrap_or_default();
     Ok(idle_rows(
-        "idle_watchers.editor",
+        prefix,
         &rows,
         &format!(
-            "the release editor, a background launch with its window hidden, over the same catalog with nothing open (Develop, the Performance section at its default): its owner watches both indexed folders from their cursors as it opens; {} s after its startup event, then stats::idle_window",
+            "the release editor, a background launch with its window hidden, {over}; {} s after its startup event, then stats::idle_window (one second of settling, then 30 s)",
             EDITOR_SETTLE.as_secs()
         ),
     ))
@@ -820,10 +901,13 @@ pub fn drag_during_indexing(cx: &Context) -> Result<Vec<Row>> {
 pub fn drag_during_preview_backlog(cx: &Context) -> Result<Vec<Row>> {
     let (folder, what) = match &cx.data.trip {
         Ok(trip) => (&trip.dir, "the RAW trip"),
-        Err(_) => (&cx.data.folder.dir, "the folder of JPEG copies (no RAW corpus)"),
+        Err(_) => (
+            &cx.data.folder.dir,
+            "the folder of JPEG copies (no RAW corpus)",
+        ),
     };
     let core = Core::open(&cx.catalog("drag-backlog")?)?;
-    let (record, _) = refresh(&core, folder)?;
+    let (record, _) = refresh(&core, folder_source(folder))?;
     let before = core.newest_entry();
     core.ask("browse.view", view_of(&listed_root(&record)?))?;
     let view = core
