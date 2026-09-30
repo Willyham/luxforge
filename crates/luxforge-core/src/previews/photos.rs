@@ -20,6 +20,10 @@
 //!   exists, so a camera preview finishing after a render cannot hide it.
 //! - **Collection** ([`collect`]): the rows go first, each only while it still names the same file,
 //!   and then their files, so no reader is handed a path whose file is about to go.
+//! - **Forgetting** ([`forget`]): a photograph that leaves the catalog loses every row, on the
+//!   owner, a page of photographs to a short transaction, and then their files, on a short-lived
+//!   thread ([`remove_files`]). Its work is cancelled first, and a write checks its cancel while it
+//!   holds the write lock, so no row of it is written after.
 //!
 //! Large tiers, rendered or camera previews, share the loupe tiers' byte budget through
 //! [`Store::evict`]; grid tiers are kept.
@@ -40,6 +44,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    thread,
 };
 
 /// The `renderer` column of a camera preview's row: made by no renderer.
@@ -57,6 +62,10 @@ pub(crate) struct PhotoRow {
     pub width: u32,
     pub height: u32,
     pub bytes: u64,
+    /// A rendered tier made through an approximate proxy
+    /// ([`RenderedTier::approximate`](super::rendered::RenderedTier::approximate)); never a camera
+    /// preview.
+    pub approximate: bool,
 }
 
 impl PhotoRow {
@@ -98,6 +107,7 @@ impl PhotoRow {
             width: self.width,
             height: self.height,
             origin: self.origin,
+            approximate: self.approximate,
             bytes: self.bytes,
             key,
         }
@@ -127,10 +137,10 @@ pub(crate) fn camera_file_name(
 }
 
 /// A row's columns as SQLite holds them, in [`rows`]' order.
-type Columns = (String, String, i64, String, String, u32, u32, i64);
+type Columns = (String, String, i64, String, String, u32, u32, i64, bool);
 
 fn parse(columns: Columns) -> Result<PhotoRow, Error> {
-    let (entry_id, tier, renderer, origin, path, width, height, bytes) = columns;
+    let (entry_id, tier, renderer, origin, path, width, height, bytes, approximate) = columns;
     let unreadable = || Error::catalog("the index holds an unreadable photo preview row");
     Ok(PhotoRow {
         entry_id: EntryId::parse(entry_id).map_err(|_| unreadable())?,
@@ -144,14 +154,15 @@ fn parse(columns: Columns) -> Result<PhotoRow, Error> {
         width,
         height,
         bytes: u64::try_from(bytes).map_err(|_| unreadable())?,
+        approximate,
     })
 }
 
 /// Every row of `asset_id`, both tiers and every entry, in one query over the table's key.
 pub(crate) fn rows(index: &Connection, asset_id: &AssetId) -> Result<Vec<PhotoRow>, Error> {
     let mut statement = index.prepare_cached(
-        "SELECT entry_id, tier, renderer, origin, path, width, height, bytes FROM photo_previews
-         WHERE asset_id = ?1",
+        "SELECT entry_id, tier, renderer, origin, path, width, height, bytes, approximate
+         FROM photo_previews WHERE asset_id = ?1",
     )?;
     let rows = statement.query_map([asset_id.as_str()], |row| {
         Ok((
@@ -163,6 +174,7 @@ pub(crate) fn rows(index: &Connection, asset_id: &AssetId) -> Result<Vec<PhotoRo
             row.get(5)?,
             row.get(6)?,
             row.get(7)?,
+            row.get(8)?,
         ))
     })?;
     rows.map(|row| parse(row?)).collect()
@@ -223,17 +235,22 @@ pub(crate) struct NewTier<'a> {
     /// [`RENDERER_GENERATION`] for a render, [`CAMERA_RENDERER`] for a camera preview.
     pub renderer: i64,
     pub origin: PreviewOrigin,
+    /// A rendered tier made through an approximate proxy; `false` for a camera preview.
+    pub approximate: bool,
     /// Relative to `<catalog>.index/previews/`.
     pub name: &'a Path,
     pub jpeg: &'a [u8],
     pub width: u32,
     pub height: u32,
     pub now_ms: i64,
+    /// The work's control: a cancel refuses the row even once the file is written ([`record`]).
+    pub control: &'a JobControl,
 }
 
 /// Write `tier` into the cache: its file through a temporary file and a rename, then its row, then
 /// the removal of the file the row named before; answers the row. A camera preview is not written,
-/// and `None` answered, when a render of its tier already exists for the photograph.
+/// and `None` answered, when a render of its tier already exists for the photograph. Work
+/// cancelled by then writes no row and removes its file.
 pub(crate) fn write(store: &mut Store, tier: &NewTier<'_>) -> Result<Option<PhotoRow>, Error> {
     let path = store.dir().join(tier.name);
     let folder = path.parent().expect("a preview's path has a folder");
@@ -258,8 +275,15 @@ pub(crate) fn write(store: &mut Store, tier: &NewTier<'_>) -> Result<Option<Phot
         width: tier.width,
         height: tier.height,
         bytes: tier.jpeg.len() as u64,
+        approximate: tier.approximate,
     };
-    match record(store.connection_mut(), tier.asset_id, &row, tier.now_ms) {
+    match record(
+        store.connection_mut(),
+        tier.asset_id,
+        &row,
+        tier.now_ms,
+        tier.control,
+    ) {
         Ok(Some(replaced)) => {
             if replaced != row.path {
                 cache::remove(&replaced);
@@ -292,14 +316,19 @@ impl<E: Into<Error>> From<E> for Refused {
 }
 
 /// Write `row`, answering the path the row named before, if there was one. The transaction takes
-/// the write lock before it reads, as a file's row's does.
+/// the write lock before it reads, as a file's row's does, and checks `control` while it holds it:
+/// a photograph that leaves the catalog has its work cancelled before its rows are deleted
+/// ([`forget`]), so a row written here is either committed before that deletion, which removes
+/// it, or never written.
 fn record(
     connection: &mut Connection,
     asset_id: &AssetId,
     row: &PhotoRow,
     now_ms: i64,
+    control: &JobControl,
 ) -> Result<Option<PathBuf>, Refused> {
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    control.checkpoint()?;
     if !row.rendered() {
         let rendered: Option<i64> = tx
             .prepare_cached(
@@ -325,12 +354,12 @@ fn record(
         .optional()?;
     tx.prepare_cached(
         "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-             bytes, origin, last_used_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             bytes, origin, last_used_ms, approximate)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(asset_id, entry_id, tier) DO UPDATE SET renderer = excluded.renderer,
              path = excluded.path, width = excluded.width, height = excluded.height,
              bytes = excluded.bytes, origin = excluded.origin,
-             last_used_ms = excluded.last_used_ms",
+             last_used_ms = excluded.last_used_ms, approximate = excluded.approximate",
     )?
     .execute(params![
         asset_id.as_str(),
@@ -343,6 +372,7 @@ fn record(
         row.bytes as i64,
         row.origin.as_str(),
         now_ms,
+        row.approximate,
     ])?;
     tx.commit()?;
     Ok(replaced.map(PathBuf::from))
@@ -406,6 +436,57 @@ pub(crate) fn discard_other_generations(
         }
         discarded += removed;
     }
+}
+
+/// The most photographs whose rows one transaction of [`forget`] deletes: a short write, so a
+/// worker's row never waits long behind a large batch, while a library change's 50,000
+/// photographs ([`MAX_LIBRARY_BATCH`](crate::catalog_types::MAX_LIBRARY_BATCH)) take 50.
+pub(crate) const FORGET_PAGE: usize = 1_000;
+
+/// Delete every row of `assets` — photographs that left the catalog: every entry, tier, renderer
+/// generation and origin — [`FORGET_PAGE`] photographs to a write transaction, each photograph's
+/// rows found by the table's key. Answers the files the deleted rows named, for the caller to
+/// remove off the owner ([`remove_files`]); no file is touched here. Deleting nothing is not an
+/// error, so a second call for the same photographs does nothing.
+pub(crate) fn forget(
+    connection: &mut Connection,
+    assets: &[AssetId],
+) -> Result<Vec<PathBuf>, Error> {
+    let mut files = Vec::new();
+    for page in assets.chunks(FORGET_PAGE) {
+        let ids = serde_json::to_string(&page.iter().map(AssetId::as_str).collect::<Vec<_>>())
+            .map_err(|error| Error::internal(format!("asset ids: {error}")))?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        {
+            let mut statement = tx.prepare_cached(
+                "DELETE FROM photo_previews WHERE asset_id IN (SELECT value FROM json_each(?1))
+                 RETURNING path",
+            )?;
+            let deleted = statement.query_map([ids], |row| row.get::<_, String>(0))?;
+            for path in deleted {
+                files.push(PathBuf::from(path?));
+            }
+        }
+        tx.commit()?;
+    }
+    Ok(files)
+}
+
+/// Remove `files`, cache files no row names any more, on a short-lived thread of their own that
+/// ends once it has removed them, never on the caller's: the photographs of one library change
+/// may name tens of thousands. A thread that cannot be started leaves them, and they cost only
+/// their bytes, as a file [`cache::remove`] cannot remove does.
+pub(crate) fn remove_files(files: Vec<PathBuf>) {
+    if files.is_empty() {
+        return;
+    }
+    let _ = thread::Builder::new()
+        .name("luxforge-preview-forget".into())
+        .spawn(move || {
+            for file in &files {
+                cache::remove(file);
+            }
+        });
 }
 
 /// How a photograph's grid stands, from its rows alone.

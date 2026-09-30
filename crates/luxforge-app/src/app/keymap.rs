@@ -10,7 +10,10 @@ use crate::app::message::{
 };
 use crate::state::palette::Panel;
 // ── catalog lane D: views and desktop ──
-use crate::app::message::select::{SelectMessage, Step};
+use crate::app::message::{
+    loupe::LoupeMessage,
+    select::{SelectMessage, Step},
+};
 use crate::state::select::{SelectPanel, Shown};
 // ── end lane D ──
 use iced::{
@@ -66,6 +69,8 @@ pub(crate) struct KeyContext {
     pub(crate) select: bool,
     /// One of Select's chip or sort menus is open, so Escape closes it.
     pub(crate) select_menu_open: bool,
+    /// The loupe is open over Select's centre, so Escape returns to the grid.
+    pub(crate) loupe_open: bool,
     // ── end lane D ──
 }
 
@@ -382,6 +387,9 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     if context.select_menu_open && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Select(SelectMessage::Menu(None)));
     }
+    if context.loupe_open && matches!(key, Key::Named(Named::Escape)) && status == Status::Ignored {
+        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Close)));
+    }
     if status != Status::Ignored {
         return None;
     }
@@ -434,6 +442,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     }
     if character(key, "s") {
         return Some(Message::Select(SelectMessage::Collapse));
+    }
+    // `Space` or `E` shows the active frame in the loupe.
+    if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
+        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)));
     }
     None
 }
@@ -542,6 +554,7 @@ mod tests {
             // ── catalog lane D: views and desktop ──
             select: false,
             select_menu_open: false,
+            loupe_open: false,
             // ── end lane D ──
         }
     }
