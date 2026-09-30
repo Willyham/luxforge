@@ -2,7 +2,7 @@
 //! plain model in [`super::testing`].
 use super::{
     Context, EventCache, Probe, SelectRequest, View, current_stamp, evaluate, event_list, facets,
-    previews::grid_states,
+    previews::index_grid_states,
     refresh_stale, rows, select, selected_items, source_files,
     testing::{self, Fixture, Item},
     view::Evaluation,
@@ -920,7 +920,10 @@ fn browse_rows_read_windows_by_position() {
     let view = held(&evaluation, true);
     let len = view.items.len() as u32;
     for (from, count) in [(0, 3), (3, 10), (len - 2, 10), (0, 1000)] {
-        let window = rows(&service, &view, from, count, &grid_states).unwrap();
+        let window = rows(&service, &view, from, count, &|items| {
+            index_grid_states(&service, items)
+        })
+        .unwrap();
         assert_eq!(window.len() as u32, count.min(len - from));
         for row in &window {
             let item = &want.items[row.position as usize];
@@ -977,14 +980,18 @@ fn browse_rows_read_windows_by_position() {
         }
     }
     assert!(
-        rows(&service, &view, len, 5, &grid_states)
-            .unwrap()
-            .is_empty()
+        rows(&service, &view, len, 5, &|items| index_grid_states(
+            &service, items
+        ))
+        .unwrap()
+        .is_empty()
     );
     assert_eq!(
-        rows(&service, &view, len + 1, 5, &grid_states)
-            .unwrap_err()
-            .kind,
+        rows(&service, &view, len + 1, 5, &|items| index_grid_states(
+            &service, items
+        ))
+        .unwrap_err()
+        .kind,
         ErrorKind::Validation
     );
     // A window's moments come from the layout.
@@ -997,7 +1004,10 @@ fn browse_rows_read_windows_by_position() {
         start: 1,
         len: 3,
     }];
-    let window = rows(&service, &grouped, 0, 5, &grid_states).unwrap();
+    let window = rows(&service, &grouped, 0, 5, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap();
     let moments: Vec<Option<(u32, u32)>> = window
         .iter()
         .map(|row| row.moment.map(|at| (at.index, at.frame)))
@@ -1015,7 +1025,10 @@ fn browse_rows_read_windows_by_position() {
             subfolders: false,
         }),
     );
-    let window = rows(&service, &held(&archive, true), 0, 10, &grid_states).unwrap();
+    let window = rows(&service, &held(&archive, true), 0, 10, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap();
     assert!(
         window
             .iter()
@@ -1030,7 +1043,10 @@ fn browse_rows_read_windows_by_position() {
         ..ViewQuery::of(ViewSource::AllPhotographs)
     };
     let evaluation = run(&service, &mut events, &photos);
-    let window = rows(&service, &held(&evaluation, false), 0, 100, &grid_states).unwrap();
+    let window = rows(&service, &held(&evaluation, false), 0, 100, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap();
     assert_eq!(window.len(), 14);
     for row in &window {
         let photo = fx
@@ -1087,12 +1103,17 @@ fn browse_a_stale_views_gone_item_is_a_conflict() {
         testing::set_index_revision(index.connection(), 1);
     }
     assert_eq!(
-        rows(&service, &view, 0, position, &grid_states)
-            .unwrap()
-            .len() as u32,
+        rows(&service, &view, 0, position, &|items| index_grid_states(
+            &service, items
+        ))
+        .unwrap()
+        .len() as u32,
         position
     );
-    let error = rows(&service, &view, 0, 10, &grid_states).unwrap_err();
+    let error = rows(&service, &view, 0, 10, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Conflict);
     assert!(error.detail.contains("stale"), "{}", error.detail);
 }
@@ -1721,7 +1742,10 @@ fn browse_works_at_the_design_scale() {
         FILES
     );
     let view = held(&evaluation, true);
-    let window = rows(&service, &view, 5_000, 200, &grid_states).unwrap();
+    let window = rows(&service, &view, 5_000, 200, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap();
     assert_eq!(window.len(), 200);
     assert!(
         window
@@ -1755,7 +1779,10 @@ fn browse_works_at_the_design_scale() {
     let photos = run(&service, &mut events, &all);
     assert_eq!(photos.items.len(), PHOTOS);
     let view = held(&photos, false);
-    let window = rows(&service, &view, 50_000, 200, &grid_states).unwrap();
+    let window = rows(&service, &view, 50_000, 200, &|items| {
+        index_grid_states(&service, items)
+    })
+    .unwrap();
     assert_eq!(window.len(), 200);
     let counts = facets(
         Context {
