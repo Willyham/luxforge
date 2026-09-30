@@ -15,10 +15,12 @@
 //!   client that leaves takes its waiting calls with it.
 //! - **The survey.** `volume.list`, `card.list` and `index.folders` answer at once from what the
 //!   survey thread last learned ([`crate::index::survey::Known`]) against the mount table read
-//!   now, and ask for a new survey when that knowledge has already answered a call
-//!   ([`learned`]); only the first calls, before any survey has posted, wait for it
-//!   ([`wait_for_survey`]), and are answered again as if just asked once it has. [`request_survey`]
-//!   is what the mount notifications will call.
+//!   now. Only the first calls, before any survey has posted, wait for it ([`wait_for_survey`]),
+//!   and are answered again as if just asked once it has; that first survey also starts the index
+//!   lane, whose watcher reports every volume mounted or taken out ([`volume`]), which asks for
+//!   the next survey. Where the platform offers no watcher, a call that reads what an earlier
+//!   call read asks for a survey instead ([`learned`]). A card mounted while the lane watches is
+//!   listed once a survey has found its `DCIM` folder.
 //! - **The index.** Lane A's reads use the service's index only once it is open: the survey opens
 //!   an index that is there, and the index lane hands over the one it creates, so neither opening
 //!   nor recreating it happens on the owner.
@@ -36,7 +38,12 @@ use crate::{
         survey::{self, Known, Mounts, Survey},
     },
 };
+use crate::{
+    catalog_types::{IndexSource, RootKind},
+    index::lane::{RootPlan, VolumeEvent},
+};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::{
     cell::RefMut,
     collections::VecDeque,
@@ -79,29 +86,47 @@ pub(super) fn ask(
     Ok(Value::Null)
 }
 
-/// Whether the surveys have learned what this call reads; when they have and a call has already
-/// read it, a new survey is asked for, so what the next call reads is current (until the mount
-/// notifications ask for one when something changes).
+/// Whether the surveys have learned what this call reads. Where no watcher reports the volumes
+/// mounted and taken out, a call that reads what an earlier call already read asks for a new
+/// survey, so what the next call reads is current.
 pub(super) fn learned(owner: &mut Owner) -> bool {
-    let surveys = &mut owner.catalog.files.surveys;
-    if !surveys.surveyed {
+    let files = &mut owner.catalog.files;
+    if !files.surveys.surveyed {
         return false;
     }
-    if std::mem::replace(&mut surveys.consumed, true) {
+    if std::mem::replace(&mut files.surveys.consumed, true) && !files.notified {
         request_survey(owner);
     }
     true
 }
 
-/// Wait for the first survey, which is started if none is running: the handler's answer.
+/// Wait for the first survey, which is started if none is running, and start the index lane,
+/// whose watcher keeps what the survey learned current from then on: the handler's answer.
 pub(super) fn wait_for_survey(owner: &mut Owner) -> Result<Value, Error> {
     let surveys = &owner.catalog.files.surveys;
     // A survey of this generation already running answers the call with its first post.
     if surveys.running != Some(surveys.generation) {
         request_survey(owner);
     }
+    // Without the lane the survey would learn nothing more; with it the thread starts only once.
+    let _ = super::ensure_lane(owner);
     owner.deferred = Some(Deferred::Survey);
     Ok(Value::Null)
+}
+
+/// The watcher reported a volume mounted or taken out: survey the volumes again, and list a card
+/// mounted once that survey has found its `DCIM` folder. One taken out is gone from the next
+/// answer already, since each reads the mount table.
+pub(super) fn volume(owner: &mut Owner, event: VolumeEvent) {
+    if let VolumeEvent::Mounted { mount } = event {
+        let surveys = &mut owner.catalog.files.surveys;
+        // The survey that learns it is the next to start.
+        let after = surveys.started + 1;
+        if surveys.mounted.len() < MAX_WAITING_QUERIES {
+            surveys.mounted.push((mount.mount_point, after));
+        }
+    }
+    request_survey(owner);
 }
 
 /// Ask for a survey: now when none is running, else once the running one ends. The mount
@@ -166,6 +191,11 @@ pub(super) struct Surveys {
     waiting: Vec<OwnerCall>,
     /// Why the last survey could not open the index, when it could not.
     index_error: Option<Error>,
+    /// How many surveys have started.
+    started: u64,
+    /// Volumes the watcher reported mounted, each with the first survey that learns it: once that
+    /// survey has, one with a `DCIM` folder is listed as a card.
+    mounted: Vec<(PathBuf, u64)>,
 }
 
 /// A call waiting for its question to be answered.
@@ -184,6 +214,8 @@ struct Queued {
 /// One post of a survey.
 pub(in crate::api::owner) struct SurveyPost {
     generation: u64,
+    /// Which survey this is, counting from 1.
+    number: u64,
     /// What it learned; none when the survey failed before learning anything.
     survey: Option<Survey>,
     /// The index it opened for the owner, none when there is none, or why it could not; absent
@@ -327,6 +359,7 @@ fn start_survey(owner: &mut Owner) {
     });
     let files = &mut owner.catalog.files;
     let generation = files.surveys.generation;
+    let number = files.surveys.started + 1;
     let (mounts, poster) = (files.mounts.clone(), files.poster.clone());
     let job: Job = Box::new(move || {
         let post = |post: SurveyPost| {
@@ -339,6 +372,7 @@ fn start_survey(owner: &mut Owner) {
             survey::survey(mounts.list(), &folders, now_ms(), |survey, last| {
                 post(SurveyPost {
                     generation,
+                    number,
                     survey: Some(survey),
                     index: index.take(),
                     last,
@@ -349,6 +383,7 @@ fn start_survey(owner: &mut Owner) {
         if surveyed.is_err() {
             post(SurveyPost {
                 generation,
+                number,
                 survey: None,
                 index: index.take(),
                 last: true,
@@ -362,7 +397,10 @@ fn start_survey(owner: &mut Owner) {
             .map(|worker| files.surveys.worker = Some(worker)),
     };
     match sent {
-        Ok(()) => files.surveys.running = Some(generation),
+        Ok(()) => {
+            files.surveys.running = Some(generation);
+            files.surveys.started = number;
+        }
         Err(error) => {
             files.surveys.worker = None;
             for call in std::mem::take(&mut files.surveys.waiting) {
@@ -378,6 +416,7 @@ fn start_survey(owner: &mut Owner) {
 pub(super) fn surveyed(owner: &mut Owner, post: SurveyPost) {
     let SurveyPost {
         generation,
+        number,
         survey,
         index,
         last,
@@ -416,11 +455,63 @@ pub(super) fn surveyed(owner: &mut Owner, post: SurveyPost) {
             owner.catalog.files.surveys.waiting = waiting;
         }
     }
+    cards_mounted(owner, number, last);
     // A call answered again above may have started a survey already, which serves the one asked
     // for meanwhile.
     let surveys = &mut owner.catalog.files.surveys;
     if last && std::mem::take(&mut surveys.again) && surveys.running.is_none() {
         start_survey(owner);
+    }
+}
+
+/// List each card the watcher reported mounted that survey `number`, which has just posted, has
+/// learned, as an `index.refresh` job no request made; forget a mounted volume that survey's last
+/// post did not learn, or learned without a `DCIM` folder.
+fn cards_mounted(owner: &mut Owner, number: u64, last: bool) {
+    let files = &owner.catalog.files;
+    if files.surveys.mounted.is_empty() {
+        return;
+    }
+    let listed = files.mounts.list();
+    let known = files.surveys.known.now(&listed);
+    let mut cards = Vec::new();
+    let mut kept = Vec::new();
+    for (mount_point, after) in &files.surveys.mounted {
+        let learned = (*after <= number)
+            .then(|| {
+                known
+                    .volumes()
+                    .find(|mounted| mounted.volume.mount_point == *mount_point)
+            })
+            .flatten();
+        match learned {
+            Some(mounted) => {
+                if let Some(dcim) = mounted.card_folder() {
+                    cards.push((mounted.volume.clone(), dcim));
+                }
+            }
+            None if *after <= number && last => {}
+            None => kept.push((mount_point.clone(), *after)),
+        }
+    }
+    owner.catalog.files.surveys.mounted = kept;
+    for (volume, dcim) in cards {
+        let source = IndexSource::Card {
+            volume_id: volume.id.clone(),
+        };
+        let roots = vec![RootPlan {
+            path: dcim,
+            kind: RootKind::Card,
+            volume_id: Some(volume.id),
+        }];
+        // A full queue leaves the card unlisted until a client refreshes it.
+        let _ = super::start_refresh(
+            owner,
+            source,
+            roots,
+            format!("the {} card", volume.label),
+            &super::unrequested(),
+        );
     }
 }
 
