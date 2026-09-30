@@ -1,4 +1,4 @@
-//! The catalog in the Select workspace (TASK-022), carried inside the Select workspace's message as
+//! The catalog in the Select workspace, carried inside the Select workspace's message as
 //! [`SelectMessage::Catalog`](super::select::SelectMessage::Catalog).
 use crate::state::select_catalog::CatalogAction;
 use luxforge_core::catalog_types::{CatalogFolders, Collections, ViewRow, ViewSource};

@@ -1,4 +1,4 @@
-//! Evidence steps on the catalog in Select (TASK-022): each gesture sent through the message its
+//! Evidence steps on the catalog in Select: each gesture sent through the message its
 //! control sends — a source row, the search field, the Metadata browser, a chip's menu, a folder's
 //! menu, the Info panel's Move to… and Add to…, Save as smart collection… — and captured once
 //! nothing Select asked the owner for is in flight.

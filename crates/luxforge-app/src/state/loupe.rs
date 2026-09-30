@@ -1,9 +1,9 @@
-//! The loupe's view model ([catalog design](../../../../docs/design/catalog.md#browsing-at-speed),
-//! TASK-020): the active frame of Select's view fitted to the screen, the bar naming its moment,
-//! its moment's numbered frames under it, the 100% focus check and compare, and the pure rules
-//! behind them — where each key moves, what the look-ahead wants, which frames compare shows, where
-//! the focus check's rectangle is, and where picking a burst frame moves on to (P7). Like every
-//! view model it names no framework type.
+//! The loupe's view model ([catalog design](../../../../docs/design/catalog.md#browsing-at-speed)):
+//! the active frame of Select's view fitted to the screen, the bar naming its moment, its moment's
+//! numbered frames under it, the 100% focus check and compare, and the pure rules behind them —
+//! where each key moves, what the look-ahead wants, which frames compare shows, where the focus
+//! check's rectangle is, and where picking a burst frame moves on to (P7). Like every view model it
+//! names no framework type.
 //!
 //! **Seam.** This file, `app/loupe.rs` (the update, with `app/loupe_frames.rs` and
 //! `app/loupe_region.rs`), `app/message/loupe.rs` and `view/loupe.rs` are the loupe's own modules.

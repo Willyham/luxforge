@@ -1,4 +1,4 @@
-//! Missing originals (TASK-023), carried inside the Select workspace's message as
+//! Missing originals, carried inside the Select workspace's message as
 //! [`SelectMessage::Missing`](super::select::SelectMessage::Missing), and Locate original… in
 //! Develop's Original not found notice, which shares its Locate.
 use crate::state::select_missing::{LocateFrom, MissingFilter, PhotoFacts};

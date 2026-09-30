@@ -579,31 +579,6 @@ pub(crate) fn frame_files(rows: &RowCache, start: u32, len: u32) -> Option<Vec<F
         .collect()
 }
 
-/// Where the loupe moves on to after picking the frame at `position` (the design's P7): the first
-/// frame after the burst or bracket `position` is in, which is the next moment's first frame or
-/// the next single, or the next frame when `position` is a single. `None` past the view's end.
-/// The loupe (TASK-020) calls it after the editor's `pick_active` and makes the answer active with
-/// `browse.select`.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the loupe's P7 (TASK-020) calls it; lane B wires it"
-    )
-)]
-pub(crate) fn next_moment(summary: &ViewSummary, position: u32) -> Option<u32> {
-    let moments = &summary.groups.moments;
-    let after = moments.partition_point(|moment| moment.start <= position);
-    let next = after
-        .checked_sub(1)
-        .map(|index| &moments[index])
-        .filter(|moment| position < moment.start.saturating_add(moment.len))
-        .map_or(position.saturating_add(1), |moment| {
-            moment.start.saturating_add(moment.len)
-        });
-    (next < summary.count).then_some(next)
-}
-
 /// The session's selection in the view on screen, as the grid draws it: disjoint ascending ranges
 /// of positions and the active item. Empty when the session describes another revision of the view
 /// than the one drawn.
