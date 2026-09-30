@@ -8,6 +8,7 @@
 mod brush;
 mod colour;
 mod colour_visual;
+mod curve;
 mod dng;
 mod exposure;
 mod mask;
