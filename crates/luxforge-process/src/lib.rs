@@ -1,6 +1,5 @@
 //! Small, safe wrappers around platform FFI: process CPU and memory counters, GPU counters where
-//! reported, the Windows file change time used to verify source signatures, and the mounted file
-//! systems the catalog's index tells volumes apart by ([`mounts`]).
+//! reported, and the Windows file change time used to verify source signatures.
 //!
 //! The platform code is FFI, so it lives in this leaf crate, the second one allowed `unsafe` after
 //! `luxforge-raw`. Every `unsafe` block sits beside a `SAFETY:` comment and nothing unsafe crosses
@@ -9,7 +8,6 @@
 //!
 //! Every time and byte counter here is cumulative or a current level taken at the call; a rate
 //! comes from two reads and the caller's own monotonic clock.
-pub use mounts::{Mount, mounts};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -17,7 +15,6 @@ use std::fmt;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
-mod mounts;
 mod procfs;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod unsupported;

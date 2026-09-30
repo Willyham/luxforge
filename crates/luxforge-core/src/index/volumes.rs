@@ -1,7 +1,7 @@
 //! Volumes: which volume a path is on, the volumes mounted now, the camera cards among them, and
 //! whether a folder on a known volume is offline.
 //!
-//! The mount table comes from the platform (`luxforge_process::mounts`), or from a fixed list a
+//! The mount table comes from the platform (`luxforge_watch::mounts`), or from a fixed list a
 //! test stands in with ([`MountSource::Fixed`]), so cards and offline volumes are tested with
 //! scratch directories as mount points. A volume's identity is the platform's volume UUID where
 //! it has one (macOS), so a card is the same volume every time it is mounted; otherwise it is the
@@ -24,7 +24,7 @@ use crate::{
     atomic_file::file_error,
     catalog_types::{Volume, VolumeId},
 };
-use luxforge_process::Mount;
+use luxforge_watch::Mount;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -63,7 +63,7 @@ impl MountSource {
     /// every path's volume is found by its device ([`MountTable::volume_of`]).
     pub(crate) fn list(&self) -> Vec<Mount> {
         let mounts = match self {
-            Self::Platform => luxforge_process::mounts().unwrap_or_default(),
+            Self::Platform => luxforge_watch::mounts().unwrap_or_default(),
             Self::Fixed(mounts) => mounts.lock().expect("a fixed mount table").clone(),
         };
         mounts
