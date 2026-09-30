@@ -357,6 +357,68 @@ pub(crate) fn insert_indexed_folder(
 
 // Each lane's row writers and readers, one marked section per lane.
 // ── catalog lane A: files ──
+/// The indexed folders and the volumes the catalog knows, as the index lane's owner glue reads
+/// them (`api/owner/files.rs`). One indexed folder is read by
+/// [`library_rows::indexed_folder`](library_rows::indexed_folder), which the journal shares.
+pub(crate) mod folder_rows {
+    use super::*;
+
+    /// Every indexed folder, in path order.
+    pub(crate) fn indexed_folders(connection: &Connection) -> Result<Vec<IndexedFolder>, Error> {
+        let mut statement = connection.prepare_cached(
+            "SELECT path, volume_id, added_ms, actor FROM indexed_folders ORDER BY path",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (path, volume_id, added_ms, actor) = row?;
+            Ok(IndexedFolder {
+                path: path.into(),
+                volume_id: VolumeId::parse(volume_id)?,
+                added_ms,
+                actor,
+            })
+        })
+        .collect()
+    }
+
+    /// Every volume the catalog knows: the volumes its picks, photographs and indexed folders are
+    /// on, as each was last seen.
+    pub(crate) fn volumes(connection: &Connection) -> Result<Vec<Volume>, Error> {
+        let mut statement = connection.prepare_cached(
+            "SELECT id, mount_point, label, removable, platform_id, last_seen_ms FROM volumes
+             ORDER BY label, id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (id, mount_point, label, removable, platform_id, last_seen_ms) = row?;
+            Ok(Volume {
+                id: VolumeId::parse(id)?,
+                mount_point: mount_point.into(),
+                label,
+                removable,
+                platform_id,
+                last_seen_ms,
+            })
+        })
+        .collect()
+    }
+}
 // ── end lane A ──
 // ── catalog lane B: previews ──
 // ── end lane B ──

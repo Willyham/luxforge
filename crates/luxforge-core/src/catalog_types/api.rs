@@ -55,6 +55,13 @@ host_params! {
     }
 }
 
+host_params! {
+    /// `disk.folders`.
+    pub(crate) struct DiskFoldersParams {
+        path: PathBuf = path().notes("an absolute folder, such as a volume's mount point from volume.list"),
+    }
+}
+
 // ── Lane B: previews ───────────────────────────────────────────────────────────────────────────
 
 host_params! {
@@ -469,6 +476,20 @@ pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         "lists a source again and reads the headers of new and changed files, reconciling by signature; a job with progress; resource-limit past the file limit",
     )
     .starts(&jobs::INDEX_REFRESH),
+    method::<NoParams>(
+        "volume.list",
+        Files,
+        "Volumes",
+        &[CatalogError],
+        "the mounted volumes, the startup disk first, each with whether it is removable and a card, then the volumes the catalog knows that are not mounted, offline",
+    ),
+    method::<DiskFoldersParams>(
+        "disk.folders",
+        Files,
+        "DiskFolders",
+        &[Validation, FileAccess],
+        "a folder's immediate subfolders in name order without what indexing skips (hidden and system folders, packages, other applications' caches, Luxforge's own directories), bounded",
+    ),
     method::<EventListParams>(
         "event.list",
         Views,
