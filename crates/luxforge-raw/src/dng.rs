@@ -1027,6 +1027,12 @@ impl DngCorrection {
     /// A value that overflows `f32` becomes infinite rather than an error
     /// here: like the development before it, this checks no finiteness, and
     /// the one check is the caller's, where it adopts the converted planes.
+    /// Whether any correction runs on the demosaiced planes (a gain map, a vignette or a warp),
+    /// so the developed planes no longer share the demosaic's one clip ceiling.
+    pub(crate) fn corrects_after_demosaic(&self) -> bool {
+        !self.stages.is_empty()
+    }
+
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
         // Photo-sized active areas run their row jobs on the development executor at the pool's
         // width; smaller ones run in order on the caller. A row owns its output; stages and

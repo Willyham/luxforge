@@ -31,6 +31,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Packaged dependency delivery and portability
 - M4 responsiveness, memory and JPEG regression measurements
 - End-to-end RAW editing journey
+- Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, then reconsider it against the highlight-clipped exception to the `raw-panel` gates. The candidate is in [instant previews](design/instant-preview.md#popular-cameras) and the exception in [decisions](decisions.md#raw-white-balance-drafts)
 
 **Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).
 - Nikon High Efficiency NEF once upstream LibRaw decodes it; refused explicitly until then

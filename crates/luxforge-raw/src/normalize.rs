@@ -264,6 +264,42 @@ impl Normalization<'_> {
     }
 }
 
+impl Normalization<'_> {
+    /// The share of the sites in `rect`, `[x, y, width, height]` in sensor coordinates, whose
+    /// normalized value is at least `fraction` of sensor white: the sites the Bayer demosaic's
+    /// input clamp cuts, or nearly cuts, at these gains. It normalizes the whole mosaic as a
+    /// development does, repairs included, and counts; it keeps nothing.
+    pub(crate) fn share_at_or_above(
+        &self,
+        fraction: f32,
+        rect: [usize; 4],
+        lanes: usize,
+        cancel: &AtomicBool,
+    ) -> Result<f64, RawError> {
+        let [x, y, width, height] = rect;
+        let rows = self.samples.len() / self.width.max(1);
+        if width == 0 || height == 0 || x + width > self.width || y + height > rows {
+            return Err(RawError::InvalidInput(
+                "clip share rectangle outside the mosaic",
+            ));
+        }
+        let mosaic = self.run(lanes, cancel)?;
+        let threshold = fraction * SENSOR_SCALE;
+        let clipped: usize = mosaic
+            .chunks_exact(self.width)
+            .skip(y)
+            .take(height)
+            .map(|row| {
+                row[x..x + width]
+                    .iter()
+                    .filter(|value| **value >= threshold)
+                    .count()
+            })
+            .sum();
+        Ok(clipped as f64 / (width * height) as f64)
+    }
+}
+
 /// Divide the demosaiced planes, whole rows of `width` values, by [`SENSOR_SCALE`] in place, in
 /// [`JOB_ROWS`]-row jobs on the development executor with `lanes` at once. Every value is divided
 /// the same way, so the three contiguous planes are one pass. The first cancellation stops the
@@ -351,6 +387,53 @@ mod tests {
         assert!(close(mosaic[64], SENSOR_SCALE), "{}", mosaic[64]);
         assert!(close(mosaic[65], SENSOR_SCALE * 1.5), "{}", mosaic[65]);
         assert_eq!(mosaic[64 * 20 + 1], 0.0);
+    }
+
+    /// The clip share counts the sites in the rectangle whose gained value reaches the fraction
+    /// of sensor white: here the red sites at 0.6 of white, gained by 2, and nothing ungained.
+    #[test]
+    fn the_clip_share_counts_gained_sites_at_sensor_white_in_the_rectangle() {
+        let never = AtomicBool::new(false);
+        // Black 65 to 68 by site; 0.6 of the 4031-code range above black puts red at 1.2 of white
+        // once gained by 2, blue at 0.9 once gained by 1.5 and green at 0.6.
+        let samples: Vec<u16> = (0..64 * 32)
+            .map(|index| {
+                let (x, y) = (index % 64, index / 64);
+                let black: f32 = 64.0 + [1.0, 2.0, 4.0, 3.0][(y % 2) * 2 + x % 2];
+                (black + 0.6 * (4095.0 - black)).round() as u16
+            })
+            .collect();
+        let bayer = normalization(&samples, &[]);
+        let whole = bayer
+            .share_at_or_above(0.99, [0, 0, 64, 32], 1, &never)
+            .unwrap();
+        assert_eq!(whole, 0.25, "the red quarter of the sites");
+        let mut raised = normalization(&samples, &[]);
+        raised.gains = [2.0, 1.0, 1.7];
+        assert_eq!(
+            raised
+                .share_at_or_above(0.99, [0, 0, 64, 32], 1, &never)
+                .unwrap(),
+            0.5,
+            "blue at 1.02 of white joins red"
+        );
+        // One red column in a one-pixel-wide rectangle, a green one beside it.
+        assert_eq!(
+            bayer
+                .share_at_or_above(0.99, [2, 0, 1, 32], 1, &never)
+                .unwrap(),
+            0.5
+        );
+        assert_eq!(
+            bayer
+                .share_at_or_above(0.99, [1, 0, 1, 1], 1, &never)
+                .unwrap(),
+            0.0
+        );
+        assert!(matches!(
+            bayer.share_at_or_above(0.99, [60, 0, 5, 1], 1, &never),
+            Err(RawError::InvalidInput(_))
+        ));
     }
 
     /// Invalid calibration, CFA or repairs fail before any mosaic is allocated, and a cancelled
