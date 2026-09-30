@@ -515,10 +515,7 @@ fn develop_picks_plan_groups_by_event_and_proposes_folders() {
         events[3].get("removable").is_none(),
         "an offline file is not developable"
     );
-    assert_eq!(
-        events[4]["folder"],
-        json!({"kind": "new", "name": "Undated · loose"})
-    );
+    assert_eq!(events[4]["folder"], json!({"kind": "new", "name": "loose"}));
 
     // Without targets a plan takes the view's picks, and there is no view yet.
     let refused = harness.refused("pick.plan", json!({}));
@@ -633,12 +630,31 @@ fn develop_picks_brings_in_the_picked_photographs_in_batches_one_event_each() {
         "Developed 2"
     );
     let events = harness.events_after(sequence);
+    let job = &events
+        .iter()
+        .rev()
+        .find(|event| event["method"] == "pick.develop")
+        .map(|event| event["job_id"].clone())
+        .expect("the job's end");
+    assert!(job.is_string(), "{events:?}");
     let announced: Vec<&Value> = events
         .iter()
         .filter(|event| event["method"] == "pick.develop")
         .map(|event| &event["library_sequence"])
         .collect();
-    assert_eq!(announced, changes.iter().collect::<Vec<_>>(), "{events:?}");
+    let mut expected: Vec<&Value> = changes.iter().collect();
+    expected.push(&Value::Null);
+    assert_eq!(
+        announced, expected,
+        "one event a batch, then the job's end: {events:?}"
+    );
+    assert!(
+        events
+            .iter()
+            .filter(|event| event["method"] == "pick.develop")
+            .all(|event| &event["job_id"] == job),
+        "every one names the job: {events:?}"
+    );
 
     // The folders the plan proposed, made from their events.
     let folders = harness.ok("folder.list", json!({}))["folders"].clone();
@@ -1162,6 +1178,75 @@ fn develop_picks_undo_sends_back_and_repicks_and_refuses_an_edited_photograph() 
     assert!(harness.picks().is_empty());
 }
 
+/// A Develop committed in several batches is undone as the one change it was: one `library.undo`
+/// sends every photograph back and picks every file again, recorded as one undo per batch and
+/// announced once, and a retry of that undo answers them all; redoing it is refused, as a
+/// sent-back photograph is developed again with `pick.develop`.
+#[test]
+fn develop_picks_undo_of_a_develop_in_batches_is_one_step() {
+    let harness = Harness::new("undo-batches");
+    let trip = harness.dir.join("trip");
+    let files: Vec<PathBuf> = (0..3)
+        .map(|index| {
+            photo(
+                &trip.join(format!("b{index}.jpg")),
+                &Shot::at(&format!("2026:09:12 10:00:0{index}")),
+            )
+        })
+        .collect();
+    let paths: Vec<&PathBuf> = files.iter().collect();
+    harness.index_paths(&paths);
+    harness.pick(&paths, "pick-batches");
+    let picks = harness.ok("pick.list", json!({}))["picks"].clone();
+    let report = harness.develop_paths("develop-batches", &paths);
+    assert_eq!(
+        report["changes"].as_array().unwrap().len(),
+        2,
+        "the first batch of one file, then the rest: {report}"
+    );
+    assert_eq!(harness.photographs(), 3);
+
+    let sequence = harness.sequence();
+    let undone = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
+    assert_eq!(
+        (&undone["outcome"], &undone["items"]),
+        (&json!("applied"), &json!(7)),
+        "three photographs sent back, three picks restored and the new folder gone: {undone}"
+    );
+    assert_eq!(harness.photographs(), 0);
+    assert_eq!(harness.ok("folder.list", json!({}))["folders"], json!([]));
+    assert_eq!(harness.ok("pick.list", json!({}))["picks"], picks);
+    assert_eq!(harness.events_after(sequence).len(), 1, "announced once");
+    let journal = harness.ok("library.journal", json!({}))["changes"].clone();
+    let undos: Vec<&Value> = journal
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|change| change["method"] == "library.undo")
+        .collect();
+    assert_eq!(undos.len(), 2, "one undo per batch");
+    let retry = harness.ok("library.undo", json!({"mutation": envelope("undo-all")}));
+    assert_eq!(
+        (&retry["change"], &retry["items"], &retry["deduplicated"]),
+        (&undone["change"], &json!(7), &json!(true))
+    );
+    assert_eq!(harness.photographs(), 0, "a retry undoes nothing more");
+
+    // A sent-back photograph is developed again with pick.develop, so redoing the undo is refused,
+    // naming the first photograph it would bring back, and changes nothing.
+    let sequence = harness.sequence();
+    let refused = harness
+        .send("library.redo", json!({"mutation": envelope("redo-all")}))
+        .error
+        .expect("a refusal");
+    assert_eq!(refused.code, "conflict", "{refused:?}");
+    assert!(refused.message.contains("develop it again"), "{refused:?}");
+    assert_eq!(refused.data.unwrap()["items"][0]["kind"], "developed-asset");
+    assert_eq!(harness.photographs(), 0);
+    assert_eq!(harness.ok("pick.list", json!({}))["picks"], picks);
+    assert!(harness.events_after(sequence).is_empty());
+}
+
 /// `asset.send-back` sends an unedited photograph back as one library change — its record gone,
 /// its file picked again with its signature now — answered once for a retry, and not undone; it
 /// refuses a photograph with an edit, one in a collection and one whose original is missing, each
@@ -1190,10 +1275,49 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
         )
     };
 
+    // A rendered preview the preview cache holds of the photograph, as lane B writes one.
+    let index = rusqlite::Connection::open(
+        crate::index::index_dir(&harness.catalog).join(crate::INDEX_FILE),
+    )
+    .unwrap();
+    index
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let previews_of = |asset: &Value| -> i64 {
+        index
+            .query_row(
+                "SELECT count(*) FROM photo_previews WHERE asset_id = ?1",
+                [asset.as_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    index
+        .execute(
+            "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
+                 bytes, origin, last_used_ms, approximate)
+             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0)",
+            [
+                assets[0].as_str().unwrap().to_owned(),
+                harness
+                    .dir
+                    .join("k0-grid.jpg")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        )
+        .unwrap();
+    assert_eq!(previews_of(&assets[0]), 1);
+
     let answer = send(&assets[0], "send-1").result.unwrap();
     assert_eq!(answer["outcome"], "applied");
     assert_eq!(answer["items"], 2);
     assert_eq!(harness.photographs(), 3);
+    assert_eq!(
+        previews_of(&assets[0]),
+        0,
+        "the preview cache forgets a photograph sent back"
+    );
     assert_eq!(
         harness
             .refused("asset.state", json!({"asset_id": assets[0]}))

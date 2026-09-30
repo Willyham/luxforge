@@ -466,9 +466,12 @@ mod tests {
         seeder.finish().unwrap();
 
         let service = EditorService::open(&catalog).unwrap();
-        let page = service.assets(None, 10).unwrap();
-        assert_eq!(page.assets.len(), 2);
-        assert_eq!(page.assets[1].kind, SourceTag::Raw);
+        let listed = service.asset_ids(10).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            service.state(&listed[1]).unwrap().asset.source.tag(),
+            SourceTag::Raw
+        );
         for asset in &assets {
             let state = service.state(&asset.id).unwrap();
             assert_eq!(state.current_entry.label, "Original");

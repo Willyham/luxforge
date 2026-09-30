@@ -1,7 +1,7 @@
 //! The mask overlay end to end: one mask's coverage grid over the evaluation the owner plans for a
 //! client's current stack, and the per-client view state that asks for it commits nothing.
 //!
-//! Everything here goes through the same owner every client reaches — `catalog.import`,
+//! Everything here goes through the same owner every client reaches — `pick.develop`,
 //! `mask.create-linear`, `mask.add-linear`, `edit.set-basic`, `workspace.set` and `session.state` — the
 //! grids come from [`luxforge_core::Evaluation::mask_overlay_coverage`] over the evaluation of an
 //! owner-planned preview job, and the frames they are compared with come from the real
@@ -36,35 +36,8 @@ impl Fixture {
         std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
         let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
         let client = owner.register();
-        let queued = ok(
-            &owner,
-            client,
-            "import",
-            "catalog.import",
-            json!({"path": source, "mutation": {"request_id": format!("import-{}", uuid::Uuid::new_v4().simple()), "actor": "test"}}),
-        );
-        let job_id = queued["job_id"].as_str().expect("a job id").to_owned();
-        luxforge_testbase::wait_until("the import to settle", || {
-            let status = ok(
-                &owner,
-                client,
-                "status",
-                "job.read",
-                json!({"job_id": job_id}),
-            );
-            match status["status"].as_str() {
-                Some("ready") => true,
-                Some("queued" | "running") => false,
-                other => panic!("unexpected import job {other:?}: {status}"),
-            }
-        });
-        let asset_value = ok(
-            &owner,
-            client,
-            "adopt",
-            "job.adopt",
-            json!({"job_id": job_id}),
-        )["asset"]["asset"]["id"]
+        let asset_value = luxforge_testkit::client::open(&owner, client, &source, "test")
+            .expect("the fixture opens")["asset"]["id"]
             .clone();
         let asset = AssetId::parse(asset_value.as_str().unwrap()).unwrap();
         Self {

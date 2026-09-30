@@ -408,7 +408,13 @@ fn every_batch_advances_the_revision_and_records_one_event() {
     let start = ok(owner, client, "events.since", json!({"after": 0}))["current_sequence"]
         .as_u64()
         .unwrap();
-    let report = refresh(owner, client, json!({"kind": "folder", "path": root}));
+    let started = ok(
+        owner,
+        client,
+        "index.refresh",
+        json!({"source": {"kind": "folder", "path": root}}),
+    );
+    let report = finished(owner, client, &started["job_id"])["result"].clone();
     assert_eq!(report["added"], crate::index::lane::INDEX_BATCH + 10);
     let events = ok(owner, client, "events.since", json!({"after": start}))["events"]
         .as_array()
@@ -442,6 +448,12 @@ fn every_batch_advances_the_revision_and_records_one_event() {
         events
             .iter()
             .all(|event| event["method"] == "index.refresh")
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["job_id"] == started["job_id"]),
+        "every batch and the end name the job: {events:?}"
     );
 }
 
