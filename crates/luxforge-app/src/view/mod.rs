@@ -11,6 +11,7 @@ pub(crate) mod canvas;
 pub(crate) mod canvas_view;
 mod capabilities;
 pub(crate) mod crop_canvas;
+pub(crate) mod cursor_probe;
 mod gallery;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;

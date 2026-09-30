@@ -316,19 +316,22 @@ const SOURCE_RULES: &[SourceRule] = &[
     // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
     // state keeps the next development — a white-balance change, a history selection, another
     // photograph — from ever starting. A stack reaches the desktop only inside the preview job that
-    // carries it to a worker; the thumbnail worker's job type is the one line that names it.
+    // carries it to a worker; each coverage worker's job type is the one line that names it.
     SourceRule {
         name: "desktop-keeps-no-stack",
         tokens: &["Evaluation"],
         scope: &["crates/luxforge-app/src"],
         types: &["rs"],
-        allowed: &["crates/luxforge-app/src/app/thumbnails.rs"],
+        allowed: &[
+            "crates/luxforge-app/src/app/thumbnails.rs",
+            "crates/luxforge-app/src/app/mask_coverage.rs",
+        ],
         mode: Match::Whole,
         tests: false,
         once: true,
         reason: "the desktop keeps no evaluation between messages: it holds its source, and a RAW \
                  development's planes hold the source worker's memory gate; only the thumbnail \
-                 worker's job type (app/thumbnails.rs) names one",
+                 and mask coverage workers' job types name one",
     },
     // Nor a planned preview job, which carries its stack. The desktop names `PreviewJob` only in
     // the files that pass one straight through: the message files that carry it (app/message.rs
@@ -350,6 +353,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-app/src/app/preview.rs",
             "crates/luxforge-app/src/app/gesture.rs",
             "crates/luxforge-app/src/app/thumbnails.rs",
+            "crates/luxforge-app/src/app/mask_coverage.rs",
         ],
         mode: Match::Whole,
         tests: false,

@@ -174,6 +174,9 @@ impl MaskThumbnails {
 /// it is per-client view state: none of it changes a recipe or is sent on its own.
 #[derive(Clone, Debug)]
 pub(crate) struct MaskPanel {
+    /// An explicit overlay choice during the current tool overrides its automatic initial tint.
+    /// Kept across a brush's committed strokes; reset by an explicit tool start.
+    pub(crate) overlay_manual: bool,
     /// The mask the panel has open. Per-client selection: it changes no recipe and is never sent.
     pub(crate) selected_mask: Option<MaskId>,
     /// The module pick mode on screen was entered from the panel with a mask open, so the pick
@@ -220,6 +223,7 @@ pub(crate) struct MaskPanel {
 impl Default for MaskPanel {
     fn default() -> Self {
         Self {
+            overlay_manual: false,
             selected_mask: None,
             pick_on_mask: false,
             selected_component: None,
@@ -437,6 +441,7 @@ pub(crate) struct DraftField {
 /// The open shape gesture, as the panel and the draft bar read it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MaskDraftModel {
+    pub(crate) creates: bool,
     /// The gesture's own declared fields, each editable as a number.
     pub(crate) fields: Vec<DraftField>,
     /// What releasing it commits, in words: `New mask`, `Subtract`, `Update`.
@@ -747,9 +752,21 @@ pub(crate) fn create_mode_reason(mode: ComponentMode) -> Option<String> {
     })
 }
 
+/// A mask creation or a held gradient owns editing until its deliberate completion. Idle painting
+/// on an existing brush remains compatible with adjustment controls between strokes.
+pub(crate) fn interaction_refusal(draft: Option<&MaskDraft>) -> Option<String> {
+    draft.filter(|draft| draft.owns_controls()).map(|draft| {
+        format!(
+            "Apply or Cancel the {} gesture before using other controls",
+            draft.op.label().to_lowercase()
+        )
+    })
+}
+
 /// The overlay control's options and the two selections it shows.
 fn overlay_model(inputs: &Inputs<'_>) -> OverlayModel {
     let workspace = &inputs.session.workspace;
+    let effective = effective_overlay(inputs.mask_draft, inputs.mask_panel, workspace.mask_overlay);
     OverlayModel {
         modes: MaskOverlayMode::ALL
             .iter()
@@ -757,7 +774,7 @@ fn overlay_model(inputs: &Inputs<'_>) -> OverlayModel {
             .collect(),
         selected: MaskOverlayMode::ALL
             .iter()
-            .position(|mode| *mode == workspace.mask_overlay)
+            .position(|mode| *mode == effective)
             .unwrap_or(0),
         colours: MaskOverlayColour::ALL
             .iter()
@@ -767,16 +784,34 @@ fn overlay_model(inputs: &Inputs<'_>) -> OverlayModel {
             .iter()
             .position(|colour| *colour == workspace.mask_overlay_colour)
             .unwrap_or(0),
-        tinting: workspace.mask_overlay == MaskOverlayMode::Tint,
-        on: workspace.mask_overlay != MaskOverlayMode::Off
-            && inputs.mask_panel.selected_mask.is_some(),
+        tinting: effective == MaskOverlayMode::Tint,
+        on: effective != MaskOverlayMode::Off
+            && (inputs.mask_draft.is_some() || inputs.mask_panel.selected_mask.is_some()),
+    }
+}
+
+/// A deliberate visibility choice overrides automatic visibility for the held tool.
+pub(crate) fn effective_overlay(
+    draft: Option<&MaskDraft>,
+    panel: &MaskPanel,
+    stored: MaskOverlayMode,
+) -> MaskOverlayMode {
+    if draft.is_some() && !panel.overlay_manual && stored == MaskOverlayMode::Off {
+        MaskOverlayMode::Tint
+    } else {
+        stored
     }
 }
 
 /// The Masks panel for the displayed entry.
 pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
+    // The model inputs' editability already carries the held tool's refusal.
     let disabled_reason = inputs.edit_refusal.clone();
     let enabled = disabled_reason.is_none();
+    // The creation lock disables unrelated edits, not the fields needed to finish the tool.
+    let tool_enabled = super::editable_refusal(inputs.document.state.as_ref(), inputs.session)
+        .is_none()
+        && !inputs.busy;
     let listing = inputs
         .document
         .masks
@@ -835,7 +870,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
     let components: Vec<ComponentRow> = open
         .map(|report| component_rows(report, inputs, enabled))
         .unwrap_or_default();
-    let brush = brush_model(inputs, enabled, open);
+    let brush = brush_model(inputs, tool_enabled, open);
     // The Brush section is the brush's while it is in hand or while a painted component is the
     // one being looked at, and nobody's otherwise.
     let brush_visible = brush.armed
@@ -871,7 +906,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> MasksModel {
         add_mode: mode_index(inputs.mask_panel.mode),
         disabled_reason,
         enabled,
-        draft: draft_model(inputs, enabled),
+        draft: draft_model(inputs, tool_enabled),
         brush,
         name,
         overlay: overlay_model(inputs),
@@ -1332,7 +1367,11 @@ fn brush_model(inputs: &Inputs<'_>, enabled: bool, open: Option<&MaskReport>) ->
     // operation: the host refuses a mask no layer is bound to by name, and the panel states that
     // before the stroke rather than after it. `limit` is what the next stroke will actually carry,
     // which is why it is the toggle's state *and* the condition, in one place.
-    let limit_reason = limit_reason(open);
+    let limit_reason = limit_reason(if inputs.mask_draft.is_some_and(MaskDraft::owns_creation) {
+        None
+    } else {
+        open
+    });
     BrushModel {
         fields,
         erase: brush.erase,
@@ -1469,7 +1508,9 @@ pub(crate) fn parse_number(text: &str) -> Option<f64> {
 
 fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
     let draft: &MaskDraft = inputs.mask_draft?;
-    let apply_reason = if inputs.gesture_conflicted {
+    let apply_reason = if let Some(reason) = draft.placement_refusal() {
+        Some(reason)
+    } else if inputs.gesture_conflicted {
         Some("Changed elsewhere: discard the draft or reapply it".into())
     } else if !enabled {
         inputs.edit_refusal.clone()
@@ -1526,6 +1567,7 @@ fn draft_model(inputs: &Inputs<'_>, enabled: bool) -> Option<MaskDraftModel> {
         })
         .collect();
     Some(MaskDraftModel {
+        creates: draft.owns_creation(),
         fields,
         title: draft.op.label().to_owned(),
         method: draft.method().unwrap_or_default().to_owned(),

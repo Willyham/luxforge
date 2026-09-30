@@ -5,7 +5,7 @@
 //! gradient is visible rather than inferred. The gesture is Lightroom's: a press away from every
 //! handle sets `p0` and the drag sets `p1`, from the untouched side towards the affected one.
 use super::editor::{
-    DISTANCE_DECIMALS, DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, compact, finite,
+    DISTANCE_DECIMALS, DrawnShape, Grab, MaskHandle, Pen, ShapeEditor, compact, finite, placeable,
 };
 use luxforge_core::mask::{LinearGradient, POSITION_MAX, POSITION_MIN};
 use serde_json::Value;
@@ -69,6 +69,12 @@ impl LinearEditor {
 }
 
 impl ShapeEditor for LinearEditor {
+    fn placement_valid(&self, from: (f64, f64), to: (f64, f64), _aspect: f64) -> bool {
+        // Measured as `legal` measures an axis, so a placement is never lengthened along a
+        // direction nobody dragged.
+        placeable(from, to) && (to.0 - from.0).hypot(to.1 - from.1) >= MIN_AXIS
+    }
+
     fn kind(&self) -> &'static str {
         KIND
     }

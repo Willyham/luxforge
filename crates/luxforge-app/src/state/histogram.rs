@@ -311,6 +311,7 @@ pub(crate) fn normalize(report: &Report) -> ([[f32; 256]; 3], u64) {
 /// generation and the normalization is the only part of this that is proportional to anything. Every
 /// other field is recomputed, which costs nothing on the derivation a pointer move causes.
 pub(crate) fn derive(inputs: &Inputs<'_>, previous: &HistogramModel) -> HistogramModel {
+    let can_toggle = inputs.document.state.is_some() && !inputs.mask_tool_owns_controls();
     let flags = (
         inputs.session.workspace.clip_shadows,
         inputs.session.workspace.clip_highlights,
@@ -319,12 +320,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>, previous: &HistogramModel) -> Histogra
         shadow: Triangle {
             tinted: false,
             active: flags.0,
-            enabled: inputs.document.state.is_some(),
+            enabled: can_toggle,
         },
         highlight: Triangle {
             tinted: false,
             active: flags.1,
-            enabled: inputs.document.state.is_some(),
+            enabled: can_toggle,
         },
         ..HistogramModel::default()
     };

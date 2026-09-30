@@ -187,7 +187,7 @@ impl<J, R> Running<'_, J, R> {
 
     /// Raised by [`Latest::cancel`], by [`Latest::withdraw`] of this job and when the worker is
     /// dropped.
-    pub(crate) fn abandoned(&self) -> &Cancel {
+    pub fn abandoned(&self) -> &Cancel {
         &self.abandoned
     }
 

@@ -321,6 +321,14 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance: &'a performance::PerformanceHistory,
 }
 
+impl Inputs<'_> {
+    /// A mask creation or held gradient owns the other controls until Apply or Cancel.
+    pub(crate) fn mask_tool_owns_controls(&self) -> bool {
+        self.mask_draft
+            .is_some_and(crate::mask_draft::MaskDraft::owns_controls)
+    }
+}
+
 /// The whole screen as plain data, derived again after every message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Workspace {
@@ -2131,9 +2139,24 @@ mod tests {
         scene.mask_panel.selected_mask = Some(mask.clone());
 
         // Adding a radial to Face: the component has no name until the commit spends its
-        // ordinal, so it is named by its kind.
+        // ordinal, so it is named by its kind. Choosing it first holds an unplaced tool whose
+        // bar explains placement; the desktop supplies that same refusal to the state model.
         let mut adding = MaskDraft::adding(mask.clone(), RADIAL, ComponentMode::Add, NEUTRAL_BRUSH)
             .expect("a drawn kind");
+        scene.apply_refusal = adding.placement_refusal();
+        scene.mask_draft = Some(adding.clone());
+        let bar = scene.derive().canvas.draft_bar.expect("an unplaced tool");
+        assert_eq!(bar.title, "Face");
+        assert_eq!(bar.subject.as_deref(), Some("Radial · Add"));
+        assert_eq!(bar.kind, Some(RADIAL));
+        assert_eq!(bar.readout, "Click and drag to place");
+        assert!(!bar.can_apply && !bar.done);
+        assert_eq!(bar.apply_reason, scene.apply_refusal);
+        assert!(adding.values().is_empty() && adding.handles().is_empty());
+        adding.sweep((0.5, 0.5), (0.7, 0.74));
+        adding.end();
+        scene.apply_refusal = adding.placement_refusal();
+        assert!(scene.apply_refusal.is_none());
         for (name, value) in [
             ("radius_x", 0.18),
             ("radius_y", 0.24),
@@ -2169,15 +2192,26 @@ mod tests {
             ("Face", Some("Radial 1 · Subtract"))
         );
 
-        // A new mask has no name until it is committed; a linear reads out its axis.
+        // A new mask has no name until it is committed; before placement it has no numeric
+        // readout, then a valid linear reads out its axis.
         let mut creating = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
+        scene.apply_refusal = creating.placement_refusal();
+        scene.mask_draft = Some(creating.clone());
+        let bar = scene.derive().canvas.draft_bar.expect("an unplaced tool");
+        assert_eq!(bar.title, "New mask");
+        assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
+        assert_eq!(bar.readout, "Click and drag to place");
+        assert!(!bar.can_apply && !bar.done);
+        assert_eq!(bar.apply_reason, scene.apply_refusal);
         creating.sweep((0.1, 0.92), (0.14, 0.38));
         creating.end();
+        scene.apply_refusal = creating.placement_refusal();
         scene.mask_draft = Some(creating);
         let bar = scene.derive().canvas.draft_bar.expect("an open gesture");
         assert_eq!(bar.title, "New mask");
         assert_eq!(bar.subject.as_deref(), Some("Linear · Add"));
         assert_eq!(bar.readout, "0.100, 0.920 → 0.140, 0.380");
+        assert!(bar.can_apply && !bar.done && bar.apply_reason.is_none());
 
         // A brush ends with Done: each stroke committed on release, so an Apply refusal is not the
         // bar's to state. Idle, it reads the brush the next stroke takes; with the stroke down,

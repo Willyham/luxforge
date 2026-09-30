@@ -55,6 +55,7 @@ pub(crate) struct StatePanelModel {
     pub(crate) version_name: String,
     /// The "+" chip has revealed the version-naming field.
     pub(crate) version_form_open: bool,
+    pub(crate) can_interact: bool,
     pub(crate) can_save: bool,
     /// History's heading caption: the open asset's revision (`rev 41`), none while nothing is open.
     pub(crate) revision: Option<String>,
@@ -77,6 +78,7 @@ pub(crate) fn actor_caption(actor: &str) -> Option<String> {
 }
 
 pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
+    let can_interact = !inputs.mask_tool_owns_controls();
     let current = inputs
         .document
         .state
@@ -96,7 +98,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             .collect(),
         version_name: inputs.version_form.name.clone(),
         version_form_open: inputs.version_form.open,
-        can_save: inputs.document.state.is_some()
+        can_interact,
+        can_save: can_interact
+            && inputs.document.state.is_some()
             && inputs.document.display_entry.is_some()
             && !inputs.busy,
         revision: inputs
@@ -124,15 +128,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
                 branch: !on_current_lineage(inputs, entry),
             })
             .collect(),
-        can_load_older: inputs.document.history.next_before_sequence.is_some(),
+        can_load_older: can_interact && inputs.document.history.next_before_sequence.is_some(),
         preview: (!super::at_current(inputs.document.state.as_ref(), inputs.session)).then_some(
             PreviewControls {
-                can_return: !inputs.busy,
-                can_restore: !inputs.busy && inputs.history_refusal.is_none(),
+                can_return: can_interact && !inputs.busy,
+                can_restore: can_interact && !inputs.busy && inputs.history_refusal.is_none(),
             },
         ),
         menu: inputs.view_state.menu.clone(),
-        can_select: !inputs.busy,
+        can_select: can_interact && !inputs.busy,
     }
 }
 

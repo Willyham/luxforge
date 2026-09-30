@@ -144,8 +144,8 @@ pub struct EventsResult {
 /// design](../../../../docs/design/masking.md)'s overlay.
 ///
 /// Per-client view state exactly as the clipping flags are: it changes no recipe, no histogram
-/// population and no export, and it commits nothing. What it selects is how the coverage grid the
-/// preview worker returns beside the frame is painted, never whether one is correct.
+/// population and no export, and it commits nothing. What it selects is how a mask's coverage grid
+/// ([`crate::Evaluation::mask_overlay_coverage`]) is painted, never whether one is correct.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MaskOverlayMode {

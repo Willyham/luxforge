@@ -21,13 +21,12 @@ use crate::app::{Before, waker};
 use crate::{layout, state, state::histogram::Analysis, view};
 use iced::{Subscription, Task};
 use luxforge_core::{
-    DraftId, EntryId, ExactOutcome, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob,
-    PreviewPhase, PreviewQueue, PreviewResult, ProxyBounds, Raster, Region, RegionOutcome, Zoom,
-    analysis::{AnalysisIdentity, MaskOverlay},
+    DraftId, EntryId, ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
+    PreviewQueue, PreviewResult, ProxyBounds, Raster, Region, RegionOutcome, Zoom,
 };
 use serde_json::json;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -169,21 +168,13 @@ pub(crate) struct Delivery {
 pub(crate) enum Presented {
     /// Older than the frame on screen: it presents nothing.
     Stale,
-    /// The visible pixels of a percentage view, with the grid they carry.
+    /// The visible pixels of a percentage view.
     Region(Box<(Delivery, RegionOutcome)>),
-    /// A job's coverage grid, following the proxy frame of its generation.
-    Overlay(u64, MaskOverlayOutcome),
     /// The display-size frame, already retained for a zoom back to Fit.
     Proxy(Box<(Delivery, ProxyFrame)>),
     /// The exact phase — its frame, already received as the retained exact raster or with its
-    /// report, or its failure — and the grid a job with no proxy frame carries beside it.
-    Exact(
-        Box<(
-            Delivery,
-            Result<ExactFrame, luxforge_core::Error>,
-            MaskOverlayOutcome,
-        )>,
-    ),
+    /// report, or its failure.
+    Exact(Box<(Delivery, Result<ExactFrame, luxforge_core::Error>)>),
 }
 
 /// What a zoom finds for the frame on screen ([`Presentation::zoom`]).
@@ -233,9 +224,9 @@ pub(crate) struct Presentation {
     /// asset or selection change calls, and so does a discarded mask gesture whose drafted frames
     /// must not reach the screen; nothing else has to.
     pub(crate) presented_generation: u64,
-    /// One opaque surface identity per evaluated content. A pan/zoom retains it; a new draft
-    /// revision, history entry, source development or recipe gets another id.
-    content_key: Option<(AnalysisIdentity, luxforge_core::ProxyIdentity)>,
+    /// One opaque surface identity per photograph content. A pan/zoom or unbound mask edit
+    /// retains it; bound edits, layer changes and source development get another id.
+    content_key: Option<(u64, luxforge_core::ProxyIdentity)>,
     pub(crate) content_serial: u64,
     pub(crate) pending_content: BTreeMap<u64, u64>,
     pending_intent: BTreeMap<u64, PreviewIntent>,
@@ -287,12 +278,6 @@ pub(crate) struct Presentation {
     pub(crate) displayed_draft_revision: Option<u64>,
     /// Revisions are ordered only within this draft; a new draft starts at zero.
     pub(crate) displayed_draft_id: Option<DraftId>,
-    /// Generations whose job asked for a coverage grid and has not presented its frame yet: a
-    /// proxy frame of one of these is followed by its grid in an overlay phase of its own.
-    pub(crate) pending_overlay: BTreeSet<u64>,
-    /// The proxy frame on screen whose grid is still on its way. A captured frame waits for it, so
-    /// evidence never records the photograph before the overlay that belongs over it.
-    pub(crate) overlay_awaited: Option<u64>,
 }
 
 /// The one desired view the owner admits through the shared gate, and the quiet policy that
@@ -317,15 +302,24 @@ pub(crate) struct ViewPlan {
 }
 
 impl Presentation {
+    pub(super) fn matches_pixel_content(&self, job: &PreviewJob) -> bool {
+        job.evaluation.pixel_content_key().ok().is_some_and(|key| {
+            self.content_key.as_ref() == Some(&(key, job.evaluation.source().identity()))
+        })
+    }
     /// Key a job's content before it is queued: the same evaluated image keeps its serial across
     /// pans and zooms, and anything else gets the next one. A region the surface cannot allocate
     /// for this content is not asked for again; the job falls back to the whole frame and says
     /// why.
     pub(crate) fn admit(&mut self, job: &mut PreviewJob) -> u64 {
-        let key = (job.identity.clone(), job.evaluation.source().identity());
-        if self.content_key.as_ref() != Some(&key) {
+        let key = job
+            .evaluation
+            .pixel_content_key()
+            .ok()
+            .map(|pixels| (pixels, job.evaluation.source().identity()));
+        if key.is_none() || self.content_key != key {
             self.content_serial = self.content_serial.saturating_add(1);
-            self.content_key = Some(key);
+            self.content_key = key;
         }
         let content = self.content_serial;
         if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
@@ -338,14 +332,13 @@ impl Presentation {
     }
 
     /// Queue one admitted job of `content` and record what its frame will need when it lands: the
-    /// bounds it was given, its content and intent, and whether a coverage grid follows it. The
-    /// job still waiting in the pending slot is replaced and forgotten.
+    /// bounds it was given, and its content and intent. The job still waiting in the pending slot
+    /// is replaced and forgotten.
     pub(crate) fn request(&mut self, job: PreviewJob, content: u64, timed: bool) -> Requested {
         let bounds = job.proxy;
         let intent = job.intent;
         let viewport = job.viewport;
         let stage = (job.identity.width, job.identity.height);
-        let overlay = job.mask_overlay.is_some();
         let (queued, at) = if timed {
             let (queued, at) = self.queue.request_timed(job);
             (queued, Some(at))
@@ -359,12 +352,8 @@ impl Presentation {
         self.pending_bounds.insert(generation, bounds);
         self.pending_content.insert(generation, content);
         self.pending_intent.insert(generation, intent);
-        if overlay {
-            self.pending_overlay.insert(generation);
-        }
         if let Some(replaced) = replaced {
             self.forget(replaced);
-            self.pending_overlay.remove(&replaced);
         }
         Requested {
             generation,
@@ -382,8 +371,6 @@ impl Presentation {
         self.pending_bounds.clear();
         self.pending_content.clear();
         self.pending_intent.clear();
-        self.pending_overlay.clear();
-        self.overlay_awaited = None;
         generation
     }
 
@@ -442,7 +429,6 @@ impl Presentation {
         };
         match outcome {
             PhaseOutcome::Region(region) => Presented::Region(Box::new((delivery, region))),
-            PhaseOutcome::Overlay(overlay) => Presented::Overlay(generation, overlay),
             PhaseOutcome::Proxy(outcome) => {
                 let frame = ProxyFrame {
                     generation,
@@ -460,7 +446,6 @@ impl Presentation {
                 let ExactOutcome {
                     result,
                     report,
-                    mask_overlay,
                     proxy_declined,
                 } = *outcome;
                 self.proxy_declined = proxy_declined;
@@ -479,7 +464,7 @@ impl Presentation {
                     });
                     self.receive(frame.clone(), analysis);
                 }
-                Presented::Exact(Box::new((delivery, frame, mask_overlay)))
+                Presented::Exact(Box::new((delivery, frame)))
             }
         }
     }
@@ -572,11 +557,6 @@ impl Presentation {
         }
         self.pending_bounds
             .retain(|pending, _| *pending > generation);
-        // A proxy frame whose job asked for a grid has it still to come, in the overlay phase that
-        // follows it; any other frame carried its own, or none was asked for.
-        self.overlay_awaited =
-            (proxy && self.pending_overlay.contains(&generation)).then_some(generation);
-        self.pending_overlay.retain(|pending| *pending > generation);
         self.refit_pending = false;
         self.presented_entry = Some(entry.clone());
         self.displayed_draft_revision = draft_revision;
@@ -625,8 +605,6 @@ impl Presentation {
         self.presented_approximate_white_balance = delivery.approximate_white_balance;
         self.refit_pending = false;
         self.render_error = None;
-        // A region carries its own grid, so no proxy's grid is awaited over it.
-        self.overlay_awaited = None;
         true
     }
 
@@ -911,6 +889,7 @@ impl Editor {
             })
     }
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
         self.view_plan.epoch = self.view_plan.epoch.saturating_add(1);
@@ -934,6 +913,9 @@ impl Editor {
     /// One message about taking up or presenting a preview frame.
     pub(super) fn preview_update(&mut self, message: PreviewMessage) -> Task<Message> {
         match message {
+            PreviewMessage::MaskCoverageSource { epoch, result } => {
+                self.mask_coverage_source_planned(epoch, result);
+            }
             PreviewMessage::ViewLoaded {
                 epoch,
                 intent,
@@ -1031,6 +1013,9 @@ impl Editor {
                 }
                 while let Some(done) = self.thumbnailer.queue.poll() {
                     self.thumbnails_ready(done);
+                }
+                while let Some(done) = self.coverage_worker.queue.poll() {
+                    self.mask_coverage_ready(done);
                 }
                 let delivered = self.deliver_previews();
                 return Task::batch([delivered, self.poll_again()]);
@@ -1302,6 +1287,7 @@ impl Editor {
         if self.overlays.queue.ready()
             || self.presentation.queue.ready()
             || self.thumbnailer.queue.ready()
+            || self.coverage_worker.queue.ready()
         {
             Task::done(Message::Preview(PreviewMessage::Poll))
         } else {
@@ -1330,7 +1316,6 @@ impl Editor {
             let phase = match result.phase() {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Region => "region",
-                PreviewPhase::Overlay => "overlay",
                 PreviewPhase::Exact => "exact",
             };
             self.event("preview_result_received", || {
@@ -1351,32 +1336,15 @@ impl Editor {
                 let (delivery, region) = *region;
                 self.region_ready(delivery, region)
             }
-            Presented::Overlay(generation, overlay) => {
-                self.coverage_ready(generation, overlay);
-                (Task::none(), false)
-            }
             Presented::Proxy(proxy) => {
                 let (delivery, frame) = *proxy;
                 self.view_fallback(delivery.generation, &delivery.viewport_declined, "proxy");
-                // A proxy frame carries no grid: its job's grid follows it as an overlay phase
-                // ([`Self::coverage_ready`]), so the overlay costs no second render and follows a
-                // drag at the proxy's pace without holding the frame back.
                 self.frame_ready(delivery, Ok(Retained::Proxy(frame)))
             }
             Presented::Exact(exact) => {
-                let (delivery, frame, grid) = *exact;
-                let generation = delivery.generation;
-                self.view_fallback(generation, &delivery.viewport_declined, "exact");
-                // A job without a proxy frame carries its coverage grid beside its one frame, and
-                // it is laid over that frame once the frame is on screen. The exact phase behind a
-                // proxy carries none and leaves that proxy's grid on screen, since both share one
-                // generation.
-                let grid = self.grid_arrived(generation, grid);
-                let taken = self.frame_ready(delivery, frame.map(Retained::Exact));
-                if let Some(grid) = grid {
-                    self.present_mask_overlay(generation, grid);
-                }
-                taken
+                let (delivery, frame) = *exact;
+                self.view_fallback(delivery.generation, &delivery.viewport_declined, "exact");
+                self.frame_ready(delivery, frame.map(Retained::Exact))
             }
         }
     }
@@ -1389,26 +1357,6 @@ impl Editor {
                 || json!({"generation":generation,"reason":reason,"phase":phase}),
             );
         }
-    }
-
-    /// The coverage grid a phase carries, to lay over its frame once that frame is taken up. When
-    /// the overlay was asked for and the host will not draw it — a mask whose coverage depends on
-    /// the pixel it reads has no grid until there is an operation whose input to read that pixel
-    /// from, and one it can afford to read — the host's own reason is said now rather than an
-    /// absence: an overlay switched on and silently not drawn is exactly what "never silently omit
-    /// an effect" forbids.
-    fn grid_arrived(
-        &mut self,
-        generation: u64,
-        outcome: MaskOverlayOutcome,
-    ) -> Option<MaskOverlay> {
-        let MaskOverlayOutcome { grid, absent } = outcome;
-        if grid.is_none()
-            && let Some(reason) = absent
-        {
-            self.mask_overlay_unavailable(generation, &reason);
-        }
-        grid
     }
 
     /// One whole frame of the photograph, or its failure.
@@ -1515,32 +1463,21 @@ impl Editor {
         } else {
             "exact"
         };
-        let (frame, proxy, bounded, grid) = match result.outcome {
+        let (frame, proxy, bounded) = match result.outcome {
             PhaseOutcome::Region(_) => return (Task::none(), false),
-            PhaseOutcome::Overlay(overlay) => {
-                self.coverage_ready(generation, overlay);
-                return (Task::none(), false);
-            }
-            PhaseOutcome::Proxy(outcome) => (
-                Ok(outcome.raster),
-                true,
-                true,
-                MaskOverlayOutcome::default(),
-            ),
+            PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
             // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {
                 let ExactOutcome {
                     result,
-                    mask_overlay,
                     proxy_declined,
                     ..
                 } = *outcome;
-                (result, false, proxy_declined.is_some(), mask_overlay)
+                (result, false, proxy_declined.is_some())
             }
         };
         self.view_fallback(generation, &result.viewport_declined, phase);
-        let grid = self.grid_arrived(generation, grid);
-        let taken = match frame {
+        match frame {
             Ok(raster) => {
                 let (presented, planned) =
                     self.crop_stage_ready(&raster, proxy, bounded, !proxy || interactive);
@@ -1550,36 +1487,6 @@ impl Editor {
                 self.draft_preview_failed(&error);
                 (Task::none(), false)
             }
-        };
-        if let Some(grid) = grid {
-            self.present_mask_overlay(generation, grid);
-        }
-        taken
-    }
-
-    /// A job's coverage grid, arriving after the proxy frame it describes.
-    ///
-    /// It is drawn only over the frame of its own generation. A grid whose frame is not the one on
-    /// screen — a newer frame was presented meanwhile, or its frame was never presented at all —
-    /// describes other pixels, so it is dropped and the presenter keeps what it has: the grid of
-    /// the frame on screen, or that frame's reason for having none, is still to come or has
-    /// already been taken up. Until the grid arrives the frame is drawn without one, since the
-    /// grid of an older frame is never drawn over a newer one.
-    fn coverage_ready(&mut self, generation: u64, overlay: MaskOverlayOutcome) {
-        if self.presentation.overlay_awaited == Some(generation) {
-            self.presentation.overlay_awaited = None;
-        }
-        if generation != self.presentation.presented_generation
-            || self.presentation.region_raster.is_some()
-        {
-            self.event(
-                "mask_overlay_dropped",
-                || json!({"generation":generation,"presented_generation":self.presentation.presented_generation}),
-            );
-            return;
-        }
-        if let Some(grid) = self.grid_arrived(generation, overlay) {
-            self.present_mask_overlay(generation, grid);
         }
     }
 
@@ -1602,10 +1509,7 @@ impl Editor {
         let draft_revision = delivery.draft_revision;
         let render_ms = delivery.render_ms;
         let approximate_white_balance = delivery.approximate_white_balance;
-        let RegionOutcome {
-            frame,
-            mask_overlay,
-        } = region;
+        let RegionOutcome { frame } = region;
         let stage = (frame.full_stage.width, frame.full_stage.height);
         let covered = self
             .desired_view_for(stage)
@@ -1656,8 +1560,6 @@ impl Editor {
             proxy: quality == luxforge_ui::RegionQuality::Interactive || !covered,
             approximate: approximate_white_balance,
         });
-        // A region carries its own grid, laid over it once it is on screen.
-        let grid = self.grid_arrived(generation, mask_overlay);
         self.event("preview_displayed", || json!({
             "generation":generation,"entry_id":entry_id,
             "draft_revision":draft_revision,"snapshot_id":frame.raster.snapshot_id.to_string(),
@@ -1709,9 +1611,6 @@ impl Editor {
             }
         }
         self.refresh_overlay();
-        if let Some(grid) = grid {
-            self.present_mask_overlay(generation, grid);
-        }
         (Task::none(), true)
     }
 
@@ -1810,6 +1709,10 @@ impl Editor {
                 || self.presentation.presenter.region().is_some())
         {
             self.withdraw_photo(generation, entry, error);
+        }
+        if !self.presentation.has_picture() && self.mask_coverage_target().is_some() {
+            self.invalidate_mask_coverage();
+            self.mask_overlay_unavailable(generation, &error.detail);
         }
         self.outcome(Outcome::PreviewFailed {
             newest: generation >= self.presentation.preview_generation,
@@ -2050,26 +1953,72 @@ impl Editor {
             self.proxy_bounds()
         };
         let content = self.presentation.admit(&mut job);
-        // The mask overlay's coverage grid rides whichever frame is about to be rendered, so it is
-        // attached here rather than by each task that builds a job: one rule, every preview path,
-        // and no second render for the overlay. The core validates the request against the stack
-        // this job will render, so a mask the stack does not hold leaves the frame without a grid
-        // instead of failing the render.
-        if let Some(overlay) = self.mask_overlay_request() {
-            match job.clone().with_mask_overlay(overlay) {
-                Ok(with_overlay) => job = with_overlay,
-                Err(error) => self.event(
-                    "mask_overlay_refused",
-                    || json!({"detail": error.detail.clone()}),
-                ),
-            }
-        }
+        self.request_mask_coverage(&job, content);
+        // Reusing pixels cannot complete work the viewport still owes. A moving region is
+        // intentionally half detail and carries no whole-image report; Settle must refine it
+        // and retain exact pixels. A non-interactive request for analysis also needs its exact
+        // report, even when a mask-only recipe change leaves photograph content unchanged.
+        let settled_pixels = job.intent != PreviewIntent::Settle
+            || (!self.presentation.presented_approximate_white_balance
+                && self.presentation.exact.as_ref().is_some_and(|frame| {
+                    frame.content == Some(content) && !frame.approximate_white_balance
+                })
+                && self
+                    .presentation
+                    .region_raster
+                    .as_ref()
+                    .is_none_or(|region| {
+                        region.quality == luxforge_ui::RegionQuality::Exact && !region.approximate
+                    }));
+        let complete_analysis = job.intent == PreviewIntent::Interactive
+            || !job.analyse
+            || (self.presentation.analysis_content == Some(content)
+                && self.presentation.analysis.is_some());
+        // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
+        // mask edits have a different pixel key and still use the ordinary rendering path.
+        let reusable = job.layer_count.is_none()
+            && content == self.presentation.presented_content
+            && self.presentation.has_picture()
+            && self.presentation.render_error.is_none()
+            && !self.presentation.queue.is_busy()
+            && !self.presentation.queue.ready()
+            && self.presentation.held_by_proxy.is_none()
+            && settled_pixels
+            && complete_analysis
+            && match job.viewport {
+                Some(wanted) => {
+                    self.presentation.presenter.full_content() == Some(content)
+                        || self
+                            .presentation
+                            .region_raster
+                            .as_ref()
+                            .is_some_and(|region| {
+                                region.content == content && contains_region(region.rect, wanted)
+                            })
+                }
+                None => {
+                    self.presentation.region_raster.is_none()
+                        && (!self.presentation.presented_proxy
+                            || self.presentation.presented_bounds == job.proxy)
+                }
+            };
         self.note_thumbnail_source(&job);
+        if reusable {
+            self.coverage_worker.reused = Some(job.identity.clone());
+            self.presentation.preview_generation = self.presentation.presented_generation;
+            self.view_plan.dirty = false;
+            return (
+                self.presentation.presented_generation,
+                timed.then(Instant::now),
+            );
+        }
+        self.coverage_worker.reused = None;
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
         // it in the same step, because the worker takes a pending job by itself the moment the
         // active one ends: a job it took up meanwhile is running, and ends through `poll_preview`.
+        let layer_count = job.layer_count;
         let Requested {
             generation,
             replaced,
@@ -2077,6 +2026,10 @@ impl Editor {
             stage,
             at,
         } = self.presentation.request(job, content, timed);
+        self.event(
+            "preview_job_requested",
+            || json!({"generation":generation,"layer_count":layer_count}),
+        );
         if replaced.is_some() && replaced == self.view_plan.request_generation {
             self.view_plan.request_generation = None;
             self.view_plan.dirty = true;

@@ -316,6 +316,14 @@ impl Editor {
     ///
     /// A slider, mask or crop gesture's release is answered by [`Editor::release_refusal`] instead.
     pub(crate) fn gesture_refusal(&self, starting: Starting) -> Option<String> {
+        // A held mask tool owns every other start. Export takes no one-draft half, so it asks
+        // even while the tool's own core draft is open.
+        if (self.core_gesture().is_none() || starting == Starting::Export)
+            && !matches!(starting, Starting::Mask | Starting::Refit)
+            && let Some(reason) = self.mask_tool_refusal()
+        {
+            return Some(reason);
+        }
         let halves = starting.halves();
         if halves.one_draft
             && let Some(reason) = self.draft_refusal(starting)
@@ -473,6 +481,12 @@ impl Editor {
     /// commits no valid output. A slider or mask gesture released while another request is in
     /// flight commits, so its pointer never comes up on a draft left open.
     pub(crate) fn release_refusal(&self) -> Option<String> {
+        if let Some(error) = self.mask_shape().and_then(MaskDraft::capture_error) {
+            return Some(error.to_string());
+        }
+        if let Some(reason) = self.mask_shape().and_then(MaskDraft::placement_refusal) {
+            return Some(reason);
+        }
         let gesture = self.core_gesture()?;
         if self.gesture_conflicted() {
             return Some(format!(
@@ -538,6 +552,13 @@ impl Editor {
     /// open, Done, Enter, Cancel and Escape put the brush down ([`Editor::put_brush_down`]).
     pub(crate) fn draft_message(&mut self, message: DraftMessage) -> Task<Message> {
         match message {
+            DraftMessage::Commit if self.mask_shape().is_some_and(MaskDraft::unplaced) => {
+                self.status.text = self
+                    .mask_shape()
+                    .and_then(MaskDraft::placement_refusal)
+                    .expect("unplaced reason");
+                Task::none()
+            }
             DraftMessage::Commit | DraftMessage::Cancel
                 if self.gesture.is_none() && self.armed.is_some() =>
             {
@@ -789,7 +810,7 @@ impl Editor {
             Kind::Mask(mask) => {
                 // `positions` is the path's length and not the path: a measurement needs to know
                 // how much geometry the frame carries, and a log is not where a stroke is stored.
-                let positions = mask.shape.brush().map(|stroke| stroke.captured().len());
+                let positions = mask.shape.brush().map(|stroke| stroke.captured());
                 self.event("mask_draft_preview", || {
                     let mut detail = json!({
                         "generation":generation,
@@ -922,6 +943,7 @@ impl Editor {
         let Some(open) = self.gesture.take() else {
             return Task::none();
         };
+        let cancelled = open.draft.cancel_requested();
         self.session.draft = None;
         self.presentation.displayed_draft_id = None;
         self.presentation.displayed_draft_revision = None;
@@ -944,10 +966,12 @@ impl Editor {
                     }
                 }
             }
-            (Kind::Mask(mask), Some(refresh)) => self.mask_committed(mask.shape, refresh),
+            (Kind::Mask(mask), Some(refresh)) => {
+                self.mask_committed(mask.shape, refresh, cancelled)
+            }
             (Kind::Mask(_), None) => {
                 self.status.text = "The mask gesture changed nothing; nothing was committed".into();
-                self.refresh_mask_overlay()
+                self.refresh_mask_coverage()
             }
             (Kind::Crop(crop), outcome) => self.crop_committed(&crop, &open.draft, outcome),
         }

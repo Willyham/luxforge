@@ -1056,6 +1056,13 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
         editor.controls.ui.clear_curve_samples();
         editor.curve_sampling.requested_source.clear();
     }
+    // A value typed but not submitted belongs to the mask or component it was typed for. When the
+    // fields address another one, the edit is dropped and the fields show the new target's own
+    // values, so a later Enter cannot land it there.
+    if editor.field_target() != before.field_target && editor.controls.editing.take().is_some() {
+        editor.seed_values();
+        editor.seed_mask_fields();
+    }
     Task::none()
 }
 

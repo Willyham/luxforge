@@ -57,6 +57,8 @@ pub(crate) enum Outcome<'a> {
     PresetsAnswered { failure: Option<&'a str> },
     /// A clipping overlay's texture reached the surface, or it failed, with the reason.
     ClippingOverlay { failure: Option<&'a str> },
+    /// The mask tool's content map answered, before an unplaced tool can accept a gesture.
+    MaskMap { available: bool },
     /// The mask overlay's coverage grid arrived for the frame on screen; `shown` when the surface
     /// took it.
     MaskGrid { shown: bool },
@@ -130,6 +132,7 @@ impl Outcome<'_> {
             Self::PickCommitting => "pick_committing",
             Self::PresetsAnswered { .. } => "presets_answered",
             Self::ClippingOverlay { .. } => "clipping_overlay",
+            Self::MaskMap { .. } => "mask_map",
             Self::MaskGrid { .. } => "mask_grid",
             Self::MaskGridAbsent { .. } => "mask_grid_absent",
             Self::MaskCommandFailed(_) => "mask_command_failed",

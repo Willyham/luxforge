@@ -110,8 +110,9 @@ impl<'a> MaskCanvas<'a> {
         )
     }
 
-    /// A mask-space radius in canvas-local logical pixels, measured through the same map the figure
-    /// is drawn with, so the painted line is as wide as the circles say it is at any zoom.
+    /// A mask-space radius in canvas-local logical pixels, measured through the same map as the
+    /// cursor ellipses, for the geometry contract's checks at crop, rotation and zoom.
+    #[cfg(test)]
     fn brush_radius(&self, radius: f64, at: (f64, f64)) -> f32 {
         let aspect = self.draft.aspect();
         let centre = self.placement.canvas_point(at.0, at.1);
@@ -123,8 +124,8 @@ impl<'a> MaskCanvas<'a> {
 }
 
 /// The pen a shape editor describes its figure through, for one frame: every point mapped through
-/// the affine and the view. Outlines are white, as the selected component's handles are; a painted
-/// path is the overlay's own green, because it previews coverage rather than outlining a shape.
+/// the affine and the view. Outlines and the brush cursor are white; coverage belongs to the
+/// production mask evaluator's separate bounded surface.
 struct FramePen<'c, 'f> {
     canvas: &'c MaskCanvas<'c>,
     frame: &'f mut Frame,
@@ -155,32 +156,6 @@ impl Pen for FramePen<'_, '_> {
             Stroke::default().with_color(outline(alpha)).with_width(1.0),
         );
     }
-
-    fn path(&mut self, points: &[[f64; 2]], radius: f64, alpha: f32) {
-        let Some(first) = points.first() else {
-            return;
-        };
-        let placement = self.canvas.placement;
-        let line = Path::new(|builder| {
-            builder.move_to(placement.canvas_point(first[0], first[1]));
-            for point in &points[1..] {
-                builder.line_to(placement.canvas_point(point[0], point[1]));
-            }
-            // A one-position stroke is a single dab, and a zero-length line draws nothing, so its
-            // own end is repeated: the round cap is then the dab the host will evaluate.
-            if points.len() == 1 {
-                builder.line_to(placement.canvas_point(first[0], first[1]));
-            }
-        });
-        self.frame.stroke(
-            &line,
-            Stroke::default()
-                .with_color(tint(alpha))
-                .with_width(2.0 * self.canvas.brush_radius(radius, (first[0], first[1])))
-                .with_line_cap(canvas::LineCap::Round)
-                .with_line_join(canvas::LineJoin::Round),
-        );
-    }
 }
 
 /// The pointer position in canvas-local logical pixels, even once a drag has left the bounds.
@@ -202,7 +177,7 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
     ) -> Option<Action<Message>> {
         match event {
             // A painted gesture has no handles: every press on the photograph paints, and the path
-            // is published position by position so the canvas can draw it as the pointer moves.
+            // is published position by position for the authoritative coverage evaluator.
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
                 if self.draft.paints() =>
             {
@@ -231,6 +206,14 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let point = cursor.position_in(bounds)?;
                 let (x, y) = self.placement.content_point(point);
+                if self.draft.unplaced() {
+                    state.sweep_from = None;
+                    return Some(self.pointer(MaskPointer::Begin {
+                        handle: MaskHandle::Extent,
+                        x,
+                        y,
+                    }));
+                }
                 match self.handle_at(point) {
                     Some(handle) => {
                         state.sweep_from = None;
@@ -275,6 +258,11 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         bounds: Rectangle,
         cursor: Cursor,
     ) -> Vec<Geometry> {
+        let measured = self
+            .draft
+            .paints()
+            .then(super::cursor_probe::geometry_started)
+            .flatten();
         let mut frame = Frame::new(renderer, bounds.size());
         // The figure is the shape editor's own, described through the pen. The pointer is handed
         // over only while it is actually over the canvas, and in the canvas's own coordinates: a
@@ -316,7 +304,17 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                 Stroke::default().with_color(GRIP_RING).with_width(1.0),
             );
         }
-        vec![frame.into_geometry()]
+        let geometry = frame.into_geometry();
+        if let Some(started) = measured
+            && let Some(centre) = cursor.position_in(bounds)
+        {
+            super::cursor_probe::mask_cursor_drawn(
+                centre,
+                bounds,
+                started.elapsed().as_secs_f64() * 1000.0,
+            );
+        }
+        vec![geometry]
     }
 
     fn mouse_interaction(
@@ -338,15 +336,6 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             Some(_) => mouse::Interaction::Grab,
             None => mouse::Interaction::Crosshair,
         }
-    }
-}
-
-/// A painted path's colour: the mask overlay's own green, never a clipping colour. The delivered
-/// clipping indicators own red, blue and the magenta between them on this canvas.
-fn tint(alpha: f32) -> iced::Color {
-    iced::Color {
-        a: alpha,
-        ..theme::MASK_OVERLAY_GREEN
     }
 }
 
@@ -380,8 +369,28 @@ fn grip_radius(grip: Grip) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mask_draft::{BRUSH, LINEAR, MaskDraft, NEUTRAL_BRUSH, RADIAL};
+    use crate::mask_draft::{
+        BRUSH, LINEAR, MaskDraft, NEUTRAL, NEUTRAL_BRUSH, NEUTRAL_RADIAL, RADIAL,
+    };
     use iced::Size;
+
+    fn existing_gradient(kind: &str) -> MaskDraft {
+        let stored = match kind {
+            LINEAR => serde_json::json!(NEUTRAL),
+            RADIAL => serde_json::json!(NEUTRAL_RADIAL),
+            _ => panic!("an existing gradient fixture requires a gradient kind"),
+        };
+        MaskDraft::editing(
+            serde_json::from_value(serde_json::json!("mask-view-gradient-fixture"))
+                .expect("a valid fixture mask identity"),
+            serde_json::from_value(serde_json::json!("component-view-gradient-fixture"))
+                .expect("a valid fixture component identity"),
+            kind,
+            &stored,
+            NEUTRAL_BRUSH,
+        )
+        .expect("an existing gradient has placed geometry")
+    }
 
     fn placement(output: (u32, u32), available: Size) -> Placement {
         let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
@@ -399,9 +408,10 @@ mod tests {
     fn a_drawn_handle_is_where_a_press_on_it_is_answered() {
         let placement = placement((480, 320), Size::new(960.0, 640.0));
         for kind in [LINEAR, RADIAL] {
-            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH).expect("a drawn kind");
+            let mut draft = existing_gradient(kind);
             draft.set_aspect(placement.map.aspect());
             let canvas = MaskCanvas::new(&draft, placement);
+            assert!(!draft.handles().is_empty());
             for (handle, (x, y)) in draft.handles() {
                 let drawn = placement.canvas_point(x, y);
                 let (back_x, back_y) = placement.content_point(drawn);
@@ -423,7 +433,7 @@ mod tests {
     fn a_press_on_a_handle_drags_it_and_a_press_on_the_photograph_sweeps() {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
-        let draft = MaskDraft::creating(LINEAR, NEUTRAL_BRUSH).expect("a drawn kind");
+        let draft = existing_gradient(LINEAR);
         let program = MaskCanvas::new(&draft, placement);
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let mut state = Interaction::default();
@@ -545,13 +555,13 @@ mod tests {
             "a position identical to the last one is dropped rather than posted"
         );
         let stroke = draft.brush().expect("a painted gesture");
-        assert_eq!(stroke.captured(), [[0.5, 0.5], [0.6, 0.55]]);
+        assert_eq!(stroke.captured(), 2);
         draft.paint_end();
         assert!(!draft.dragging());
     }
 
     /// The cursor's circles are the brush's own size through the geometry tail, so they are right at
-    /// Fit, at 100% and under a rotated crop — and the painted line is drawn as wide as they say.
+    /// Fit, at 100% and under a rotated crop.
     #[test]
     fn the_brush_cursor_is_its_own_size_at_every_zoom_and_under_a_rotated_crop() {
         let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
@@ -593,7 +603,7 @@ mod tests {
     fn the_grips_are_white_and_the_one_that_moves_the_figure_is_the_accent() {
         let placement = placement((480, 320), Size::new(960.0, 640.0));
         for kind in [LINEAR, RADIAL] {
-            let mut draft = MaskDraft::creating(kind, NEUTRAL_BRUSH).expect("a drawn kind");
+            let mut draft = existing_gradient(kind);
             draft.set_aspect(placement.map.aspect());
             let canvas = MaskCanvas::new(&draft, placement);
             let mut anchors = 0;
@@ -628,19 +638,11 @@ mod tests {
         assert_eq!((white.r, white.g, white.b, white.a), (1.0, 1.0, 1.0, 0.9));
     }
 
-    /// The overlay and the handles are green or white, never a clipping colour: a person must be
-    /// able to tell a selection from a blown highlight.
+    /// The cursor and handles use white outlines. Coverage is not approximated by a painted line.
     #[test]
-    fn the_handle_tint_is_the_mask_overlay_colour_and_not_a_clipping_one() {
-        let colour = tint(1.0);
-        assert_eq!(
-            (colour.r, colour.g, colour.b),
-            (
-                theme::MASK_OVERLAY_GREEN.r,
-                theme::MASK_OVERLAY_GREEN.g,
-                theme::MASK_OVERLAY_GREEN.b
-            )
-        );
+    fn cursor_and_handle_outlines_are_white_and_not_a_clipping_colour() {
+        let colour = outline(1.0);
+        assert_eq!((colour.r, colour.g, colour.b), (1.0, 1.0, 1.0));
         for clipping in [
             theme::CLIPPING_SHADOW,
             theme::CLIPPING_HIGHLIGHT,
