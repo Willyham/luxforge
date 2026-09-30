@@ -1,7 +1,8 @@
 //! The two channels the desktop is woken through: one the preview and overlay workers post to when
 //! they have a result, and one the catalog owner posts to when another client's change reaches the
 //! event log. A seam that is woken apart from both holds its own [`Signal`] of the same kind: the
-//! Select grid's decoded previews (`select_previews.rs`).
+//! Select grid's decoded previews (`select_previews.rs`), and long-running work, which the owner's
+//! activity board wakes when catalog work changes (`long_work.rs`).
 //!
 //! Idle means asleep: there is no timer that wakes up to ask whether a frame is ready or whether
 //! anything changed. A worker posts one signal when it has something to deliver, and the
