@@ -9,7 +9,10 @@
 //! the visible cells alone, and draws a cell whose row is not read yet as the placeholder at the
 //! shape its header gives, or 3:2.
 use crate::{
-    app::message::{Message, select::SelectMessage, view::ViewMessage},
+    app::{
+        message::{Message, select::SelectMessage, view::ViewMessage},
+        select_previews::GridImages,
+    },
     layout::{
         DIVIDER_WIDTH, STATE_PANEL_WIDTH, STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT, TOOLS_PANEL_WIDTH,
     },
@@ -64,6 +67,8 @@ pub(crate) struct Grid<'a> {
     pub(crate) viewport: Size,
     pub(crate) rows: &'a RowCache,
     pub(crate) content: &'a GridContent,
+    /// Each cell's decoded preview, borrowed so its handle keeps its id and uploads once.
+    pub(crate) images: GridImages<'a>,
 }
 
 /// The workspace switch at a title bar's leading edge, `current` raised. Either segment sends the
@@ -366,10 +371,11 @@ fn centre<'a>(model: &'a SelectModel, grid: Grid<'a>) -> Element<'a, Message> {
         viewport,
         rows,
         content,
+        images,
     } = grid;
     let selection = &model.selection;
     let widget = thumbnail_grid(layout, scroll, move |cell: GridCell| {
-        cell_view(cell, rows, content, selection)
+        cell_view(cell, rows, content, selection, images)
     })
     .on_press(|press| Message::Select(SelectMessage::Press(press)))
     .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
@@ -405,18 +411,21 @@ fn cell_view<'a>(
     rows: &'a RowCache,
     content: &'a GridContent,
     selection: &SelectionModel,
+    images: GridImages<'a>,
 ) -> CellView<'a> {
     let facts = rows.cell(cell.item).unwrap_or_default();
+    let unreadable = images.unreadable(cell.item);
     CellView {
-        // Previews come with the preview lane; until then every cell is the placeholder at its
-        // photograph's shape.
-        image: None,
+        // The decoded preview while the cache holds it; the placeholder at the photograph's shape
+        // while it loads.
+        image: images.image(cell.item),
         aspect: facts.aspect,
         picked: facts.picked,
         selected: selection.selected(cell.item, cell.span),
         active: selection.active_in(cell.item, cell.span),
         in_catalog: facts.in_catalog,
         availability: match facts.availability {
+            Availability::Available if unreadable => CellAvailability::Unreadable,
             Availability::Available => CellAvailability::Available,
             Availability::Offline => CellAvailability::Offline,
             Availability::Unreadable => CellAvailability::Unreadable,
@@ -725,6 +734,7 @@ mod tests {
             ..Workspace::default()
         };
         let layout = GridLayout::new(Vec::new(), luxforge_ui::GridMetrics::default(), 0.0);
+        let previews = crate::app::select_previews::SelectPreviews::default();
         let _ = screen(
             &workspace,
             Grid {
@@ -733,6 +743,7 @@ mod tests {
                 viewport: Size::ZERO,
                 rows: &state.rows,
                 content: &state.content,
+                images: previews.grid(&state.rows),
             },
         );
         let _ = switch(Shown::Develop);

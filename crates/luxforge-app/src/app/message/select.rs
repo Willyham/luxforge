@@ -79,4 +79,6 @@ pub(crate) enum SelectMessage {
     TogglePanels,
     /// The session read after the owner woke the desktop, which says whether the view went stale.
     Checked(Result<Box<ClientSession>, String>),
+    /// The grid's decoded previews: a batch of `preview.read` answers, or their signal.
+    Previews(crate::app::select_previews::SelectPreviewMessage),
 }
