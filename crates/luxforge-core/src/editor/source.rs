@@ -2073,7 +2073,7 @@ mod tests {
         let a = service.import(&source).unwrap().asset.id;
         assert_eq!(service.import(&hard).unwrap().asset.id, a);
         assert_eq!(service.import(&copy).unwrap().asset.id, a);
-        assert_eq!(service.asset_ids(100).unwrap(), [a.clone()]);
+        assert_eq!(service.asset_ids(100).unwrap(), std::slice::from_ref(&a));
         std::fs::write(&source, b"changed").unwrap();
         assert_eq!(
             service.render_current(&a).unwrap_err().kind,
