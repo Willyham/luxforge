@@ -847,8 +847,39 @@ fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_a
     };
     let triggers_before = triggers();
     let sequence = harness.sequence();
+    // A rendered preview the preview cache holds of a removed photograph, as lane B writes one.
+    let index = rusqlite::Connection::open(
+        crate::index::index_dir(&harness.catalog).join(crate::INDEX_FILE),
+    )
+    .unwrap();
+    index
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    index
+        .execute(
+            "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
+                 bytes, origin, last_used_ms, approximate)
+             VALUES (?1, 'entry-0', 'grid', 1, ?2, 512, 341, 4, 'rendered', 0, 0)",
+            [
+                k0.as_str().unwrap().to_owned(),
+                harness
+                    .dir
+                    .join("k0-grid.jpg")
+                    .to_string_lossy()
+                    .into_owned(),
+            ],
+        )
+        .unwrap();
 
     let emptied = harness.empty("empty-1");
+    let cached: i64 = index
+        .query_row(
+            "SELECT count(*) FROM photo_previews WHERE asset_id = ?1",
+            [k0.as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(cached, 0, "the preview cache forgets an emptied photograph");
     assert_eq!(
         emptied,
         json!({"outcome": "applied", "deleted": 2, "remaining": 0, "deduplicated": false})
