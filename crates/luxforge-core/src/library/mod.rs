@@ -45,6 +45,9 @@ pub(crate) mod tree;
 // Availability and Locate (TASK-016).
 pub(crate) mod availability;
 pub(crate) mod locate;
+/// The one scratch disk image the offline-volume tests attach at a time.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) mod test_disk;
 pub(crate) mod worker;
 
 // Developing picks (TASK-013).

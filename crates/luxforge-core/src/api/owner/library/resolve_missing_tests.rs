@@ -936,70 +936,7 @@ fn a_search_names_one_readable_folder_and_what_to_look_for() {
 #[cfg(target_os = "macos")]
 #[test]
 fn a_detached_disk_image_is_volume_offline_and_a_search_on_it_fails_cleanly() {
-    use std::process::Command;
-
-    /// A 16 MB HFS+ disk image in a scratch directory, mounted at a folder beside it, never shown
-    /// in the Finder.
-    struct DiskImage {
-        image: PathBuf,
-        mount: PathBuf,
-        attached: bool,
-    }
-
-    impl DiskImage {
-        fn create(dir: &Path, label: &str) -> Self {
-            let image = dir.join(format!("{label}.dmg"));
-            let status = Command::new("hdiutil")
-                .args([
-                    "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", label,
-                ])
-                .arg(&image)
-                .status()
-                .expect("hdiutil runs; this test needs it");
-            assert!(status.success(), "hdiutil create: {status}");
-            let mount = dir.join(label);
-            fs::create_dir_all(&mount).unwrap();
-            let mut disk = Self {
-                image,
-                mount,
-                attached: false,
-            };
-            disk.attach();
-            disk
-        }
-
-        fn attach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
-                .arg(&self.mount)
-                .arg(&self.image)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil attach: {status}");
-            self.attached = true;
-        }
-
-        fn detach(&mut self) {
-            let status = Command::new("hdiutil")
-                .args(["detach", "-quiet", "-force"])
-                .arg(&self.mount)
-                .status()
-                .unwrap();
-            assert!(status.success(), "hdiutil detach: {status}");
-            self.attached = false;
-        }
-    }
-
-    impl Drop for DiskImage {
-        fn drop(&mut self) {
-            if self.attached {
-                let _ = Command::new("hdiutil")
-                    .args(["detach", "-quiet", "-force"])
-                    .arg(&self.mount)
-                    .status();
-            }
-        }
-    }
+    use crate::library::test_disk::DiskImage;
 
     let harness = Harness::new("disk-image");
     let mut disk = DiskImage::create(&harness.dir, "LuxforgeFind");
