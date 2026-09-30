@@ -64,10 +64,14 @@ fn probe(_: &Owner) -> &'static dyn BracketProbe {
     &NoProbe
 }
 
-/// Ask the preview lane for a view's grid previews, as one background job per client. Lane B's
-/// `owner::previews::want_view(owner, client, files)` does this once its preview lane lands; until
-/// then no preview is read.
-fn want_view(_: &mut Owner, _: ClientId, _: &[FileId]) {}
+/// Ask the preview lane for a view's missing grid previews, as one background job per client that
+/// replaces the client's previous one. The view is answered whatever the lane says: previews are a
+/// cache, and a view whose background job was refused (a view past the lane's queue bound, or an
+/// index read that failed) still browses, its visible cells read through `preview.read` at their
+/// own priority as the client asks for them.
+fn want_view(owner: &mut Owner, client: ClientId, files: &[FileId]) {
+    let _ = super::previews::want_view(owner, client, files);
+}
 
 /// The owner recorded a change: mark every view the catalog or the index has moved on from stale,
 /// reading the current library change and index revision once. Nothing is read while no client
@@ -235,12 +239,15 @@ pub(in crate::api) fn browse_rows(
         catalog,
         ..
     } = owner;
+    let previews = &catalog.previews;
     let (view, _) = current_view(service, sessions, &mut catalog.views, call.client)?;
     check_revision(view, p.revision)?;
     value(ViewRows {
         revision: view.revision,
         from: p.from,
-        rows: browse::rows(service, view, p.from, p.count)?,
+        rows: browse::rows(service, view, p.from, p.count, &|connection, files| {
+            previews.grid_states(connection, files)
+        })?,
     })
 }
 

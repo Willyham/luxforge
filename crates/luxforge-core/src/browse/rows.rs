@@ -8,7 +8,7 @@ use super::{
     View,
     candidates::{exposure, position},
     json_list, places,
-    previews::{grid_states, photo_grid_states},
+    previews::{GridStates, photo_grid_states},
     within,
 };
 use crate::{
@@ -29,6 +29,7 @@ pub(crate) fn rows(
     view: &View,
     from: u32,
     count: u32,
+    grid: GridStates<'_>,
 ) -> Result<Vec<ViewRow>, Error> {
     let start = from as usize;
     if start > view.items.len() {
@@ -40,7 +41,7 @@ pub(crate) fn rows(
     let end = start.saturating_add(count as usize).min(view.items.len());
     let window = &view.items[start..end];
     if view.over_files {
-        file_rows(service, window, from, &view.layout.moments)
+        file_rows(service, window, from, &view.layout.moments, grid)
     } else {
         photo_rows(service, window, from, &view.layout.moments)
     }
@@ -103,6 +104,7 @@ fn file_rows(
     window: &[ViewItem],
     from: u32,
     moments: &[Moment],
+    grid: GridStates<'_>,
 ) -> Result<Vec<ViewRow>, Error> {
     let ids: Vec<FileId> = window
         .iter()
@@ -144,7 +146,7 @@ fn file_rows(
     }
     drop(rows);
     drop(statement);
-    let previews = grid_states(connection, &ids);
+    let previews = grid(connection, &ids)?;
     let offline: Vec<String> = connection
         .prepare_cached("SELECT path FROM roots WHERE offline = 1")?
         .query_map([], |row| row.get(0))?

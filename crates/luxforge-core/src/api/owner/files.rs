@@ -25,6 +25,11 @@ impl FilesLane {
     /// `job.cancel` cancelled one of this lane's jobs in the job table.
     pub(super) fn cancelled(&mut self, _: &JobId) {}
 
+    /// A committed library change (an `index.add-folder` or `index.remove-folder`, or the undo or
+    /// redo of one) changed whether these folders are indexed: `indexed_folders` holds the answer.
+    /// Lane A owns the body; lane C calls it after every committed library change that touched one.
+    pub(super) fn indexed_folders_changed(&mut self, _: &[std::path::PathBuf]) {}
+
     pub(super) fn shutdown(self) {}
 }
 

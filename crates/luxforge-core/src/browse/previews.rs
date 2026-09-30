@@ -1,22 +1,33 @@
-//! What the grid can draw for a row now ([`PreviewState`]), read from the index's preview records:
-//! the seam to lane B's preview lane. Once its cache lands, [`grid_states`] answers with
-//! `crate::previews::grid_states` over the same files, so the switch is that one call; until then
-//! it reads the records the contracts laid down.
+//! What the grid can draw for a row now ([`PreviewState`]). A file's grid state is the preview
+//! lane's answer (`PreviewsLane::grid_states`: its cache's valid records and the failures it
+//! remembers), which the owner glue lends to [`super::rows`] as a [`GridStates`]; the tests lend
+//! [`grid_states`], which reads the index's records alone. A developed photograph's is read here
+//! until the lane renders them.
 
 use super::json_list;
 use crate::{
-    AssetId, EntryId,
+    AssetId, EntryId, Error,
     catalog_types::{FileId, PreviewState},
 };
 use rusqlite::Connection;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-/// Each file's grid preview state, in the order of `files`: `ready` when the index records its grid
-/// tier, `thumbnail` when its header records an embedded thumbnail, `unavailable` when its header
-/// could not be read, and `pending` otherwise. A state is advisory — the preview lane reads what is
-/// missing — so a file the index no longer has, or a read that fails, is `pending`.
-pub(super) fn grid_states(index: &Connection, files: &[FileId]) -> Vec<PreviewState> {
-    let read = || -> Result<HashMap<i64, PreviewState>, crate::Error> {
+/// Where the rows of a view over files read their grid preview states: each file's state, in the
+/// order of the files, from the index connection given.
+pub(crate) type GridStates<'a> =
+    &'a dyn Fn(&Connection, &[FileId]) -> Result<Vec<PreviewState>, Error>;
+
+/// Each file's grid preview state from the index's records alone, in the order of `files`: `ready`
+/// when the index records its grid tier, `thumbnail` when its header records an embedded
+/// thumbnail, `unavailable` when its header could not be read, and `pending` otherwise; a file the
+/// index no longer has, or a read that fails, is `pending`. The tests' provider, which the model
+/// they compare with reads the same way.
+#[cfg(test)]
+pub(crate) fn grid_states(
+    index: &Connection,
+    files: &[FileId],
+) -> Result<Vec<PreviewState>, Error> {
+    let read = || -> Result<std::collections::HashMap<i64, PreviewState>, crate::Error> {
         let mut statement = index.prepare_cached(
             "SELECT f.id,
                  EXISTS(SELECT 1 FROM previews p WHERE p.file_id = f.id AND p.tier = 'grid'),
@@ -39,7 +50,7 @@ pub(super) fn grid_states(index: &Connection, files: &[FileId]) -> Vec<PreviewSt
         Ok(rows.collect::<Result<_, _>>()?)
     };
     let states = read().unwrap_or_default();
-    files
+    Ok(files
         .iter()
         .map(|file| {
             states
@@ -47,7 +58,7 @@ pub(super) fn grid_states(index: &Connection, files: &[FileId]) -> Vec<PreviewSt
                 .copied()
                 .unwrap_or(PreviewState::Pending)
         })
-        .collect()
+        .collect())
 }
 
 /// Each developed photograph's grid preview state at the entry it names (its current entry), in

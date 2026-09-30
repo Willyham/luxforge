@@ -1776,7 +1776,7 @@ impl Owner {
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
         self.event_waits.retain(|held| held.client != client);
-        self.catalog.disconnect(client);
+        self.catalog.disconnect(client, &mut self.jobs);
     }
 
     /// A source job finished on the worker: commit what it prepared for the clients still waiting,
@@ -1968,7 +1968,7 @@ pub(super) fn job_cancel(
         }
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);
-            owner.catalog.cancelled(job_id, kind);
+            owner.catalog.cancelled(job_id, kind, &mut owner.jobs);
         }
     }
     owner.read_job(job_id, client)
