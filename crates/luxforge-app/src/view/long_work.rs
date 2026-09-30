@@ -1,8 +1,8 @@
 //! Long-running work's pieces of the screen, from `state/long_work.rs`'s model: the status bar's
-//! busiest job and the in-view progress sheet. Both status bars and Select's centre call these.
-//!
-//! **Seam.** The long-running-work task settles their look and what they say; the widgets are
-//! `luxforge_ui::status_job` and `progress_sheet` (the components board's long-running work).
+//! busiest job and the in-view progress sheet. Both status bars and Select's centre call these; the
+//! Performance section draws catalog work's rows itself (`view/state_panel.rs`, `work_row`). The
+//! widgets are `luxforge_ui::status_job` and `progress_sheet`, the components board's long-running
+//! work, each drawing exactly the fraction it is given or none.
 use crate::{
     app::message::{Message, long_work::LongWorkMessage},
     state::long_work::LongWorkModel,

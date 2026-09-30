@@ -326,6 +326,8 @@ pub(crate) struct Inputs<'a> {
     /// The Select workspace's state: which workspace is shown, what Select last read and its own
     /// choices.
     pub(crate) select: &'a select::SelectState,
+    /// Long-running work: the board as last read, each job's rate and the view waiting on a job.
+    pub(crate) long_work: &'a long_work::LongWorkState,
     // ── end lane D ──
 }
 
@@ -554,6 +556,7 @@ mod tests {
         version_form: VersionForm,
         // ── catalog lane D: views and desktop ──
         select: select::SelectState,
+        long_work: long_work::LongWorkState,
         // ── end lane D ──
     }
 
@@ -597,6 +600,7 @@ mod tests {
                 version_form: VersionForm::default(),
                 // ── catalog lane D: views and desktop ──
                 select: select::SelectState::default(),
+                long_work: long_work::LongWorkState::default(),
                 // ── end lane D ──
             }
         }
@@ -708,6 +712,7 @@ mod tests {
                 performance: &self.performance,
                 // ── catalog lane D: views and desktop ──
                 select: &self.select,
+                long_work: &self.long_work,
                 // ── end lane D ──
             }
         }

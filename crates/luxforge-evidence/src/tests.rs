@@ -919,7 +919,16 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": {"agent_pick": {"positions": [5, 6]}}},
         {"select": {"agent_pick": {"positions": [5], "picked": false}}},
         {"select": {"switch": "develop"}},
+        {"select": {"first_look": "/Volumes/SSD/Pictures"}},
+        {"select": "continue_in_background"},
+        {"select": "cancel_work"},
     ]));
+    assert_eq!(
+        steps[12],
+        Step::Select(SelectStep::FirstLook("/Volumes/SSD/Pictures".into()))
+    );
+    assert_eq!(steps[13], Step::Select(SelectStep::ContinueInBackground));
+    assert_eq!(steps[14], Step::Select(SelectStep::CancelWork));
     assert_eq!(
         steps[3],
         Step::Select(SelectStep::Arrow {
@@ -936,6 +945,10 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
     );
     refused(json!([{"select": {"source": " "}}]), "select source");
     refused(json!([{"select": {"folder": ""}}]), "select folder");
+    refused(
+        json!([{"select": {"first_look": " "}}]),
+        "select first_look",
+    );
     refused(
         json!([{"select": {"agent_pick": {"positions": []}}}]),
         "1 to 64 positions",
