@@ -13,6 +13,7 @@ use crate::{
         Boot, Editor,
         message::{
             Message,
+            long_work::LongWorkMessage,
             select::{SelectMessage, Step},
             sync::SyncMessage,
         },
@@ -492,6 +493,97 @@ fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
             editor.status.text
         );
     }
+    finish(editor, catalog);
+}
+
+/// A view that goes stale while a folder is read for this desktop — the index lane's own batches
+/// make it so — is never announced as changed elsewhere. While the reading waits to replace it,
+/// the title names the folder and the view is not read again; sent to the background, the view is
+/// back in the title and read again quietly; a reading that ends without replacing it reads a view
+/// that went stale meanwhile once, quietly; and choosing another view leaves the reading to the
+/// status bar.
+#[test]
+fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
+    let (mut editor, catalog) = selecting();
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
+        .press
+        .clone()
+    else {
+        panic!("an event row views its event");
+    };
+    let _ = editor.update(Message::Select(SelectMessage::Source(source.clone())));
+    evaluate(&mut editor);
+    let viewed = editor.workspace.select.title.name.clone();
+    let stale = |editor: &Editor| {
+        let mut session = session_now(&editor.owner, editor.client).unwrap();
+        session.browse.stale = true;
+        Ok(Box::new(session))
+    };
+    let folder = catalog.parent().unwrap().join("Trip");
+    let read = |editor: &mut Editor, job: &str| {
+        let _ = editor.update(Message::Select(SelectMessage::FolderPicked(Some(
+            folder.clone(),
+        ))));
+        let _ = editor.update(Message::Select(SelectMessage::Reading(Ok(job.into()))));
+        editor.status.text.clone()
+    };
+
+    // Waiting: the title is the folder's, and the stale view waits with it.
+    let reading = read(&mut editor, "job-look");
+    assert!(reading.starts_with("Reading "), "{reading}");
+    let title = &editor.workspace.select.title;
+    assert_eq!(title.name, "Trip");
+    assert!(
+        title.summary.starts_with("Reading\u{2026}"),
+        "{}",
+        title.summary
+    );
+    let serial = editor.select.serial;
+    let _ = editor.update(Message::Select(SelectMessage::Checked(stale(&editor))));
+    assert_eq!(
+        editor.select.serial, serial,
+        "not read again while it waits"
+    );
+    assert!(editor.select.stale_while_reading);
+    assert_eq!(editor.status.text, reading);
+
+    // In the background: the view is back in the title, and read again without a word.
+    let _ = editor.update(Message::LongWork(LongWorkMessage::ContinueInBackground));
+    assert_eq!(editor.workspace.select.title.name, viewed);
+    let _ = editor.update(Message::Select(SelectMessage::Checked(stale(&editor))));
+    assert!(editor.select.state.loading, "read again");
+    assert!(!editor.select.stale_while_reading);
+    evaluate(&mut editor);
+    assert_eq!(
+        editor.status.text, reading,
+        "no change elsewhere is announced"
+    );
+
+    // Cancelled while waiting: the view that went stale is read again once, quietly.
+    let _ = editor.update(Message::Select(SelectMessage::Source(source.clone())));
+    evaluate(&mut editor);
+    read(&mut editor, "job-cancelled");
+    let _ = editor.update(Message::Select(SelectMessage::Checked(stale(&editor))));
+    assert!(!editor.select.state.loading);
+    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(
+        json!({"status": "cancelled"}),
+    ))));
+    assert!(editor.select.reading.is_none());
+    assert!(editor.select.state.loading, "the stale view is read again");
+    evaluate(&mut editor);
+    assert!(
+        editor.status.text.starts_with("Cancelled reading "),
+        "{}",
+        editor.status.text
+    );
+    assert_eq!(editor.workspace.select.title.name, viewed);
+
+    // Another view chosen while it waits: the reading is the status bar's job from then on.
+    read(&mut editor, "job-left");
+    let _ = editor.update(Message::Select(SelectMessage::Source(source)));
+    assert!(editor.select.reading.is_none());
+    evaluate(&mut editor);
+    assert_eq!(editor.workspace.select.title.name, viewed);
     finish(editor, catalog);
 }
 
