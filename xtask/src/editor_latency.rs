@@ -882,8 +882,20 @@ fn paint_path(positions: usize) -> Vec<[f64; 2]> {
 /// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
 /// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
 fn paint_precondition(options: &Options) -> Vec<script::Step> {
-    // With `--mask-overlay`, the selected mask's tint is on while the stroke is painted, so every
-    // drafted job also fills the overlay's coverage grid.
+    let mut steps = brushed_mask(options);
+    steps.push(script::Step::Slider(
+        SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release(),
+    ));
+    steps.push(script::Step::Mask(MaskStep::Paint(PaintStep::Component(
+        Reference::Index(0),
+    ))));
+    steps
+}
+
+/// Mask mode with the paint brush's settings and one committed brush mask. With
+/// `--mask-overlay`, the selected mask's tint is on, so every accepted draft also asks for its
+/// coverage grid.
+fn brushed_mask(options: &Options) -> Vec<script::Step> {
     let workspace = WorkspaceStep::default().mode("mask");
     let workspace = if options.mask_overlay {
         workspace.mask_overlay("tint")
@@ -907,8 +919,6 @@ fn paint_precondition(options: &Options) -> Vec<script::Step> {
             interval_ms: None,
             settle_between: false,
         }),
-        script::Step::Slider(SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release()),
-        script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::Index(0)))),
     ]
 }
 
@@ -1768,7 +1778,7 @@ fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
     }
     // Reproduce the reported route: one committed brush mask with an adjustment, then New Mask
     // and cursor motion with no press. The new tool's overlay is enabled by its own UI path.
-    steps.extend(paint_precondition(options).into_iter().take(4));
+    steps.extend(brushed_mask(options));
     steps.push(script::Step::Slider(
         SliderStep::new(&field.action, &field.parameter, [value]).release(),
     ));

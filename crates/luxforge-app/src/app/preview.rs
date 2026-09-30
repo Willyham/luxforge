@@ -228,6 +228,9 @@ pub(crate) struct Presentation {
     /// retains it; bound edits, layer changes and source development get another id.
     content_key: Option<(u64, luxforge_core::ProxyIdentity)>,
     pub(crate) content_serial: u64,
+    /// A draft or commit whose unchanged pixels were reused instead of rendered, waiting to be
+    /// settled once the draft driver has drained ([`Editor::settle_reused_pixels`]).
+    pub(crate) reused: Option<luxforge_core::analysis::AnalysisIdentity>,
     pub(crate) pending_content: BTreeMap<u64, u64>,
     pending_intent: BTreeMap<u64, PreviewIntent>,
     pub(crate) presented_content: u64,
@@ -368,6 +371,7 @@ impl Presentation {
     /// which nothing is delivered any more.
     pub(crate) fn cancel(&mut self) -> u64 {
         let generation = self.queue.cancel();
+        self.reused = None;
         self.pending_bounds.clear();
         self.pending_content.clear();
         self.pending_intent.clear();
@@ -888,6 +892,58 @@ impl Editor {
                     || !contains_region(region.rect, wanted)
             })
     }
+    /// Settle a draft or commit whose photograph pixels were reused instead of rendered, once the
+    /// shared draft driver has drained: the entry, draft and analysis identity advance together.
+    pub(crate) fn settle_reused_pixels(&mut self) {
+        let Some(identity) = self.presentation.reused.clone() else {
+            return;
+        };
+        if self
+            .core_gesture()
+            .is_some_and(|gesture| !gesture.draft.drained())
+        {
+            return;
+        }
+        self.presentation.reused = None;
+        self.show_entry(identity.entry_id.clone());
+        self.presentation.presented_entry = Some(identity.entry_id.clone());
+        self.presentation.displayed_draft_id = identity.draft.as_ref().map(|d| d.draft_id.clone());
+        self.presentation.displayed_draft_revision =
+            identity.draft.as_ref().map(|d| d.draft_revision);
+        let generation = self.presentation.presented_generation;
+        if self.presentation.analysis_content == Some(self.presentation.presented_content)
+            && let Some(analysis) = self.presentation.analysis.as_mut()
+        {
+            analysis.identity = identity.clone();
+            let report = analysis.report.clone();
+            self.owner.submit_analysis(identity.clone(), report);
+            self.event(
+                "analysis_reused",
+                || json!({"generation":generation,"identity":identity}),
+            );
+        }
+        self.event(
+            "preview_pixels_reused",
+            || json!({"generation":generation,"identity":identity}),
+        );
+        self.outcome(Outcome::EntryShown(&identity.entry_id));
+        let presented = match self.core_gesture() {
+            Some(gesture) => outcome::Presented::Draft {
+                slider: gesture.slider().is_some(),
+                newest: true,
+            },
+            None => outcome::Presented::Photo,
+        };
+        self.outcome(Outcome::Presented(presented));
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.displayed = self.activity.requested;
+            self.activity.phase = "ready";
+            self.outcome(Outcome::RequestEnded { failed: false });
+        }
+        self.status.text = self.displayed_status(&identity.entry_id);
+    }
+
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
@@ -2004,7 +2060,7 @@ impl Editor {
             };
         self.note_thumbnail_source(&job);
         if reusable {
-            self.coverage_worker.reused = Some(job.identity.clone());
+            self.presentation.reused = Some(job.identity.clone());
             self.presentation.preview_generation = self.presentation.presented_generation;
             self.view_plan.dirty = false;
             return (
@@ -2012,7 +2068,7 @@ impl Editor {
                 timed.then(Instant::now),
             );
         }
-        self.coverage_worker.reused = None;
+        self.presentation.reused = None;
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
@@ -2326,6 +2382,7 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
     let zoomed = editor.zoom_changed(&before.zoom);
     let refit = editor.refit_proxy();
     let view = editor.reconcile_view();
+    editor.settle_reused_pixels();
     Task::batch([zoomed, refit, view])
 }
 
