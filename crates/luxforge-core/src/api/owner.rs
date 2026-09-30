@@ -138,14 +138,6 @@ enum OwnerMessage {
     /// How many `events.wait` calls the owner holds unanswered.
     #[cfg(test)]
     EventWaits(SyncSender<usize>),
-    /// Relocate an asset as the Locate command will, which no method exposes yet ([`relocate`]).
-    #[cfg(test)]
-    Relocate {
-        origin: Origin,
-        asset_id: AssetId,
-        path: PathBuf,
-        reply: SyncSender<Result<crate::MutationOutcome, Error>>,
-    },
     /// Wake this client whenever another client's change lands in the event log.
     WatchEvents {
         client: ClientId,
@@ -978,27 +970,6 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
-    /// Relocate `asset_id` to `path` on the owner under `origin` ([`relocate`]), which no method
-    /// exposes yet.
-    #[cfg(test)]
-    pub(crate) fn relocate(
-        &self,
-        origin: Origin,
-        asset_id: AssetId,
-        path: PathBuf,
-    ) -> Result<crate::MutationOutcome, Error> {
-        let (reply, answer) = sync_channel(1);
-        self.sender
-            .send(OwnerMessage::Relocate {
-                origin,
-                asset_id,
-                path,
-                reply,
-            })
-            .expect("the owner is running");
-        answer.recv().expect("the owner answered")
-    }
-
     /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
     #[cfg(test)]
     pub(crate) fn fault(&self, fault: Option<Fault>) {
@@ -1190,16 +1161,6 @@ fn owner_loop(
                 OwnerMessage::EventWaits(reply) => {
                     let _ = reply.send(owner.event_waits.len());
                 }
-                #[cfg(test)]
-                OwnerMessage::Relocate {
-                    origin,
-                    asset_id,
-                    path,
-                    reply,
-                } => {
-                    let _ = reply.send(relocate(&mut owner, &origin, &asset_id, &path));
-                    owner.record_announced();
-                }
                 OwnerMessage::Preview { request, response } => {
                     let _ = response.send(owner.preview(request));
                 }
@@ -1270,12 +1231,13 @@ fn owner_loop(
         catalog,
         ..
     } = owner;
-    catalog.shutdown();
     // The lanes post into the receiver, so it goes first: a lane finishing as it stops is never
-    // left waiting on a full channel while the owner waits for it. Every live job is asked to
-    // stop, the source worker's included, and the lanes are joined; a running export stops at its
-    // next row or block and removes its temporary file.
+    // left waiting on a full channel while the owner waits for it, and the catalog lanes, whose
+    // workers post into it too, stop after it. Every live job is asked to stop, the source
+    // worker's included, and the lanes are joined; a running export stops at its next row or block
+    // and removes its temporary file.
     drop(receiver);
+    catalog.shutdown();
     jobs.shutdown();
     // The source worker sees its stop on the memory gate, and its channel closes behind it.
     sources.gate.wake();
@@ -1306,6 +1268,7 @@ impl EventLog {
             asset_id: origin.asset_id.clone(),
             revision: origin.revision,
             library_sequence: origin.library_sequence,
+            index_revision: origin.index_revision,
         });
     }
 
@@ -2017,30 +1980,6 @@ pub(super) fn source_prepare(
         &needs,
     )?;
     Ok(json!({"job_id": id, "status": JobStatus::Queued}))
-}
-
-/// Point an asset at the file its original is now found at ([`EditorService::relocate`]) and
-/// announce the change under `origin`, naming the asset and no revision, since its history did not
-/// move — as naming a version is announced. A client watching the log reads the asset again to see
-/// its new locator. A relocation to where the asset already is announces nothing.
-///
-/// The owner's half of the internal write the Locate milestone's command will make; no method
-/// exposes it yet.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn relocate(
-    owner: &mut Owner,
-    origin: &Origin,
-    asset_id: &AssetId,
-    path: &Path,
-) -> Result<crate::MutationOutcome, Error> {
-    let outcome = owner.service.relocate(asset_id, path)?;
-    if outcome == crate::MutationOutcome::Applied {
-        announce_once(
-            &mut owner.announced,
-            &origin.clone().changed(asset_id.clone(), None),
-        );
-    }
-    Ok(outcome)
 }
 
 /// `artifact.collect`: remove the collectable rows now, in one catalog transaction, and queue a
