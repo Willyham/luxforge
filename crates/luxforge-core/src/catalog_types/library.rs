@@ -811,13 +811,15 @@ pub struct CollectionAnswer {
     pub deduplicated: bool,
 }
 
-/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted. It is
-/// not a library change: nothing it deletes can be restored.
+/// What `catalog.empty-removed` answers: how many removed photographs' records it deleted, and how
+/// many removed photographs past its bound ([`MAX_LIBRARY_BATCH`] a call) are left for another
+/// call. It is not a library change: nothing it deletes can be restored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyRemovedAnswer {
     pub outcome: MutationOutcome,
     pub deleted: u32,
+    pub remaining: u32,
     pub deduplicated: bool,
 }
 
