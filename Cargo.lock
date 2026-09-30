@@ -4805,6 +4805,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "image",
+ "kamadak-exif",
  "luxforge-core",
  "luxforge-evidence",
  "luxforge-raw",

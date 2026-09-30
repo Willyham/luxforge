@@ -57,6 +57,8 @@ pub(crate) struct KeyContext {
     /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
+    // ── catalog lane D: views and desktop ──
+    // ── end lane D ──
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -207,6 +209,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if status != Status::Ignored {
         return None;
     }
+    // ── catalog lane D: views and desktop ──
+    // The Select workspace's keys (`docs/design/catalog.md#keyboard`), while it is shown.
+    // ── end lane D ──
     // While a kind menu is open its letters start its kinds. The menu is what the person is looking
     // at, so its letters win over a canvas-mode letter that happens to be the same.
     if let Some((menu, letters)) = &context.kind_menu
