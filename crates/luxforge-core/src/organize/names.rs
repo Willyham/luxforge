@@ -136,34 +136,35 @@ impl<'a> Namer<'a> {
         let first = &frames[members[0] as usize];
         let last = &frames[members[members.len() - 1] as usize];
         let first_folder = self.tables.folder_path(first.folder);
-        let (id, name, place) = match (first.instant_ms, first_day.zip(last_day)) {
+        let (id, name, label, place) = match (first.instant_ms, first_day.zip(last_day)) {
             (Some(instant), Some((first_day, last_day))) => {
                 let dates = dates(first_day, last_day);
                 let place = central_position(&mut self.latitudes, &mut self.longitudes)
                     .and_then(|position| self.places.nearest(&position));
-                let name = match (&place, self.named_folder(members.len())) {
-                    (Some(place), _) => format!("{place} · {dates}"),
-                    (None, Some(folder)) => format!("{folder} · {dates}"),
+                let (name, label) = match (&place, self.named_folder(members.len())) {
+                    (Some(place), _) => (format!("{place} · {dates}"), place.clone()),
+                    (None, Some(folder)) => (format!("{folder} · {dates}"), folder),
                     (None, None) => match self.cameras() {
-                        Some(cameras) => format!("{dates} · {cameras}"),
-                        None => dates,
+                        Some(cameras) => (format!("{dates} · {cameras}"), cameras),
+                        None => (dates, String::new()),
                     },
                 };
                 (
                     EventId::of(&first_folder.join(&*first.name), instant),
                     name,
+                    label,
                     place,
                 )
             }
-            _ => (
-                EventId::of(first_folder, 0),
-                format!("Undated · {}", folder_name(first_folder)),
-                None,
-            ),
+            _ => {
+                let name = format!("Undated · {}", folder_name(first_folder));
+                (EventId::of(first_folder, 0), name.clone(), name, None)
+            }
         };
         EventGroup {
             id,
             name,
+            label,
             place,
             start_ms: first.instant_ms,
             end_ms: last.instant_ms,

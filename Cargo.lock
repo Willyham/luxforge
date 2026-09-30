@@ -1899,6 +1899,7 @@ dependencies = [
  "luxforge-raw",
  "luxforge-reference",
  "luxforge-testbase",
+ "luxforge-watch",
  "moxcms",
  "rayon",
  "roxmltree",
@@ -2008,6 +2009,19 @@ dependencies = [
  "luxforge-reference",
  "luxforge-testbase",
  "wgpu",
+]
+
+[[package]]
+name = "luxforge-watch"
+version = "0.0.0"
+dependencies = [
+ "dispatch2",
+ "libc",
+ "luxforge-testbase",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "rustix 1.1.5",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2417,6 +2431,17 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-contacts",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "libc",
+ "objc2-core-foundation",
 ]
 
 [[package]]

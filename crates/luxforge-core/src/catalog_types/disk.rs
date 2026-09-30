@@ -100,8 +100,9 @@ pub struct IndexedFolder {
     pub actor: String,
 }
 
-/// An indexed folder as `index.folders` answers it: the record, whether its volume is mounted, and
-/// what its last listing found. (Not `deny_unknown_fields`, which serde does not support beside
+/// An indexed folder as `index.folders` answers it: the record, whether its volume is mounted, what
+/// its last listing found, and whether the index lane follows its changes as they happen, with why
+/// not when it does not. (Not `deny_unknown_fields`, which serde does not support beside
 /// `flatten`.)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexedFolderState {
@@ -112,6 +113,13 @@ pub struct IndexedFolderState {
     pub files: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listed_ms: Option<i64>,
+    /// Whether the platform's change notifications keep the folder's rows current now.
+    #[serde(default)]
+    pub watching: bool,
+    /// Why they do not, when they do not: not watched yet, offline, on a network volume, or a
+    /// platform limit reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unwatched: Option<String>,
 }
 
 /// What `index.add-folder` answers: the library change, the folder, the `index.refresh` job that

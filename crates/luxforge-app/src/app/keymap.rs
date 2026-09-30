@@ -398,6 +398,12 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     if status != Status::Ignored {
         return None;
     }
+    // The loupe's own keys, ahead of the grid's (`app/loupe.rs`).
+    if context.loupe_open
+        && let Some(message) = crate::app::loupe::loupe_keys(key, modifiers, *repeat)
+    {
+        return Some(message);
+    }
     if modifiers.command() {
         if modifiers.alt() {
             if character(key, "[") {
