@@ -115,7 +115,12 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
         let _ = editor.update(Message::LongWork(LongWorkMessage::Woken));
     };
     let folder = files(&catalog, "agree", 3_000);
-    let job = refresh_now(&editor.owner, editor.client, &folder).unwrap();
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    )
+    .unwrap();
     let mut shown = false;
     let record = luxforge_testbase::wait_for("the listing to end", || {
         wake(&mut editor);
