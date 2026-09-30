@@ -248,6 +248,58 @@ fn encode_range(path: &Path) -> Result {
     Ok(())
 }
 
+/// The `curve` smoke scenario's own fixture: what a tone curve needs to be read against, which no
+/// photograph has on its own.
+///
+/// - Rows `0..TONE_RAMP_BAND` are an encoded grey ramp, code `round(x · 255 / 511)` in column `x`,
+///   every code from black to white across the width, so a curve's monotonicity, its effect on the
+///   lower and upper halves of the tonal range, and whether it colours a grey can each be read along
+///   a row.
+/// - Rows `TONE_RAMP_BAND..` are four flat patches, [`TONE_RAMP_PATCH`] pixels wide, of the four
+///   quadrant colours of `fixtures/s0/orientation-1.jpg` ([`COLORS`] in its order), so a luminance
+///   curve's hue preservation can be read on saturated colours.
+///
+/// Every boundary falls on a multiple of 16, so a JPEG's chroma subsampling and its ringing stay at
+/// the edges and a probe 16 px inside reads what was drawn.
+pub const TONE_RAMP_FIXTURE: (u32, u32) = (512, 256);
+/// The height of the ramp band and of the patch band below it.
+pub const TONE_RAMP_BAND: u32 = 128;
+/// The width of each colour patch.
+pub const TONE_RAMP_PATCH: u32 = 128;
+/// The patches in column order, named for what they show: `fixtures/s0/orientation-1.jpg`'s
+/// top-left, top-right, bottom-left and bottom-right quadrant colours.
+pub const TONE_RAMP_PATCHES: [(&str, [u8; 3]); 4] = [
+    ("red", COLORS[0]),
+    ("green", COLORS[1]),
+    ("blue", COLORS[2]),
+    ("yellow", COLORS[3]),
+];
+
+/// The ramp's code in column `x` of a ramp `width` pixels wide: black in the first column and white
+/// in the last.
+pub fn tone_ramp_code(x: u32, width: u32) -> u8 {
+    ((f64::from(x) * 255.0 / f64::from(width - 1)).round()) as u8
+}
+
+fn tone_ramp(w: u32, h: u32) -> RgbImage {
+    RgbImage::from_fn(w, h, |x, y| {
+        if y < TONE_RAMP_BAND {
+            Rgb([tone_ramp_code(x, w); 3])
+        } else {
+            let patch = ((x / TONE_RAMP_PATCH) as usize).min(TONE_RAMP_PATCHES.len() - 1);
+            Rgb(TONE_RAMP_PATCHES[patch].1)
+        }
+    })
+}
+
+fn encode_tone_ramp(path: &Path) -> Result {
+    let (w, h) = TONE_RAMP_FIXTURE;
+    let img = tone_ramp(w, h);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 /// One JPEG the rendered and timing tiers need before they can run: its file name inside a
 /// fixtures directory, the function that writes it, and the manifest fields it needs beyond `file`
 /// and `sha256` (both of which `generate` fills in from what it actually wrote, once it has hashed
@@ -259,7 +311,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 5] = [
+pub const TABLE: [Fixture; 6] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -291,6 +343,18 @@ pub const TABLE: [Fixture; 5] = [
             json!({
                 "width":w,"height":h,
                 "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes})),
+            })
+        },
+    },
+    Fixture {
+        file: "tone-ramp.jpg",
+        write: encode_tone_ramp,
+        manifest: || {
+            let (w, h) = TONE_RAMP_FIXTURE;
+            json!({
+                "width":w,"height":h,
+                "ramp":{"rows":[0,TONE_RAMP_BAND],"code":"round(x * 255 / (width - 1))"},
+                "patches":TONE_RAMP_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes,"width":TONE_RAMP_PATCH})),
             })
         },
     },
@@ -564,5 +628,45 @@ mod tests {
         assert!(!present(t.path()), "missing range.jpg still reads present");
         fs::write(t.path().join("range.jpg"), b"stub").unwrap();
         assert!(present(t.path()));
+    }
+
+    #[test]
+    fn a_directory_missing_only_tone_ramp_jpg_is_not_present() {
+        let t = tempfile::tempdir().unwrap();
+        for f in TABLE.iter().filter(|f| f.file != "tone-ramp.jpg") {
+            fs::write(t.path().join(f.file), b"stub").unwrap();
+        }
+        assert!(
+            !present(t.path()),
+            "missing tone-ramp.jpg still reads present"
+        );
+        fs::write(t.path().join("tone-ramp.jpg"), b"stub").unwrap();
+        assert!(present(t.path()));
+    }
+
+    /// The ramp runs from black in the first column to white in the last through every code, and
+    /// the patches are the orientation fixture's quadrant colours in its order.
+    #[test]
+    fn the_tone_ramp_holds_every_code_and_the_quadrant_colours() {
+        let (w, h) = TONE_RAMP_FIXTURE;
+        let img = tone_ramp(w, h);
+        assert_eq!(img.get_pixel(0, 0).0, [0; 3]);
+        assert_eq!(img.get_pixel(w - 1, TONE_RAMP_BAND - 1).0, [255; 3]);
+        assert_eq!(img.get_pixel(256, 64).0, [128; 3]);
+        let codes: std::collections::BTreeSet<u8> =
+            (0..w).map(|x| img.get_pixel(x, 0).0[0]).collect();
+        assert_eq!(codes.len(), 256);
+        for (index, (_, colour)) in TONE_RAMP_PATCHES.iter().enumerate() {
+            let x = index as u32 * TONE_RAMP_PATCH + TONE_RAMP_PATCH / 2;
+            assert_eq!(img.get_pixel(x, h - 1).0, *colour);
+            assert_eq!(*colour, COLORS[ORDERS[0][index]]);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        encode_tone_ramp(&dir.path().join("a.jpg")).unwrap();
+        encode_tone_ramp(&dir.path().join("b.jpg")).unwrap();
+        assert_eq!(
+            hash(&dir.path().join("a.jpg")).unwrap(),
+            hash(&dir.path().join("b.jpg")).unwrap()
+        );
     }
 }

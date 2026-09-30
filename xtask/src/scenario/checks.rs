@@ -35,6 +35,7 @@ fn tolerance(tolerance: Tolerance) -> Value {
         Tolerance::Apart(least) => json!({"apart": least}),
         Tolerance::Beyond(least) => json!({"beyond": least}),
         Tolerance::Above(margin) => json!({"above": margin}),
+        Tolerance::AtMost(margin) => json!({"at_most": margin}),
     }
 }
 

@@ -5,7 +5,7 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
+    crop_smoke as crop, curve_smoke as curve, export_smoke as export, gallery_smoke as gallery,
     histogram_smoke as histogram, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
@@ -447,6 +447,19 @@ pub static SCENARIOS: &[Scenario] = &[
         }],
         verify: mixer::verify,
         source: Source::Fixtures(&[mixer::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "curve",
+        about: "The Tone curve over a generated grey ramp and colour patches",
+        launches: &[LaunchSpec {
+            plan: curve::plan,
+            ..APP
+        }],
+        verify: curve::verify,
+        source: Source::Fixtures(&[curve::FIXTURE]),
         window: Some(PANELLED),
         note: None,
         own: None,
