@@ -322,6 +322,32 @@ impl LinearImage {
         self.planes.as_slice()
     }
 
+    /// A new development whose every base pixel is `map` of this one's, under the same view: a
+    /// measurement's stand-in for a per-pixel evaluator setting that does not exist.
+    #[cfg(test)]
+    pub(crate) fn map_pixels(&self, map: impl Fn([f32; 3]) -> [f32; 3]) -> Result<Self, Error> {
+        let n = self.base_width as usize * self.base_height as usize;
+        let mut planes = vec![0.0; 3 * n];
+        for index in 0..n {
+            let mapped = map([
+                self.planes[index],
+                self.planes[n + index],
+                self.planes[2 * n + index],
+            ]);
+            for (channel, value) in mapped.into_iter().enumerate() {
+                planes[channel * n + index] = value;
+            }
+        }
+        let mut image = Self::with_fingerprint(
+            self.base_width,
+            self.base_height,
+            planes,
+            self.fingerprint.clone(),
+        )?;
+        image.view = self.view;
+        Ok(image)
+    }
+
     /// Read one view pixel without allocating. This is also useful to a source-stage picker. A
     /// caller that reads many pixels takes [`Self::reader`] once instead.
     #[cfg(test)]

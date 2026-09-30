@@ -366,6 +366,28 @@ fn step_log<'a>(launch: &'a Checked, step: &str) -> Result<Vec<&'a Value>> {
     Ok(step_events(&launch.events, number as usize))
 }
 
+/// The frames presented among `events`.
+fn presented<'a>(events: &[&'a Value]) -> Vec<&'a Value> {
+    events
+        .iter()
+        .copied()
+        .filter(|event| event["event"] == "preview_displayed")
+        .collect()
+}
+
+/// One step's events split at its last `script_step_settled`: what happened up to the outcome its
+/// frame was captured for, and what the editor went on to do before the next step began. The next
+/// step's `script_step` is logged only once this step's capture is written, which can take longer
+/// than the shared 120 ms quiet interval, so a held gesture's quiet refinement can land in the
+/// tail. A step that never settled has no tail.
+fn split_at_settle<'a>(events: &[&'a Value]) -> (Vec<&'a Value>, Vec<&'a Value>) {
+    let settled = events
+        .iter()
+        .rposition(|event| event["event"] == "script_step_settled")
+        .map_or(events.len(), |index| index + 1);
+    (events[..settled].to_vec(), events[settled..].to_vec())
+}
+
 /// The frame captured just before the named step's.
 fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
     launch
@@ -1222,25 +1244,31 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         format!("The histogram was adopted from the approximate frame: {histogram}"),
     )?;
     let drag_events = step_log(launch, drag.drag)?;
-    let displayed: Vec<&&Value> = drag_events
-        .iter()
-        .filter(|event| event["event"] == "preview_displayed")
-        .collect();
+    // The moving frames are those up to the drag's settle, which its capture shows. At 100% the
+    // held draft's quiet refinement, a later generation, may begin before the next step is logged:
+    // the quiet check below reads that tail.
+    let (moving_events, held_tail) = split_at_settle(&drag_events);
+    let displayed = presented(&moving_events);
+    let all_displayed = presented(&drag_events);
     ensure(
         !displayed.is_empty()
-            && displayed
+            && all_displayed
                 .iter()
                 .all(|event| event["detail"]["approximate_white_balance"] == true),
-        format!("The drafted generation's frames are not all labelled approximate: {displayed:?}"),
+        format!(
+            "The drafted generation's frames are not all labelled approximate: {all_displayed:?}"
+        ),
     )?;
     ensure(
-        displayed.iter().all(|event| {
-            let detail = &event["detail"];
-            detail["generation"] == generation
-                && detail["draft_revision"] == state["displayed_draft_revision"]
-                && detail["entry_id"] == state["stack"]["displayed"]["entry"]
-                && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
-        }),
+        displayed
+            .iter()
+            .all(|event| event["detail"]["generation"] == generation)
+            && all_displayed.iter().all(|event| {
+                let detail = &event["detail"];
+                detail["draft_revision"] == state["displayed_draft_revision"]
+                    && detail["entry_id"] == state["stack"]["displayed"]["entry"]
+                    && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
+            }),
         "A drafted frame has the wrong generation, revision, entry or snapshot",
     )?;
     if drag.fit {
@@ -1255,7 +1283,7 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         let full = state["preview_dimensions"]
             .as_array()
             .ok_or("The 100% draft has no full-stage dimensions")?;
-        let region_matches = |event: &&&Value| {
+        let region_matches = |event: &&Value| {
             let detail = &event["detail"];
             let half = detail["region_stage"].as_array();
             let rect = detail["region"].as_array();
@@ -1334,11 +1362,14 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         let quiet = launch.at(name)?;
         let paused = &quiet["state"];
         let quiet_generation = &paused["surface"]["generation"];
-        let quiet_events = step_log(launch, name)?;
-        let presented: Vec<&&Value> = quiet_events
+        // The held draft's quiet interval runs from the drag's last input, so its refinement may
+        // begin in the drag step's tail, after the moving frame was captured.
+        let quiet_events: Vec<&Value> = held_tail
             .iter()
-            .filter(|event| event["event"] == "preview_displayed")
+            .copied()
+            .chain(step_log(launch, name)?)
             .collect();
+        let presented = presented(&quiet_events);
         ensure(
             quiet_events
                 .iter()
@@ -1604,6 +1635,53 @@ mod tests {
             .and_then(|rest| rest.strip_suffix(';'))
             .expect("the crop canvas declares DIM_OPACITY");
         assert_eq!(value.parse::<f64>().unwrap(), DRAFT_DIM_OPACITY);
+    }
+
+    /// The recorded Z6 and Canon 90D failures on a loaded host: the 100% drag settled on its
+    /// half-detail draft, its capture took longer than the 120 ms quiet interval, and the quiet
+    /// refinement began (and on the Z6 presented its exact region) before the wait step was logged.
+    /// The drag's moving frames end at its settle; the quiet check reads the tail with the wait.
+    #[test]
+    fn a_quiet_refinement_before_the_next_step_belongs_to_the_held_draft() {
+        let event = |name: &str, detail: Value| json!({"event": name, "detail": detail});
+        let events = [
+            event("script_step", json!({"step": 4})),
+            event("slider_draft_preview", json!({"generation": 6})),
+            event(
+                "preview_displayed",
+                json!({"generation": 6, "path": "region", "quality": "interactive"}),
+            ),
+            event(
+                "script_step_settled",
+                json!({"step": 4, "waited_for": "slider_draft", "by": "presented_draft"}),
+            ),
+            event("preview_quiet_refine", json!({})),
+            event(
+                "preview_displayed",
+                json!({"generation": 7, "path": "region", "quality": "exact"}),
+            ),
+            event("script_step", json!({"step": 5})),
+            event(
+                "preview_displayed",
+                json!({"generation": 7, "path": "surface", "proxy": false}),
+            ),
+        ];
+        let drag = step_events(&events, 4);
+        let (moving, tail) = split_at_settle(&drag);
+        assert_eq!(
+            presented(&moving)
+                .iter()
+                .map(|event| &event["detail"]["generation"])
+                .collect::<Vec<_>>(),
+            [&json!(6)],
+            "only the frame the drag's capture shows is a moving frame"
+        );
+        assert_eq!(tail[0]["event"], "preview_quiet_refine");
+        assert_eq!(presented(&tail)[0]["detail"]["quality"], "exact");
+        assert_eq!(step_events(&events, 5).len(), 2);
+        // A step that never settled keeps every event as its own.
+        let (all, none) = split_at_settle(&drag[..3]);
+        assert_eq!((all.len(), none.len()), (3, 0));
     }
 
     #[test]
