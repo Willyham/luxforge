@@ -6,8 +6,10 @@
 //! uploads the boundary when its version changes, writes the tick's words with one
 //! `queue.write_buffer`, encodes one pass that runs the programs into the surface's GPU-preview
 //! output texture and submits it. `draw` samples that texture exactly as it samples the photograph,
-//! through the same placement, snapping and filter. The UI thread only encodes commands: it never
-//! waits on the GPU, reads a pixel back or touches one on the CPU.
+//! through the same placement, snapping and filter; the output is held in the photograph's own
+//! size bucket with its edge texels repeated past the frame, so a GPU frame and the CPU frame of the
+//! same codes draw identically. The UI thread only encodes commands: it never waits on the GPU,
+//! reads a pixel back or touches one on the CPU.
 //!
 //! # The calling convention
 //!
@@ -57,9 +59,11 @@
 //!
 //! When the GPU stage cannot draw a frame, the surface draws the CPU frame it was given — the
 //! surface always holds one — and names why ([`GpuFallback`]). A device that cannot run the stage,
-//! a lost device, a failed pipeline, an exceeded budget or a boundary past the device's texture
-//! limit each make that frame and every later one take the CPU path until the cause goes. A lost
-//! device is noticed through its callback, an atomic flag, so nothing waits for a recovery.
+//! a lost device, a failed pipeline, an exceeded budget, or a boundary, words or blocks past what
+//! the device allows a texture or a storage binding to be each make that frame and every later one
+//! take the CPU path until the cause goes; nothing the stage creates can then be an error wgpu's
+//! default handler would panic on. A lost device is noticed through its callback, an atomic flag,
+//! so nothing waits for a recovery.
 //!
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
@@ -337,6 +341,8 @@ pub enum GpuFallback {
     },
     /// The boundary is larger than the device allows a texture to be.
     TextureLimit { width: u32, height: u32, limit: u32 },
+    /// The words or the blocks are larger than the device allows a storage binding to be.
+    BufferLimit { bytes: u64, limit: u64 },
 }
 
 impl GpuFallback {
@@ -347,6 +353,7 @@ impl GpuFallback {
             Self::PipelineFailed => "pipeline-failed",
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
+            Self::BufferLimit { .. } => "buffer-limit",
         }
     }
 }
@@ -692,7 +699,8 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
         "
 @fragment
 fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let texel = vec2<u32>(position.xy);
+    // The border column and row past the boundary repeat its edge texels.
+    let texel = min(vec2<u32>(position.xy), textureDimensions(lf_boundary) - vec2<u32>(1u));
     var rgb = textureLoad(lf_boundary, texel, 0).rgb;
     let pos = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
 ",
@@ -879,9 +887,15 @@ fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
     }
 }
 
-/// A storage buffer able to hold `bytes`, rounded up so a few more words do not each reallocate.
-fn buffer_capacity(bytes: u64) -> u64 {
-    bytes.max(MIN_BUFFER).next_power_of_two()
+/// A storage buffer able to hold `bytes`, rounded up so a few more words do not each reallocate,
+/// within the device's largest storage binding, or the refusal that names that limit.
+fn buffer_capacity(device: &wgpu::Device, bytes: u64) -> Result<u64, GpuFallback> {
+    // A multiple of four, as a buffer binding must be.
+    let limit = u64::from(device.limits().max_storage_buffer_binding_size) & !3;
+    if bytes > limit {
+        return Err(GpuFallback::BufferLimit { bytes, limit });
+    }
+    Ok(bytes.max(MIN_BUFFER).next_power_of_two().min(limit))
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
@@ -995,7 +1009,7 @@ impl PhotoPipeline {
             (&mut slot.blocks, block_bytes, "luxforge.gpu_preview.blocks"),
         ] {
             if bytes > charged.bytes {
-                let capacity = buffer_capacity(bytes);
+                let capacity = buffer_capacity(device, bytes)?;
                 self.figures.preview.charge(capacity)?;
                 let old = std::mem::replace(
                     charged,
@@ -1058,6 +1072,19 @@ impl PhotoPipeline {
                     timestamp_writes: None,
                     occlusion_query_set: None,
                 });
+                // The frame and, where the bucket has room, one more column and row: the edge
+                // texels again, which the linear filter reads across the frame's edge as it reads
+                // the photograph's.
+                let (width, height) = slot.size;
+                let (columns, rows) = slot.output.capacity;
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    (width + 1).min(columns) as f32,
+                    (height + 1).min(rows) as f32,
+                    0.0,
+                    1.0,
+                );
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &slot.bindings, &[]);
                 pass.draw(0..3, 0..1);
@@ -1080,22 +1107,31 @@ impl PhotoPipeline {
         word_bytes: u64,
         block_bytes: u64,
     ) -> Result<GpuSlot, GpuFallback> {
+        let limit = device.limits().max_texture_dimension_2d;
+        // The output is reserved in the photograph's own size bucket, so the draw samples it over
+        // the same texture extent, and with the same filter weights, as the CPU frame it stands
+        // in for; the pass writes its edge column and row into the border as an upload copies
+        // them. The boundary is only loaded, never sampled, so it is exactly its size.
+        let capacity = super::full_capacity((width, height), limit);
         let texels = u64::from(width) * u64::from(height);
+        let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
         let texture_bytes =
-            texels * GpuBoundary::TEXEL_BYTES as u64 + texels * 4 + UNIFORM_SIZE as u64;
-        let (words, blocks) = (buffer_capacity(word_bytes), buffer_capacity(block_bytes));
+            texels * GpuBoundary::TEXEL_BYTES as u64 + output_bytes + UNIFORM_SIZE as u64;
+        let (words, blocks) = (
+            buffer_capacity(device, word_bytes)?,
+            buffer_capacity(device, block_bytes)?,
+        );
         self.figures
             .preview
             .charge(texture_bytes + words + blocks)?;
-        let extent = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-        let texture = |label, format, usage| {
+        let texture = |label, (width, height), format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
-                size: extent,
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -1106,11 +1142,13 @@ impl PhotoPipeline {
         };
         let boundary = texture(
             "luxforge.gpu_preview.boundary",
+            (width, height),
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         );
         let output = texture(
             "luxforge.gpu_preview.output",
+            capacity,
             OUTPUT_FORMAT,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
         );
@@ -1147,22 +1185,22 @@ impl PhotoPipeline {
         let picture = Picture {
             tiles: vec![Tile {
                 layout,
-                capacity: (width, height),
+                capacity,
                 texture: output,
                 uniform,
                 bindings: photo_bindings,
             }],
             width,
             height,
-            capacity: (width, height),
+            capacity,
             grid: (1, 1),
-            limit: device.limits().max_texture_dimension_2d,
+            limit,
             version: 0,
             content_id: None,
             region_key: None,
-            allocated_bytes: texels * 4,
-            // Evaluated at the boundary's own size, the display's at Fit: never minified far
-            // enough to need a chain.
+            allocated_bytes: output_bytes,
+            // Evaluated at the boundary's own size, about the display's at Fit: never minified
+            // far enough to need a chain.
             mip_levels: 1,
             mip_bytes: 0,
             mips_current: false,
