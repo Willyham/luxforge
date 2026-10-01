@@ -7,11 +7,16 @@
 //! only the plan's steps, each unit's words and a reference to each storage block, and reads no
 //! pixel: the boundary's texels are the caller's, built off the UI thread.
 //!
-//! The surface runs one pass of colour steps over the boundary today. A plan that needs more — a
-//! geometry tail that is not the identity, a mask, a boundary that is not the plan's stage — is
-//! answered with the reason the surface cannot run it yet ([`Unrunnable`]), and its gesture keeps
+//! [`surface_plan`] follows the core plan's parts in order, one function each, so a step kind the
+//! surface gains joins the part it belongs to:
+//!
+//! - [`boundary_map`]: the held boundary against the plan's boundary stage;
+//! - [`operation_steps`]: each content operation's units, and where its mask's coverage joins;
+//! - [`geometry_steps`]: the geometry tail, and after it the output operations;
+//!
+//! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
-use luxforge_core::{GpuDescription, GpuPosition};
+use luxforge_core::{GpuDescription, GpuGeometry, GpuOperation, GpuPosition, Stage};
 use luxforge_ui::photo_surface::{
     GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap,
 };
@@ -21,8 +26,8 @@ use std::{borrow::Cow, sync::Arc};
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unrunnable {
-    /// The geometry tail is not the identity, so output-space steps and a resample would follow
-    /// the content pass: the surface has no geometry step yet.
+    /// The geometry tail is not the identity, so a resample, and output-space steps after it,
+    /// follow the content pass: the surface has no geometry step yet.
     Geometry,
     /// A masked operation: the surface has no coverage step yet.
     Mask { layer: usize },
@@ -47,15 +52,30 @@ impl Unrunnable {
 /// The largest coordinate an `f32` holds exactly, and with it every integer a position map adds.
 const EXACT_F32: i64 = 1 << 24;
 
-/// `plan` as the surface's plain data over `boundary`, the texels of the plan's whole boundary
-/// stage: one colour step per unit of each content operation, in recipe order, each with its
-/// operation's position map. A boundary inside a colour run (`plan.boundary.continues_run`) must
-/// hold that run's unclamped value; the half floats of a [`GpuBoundary`] do.
+/// `plan` as the surface's plain data over `boundary`: the boundary's texel map, then the steps of
+/// every content operation in recipe order, then the geometry tail's. A boundary inside a colour
+/// run (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
+/// [`GpuBoundary`] do.
 pub(crate) fn surface_plan(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
 ) -> Result<GpuPlan, Unrunnable> {
-    let stage = plan.boundary.stage;
+    let texels = boundary_map(plan.boundary.stage, &boundary)?;
+    let mut steps = Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum());
+    for operation in &plan.content {
+        operation_steps(operation, &mut steps)?;
+    }
+    geometry_steps(plan, &mut steps)?;
+    Ok(GpuPlan {
+        boundary,
+        texels,
+        steps,
+    })
+}
+
+/// Where the held boundary's texels are in the plan's boundary stage: the whole stage, texel for
+/// pixel. A boundary that holds a window of the stage is not held yet.
+pub(crate) fn boundary_map(stage: Stage, boundary: &GpuBoundary) -> Result<TexelMap, Unrunnable> {
     let held = boundary.size();
     if held != (stage.width, stage.height) {
         return Err(Unrunnable::Boundary {
@@ -63,39 +83,54 @@ pub(crate) fn surface_plan(
             stage: (stage.width, stage.height),
         });
     }
-    let geometry = &plan.geometry;
-    let output = geometry.output();
-    let whole = geometry.reads.x0 == 0
-        && geometry.reads.y0 == 0
-        && (geometry.reads.width, geometry.reads.height) == (stage.width, stage.height);
-    if (output.width, output.height) != (stage.width, stage.height)
-        || geometry.affine() != Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-        || geometry.clamps
-        || !whole
-        || !plan.output.is_empty()
-    {
+    Ok(TexelMap::IDENTITY)
+}
+
+/// One colour operation's steps, appended to `steps`: one colour step per unit, in order, each at
+/// the operation's position map. A masked operation's coverage, and the blend against its input,
+/// would join here; the surface has no coverage step yet.
+pub(crate) fn operation_steps(
+    operation: &GpuOperation,
+    steps: &mut Vec<GpuStep>,
+) -> Result<(), Unrunnable> {
+    if operation.mask.is_some() {
+        return Err(Unrunnable::Mask {
+            layer: operation.layer,
+        });
+    }
+    let position = position_map(operation.position).ok_or(Unrunnable::Position {
+        layer: operation.layer,
+    })?;
+    steps.extend(operation.units.iter().map(|unit| GpuStep::Colour {
+        program: program(unit),
+        position,
+    }));
+    Ok(())
+}
+
+/// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the
+/// whole boundary stage with nothing clamped, which leaves the output stage the boundary's and no
+/// output operation after it. A geometry step, and the output operations through
+/// [`operation_steps`] after it, would join here.
+pub(crate) fn geometry_steps(
+    plan: &luxforge_core::GpuPlan,
+    _steps: &mut Vec<GpuStep>,
+) -> Result<(), Unrunnable> {
+    if !identity(&plan.geometry, plan.boundary.stage) || !plan.output.is_empty() {
         return Err(Unrunnable::Geometry);
     }
-    let mut steps = Vec::with_capacity(plan.content.iter().map(|op| op.units.len()).sum());
-    for operation in &plan.content {
-        if operation.mask.is_some() {
-            return Err(Unrunnable::Mask {
-                layer: operation.layer,
-            });
-        }
-        let position = position_map(operation.position).ok_or(Unrunnable::Position {
-            layer: operation.layer,
-        })?;
-        steps.extend(operation.units.iter().map(|unit| GpuStep::Colour {
-            program: program(unit),
-            position,
-        }));
-    }
-    Ok(GpuPlan {
-        boundary,
-        texels: TexelMap::IDENTITY,
-        steps,
-    })
+    Ok(())
+}
+
+/// Whether `geometry` takes every pixel of `stage` to itself: an affine identity onto the same
+/// stage, reading the whole of it, with nothing clamped before it.
+fn identity(geometry: &GpuGeometry, stage: Stage) -> bool {
+    let output = geometry.output();
+    let reads = geometry.reads;
+    (output.width, output.height) == (stage.width, stage.height)
+        && geometry.affine() == Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        && !geometry.clamps
+        && (reads.x0, reads.y0, reads.width, reads.height) == (0, 0, stage.width, stage.height)
 }
 
 /// One unit's description as the surface's program: the core's static text, borrowed, its words
@@ -110,7 +145,7 @@ pub(crate) fn program(description: &GpuDescription) -> GpuProgram {
 }
 
 /// The core's exact map as the surface's, when every coefficient is an integer an `f32` holds.
-fn position_map(position: GpuPosition) -> Option<PositionMap> {
+pub(crate) fn position_map(position: GpuPosition) -> Option<PositionMap> {
     let GpuPosition { a, b, tx, c, d, ty } = position;
     let narrow = |value: i64| {
         (value.abs() <= EXACT_F32)
