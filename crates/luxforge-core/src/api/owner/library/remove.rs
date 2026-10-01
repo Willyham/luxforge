@@ -86,7 +86,9 @@ pub(in crate::api) fn catalog_empty_removed(
     } = &emptied;
     if !assets.is_empty() {
         announce_once(&mut owner.announced, &call.origin);
-        // Their rendered previews go too, now that the deletion has committed.
+        // Every view is stale, though no library change or index revision moved; and their
+        // rendered previews go too, now that the deletion has committed.
+        super::super::views::photographs_deleted(owner);
         super::super::previews::forget_photographs(owner, assets);
     }
     if let Some(collection) = collection {

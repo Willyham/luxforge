@@ -9,7 +9,9 @@
 //!    ([`plan::destinations`]).
 //! 2. **Read** on the worker, one file at a time (`read.rs`): one bounded read streaming the
 //!    fingerprint, the header from the same bytes and the interpretation without developing; a
-//!    card's pick from its verified copy when asked ([`develop_file`]).
+//!    card's pick from its verified copy when asked ([`develop_file`]). A Develop of one file —
+//!    what opening a file is — keeps what it read, and once it is committed the service keeps
+//!    that for the preparation that follows ([`EditorService::keep_read`]).
 //! 3. **Commit** on the owner, in batches (`commit.rs`): the first batch one file, so Develop can
 //!    show it at once, then up to [`BATCH_FILES`] files or [`BATCH_TIME`], never across an event.
 //!    Each batch is one library change, a part of the Develop's request
@@ -63,11 +65,22 @@ impl EditorService {
     /// a Develop of that one file — the develop lane's read ([`read`]), then the owner's decision
     /// and commit ([`decide`], [`write`]) as one library change by the actor `system` — into the
     /// top-level catalog folder named after its folder on disk, made when there is none, then its
-    /// preparation ([`Self::prepare`]). A file whose bytes are already a photograph's is linked to
-    /// it, and one that is a missing original's relinks it, as a Develop does. For tests, tools
-    /// and the harness; a client sends `pick.develop`, `source.prepare` and `job.adopt`.
+    /// preparation ([`Self::prepare`]), which takes what the Develop read of the file instead of
+    /// reading and decoding it again, as an open's does. A file whose bytes are already a
+    /// photograph's is linked to it, and one that is a missing original's relinks it, as a Develop
+    /// does. For tests, tools and the harness; a client sends `pick.develop`, `source.prepare` and
+    /// `job.adopt`.
     pub fn import(&mut self, path: &Path) -> Result<EditorState, Error> {
-        let file = read(path, &JobControl::new(), &|_| {})?;
+        let asset = self.develop_one(path)?;
+        let needs = self.entry_needs(&asset, None)?;
+        self.prepare(&needs)
+    }
+
+    /// The Develop [`Self::import`] makes of the file at `path`, answering its photograph: read
+    /// keeping what it reads, as a one-file Develop does, decided and committed, with what it
+    /// read kept for the preparation that follows ([`Self::keep_read`]).
+    pub(crate) fn develop_one(&mut self, path: &Path) -> Result<crate::AssetId, Error> {
+        let file = read(path, true, &JobControl::new(), &|_| {})?;
         let now = now_ms();
         let name = plan::parent(&file.path).file_name().map_or_else(
             || "Imported".to_owned(),
@@ -99,7 +112,7 @@ impl EditorService {
             file,
             moment: None,
         };
-        let (decided, refused) = decide(self, vec![developed], now)?;
+        let (mut decided, refused) = decide(self, vec![developed], now)?;
         if let Some(refused) = refused.into_iter().next() {
             return Err(refused.error);
         }
@@ -115,8 +128,10 @@ impl EditorService {
         };
         let artifact_root = self.artifact_root().to_path_buf();
         self.library_write(|tx| write(tx, request, &artifact_root, &destination, &decided, now))?;
-        let needs = self.entry_needs(&asset, None)?;
-        self.prepare(&needs)
+        if let Some(read) = decided.iter_mut().find_map(Decided::take_read) {
+            self.keep_read(read);
+        }
+        Ok(asset)
     }
 }
 
@@ -142,12 +157,14 @@ pub(crate) struct Developed {
 /// connected; otherwise read and interpreted, and for a card's pick with copies when `use_copies`
 /// is set, developed from the first copy that proves to hold its bytes. With no such copy it is
 /// developed from the card when `confirm_removable` is set and refused otherwise (`conflict`,
-/// naming why). `pause` hears each phase, for a test to hold it there; [`Phase::Verified`] is
-/// the file ready to commit.
+/// naming why). With `keep`, for a Develop of this one file, what was read is kept for the
+/// preparation that follows ([`ReadFile::kept`]). `pause` hears each phase, for a test to hold it
+/// there; [`Phase::Verified`] is the file ready to commit.
 pub(crate) fn develop_file(
     file: &PlannedFile,
     use_copies: bool,
     confirm_removable: bool,
+    keep: bool,
     control: &JobControl,
     pause: &dyn Fn(Phase),
 ) -> Result<Developed, Error> {
@@ -156,7 +173,7 @@ pub(crate) fn develop_file(
             "the volume {label} is not connected"
         )));
     }
-    let card = read(&file.path, control, pause)?;
+    let card = read(&file.path, keep, control, pause)?;
     let (file_read, used) = match &file.removable {
         Some(_) if use_copies && !file.copies.is_empty() => {
             match from_copy(&card, &file.copies, control, pause)? {
