@@ -649,7 +649,7 @@ Against the performance-rules checklist: browsing decodes only embedded previews
 What the feature does not do or has not shown yet, beyond the later work under [scope](#scope):
 
 - **Owner decisions.** Every [proposal](#proposals) awaits the owner, and P13's choice of how to meet the photographs view's time is open.
-- **Measurements.** The figures `cargo xtask catalog-measure` takes are to be recorded in [performance](../specs/performance.md). `browse.view` over 100,000 photographs misses its target ([performance](#performance)), and the first browse from a card reader is not recorded.
+- **Measurements.** The figures are recorded in [performance](../specs/performance.md#catalog-browse-pick-develop), on a host loaded by other sessions, so none is a baseline: `browse.view` over 100,000 photographs misses its target ([performance](#performance)), `browse.rows` met its 2 ms target in one run and missed it under heavier load, and the first browse from a card reader is not recorded.
 - **A labelled corpus.** Events and moments are checked against generated data and an independent reference grouping only; no labelled corpus of real trips, bursts and brackets from several makes exists, so the acceptance's corpus check is not claimed.
 - **Linux and Windows.** Their watchers and mount notifications are compiled but not run natively, and neither platform keeps a history, so an indexed folder there is listed again as the catalog opens.
 - **In the desktop.** Dragging photographs onto a catalog folder (Move to… does it), moving a collection between groups (`collection.move`), changing a smart collection's query (`collection.update-smart`), previews in Missing originals' rows, and Locate original… in export's refusal.
