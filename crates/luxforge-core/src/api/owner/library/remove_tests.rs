@@ -789,6 +789,63 @@ fn remove_empty_is_forbidden_without_permission_authority() {
     );
 }
 
+/// Emptying Removed deletes photographs outside the journal, so it moves neither the library
+/// sequence nor the index revision a view is stamped with; it still leaves every view stale, the
+/// caller's and another client's, so neither acts on or shows the deleted photographs until it is
+/// evaluated again. A no-op empties nothing and leaves views as they were.
+#[test]
+fn remove_empty_leaves_every_view_stale() {
+    let harness = Harness::new("empty-views");
+    let paths = harness.photos(2);
+    let assets = harness.develop("develop", &paths);
+    harness.ok("asset.remove", targets(&[&assets[0]], "remove-k0"));
+    let removed = json!({"kind": "removed"});
+    let stale = |client: ClientId| {
+        harness
+            .send_as(client, "session.state", json!({}))
+            .result
+            .unwrap()["browse"]["stale"]
+            .clone()
+    };
+    let view = |client: ClientId, source: &Value| {
+        let summary = harness
+            .send_as(client, "browse.view", json!({"source": source}))
+            .result
+            .expect("a view");
+        summary["count"].clone()
+    };
+    assert_eq!(view(harness.client, &removed), 1);
+    assert_eq!(view(harness.admin, &json!({"kind": "all-photographs"})), 1);
+    assert_eq!(
+        (stale(harness.client), stale(harness.admin)),
+        (json!(false), json!(false))
+    );
+
+    let emptied = harness.empty("empty-1");
+    assert_eq!(emptied["deleted"], 1);
+    assert_eq!(
+        (stale(harness.client), stale(harness.admin)),
+        (json!(true), json!(true)),
+        "both views are stale"
+    );
+    // The stale Removed view refuses to be acted on, and evaluated again it is empty.
+    assert_eq!(
+        harness
+            .refused(
+                "asset.restore",
+                json!({"targets": {"kind": "selection"}, "mutation": envelope("restore")})
+            )
+            .code,
+        "conflict"
+    );
+    assert_eq!(view(harness.client, &removed), 0);
+    assert_eq!(stale(harness.client), json!(false));
+
+    // Emptying nothing leaves a fresh view fresh.
+    assert_eq!(harness.empty("empty-2")["outcome"], "no-op");
+    assert_eq!(stale(harness.client), json!(false));
+}
+
 /// Emptying deletes exactly the removed photographs' records — an edited one with a named version,
 /// a collection, brush strokes and tints, and an unedited one — with the stroke and the artifact only
 /// they named, and keeps the stroke and the artifact a remaining photograph shares, which still

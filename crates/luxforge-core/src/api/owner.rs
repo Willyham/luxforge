@@ -62,7 +62,8 @@ const EVENT_CAPACITY: usize = 256;
 const MAX_EVENT_WAIT_MS: i64 = 30_000;
 const DEFAULT_EVENT_WAIT_MS: u64 = 10_000;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
-/// Pending developments may pin one sensor mosaic identity; the cache can retain one more.
+/// Pending developments, with file preparations holding the sensor a Develop read, may pin one
+/// sensor mosaic identity between them; the cache can retain one more.
 const MAX_QUEUED_MOSAICS: usize = 1;
 
 /// Identifies one connected client; the owner keeps that client's session until it disconnects.
@@ -365,29 +366,46 @@ impl SourceQueue {
 
     /// Queue one source job's work and the artifacts it reads after it, or join the queued or
     /// running job doing the same. A development is admitted only while queued developments pin
-    /// fewer than [`MAX_QUEUED_MOSAICS`] distinct mosaics, or the one it pins already.
+    /// fewer than [`MAX_QUEUED_MOSAICS`] distinct mosaics, or the one it pins already. A file's
+    /// preparation that takes the RAW sensor a Develop read pins it the same way, within the same
+    /// bound; past it the sensor is dropped and the file read and decoded as it would be without.
     fn enqueue(
         &mut self,
         jobs: &mut Jobs,
         client: ClientId,
-        work: SourceWork,
+        mut work: SourceWork,
         artifacts: Vec<ArtifactRead>,
     ) -> Result<JobId, Error> {
-        let (key, sensor) = match &work {
+        let (key, sensor) = match &mut work {
             SourceWork::File {
                 path,
                 signature,
                 target,
-            } => (
-                SourceFlightKey {
-                    path: path.clone(),
-                    signature: Some(signature.clone()),
-                    expected_fingerprint: Some(target.fingerprint.clone()),
-                    gains_bits: target.raw.as_ref().map(|raw| raw.gains.map(f32::to_bits)),
-                    artifacts: flight_artifacts(&artifacts),
-                },
-                None,
-            ),
+                read,
+            } => {
+                let pinned = read
+                    .as_ref()
+                    .and_then(|read| read.content.sensor())
+                    .map(Arc::downgrade);
+                let sensor = match pinned {
+                    Some(sensor) if self.admit_mosaic(&sensor).is_ok() => Some(sensor),
+                    Some(_) => {
+                        *read = None;
+                        None
+                    }
+                    None => None,
+                };
+                (
+                    SourceFlightKey {
+                        path: path.clone(),
+                        signature: Some(signature.clone()),
+                        expected_fingerprint: Some(target.fingerprint.clone()),
+                        gains_bits: target.raw.as_ref().map(|raw| raw.gains.map(f32::to_bits)),
+                        artifacts: flight_artifacts(&artifacts),
+                    },
+                    sensor,
+                )
+            }
             SourceWork::Develop(request) => {
                 let key = SourceFlightKey {
                     path: request.asset_id.as_str().into(),
@@ -2563,6 +2581,85 @@ mod tests {
                     Vec::new()
                 )
                 .is_ok()
+        );
+    }
+
+    /// A file's preparation holding the RAW sensor a Develop read pins it as a development does:
+    /// while a queued development pins another mosaic it is admitted without it, to read and decode
+    /// the file, never refused; once that development completes, it keeps the sensor.
+    #[test]
+    #[ignore = "requires two private photo-sized RAW fixtures"]
+    fn a_kept_sensor_is_admitted_within_the_mosaic_bound_or_left_behind() {
+        let first_path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE_A").unwrap());
+        let second_path = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE_B").unwrap());
+        let cancel = AtomicBool::new(false);
+        let decode = |path: &Path| {
+            Arc::new(
+                luxforge_raw::RawSource::decode(std::fs::read(path).unwrap(), &cancel).unwrap(),
+            )
+        };
+        let first_sensor = decode(&first_path);
+        let second_sensor = decode(&second_path);
+        let development = crate::editor::RawDevelopment {
+            asset_id: AssetId::new(),
+            signature: EditorService::request_signature(&first_path).unwrap().1,
+            fingerprint: "test".into(),
+            gains: first_sensor.metadata().as_shot_gains,
+            sensor: first_sensor,
+            capture: Arc::default(),
+            file_name: None,
+        };
+        let file = |sensor: &Arc<luxforge_raw::RawSource>| {
+            let target = crate::editor::FilePreparation {
+                asset_id: AssetId::new(),
+                fingerprint: "test".into(),
+                raw: None,
+            };
+            let (path, signature) = EditorService::request_signature(&second_path).unwrap();
+            SourceWork::File {
+                read: Some(Box::new(crate::editor::ReadOriginal {
+                    asset_id: target.asset_id.clone(),
+                    path: path.clone(),
+                    signature: signature.clone(),
+                    fingerprint: target.fingerprint.clone(),
+                    content: crate::editor::ReadContent::Raw {
+                        sensor: sensor.clone(),
+                        capture: Arc::default(),
+                    },
+                })),
+                path,
+                signature,
+                target: Box::new(target),
+            }
+        };
+        let kept = |task: SourceTask| match task.kind {
+            SourceTaskKind::Prepare(SourceWork::File { read, .. }) => read.is_some(),
+            _ => panic!("a file's preparation"),
+        };
+        let (mut sources, mut jobs, receiver) = source_queue();
+        let developing = sources
+            .enqueue(
+                &mut jobs,
+                ClientId(1),
+                SourceWork::Develop(Box::new(development)),
+                Vec::new(),
+            )
+            .unwrap();
+        let without = sources
+            .enqueue(&mut jobs, ClientId(2), file(&second_sensor), Vec::new())
+            .unwrap();
+        drop(receiver.try_recv().unwrap());
+        assert!(!kept(receiver.try_recv().unwrap()), "left behind");
+        for id in [&developing, &without] {
+            jobs.finish(id, Err(Error::conflict("finished")));
+            sources.complete(id);
+        }
+        sources
+            .enqueue(&mut jobs, ClientId(2), file(&second_sensor), Vec::new())
+            .unwrap();
+        assert!(
+            kept(receiver.try_recv().unwrap()),
+            "admitted with its sensor"
         );
     }
 
