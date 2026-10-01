@@ -110,6 +110,10 @@ pub(crate) struct LaneConfig {
     /// Held at each folder of a walk, for a test that acts while a listing runs.
     #[cfg(test)]
     pub hold: Option<Arc<luxforge_testbase::Gate>>,
+    /// Held by a header worker before each read, until its work is cancelled, for a test that
+    /// acts while a read is unwritten.
+    #[cfg(test)]
+    pub hold_reads: Option<Arc<luxforge_testbase::Gate>>,
     /// The path of every header read the lane takes in, for a test that counts them.
     #[cfg(test)]
     pub reads: Arc<Mutex<Vec<PathBuf>>>,
@@ -338,6 +342,8 @@ struct Task {
     run: u64,
     control: Arc<JobControl>,
     file: FileTask,
+    #[cfg(test)]
+    hold: Option<Arc<luxforge_testbase::Gate>>,
 }
 
 /// A worker's answer: the outcome, or none when the job was cancelled before the read, tagged
@@ -353,6 +359,10 @@ fn header_worker(queued: &Mutex<Receiver<Task>>, answers: &SyncSender<Answer>) {
     loop {
         let task = queued.lock().expect("the index task queue").recv();
         let Ok(task) = task else { return };
+        #[cfg(test)]
+        if let Some(hold) = &task.hold {
+            hold.pass_unless(|| task.control.is_cancelled());
+        }
         let outcome = (!task.control.is_cancelled()).then(|| {
             catch_unwind(AssertUnwindSafe(|| read_file(&task.file))).unwrap_or_else(|_| {
                 HeaderOutcome::Read(Box::new(FileRecord {
@@ -548,6 +558,14 @@ impl Coordinator {
             last_stamp,
             ..
         } = self;
+        if connection.is_none() && !config.index_dir.join(database::INDEX_FILE).exists() {
+            // No index yet, so no root to keep or take offline: a volume event is only the
+            // owner's to hear, and creates no index of a catalog that has listed nothing.
+            if let Some(WatchEvent::Volume(event)) = first {
+                (config.post)(LaneEvent::Volume(event));
+            }
+            return;
+        }
         let Ok(connection) = open(config, connection) else {
             // Without the index nothing can be applied; the next listing of each root catches up.
             return;
@@ -1230,6 +1248,8 @@ impl Run<'_> {
                 run: self.id,
                 control: self.control.clone(),
                 file,
+                #[cfg(test)]
+                hold: self.config.hold_reads.clone(),
             })
             .map_err(|_| Error::internal("the index lane's header workers stopped"))?;
         self.in_flight += 1;

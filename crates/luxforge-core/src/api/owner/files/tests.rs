@@ -474,6 +474,12 @@ fn every_batch_advances_the_revision_and_records_one_event() {
     let fixture = Fixture::new("revision");
     let owner = fixture.owner();
     let client = owner.register();
+    // A mount table of nothing, so a card the host mounts meanwhile (another process's disk image)
+    // is not listed, and its batches are not counted among the job's.
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::default())),
+    );
     let root = fixture.dir.join("photos");
     for index in 0..(crate::index::lane::INDEX_BATCH + 10) {
         put(
