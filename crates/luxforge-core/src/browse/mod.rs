@@ -1,5 +1,5 @@
-//! Browse views, facets and selection. **Lane D (views and desktop)** owns this module
-//! (`docs/design/catalog.md`, "Views on the owner", API `browse.*` and `event.list`).
+//! Browse views, facets and selection (`docs/design/catalog.md`, "Views on the owner", API
+//! `browse.*` and `event.list`).
 //!
 //! A view is one client's ordered list of files or photographs: a [`ViewQuery`] evaluated over the
 //! index (files) or the catalog (photographs) into [`ViewItem`]s, 16 bytes each, which the owner
@@ -29,7 +29,7 @@
 //! Files: `candidates.rs` (reading a source's rows), `filter.rs` (a filter as per-item predicates),
 //! `view.rs` (evaluation, ordering and the held item list), `rows.rs` (windows), `facets.rs`,
 //! `select.rs` (the selection and its carry-over), `events.rs` (events and `event.list`) and
-//! `previews.rs` (the preview-state seam to lane B).
+//! `previews.rs` (the preview-state seam to the preview lane).
 
 mod candidates;
 mod events;
@@ -108,10 +108,7 @@ pub(crate) fn refresh_stale(
 /// (with its subfolders when asked) or a card's — ascending by row, whatever a filter would say.
 /// Refused for a source over photographs, and for an event, folder or card the index does not
 /// know. An event is resolved under the default thresholds, computing the events afresh.
-#[allow(
-    dead_code,
-    reason = "the seam lane C's picks by source call; nothing in this lane needs it"
-)]
+#[allow(dead_code, reason = "called by the tests")]
 pub(crate) fn source_files(
     service: &EditorService,
     source: &ViewSource,

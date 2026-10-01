@@ -1,4 +1,4 @@
-//! The desktop's frame-time probes: **lane B's module**, which `catalog-measure` calls once with
+//! The desktop's frame-time probes, which `catalog-measure` calls once with
 //! the data it prepared. The probes themselves are `xtask/src/catalog_probes/`: each launches the
 //! editor in the background through the scenario library over a directory under
 //! `context.scratch`, takes its figures from the editor's own evidence, and answers them under the

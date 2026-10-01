@@ -1,7 +1,7 @@
 //! Missing originals in the Select workspace ([catalog
 //! design](../../../../docs/design/catalog.md#missing-originals)), and Locate original… in
-//! Develop's Original not found notice. **Lane D (views and desktop)** owns this seam; its model is
-//! `state/select_missing.rs` and its region `view/select_missing.rs`.
+//! Develop's Original not found notice. Its model is `state/select_missing.rs` and its region
+//! `view/select_missing.rs`.
 //!
 //! The desktop holds no catalog logic: every gesture sends the request an API client sends, and
 //! every row shows what the owner answered.

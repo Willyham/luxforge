@@ -92,7 +92,7 @@ pub(crate) enum Outcome {
         /// The items it changed, in its order; empty for a retry, which changed nothing. What the
         /// change touched is read from here once it commits: the photographs whose original it
         /// moved, whose cached rows the service reads again, and whatever a lane follows (the
-        /// indexed folders lane A watches).
+        /// indexed folders the index lane watches).
         items: Vec<LibraryItem>,
         deduplicated: bool,
     },

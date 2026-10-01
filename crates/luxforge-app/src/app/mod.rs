@@ -33,6 +33,7 @@ pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
 pub(crate) mod crop;
+pub(crate) mod develop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
 #[cfg(test)]
@@ -50,6 +51,10 @@ pub(crate) mod keymap;
 mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
+pub(crate) mod loupe_frames;
+pub(crate) mod loupe_region;
 pub(crate) mod mask_coverage;
 pub(crate) mod mask_panel;
 pub(crate) mod masks;
@@ -78,6 +83,16 @@ mod preview_failure_tests;
 mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
+#[cfg(test)]
+mod select_missing_tests;
+#[cfg(test)]
+mod select_owner_tests;
+pub(crate) mod select_previews;
+#[cfg(test)]
+mod select_tests;
 pub(crate) mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -93,23 +108,6 @@ mod view_state;
 #[cfg(test)]
 mod view_state_tests;
 pub(crate) mod waker;
-// ── catalog lane D: views and desktop ──
-pub(crate) mod develop;
-pub(crate) mod long_work;
-pub(crate) mod loupe;
-pub(crate) mod loupe_frames;
-pub(crate) mod loupe_region;
-pub(crate) mod select;
-pub(crate) mod select_catalog;
-pub(crate) mod select_missing;
-#[cfg(test)]
-mod select_missing_tests;
-#[cfg(test)]
-mod select_owner_tests;
-pub(crate) mod select_previews;
-#[cfg(test)]
-mod select_tests;
-// ── end lane D ──
 
 pub(crate) use lifecycle::{Boot, run};
 
@@ -323,7 +321,6 @@ pub(crate) struct Editor {
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
-    // ── catalog lane D: views and desktop ──
     /// The Select workspace: which workspace is shown, what Select last read, its grid and what is
     /// in flight.
     pub(crate) select: select::Select,
@@ -332,7 +329,6 @@ pub(crate) struct Editor {
     /// Developing picks and the development set: Develop N's confirmation, the set and its
     /// filmstrip, and the large previews a move draws first.
     pub(crate) develop: develop::Develop,
-    // ── end lane D ──
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -394,14 +390,12 @@ const AFTER_MESSAGE: [AfterMessage; 18] = [
     overlay::after_message,
     thumbnails::after_message,
     mask_coverage::after_message,
-    // ── catalog lane D: views and desktop ──
     select::after_message,
     select_missing::after_message,
     select_catalog::after_message,
     loupe::after_message,
     develop::after_message,
     long_work::after_message,
-    // ── end lane D ──
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -409,9 +403,7 @@ const AFTER_MESSAGE: [AfterMessage; 18] = [
 const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
     capabilities::after_derive,
     controls::after_derive,
-    // ── catalog lane D: views and desktop ──
     loupe::after_derive,
-    // ── end lane D ──
 ];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
@@ -425,12 +417,10 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
     evidence::subscription,
     capabilities::subscription,
     export::subscription,
-    // ── catalog lane D: views and desktop ──
     select::subscription,
     loupe::subscription,
     develop::subscription,
     long_work::subscription,
-    // ── end lane D ──
 ];
 
 impl Editor {
@@ -493,11 +483,9 @@ impl Editor {
             capability_started: Vec::new(),
             performance: performance::Sampler::open(),
             export: Default::default(),
-            // ── catalog lane D: views and desktop ──
             select: Default::default(),
             long_work: long_work::LongWork::watching(&owner),
             develop: Default::default(),
-            // ── end lane D ──
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -676,11 +664,9 @@ impl Editor {
             preset_form: &self.presets.form,
             performance_expanded: self.performance.expanded,
             performance: &self.performance.history,
-            // ── catalog lane D: views and desktop ──
             select: &self.select.state,
             long_work: &self.long_work.state,
             develop: &self.develop.state,
-            // ── end lane D ──
         };
         workspace.derive(&inputs);
         self.workspace = workspace;
@@ -723,11 +709,9 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Export(message) => self.export_update(message),
             Message::Evidence(message) => self.evidence_update(message),
-            // ── catalog lane D: views and desktop ──
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
             Message::Develop(message) => self.develop_update(message),
-            // ── end lane D ──
             Message::Close => self.close(),
         }
     }
@@ -795,7 +779,6 @@ impl Editor {
         let started = Instant::now();
         let element = match self.gallery_page() {
             Some(page) => view::gallery(page),
-            // ── catalog lane D: views and desktop ──
             None if self.select_shown() => view::select::screen(
                 &self.workspace,
                 view::select::Grid {
@@ -808,14 +791,11 @@ impl Editor {
                     loupe: self.loupe_images(),
                 },
             ),
-            // ── end lane D ──
-            // ── catalog lane D: views and desktop ──
             None => view::workspace(
                 &self.workspace,
                 self.surfaces(),
                 self.develop.strip_images(),
             ),
-            // ── end lane D ──
         };
         let mut timing = self.log.loop_timing.get();
         timing.views += 1;
@@ -870,13 +850,11 @@ impl Editor {
                 && self
                     .mask_shape()
                     .is_none_or(|shape| shape.brush().is_some()),
-            // ── catalog lane D: views and desktop ──
             select: self.select_shown(),
             select_menu_open: self.select.state.menu.is_some() || self.select.state.catalog.open(),
             loupe_open: self.loupe_open(),
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
-            // ── end lane D ──
         }
     }
 

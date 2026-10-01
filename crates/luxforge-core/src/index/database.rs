@@ -38,8 +38,7 @@ use std::{
 pub const INDEX_FORMAT: i64 = 5;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
-/// The preview cache's directory inside the index directory; the preview lane (lane B) owns its
-/// layout.
+/// The preview cache's directory inside the index directory; the preview lane owns its layout.
 pub const PREVIEWS_DIR: &str = "previews";
 
 /// How long a connection waits for another connection's write before it answers `conflict`.
@@ -203,7 +202,7 @@ impl IndexDb {
     /// discarding it — never the catalog — when it cannot be used.
     ///
     /// One open at a time in the process ([`OPENING`]): the index lane's threads open it while the
-    /// owner may open it for another lane, and two openers of an index that cannot be used must
+    /// owner may open it for its own reads, and two openers of an index that cannot be used must
     /// not both discard it, one under the other's new connection.
     pub fn open(dir: &Path, catalog_id: &str) -> Result<(Self, IndexOpened), Error> {
         let _opening = OPENING.lock().unwrap_or_else(PoisonError::into_inner);

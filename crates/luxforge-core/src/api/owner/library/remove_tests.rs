@@ -906,7 +906,8 @@ fn remove_empty_deletes_exactly_the_removed_photographs_with_their_strokes_and_a
     };
     let triggers_before = triggers();
     let sequence = harness.sequence();
-    // A rendered preview the preview cache holds of a removed photograph, as lane B writes one.
+    // A rendered preview the preview cache holds of a removed photograph, as the preview lane
+    // writes one.
     let index = rusqlite::Connection::open(
         crate::index::index_dir(&harness.catalog).join(crate::INDEX_FILE),
     )

@@ -1,19 +1,18 @@
-//! The preview lane and cache. **Lane B (previews)** owns this module (`docs/design/catalog.md`,
-//! "The index and previews cache", "Browsing at speed", "Architecture").
+//! The preview lane and cache (`docs/design/catalog.md`, "The index and previews cache",
+//! "Browsing at speed", "Architecture").
 //!
-//! Built:
 //! - `cache.rs`: the previews cache under `<catalog>.index/previews/` and its rows in the index's
 //!   `previews` table — validity by the file's signature, names from what made each file, writes
 //!   through a temporary file and a rename, the loupe and large tiers' shared byte budget with
-//!   least-recently-used eviction — and the reads other lanes use: [`grid_states`] (lane D's
-//!   `browse.rows`) and [`cache_bytes`] (lane C's `catalog.info`).
+//!   least-recently-used eviction — and the reads others use: [`grid_rows`] (`browse.rows`) and
+//!   [`cache_bytes`] (`catalog.info`).
 //! - `extract.rs`: a file's grid tier, in two stages (its thumbnail, then its embedded preview),
 //!   and its loupe tier, from a JPEG original or a RAW's embedded images through `luxforge-raw`,
 //!   with scaled decodes through `luxforge-jpeg`, every tier upright; and the seam where a RAW
 //!   with no usable preview is developed instead (`develop_instead`), for a visible or look-ahead
 //!   task.
 //! - `display.rs`: [`decode_preview`], a cached preview decoded for a client to draw at the size it
-//!   needs, on the client's own worker: the desktop's Select grid's decode (lane D's).
+//!   needs, on the client's own worker: the desktop's Select grid's decode.
 //! - `lane.rs`: the priority queue — the loupe's look-ahead, then visible cells, then the rest of
 //!   the view — deduplicated by (file, tier) and bounded, the failures and deferrals it remembers,
 //!   and at most two worker threads, each blocked on its channel while idle.
@@ -36,7 +35,7 @@
 //! - `bracket.rs`: the brightness check for brackets the metadata cannot show: a
 //!   fingerprint of each complete grid tier, kept beside its row, and [`PreviewProbe`], a
 //!   [`BracketProbe`](crate::catalog_types::BracketProbe) over the index ([`bracket_probe`]) that
-//!   lane D's `browse.view` hands to `organize::group`: it reads a run's fingerprints only when
+//!   `browse.view` hands to `organize::group`: it reads a run's fingerprints only when
 //!   organizing asks about that run.
 //!
 //! The owner's side — each request's job, each client's view job and its progress on the activity
@@ -58,12 +57,12 @@ mod renders;
 
 #[allow(
     unused_imports,
-    reason = "lane D's browse.view loads the probe as it lands"
+    reason = "callers reach the probe through `bracket_probe`"
 )]
 pub(crate) use bracket::{PreviewProbe, bracket_probe};
 #[allow(
     unused_imports,
-    reason = "lanes C and D read these as they land: browse.rows and catalog.info"
+    reason = "`catalog.info` reads `cache_bytes` here; the rest are read inside `previews`"
 )]
 pub(crate) use cache::{CacheBytes, cache_bytes, grid_states};
 pub(crate) use cache::{Store, file_tiers, grid_rows, grids_wanted, intact, touch};

@@ -117,7 +117,6 @@ pub(crate) enum Starting {
     /// An export of the displayed entry: no request in flight only. The one-draft rule does not
     /// apply, since an open draft does not change the displayed entry an export writes.
     Export,
-    // ── catalog lane D: views and desktop ──
     /// Switching to the Select workspace, which does not show the photograph: one draft only, so
     /// an open draft is applied or cancelled first. Neither a previewed entry nor a request in
     /// flight holds it back, and switching pauses neither.
@@ -126,7 +125,6 @@ pub(crate) enum Starting {
     /// draft only, so an open draft is applied or cancelled first. A previewed entry does not hold
     /// it back; a request of this desktop's in flight is answered by the switch itself.
     Photograph,
-    // ── end lane D ──
 }
 
 /// Which halves of the one refusal answer a start.

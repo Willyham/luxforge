@@ -3,7 +3,6 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
-// ── catalog lane D: views and desktop ──
 mod develop;
 mod grid;
 mod long_work;
@@ -11,7 +10,6 @@ mod loupe;
 mod select;
 mod select_catalog;
 mod select_missing;
-// ── end lane D ──
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -122,12 +120,12 @@ pub(crate) struct Evidence {
     pub(crate) agent: Option<ClientId>,
     /// What a running `agent` step still waits for.
     pub(crate) agent_wait: Option<AgentWait>,
-    /// What a running long-running-work step still waits for (catalog lane D).
+    /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
-    /// A running loupe `arrows` step's presses still to send (catalog lane D). Its timer exists only
+    /// A running loupe `arrows` step's presses still to send. Its timer exists only
     /// while presses remain after the first.
     pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
-    /// A running `grid_scroll` step's frames still to scroll (catalog lane D). The window's frame
+    /// A running `grid_scroll` step's frames still to scroll. The window's frame
     /// clock it rides is subscribed to only while it runs.
     pub(crate) grid_scroll: Option<grid::GridScrolling>,
     pub(crate) sync: CaptureSync,
@@ -448,7 +446,6 @@ pub(crate) enum Settle {
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
-    // ── catalog lane D: views and desktop ──
     /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
     /// the view has been evaluated again.
     Select,
@@ -462,7 +459,6 @@ pub(crate) enum Settle {
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
     DevelopAhead,
-    // ── end lane D ──
 }
 
 impl Settle {
@@ -914,11 +910,9 @@ impl Editor {
                 return self.host_answered(result.map(|answer| *answer));
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
-            // ── catalog lane D: views and desktop ──
             EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
             EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
             EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
-            // ── end lane D ──
         }
         Task::none()
     }
@@ -989,14 +983,12 @@ impl Editor {
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Export(step) => self.export_step(step),
-            // ── catalog lane D: views and desktop ──
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
             Step::Loupe(step) => self.loupe_step(step),
             Step::GridScroll(step) => self.grid_scroll_step(step),
             Step::Catalog(step) => self.catalog_step(step),
             Step::Develop(step) => self.develop_step(step),
-            // ── end lane D ──
         }
     }
 
@@ -3208,7 +3200,6 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
-            // ── catalog lane D: views and desktop ──
             // A Select key waits for what it asked the owner for; a refused switch has nothing to
             // wait for and is captured with its reason.
             Some(Message::Select(_)) => {
@@ -3226,7 +3217,6 @@ impl Editor {
                 self.await_develop();
                 task
             }
-            // ── end lane D ──
             Some(_) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.capture_next_frame();
@@ -3763,10 +3753,8 @@ impl Editor {
                 }
                 self.settle_step(Settle::Export, by);
             }
-            // ── catalog lane D: views and desktop ──
             Outcome::SelectSettled => self.select_settled(by),
             Outcome::LongWorkShown => self.long_work_shown(by),
-            // ── end lane D ──
         }
     }
 
@@ -4105,9 +4093,9 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
-        // A loupe `arrows` step's presses after its first, gated the same way (catalog lane D).
+        // A loupe `arrows` step's presses after its first, gated the same way.
         subscriptions.extend(loupe::subscription(evidence));
-        // A `grid_scroll` step's frame clock, gated the same way (catalog lane D).
+        // A `grid_scroll` step's frame clock, gated the same way.
         subscriptions.extend(grid::subscription(evidence));
     }
     Subscription::batch(subscriptions)

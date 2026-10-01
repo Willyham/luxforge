@@ -71,8 +71,8 @@ impl PlaceNames for GridPlaces {
     }
 }
 
-/// A preview check standing in for lane B's: each frame's measured brightness and its framing, known
-/// for some frames; it answers when it knows every frame and they share one framing.
+/// A preview check standing in for the preview lane's: each frame's measured brightness and its
+/// framing, known for some frames; it answers when it knows every frame and they share one framing.
 #[derive(Default)]
 pub(in crate::organize) struct TableProbe(pub HashMap<ViewItem, (u32, f32)>);
 

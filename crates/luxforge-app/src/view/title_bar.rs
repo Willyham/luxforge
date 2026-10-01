@@ -45,10 +45,8 @@ const EXPORT_MENU_WIDTH: f32 = 220.0;
 /// on the window over them rather than between them, so they stay put whatever the file's name.
 pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
     let edges = row![
-        // ── catalog lane D: views and desktop ──
         // The workspace switch at the bar's leading edge, Develop raised.
         crate::view::select::switch(crate::state::select::Shown::Develop),
-        // ── end lane D ──
         identity(&model.title),
         Space::new().width(Length::Fill),
         actions(&model.title),

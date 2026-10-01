@@ -2,8 +2,8 @@
 //! which workspace the window shows, what the Select workspace last read from the owner — the event
 //! list, the view's summary and facets, and a bounded window of its rows — and the plain data its
 //! regions are drawn from: the title bar, the sources panel, the filter bar and the floating strip,
-//! the grid's blocks and cells, the Info panel and the status line. **Lane D (views and desktop)**
-//! owns it. Like every view model it names no framework type, no widget and no view.
+//! the grid's blocks and cells, the Info panel and the status line. Like every view model it names
+//! no framework type, no widget and no view.
 //!
 //! The desktop holds no catalog logic. A change of source, filter, sort or grouping is a whole
 //! [`ViewQuery`] for the owner to evaluate ([`changed`]); a selection gesture is the `browse.select`
