@@ -9,14 +9,17 @@
 //!
 //! - **Renders.** A render is one photograph at one entry — the current one, or the one a request
 //!   names — making every tier wanted of it (grid, large or both) from one preparation. Requests
-//!   for the same (asset, entry) join it; each tier has one `preview-render` catalog job, shared
-//!   by every request for it, whose result is the tier's
-//!   [`PreviewInfo`](crate::catalog_types::PreviewInfo). A tier asked for while its render runs
-//!   without it is rendered next. Renders wait in the lane's priority order (look-ahead, then
-//!   visible newest first, then background) in a queue of at most [`RENDER_QUEUE_CAPACITY`], and
-//!   run one at a time on the render worker; the one running is a "Rendering previews" row on the
-//!   activity board with its job. `job.cancel` of a tier's job leaves the render, which is removed
-//!   from the queue, or stopped at its next checkpoint, once no tier of it is wanted.
+//!   for the same (asset, entry) join it; each tier has one `preview-render` catalog job, whose
+//!   result is the tier's [`PreviewInfo`](crate::catalog_types::PreviewInfo), shared by interest
+//!   as a file's tier's is: every request for the tier joins it and reads it, and a commit's
+//!   background re-render opens it for nobody. A tier asked for while its render runs without it
+//!   is rendered next. Renders wait in the lane's priority order (look-ahead, then visible newest
+//!   first, then background) in a queue of at most [`RENDER_QUEUE_CAPACITY`], and run one at a
+//!   time on the render worker; the one running is a "Rendering previews" row on the activity
+//!   board with its job. A client's `job.cancel` of a tier's job, or its disconnect, releases its
+//!   interest ([`Renders::released`]); when the last interested client leaves, the job ends
+//!   `cancelled` and leaves the render, which is removed from the queue, or stopped at its next
+//!   checkpoint, once no tier of it is wanted.
 //! - **The camera preview.** Until a photograph has any render of a tier, a request for it also
 //!   asks the extraction workers for its camera preview (`crate::previews::CameraSource`), at the
 //!   request's priority: the fallback the next read answers. The render releases it.
@@ -119,7 +122,8 @@ struct RenderTask {
     tiers: BTreeMap<PreviewTier, (JobId, Arc<JobControl>)>,
     /// While it runs, the tiers the render makes.
     making: Option<Vec<PreviewTier>>,
-    /// The clients that asked, woken when it writes or ends.
+    /// The clients that asked and have not left every tier they asked for, woken when it writes
+    /// or ends.
     waiters: BTreeSet<ClientId>,
     /// A client asked for it; otherwise only a commit did, and a newer commit supersedes it.
     requested: bool,
@@ -150,9 +154,9 @@ impl Renders {
         self.used = true;
     }
 
-    /// `job.cancel` cancelled `job_id` in the job table: when it is a render's tier, the render
-    /// leaves the queue, or stops at its next checkpoint, once no tier of it is wanted. Whether it
-    /// was one.
+    /// The job table stopped `job_id`, its last interested client gone: when it is a render's
+    /// tier, it ends `cancelled`, and the render leaves the queue, or stops at its next checkpoint,
+    /// once no tier of it is wanted. Whether it was one.
     pub(super) fn cancelled(&mut self, job_id: &JobId, jobs: &mut Jobs) -> bool {
         let Some((id, tier)) = self.jobs.remove(job_id) else {
             return false;
@@ -170,6 +174,30 @@ impl Renders {
             }
         }
         true
+    }
+
+    /// `client` left `job_id`, when it is a render's tier: it is woken for the render no more once
+    /// it wants none of its tiers. Answers the photograph's row and the tier when the client wants
+    /// no render of that tier of it any more, so the camera preview asked for in the tier's place
+    /// wakes it no more either; `None` otherwise, and for any other job. One pass over the renders
+    /// held, at most [`RENDER_QUEUE_CAPACITY`] and the running one.
+    pub(super) fn released(
+        &mut self,
+        job_id: &JobId,
+        client: ClientId,
+        jobs: &Jobs,
+    ) -> Option<(AssetRowId, PreviewTier)> {
+        let (id, tier) = *self.jobs.get(job_id)?;
+        let wants = |job: &JobId| jobs.wanted_by(job, client);
+        let task = self.tasks.get_mut(&id)?;
+        if !task.tiers.values().any(|(job, _)| wants(job)) {
+            task.waiters.remove(&client);
+        }
+        let row = task.row;
+        let still = self.tasks.values().any(|task| {
+            task.row == row && task.tiers.get(&tier).is_some_and(|(job, _)| wants(job))
+        });
+        (!still).then_some((row, tier))
     }
 
     /// Take a waiting render out of the queue and forget it.
@@ -219,8 +247,9 @@ impl Renders {
         woken
     }
 
-    /// A client has gone: it is woken for nothing any more. The jobs its requests made belong to no
-    /// client and stay.
+    /// A client has gone: it is woken for nothing any more. Its interest in the tiers' jobs has
+    /// left them already (`Jobs::disconnect`), and a tier it was the last to want has ended through
+    /// [`Self::cancelled`].
     pub(super) fn disconnect(&mut self, client: ClientId) {
         for task in self.tasks.values_mut() {
             task.waiters.remove(&client);
@@ -370,9 +399,10 @@ pub(super) fn read_photo(
 }
 
 /// Queue `tier` of `photo` at `entry`, or join the render that makes it: its tier's job, opened by
-/// the first request for it. A new render is planned once now, which refuses a stack no render
-/// could make (an entry not of the photograph, an effect without its provider) before anything is
-/// queued. `resource-limit` when a new render would pass the queue's bound.
+/// the first request for it (for nobody, by a commit's re-render) and joined by every later one. A
+/// new render is planned once now, which refuses a stack no render could make (an entry not of the
+/// photograph, an effect without its provider) before anything is queued. `resource-limit` when a
+/// new render would pass the queue's bound.
 fn want(
     owner: &mut Owner,
     call: Option<&Call<'_>>,
@@ -425,17 +455,26 @@ fn want(
         task.waiters.insert(call.client);
     }
     let job_id = match task.tiers.get(&tier) {
-        Some((job_id, _)) => job_id.clone(),
+        Some((job_id, _)) => {
+            if let Some(call) = call {
+                let joined = owner.jobs.join_catalog(job_id, call.client);
+                debug_assert!(joined, "a tier's job is live and shared");
+            }
+            job_id.clone()
+        }
         None => {
             let job_id = JobId::new();
             let control = JobControl::new();
-            owner.jobs.open_catalog(CatalogOpened {
-                job_id: job_id.clone(),
-                kind: JobKind::PreviewRender,
-                asset_id: Some(photo.asset_id.clone()),
-                origin: call.map(|call| call.origin.clone()),
-                control: control.clone(),
-            });
+            owner.jobs.open_catalog_shared(
+                CatalogOpened {
+                    job_id: job_id.clone(),
+                    kind: JobKind::PreviewRender,
+                    asset_id: Some(photo.asset_id.clone()),
+                    origin: call.map(|call| call.origin.clone()),
+                    control: control.clone(),
+                },
+                call.map(|call| call.client),
+            );
             if task
                 .making
                 .as_ref()

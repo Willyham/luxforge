@@ -70,7 +70,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | How promptly a cancelled 24 MP render stops, in the transform pass and mid colour chunk, against its 25 ms bound, release only | `cargo test --release --locked -p luxforge-core --test cancellation -- --ignored --nocapture cancelled` |
 | Inspect a capture | `cargo xtask check-capture --image PNG [--orientation N]` |
 | Process failure checks; macOS measurement, `--samples` defaults to 5 launches per workload | `cargo xtask hardening --binary PATH --output NEW_DIR`, `cargo xtask measure --binary PATH --output NEW_DIR [--samples N]` |
-| The catalog's provisional performance targets in one report, `catalog-measure.json` with `catalog-measure.md` beside it: every row with its p50/p95, scope, cache state and the load at its step's start and end, and a `not_measured`, `skipped` or `failed` row with its reason for anything not taken. Its data is made under the output's `scratch/`: generated files, photographs and JPEGs, a tree and a folder of copies of those JPEGs, and a RAW trip copied from the corpus (`--raw-corpus`, else `LUXFORGE_RAW_CORPUS_DIR`; its rows are skipped when it is absent). It times `browse.view` and `browse.rows` at the design's scale, the first browse of the trip as an indexed folder (the first screen, every file, event and moment, every grid preview), returning to it and developing its picks, a first index of the tree with the owner's round trips sampled throughout, the preview bracket check per run (the core's ignored bench `bracket_probe_per_run`), idle CPU with the watchers armed in the core and in the editor, and a Basic drag through `editor-latency` alone, during indexing and during a preview backlog. `--card PATH` browses the mounted camera card that path is on, as a card, for a first browse from a card reader; without it those rows are skipped. `--samples` defaults to 30, and a first browse takes at most 5. `--scale tiny` proves the harness in minutes and claims nothing. The desktop's frame-time probes and the Develop switch are rows it reports `not_measured` until they are built. Not part of `verify`'s timing tier | `cargo run --release --locked --package xtask -- catalog-measure --output NEW_DIR [--samples N] [--scale tiny\|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]` |
+| The catalog's provisional performance targets in one report, `catalog-measure.json` with `catalog-measure.md` beside it: every row with its p50/p95, scope, cache state and the load at its step's start and end, and a `not_measured`, `skipped` or `failed` row with its reason for anything not taken. Its data is made under the output's `scratch/`: generated files, photographs and JPEGs, a tree and a folder of copies of those JPEGs, a tree of hard links to them, and a RAW trip copied from the corpus (`--raw-corpus`, else `LUXFORGE_RAW_CORPUS_DIR`; its rows are skipped when it is absent). It times `browse.view` and `browse.rows` at the design's scale, the first browse of the trip as an indexed folder (the first screen, every file, event and moment, every grid preview), returning to it and developing its picks, a first index of the tree of copies and of the tree of hard links (200,000 links at full scale, 400 sharing each JPEG's file identity; its rows skipped where the file system refuses hard links), each with the owner's round trips sampled throughout, the preview bracket check per run (the core's ignored bench `bracket_probe_per_run`), idle CPU with the watchers armed in the core and in the editor, and a Basic drag through `editor-latency` alone, during indexing and during a preview backlog. `--card PATH` browses the mounted camera card that path is on, as a card, for a first browse from a card reader; without it those rows are skipped. `--samples` defaults to 30, and a first browse takes at most 5. `--scale tiny` proves the harness in minutes and claims nothing. Its desktop step (`xtask/src/catalog_probes/`) times, through background evidence launches of the editor, grid scroll over the folder (the updates that adopt each offset), loupe stepping with the look-ahead warm (in display frames of the observed frame interval, and in ms) and a held arrow at 30 ms, the 100% focus check from a full-size embedded preview and, over the trip, from a development per camera (skipped without it), and the decoded grid and loupe previews the editor held meanwhile; the Develop switch is a row it reports `not_measured` until it is built. Not part of `verify`'s timing tier | `cargo run --release --locked --package xtask -- catalog-measure --output NEW_DIR [--samples N] [--scale tiny\|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]` |
 | Package; dependency inventory | `cargo xtask package --output NEW_DIR`, `cargo xtask inventory --output NEW_DIR` |
 | License, source and advisory policy | `cargo xtask audit`, see [dependencies](dependencies.md) |
 
@@ -805,6 +805,31 @@ Each step is an object with exactly one key.
   `session.state` `browse` block for the desktop's client, so a frame's selection can be checked
   against what the owner holds. A source row that opens the native folder dialog, a menu item that
   does not exist and a position whose row is not read fail the step.
+- `loupe` is one gesture on the open loupe that its timing needs: `{"arrows": {"direction":
+  "right", "count": 30, "interval_ms": 30}}` waits until the look-ahead is warm — every frame the
+  loupe wants, on screen and ahead, decoded at its size or with nothing more to wait for — records
+  `loupe_warm`, then presses the arrow `count` times (1 to 240) through the key table,
+  `interval_ms` apart (1 to 1000; a single press takes none), the first a press and the rest the
+  key's repeats, and is captured once Select has nothing in flight after the last;
+  `{"pointer": [0.3, 0.3]}` moves the pointer over the picture to those fractions of it, recorded
+  as `loupe_pointer_sent`, and is captured once Select has settled, with the focus check on once
+  the region under the pointer has landed. A closed loupe fails the step. Wherever events are
+  written the loupe records what a timing harness pairs: each key that moves the active frame
+  (`loupe_key`, with `pressed_ms` from the start of its handling, where it moved from and to and
+  whether that frame was already `ready`), `Z` (`loupe_focus`), each region asked for
+  (`loupe_region_asked`), and, from the model just derived, each picture the active frame presents
+  (`loupe_presented`, under its own item and preview key, a stand-in said so) and each region the
+  inset presents (`loupe_region_presented`). Presented means the update whose redraw draws it, as
+  for `preview_displayed`, not scanout. Each frame's `select.loupe.frames` block also records the
+  most decoded bytes the loupe has held at once (`peak_bytes`), kept when its frames are released.
+- `grid_scroll` (`{"px_per_frame": 60, "frames": 240}`, 1 to 2000 logical pixels on each of 1 to
+  1000 frames) scrolls the Select grid down on each frame of the window's own frame clock, which it
+  subscribes to only while it scrolls, sending the offset the grid's scrollable publishes, as a
+  steady trackpad scroll does. Each frame is recorded as `grid_scroll_frame` (the frame's time, the
+  offset, the cells on screen drawing a decoded preview, the placeholder while one loads, or
+  nothing ever, and the grid's decoded preview bytes against its budget), and the grid records
+  `select_scrolled` in the update that adopts an offset, the one whose redraw draws it. It is captured once Select has nothing in flight after its last frame,
+  or after the frame that reached the end of the grid; a grid that is not shown fails the step.
 - `missing` is one gesture on Select's Missing originals, sent through the message its control
   sends: `{"find": {"group": "2026-09 Konstanz", "folder": "/path"}}` presses Find in a folder… on
   the group developed from the folder of that name and answers the folder dialog with `folder`,

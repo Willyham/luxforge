@@ -1,8 +1,9 @@
 //! The loupe's region ([burst board](../../../../docs/design/catalog/choosing-from-a-burst.png)),
 //! drawn in Select's centre in place of the grid while the loupe is open, from
 //! `state/loupe.rs`'s model. Like every view it reads only its model, and what the app lends it for
-//! the frame ([`LoupeImages`]): each picture's handle by its own frame's item and preview key, the
-//! region's, and the grid's previews for the strip. No handle is made here.
+//! the frame ([`LoupeImages`]): each picture's and strip thumbnail's handle by its own frame's item
+//! and preview key, the region's, and the grid's previews for the strip's files. No handle is made
+//! here.
 //!
 //! Top to bottom, as the board draws it: the info bar, the photograph fitted to the screen (or
 //! compare's cells) with the 100% focus check's box and inset over it, the moment's numbered
@@ -24,8 +25,8 @@ use iced::{
     widget::{Row, Space, column, container, image, mouse_area, stack, text},
 };
 use luxforge_ui::{
-    FocusInsetModel, FrameStripModel, InsetSource, KeyHint, LoupeInfoModel, MomentFrame, caption,
-    focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, theme,
+    FocusInsetModel, FrameStripModel, InsetRegion, InsetSource, KeyHint, LoupeInfoModel,
+    MomentFrame, caption, focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, theme,
 };
 
 fn loupe_message(message: LoupeMessage) -> Message {
@@ -132,7 +133,10 @@ fn single<'a>(
                 .region
                 .as_ref()
                 .and_then(|region| images.region(region))
-                .cloned(),
+                .map(|handle| InsetRegion {
+                    handle: handle.clone(),
+                    size: Size::new(focus.region_points.0, focus.region_points.1),
+                }),
             source: if focus.developed {
                 InsetSource::Development
             } else {
@@ -207,18 +211,15 @@ fn compare<'a>(cells: &'a [FrameModel], images: LoupeImages<'a>) -> Element<'a, 
     .into()
 }
 
-/// The moment's numbered frames, each the grid's preview of its file, with the moments either side.
+/// The moment's numbered frames, each its grid preview — a file's the grid's, a photograph's its
+/// grid tier — with the moments either side.
 fn strip_view<'a>(strip: &'a StripModel, images: LoupeImages<'a>) -> Element<'a, Message> {
     let model = FrameStripModel {
         frames: strip
             .frames
             .iter()
             .map(|frame| MomentFrame {
-                image: frame
-                    .item
-                    .as_ref()
-                    .and_then(|item| images.thumbnail(item))
-                    .cloned(),
+                image: images.thumbnail(frame).cloned(),
                 picked: frame.picked,
             })
             .collect(),
@@ -241,7 +242,7 @@ fn strip_view<'a>(strip: &'a StripModel, images: LoupeImages<'a>) -> Element<'a,
 mod tests {
     use crate::state::loupe::{
         FOCUS_INSET_HEIGHT, FOCUS_REGION, INFO_BAR_HEIGHT, STRIP_CHEVRON, STRIP_FRAME_WIDTH,
-        STRIP_HEIGHT, STRIP_SPACING,
+        STRIP_HEIGHT, STRIP_IMAGE, STRIP_SPACING,
     };
     use luxforge_ui::theme;
 
@@ -254,6 +255,10 @@ mod tests {
         assert_eq!(STRIP_FRAME_WIDTH, theme::MOMENT_FRAME_WIDTH);
         assert_eq!(STRIP_SPACING, theme::MOMENT_STRIP_SPACING);
         assert_eq!(STRIP_CHEVRON, theme::ICON_BUTTON_SIZE);
+        assert_eq!(
+            STRIP_IMAGE,
+            (theme::MOMENT_IMAGE_WIDTH, theme::MOMENT_IMAGE_HEIGHT)
+        );
         assert_eq!(
             FOCUS_REGION,
             (theme::FOCUS_INSET_WIDTH, theme::FOCUS_REGION_HEIGHT)

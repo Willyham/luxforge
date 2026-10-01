@@ -34,7 +34,7 @@
 use crate::app::{
     Before, Editor,
     gesture::Starting,
-    loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Want},
+    loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Slot, Want},
     message::{Message, develop::DevelopMessage, select::SelectMessage},
     select_previews::{self, Item, SelectPreviewMessage, SelectPreviews, Wanted},
     tasks::{self, call, owner_task, owner_work, request},
@@ -848,7 +848,7 @@ impl Editor {
             return false;
         }
         let asset = switch.asset.clone();
-        let Some(held) = self.develop.frames.photo(&item(&asset)) else {
+        let Some(held) = self.develop.frames.photo(&Slot::frame(item(&asset))) else {
             return false;
         };
         let Handle::Rgba {
@@ -909,7 +909,7 @@ impl Editor {
         let mut push = |index: usize, shown: bool| {
             if let Some(photo) = set.photo(index) {
                 wants.push(Want {
-                    item: item(&photo.asset_id),
+                    slot: Slot::frame(item(&photo.asset_id)),
                     pixels,
                     shown,
                 });

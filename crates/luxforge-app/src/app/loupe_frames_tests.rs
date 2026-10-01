@@ -2,11 +2,12 @@
 //! each once, a queued frame read again once the owner wakes this client, and the reads of frames
 //! passed cancelled), a stand-in drawn until its tier replaces it, a decode that lands for a frame
 //! no longer shown never drawn as another's, the byte budget under a held arrow and its eviction
-//! (never a frame on screen), and a real owner's `preview.read` of the loupe tier answered and
-//! decoded into a handle of the screen's size.
+//! (never a frame on screen), a photograph's strip thumbnail read at the grid tier and held beside
+//! its frame, lent only as its own, and a real owner's `preview.read` of a file's loupe tier and of
+//! a photograph's grid tier answered and decoded into handles of the size they are drawn at.
 use super::*;
 use luxforge_core::{
-    EditorService, JobId,
+    AssetId, EditorService, JobId,
     catalog_types::{FileId, FileRecord, FileSignature, HeaderState, VolumeId},
     seed::IndexSeeder,
 };
@@ -16,15 +17,23 @@ use std::fs;
 /// The loupe's area at scale 2 on a 1440 × 900 window with the panels hidden.
 const SCREEN: (u32, u32) = (2784, 1282);
 
+/// A strip frame's picture box at scale 2.
+const STRIP: (u32, u32) = (232, 152);
+
 fn file(id: i64) -> PreviewItem {
     PreviewItem::File {
         file_id: FileId(id),
     }
 }
 
+/// File `id`'s frame.
+fn frame(id: i64) -> Slot {
+    Slot::frame(file(id))
+}
+
 fn want(id: i64, shown: bool) -> Want {
     Want {
-        item: file(id),
+        slot: frame(id),
         pixels: SCREEN,
         shown,
     }
@@ -87,8 +96,8 @@ fn answer(batch: &ReadBatch, by: impl Fn(i64) -> Result<PreviewAnswer, Refusal>)
         answers: batch
             .reads
             .iter()
-            .map(|item| match item {
-                PreviewItem::File { file_id } => (item.clone(), by(file_id.0)),
+            .map(|slot| match &slot.item {
+                PreviewItem::File { file_id } => (slot.clone(), by(file_id.0)),
                 PreviewItem::Photo { .. } => unreachable!(),
             })
             .collect(),
@@ -99,7 +108,7 @@ fn ids(batch: &ReadBatch) -> Vec<i64> {
     batch
         .reads
         .iter()
-        .map(|item| match item {
+        .map(|slot| match &slot.item {
             PreviewItem::File { file_id } => file_id.0,
             PreviewItem::Photo { .. } => unreachable!(),
         })
@@ -120,10 +129,14 @@ fn decoded(decode: &Decode) -> Decoded {
 }
 
 fn planned(frames: &LoupeFrames, id: i64) -> Option<Decode> {
+    planned_for(frames, &frame(id))
+}
+
+fn planned_for(frames: &LoupeFrames, slot: &Slot) -> Option<Decode> {
     frames
         .planned()
         .iter()
-        .find(|decode| decode.item == file(id))
+        .find(|decode| &decode.slot == slot)
         .cloned()
 }
 
@@ -191,7 +204,7 @@ fn loupe_frames_draw_the_stand_in_until_the_tier_lands() {
         "the tier is still being read"
     );
     frames.adopt(decoded(&stand_in));
-    let held = frames.held(&file(5));
+    let held = frames.held(&frame(5));
     let picture = held.picture.expect("drawn");
     assert!(picture.stand_in && picture.key.contains(":grid:"));
     assert!(frames.handle(&picture).is_some());
@@ -204,11 +217,11 @@ fn loupe_frames_draw_the_stand_in_until_the_tier_lands() {
         "the 2560 × 1707 tier fitted to 1282 px high"
     );
     assert!(
-        frames.held(&file(5)).picture.unwrap().stand_in,
+        frames.held(&frame(5)).picture.unwrap().stand_in,
         "the stand-in stays until the tier lands"
     );
     frames.adopt(decoded(&tier));
-    let picture = frames.held(&file(5)).picture.unwrap();
+    let picture = frames.held(&frame(5)).picture.unwrap();
     assert!(!picture.stand_in && picture.key.contains(":loupe:"));
     assert_eq!((picture.width, picture.height), (2560, 1707));
     assert!(frames.settled(&wanting(5, &[])));
@@ -220,6 +233,41 @@ fn loupe_frames_draw_the_stand_in_until_the_tier_lands() {
         "a look-ahead read is in flight"
     );
     assert_accounted(&frames);
+}
+
+/// Warm: every wanted frame, on screen and ahead, decoded at its size; a frame is ready only with
+/// its own tier held, never with the stand-in drawn meanwhile.
+#[test]
+fn loupe_frames_are_warm_once_the_look_ahead_is_decoded() {
+    let mut frames = paused(DECODED_BUDGET_BYTES);
+    let wanted = wanting(5, &[6, 7]);
+    let batch = frames.want(wanted.clone()).unwrap();
+    let job = JobId::new();
+    frames.answered(answer(&batch, |id| {
+        if id == 7 { queued(id, &job) } else { ready(id) }
+    }));
+    assert!(!frames.all_settled(&wanted) && !frames.ready(&wanted[0]));
+    for id in [5, 6] {
+        frames.adopt(decoded(&planned(&frames, id).unwrap()));
+    }
+    let stand_in = planned(&frames, 7).expect("frame 7's stand-in");
+    frames.adopt(decoded(&stand_in));
+    assert!(frames.settled(&wanted), "the frame on screen is settled");
+    assert!(frames.ready(&wanted[0]) && frames.ready(&wanted[1]));
+    assert!(
+        !frames.ready(&wanted[2]) && !frames.all_settled(&wanted),
+        "frame 7 draws its stand-in while its tier is made: not warm"
+    );
+    let again = frames.woken(true).unwrap();
+    frames.answered(answer(&again, ready));
+    frames.adopt(decoded(&planned(&frames, 7).unwrap()));
+    assert!(frames.ready(&wanted[2]) && frames.all_settled(&wanted));
+    // The high-water mark of the bytes held outlives their release.
+    let held = frames.summary()["bytes"].as_u64().unwrap();
+    assert!(held > 0 && frames.summary()["peak_bytes"].as_u64() >= Some(held));
+    let _ = frames.release();
+    assert_eq!(frames.summary()["bytes"], 0);
+    assert!(frames.summary()["peak_bytes"].as_u64() >= Some(held));
 }
 
 /// Identity: a decode that lands for a frame no longer on screen is kept as that frame's own while
@@ -239,14 +287,14 @@ fn loupe_frames_a_late_decode_is_never_drawn_as_another_frame() {
     }
     frames.adopt(decoded(&six));
     assert!(
-        frames.held(&file(6)).picture.is_none(),
+        frames.held(&frame(6)).picture.is_none(),
         "nothing wants it: dropped"
     );
     frames.adopt(decoded(&five));
-    let nine = frames.held(&file(9));
+    let nine = frames.held(&frame(9));
     assert!(nine.picture.is_none(), "frame 9 has nothing of its own yet");
     let picture = frames
-        .held(&file(5))
+        .held(&frame(5))
         .picture
         .expect("frame 5 keeps its own");
     assert_eq!(picture.item, file(5));
@@ -261,10 +309,10 @@ fn loupe_frames_a_late_decode_is_never_drawn_as_another_frame() {
     );
     // A stale stage: frame 9's answer changes before its first decode lands.
     let stale = planned(&frames, 9).unwrap();
-    let entry = frames.entries.get_mut(&file(9)).unwrap();
+    let entry = frames.entries.get_mut(&frame(9)).unwrap();
     entry.source.as_mut().unwrap().key = "file:9:changed:loupe:embedded".into();
     frames.adopt(decoded(&stale));
-    assert!(frames.held(&file(9)).picture.is_none(), "dropped");
+    assert!(frames.held(&frame(9)).picture.is_none(), "dropped");
     assert_accounted(&frames);
 }
 
@@ -305,7 +353,7 @@ fn loupe_frames_a_held_arrow_never_queues_more_decodes_than_the_budget_holds() {
             frames.adopt(decoded(&head));
         }
         assert_accounted(&frames);
-        let shown = frames.held(&file(active));
+        let shown = frames.held(&frame(active));
         assert!(
             shown
                 .picture
@@ -339,14 +387,14 @@ fn loupe_frames_evict_the_least_recently_wanted_never_a_frame_on_screen() {
     frames.answered(answer(&batch, ready));
     let three = planned(&frames, 3).unwrap();
     frames.adopt(decoded(&three));
-    assert!(frames.held(&file(1)).picture.is_none(), "the oldest went");
-    assert!(frames.held(&file(3)).picture.is_some());
+    assert!(frames.held(&frame(1)).picture.is_none(), "the oldest went");
+    assert!(frames.held(&frame(3)).picture.is_some());
     // Frame 4, still wanted ahead, may evict frame 2 (no longer wanted), but never frame 3.
     let four = planned(&frames, 4).unwrap();
     frames.adopt(decoded(&four));
-    assert!(frames.held(&file(3)).picture.is_some(), "on screen");
-    assert!(frames.held(&file(4)).picture.is_some());
-    assert!(frames.held(&file(2)).picture.is_none());
+    assert!(frames.held(&frame(3)).picture.is_some(), "on screen");
+    assert!(frames.held(&frame(4)).picture.is_some());
+    assert!(frames.held(&frame(2)).picture.is_none());
     assert_accounted(&frames);
     // A frame larger than what can be made room for is dropped and not planned again.
     let mut tiny = paused(one / 2);
@@ -356,7 +404,7 @@ fn loupe_frames_evict_the_least_recently_wanted_never_a_frame_on_screen() {
         tiny.planned().is_empty(),
         "a decode larger than the budget is never planned"
     );
-    assert!(tiny.held(&file(7)).picture.is_none());
+    assert!(tiny.held(&frame(7)).picture.is_none());
 }
 
 /// A refused frame says why and is settled, having nothing to wait for; a read the lane ended
@@ -376,7 +424,7 @@ fn loupe_frames_a_refusal_is_settled_and_release_cancels_the_queued_reads() {
             queued(id, &job)
         }
     }));
-    let held = frames.held(&file(5));
+    let held = frames.held(&frame(5));
     assert_eq!(held.unavailable.as_deref(), Some("unsupported-input"));
     assert!(
         frames.settled(&wanting(5, &[6])),
@@ -432,6 +480,7 @@ fn loupe_frames_a_real_owner_answers_and_the_tier_is_decoded() {
         .expect("the file");
     seeder.finish().expect("the index");
     let item = PreviewItem::File { file_id: files[0] };
+    let slot = Slot::frame(item.clone());
     let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
     let client = owner.register();
     let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -443,7 +492,7 @@ fn loupe_frames_a_real_owner_answers_and_the_tier_is_decoded() {
 
     let mut frames = LoupeFrames::default();
     let wants = vec![Want {
-        item: item.clone(),
+        slot: slot.clone(),
         pixels: (240, 240),
         shown: true,
     }];
@@ -455,7 +504,7 @@ fn loupe_frames_a_real_owner_answers_and_the_tier_is_decoded() {
         }
         frames.settled(&wants)
     });
-    let picture = frames.held(&item).picture.expect("drawn");
+    let picture = frames.held(&slot).picture.expect("drawn");
     assert!(
         !picture.stand_in && picture.key.contains("loupe"),
         "{picture:?}"
@@ -467,6 +516,341 @@ fn loupe_frames_a_real_owner_answers_and_the_tier_is_decoded() {
     };
     assert_eq!((*width, *height), (240, 160));
     assert_eq!(frames.summary()["handles"], 1);
+    drop(frames);
+    owner.stop();
+    let _ = join.join();
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// Photograph `id`, at its current entry.
+fn photo(id: u32) -> PreviewItem {
+    PreviewItem::Photo {
+        asset_id: AssetId::parse(format!("asset-photo-{id:04}")).unwrap(),
+        entry_id: None,
+    }
+}
+
+/// Photograph `id`'s strip thumbnail, on screen.
+fn thumbnail_want(id: u32) -> Want {
+    Want {
+        slot: Slot::thumbnail(photo(id)),
+        pixels: STRIP,
+        shown: true,
+    }
+}
+
+/// A preview of photograph `id` at `tier`, 512 × 341 or 2048 × 1365, `origin` (a camera preview is
+/// `embedded`, a render `rendered`).
+fn photo_info(id: u32, tier: PreviewTier, origin: PreviewOrigin) -> PreviewInfo {
+    let (width, height) = match tier {
+        PreviewTier::Large => (2048, 1365),
+        _ => (512, 341),
+    };
+    PreviewInfo {
+        item: photo(id),
+        tier,
+        path: PathBuf::from(format!(
+            "/c.index/previews/photos/{id}-{}-{}.jpg",
+            tier.as_str(),
+            origin.as_str()
+        )),
+        width,
+        height,
+        origin,
+        bytes: 40_000,
+        key: format!("photo:{id}:e:{}:{}", tier.as_str(), origin.as_str()),
+        approximate: false,
+    }
+}
+
+/// What the lane answers a photograph's slot: its render when `rendered`, else a render job with
+/// its camera preview as the fallback.
+fn photo_answer(slot: &Slot, rendered: bool, job: &JobId) -> Result<PreviewAnswer, Refusal> {
+    let PreviewItem::Photo { asset_id, .. } = &slot.item else {
+        unreachable!("a photograph's slot")
+    };
+    let id: u32 = asset_id.as_str()["asset-photo-".len()..].parse().unwrap();
+    Ok(if rendered {
+        PreviewAnswer::Ready {
+            preview: photo_info(id, slot.tier(), PreviewOrigin::Rendered),
+        }
+    } else {
+        PreviewAnswer::Queued {
+            job_id: job.clone(),
+            fallback: Some(photo_info(id, PreviewTier::Grid, PreviewOrigin::Embedded)),
+        }
+    })
+}
+
+fn photo_answers(
+    batch: &ReadBatch,
+    by: impl Fn(&Slot) -> Result<PreviewAnswer, Refusal>,
+) -> ReadAnswers {
+    ReadAnswers {
+        serial: batch.serial,
+        answers: batch
+            .reads
+            .iter()
+            .map(|slot| (slot.clone(), by(slot)))
+            .collect(),
+    }
+}
+
+/// The size of the handle lent, if one is.
+fn size(handle: Option<&Handle>) -> Option<(u32, u32)> {
+    match handle? {
+        Handle::Rgba { width, height, .. } => Some((*width, *height)),
+        Handle::Path(..) | Handle::Bytes(..) => None,
+    }
+}
+
+/// A photograph's strip thumbnail is read at the grid tier at the visible cells' priority, after
+/// its frame's large tier at the look-ahead's; its camera preview is drawn, said to be one, until
+/// its render lands. The frame and the thumbnail of the same photograph are held apart, each at
+/// its own size, and a thumbnail is lent only for its own item and preview: never as the frame,
+/// never as another photograph's.
+#[test]
+fn loupe_frames_read_a_photographs_strip_thumbnail_at_the_grid_tier_beside_its_frame() {
+    assert_eq!(Slot::thumbnail(photo(1)).tier(), PreviewTier::Grid);
+    assert_eq!(
+        Slot::thumbnail(photo(1)).priority(),
+        PreviewPriority::Visible
+    );
+    assert_eq!(Slot::frame(photo(1)).tier(), PreviewTier::Large);
+    assert_eq!(Slot::frame(photo(1)).priority(), PreviewPriority::LookAhead);
+    let mut frames = paused(DECODED_BUDGET_BYTES);
+    let wants = vec![
+        Want {
+            slot: Slot::frame(photo(1)),
+            pixels: SCREEN,
+            shown: true,
+        },
+        thumbnail_want(1),
+        thumbnail_want(2),
+    ];
+    let batch = frames.want(wants.clone()).expect("reads");
+    assert_eq!(
+        batch.reads,
+        vec![
+            Slot::frame(photo(1)),
+            Slot::thumbnail(photo(1)),
+            Slot::thumbnail(photo(2))
+        ],
+        "the frame first, then the strip"
+    );
+    // Photograph 2 is rendered; photograph 1's render is still to come.
+    let job = JobId::new();
+    frames.answered(photo_answers(&batch, |slot| {
+        photo_answer(slot, slot.item == photo(2), &job)
+    }));
+    let thumbnail_1 = planned_for(&frames, &Slot::thumbnail(photo(1))).unwrap();
+    let frame_1 = planned_for(&frames, &Slot::frame(photo(1))).unwrap();
+    let thumbnail_2 = planned_for(&frames, &Slot::thumbnail(photo(2))).unwrap();
+    assert_eq!(thumbnail_1.side, 229, "512 × 341 fitted to the strip's box");
+    assert_eq!(frame_1.side, 512, "the stand-in at its own size");
+    assert_eq!(thumbnail_2.side, 229);
+    for decode in [&frame_1, &thumbnail_1, &thumbnail_2] {
+        frames.adopt(decoded(decode));
+    }
+    let own = frames
+        .held(&Slot::thumbnail(photo(2)))
+        .picture
+        .expect("photograph 2's thumbnail");
+    assert_eq!(own.item, photo(2));
+    assert_eq!(own.origin, PreviewOrigin::Rendered);
+    assert!(!own.stand_in && own.key.contains(":grid:"));
+    assert_eq!(size(frames.thumbnail(&own)), Some((229, 152)));
+    assert!(frames.handle(&own).is_none(), "never lent as a frame");
+    let camera = frames
+        .held(&Slot::thumbnail(photo(1)))
+        .picture
+        .expect("photograph 1's camera preview meanwhile");
+    assert!(camera.stand_in && camera.origin == PreviewOrigin::Embedded);
+    let frame = frames.held(&Slot::frame(photo(1))).picture.unwrap();
+    assert_eq!(frame.key, camera.key, "the same preview, held twice");
+    assert_eq!(size(frames.handle(&frame)), Some((512, 341)));
+    assert_eq!(size(frames.thumbnail(&camera)), Some((229, 152)));
+    // Identity: photograph 2's preview is never lent under photograph 1, nor for an item not held.
+    assert!(
+        frames
+            .thumbnail(&Picture {
+                item: photo(1),
+                ..own.clone()
+            })
+            .is_none()
+    );
+    assert!(
+        frames
+            .thumbnail(&Picture {
+                item: photo(3),
+                ..own.clone()
+            })
+            .is_none()
+    );
+    assert!(!frames.settled(&wants), "photograph 1 is still rendering");
+    assert_accounted(&frames);
+    assert_eq!(frames.handles, 3);
+    // The render lands: both of photograph 1's slots read again, each replaced in place.
+    let again = frames.woken(true).expect("the owner wrote the render");
+    assert_eq!(
+        again.reads,
+        vec![Slot::frame(photo(1)), Slot::thumbnail(photo(1))]
+    );
+    frames.answered(photo_answers(&again, |slot| photo_answer(slot, true, &job)));
+    for slot in [Slot::frame(photo(1)), Slot::thumbnail(photo(1))] {
+        let decode = planned_for(&frames, &slot).unwrap();
+        frames.adopt(decoded(&decode));
+    }
+    let rendered = frames.held(&Slot::thumbnail(photo(1))).picture.unwrap();
+    assert!(!rendered.stand_in && rendered.origin == PreviewOrigin::Rendered);
+    assert!(
+        frames.thumbnail(&camera).is_none(),
+        "the camera preview is gone"
+    );
+    assert!(frames.thumbnail(&rendered).is_some());
+    let frame = frames.held(&Slot::frame(photo(1))).picture.unwrap();
+    assert!(frame.key.contains(":large:"));
+    assert_eq!(size(frames.handle(&frame)), Some((1924, 1282)));
+    assert!(frames.settled(&wants));
+    assert_eq!(frames.summary()["thumbnails"], 2);
+    assert_eq!(frames.summary()["thumbnails_held"], 2);
+    assert_accounted(&frames);
+}
+
+/// Stepping moment by moment through a view of photographs, each moment's strip of five
+/// thumbnails on screen: the plan never holds more bytes than the budget, the strip's thumbnails
+/// are never evicted while the frames make room, and the reads still queued for the strips passed
+/// are cancelled with the next batch.
+#[test]
+fn loupe_frames_keep_the_strips_thumbnails_on_screen_within_the_budget() {
+    // About three screen frames and a strip.
+    let one = estimate(2048, 1365, side(2048, 1365, SCREEN));
+    let strip = estimate(512, 341, side(512, 341, STRIP));
+    let budget = one * 3 + strip * 5;
+    let mut frames = paused(budget);
+    let job = |moment: u32| JobId::parse(format!("job-strip-{moment:06}")).unwrap();
+    let mut cancelled = Vec::new();
+    for moment in 0..40u32 {
+        let first = moment * 5;
+        let mut wants = vec![
+            Want {
+                slot: Slot::frame(photo(first)),
+                pixels: SCREEN,
+                shown: true,
+            },
+            Want {
+                slot: Slot::frame(photo(first + 1)),
+                pixels: SCREEN,
+                shown: false,
+            },
+            Want {
+                slot: Slot::frame(photo(first + 5)),
+                pixels: SCREEN,
+                shown: false,
+            },
+        ];
+        wants.extend((first..first + 5).map(thumbnail_want));
+        let mut batch = frames.want(wants.clone());
+        while let Some(sent) = batch.take() {
+            cancelled.extend(sent.cancel.iter().cloned());
+            // The frames are rendered; the strip's thumbnails wait for their renders, their camera
+            // previews drawn meanwhile.
+            batch = frames.answered(photo_answers(&sent, |slot| {
+                photo_answer(slot, slot.role == Role::Frame, &job(moment))
+            }));
+        }
+        assert!(
+            frames.plan_bytes() <= budget,
+            "moment {moment}: the plan holds {} of {budget} bytes",
+            frames.plan_bytes()
+        );
+        let plan: Vec<Decode> = frames.planned().to_vec();
+        for decode in &plan {
+            frames.adopt(decoded(decode));
+        }
+        assert_accounted(&frames);
+        for id in first..first + 5 {
+            let held = frames.held(&Slot::thumbnail(photo(id)));
+            assert!(
+                held.picture
+                    .is_some_and(|picture| picture.item == photo(id)),
+                "moment {moment}: photograph {id}'s thumbnail is drawn, as its own"
+            );
+        }
+        assert!(
+            frames.held(&Slot::frame(photo(first))).picture.is_some(),
+            "moment {moment}: the frame on screen is drawn"
+        );
+    }
+    assert!(frames.dropped == 0, "nothing on screen had to be dropped");
+    assert!(
+        cancelled.contains(&job(0).as_str().to_owned()),
+        "the first strip's renders were cancelled once it was passed"
+    );
+    assert!(
+        !cancelled.contains(&job(39).as_str().to_owned()),
+        "the strip on screen keeps its renders"
+    );
+}
+
+/// Through a real owner: a photograph imported into the catalog is read at the grid tier, queued
+/// with a render (its camera preview meanwhile), rendered by the preview lane, which wakes this
+/// client, read again ready, and decoded on the worker into a handle of the strip's size.
+#[test]
+fn loupe_frames_a_real_owner_renders_a_photographs_strip_thumbnail() {
+    let root = temp_dir("loupe-frames-photo");
+    let catalog = root.join("catalog.sqlite");
+    let original = root.join("photos").join("A.jpg");
+    fs::create_dir_all(original.parent().unwrap()).unwrap();
+    fs::copy(luxforge_testbase::paths::jpeg(), &original).unwrap();
+    // The file developed into the catalog as a single opened file is.
+    let asset_id: AssetId = EditorService::open(&catalog)
+        .expect("a catalog")
+        .import(&original)
+        .expect("the photograph")
+        .asset
+        .id;
+    let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
+    let client = owner.register();
+    let slot = Slot::thumbnail(PreviewItem::Photo {
+        asset_id,
+        entry_id: None,
+    });
+    let woke = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = woke.clone();
+    owner.watch_previews(
+        client,
+        Arc::new(move || flag.store(true, Ordering::Release)),
+    );
+
+    let mut frames = LoupeFrames::default();
+    let wants = vec![Want {
+        slot: slot.clone(),
+        pixels: STRIP,
+        shown: true,
+    }];
+    let batch = frames.want(wants.clone()).expect("the thumbnail is read");
+    frames.answered(read(&owner, client, batch));
+    wait_until("the grid tier rendered, read again and decoded", || {
+        if let Some(batch) = frames.woken(woke.swap(false, Ordering::AcqRel)) {
+            frames.answered(read(&owner, client, batch));
+        }
+        frames.settled(&wants)
+    });
+    let picture = frames.held(&slot).picture.expect("drawn");
+    assert!(
+        !picture.stand_in
+            && picture.origin == PreviewOrigin::Rendered
+            && picture.key.contains(":grid:"),
+        "{picture:?}"
+    );
+    // The fixture is 480 × 320: its grid tier is that size, fitted to the strip's 232 × 152.
+    assert_eq!((picture.width, picture.height), (480, 320));
+    assert_eq!(size(frames.thumbnail(&picture)), Some((228, 152)));
+    assert!(
+        frames.handle(&picture).is_none(),
+        "a thumbnail, not a frame"
+    );
     drop(frames);
     owner.stop();
     let _ = join.join();

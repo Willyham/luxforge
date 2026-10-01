@@ -12,11 +12,11 @@
 //! which the loupe keeps near the active frame by scrolling the grid under it.
 //!
 //! **What is drawn is what is named.** The app mirrors what it holds into [`LoupeState::held`]
-//! after every message: for each frame the loupe may draw, the picture it holds for that frame's own
-//! item (its preview's key, origin and size), and the 100% region with the item it was cut from. The
-//! model draws a frame's picture only when its item is the item of the row at the frame's position,
-//! and the view looks a handle up by that item and key alone, so a picture never appears under
-//! another frame's name.
+//! after every message: for each frame the loupe may draw, and each photograph in the strip, the
+//! picture it holds for that frame's own item (its preview's key, origin and size), and the 100%
+//! region with the item it was cut from. The model draws a frame's picture, or a strip frame's
+//! thumbnail, only when its item is the item of the row at the frame's position, and the view looks
+//! a handle up by that item and key alone, so a picture never appears under another frame's name.
 use super::select::{SelectState, exposure_text, thousands};
 use crate::layout::canvas_logical;
 use luxforge_core::catalog_types::{
@@ -58,6 +58,9 @@ pub(crate) const COMPARE_GAP: f32 = 8.0;
 pub(crate) const STRIP_FRAME_WIDTH: f32 = 124.0;
 pub(crate) const STRIP_SPACING: f32 = 6.0;
 pub(crate) const STRIP_CHEVRON: f32 = 26.0;
+/// The box a strip frame's picture is fitted into (`theme::MOMENT_IMAGE_WIDTH`,
+/// `theme::MOMENT_IMAGE_HEIGHT`): what a photograph's thumbnail is decoded for.
+pub(crate) const STRIP_IMAGE: (f32, f32) = (116.0, 76.0);
 /// The 100% inset's region, in points (`theme::FOCUS_INSET_WIDTH`, `theme::FOCUS_REGION_HEIGHT`):
 /// at 100% it shows this many points' worth of pixels at the display's scale.
 pub(crate) const FOCUS_REGION: (f32, f32) = (308.0, 209.0);
@@ -132,6 +135,14 @@ pub(crate) fn strip_capacity(window: (f32, f32), sources_open: bool, info_open: 
     ((room + STRIP_SPACING) / (STRIP_FRAME_WIDTH + STRIP_SPACING))
         .floor()
         .max(1.0) as u32
+}
+
+/// Which of the active frame's unit's frames the strip shows, as indices of the unit from 0: a
+/// window of them that fits across Select's centre, keeping the active one (`index`) in view.
+fn strip_window(state: &SelectState, unit: Unit, index: u32) -> Range<u32> {
+    let loupe = &state.loupe;
+    let capacity = strip_capacity(loupe.window, state.sources_panel, state.info_panel);
+    window(unit.len, index, capacity)
 }
 
 /// The pixels a picture drawn over `area` at `scale` needs: its size, never more than the preview
@@ -302,6 +313,13 @@ pub(crate) fn region_size(scale: f32) -> (u32, u32) {
     )
 }
 
+/// The size in points a region of `rect`'s pixels takes at 100% on a display of `scale`: one of its
+/// pixels to one of the display's.
+pub(crate) fn region_points(rect: PixelRect, scale: f32) -> (f32, f32) {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    (rect.width as f32 / scale, rect.height as f32 / scale)
+}
+
 /// The rectangle of `frame` under the pointer at `pointer` (fractions of the picture): `size`
 /// pixels centred there, moved back inside the frame and no larger than it.
 pub(crate) fn region_rect(frame: Dimensions, pointer: (f32, f32), size: (u32, u32)) -> PixelRect {
@@ -409,6 +427,8 @@ pub(crate) struct Region {
 pub(crate) struct Holding {
     /// The frames on screen: the active one and compare's.
     pub(crate) frames: Vec<Held>,
+    /// The strip's photographs' thumbnails; a file's strip frame is the Select grid's preview.
+    pub(crate) thumbnails: Vec<Held>,
     pub(crate) region: Option<Region>,
     /// A region is being cut, or waits to be.
     pub(crate) region_pending: bool,
@@ -527,8 +547,11 @@ pub(crate) struct StripModel {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StripFrame {
     pub(crate) position: u32,
-    /// Its file, whose grid preview the strip borrows; none for a photograph or an unread row.
+    /// Its item: a file, whose grid preview the strip borrows from the Select grid, or a
+    /// photograph, whose grid tier the loupe reads; none for an unread row.
     pub(crate) item: Option<PreviewItem>,
+    /// A photograph's thumbnail to draw, whose item is `item`; none for a file or while it is read.
+    pub(crate) thumbnail: Option<Picture>,
     pub(crate) picked: bool,
 }
 
@@ -544,6 +567,9 @@ pub(crate) struct FocusModel {
     pub(crate) inset: Area,
     /// The region to draw: the active frame's own, cut from the frame named.
     pub(crate) region: Option<Region>,
+    /// The size in points the region's pixels take at 100% on this display: its pixel size over
+    /// the display's scale factor. The inset draws it at that size, never scaled.
+    pub(crate) region_points: (f32, f32),
     /// The region is a Luxforge development, which the inset says.
     pub(crate) developed: bool,
     pub(crate) pending: bool,
@@ -585,9 +611,10 @@ fn row_at(state: &SelectState, revision: u64, position: u32) -> Option<&ViewRow>
         .flatten()
 }
 
-/// The picture held for `item`, when the app holds one.
-fn held_for<'a>(held: &'a Holding, item: &PreviewItem) -> Option<&'a Held> {
-    held.frames.iter().find(|frame| &frame.item == item)
+/// What the app holds for `item` among `held` (its frames, or its strip thumbnails), when it holds
+/// anything.
+fn held_for<'a>(held: &'a [Held], item: &PreviewItem) -> Option<&'a Held> {
+    held.iter().find(|frame| &frame.item == item)
 }
 
 /// A frame's model: its row, the picture held for its own item, fitted into `area`.
@@ -599,7 +626,7 @@ fn frame_model(
     area: Area,
 ) -> FrameModel {
     let item = preview_item(row);
-    let held = held_for(&loupe.held, &item);
+    let held = held_for(&loupe.held.frames, &item);
     let picture = held
         .and_then(|held| held.picture.clone())
         .filter(|picture| picture.item == item);
@@ -730,7 +757,7 @@ pub(crate) fn focus_request(
     let subject = subject(state.summary.as_ref(), browse)?;
     let row = row_at(state, subject.revision, subject.position)?;
     let item = preview_item(row);
-    let picture = held_for(&loupe.held, &item)
+    let picture = held_for(&loupe.held.frames, &item)
         .and_then(|held| held.picture.as_ref())
         .filter(|picture| picture.item == item);
     let frame = focus_frame(loupe, row, picture)?;
@@ -807,9 +834,9 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
         exposure: exposure_text(&row.exposure),
         source: source_text(frame.picture.as_ref(), frame.note.as_deref()),
     };
-    // The strip: the moment's frames, or the single frame alone.
-    let capacity = strip_capacity(loupe.window, state.sources_panel, state.info_panel);
-    let shown = window(unit.len, index, capacity);
+    // The strip: the moment's frames, or the single frame alone, each a photograph's thumbnail
+    // only when it is the one held for its own item.
+    let shown = strip_window(state, unit, index);
     model.strip = Some(StripModel {
         first: shown.start,
         frames: shown
@@ -817,12 +844,20 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
             .map(|at| {
                 let position = unit.start + at;
                 let row = row_at(state, subject.revision, position);
+                let item = row.map(preview_item);
+                let thumbnail = item
+                    .as_ref()
+                    .filter(|item| matches!(item, PreviewItem::Photo { .. }))
+                    .and_then(|item| {
+                        held_for(&loupe.held.thumbnails, item)?
+                            .picture
+                            .clone()
+                            .filter(|picture| &picture.item == item)
+                    });
                 StripFrame {
                     position,
-                    item: row.and_then(|row| match row.item {
-                        RowItem::File { file_id } => Some(PreviewItem::File { file_id }),
-                        RowItem::Photo { .. } => None,
-                    }),
+                    item,
+                    thumbnail,
                     picked: row.is_some_and(|row| row.picked),
                 }
             })
@@ -875,6 +910,9 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
             developed: region
                 .as_ref()
                 .is_some_and(|region| region.origin == PreviewOrigin::Developed),
+            region_points: region.as_ref().map_or(FOCUS_REGION, |region| {
+                region_points(region.rect, loupe.scale)
+            }),
             region,
             pending: loupe.held.region_pending,
             error: loupe.held.region_error.clone(),
@@ -900,18 +938,21 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
     model
 }
 
-/// One frame the loupe wants decoded: its row's item at its position, the pixels its area needs,
-/// and whether it is on screen, which the cache never evicts.
+/// One picture the loupe wants decoded: its row's item at its position, the pixels its area needs,
+/// whether it is on screen, which the cache never evicts, and whether it is the item's strip
+/// thumbnail (its grid tier) rather than its frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WantedFrame {
     pub(crate) position: u32,
     pub(crate) item: PreviewItem,
     pub(crate) pixels: (u32, u32),
     pub(crate) shown: bool,
+    pub(crate) thumbnail: bool,
 }
 
-/// What the loupe wants decoded now, most wanted first: the active frame, compare's frames, then
-/// the look-ahead in the direction of travel. A frame whose row is not read yet is left out.
+/// What the loupe wants decoded now, most wanted first: the active frame, compare's frames, the
+/// look-ahead in the direction of travel, then the strip's photographs' thumbnails, which are on
+/// screen (the strip's files are the Select grid's). A frame whose row is not read yet is left out.
 pub(crate) fn wanted(state: &SelectState, browse: &BrowseSession) -> Vec<WantedFrame> {
     let loupe = &state.loupe;
     if !loupe.open {
@@ -935,6 +976,7 @@ pub(crate) fn wanted(state: &SelectState, browse: &BrowseSession) -> Vec<WantedF
                     item,
                     pixels,
                     shown,
+                    thumbnail: false,
                 });
             }
         }
@@ -956,6 +998,29 @@ pub(crate) fn wanted(state: &SelectState, browse: &BrowseSession) -> Vec<WantedF
     }
     for position in look_ahead(summary, subject.position, loupe.travel) {
         push(position, full, false);
+    }
+    let unit = unit_of(summary, subject.position);
+    let strip = display_pixels(
+        Area {
+            width: STRIP_IMAGE.0,
+            height: STRIP_IMAGE.1,
+            ..Area::default()
+        },
+        loupe.scale,
+    );
+    for at in strip_window(state, unit, subject.position - unit.start) {
+        let position = unit.start + at;
+        if let Some(row) = row_at(state, subject.revision, position)
+            && let RowItem::Photo { .. } = row.item
+        {
+            frames.push(WantedFrame {
+                position,
+                item: preview_item(row),
+                pixels: strip,
+                shown: true,
+                thumbnail: true,
+            });
+        }
     }
     frames
 }
@@ -1095,6 +1160,28 @@ mod tests {
             stand_in: false,
             approximate: false,
         }
+    }
+
+    /// The inset draws a region at 100%: its pixels over the display's scale, so a region the
+    /// inset's size fills it on a 2x display and a smaller one (cut at the frame's edge) takes fewer
+    /// points instead of being enlarged.
+    #[test]
+    fn loupe_region_is_drawn_at_one_pixel_to_one() {
+        let rect = |width, height| PixelRect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        let (width, height) = region_size(2.0);
+        assert_eq!(region_points(rect(width, height), 2.0), (308.0, 209.0));
+        assert_eq!(region_points(rect(120, 80), 2.0), (60.0, 40.0));
+        assert_eq!(region_points(rect(120, 80), 1.0), (120.0, 80.0));
+        assert_eq!(
+            region_points(rect(120, 80), 0.0),
+            (120.0, 80.0),
+            "no scale yet"
+        );
     }
 
     /// The bar names what the picture is, and says so when a developed photograph's rendered tier
@@ -1489,6 +1576,128 @@ mod tests {
         assert!(compare[0].pixels.0 < wanted[0].pixels.0);
         state.loupe.open = false;
         assert!(super::wanted(&state, &browse(1, Some(3))).is_empty());
+    }
+
+    /// Photograph `position` of a view of developed photographs.
+    fn photograph(position: u32) -> PreviewItem {
+        PreviewItem::Photo {
+            asset_id: luxforge_core::AssetId::parse(format!("asset-photo-{position:04}")).unwrap(),
+            entry_id: None,
+        }
+    }
+
+    /// Select's state over `view`, a view of developed photographs, every row read.
+    fn photographs(view: ViewSummary) -> SelectState {
+        let mut state = state(view.clone());
+        let mut rows = RowCache::default();
+        rows.reset(view.revision, view.count);
+        let block: Vec<ViewRow> = (0..view.count)
+            .map(|at| ViewRow {
+                item: RowItem::Photo {
+                    asset_id: luxforge_core::AssetId::parse(format!("asset-photo-{at:04}"))
+                        .unwrap(),
+                },
+                ..row(at, at * 260)
+            })
+            .collect();
+        rows.answered(view.revision, 0, block, 0..view.count);
+        state.rows = rows;
+        state
+    }
+
+    /// In a view of photographs the loupe wants each strip frame's grid tier, on screen and at the
+    /// strip's picture box, after the frames and the look-ahead; in a view of files it wants none,
+    /// the strip borrowing the grid's. A strip frame draws a thumbnail only when the one held is
+    /// its own photograph's.
+    #[test]
+    fn loupe_strip_wants_its_photographs_grid_tiers_and_draws_only_their_own() {
+        let view = bursts(1, 12, &[(2, 6)]);
+        let files = wanted(&state(view.clone()), &browse(1, Some(3)));
+        assert!(files.iter().all(|frame| !frame.thumbnail), "{files:?}");
+        let mut state = photographs(view);
+        let wanted = wanted(&state, &browse(1, Some(3)));
+        let frames: Vec<(u32, bool)> = wanted
+            .iter()
+            .filter(|frame| !frame.thumbnail)
+            .map(|frame| (frame.position, frame.shown))
+            .collect();
+        assert_eq!(
+            frames,
+            vec![(3, true), (4, false), (5, false), (6, false), (8, false)],
+            "the frames as in a view of files"
+        );
+        let thumbnails: Vec<&WantedFrame> = wanted.iter().filter(|frame| frame.thumbnail).collect();
+        assert_eq!(
+            thumbnails
+                .iter()
+                .map(|frame| frame.position)
+                .collect::<Vec<_>>(),
+            (2..8).collect::<Vec<_>>(),
+            "the burst's six frames, the active one among them"
+        );
+        assert!(thumbnails.iter().all(|frame| frame.shown
+            && frame.pixels == (232, 152)
+            && frame.item == photograph(frame.position)));
+        assert!(
+            wanted.iter().position(|frame| frame.thumbnail).unwrap() == frames.len(),
+            "after the frames and the look-ahead"
+        );
+        // Nothing held yet: the strip names its photographs and draws nothing.
+        let strip = derive(&state, &browse(1, Some(3))).strip.unwrap();
+        assert_eq!(strip.frames.len(), 6);
+        assert!(strip.frames.iter().all(
+            |frame| frame.thumbnail.is_none() && frame.item == Some(photograph(frame.position))
+        ));
+        // Frame 4's own thumbnail is drawn; one held under frame 5 but of frame 6 is not.
+        let thumbnail = |of: u32| Picture {
+            item: photograph(of),
+            key: format!("photo:{of}:e:grid:r1"),
+            origin: PreviewOrigin::Rendered,
+            width: 512,
+            height: 341,
+            stand_in: false,
+            approximate: false,
+        };
+        state.loupe.held.thumbnails = vec![
+            Held {
+                item: photograph(4),
+                picture: Some(thumbnail(4)),
+                unavailable: None,
+            },
+            Held {
+                item: photograph(5),
+                picture: Some(thumbnail(6)),
+                unavailable: None,
+            },
+        ];
+        // A frame's picture of frame 3 is not a thumbnail.
+        state.loupe.held.frames = vec![Held {
+            item: photograph(3),
+            picture: Some(thumbnail(3)),
+            unavailable: None,
+        }];
+        let strip = derive(&state, &browse(1, Some(3))).strip.unwrap();
+        let drawn: Vec<(u32, Option<PreviewItem>)> = strip
+            .frames
+            .iter()
+            .map(|frame| {
+                (
+                    frame.position,
+                    frame.thumbnail.as_ref().map(|picture| picture.item.clone()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            drawn,
+            vec![
+                (2, None),
+                (3, None),
+                (4, Some(photograph(4))),
+                (5, None),
+                (6, None),
+                (7, None)
+            ]
+        );
     }
 
     /// The photograph's area is Select's centre less the bar above and the strip and hints below;

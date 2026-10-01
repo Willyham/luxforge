@@ -261,7 +261,8 @@ pub(crate) fn untouched(path: &Path) -> (String, u64, std::time::SystemTime, Pat
 /// One read of a JPEG with a camera's EXIF: the fingerprint is the SHA-256 of its bytes, streamed a
 /// chunk at a time; its header is the index reader's; its interpretation is its size turned upright
 /// by its orientation, read without decoding it; the gazetteer names its place; and the file is as
-/// it was.
+/// it was. The read keeps nothing unless asked, and a read asked to keep what it read, as a
+/// one-file Develop's is, keeps exactly the bytes it hashed.
 #[test]
 fn develop_picks_read_streams_the_fingerprint_and_interprets_a_jpeg_from_its_header() {
     let dir = luxforge_testbase::paths::temp_dir("develop-read");
@@ -272,10 +273,17 @@ fn develop_picks_read_streams_the_fingerprint_and_interprets_a_jpeg_from_its_hea
     let path = photo(&dir.join("DSC_0412.JPG"), &shot);
     let before = untouched(&path);
     let phases = Mutex::new(Vec::new());
-    let read = read(&path, &JobControl::new(), &|phase| {
+    let read = read(&path, false, &JobControl::new(), &|phase| {
         phases.lock().unwrap().push(phase)
     })
     .unwrap();
+    assert!(read.kept.is_none(), "{:?}", read.kept);
+    let kept = super::read(&path, true, &JobControl::new(), &|_| {}).unwrap();
+    let Some(crate::editor::ReadContent::Jpeg(bytes)) = &kept.kept else {
+        panic!("a JPEG's bytes are kept: {:?}", kept.kept);
+    };
+    assert_eq!(**bytes, fs::read(&path).unwrap());
+    assert_eq!(kept.fingerprint, before.0);
     assert_eq!(read.path, path);
     assert_eq!(read.fingerprint, before.0);
     assert_eq!(read.signature.byte_len(), before.1);
@@ -324,28 +332,28 @@ fn develop_picks_read_streams_the_fingerprint_and_interprets_a_jpeg_from_its_hea
 fn develop_picks_read_refuses_what_cannot_be_developed() {
     let dir = luxforge_testbase::paths::temp_dir("develop-refuse");
     let broken = broken_raw(&dir.join("DSC_0001.NEF"));
-    let error = read(&broken, &JobControl::new(), &|_| {}).unwrap_err();
+    let error = read(&broken, false, &JobControl::new(), &|_| {}).unwrap_err();
     assert!(
         matches!(error.kind, ErrorKind::Decode | ErrorKind::UnsupportedInput),
         "{error:?}"
     );
     let cmyk = dir.join("cmyk.jpg");
     fs::copy(luxforge_testbase::paths::fixture("s0/cmyk.jpg"), &cmyk).unwrap();
-    let error = read(&cmyk, &JobControl::new(), &|_| {}).unwrap_err();
+    let error = read(&cmyk, false, &JobControl::new(), &|_| {}).unwrap_err();
     assert_eq!(error.kind, ErrorKind::UnsupportedColor, "{error:?}");
-    let error = read(&dir.join("gone.jpg"), &JobControl::new(), &|_| {}).unwrap_err();
+    let error = read(&dir.join("gone.jpg"), false, &JobControl::new(), &|_| {}).unwrap_err();
     assert_eq!(error.kind, ErrorKind::SourceUnavailable, "{error:?}");
 
     let path = photo(&dir.join("a.jpg"), &Shot::at("2026:09:12 10:00:00"));
     let control = JobControl::new();
-    let error = read(&path, &control, &|phase| {
+    let error = read(&path, false, &control, &|phase| {
         if phase == Phase::Hashing {
             control.cancel("stopped");
         }
     })
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Cancelled);
-    let error = read(&path, &JobControl::new(), &|phase| {
+    let error = read(&path, false, &JobControl::new(), &|phase| {
         if phase == Phase::Hashed {
             let file = fs::OpenOptions::new().append(true).open(&path).unwrap();
             let len = file.metadata().unwrap().len();
@@ -447,7 +455,7 @@ fn develop_picks_reads_the_owners_raw_interpretations_without_developing() {
             drop(sensor);
             assert_eq!(fingerprint, before.0);
             let start = std::time::Instant::now();
-            let whole = read(&path, &control, &|_| {}).unwrap();
+            let whole = read(&path, false, &control, &|_| {}).unwrap();
             let whole_ms = start.elapsed().as_secs_f64() * 1e3;
             assert!(matches!(whole.source, crate::SourceKind::Raw { .. }));
             times.push((read_ms, decode_ms, whole_ms));

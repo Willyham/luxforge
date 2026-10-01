@@ -406,8 +406,13 @@ const AFTER_MESSAGE: [AfterMessage; 18] = [
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
-    [capabilities::after_derive, controls::after_derive];
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
+    capabilities::after_derive,
+    controls::after_derive,
+    // ── catalog lane D: views and desktop ──
+    loupe::after_derive,
+    // ── end lane D ──
+];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
