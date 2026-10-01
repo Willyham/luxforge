@@ -40,33 +40,25 @@ const DEVELOPED: [&str; 2] = [
     "desktop.focus_check.development_second_region",
 ];
 
-/// The focus check's figures over the generated JPEGs and, when there is one, per camera over the
-/// RAW trip; without one, the developed figures are skipped, their data absent.
+/// The focus check's figures over the generated JPEGs (when they were generated) and, when there
+/// is one, per camera over the RAW trip; without one, the developed figures are skipped, their data
+/// absent. Each run answers on its own, a failed one with its failed figure.
 pub(super) fn probe(
     root: &Path,
     context: &ProbeContext,
-    images: &Source,
+    images: Option<&Source>,
     raw: Option<&Source>,
     memory: &mut Memory,
-) -> Result<Vec<Figure>> {
-    let named = |name: &str, result: Result<Vec<Figure>>| -> Result<Vec<Figure>> {
-        result.map_err(|error| {
-            format!(
-                "The {name} probe ({}): {error}",
-                context.scratch.join(name).display()
-            )
-            .into()
-        })
+) -> Vec<Figure> {
+    let mut run = |name: &str, source: &Source, per_camera: bool| {
+        measure(root, context, name, source, per_camera, memory)
+            .unwrap_or_else(|error| vec![Figure::failed(context, name, error)])
     };
-    let mut figures = named(
-        "focus",
-        measure(root, context, "focus", images, false, memory),
-    )?;
+    let mut figures = images
+        .map(|images| run("focus", images, false))
+        .unwrap_or_default();
     match raw {
-        Some(raw) => figures.extend(named(
-            "focus-raw",
-            measure(root, context, "focus-raw", raw, true, memory),
-        )?),
+        Some(raw) => figures.extend(run("focus-raw", raw, true)),
         None => figures.extend(DEVELOPED.map(|metric| {
             Figure::skipped(
                 metric,
@@ -76,7 +68,7 @@ pub(super) fn probe(
             .target(FOCUS_DEVELOPMENT)
         })),
     }
-    Ok(figures)
+    figures
 }
 
 /// One sample: the frame the loupe is on, how the loupe gets there from the sample before, and
@@ -87,7 +79,7 @@ struct Sample {
     second: Option<[f32; 2]>,
 }
 
-fn measure(
+pub(super) fn measure(
     root: &Path,
     context: &ProbeContext,
     name: &str,

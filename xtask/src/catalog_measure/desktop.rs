@@ -88,6 +88,7 @@ fn row(figure: Figure) -> Row {
         Outcome::Measured(samples) => Row::measured(&figure.metric, figure.unit, samples),
         Outcome::NotMeasured(reason) => Row::not_measured(&figure.metric, figure.unit, &reason),
         Outcome::Skipped(reason) => Row::skipped(&figure.metric, figure.unit, &reason),
+        Outcome::Failed(reason) => Row::failed(&figure.metric, &reason),
     };
     let row = row
         .scope(figure.scope)
@@ -136,6 +137,20 @@ mod tests {
         );
         let unmeasured = row(figure(Outcome::NotMeasured("no frame".into()))).value();
         assert_eq!(unmeasured["status"], report::NOT_MEASURED);
+        let failed = row(figure(Outcome::Failed("launch 26 timed out".into()))).value();
+        assert_eq!(
+            (
+                failed["metric"].as_str(),
+                failed["status"].as_str(),
+                failed["reason"].as_str()
+            ),
+            (
+                Some(PROBES[1].0),
+                Some(report::FAILED),
+                Some("launch 26 timed out")
+            )
+        );
+        assert_eq!(failed["detail"]["samples"], 3, "its detail kept");
         assert_eq!(
             row(figure(Outcome::Measured(Vec::new()))).value()["status"],
             report::NOT_MEASURED,

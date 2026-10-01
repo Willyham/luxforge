@@ -43,35 +43,35 @@ struct Plan {
 
 /// The loupe's figures over the generated JPEGs, whose warm stepping is the design's figure, and,
 /// when there is one, over the RAW trip beside them; `frame_ms` is the display frame interval
-/// observed, which the design's figure is counted in.
+/// observed, which the design's figure is counted in. Each run answers on its own, a failed one
+/// with its failed figure; a run without its folder (the JPEGs not generated, no trip) is not run.
 pub(super) fn probe(
     root: &Path,
     context: &ProbeContext,
-    images: &Source,
+    images: Option<&Source>,
     raw: Option<&Source>,
     frame_ms: Option<f64>,
     memory: &mut Memory,
-) -> Result<Vec<Figure>> {
+) -> Vec<Figure> {
     let mut figures = Vec::new();
     for (name, family, source) in [
-        ("loupe", "desktop.loupe_step", Some(images)),
+        ("loupe", "desktop.loupe_step", images),
         ("loupe-raw", "desktop.loupe_step.raw_trip", raw),
     ] {
         let Some(source) = source else {
             continue;
         };
-        let out = context.scratch.join(name);
         let taken = Taken {
             name,
             family,
             frame_ms,
         };
-        figures.extend(
-            measure(root, context, source, &taken, memory)
-                .map_err(|error| format!("The {name} probe ({}): {error}", out.display()))?,
-        );
+        match measure(root, context, source, &taken, memory) {
+            Ok(taken) => figures.extend(taken),
+            Err(error) => figures.push(Figure::failed(context, name, error)),
+        }
     }
-    Ok(figures)
+    figures
 }
 
 /// One run of the probe: its directory's name, the metric family its figures are named in, and
