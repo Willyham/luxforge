@@ -478,6 +478,26 @@ fn a_finished_job_leaves_a_sentence() {
 
 /// A running catalog job's Performance row is a work row: its place in its label, the job its
 /// Cancel stops, its count and its estimate once steady; other work keeps its plain row.
+/// A batch preset or export leaves no sentence of the status bar's own: the catalog's batch form
+/// words its end.
+#[test]
+fn a_batch_job_leaves_its_sentence_to_its_view() {
+    for kind in ["batch.apply-preset", "batch.export"] {
+        let batch = running(7, kind, Some("12 photographs"), 0, None);
+        for outcome in [Outcome::Completed, Outcome::Cancelled, Outcome::Failed] {
+            assert_eq!(
+                finished_sentence(&finished(batch.clone(), outcome, 9_000), None, home()),
+                None,
+                "{kind} {outcome:?}"
+            );
+        }
+    }
+    let develop = running(8, "pick.develop", Some("18 picks"), 0, None);
+    assert!(
+        finished_sentence(&finished(develop, Outcome::Completed, 9_000), None, home()).is_some()
+    );
+}
+
 #[test]
 fn a_performance_row_of_catalog_work_names_its_job_count_and_estimate() {
     use crate::state::performance::{Work, jobs};

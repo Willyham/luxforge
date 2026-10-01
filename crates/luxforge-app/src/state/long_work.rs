@@ -29,7 +29,7 @@ use crate::state::select::{Shown, shown_path, thousands};
 use luxforge_core::{
     ActivitySnapshot,
     activity::{ActiveActivity, ActivityEntry, Outcome, RecentActivity},
-    catalog_types::jobs::{INDEX_REFRESH, catalog_job},
+    catalog_types::jobs::{BATCH_EXPORT, BATCH_PRESET, CatalogJob, INDEX_REFRESH, catalog_job},
 };
 use serde_json::Value;
 use std::{collections::VecDeque, path::Path};
@@ -287,6 +287,15 @@ pub(crate) fn place(detail: &str, home: Option<&Path>) -> String {
         .map_or(shown, |name| format!("\u{2026}/{}", name.to_string_lossy()))
 }
 
+/// The catalog jobs whose view words their end itself (the catalog's batch form reports a batch
+/// preset or export), so the status bar leaves them no sentence of its own.
+const WORDED_BY_THEIR_VIEW: [CatalogJob; 2] = [BATCH_PRESET, BATCH_EXPORT];
+
+/// Whether the status bar leaves a finished job of board kind `kind` a sentence.
+pub(crate) fn leaves_sentence(kind: &str) -> bool {
+    !WORDED_BY_THEIR_VIEW.iter().any(|job| job.activity == kind)
+}
+
 /// The sentence a finished job leaves in the status bar, from its board entry and, when it has one,
 /// its `job.read` record: `Indexed 12,408 files in ~/Pictures`, `Cancelled indexing ~/Pictures`,
 /// `Indexing ~/Pictures failed: …`, `Developed picks · 18 of 18`. None for work that ran less than
@@ -297,7 +306,7 @@ pub(crate) fn finished_sentence(
     home: Option<&Path>,
 ) -> Option<String> {
     let entry = &job.entry;
-    if !followed(entry) || job.duration_ms < FINISHED_SENTENCE_MS {
+    if !followed(entry) || !leaves_sentence(&entry.kind) || job.duration_ms < FINISHED_SENTENCE_MS {
         return None;
     }
     let what = work_label(entry, home);
