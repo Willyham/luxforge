@@ -2,8 +2,7 @@
 //! the Catalog sources' folders by year and collections with their menus and names typed in place,
 //! the filter bar over the catalog with Save as smart collection… and the view's count, the
 //! Metadata browser, and the Info panel over photographs (one photograph's Organize band, or the
-//! batch form), drawn from `state/select_catalog.rs`'s model. **Lane D (views and desktop)** owns
-//! it.
+//! batch form), drawn from `state/select_catalog.rs`'s model.
 //!
 //! Like every view it reads only its model and what the app lends it for the frame: the grid's
 //! decoded previews, which the Info panel borrows for the photographs it describes.

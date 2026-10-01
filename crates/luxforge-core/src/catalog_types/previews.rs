@@ -1,4 +1,4 @@
-//! Previews: what the preview lane (lane B) caches and answers, and the honest name of every
+//! Previews: what the preview lane caches and answers, and the honest name of every
 //! preview's pixels.
 //!
 //! For a file, previews are keyed by its signature: the grid tier from its EXIF thumbnail or

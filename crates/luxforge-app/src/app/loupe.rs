@@ -459,7 +459,7 @@ impl Editor {
         self.pick_active()
     }
 
-    /// A pick lane D's `select_pick` answered: P7. When it picked the loupe's active frame and that
+    /// A pick [`Self::select_pick`] answered: P7. When it picked the loupe's active frame and that
     /// frame is a burst's, the loupe moves on to the next moment's first frame; a clear, a
     /// bracket's frame, a single, a failed pick or another frame's pick stay where they are.
     /// `positions` are the view positions the pick named.

@@ -1275,7 +1275,7 @@ fn develop_picks_send_back_returns_an_unedited_photograph_to_its_picks() {
         )
     };
 
-    // A rendered preview the preview cache holds of the photograph, as lane B writes one.
+    // A rendered preview the preview cache holds of the photograph, as the preview lane writes one.
     let index = rusqlite::Connection::open(
         crate::index::index_dir(&harness.catalog).join(crate::INDEX_FILE),
     )

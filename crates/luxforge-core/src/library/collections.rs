@@ -7,7 +7,8 @@
 //! Each function here checks what the design refuses and plans the items, reading the catalog; the
 //! owner records the plan ([`Planned::apply`]) in one transaction. Names follow [`super::tree`]'s
 //! rules, among all the collections of one group (or the top level), whatever their kind. What a
-//! smart collection finds is the views lane's to evaluate; this module only keeps its query.
+//! smart collection finds is for browse views to evaluate (`crate::browse`); this module only keeps
+//! its query.
 use super::{
     folders::{self, counted},
     journal::Desired,

@@ -325,7 +325,6 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance_expanded: bool,
     /// What the Performance section's sampler has read since it last started sampling.
     pub(crate) performance: &'a performance::PerformanceHistory,
-    // ── catalog lane D: views and desktop ──
     /// The Select workspace's state: which workspace is shown, what Select last read and its own
     /// choices.
     pub(crate) select: &'a select::SelectState,
@@ -334,7 +333,6 @@ pub(crate) struct Inputs<'a> {
     /// Developing picks and the development set: Develop N's confirmation, a Develop running, the
     /// set, and the cached preview drawn while a photograph of it prepares.
     pub(crate) develop: &'a develop::DevelopState,
-    // ── end lane D ──
 }
 
 impl Inputs<'_> {
@@ -359,14 +357,12 @@ pub(crate) struct Workspace {
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
-    // ── catalog lane D: views and desktop ──
     /// The Select workspace, empty while Develop is shown.
     pub(crate) select: select::SelectModel,
     /// Long-running work: the status bar's busiest job and Select's progress sheet.
     pub(crate) long_work: long_work::LongWorkModel,
     /// Develop N's confirmation and progress, the filmstrip and the cached preview's words.
     pub(crate) develop: develop::DevelopModel,
-    // ── end lane D ──
 }
 
 impl Workspace {
@@ -384,7 +380,6 @@ impl Workspace {
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
         self.palette = palette::derive(inputs);
-        // ── catalog lane D: views and desktop ──
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
         let progress = inputs
@@ -396,7 +391,6 @@ impl Workspace {
             .and_then(|job| job.entry.progress.as_ref())
             .and_then(|progress| progress.fraction);
         self.develop = develop::derive(inputs.develop, progress);
-        // ── end lane D ──
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -571,11 +565,9 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         version_form: VersionForm,
-        // ── catalog lane D: views and desktop ──
         select: select::SelectState,
         long_work: long_work::LongWorkState,
         develop: develop::DevelopState,
-        // ── end lane D ──
     }
 
     impl Scene {
@@ -616,11 +608,9 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 version_form: VersionForm::default(),
-                // ── catalog lane D: views and desktop ──
                 select: select::SelectState::default(),
                 long_work: long_work::LongWorkState::default(),
                 develop: develop::DevelopState::default(),
-                // ── end lane D ──
             }
         }
 
@@ -729,11 +719,9 @@ mod tests {
                 capabilities: &self.capabilities,
                 performance_expanded: self.performance_expanded,
                 performance: &self.performance,
-                // ── catalog lane D: views and desktop ──
                 select: &self.select,
                 long_work: &self.long_work,
                 develop: &self.develop,
-                // ── end lane D ──
             }
         }
 

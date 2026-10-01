@@ -5,8 +5,8 @@
 //!   separated like `PATH`. Every image's header is read through the index's header reader, and
 //!   the events (members, place, name), days, cameras and moments (members, kind, evidence,
 //!   steps) are compared with `images/manifest.json`, with a probe that answers from the
-//!   manifest's steps for the brackets only the previews show (standing in for lane B), and again
-//!   with no probe, when those brackets must come out as bursts.
+//!   manifest's steps for the brackets only the previews show (standing in for the preview
+//!   lane's), and again with no probe, when those brackets must come out as bursts.
 //! - `LUXFORGE_GENERATED_INDEX`: one or more `--files N` outputs (or their `index.sqlite`). The
 //!   index's rows are organized and compared with the reference grouping, and every older trip's
 //!   folder (`<year>/<first day> <title>`, the plan's ground truth: one trip each) with one event.

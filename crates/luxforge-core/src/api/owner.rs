@@ -49,7 +49,8 @@ mod catalog_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
-// The catalog lanes' owner-side homes, one file each ([`catalog`]).
+// The catalog's owner-side homes, one file each: the index, preview and library lanes and
+// browse views ([`catalog`]).
 pub(super) mod files;
 pub(super) mod library;
 mod point;
@@ -151,7 +152,8 @@ enum OwnerMessage {
         job: Option<JobId>,
         reply: SyncSender<()>,
     },
-    /// A catalog lane's worker has something for the owner, which hands it to that lane.
+    /// The index, preview or library lane's worker has something for the owner, which hands it to
+    /// that lane.
     Catalog(catalog::CatalogMessage),
     Disconnect(ClientId),
     Stop,
@@ -893,7 +895,8 @@ impl OwnerHandle {
         let completions = sender.clone();
         let host = CapabilityHost::new(host);
         let owner_activity = activity.clone();
-        // The catalog lanes post their workers' results through the same channel.
+        // The index, preview and library lanes post their workers' results through the same
+        // channel.
         let catalog =
             catalog::CatalogLanes::new(catalog::Poster::new(sender.clone()), activity.clone());
         let join = std::thread::spawn(move || {
@@ -1128,7 +1131,7 @@ fn owner_loop(
         #[cfg(test)]
         fault: None,
     };
-    // Lane A: a catalog with indexed folders has them watched from its opening.
+    // A catalog with indexed folders has them watched from its opening.
     files::opened(&mut owner);
     loop {
         // A wait past its deadline is answered before anything else is read, so a busy owner still
@@ -1246,8 +1249,8 @@ fn owner_loop(
     // stops at its next row or block and removes its temporary file however long the lanes below
     // take to stop, and before a caller can see the owner gone. The lanes post into the receiver,
     // so it goes next: a lane finishing as it stops is never left waiting on a full channel while
-    // the owner waits for it, and the catalog lanes, whose workers post into it too, stop after
-    // it. Then the job lanes are joined.
+    // the owner waits for it, and the index, preview and library lanes, whose workers post into it
+    // too, stop after it. Then the job lanes are joined.
     jobs.cancel_live();
     drop(receiver);
     catalog.shutdown();
@@ -1374,11 +1377,12 @@ pub(super) struct Owner {
     /// Set by the `events.wait` handler when it cannot answer yet: the wait [`Owner::call`] parks
     /// with the call's own reply channel, which the handler does not hold. Empty between calls.
     parking: Option<PendingWait>,
-    /// Set by a lane A handler that handed its disk reads to the index lane's threads: the call
-    /// [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty between
-    /// calls.
+    /// Set by an index lane handler that handed its disk reads to the index lane's threads: the
+    /// call [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty
+    /// between calls.
     deferred: Option<files::Deferred>,
-    /// The catalog lanes' owner-side state, one field per lane, each in its own file.
+    /// The catalog's owner-side state, one field per lane and one for browse views, each in its own
+    /// file.
     catalog: catalog::CatalogLanes,
     #[cfg(test)]
     fault: Option<Fault>,
@@ -1696,7 +1700,7 @@ impl Owner {
         if !announced.is_empty() {
             views::changed(self);
         }
-        // Lane B: a developed photograph whose history moved has its grid tier rendered again.
+        // A developed photograph whose history moved has its grid tier rendered again.
         previews::follow_changes(self, &announced);
     }
 
@@ -1835,7 +1839,7 @@ impl Owner {
     /// A source task sees its cancelled control between steps, and on the memory gate should it
     /// wait there. An analysis still in the pending slot is dropped and recorded `cancelled` now;
     /// a running one is abandoned, stops within a chunk and is recorded when its outcome arrives.
-    /// A catalog lane's shared job is ended by its lane, as a cancelled lane job is.
+    /// A shared catalog job is ended by the lane that runs it, as a cancelled lane job is.
     fn stop(&mut self, job_id: &JobId, kind: JobKind) {
         match kind.family() {
             Family::Source => self.sources.gate.wake(),

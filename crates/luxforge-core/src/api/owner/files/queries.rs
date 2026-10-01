@@ -1,6 +1,6 @@
-//! Lane A's calls that wait on the index lane's query and survey threads (`crate::index::query`),
-//! parked on the owner as `events.wait` is: the owner never touches the file system beyond the
-//! platform's mount table, which waits on none.
+//! The index lane's calls that wait on its query and survey threads (`crate::index::query`), parked
+//! on the owner as `events.wait` is: the owner never touches the file system beyond the platform's
+//! mount table, which waits on none.
 //!
 //! - **A question for the query thread.** A handler that must stat, canonicalize or list a path
 //!   hands the query thread an [`Ask`] ([`ask`]): the thread runs it and posts back a [`Resume`],
@@ -23,9 +23,9 @@
 //!   listed once a survey has found its `DCIM` folder, and so is every card already mounted as a
 //!   catalog with indexed folders opens and starts the lane, once the first survey that begins
 //!   after its watcher has found it ([`lane_started`]).
-//! - **The index.** Lane A's reads use the service's index only once it is open: the survey opens
-//!   an index that is there, and the index lane hands over the one it creates, so neither opening
-//!   nor recreating it happens on the owner.
+//! - **The index.** The index lane's reads use the service's index only once it is open: the survey
+//!   opens an index that is there, and the index lane hands over the one it creates, so neither
+//!   opening nor recreating it happens on the owner.
 use super::{super::requests::RequestKey, FilesLane, FilesMessage, indexed_folders};
 use crate::{
     Error,
@@ -52,10 +52,10 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
-/// Calls that may wait on lane A's threads at once, behind the question being answered; past it a
-/// call is refused with `resource-limit`. Each has a client blocked on it, and every client
-/// connection carries one call at a time, so this is twice the live clients' limit: room for the
-/// desktop's calls beside them.
+/// Calls that may wait on the index lane's threads at once, behind the question being answered;
+/// past it a call is refused with `resource-limit`. Each has a client blocked on it, and every
+/// client connection carries one call at a time, so this is twice the live clients' limit: room for
+/// the desktop's calls beside them.
 pub(crate) const MAX_WAITING_QUERIES: usize = 16;
 
 /// What the query thread runs for one call: every file system read the call needs, answering what
@@ -66,7 +66,7 @@ pub(in crate::api::owner) type Ask = Box<dyn FnOnce() -> Resume + Send>;
 /// found and answers the call.
 pub(in crate::api::owner) type Resume = Box<dyn FnOnce(&mut Owner) -> Result<Value, Error> + Send>;
 
-/// What a lane A handler asks for when it cannot answer yet. The handler leaves it in
+/// What an index lane handler asks for when it cannot answer yet. The handler leaves it in
 /// `Owner::deferred` and answers nothing; the owner hands it the call with its reply ([`defer`]).
 pub(in crate::api::owner) enum Deferred {
     /// Answer once the query thread has run `ask`. `key` is the call's retry key, when the owner
@@ -170,8 +170,8 @@ pub(super) fn mounted(owner: &Owner) -> Mounts<'_> {
     files.surveys.known.now(&files.mounts.list())
 }
 
-/// The catalog's index for lane A's reads on the owner, never opened here: the service's open
-/// index; none when the last survey found no index; or why the survey could not open it.
+/// The catalog's index for the index lane's reads on the owner, never opened here: the service's
+/// open index; none when the last survey found no index; or why the survey could not open it.
 pub(super) fn index(owner: &Owner) -> Result<Option<RefMut<'_, IndexDb>>, Error> {
     if let Some(index) = owner.service.index_open() {
         return Ok(Some(index));

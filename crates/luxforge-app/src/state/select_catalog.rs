@@ -2,9 +2,8 @@
 //! [catalog board](../../../../docs/design/catalog/catalog.png)): the Catalog sources'
 //! folders by year and collections, the filter bar over the catalog (search, Kind and Edited, the
 //! metadata conditions and the view's count), the Metadata browser, Save as smart collection…, and
-//! the Info panel over photographs — one photograph's Organize band, or the batch form. **Lane D
-//! (views and desktop)** owns it. Like every view model it names no framework type, no widget and no
-//! view.
+//! the Info panel over photographs — one photograph's Organize band, or the batch form. Like every
+//! view model it names no framework type, no widget and no view.
 //!
 //! The desktop holds no catalog logic. The folders and collections are `folder.list` and
 //! `collection.list` as the owner answered them; every chip, column value and sort is a whole

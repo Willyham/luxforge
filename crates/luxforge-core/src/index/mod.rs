@@ -1,5 +1,5 @@
 //! The index: what Luxforge has read from the files it browses, so browsing is instant the second
-//! time. **Lane A (files)** owns this module (`docs/design/catalog.md`, "Delivery plan").
+//! time (`docs/design/catalog.md`, "The index and previews cache").
 //!
 //! - `database.rs`: the index database — schema, format marker, open, create and discard, its
 //!   revision, and the file and root rows ([`IndexDb`], [`INDEX_FORMAT`], [`index_dir`]).
@@ -35,10 +35,6 @@ pub(crate) mod survey;
 pub(crate) mod volumes;
 pub(crate) mod walk;
 
-#[allow(
-    unused_imports,
-    reason = "the preview and views lanes read file rows through it"
-)]
 pub(crate) use database::file;
 pub use database::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};
 pub(crate) use database::{upsert_file, upsert_root};

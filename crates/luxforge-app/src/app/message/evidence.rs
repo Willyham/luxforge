@@ -32,7 +32,6 @@ pub(crate) enum EvidenceMessage {
     HostAnswered(Result<Box<HostAnswer>, String>),
     /// The edit an `agent` step sent through the run's second client answered.
     AgentAnswered(Result<Value, String>),
-    // ── catalog lane D: views and desktop ──
     /// The `pick.set` a Select `agent_pick` step sent through the run's second client answered.
     SelectAgentAnswered(Result<Value, String>),
     /// One press of a loupe `arrows` step: the first once the look-ahead is warm, the rest one per
@@ -40,7 +39,6 @@ pub(crate) enum EvidenceMessage {
     LoupeArrow,
     /// A display frame of a running `grid_scroll` step: scroll the grid on by the step's speed.
     GridScrollFrame(std::time::Instant),
-    // ── end lane D ──
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
 }

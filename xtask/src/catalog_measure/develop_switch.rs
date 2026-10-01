@@ -1,4 +1,4 @@
-//! Switching photographs in Develop with a cached large preview: **lane D's probe**. It takes the
+//! Switching photographs in Develop with a cached large preview. It takes the
 //! desktop probes' context ([`DesktopContext`]) and returns its rows as they do
 //! ([`super::desktop`]).
 //!

@@ -1,6 +1,6 @@
-//! Lane C's worker thread: one thread, started on the lane's first job, that takes one job at a time
-//! from a one-slot channel and blocks on it while idle (performance rule 8). What a job is, and what
-//! the worker does with its result, is the owner's side (`api/owner/library.rs`).
+//! The library lane's worker thread: one thread, started on the lane's first job, that takes one
+//! job at a time from a one-slot channel and blocks on it while idle (performance rule 8). What a
+//! job is, and what the worker does with its result, is the owner's side (`api/owner/library.rs`).
 use crate::Error;
 use std::{
     sync::mpsc::{SyncSender, sync_channel},

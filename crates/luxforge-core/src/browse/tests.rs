@@ -55,7 +55,7 @@ fn query(source: ViewSource, filter: ViewFilter, sort: ViewSort, grouping: Group
 }
 
 /// The view agrees with the model: its items in order, its layout with its days' and moments' pick
-/// counts, its counts; and the layout keeps the promises its signature makes whatever lane A's
+/// counts, its counts; and the layout keeps the promises its signature makes whatever the organize
 /// rules become.
 fn agree(fx: &Fixture, service: &EditorService, events: &mut EventCache, query: &ViewQuery) {
     let got = run(service, events, query);
@@ -1598,7 +1598,7 @@ fn browse_a_smart_collection_naming_a_deleted_source_is_empty() {
     }
 }
 
-/// The seam lane C calls: the files a source over files covers, whatever a filter would say.
+/// The files a source over files covers, whatever a filter would say.
 #[test]
 fn browse_source_files_lists_what_a_source_covers() {
     let fx = testing::fixture("source-files");

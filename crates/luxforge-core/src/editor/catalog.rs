@@ -734,13 +734,8 @@ pub(super) fn entry_from(
     Ok(entry)
 }
 
-// The catalog lanes' additions to the asset rows and the history they read and write, one marked
-// section per lane. The format-12 tables' own rows are written in `catalog_rows.rs`.
-// ── catalog lane A: files ──
-// ── end lane A ──
-// ── catalog lane B: previews ──
-// ── end lane B ──
-// ── catalog lane C: catalog ──
+// Library changes to the asset rows and the history they read and write, and the journal's latest
+// change. The format-12 tables' own rows are written in `catalog_rows.rs`.
 impl EditorService {
     /// One library change in one catalog transaction ([`write`]): `change` reads and writes
     /// through the library journal (`crate::library::journal`), and once it commits, each cached
@@ -837,8 +832,7 @@ impl EditorService {
         }
     }
 }
-// ── end lane C ──
-// ── catalog lane D: views ──
+
 impl EditorService {
     /// The catalog's latest library change, or 0 before the first: what a browse view is stamped
     /// with, so a later change marks it stale. The journal's own reader, one row by its key.
@@ -846,7 +840,6 @@ impl EditorService {
         crate::library::journal::latest(&self.connection)
     }
 }
-// ── end lane D ──
 
 #[cfg(test)]
 mod tests {
@@ -1109,10 +1102,10 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// The constraints the lanes rely on hold in the schema itself: a folder holding a photograph
-    /// cannot be deleted, sibling names are unique ignoring case, collections nest only in groups
-    /// and only plain collections have members, once each, a collection keeps its kind, and the
-    /// journal is append-only, each change undone and each undo redone at most once.
+    /// The constraints the library relies on hold in the schema itself: a folder holding a
+    /// photograph cannot be deleted, sibling names are unique ignoring case, collections nest only
+    /// in groups and only plain collections have members, once each, a collection keeps its kind,
+    /// and the journal is append-only, each change undone and each undo redone at most once.
     #[test]
     fn catalog_format_constraints_hold() {
         let catalog = temp("format-constraints.sqlite");

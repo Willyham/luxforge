@@ -2,7 +2,7 @@
 //! tone curve (as the generated folders render) and through three camera-like ones, encoded as
 //! grid tiers are; the bursts it must not call brackets (changing light, a pan, a zoom, noise);
 //! what it cannot tell; fingerprints kept with the grid tier under the signature rule; the probe
-//! through lane A's organize functions; and, ignored, the calibration figures and the generated
+//! through the organize functions; and, ignored, the calibration figures and the generated
 //! image folders end to end.
 use super::*;
 use crate::{
@@ -316,7 +316,7 @@ const PATTERNS: [&[f32]; 7] = [
 ];
 
 /// `prints` as one drone's frames 400 ms apart with the same settings, so the metadata cannot
-/// classify them, grouped by lane A's organize functions with a probe over the fingerprints: the
+/// classify them, grouped by the organize functions with a probe over the fingerprints: the
 /// run's moment, if any.
 fn organized(prints: Vec<Fingerprint>) -> Option<Moment> {
     let mut tables = FrameTables::default();
@@ -831,9 +831,9 @@ const BANDS: [(f32, f32, f32); 4] = [
 
 /// Calibration: the figures the thresholds rest on, printed, for synthetic brackets within ±2 EV
 /// of six scenes through each curve (link ratio measured over true, lowest framing cosine and
-/// coverage, highest disagreeing share per band, runs measured and runs lane A would call brackets
-/// at three tolerances), frames moved at one exposure (framing cosine), and changing light (step,
-/// cosine, disagreeing share per band). Asserts nothing. Run with `--ignored --nocapture`.
+/// coverage, highest disagreeing share per band, runs measured and runs organizing would call
+/// brackets at three tolerances), frames moved at one exposure (framing cosine), and changing light
+/// (step, cosine, disagreeing share per band). Asserts nothing. Run with `--ignored --nocapture`.
 #[test]
 #[ignore = "calibration: prints the figures the thresholds rest on"]
 fn bracket_preview_calibration() {
@@ -963,7 +963,7 @@ struct Truth {
 
 /// The generated image folders (`cargo xtask generate-catalog --images N`), end to end: every
 /// file's header read and indexed, its grid tier made by the preview lane's worker (which keeps
-/// its fingerprint), the probe loaded in one query, and lane A's moment finder run with it; its
+/// its fingerprint), the probe loaded in one query, and the moment finder run with it; its
 /// moments compared with the manifest's, the brackets only the previews show among them. Prints
 /// the confusion of kinds and the measured steps' errors. Run with `LUXFORGE_GENERATED_CATALOG`
 /// naming one or more generator outputs, separated like `PATH`.

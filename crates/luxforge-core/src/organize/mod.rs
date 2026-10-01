@@ -1,10 +1,9 @@
-//! Organization: events by time and place, and the day, camera and moment boundaries of a view.
-//! **Lane A (files)** owns this module (`docs/design/catalog.md`, "Events", "Grouping inside a
-//! view").
+//! Organization: events by time and place, and the day, camera and moment boundaries of a view
+//! (`docs/design/catalog.md`, "Events", "Grouping inside a view").
 //!
 //! Pure functions of [`FrameFacts`] (header metadata, compact), the gazetteer ([`PlaceNames`]) and
 //! the view's [`Thresholds`]; nothing is stored, so changing a threshold regroups at once. The
-//! preview-brightness bracket check is lane B's and plugs in through [`BracketProbe`].
+//! preview-brightness bracket check is the preview lane's and plugs in through [`BracketProbe`].
 //!
 //! - [`order`] sorts a view's frames; [`group`] finds its days, cameras and moments in that order
 //!   (`moments.rs`: runs, bursts and brackets, P5); [`events`] splits every frame into events and

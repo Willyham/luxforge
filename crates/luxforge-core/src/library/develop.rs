@@ -1,6 +1,7 @@
 //! Developing picks (`docs/design/catalog.md`, "Developing picks", P8, P9, P14, P15): bringing
 //! files into the catalog as photographs, into the catalog folder chosen for each event, on the
-//! develop lane — lane C's worker, off the owner and off the source worker.
+//! develop lane — the library lane's worker (`library/worker.rs`), off the owner and off the
+//! source worker.
 //!
 //! 1. **Plan** on the owner (`plan.rs`): the files by event and moment (`crate::organize`, over
 //!    what the index lists in their folders, `frames.rs`), each event's proposed folder, and which
@@ -38,7 +39,7 @@ pub(crate) mod develop_picks_tests;
 pub(crate) use commit::{Decided, Refused, decide, failure, write};
 #[allow(
     unused_imports,
-    reason = "the views lane organizes the files it views from the same rows"
+    reason = "`plan.rs` reads frames through its module; nothing outside `develop` reads it"
 )]
 pub(crate) use frames::{Frames, frames};
 pub(crate) use plan::{Destination, Plan, PlannedFile, destinations, plan};
