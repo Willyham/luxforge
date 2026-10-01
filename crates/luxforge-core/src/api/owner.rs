@@ -1885,8 +1885,10 @@ pub(super) fn job_read(
 /// `job.cancel`, by the job's kind. A source or analysis job, and a catalog job shared by interest
 /// (a preview read's or render's), belongs to the clients that want it: the caller leaves it, and
 /// the work stops only when no other client wants it. A capability, export or other catalog job
-/// belongs to no client: its cancel stops it for everyone. Answers the job as `job.read` does
-/// afterwards.
+/// belongs to no client: its cancel stops it for everyone. So does any client's cancel of a shared
+/// catalog job no client waits for; a client that never asked for one another client waits for is
+/// refused `conflict`. Answers the job as `job.read` does afterwards, a catalog job as any client
+/// reads it.
 ///
 /// Every cancel converges, so it carries no mutation envelope and a retry needs no stored answer:
 /// a left job stays left, a cancelled one stays cancelled and a finished one is answered as it is.
@@ -1897,7 +1899,20 @@ pub(super) fn job_cancel(
 ) -> Result<Value, Error> {
     let job_id = &params.job_id;
     let client = call.client;
-    let kind = owner.jobs.kind_for(job_id, client)?;
+    let kind = match owner.jobs.kind_for(job_id, client) {
+        Ok(kind) => kind,
+        // A preview job the caller never asked for: refused while a client waits for it, and
+        // otherwise stopped for everyone below.
+        Err(refused) => match owner.jobs.kind(job_id) {
+            Some(kind) if kind.family() == Family::Catalog && owner.jobs.shared(job_id) => {
+                if owner.jobs.wanted(job_id) {
+                    return Err(previews::waiting(job_id));
+                }
+                kind
+            }
+            _ => return Err(refused),
+        },
+    };
     match kind.family() {
         Family::Source | Family::Analysis => {
             if owner.latest_preparation.get(&client) == Some(job_id) {
@@ -1918,13 +1933,15 @@ pub(super) fn job_cancel(
         Family::Export => {
             owner.jobs.cancel(job_id, export::CANCELLED);
         }
-        Family::Catalog if owner.jobs.shared(job_id) => {
+        Family::Catalog if owner.jobs.wanted_by(job_id, client) => {
             let release = owner.jobs.release(job_id, client)?;
             owner.catalog.previews.released(job_id, client, &owner.jobs);
             if release == Release::Stopped {
                 owner.stop(job_id, kind);
             }
         }
+        // A client that asked for a preview and has left it changes nothing while another waits.
+        Family::Catalog if owner.jobs.wanted(job_id) => {}
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);
             owner.catalog_cancelled(job_id, kind);
@@ -1934,6 +1951,9 @@ pub(super) fn job_cancel(
                 owner.release_waiters(|waiter| waiter.job.as_ref() == Some(job_id));
             }
         }
+    }
+    if kind.family() == Family::Catalog {
+        return methods::value(owner.jobs.read_any(job_id)?);
     }
     owner.read_job(job_id, client)
 }
