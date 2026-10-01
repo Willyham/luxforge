@@ -18,7 +18,8 @@
 //!   keeps the same job id and reads it. A client's `job.cancel` of it, or its disconnect, releases
 //!   that client's interest: it is woken for the task no more ([`PreviewsLane::released`]), and
 //!   only when the last interested client leaves does the job end `cancelled` and the task leave
-//!   the queue, or stop while it runs, unless a view still wants it. These jobs are too short for
+//!   the queue, or stop while it runs, unless a view still wants it. A client that never asked for
+//!   it is refused `conflict` while one waits for it ([`waiting`]). These jobs are too short for
 //!   rows of their own on the activity board.
 //! - **View jobs.** [`want_view_items`] queues, in the background, the grid tiers a client's view
 //!   lacks, as one catalog job per client ("Reading previews", `n of N`), which replaces the
@@ -85,6 +86,15 @@ const DISCONNECTED: &str = "the client disconnected";
 const UNWANTED: &str = "no request or view wants this preview any more";
 /// The reason a photograph's preview work ends when the photograph leaves the catalog.
 const LEFT_THE_CATALOG: &str = "the photograph left the catalog";
+/// Why `job.cancel` of a preview's job is refused to a client that never asked for it while
+/// another client waits for it.
+const WAITING: &str = "another client is waiting for this preview";
+
+/// The refusal of `job.cancel` of `job_id`, a preview's job another client waits for, to a client
+/// that never asked for it: `conflict`, naming the job.
+pub(super) fn waiting(job_id: &JobId) -> Error {
+    Error::conflict(WAITING).with_data(json!({ "job_id": job_id }))
+}
 
 mod regions;
 mod renders;
@@ -353,10 +363,11 @@ impl PreviewsLane {
         }
     }
 
-    /// The job table stopped one of this lane's jobs — `job.cancel` of a view job or a region, or
-    /// the last interested client leaving a request's job by a cancel or a disconnect: a view job
-    /// drops the tasks only it wanted; a request's job ends `cancelled` and leaves its task, which
-    /// is removed from the queue, or stopped while it runs, when no view still wants it.
+    /// The job table stopped one of this lane's jobs — `job.cancel` of a view job, a region or a
+    /// commit's re-render, or the last interested client leaving a request's job by a cancel or a
+    /// disconnect: a view job drops the tasks only it wanted; a request's job ends `cancelled` and
+    /// leaves its task, which is removed from the queue, or stopped while it runs, when no view
+    /// still wants it; a render's tier is rendered still while another of its jobs wants it.
     pub(super) fn cancelled(&mut self, job_id: &JobId, jobs: &mut Jobs) {
         if self.regions.cancelled(job_id, jobs) || self.renders.cancelled(job_id, jobs) {
             return;

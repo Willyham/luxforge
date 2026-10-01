@@ -5,9 +5,10 @@
 //! earlier entry's key, a deleted index directory rendering again, the large tier sharing the loupe
 //! tiers' budget, the discard of other renderer generations, the camera preview until the first
 //! render, views over photographs making camera previews only, `job.cancel` of a waiting and a
-//! running render, a tier's job shared by two clients until the last leaves it, the render queue's
-//! bound, a backlog of renders never delaying an open photograph's Develop preview and, with the
-//! supplied RAW files, an edited Nikon Z 6 photograph.
+//! running render, a tier's job shared by two clients until the last leaves it, a commit's
+//! re-render stopped for everyone by any client's cancel and run on when a client that joined it
+//! leaves, the render queue's bound, a backlog of renders never delaying an open photograph's
+//! Develop preview and, with the supplied RAW files, an edited Nikon Z 6 photograph.
 use crate::{
     ApiRequest, ApiResponse, AssetId, EditorService, EntryId, PreviewQueue, ProxyBounds, SourceTag,
     api::owner::{ClientId, OwnerHandle, PreviewRequest},
@@ -226,6 +227,17 @@ impl Setup {
     /// `job.cancel` of `job` by `client`: the job's status afterwards.
     fn cancel_for(&self, client: ClientId, job: &Value) -> Value {
         self.ok_for(client, "job.cancel", json!({"job_id": job}))["status"].clone()
+    }
+
+    /// The job the "Rendering previews" row on the activity board names.
+    fn rendering(&self) -> Value {
+        self.ok("activity.list", json!({}))["active"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["kind"] == "preview.photo")
+            .map(|entry| entry["job_id"].clone())
+            .expect("a render on the activity board")
     }
 
     /// Read `tier` of `photo` until it is ready, settling the job a queued answer names; answers
@@ -1172,6 +1184,109 @@ fn only_the_last_client_to_leave_a_tiers_job_stops_its_render() {
     assert!(
         !setup.has_row(running, &running.entry, GRID, "rendered"),
         "the stopped render wrote nothing"
+    );
+}
+
+/// A commit's background re-render has a job of its own that no client waits for: any client — one
+/// that never asked, as the Performance section's Cancel is — reads it, and its `job.cancel` stops
+/// it for everyone, answering the job, and drops the commit's want, so the render writes nothing
+/// and nothing renders it again.
+#[test]
+fn any_clients_cancel_of_a_commits_rerender_stops_it_for_everyone() {
+    let (setup, photos) = Setup::new(
+        "rendered-owner-stop-rerender",
+        &["orientation-1.jpg", "orientation-3.jpg"],
+        true,
+    );
+    let [photo, other] = &photos[..] else {
+        unreachable!()
+    };
+    setup.ready(photo, GRID);
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_renders(Some(gate.clone()));
+    let (entry, _) = setup.edit(setup.client, photo, 1, -0.8);
+    gate.wait_reached(1, "the commit's re-render");
+    let job = setup.rendering();
+    let stranger = setup.owner.register();
+    assert_eq!(setup.status_for(stranger, &job), "running");
+
+    let record = setup.ok_for(stranger, "job.cancel", json!({"job_id": job}));
+    assert_eq!(record["kind"], "preview-render");
+    assert_eq!(record["status"], "cancelled", "{record}");
+    assert_eq!(record["error"]["code"], "cancelled");
+    assert_eq!(setup.status_for(setup.client, &job), "cancelled");
+    assert!(
+        !setup.ok("activity.list", json!({}))["active"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["kind"] == "preview.photo"),
+        "its row left the activity board"
+    );
+
+    gate.open();
+    // Renders run one at a time, so the next one starts once the stopped one has ended.
+    let after = setup.read(other, GRID, "visible");
+    assert_eq!(setup.settled(&after["job_id"])["status"], "ready");
+    assert!(
+        !setup.has_row(photo, &entry, GRID, "rendered"),
+        "the stopped re-render wrote nothing"
+    );
+    assert_eq!(
+        setup.owner.renders_dispatched(),
+        [
+            (photo.asset.clone(), photo.entry.clone(), vec![GRID]),
+            (photo.asset.clone(), entry, vec![GRID]),
+            (other.asset.clone(), other.entry.clone(), vec![GRID]),
+        ],
+        "nothing renders the commit's tier again"
+    );
+}
+
+/// A commit's re-render wants its tier as a view wants a file's: a client that reads the tier while
+/// it renders waits on the job the requests share, and its `job.cancel` ends that job `cancelled`,
+/// releasing only itself, while the render runs on for the commit to `ready` and writes the tier.
+#[test]
+fn a_client_that_leaves_a_commits_rerender_leaves_it_running() {
+    let (setup, photos) = Setup::new(
+        "rendered-owner-leave-rerender",
+        &["orientation-1.jpg"],
+        true,
+    );
+    let photo = &photos[0];
+    setup.ready(photo, GRID);
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_renders(Some(gate.clone()));
+    let (entry, _) = setup.edit(setup.client, photo, 1, -0.8);
+    gate.wait_reached(1, "the commit's re-render");
+    let background = setup.rendering();
+    let read = setup.read(photo, GRID, "visible");
+    assert_eq!(read["state"], "queued", "{read}");
+    let job = read["job_id"].clone();
+    assert_ne!(job, background, "the requests' own job");
+    assert_eq!(setup.status_for(setup.client, &job), "running");
+
+    assert_eq!(setup.cancel_for(setup.client, &job), "cancelled");
+    assert_eq!(
+        setup.status_for(setup.client, &background),
+        "running",
+        "the commit still wants the tier"
+    );
+    gate.open();
+    let record = setup.settled(&background);
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(record["result"]["key"], key(photo, &entry, GRID));
+    assert!(setup.has_row(photo, &entry, GRID, "rendered"));
+    assert_eq!(setup.status_for(setup.client, &job), "cancelled");
+    assert_eq!(
+        setup.owner.renders_dispatched(),
+        [
+            (photo.asset.clone(), photo.entry.clone(), vec![GRID]),
+            (photo.asset.clone(), entry, vec![GRID]),
+        ],
+        "one render, never stopped"
     );
 }
 
