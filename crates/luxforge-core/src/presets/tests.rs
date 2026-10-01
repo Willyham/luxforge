@@ -14,9 +14,40 @@ const OUT_OF_RANGE: &str = include_str!("../../../../fixtures/presets/out-of-ran
 const SIDECAR: &str = include_str!("../../../../fixtures/presets/sidecar.xmp");
 const FADED: &str = include_str!("../../../../fixtures/presets/faded.lrtemplate");
 const SOFT_FILM: &str = include_str!("../../../../fixtures/presets/soft-film.lfpreset");
+const CURVE_XMP: &str = include_str!("../../../../fixtures/presets/curve.xmp");
+const CURVE_17: &str = include_str!("../../../../fixtures/presets/curve-17-points.xmp");
+const CURVE_DECREASING: &str =
+    include_str!("../../../../fixtures/presets/curve-decreasing.lrtemplate");
+const CURVE_DISABLED: &str = include_str!("../../../../fixtures/presets/curve-disabled.xmp");
 
 fn registry() -> ModuleRegistry {
     ModuleRegistry::builtin()
+}
+
+#[test]
+fn lightroom_perspective_keys_are_unsupported_as_different_model() {
+    let keys = [
+        "PerspectiveUpright",
+        "PerspectiveVertical",
+        "PerspectiveHorizontal",
+        "PerspectiveRotate",
+        "PerspectiveAspect",
+        "PerspectiveX",
+        "PerspectiveY",
+        "PerspectiveScale",
+    ];
+    let settings = keys
+        .iter()
+        .map(|key| format!("{key} = 110"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let preset = inspect_preset(&settings_template(&settings), None, &registry()).unwrap();
+    assert!(preset.settings.is_empty());
+    assert_eq!(preset.report.unsupported.len(), keys.len());
+    for row in preset.report.unsupported {
+        assert!(keys.contains(&row.setting.as_str()));
+        assert_eq!(row.reason.as_deref(), Some("different perspective model"));
+    }
 }
 
 fn mapped(setting: &str, value: &str, action: &str, field: &str, applied: Value) -> MappedSetting {
@@ -55,11 +86,65 @@ fn expect_error(result: Result<ImportedPreset, Error>, kind: ErrorKind, detail: 
     assert!(error.detail.contains(detail), "{error}");
 }
 
-const SHARPENING: &str = "Luxforge has no sharpening";
+const SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
 const GRADING: &str = "Luxforge has no colour grading";
-const CURVE: &str = "Luxforge has no tone curve";
+const CHANNEL_CURVES: &str = "Luxforge's tone curve has no per-channel curves";
+const PARAMETRIC: &str = "Luxforge has no parametric curve";
+const CURVE_SATURATION: &str = "Luxforge's tone curve changes no saturation";
+const CURVE_NAME: &str = "names a curve whose points are not in the preset";
 const PROFILES: &str = "Luxforge has no profiles";
 const CROP: &str = "crop belongs to one photo, not to a preset";
+
+/// Lightroom's 0–255 points as the Tone curve's luminance points: each coordinate over 255.
+fn unit(points: &[[f64; 2]]) -> Value {
+    Value::Array(
+        points
+            .iter()
+            .map(|[x, y]| json!([x / 255.0, y / 255.0]))
+            .collect(),
+    )
+}
+
+/// The report entry of a mapped `ToneCurvePV2012`.
+fn curve_mapped(value: &str, points: &[[f64; 2]]) -> MappedSetting {
+    mapped(
+        "ToneCurvePV2012",
+        value,
+        "set-curve",
+        "luminance",
+        unit(points),
+    )
+}
+
+/// A modern template whose only curve setting is `ToneCurvePV2012` written as `curve`, beside an
+/// exposure that maps, so the import stands on its own.
+fn curve_template(curve: &str) -> ImportedPreset {
+    inspect_preset(
+        &settings_template(&format!(
+            "ProcessVersion = \"15.4\", Exposure2012 = 0.1, ToneCurvePV2012 = {curve}"
+        )),
+        None,
+        &registry(),
+    )
+    .unwrap()
+}
+
+/// The reason a template's `ToneCurvePV2012` is refused with, having checked that nothing else
+/// of the curve reached the settings.
+fn curve_refusal(curve: &str) -> String {
+    let preset = curve_template(curve);
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-basic": {"exposure": 0.1}})),
+        "{curve}"
+    );
+    assert!(preset.report.neutral.is_empty(), "{curve}");
+    assert!(preset.report.unsupported.is_empty(), "{curve}");
+    match &preset.report.refused[..] {
+        [entry] if entry.setting == "ToneCurvePV2012" => entry.reason.clone().unwrap(),
+        other => panic!("{curve}: refused {other:?}"),
+    }
+}
 
 fn develop_report(format: &str) -> ImportReport {
     ImportReport {
@@ -152,6 +237,10 @@ fn develop_report(format: &str) -> ImportReport {
             ),
             mapped("Shadows2012", "+25", "set-basic", "shadows", json!(25)),
             mapped("Texture", "+15", "set-presence", "texture", json!(15)),
+            curve_mapped(
+                "0, 0; 64, 56; 192, 200; 255, 255",
+                &[[0.0, 0.0], [64.0, 56.0], [192.0, 200.0], [255.0, 255.0]],
+            ),
             mapped("Vibrance", "+20", "set-basic", "vibrance", json!(20)),
             mapped("Whites2012", "+8", "set-basic", "whites", json!(8)),
         ],
@@ -174,6 +263,7 @@ fn develop_report(format: &str) -> ImportReport {
             neutral("SplitToningBalance", "0"),
             neutral("SplitToningShadowHue", "220"),
             neutral("SplitToningShadowSaturation", "0"),
+            neutral("ToneCurveName2012", "Custom"),
             neutral("ToneCurvePV2012Red", "0, 0; 255, 255"),
             neutral("WhiteBalance", "Custom"),
         ],
@@ -185,8 +275,6 @@ fn develop_report(format: &str) -> ImportReport {
             because("SplitToningHighlightHue", "45", GRADING),
             because("SplitToningHighlightSaturation", "12", GRADING),
             because("SyntheticFutureControl", "3", "not recognised"),
-            because("ToneCurveName2012", "Custom", CURVE),
-            because("ToneCurvePV2012", "0, 0; 64, 56; 192, 200; 255, 255", CURVE),
         ],
         refused: vec![],
     }
@@ -198,6 +286,9 @@ fn develop_settings() -> Map<String, Value> {
             "blacks": -6, "contrast": 12, "exposure": 0.35, "highlights": -40,
             "saturation": -5, "shadows": 25, "temperature": 7, "tint": -3,
             "vibrance": 20, "whites": 8
+        },
+        "set-curve": {
+            "luminance": unit(&[[0.0, 0.0], [64.0, 56.0], [192.0, 200.0], [255.0, 255.0]])
         },
         "set-mixer": {
             "blue-saturation": -20, "green-luminance": -12.5, "orange-hue": 0,
@@ -228,9 +319,9 @@ fn an_xmp_develop_preset_maps_its_values_and_reports_every_other_setting() {
     assert_eq!(
         preset.report.counts(),
         ReportCounts {
-            mapped: 22,
-            neutral: 15,
-            unsupported: 9,
+            mapped: 23,
+            neutral: 16,
+            unsupported: 7,
             refused: 0
         }
     );
@@ -395,7 +486,7 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
             "set-raw": {"white-balance": "as-shot"}
         }))
     );
-    let noise = "Luxforge has no noise reduction";
+    let noise = "Lightroom noise reduction is not mapped to Luxforge Detail";
     let lens = "Luxforge has no lens corrections";
     assert_eq!(
         preset.report,
@@ -466,6 +557,9 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
         preset.settings,
         object(json!({
             "set-basic": {"blacks": 20, "contrast": -15, "exposure": 0.25, "temperature": 5},
+            "set-curve": {
+                "luminance": unit(&[[0.0, 28.0], [64.0, 70.0], [192.0, 188.0], [255.0, 240.0]])
+            },
             "set-presence": {"clarity": -10},
             "set-raw": {"white-balance": "as-shot"},
             "set-vignette": {"amount": -12, "feather": 50, "midpoint": 50, "roundness": 0}
@@ -518,6 +612,11 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                     "roundness",
                     json!(0)
                 ),
+                // The flat interleaved array, read as its pairs.
+                curve_mapped(
+                    "0, 28; 64, 70; 192, 188; 255, 240",
+                    &[[0.0, 28.0], [64.0, 70.0], [192.0, 188.0], [255.0, 240.0]],
+                ),
                 // Its relative temperature is Basic's, so As shot sets only the development's.
                 mapped(
                     "WhiteBalance",
@@ -533,6 +632,7 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 neutral("RetouchInfo", ""),
                 neutral("SplitToningHighlightHue", "40"),
                 neutral("SplitToningHighlightSaturation", "18"),
+                neutral("ToneCurveName2012", "Custom \"S\""),
                 neutral("ToneCurvePV2012Blue", "0, 0; 255, 255"),
             ],
             unsupported: vec![
@@ -551,12 +651,6 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                     "Luxforge draws one vignette style"
                 ),
                 because("Sharpness", "25", SHARPENING),
-                because("ToneCurveName2012", "Custom \"S\"", CURVE),
-                because(
-                    "ToneCurvePV2012",
-                    "0, 28; 64, 70; 192, 188; 255, 240",
-                    CURVE
-                ),
             ],
             refused: vec![
                 because("HueAdjustmentAqua", "10", disabled),
@@ -861,8 +955,8 @@ fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
                 "What=Mask",
                 "Lightroom masks and local corrections are not imported"
             ),
-            because("ParametricLights", "5", CURVE),
-            because("ParametricShadowSplit", "30", CURVE),
+            because("ParametricLights", "5", PARAMETRIC),
+            because("ParametricShadowSplit", "30", PARAMETRIC),
             because(
                 "VignetteMidpoint",
                 "40",
@@ -883,6 +977,537 @@ fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
             ),
         ]
     );
+}
+
+/// `ToneCurvePV2012` transfers onto `set-curve.luminance` as its points over 255, in order, beside
+/// the sibling settings Luxforge has no tool for: a per-channel curve that is not an identity and a
+/// parametric region that is not zero are unsupported, and every other curve setting is neutral.
+#[test]
+fn a_tone_curve_transfers_as_points_on_the_unit_scale() {
+    let preset = parse_preset(CURVE_XMP, Some("curve.xmp"), &registry()).unwrap();
+    let points = [
+        [0.0, 24.0],
+        [60.0, 58.0],
+        [128.0, 132.0],
+        [200.0, 212.0],
+        [255.0, 250.0],
+    ];
+    assert_eq!(preset.name, "Matte Curve");
+    assert_eq!(
+        preset.settings,
+        object(json!({
+            "set-basic": {"exposure": 0.1},
+            "set-curve": {"luminance": unit(&points)}
+        }))
+    );
+    assert_eq!(
+        preset.settings["set-curve"]["luminance"][4],
+        json!([1.0, 250.0 / 255.0]),
+        "255 is the unit scale's 1"
+    );
+    assert_eq!(
+        preset.report,
+        ImportReport {
+            format: "lightroom-xmp".into(),
+            process_version: Some("15.4".into()),
+            mapped: vec![
+                mapped("Exposure2012", "+0.10", "set-basic", "exposure", json!(0.1)),
+                curve_mapped("0, 24; 60, 58; 128,132; 200, 212; 255, 250", &points),
+            ],
+            neutral: vec![
+                neutral("CurveRefineSaturation", "100"),
+                neutral("ParametricDarks", "0"),
+                neutral("ParametricHighlightSplit", "75"),
+                neutral("ParametricLights", "0"),
+                neutral("ParametricMidtoneSplit", "50"),
+                neutral("ParametricShadowSplit", "25"),
+                neutral("ParametricShadows", "0"),
+                neutral("ToneCurveName2012", "Custom"),
+                neutral("ToneCurvePV2012Blue", "0, 0; 255, 255"),
+                neutral("ToneCurvePV2012Red", "0, 0; 255, 255"),
+            ],
+            unsupported: vec![
+                because("ParametricHighlights", "-10", PARAMETRIC),
+                because(
+                    "ToneCurvePV2012Green",
+                    "0, 0; 128, 120; 255, 255",
+                    CHANNEL_CURVES
+                ),
+            ],
+            refused: vec![],
+        }
+    );
+    assert_eq!(
+        preset.origin,
+        PresetOrigin::LightroomXmp {
+            file_name: Some("curve.xmp".into()),
+            uuid: None,
+            process_version: Some("15.4".into()),
+            preset_type: Some("Normal".into()),
+        }
+    );
+    // Each part of a point is trimmed, and a flat segment is monotone.
+    let trimmed = curve_template("{ \" 0 ,  0 \", \"96,128\", \"176, 128\", \"255 , 255\" }");
+    assert_eq!(
+        trimmed.settings["set-curve"]["luminance"],
+        unit(&[[0.0, 0.0], [96.0, 128.0], [176.0, 128.0], [255.0, 255.0]])
+    );
+}
+
+#[test]
+fn a_tone_curve_with_seventeen_points_is_refused_with_its_count() {
+    let preset = parse_preset(CURVE_17, Some("curve-17-points.xmp"), &registry()).unwrap();
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-basic": {"contrast": 8}}))
+    );
+    let [refused] = &preset.report.refused[..] else {
+        panic!("one refusal: {:?}", preset.report.refused);
+    };
+    assert_eq!(refused.setting, "ToneCurvePV2012");
+    assert!(
+        refused.value.starts_with("0, 0; 16, 12; "),
+        "{}",
+        refused.value
+    );
+    assert!(refused.value.ends_with("; 255, 255"), "{}", refused.value);
+    assert_eq!(
+        refused.reason.as_deref(),
+        Some("has 17 points; Luxforge's tone curve holds at most 16")
+    );
+    // The name is neutral beside the points it names, whatever became of them.
+    assert_eq!(
+        preset.report.neutral,
+        vec![neutral("ToneCurveName2012", "Custom")]
+    );
+    assert!(preset.report.unsupported.is_empty());
+    // Sixteen points are the most the curve holds, and transfer.
+    let sixteen: Vec<String> = (0..16)
+        .map(|index| format!("{}, {}", index * 17, index * 17))
+        .collect();
+    let preset = curve_template(&format!(
+        "{{ {} }}",
+        sixteen
+            .iter()
+            .map(|point| format!("\"{point}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    assert_eq!(
+        preset.settings["set-curve"]["luminance"]
+            .as_array()
+            .map(Vec::len),
+        Some(16)
+    );
+}
+
+#[test]
+fn a_tone_curve_with_one_point_is_refused_with_its_count() {
+    assert_eq!(
+        curve_refusal("{ 0, 0 }"),
+        "has 1 point; Luxforge's tone curve needs at least 2"
+    );
+    assert_eq!(
+        curve_refusal("{}"),
+        "has 0 points; Luxforge's tone curve needs at least 2"
+    );
+}
+
+#[test]
+fn a_tone_curve_item_that_is_not_a_pair_is_refused() {
+    for (curve, reason) in [
+        (
+            "{ \"0, 0\", \"64\", \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        (
+            "{ \"0, 0\", \"64, 56, 60\", \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        (
+            "{ \"0, 0\", \"a, 56\", \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        (
+            "{ \"0, 0\", \"64, \", \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        ("{ \"0; 0\", \"255, 255\" }", "point 0 is not \"x, y\""),
+        (
+            "{ \"0, 0\", { x = 64, y = 56 }, \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        // Every item is read before any is range-checked.
+        (
+            "{ \"0, 900\", \"64\", \"255, 255\" }",
+            "point 1 is not \"x, y\"",
+        ),
+        ("\"0, 0; 255, 255\"", "not a list of \"x, y\" points"),
+        ("true", "not a list of \"x, y\" points"),
+    ] {
+        assert_eq!(curve_refusal(curve), reason, "{curve}");
+    }
+}
+
+/// A template's flat array holds its points as `x, y` pairs; an odd one does not, so it arrives as
+/// bare numbers and its first number is refused as a point. The count is checked first.
+#[test]
+fn an_odd_flat_lrtemplate_curve_is_refused_point_by_point() {
+    assert_eq!(
+        curve_refusal("{ 0, 0, 128, 140, 255 }"),
+        "point 0 is not \"x, y\""
+    );
+    assert_eq!(curve_refusal("{ 0, 0, 255 }"), "point 0 is not \"x, y\"");
+    let seventeen = vec!["0"; 17].join(", ");
+    assert_eq!(
+        curve_refusal(&format!("{{ {seventeen} }}")),
+        "has 17 points; Luxforge's tone curve holds at most 16"
+    );
+}
+
+#[test]
+fn a_tone_curve_value_outside_0_255_is_refused() {
+    for (curve, reason) in [
+        ("{ 0, 0, 128, 300, 255, 255 }", "point 1 is outside 0..255"),
+        ("{ -1, 0, 255, 255 }", "point 0 is outside 0..255"),
+        ("{ 0, 0, 255.5, 255 }", "point 1 is outside 0..255"),
+        ("{ 0, -0.5, 255, 255 }", "point 0 is outside 0..255"),
+        // Every coordinate is range-checked before any input is compared.
+        ("{ 0, 0, 128, 100, 64, 300 }", "point 2 is outside 0..255"),
+    ] {
+        assert_eq!(curve_refusal(curve), reason, "{curve}");
+    }
+}
+
+#[test]
+fn a_tone_curve_whose_input_does_not_increase_is_refused() {
+    for (curve, reason) in [
+        (
+            "{ 0, 0, 128, 100, 128, 140, 255, 255 }",
+            "point 2's input does not increase",
+        ),
+        (
+            "{ 0, 0, 200, 100, 100, 140, 255, 255 }",
+            "point 2's input does not increase",
+        ),
+        // Every input is compared before any output: point 2's output falls, but point 3's input
+        // repeats point 2's.
+        (
+            "{ 0, 0, 128, 140, 192, 120, 192, 200, 255, 255 }",
+            "point 3's input does not increase",
+        ),
+    ] {
+        assert_eq!(curve_refusal(curve), reason, "{curve}");
+    }
+}
+
+/// Luxforge's tone curve is monotone, so an inversion is refused rather than reordered or clamped.
+#[test]
+fn a_decreasing_tone_curve_is_refused_as_not_monotone() {
+    let preset = parse_preset(
+        CURVE_DECREASING,
+        Some("curve-decreasing.lrtemplate"),
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(preset.name, "Solarize");
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-basic": {"exposure": -0.2}}))
+    );
+    assert_eq!(
+        preset.report,
+        ImportReport {
+            format: "lightroom-template".into(),
+            process_version: Some("10.0".into()),
+            mapped: vec![mapped(
+                "Exposure2012",
+                "-0.2",
+                "set-basic",
+                "exposure",
+                json!(-0.2)
+            )],
+            neutral: vec![neutral("ToneCurveName2012", "Custom")],
+            unsupported: vec![],
+            refused: vec![because(
+                "ToneCurvePV2012",
+                "0, 0; 96, 140; 176, 110; 255, 255",
+                "point 2's output decreases; Luxforge's tone curve is monotone"
+            )],
+        }
+    );
+    assert_eq!(
+        preset.origin,
+        PresetOrigin::LightroomTemplate {
+            file_name: Some("curve-decreasing.lrtemplate".into()),
+            uuid: Some("3C9E1A74-5B2D-4F80-9E16-7A0C4D2B8F13".into()),
+        }
+    );
+    assert_eq!(
+        curve_refusal("{ 0, 255, 255, 0 }"),
+        "point 1's output decreases; Luxforge's tone curve is monotone"
+    );
+}
+
+/// An identity curve is a curve like any other: it transfers as written and resets the Tone
+/// curve, as every mapped control transfers its neutral value.
+#[test]
+fn an_identity_tone_curve_is_mapped() {
+    let preset = curve_template("{ 0, 0, 255, 255 }");
+    assert_eq!(
+        preset.settings,
+        object(json!({
+            "set-basic": {"exposure": 0.1},
+            "set-curve": {"luminance": [[0.0, 0.0], [1.0, 1.0]]}
+        }))
+    );
+    assert_eq!(
+        preset.report.mapped[1],
+        mapped(
+            "ToneCurvePV2012",
+            "0, 0; 255, 255",
+            "set-curve",
+            "luminance",
+            json!([[0.0, 0.0], [1.0, 1.0]])
+        )
+    );
+    assert!(preset.report.neutral.is_empty());
+    let preset = curve_template("{ 0, 0, 128, 128, 255, 255 }");
+    assert_eq!(
+        preset.settings["set-curve"]["luminance"],
+        unit(&[[0.0, 0.0], [128.0, 128.0], [255.0, 255.0]]),
+        "never decimated"
+    );
+}
+
+/// A curve in a panel the preset switches off is refused as disabled, an identity curve included,
+/// and never reported neutral; the other curve settings are neutral. A switch that is not a
+/// boolean refuses the curve too.
+#[test]
+fn a_disabled_tone_curve_is_refused_as_disabled() {
+    let preset = parse_preset(CURVE_DISABLED, Some("curve-disabled.xmp"), &registry()).unwrap();
+    assert_eq!(preset.name, "Curve Off");
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-basic": {"exposure": 0.25}}))
+    );
+    assert_eq!(
+        preset.report,
+        ImportReport {
+            format: "lightroom-xmp".into(),
+            process_version: Some("15.4".into()),
+            mapped: vec![mapped(
+                "Exposure2012",
+                "+0.25",
+                "set-basic",
+                "exposure",
+                json!(0.25)
+            )],
+            neutral: vec![
+                neutral("CurveRefineSaturation", "80"),
+                neutral("ParametricLights", "20"),
+                neutral("ToneCurveName2012", "Strong Contrast"),
+                neutral("ToneCurvePV2012Green", "0, 10; 255, 255"),
+            ],
+            unsupported: vec![],
+            refused: vec![because(
+                "ToneCurvePV2012",
+                "0, 0; 64, 48; 192, 210; 255, 255",
+                "disabled in the preset"
+            )],
+        }
+    );
+    let identity = inspect_preset(
+        &settings_template(
+            "ProcessVersion = \"15.4\", EnableToneCurve = false, ToneCurvePV2012 = { 0, 0, 255, 255 }",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert!(identity.settings.is_empty());
+    assert!(identity.report.neutral.is_empty());
+    assert_eq!(
+        identity.report.refused,
+        vec![because(
+            "ToneCurvePV2012",
+            "0, 0; 255, 255",
+            "disabled in the preset"
+        )]
+    );
+    let unknown = inspect_preset(
+        &settings_template(
+            "ProcessVersion = \"15.4\", EnableToneCurve = \"maybe\", ToneCurvePV2012 = { 0, 0, 255, 255 }",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert!(unknown.settings.is_empty());
+    assert_eq!(
+        unknown.report.unsupported,
+        vec![because(
+            "EnableToneCurve",
+            "maybe",
+            "panel switch is not a boolean"
+        )]
+    );
+    assert_eq!(
+        unknown.report.refused,
+        vec![because(
+            "ToneCurvePV2012",
+            "0, 0; 255, 255",
+            "panel switch EnableToneCurve is not a boolean"
+        )]
+    );
+}
+
+/// A curve in an earlier-process preset is refused with the era, like every mapped setting there,
+/// an identity curve included. Without a `ProcessVersion`, `ToneCurvePV2012` is a Process 2012
+/// field, so it makes the preset modern.
+#[test]
+fn a_tone_curve_in_a_legacy_preset_is_refused_with_the_era() {
+    let legacy = inspect_preset(
+        &settings_template(
+            "ProcessVersion = \"5.7\", ToneCurvePV2012 = { 0, 0, 64, 56, 255, 255 }, \
+             ToneCurve = { 0, 0, 255, 255 }",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert!(legacy.settings.is_empty());
+    assert!(legacy.report.neutral.is_empty());
+    assert_eq!(
+        legacy.report.refused,
+        vec![
+            because(
+                "ToneCurve",
+                "0, 0; 255, 255",
+                "earlier-process field; Luxforge follows Process 2012"
+            ),
+            because(
+                "ToneCurvePV2012",
+                "0, 0; 64, 56; 255, 255",
+                "earlier process version 5.7"
+            ),
+        ]
+    );
+    let identity = inspect_preset(
+        &settings_template("ProcessVersion = \"6.6\", ToneCurvePV2012 = { 0, 0, 255, 255 }"),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        identity.report.refused,
+        vec![because(
+            "ToneCurvePV2012",
+            "0, 0; 255, 255",
+            "earlier process version 6.6"
+        )]
+    );
+    let unversioned = inspect_preset(
+        &settings_template("Exposure = 0.5, ToneCurvePV2012 = { 0, 0, 64, 56, 255, 255 }"),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        unversioned.settings,
+        object(json!({
+            "set-curve": {"luminance": unit(&[[0.0, 0.0], [64.0, 56.0], [255.0, 255.0]])}
+        }))
+    );
+    assert_eq!(unversioned.report.neutral, vec![neutral("Exposure", "0.5")]);
+}
+
+#[test]
+fn a_tone_curve_name_is_neutral_beside_its_points() {
+    for (curve, mapped) in [
+        ("{ 0, 0, 64, 56, 192, 200, 255, 255 }", true),
+        // The points are refused, and the name still says nothing they do not.
+        ("{ 0, 0, 64, 56, 192, 40, 255, 255 }", false),
+    ] {
+        let preset = inspect_preset(
+            &settings_template(&format!(
+                "ProcessVersion = \"15.4\", ToneCurveName2012 = \"Medium Contrast\", \
+                 ToneCurvePV2012 = {curve}"
+            )),
+            None,
+            &registry(),
+        )
+        .unwrap();
+        assert_eq!(
+            preset.report.neutral,
+            vec![neutral("ToneCurveName2012", "Medium Contrast")],
+            "{curve}"
+        );
+        assert!(preset.report.unsupported.is_empty(), "{curve}");
+        assert_eq!(preset.report.mapped.len(), usize::from(mapped), "{curve}");
+        assert_eq!(preset.report.refused.len(), usize::from(!mapped), "{curve}");
+    }
+}
+
+#[test]
+fn a_tone_curve_name_without_points_is_unsupported() {
+    let name = |value: &str| {
+        inspect_preset(
+            &settings_template(&format!(
+                "ProcessVersion = \"15.4\", Exposure2012 = 0.1, ToneCurveName2012 = \"{value}\""
+            )),
+            None,
+            &registry(),
+        )
+        .unwrap()
+        .report
+    };
+    for value in ["Medium Contrast", "Custom"] {
+        let report = name(value);
+        assert_eq!(
+            report.unsupported,
+            vec![because("ToneCurveName2012", value, CURVE_NAME)],
+            "{value}"
+        );
+        assert!(report.neutral.is_empty(), "{value}");
+    }
+    // Linear names the identity, which is neutral with no points to carry.
+    let report = name("Linear");
+    assert_eq!(report.neutral, vec![neutral("ToneCurveName2012", "Linear")]);
+    assert!(report.unsupported.is_empty());
+}
+
+#[test]
+fn curve_refine_saturation_is_unsupported_unless_100() {
+    let refine = |value: &str| {
+        inspect_preset(
+            &settings_template(&format!(
+                "ProcessVersion = \"15.4\", Exposure2012 = 0.1, CurveRefineSaturation = {value}"
+            )),
+            None,
+            &registry(),
+        )
+        .unwrap()
+        .report
+    };
+    for (written, value) in [("100", "100"), ("100.0", "100.0"), ("\"+100\"", "+100")] {
+        let report = refine(written);
+        assert_eq!(
+            report.neutral,
+            vec![neutral("CurveRefineSaturation", value)],
+            "{written}"
+        );
+        assert!(report.unsupported.is_empty(), "{written}");
+    }
+    for value in ["80", "0", "150"] {
+        let report = refine(value);
+        assert_eq!(
+            report.unsupported,
+            vec![because("CurveRefineSaturation", value, CURVE_SATURATION)],
+            "{value}"
+        );
+        assert!(report.neutral.is_empty(), "{value}");
+    }
 }
 
 #[test]
@@ -979,6 +1604,10 @@ fn every_import_round_trips_through_an_exported_document() {
         (OUT_OF_RANGE, "out-of-range.xmp"),
         (SIDECAR, "sidecar.xmp"),
         (FADED, "faded.lrtemplate"),
+        (CURVE_XMP, "curve.xmp"),
+        (CURVE_17, "curve-17-points.xmp"),
+        (CURVE_DECREASING, "curve-decreasing.lrtemplate"),
+        (CURVE_DISABLED, "curve-disabled.xmp"),
     ] {
         let imported = parse_preset(text, Some(file_name), &registry()).unwrap();
         let export = export_document(
@@ -1120,6 +1749,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
             title: "Set away".into(),
             notes: "test".into(),
             patch: true,
+            preset: true,
             parameters: vec![parameter],
         }],
         queries: vec![],

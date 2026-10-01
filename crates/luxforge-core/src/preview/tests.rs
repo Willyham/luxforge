@@ -1290,6 +1290,15 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
 /// A job whose one colour layer waits on `gate` in every phase that renders it, so a test can
 /// hold the job in the phase it is about. The layer leaves its pixels as it found them.
 fn held(gate: &Arc<luxforge_testbase::Gate>, proxy: Option<ProxyBounds>) -> PreviewJob {
+    held_behind(gate, proxy, Vec::new())
+}
+
+/// [`held`], with `before` placed ahead of the waiting layer.
+fn held_behind(
+    gate: &Arc<luxforge_testbase::Gate>,
+    proxy: Option<ProxyBounds>,
+    mut before: Vec<Layer>,
+) -> PreviewJob {
     let layer = Layer {
         id: LayerId::new(),
         effect_id: crate::modules::HELD_EFFECT.into(),
@@ -1302,7 +1311,8 @@ fn held(gate: &Arc<luxforge_testbase::Gate>, proxy: Option<ProxyBounds>) -> Prev
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
         .expect("a valid holding module");
-    rebuilt(stacked(64, 48, vec![layer], proxy), |parts| {
+    before.push(layer);
+    rebuilt(stacked(64, 48, before, proxy), |parts| {
         parts.registry = Arc::new(registry);
     })
 }
@@ -1375,6 +1385,106 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
         "the job moved on to its exact phase"
     );
     assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+}
+
+/// A job's exact phase publishes how far its spatial tiles have got on the queue while it runs,
+/// and its activity carries the same fraction; once the phase has ended the queue reads nothing.
+/// Detail's tiles all run before the colour layer behind it waits at its gate, so the reading
+/// there is the phase's whole extent, finished.
+#[test]
+fn the_exact_phase_publishes_its_progress_until_it_ends() {
+    let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+    let mut queue = PreviewQueue::default();
+    queue.set_activity(board.clone());
+    assert_eq!(queue.progress(), None, "nothing runs");
+
+    gate.shut();
+    let detail = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening": 60, "luminance": 30}),
+    );
+    let generation = queue.request(held_behind(&gate, None, vec![detail]));
+    let progress = wait_for("the exact phase never finished its tiles", || {
+        queue
+            .progress()
+            .filter(|progress| progress.counts.done == progress.counts.planned)
+    });
+    assert_eq!(progress.generation, generation);
+    assert!(progress.counts.planned > 0, "{progress:?}");
+    board_until(
+        &board,
+        |snapshot| {
+            snapshot.active.first().is_some_and(|active| {
+                active.entry.progress.as_ref().and_then(|p| p.fraction) == Some(1.0)
+            })
+        },
+        "the activity never reported the finished tiles",
+    );
+
+    gate.open();
+    let results = drain_all(&mut queue);
+    assert_eq!(
+        results.last().map(PreviewResult::phase),
+        Some(PreviewPhase::Exact)
+    );
+    assert_eq!(queue.progress(), None, "the phase has ended");
+
+    // A stack without a spatial operation publishes its phase with nothing planned: there is no
+    // truthful extent to show.
+    gate.shut();
+    queue.request(held(&gate, None));
+    let progress = wait_for("the exact phase never started", || queue.progress());
+    assert_eq!(progress.counts, crate::ProgressCounts::default());
+    gate.open();
+    drain_all(&mut queue);
+    assert_eq!(queue.progress(), None);
+}
+
+/// The exact phase's meter wakes the consumer only once the phase has run
+/// [`super::worker::PROGRESS_QUIET`], and then at most once per interval however many batches
+/// finish; before the phase starts it wakes nothing.
+#[test]
+fn the_exact_meter_wakes_the_consumer_only_after_the_quiet_interval() {
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counted = wakes.clone();
+    let waker: crate::latest::Wake = Arc::new(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+    });
+    let meter_for = |phase: Option<Instant>| {
+        let started = Arc::new(OnceLock::new());
+        if let Some(phase) = phase {
+            let _ = started.set(phase);
+        }
+        let meter = super::worker::exact_meter(None, Some(waker.clone()), started);
+        meter.plan(8);
+        meter
+    };
+
+    let unstarted = meter_for(None);
+    unstarted.advance(1);
+    let fresh = meter_for(Some(Instant::now()));
+    fresh.advance(1);
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        0,
+        "before the quiet interval"
+    );
+
+    let long = meter_for(Instant::now().checked_sub(Duration::from_secs(1)));
+    for _ in 0..4 {
+        long.advance(1);
+    }
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "batches inside one interval wake the consumer once"
+    );
+    assert_eq!(long.counts().done, 4);
 }
 
 /// A newer request stops the exact phase of the job it replaces, and that job's activity ends
@@ -2338,4 +2448,449 @@ fn a_cancelled_mask_coverage_is_an_error() {
         .mask_coverage(&mask.id, (28, 19), None, &cancel)
         .unwrap_err();
     assert_eq!(error.kind, crate::ErrorKind::Cancelled);
+}
+
+#[test]
+fn restoration_settlement_reduces_final_pixels_and_reduce_only_shares_full_raster() {
+    let layer = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening":50,"luminance":40,"colour":40}),
+    );
+    let mut wanted = stacked(
+        129,
+        97,
+        vec![layer],
+        Some(ProxyBounds {
+            width: 37,
+            height: 31,
+        }),
+    );
+    wanted.analyse = true;
+    wanted.intent = PreviewIntent::Settle;
+    let mut queue = PreviewQueue::default();
+    queue.request(wanted.clone());
+    let settled = drain_all(&mut queue);
+    assert_eq!(settled.len(), 1, "settlement runs no moving proxy");
+    let exact = settled[0].exact().unwrap();
+    let full = exact.result.as_ref().unwrap();
+    let displayed = exact.display.as_ref().unwrap();
+    let plan = crate::ProxyPlan::fit((129, 97), (129, 97), wanted.proxy.unwrap()).unwrap();
+    let reference = crate::proxy::downscale_raster(full, plan, &Cancel::never()).unwrap();
+    assert_eq!(displayed.rgba, reference.rgba);
+    assert_eq!(
+        exact.report.as_ref().unwrap(),
+        &crate::analysis::reduce(&full.rgba, 129, 97, &Cancel::never()).unwrap()
+    );
+    let full = Arc::new(full.clone());
+    wanted.reduce = Some(full.clone());
+    wanted.proxy = Some(ProxyBounds {
+        width: 29,
+        height: 17,
+    });
+    wanted.intent = PreviewIntent::Reduce;
+    queue.request(wanted.clone());
+    let resized = drain_all(&mut queue);
+    assert_eq!(resized.len(), 1);
+    let resized = resized[0].exact().unwrap();
+    assert!(resized.report.is_none(), "resizing does not rerun analysis");
+    assert!(Arc::ptr_eq(
+        &full.rgba,
+        &resized.result.as_ref().unwrap().rgba
+    ));
+    let plan = crate::ProxyPlan::fit((129, 97), (129, 97), wanted.proxy.unwrap()).unwrap();
+    assert_eq!(
+        resized.display.as_ref().unwrap().rgba,
+        crate::proxy::downscale_raster(&full, plan, &Cancel::never())
+            .unwrap()
+            .rgba
+    );
+    wanted.reduce = Some(Arc::new(crate::Raster {
+        snapshot_id: SnapshotId::new(),
+        ..(*full).clone()
+    }));
+    queue.request(wanted);
+    assert!(
+        drain_all(&mut queue)[0].exact().unwrap().result.is_err(),
+        "an unrelated exact allocation is refused"
+    );
+}
+
+#[test]
+fn restoration_settlement_excludes_partial_moving_and_approximate_frames() {
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30}));
+    let mut whole = stacked(64, 48, vec![detail.clone()], Some(bounds(16, 12)));
+    whole.intent = PreviewIntent::Settle;
+    let raster = whole
+        .evaluation
+        .exact(&Cancel::never())
+        .unwrap()
+        .frame(whole.evaluation.entry().snapshot.id.clone())
+        .unwrap();
+    let result = Ok(raster);
+    assert!(whole.evaluation.settles_from_exact());
+    assert!(
+        super::worker::settled_display(&whole, &result, true, &Cancel::never())
+            .unwrap()
+            .is_some()
+    );
+
+    let mut partial = whole.clone();
+    partial.layer_count = Some(1);
+    let mut viewport = whole.clone();
+    viewport.viewport = Some(crate::Region {
+        x0: 0,
+        y0: 0,
+        width: 16,
+        height: 12,
+    });
+    let mut moving = whole.clone();
+    moving.intent = PreviewIntent::Interactive;
+    let mut fits = whole.clone();
+    fits.proxy = Some(bounds(64, 48));
+    let mut unbounded = whole.clone();
+    unbounded.proxy = None;
+    let mut approximate = rebuilt(raw_job(Some(approximation())), |parts| {
+        parts.recipe.layers.push(detail)
+    });
+    approximate.intent = PreviewIntent::Settle;
+    for (name, job) in [
+        ("truncated", partial),
+        ("viewport", viewport),
+        ("interactive", moving),
+        ("scale one", fits),
+        ("unbounded", unbounded),
+        ("approximate white balance", approximate.clone()),
+    ] {
+        assert!(
+            super::worker::settled_display(&job, &result, true, &Cancel::never())
+                .unwrap()
+                .is_none(),
+            "{name}"
+        );
+    }
+    assert!(
+        super::worker::settled_display(&whole, &result, false, &Cancel::never())
+            .unwrap()
+            .is_none(),
+        "a stack without settlement metadata has no display reduction"
+    );
+    let cancelled = Cancel::new();
+    cancelled.cancel();
+    assert_eq!(
+        super::worker::settled_display(&whole, &result, true, &cancelled)
+            .unwrap_err()
+            .kind,
+        crate::ErrorKind::Cancelled
+    );
+
+    // Even a correctly tagged retained RAW raster cannot become an exact-derived display when
+    // its source settings approximate a drafted white balance.
+    let raw = approximate
+        .evaluation
+        .exact(&Cancel::never())
+        .unwrap()
+        .frame(approximate.evaluation.entry().snapshot.id.clone())
+        .unwrap();
+    approximate.intent = PreviewIntent::Reduce;
+    approximate.reduce = Some(Arc::new(raw));
+    let mut queue = PreviewQueue::default();
+    queue.request(approximate);
+    let answers = drain_all(&mut queue);
+    let exact = answers[0].exact().unwrap();
+    assert_eq!(
+        exact.result.as_ref().unwrap_err().kind,
+        crate::ErrorKind::Validation
+    );
+    assert!(exact.display.is_none() && exact.report.is_none());
+}
+
+#[test]
+fn restoration_settlement_supersession_returns_no_display_or_report() {
+    let gate = Arc::new(luxforge_testbase::Gate::new());
+    let mut older = rebuilt(held(&gate, Some(bounds(16, 12))), |parts| {
+        parts
+            .recipe
+            .layers
+            .insert(0, Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30})));
+    });
+    older.intent = PreviewIntent::Settle;
+    older.analyse = true;
+    let mut queue = PreviewQueue::default();
+    gate.shut();
+    let first = queue.request(older.clone());
+    gate.wait_reached(1, "the Detail settlement colour pass");
+    let second = queue.request(older);
+    gate.open();
+    let answers = drain_all(&mut queue);
+    assert_eq!(answers.len(), 2);
+    assert_eq!(
+        (answers[0].generation, answers[1].generation),
+        (first, second)
+    );
+    let cancelled = answers[0].exact().unwrap();
+    assert_eq!(
+        cancelled.result.as_ref().unwrap_err().kind,
+        crate::ErrorKind::Cancelled
+    );
+    assert!(cancelled.display.is_none() && cancelled.report.is_none());
+    let current = answers[1].exact().unwrap();
+    assert!(current.result.is_ok() && current.display.is_some() && current.report.is_some());
+}
+
+/// Cancellation after rendering can happen while the output queue is full. It must release the
+/// processed prefix without losing the reusable source proxy or handing over the abandoned frame.
+#[test]
+fn restoration_prefix_is_released_when_rendered_delivery_is_abandoned() {
+    use crate::{PrefixUse, ProxyCache, ProxyKey, latest::Latest};
+    use std::sync::mpsc::channel;
+
+    let mut wanted = stacked(
+        64,
+        48,
+        vec![
+            Layer::new(
+                crate::DETAIL_EFFECT,
+                json!({"sharpening":40,"luminance":25}),
+            ),
+            Layer::new(BASIC_EFFECT, json!({"exposure":0.5})),
+        ],
+        Some(bounds(16, 12)),
+    );
+    wanted.intent = PreviewIntent::Interactive;
+    let (rendered_tx, rendered) = channel();
+    let (delivered_tx, delivered) = channel();
+    let mut source_cache = ProxyCache::default();
+    let mut restoration = crate::render::RestorationPrefixCache::default();
+    let mut queue = Latest::new(
+        "luxforge-preview-delivery-cancel-test",
+        move |task: super::queue::PreviewTask, running: &crate::latest::Running<'_, _, _>| {
+            let job = task.job;
+            let evaluation = &job.evaluation;
+            let plan = evaluation
+                .source()
+                .proxy_plan(
+                    evaluation.registry(),
+                    evaluation.recipe(),
+                    job.proxy.unwrap(),
+                )
+                .unwrap()
+                .unwrap();
+            let key = ProxyKey {
+                identity: evaluation.source().identity(),
+                plan,
+            };
+            let (source, built) = source_cache
+                .source_for(&key, evaluation.source(), || {
+                    restoration.clear();
+                    evaluation.source().proxy(plan)
+                })
+                .unwrap();
+            let proxy = render(
+                evaluation.registry(),
+                source.input(),
+                evaluation.recipe(),
+                RenderOptions::proxy(running.abandoned()),
+                evaluation.context(),
+            )
+            .unwrap();
+            let (raster, prefix) = proxy
+                .frame_with_restoration_cache(
+                    evaluation.entry().snapshot.id.clone(),
+                    evaluation.registry(),
+                    evaluation.recipe(),
+                    &key,
+                    &mut restoration,
+                )
+                .unwrap();
+            let result = || PreviewResult {
+                restoration_prefix: prefix,
+                generation: running.generation(),
+                entry_id: evaluation.entry().id.clone(),
+                identity: job.identity.clone(),
+                draft_revision: None,
+                intent: job.intent,
+                viewport_declined: None,
+                outcome: PhaseOutcome::Proxy(ProxyOutcome {
+                    raster: raster.clone(),
+                    dimensions: source.dimensions(),
+                    built,
+                    approximation: proxy.approximation(),
+                }),
+                approximate_white_balance: false,
+                render_ms: 0.0,
+                queue_wait_ms: None,
+            };
+            // Fill the production delivery buffer before attempting the rendered phase. With no
+            // polling, its final send cannot succeed until the test explicitly cancels it.
+            if running.generation() == 1 {
+                for _ in 0..crate::latest::WAITING_RESULTS {
+                    assert!(running.send(result()));
+                }
+            }
+            rendered_tx
+                .send((running.generation(), prefix, restoration.bytes(), built))
+                .unwrap();
+            let accepted = super::worker::send_phase(&mut restoration, running, result());
+            delivered_tx
+                .send((running.generation(), accepted, restoration.bytes()))
+                .unwrap();
+            None
+        },
+    );
+    let task = |job| super::queue::PreviewTask {
+        job,
+        board: None,
+        requested_at: None,
+    };
+    let first = queue.request(task(wanted.clone())).generation;
+    let (generation, prefix, bytes, source_built) =
+        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
+    assert_eq!(
+        (generation, prefix, source_built),
+        (first, Some(PrefixUse::Built), true)
+    );
+    assert!(
+        bytes > 0,
+        "cancellation must follow a completed, retained prefix"
+    );
+    assert!(
+        delivered.try_recv().is_err(),
+        "the full output queue must hold delivery"
+    );
+    queue.cancel();
+    assert_eq!(
+        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
+        (first, false, 0)
+    );
+    wait_until("the abandoned preview delivery ending", || !queue.is_busy());
+    assert!(
+        queue.poll().is_none(),
+        "no buffered or completed stale frame survives cancel"
+    );
+
+    let next = queue.request(task(wanted.clone())).generation;
+    let (generation, prefix, bytes, source_built) =
+        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
+    assert_eq!(
+        (generation, prefix, source_built),
+        (next, Some(PrefixUse::Built), false),
+        "the processed prefix rebuilds from the still-shared source proxy"
+    );
+    assert!(bytes > 0);
+    assert_eq!(
+        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
+        (next, true, bytes)
+    );
+    assert_eq!(wait_for("the rebuilt preview", || queue.poll()).0, next);
+
+    let mut downstream = rebuilt(wanted, |parts| {
+        parts.recipe.layers[1].payload = json!({"exposure":0.75})
+    });
+    downstream.intent = PreviewIntent::Interactive;
+    let next = queue.request(task(downstream)).generation;
+    let (generation, prefix, held, source_built) =
+        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
+    assert_eq!(
+        (generation, prefix, held, source_built),
+        (next, Some(PrefixUse::Reused), bytes, false),
+        "ordinary delivery must preserve the prefix for downstream edits"
+    );
+    assert_eq!(
+        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
+        (next, true, bytes)
+    );
+    assert_eq!(wait_for("the reused preview", || queue.poll()).0, next);
+}
+
+/// A different source can fit the display or ask only for settlement, so it never misses the
+/// source-proxy cache. Its job must still release the previous processed prefix before rendering.
+#[test]
+fn restoration_prefix_is_released_on_exact_only_source_switch() {
+    use crate::{PrefixUse, ProxyCache, latest::Latest};
+    use std::sync::mpsc::channel;
+
+    for intent in [PreviewIntent::Immediate, PreviewIntent::Settle] {
+        let mut wanted = stacked(
+            64,
+            48,
+            vec![
+                Layer::new(
+                    crate::DETAIL_EFFECT,
+                    json!({"sharpening":40,"luminance":25}),
+                ),
+                Layer::new(BASIC_EFFECT, json!({"exposure":0.5})),
+            ],
+            Some(bounds(16, 12)),
+        );
+        wanted.intent = PreviewIntent::Interactive;
+        let (held_tx, held) = channel();
+        let mut source_cache = ProxyCache::default();
+        let mut restoration = crate::render::RestorationPrefixCache::default();
+        let progress = super::queue::ExactProgress::default();
+        let mut queue = Latest::new(
+            "luxforge-preview-source-switch-test",
+            move |task: super::queue::PreviewTask, running| {
+                let generation = running.generation();
+                let result = super::worker::run(
+                    &mut source_cache,
+                    &mut restoration,
+                    &progress,
+                    task,
+                    running,
+                );
+                held_tx.send((generation, restoration.bytes())).unwrap();
+                result
+            },
+        );
+        let mut run = |job| {
+            let generation = queue
+                .request(super::queue::PreviewTask {
+                    job,
+                    board: None,
+                    requested_at: None,
+                })
+                .generation;
+            let (observed, bytes) = held.recv_timeout(luxforge_testbase::HANG).unwrap();
+            assert_eq!(observed, generation);
+            let (observed, result) = wait_for("the source-switch preview", || queue.poll());
+            assert_eq!(observed, generation);
+            wait_until("source-switch rendering ending", || !queue.is_busy());
+            (result, bytes)
+        };
+        let (first, bytes) = run(wanted.clone());
+        assert_eq!(first.restoration_prefix, Some(PrefixUse::Built));
+        assert!(bytes > 0 && first.proxy().unwrap().built);
+
+        let mut same_source = wanted.clone();
+        same_source.intent = PreviewIntent::Settle;
+        let (settled, held) = run(same_source);
+        assert!(settled.exact().unwrap().result.is_ok());
+        assert_eq!(
+            held, bytes,
+            "same-source exact settlement preserves downstream reuse"
+        );
+
+        let mut small = stacked(
+            8,
+            6,
+            wanted.evaluation.recipe().layers.clone(),
+            Some(bounds(16, 12)),
+        );
+        small.intent = intent;
+        let (small, held) = run(small);
+        assert_eq!(small.phase(), PreviewPhase::Exact);
+        assert!(small.exact().unwrap().result.is_ok());
+        assert_eq!(
+            held, 0,
+            "a different exact-only source must release processed pixels"
+        );
+
+        let (returned, held) = run(wanted);
+        assert_eq!(returned.restoration_prefix, Some(PrefixUse::Built));
+        assert_eq!(held, bytes);
+        assert!(
+            !returned.proxy().unwrap().built,
+            "the independent source-proxy cache keeps its valid prepared pixels"
+        );
+    }
 }

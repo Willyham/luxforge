@@ -4,7 +4,8 @@
 //! A mapped value is a **value transfer**: the same number on a Luxforge control with the same
 //! name, range and direction, checked against that control's own descriptor. It is not a claim
 //! that Luxforge renders what Lightroom renders; `docs/research/lightroom/slider-parity.md` records
-//! why equal values do not mean equal pixels.
+//! why equal values do not mean equal pixels. A curve transfer carries Lightroom's composite point
+//! curve onto the Tone curve's points, rescaled from Lightroom's 0–255 to 0–1.
 //! A value that does not parse or lies outside the control's hard range is refused, never clamped.
 use super::report::{ImportReport, MappedSetting, ReportedSetting};
 use super::value::{
@@ -102,8 +103,8 @@ pub(super) enum Unless {
     Zero(&'static str),
     /// The named switch is `false`.
     Off(&'static str),
-    /// The named curve is an identity.
-    Identity(&'static str),
+    /// The named setting is in the preset, whatever its value.
+    Present(&'static str),
     /// Every named amount the preset holds is 0, and it holds at least one of them.
     AllZero(&'static [&'static str]),
     /// The named profile is Lightroom's default.
@@ -118,6 +119,12 @@ pub(super) enum Rule {
         action: &'static str,
         field: &'static str,
         lightroom: (f64, f64),
+    },
+    /// A point curve transferred onto a presettable curve field: Lightroom's `"x, y"` points on
+    /// its 0–255 scale, each coordinate divided by 255, in order ([`curve_transfer_value`]).
+    CurveTransfer {
+        action: &'static str,
+        field: &'static str,
     },
     /// Lightroom's absolute RAW `Temperature` (K) or `Tint`, converted together through the
     /// illuminant chromaticity the pair names onto the RAW development's `field`
@@ -200,6 +207,7 @@ const RAW: &str = "set-raw";
 const PRESENCE: &str = "set-presence";
 const MIXER: &str = "set-mixer";
 const VIGNETTE: &str = "set-vignette";
+const TONE_CURVE: &str = "set-curve";
 const HSL: Option<Panel> = Some(Panel::ColorAdjustments);
 const EFFECTS: Option<Panel> = Some(Panel::Effects);
 const DETAIL: Option<Panel> = Some(Panel::Detail);
@@ -209,17 +217,20 @@ const TRANSFORM: Option<Panel> = Some(Panel::Transform);
 const CURVE: Option<Panel> = Some(Panel::ToneCurve);
 const CALIBRATION: Option<Panel> = Some(Panel::Calibration);
 
-const NO_SHARPENING: &str = "Luxforge has no sharpening";
-const NO_NOISE_REDUCTION: &str = "Luxforge has no noise reduction";
+const NO_SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
+const NO_NOISE_REDUCTION: &str = "Lightroom noise reduction is not mapped to Luxforge Detail";
 const NO_GRAIN: &str = "Luxforge has no grain";
 const NO_GRADING: &str = "Luxforge has no colour grading";
-const NO_CURVE: &str = "Luxforge has no tone curve";
+const NO_CHANNEL_CURVES: &str = "Luxforge's tone curve has no per-channel curves";
+const NO_PARAMETRIC: &str = "Luxforge has no parametric curve";
+const NO_CURVE_SATURATION: &str = "Luxforge's tone curve changes no saturation";
+const CURVE_NAME: &str = "names a curve whose points are not in the preset";
 const NO_GRAYSCALE: &str = "Luxforge has no black-and-white conversion";
 const NO_LENS: &str = "Luxforge has no lens corrections";
 const NO_CA: &str = "Luxforge has no chromatic-aberration correction";
 const NO_LENS_VIGNETTE: &str = "Luxforge has no lens vignetting correction";
 const NO_DEFRINGE: &str = "Luxforge has no defringe";
-const NO_TRANSFORM: &str = "Luxforge has no upright or perspective correction";
+const NO_TRANSFORM: &str = "different perspective model";
 const NO_CALIBRATION: &str = "Luxforge has no calibration";
 const NO_PROFILES: &str = "Luxforge has no profiles";
 const NO_AUTO_TONE: &str = "Luxforge has no Auto Tone";
@@ -451,76 +462,97 @@ pub(super) const ROWS: &[Row] = &[
     row("AutoShadows", Rule::EarlierProcess, None),
     row("AutoBrightness", Rule::EarlierProcess, None),
     row("AutoContrast", Rule::EarlierProcess, None),
-    // Tone curves.
-    unsupported_row(
+    // Tone curves: the composite point curve transfers onto the luminance curve; Luxforge has no
+    // per-channel or parametric curve.
+    row(
         "ToneCurvePV2012",
-        NO_CURVE,
-        Identity,
-        Unless::Nothing,
+        Rule::CurveTransfer {
+            action: TONE_CURVE,
+            field: "luminance",
+        },
         CURVE,
     ),
     unsupported_row(
         "ToneCurvePV2012Red",
-        NO_CURVE,
+        NO_CHANNEL_CURVES,
         Identity,
         Unless::Nothing,
         CURVE,
     ),
     unsupported_row(
         "ToneCurvePV2012Green",
-        NO_CURVE,
+        NO_CHANNEL_CURVES,
         Identity,
         Unless::Nothing,
         CURVE,
     ),
     unsupported_row(
         "ToneCurvePV2012Blue",
-        NO_CURVE,
+        NO_CHANNEL_CURVES,
         Identity,
         Unless::Nothing,
         CURVE,
     ),
+    // The name of the points `ToneCurvePV2012` carries, which say everything the name does.
     unsupported_row(
         "ToneCurveName2012",
-        NO_CURVE,
+        CURVE_NAME,
         Neutral::Text("Linear"),
-        Unless::Identity("ToneCurvePV2012"),
+        Unless::Present("ToneCurvePV2012"),
         CURVE,
     ),
-    unsupported_row("ParametricShadows", NO_CURVE, Zero, Unless::Nothing, CURVE),
-    unsupported_row("ParametricDarks", NO_CURVE, Zero, Unless::Nothing, CURVE),
-    unsupported_row("ParametricLights", NO_CURVE, Zero, Unless::Nothing, CURVE),
+    unsupported_row(
+        "ParametricShadows",
+        NO_PARAMETRIC,
+        Zero,
+        Unless::Nothing,
+        CURVE,
+    ),
+    unsupported_row(
+        "ParametricDarks",
+        NO_PARAMETRIC,
+        Zero,
+        Unless::Nothing,
+        CURVE,
+    ),
+    unsupported_row(
+        "ParametricLights",
+        NO_PARAMETRIC,
+        Zero,
+        Unless::Nothing,
+        CURVE,
+    ),
     unsupported_row(
         "ParametricHighlights",
-        NO_CURVE,
+        NO_PARAMETRIC,
         Zero,
         Unless::Nothing,
         CURVE,
     ),
     unsupported_row(
         "ParametricShadowSplit",
-        NO_CURVE,
+        NO_PARAMETRIC,
         Equals(25.0),
         Unless::AllZero(PARAMETRIC_REGIONS),
         CURVE,
     ),
     unsupported_row(
         "ParametricMidtoneSplit",
-        NO_CURVE,
+        NO_PARAMETRIC,
         Equals(50.0),
         Unless::AllZero(PARAMETRIC_REGIONS),
         CURVE,
     ),
     unsupported_row(
         "ParametricHighlightSplit",
-        NO_CURVE,
+        NO_PARAMETRIC,
         Equals(75.0),
         Unless::AllZero(PARAMETRIC_REGIONS),
         CURVE,
     ),
     unsupported_row(
         "CurveRefineSaturation",
-        NO_CURVE,
+        NO_CURVE_SATURATION,
         Equals(100.0),
         Unless::Nothing,
         CURVE,
@@ -1169,9 +1201,7 @@ fn unless(unless: Unless, settings: &HashMap<&str, &RawValue>) -> bool {
         Unless::Off(name) => settings
             .get(name)
             .is_some_and(|value| boolean(value) == Some(false)),
-        Unless::Identity(name) => settings
-            .get(name)
-            .is_some_and(|value| identity_curve(value)),
+        Unless::Present(name) => settings.contains_key(name),
         Unless::AllZero(names) => {
             let present: Vec<_> = names.iter().filter_map(|name| settings.get(name)).collect();
             !present.is_empty() && present.into_iter().all(|value| is_zero(Some(value)))
@@ -1205,6 +1235,84 @@ fn transfer_value(
         }
         _ => "not a value Luxforge accepts".to_owned(),
     })?;
+    Ok(applied)
+}
+
+/// Lightroom's `ToneCurvePV2012` as the value a curve transfer writes, or why it cannot. The target
+/// must be presettable and declare `field` as a curve. The value is then read in stages, each over
+/// every point before the next begins, and the first failure is the reason: a list; a count within
+/// the target's point bounds, before any item is read; every item `"x, y"`, split once at `,`,
+/// each part trimmed and read as Lightroom writes a number; every coordinate within Lightroom's
+/// `0..=255`; every input greater than the one before; no output less than the one before. A point
+/// is named by its zero-based index, as the host names one. The value is `[x / 255, y / 255]` per
+/// point, in order, never decimated, clamped or reordered, and it must pass the target parameter's
+/// own check. At most `points_max` items are ever read, whatever the list holds.
+fn curve_transfer_value(
+    registry: &ModuleRegistry,
+    action: &str,
+    field: &str,
+    value: &RawValue,
+) -> Result<Value, String> {
+    let (_, descriptor) = registry
+        .patch_action(action)
+        .map_err(|refusal| refusal.detail)?;
+    let Some(parameter) = descriptor.parameter(field) else {
+        return Err(format!("{action} has no {field} field"));
+    };
+    let ParameterKind::Curve {
+        points_min,
+        points_max,
+        ..
+    } = &parameter.kind
+    else {
+        return Err(format!("{action}.{field} is not a curve"));
+    };
+    let RawValue::List(items) = value else {
+        return Err("not a list of \"x, y\" points".to_owned());
+    };
+    let count = items.len();
+    if count > *points_max {
+        return Err(format!(
+            "has {count} points; Luxforge's tone curve holds at most {points_max}"
+        ));
+    }
+    if count < *points_min {
+        let points = if count == 1 { "point" } else { "points" };
+        return Err(format!(
+            "has {count} {points}; Luxforge's tone curve needs at least {points_min}"
+        ));
+    }
+    let pair = |item: &RawValue| -> Option<[f64; 2]> {
+        let (x, y) = item.text()?.split_once(',')?;
+        let read = |part: &str| number(&RawValue::Text(part.trim().to_owned()));
+        Some([read(x)?, read(y)?])
+    };
+    let points = items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| pair(item).ok_or_else(|| format!("point {index} is not \"x, y\"")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(index) = points
+        .iter()
+        .position(|point| point.iter().any(|value| !(0.0..=255.0).contains(value)))
+    {
+        return Err(format!("point {index} is outside 0..255"));
+    }
+    if let Some(index) = (1..count).find(|&index| points[index][0] <= points[index - 1][0]) {
+        return Err(format!("point {index}'s input does not increase"));
+    }
+    if let Some(index) = (1..count).find(|&index| points[index][1] < points[index - 1][1]) {
+        return Err(format!(
+            "point {index}'s output decreases; Luxforge's tone curve is monotone"
+        ));
+    }
+    let applied = Value::Array(
+        points
+            .iter()
+            .map(|[x, y]| Value::Array(vec![Value::from(x / 255.0), Value::from(y / 255.0)]))
+            .collect(),
+    );
+    check_value(parameter, &applied).map_err(|error| error.detail)?;
     Ok(applied)
 }
 
@@ -1342,7 +1450,9 @@ pub(super) fn map(
         let switch = row.panel.map_or(Switch::On, |panel| switches[&panel]);
         if switch == Switch::Off {
             match row.rule {
-                Rule::Transfer { .. } => refused.push(reported(setting, Some(DISABLED))),
+                Rule::Transfer { .. } | Rule::CurveTransfer { .. } => {
+                    refused.push(reported(setting, Some(DISABLED)))
+                }
                 Rule::Metadata => {}
                 _ => neutral.push(reported(setting, None)),
             }
@@ -1350,7 +1460,7 @@ pub(super) fn map(
         }
         match row.rule {
             Rule::Metadata => {}
-            Rule::Transfer { action, field, .. } => {
+            Rule::Transfer { action, field, .. } | Rule::CurveTransfer { action, field } => {
                 if let Era::Legacy(reason) = &era {
                     refused.push(reported(setting, Some(reason)));
                     continue;
@@ -1361,7 +1471,13 @@ pub(super) fn map(
                     refused.push(reported(setting, Some(&reason)));
                     continue;
                 }
-                match transfer_value(registry, action, field, value) {
+                let applied = match row.rule {
+                    Rule::CurveTransfer { .. } => {
+                        curve_transfer_value(registry, action, field, value)
+                    }
+                    _ => transfer_value(registry, action, field, value),
+                };
+                match applied {
                     Ok(applied) => {
                         insert(&mut out, action, field, applied.clone());
                         mapped.push(MappedSetting {
@@ -1526,7 +1642,36 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let mut targets = HashSet::new();
         let mut transfers = 0;
+        let mut curves = 0;
         for row in ROWS {
+            if let Rule::CurveTransfer { action, field } = row.rule {
+                curves += 1;
+                assert!(
+                    targets.insert((action, field)),
+                    "{action}.{field} is mapped twice"
+                );
+                let (_, descriptor) = registry
+                    .patch_action(action)
+                    .unwrap_or_else(|refusal| panic!("{} targets {refusal}", row.name));
+                let parameter = descriptor
+                    .parameter(field)
+                    .unwrap_or_else(|| panic!("{} targets unknown {action}.{field}", row.name));
+                assert!(
+                    matches!(
+                        parameter.kind,
+                        ParameterKind::Curve {
+                            points_min: 2,
+                            points_max: 16,
+                            monotone: true,
+                            fixed_x: None,
+                        }
+                    ),
+                    "{action}.{field} is not the free monotone curve of 2..=16 points the \
+                     reasons name: {:?}",
+                    parameter.kind
+                );
+                continue;
+            }
             let Rule::Transfer {
                 action,
                 field,
@@ -1555,8 +1700,9 @@ mod tests {
                 row.name
             );
         }
-        // Basic 10, Presence 3, mixer 24, vignette 4.
+        // Basic 10, Presence 3, mixer 24, vignette 4; and the Tone curve's luminance.
         assert_eq!(transfers, 41);
+        assert_eq!(curves, 1);
     }
 
     #[test]

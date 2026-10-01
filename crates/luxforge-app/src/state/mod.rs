@@ -16,6 +16,7 @@ pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
+pub(crate) mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
@@ -146,7 +147,9 @@ pub(crate) fn edit_refusal(
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CropSection {
     pub(crate) custom: (String, String),
-    /// The Straighten guide: a drag on the image draws a levelling line instead.
+    /// The module disclosures to restore when the crop draft ends, including implicit defaults.
+    pub(crate) previous_expanded: Option<BTreeMap<String, bool>>,
+    /// The one-shot Straighten tool: a drag draws a levelling line, then returns to crop handles.
     pub(crate) guide: bool,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     pub(crate) option: bool,
@@ -158,6 +161,7 @@ impl Default for CropSection {
     fn default() -> Self {
         Self {
             custom: ("5".into(), "4".into()),
+            previous_expanded: None,
             guide: false,
             option: false,
             space: false,
@@ -307,6 +311,9 @@ pub(crate) struct Inputs<'a> {
     /// How long the frame on the photo surface took to render, measured on the preview worker for
     /// that frame's own phase. `None` before any frame is on screen.
     pub(crate) render: Option<status::RenderTime>,
+    /// A long render's progress, while it earns the bar over the photograph
+    /// ([`canvas::render_bar`]).
+    pub(crate) render_bar: Option<canvas::RenderBar>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a luxforge_core::Error>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
@@ -446,6 +453,7 @@ impl Workspace {
                             tools::ControlModel::Action(action) => Some(json!({
                                 "kind": "action", "label": action.label, "action": action.action,
                             })),
+                            tools::ControlModel::QueryChoice(choice) => Some(json!({"kind":"query-choice", "label":choice.control.label, "action":choice.control.action, "query":choice.control.query})),
                             tools::ControlModel::Picker(picker) => Some(json!({
                                 "kind": "picker", "label": picker.label, "mode": picker.module_id,
                             })),
@@ -706,6 +714,7 @@ mod tests {
                 photo: true,
                 clients: Some(1),
                 rendering: false,
+                render_bar: None,
                 render: Some(status::RenderTime {
                     ms: 41.0,
                     proxy: false,
@@ -2558,6 +2567,17 @@ mod tests {
         workspace.derive(&inputs);
         assert_eq!(workspace.status.clients, "3 agents connected");
         assert_eq!(workspace.status.render, "Rendering…");
+        assert_eq!(workspace.canvas.render_bar, None, "no long render");
+
+        // A long render shows its finished share in the status bar, floored to whole percent, and
+        // as the bar over the plain photograph.
+        inputs.render_bar = Some(canvas::RenderBar {
+            generation: 4,
+            fraction: 0.427,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Rendering… 42%");
+        assert_eq!(workspace.canvas.render_bar, Some(0.427));
 
         // A display-size proxy on screen says it is approximate beside its own time.
         let mut inputs = scene.inputs();
@@ -2904,6 +2924,50 @@ mod tests {
         assert!(!tone.expanded);
         // The descriptors are what the API lists, unchanged.
         assert_eq!(scene.modules, modules);
+    }
+
+    /// The Tone curve section, directly after Basic, is the headerless single-curve case: its one
+    /// group draws its curve straight under the band, with no label line of its own (the band
+    /// names it), the add-and-remove hint shown, the Points list closed and room for sixteen
+    /// points.
+    #[test]
+    fn the_tone_curve_section_draws_its_curve_without_a_label_line_with_the_hint_and_points_closed()
+    {
+        let scene = Scene::new(descriptors()).opened(Vec::new());
+        let workspace = scene.derive();
+        let order: Vec<&str> = workspace
+            .tools
+            .all()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        let basic = order
+            .iter()
+            .position(|id| *id == "luxforge.basic")
+            .expect("Basic");
+        assert_eq!(
+            order.get(basic + 1),
+            Some(&"luxforge.curve"),
+            "the Tone curve follows Basic: {order:?}"
+        );
+        let drawn = section(&workspace, "luxforge.curve");
+        let [ControlModel::Curve(curve)] = drawn.controls.as_slice() else {
+            panic!(
+                "the Tone curve draws exactly its curve: {:?}",
+                drawn.controls
+            );
+        };
+        assert_eq!(curve.label, "Tone curve");
+        assert!(!curve.label_shown, "the band already names the curve");
+        assert_eq!(curve.hint.as_deref(), Some(tools::CURVE_HINT));
+        assert!(!curve.points_open, "the Points list starts closed");
+        assert_eq!(curve.points_max, 16);
+        assert!(curve.background, "the histogram is drawn behind the plot");
+        assert_eq!(curve.sample_query, "sample-curve");
+        assert_eq!(
+            drawn.reset.as_ref().map(|reset| reset.action.as_str()),
+            Some("reset-curve"),
+            "the band carries the module reset"
+        );
     }
 
     /// A one-group tabbed module is still tabs: the rule is for stacked sections only.

@@ -19,7 +19,7 @@ use crate::{
     smoke::Scenario,
     *,
 };
-use luxforge_evidence::{self as script, ViewStep};
+use luxforge_evidence::{self as script, PinchStep, ViewStep};
 
 pub const SCENARIO: &str = "zoom";
 
@@ -57,17 +57,20 @@ enum Kind {
     View,
     Wait,
     Pan(f64, f64),
+    Pinch(f64),
 }
 
 /// Every frame in capture order: the open frame, then one per script step, each named, with the
 /// zoom it must be drawn at. The plan, and so the script and the frame count, is made from this
 /// table, and the checks below walk the same table beside the frames the plan held.
-const PLAN: [(&str, Kind, Zoom); 13] = [
+const PLAN: [(&str, Kind, Zoom); 15] = [
     ("opened", Kind::Open, Zoom::Fit),
     ("settle", Kind::Settle, Zoom::Fit),
     ("idle-fit", Kind::Wait, Zoom::Fit),
     ("50", Kind::View, Zoom::Percent(50.0)),
     ("100", Kind::View, Zoom::Percent(100.0)),
+    ("pinch-in", Kind::Pinch(1.2), Zoom::Percent(120.0)),
+    ("pinch-out", Kind::Pinch(1.0 / 1.2), Zoom::Percent(100.0)),
     ("idle-100", Kind::Wait, Zoom::Percent(100.0)),
     ("120", Kind::View, Zoom::Percent(120.0)),
     ("800", Kind::View, Zoom::Percent(800.0)),
@@ -86,6 +89,14 @@ fn request(kind: Kind, zoom: Zoom) -> Option<script::Step> {
         Kind::Settle => Some(script::Step::wait(SETTLE_MS)),
         Kind::Wait => Some(script::Step::wait(WAIT_MS)),
         Kind::Pan(x, y) => Some(script::Step::pan(x as f32, y as f32)),
+        Kind::Pinch(factor) => Some(
+            PinchStep {
+                delta: factor.ln(),
+                x: 0.37,
+                y: 0.42,
+            }
+            .into(),
+        ),
         Kind::View => Some(match zoom {
             Zoom::Fit => script::Step::View(ViewStep::Fit),
             Zoom::Percent(value) => script::Step::View(ViewStep::Percent(value as f32)),
@@ -431,6 +442,14 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         (dims[0], dims[1])
     };
     let mut checks = Checks::new();
+    if std::env::consts::OS == "macos" {
+        ensure(
+            events
+                .iter()
+                .any(|event| event["event"] == "trackpad_input_ready"),
+            "The native trackpad monitor was not installed",
+        )?;
+    }
     for (index, ((name, kind, zoom), frame)) in PLAN.iter().zip(frames).enumerate() {
         let what = format!("step {name:?} (frame {index}, {kind:?} at {zoom:?})");
         let state = &frame["state"];
@@ -440,6 +459,41 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("{what}: not a ready frame of the opened photograph"),
         )?;
         let surface = &state["surface"];
+        if matches!(kind, Kind::Pinch(_)) {
+            let before = &frames[index - 1];
+            let previous = before.photo_rect()?;
+            let current = frame.photo_rect()?;
+            let [left, top, right, bottom]: [u32; 4] =
+                serde_json::from_value(frame["canvas_rect"].clone())?;
+            let cursor = [
+                f64::from(left) + f64::from(right - left) * 0.37,
+                f64::from(top) + f64::from(bottom - top) * 0.42,
+            ];
+            let old_percent = before["state"]["surface"]["view"]["zoom"]["value"]
+                .as_f64()
+                .ok_or("No pre-pinch zoom")?;
+            let new_percent = surface["view"]["zoom"]["value"]
+                .as_f64()
+                .ok_or("No pinched zoom")?;
+            for axis in 0..2 {
+                let a = (cursor[axis] - previous[axis] as f64) * 100.0 / old_percent;
+                let b = (cursor[axis] - current[axis] as f64) * 100.0 / new_percent;
+                checks.compare(
+                    frame,
+                    "the pinch keeps the source point under the pointer",
+                    a,
+                    b,
+                    crate::scenario::Tolerance::Within(2.0),
+                )?;
+            }
+            ensure(
+                events.iter().any(|event| {
+                    event["event"] == "view_pinched"
+                        && event["detail"]["params"]["zoom"]["value"] == json!(new_percent)
+                }),
+                "The pinched frame has no correlated input request",
+            )?;
+        }
 
         // The texture on screen: the proxy wherever the stage is drawn smaller than itself, the
         // exact render from 100% up.
@@ -628,7 +682,7 @@ mod tests {
             steps[2],
             script::Step::View(ViewStep::Percent(50.0)).to_value()
         );
-        assert_eq!(steps[8], script::Step::pan(0.5, 0.5).to_value());
+        assert_eq!(steps[10], script::Step::pan(0.5, 0.5).to_value());
         assert_eq!(
             *steps.last().expect("a last step"),
             script::Step::View(ViewStep::Fit).to_value()

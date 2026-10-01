@@ -30,6 +30,7 @@ fn one_query_identity_resolves_to_one_provider_across_the_registry() {
             title: "Test query".into(),
             notes: "test".into(),
             patch: false,
+            preset: true,
             parameters: Vec::new(),
         }];
         TestModule::from_descriptor(descriptor)
@@ -311,4 +312,24 @@ fn patch_action_resolves_an_available_field_patch_and_refuses_the_rest() {
         assert_eq!(error.kind, kind, "{id}");
         assert_eq!(error.detail, detail, "{id}");
     }
+}
+
+#[test]
+fn patch_action_refuses_explicitly_non_presettable_patch() {
+    let mut descriptor = TestModule::new(
+        "test.nonpresettable",
+        "test.nonpresettable.effect",
+        "set-no-preset",
+        Availability::Available,
+    )
+    .0;
+    descriptor.actions[0].patch = true;
+    descriptor.actions[0].preset = false;
+    let mut registry = ModuleRegistry::new();
+    registry
+        .register(TestModule::from_descriptor(descriptor))
+        .unwrap();
+    let error = registry.patch_action("set-no-preset").err().unwrap();
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert_eq!(error.detail, "set-no-preset is not presettable");
 }

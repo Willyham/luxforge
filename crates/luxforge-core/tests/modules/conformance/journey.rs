@@ -1256,7 +1256,20 @@ pub fn journey(
         let current = values_of(row(&rows(&owner, editor, &asset, module)?, None)?)?;
         let value =
             |field: &Field| other_than(field, current.get(&field.name).unwrap_or(&field.default));
-        let (mine, theirs) = (value(&lead), value(&second));
+        let mine = value(&lead);
+        // A module of one field (the Tone curve) has the agent move the same field to a third
+        // value, so its commit changes the stack and the editor's reapplied gesture still does.
+        let theirs = if second.name == lead.name {
+            let current = current.get(&lead.name).unwrap_or(&lead.default);
+            [lead.high(), lead.low(), lead.default.clone()]
+                .into_iter()
+                .find(|candidate| {
+                    !lead.same(Some(current), candidate) && !lead.same(Some(&mine), candidate)
+                })
+                .ok_or("the module's one field has no third value for a second client")?
+        } else {
+            value(&second)
+        };
         let draft = owner.call(
             editor,
             "draft.begin",

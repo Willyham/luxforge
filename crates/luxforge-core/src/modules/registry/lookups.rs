@@ -114,6 +114,9 @@ impl ModuleRegistry {
                 "{id} is not a field-patch action"
             )));
         }
+        if !action.preset {
+            return Err(Error::validation(format!("{id} is not presettable")));
+        }
         module.descriptor().check_available()?;
         Ok((module, action))
     }
@@ -262,5 +265,22 @@ impl ModuleRegistry {
     pub(super) fn provider(&self, effect_id: &str) -> Option<Provider<'_>> {
         let (provider, _) = self.effect(effect_id)?;
         provider.descriptor().is_available().then_some(provider)
+    }
+
+    /// Every registered module in registration order, with the availability it was registered
+    /// with: the order a photograph's first-open actions are asked in.
+    pub(crate) fn providers(&self) -> impl Iterator<Item = Provider<'_>> {
+        self.entries.iter().map(|entry| entry.provider())
+    }
+
+    /// Block until every available module can answer [`crate::ToolModule::first_open`]. The
+    /// source worker calls it before a photograph's first preparation completes, so the catalog
+    /// owner never waits.
+    pub(crate) fn await_first_open(&self) {
+        for provider in self.providers() {
+            if provider.descriptor().is_available() {
+                provider.await_first_open();
+            }
+        }
     }
 }

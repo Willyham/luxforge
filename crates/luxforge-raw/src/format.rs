@@ -1479,6 +1479,7 @@ mod tests {
             calibration_identity: "test".into(),
             corrections: DngCorrections::Stage3GainMapThenWarp,
             interpretation: "test".into(),
+            optics: None,
             required_opcodes: Vec::new().into(),
             decoder_active_bottom_trim: 0,
         }

@@ -4,13 +4,15 @@
 //! The grid is the one [`mask_overlay_for`] fills for the canvas's live overlay — the same compiled
 //! mask, the same geometry tail and, for a mask that reads pixels, the same input of its first
 //! bound layer — asked for over the whole output stage at the caller's cell count. It reads no pixel
-//! of any rendered frame and allocates only the cells, so a thumbnail costs no render.
+//! of any terminal frame. A leading restoration prefix is evaluated through bounded exact
+//! windows or tiles and its input values can be retained in the worker's one bounded grid.
 //!
 //! **The key is what makes it cheap to keep.** A thumbnail is asked for every mask after every
 //! settled frame, and almost every such frame leaves most masks exactly as they were. The key hashes
 //! everything the grid is a function of — the source's identity, the geometry tail, the mask itself
 //! and, only when the mask reads pixels, the stack before its first bound layer with the masks that
-//! stack applies through — so a caller holding the key of the grid it already has learns in
+//! stack applies through and the precision that the full stack requires at its spatial boundary —
+//! so a caller holding the key of the grid it already has learns in
 //! `O(recipe)` and without filling a cell that nothing changed.
 use super::PreviewSource;
 use crate::{
@@ -103,6 +105,7 @@ fn one_component(mask: &Mask, component: &ComponentId) -> Option<Mask> {
 /// **no** reason on purpose: a mask with nothing to describe, which
 /// [`crate::analysis::coverage_grid`] decides in closed form and which a grid of zeros would
 /// misreport, and a cancel, which each caller turns into [`ErrorKind::Cancelled`] itself.
+#[cfg(test)]
 pub(super) fn mask_overlay_for(
     registry: &ModuleRegistry,
     frame: &Render<'_>,
@@ -111,6 +114,30 @@ pub(super) fn mask_overlay_for(
     region: Option<Region>,
     cancel: &Cancel,
     context: &RenderContext,
+) -> MaskOverlayOutcome {
+    mask_overlay_for_cached(
+        registry,
+        frame,
+        recipe,
+        request,
+        region,
+        cancel,
+        context,
+        &mut crate::InputGridCache::default(),
+    )
+}
+
+// Keep the overlay's immutable evaluation inputs explicit beside its worker-owned mutable cache.
+#[allow(clippy::too_many_arguments)]
+fn mask_overlay_for_cached(
+    registry: &ModuleRegistry,
+    frame: &Render<'_>,
+    recipe: &Recipe,
+    request: &MaskOverlayRequest,
+    region: Option<Region>,
+    cancel: &Cancel,
+    context: &RenderContext,
+    input_cache: &mut crate::InputGridCache,
 ) -> MaskOverlayOutcome {
     let refused = |error: Error| MaskOverlayOutcome {
         grid: None,
@@ -161,40 +188,6 @@ pub(super) fn mask_overlay_for(
     // states once for everything that reads a pixel through a mask, and which the colour-constrained
     // brush's seed and `mask.sample-input` already read, so the overlay and the seed cannot disagree
     // about which pixel a mask reads. The prefix is compiled once and asked once per cell.
-    let input;
-    let unavailable;
-    let pixels = if !compiled.reads_pixels() {
-        // Position-only: no operation is needed and none is looked for, so a geometric grid costs
-        // exactly what it did before a value-based component existed.
-        MaskPixels::Unavailable("this mask reads no pixel")
-    } else {
-        match crate::mask::commands::input_layer_index(recipe, &request.mask).and_then(|layer| {
-            crate::render::layer_input(registry, frame.source(), recipe, layer, context)
-        }) {
-            // Two different stages would be two different coverage fields, and `coverage_grid`
-            // refuses that mismatch for the frame; it is refused here for the operation, in the same
-            // voice, rather than read at coordinates of another stage.
-            Ok((received, _)) if received != stage => {
-                unavailable = format!(
-                    "the masked operation receives a {}x{} stage and this mask is compiled against \
-                     {}x{}",
-                    received.width, received.height, stage.width, stage.height
-                );
-                MaskPixels::Unavailable(&unavailable)
-            }
-            Ok((_, prefix)) => {
-                input = prefix;
-                MaskPixels::Input(&*input)
-            }
-            // No layer is bound to this mask, or its prefix holds a spatial layer, or it does not
-            // compile: in every case there is no operation whose input this grid can read, and the
-            // refusal's own sentence says which and what to do about it.
-            Err(error) => {
-                unavailable = error.detail;
-                MaskPixels::Unavailable(&unavailable)
-            }
-        }
-    };
     let (cells_w, cells_h) = (request.cells_w, request.cells_h);
     let region = region.unwrap_or(Region {
         x0: 0,
@@ -202,6 +195,64 @@ pub(super) fn mask_overlay_for(
         width: transform.output.width,
         height: transform.output.height,
     });
+    let input;
+    let grid;
+    let unavailable;
+    let pixels = if !compiled.reads_pixels() {
+        MaskPixels::Unavailable("this mask reads no pixel")
+    } else {
+        match crate::mask::commands::input_layer_index(recipe, &request.mask) {
+            Err(error) => {
+                unavailable = error.detail;
+                MaskPixels::Unavailable(&unavailable)
+            }
+            Ok(layer) => match crate::render::grid_input(
+                registry,
+                frame.source(),
+                recipe,
+                crate::render::GridRequest {
+                    layer,
+                    transform: &transform,
+                    region,
+                    cells: (cells_w, cells_h),
+                },
+                cancel,
+                context,
+                input_cache,
+            ) {
+                Ok(Some(prefix)) => {
+                    grid = prefix;
+                    MaskPixels::Grid(&grid)
+                }
+                Err(error) => return refused(error),
+                Ok(None) => {
+                    match crate::render::layer_input(
+                        registry,
+                        frame.source(),
+                        recipe,
+                        layer,
+                        context,
+                    ) {
+                        Ok((received, _)) if received != stage => {
+                            unavailable = format!(
+                                "the masked operation receives a {}x{} stage and this mask is compiled against {}x{}",
+                                received.width, received.height, stage.width, stage.height
+                            );
+                            MaskPixels::Unavailable(&unavailable)
+                        }
+                        Ok((_, prefix)) => {
+                            input = prefix;
+                            MaskPixels::Input(&*input)
+                        }
+                        Err(error) => {
+                            unavailable = error.detail;
+                            MaskPixels::Unavailable(&unavailable)
+                        }
+                    }
+                }
+            },
+        }
+    };
     let coverage = match crate::analysis::coverage_grid_region(
         &compiled, &transform, region, cells_w, cells_h, pixels, cancel,
     ) {
@@ -377,6 +428,25 @@ impl Evaluation {
         cached: Option<u64>,
         cancel: &Cancel,
     ) -> Result<MaskCoverage, Error> {
+        self.mask_overlay_coverage_with_cache(
+            target,
+            cells,
+            region,
+            cached,
+            cancel,
+            &mut crate::InputGridCache::default(),
+        )
+    }
+
+    pub fn mask_overlay_coverage_with_cache(
+        &self,
+        target: &MaskCoverageTarget,
+        cells: (u32, u32),
+        region: Option<Region>,
+        cached: Option<u64>,
+        cancel: &Cancel,
+        input_cache: &mut crate::InputGridCache,
+    ) -> Result<MaskCoverage, Error> {
         cancel.check()?;
         let (held, component) = self.resolve_target(target)?;
         let (cells_w, cells_h) = cells;
@@ -425,7 +495,7 @@ impl Evaluation {
                 ));
             }
         }
-        let mut outcome = mask_overlay_for(
+        let mut outcome = mask_overlay_for_cached(
             self.registry(),
             &frame,
             self.recipe(),
@@ -433,6 +503,7 @@ impl Evaluation {
             region,
             cancel,
             self.context(),
+            input_cache,
         );
         cancel.check()?;
         if outcome.grid.is_none() && outcome.absent.is_none() {
@@ -456,19 +527,40 @@ impl Evaluation {
     /// The grid is the overlay's own ([`mask_overlay_for`]), so a thumbnail and the overlay cannot
     /// disagree about a cell. A mask that reads pixels is answered on the input of its first bound
     /// layer, and has no grid — with the host's reason in [`MaskOverlayOutcome::absent`] — when no
-    /// layer is bound to it or the stack before that layer holds a spatial one.
+    /// layer is bound to it or its prefix contains a later spatial or resampling boundary. A
+    /// leading restoration run followed by pointwise operations supplies exact input values.
     ///
     /// Cost: `O(recipe)` to key it, which composes the geometry tail and compiles the one mask but
-    /// reads no pixel; on a miss, `O(cells × components)` plus one point query per cell through the
-    /// prefix for a mask that reads pixels. A cancel ends it with [`crate::ErrorKind::Cancelled`],
+    /// reads no pixel; on a miss, `O(cells × components)` plus the pointwise prefix or bounded
+    /// restoration input-grid work for a mask that reads pixels. A cancel ends it with [`crate::ErrorKind::Cancelled`],
     /// never with an absent grid a caller could mistake for an answer.
     pub fn mask_coverage(
+        &self,
+        mask: &MaskId,
+        cells: (u32, u32),
+        cached: Option<u64>,
+        cancel: &Cancel,
+    ) -> Result<MaskCoverage, Error> {
+        self.mask_coverage_with_cache(
+            mask,
+            cells,
+            cached,
+            cancel,
+            &mut crate::InputGridCache::default(),
+        )
+    }
+
+    /// Coverage using the worker's one bounded restoration input grid. Mask-only changes can
+    /// reuse those prefix values while the composed output coverage is filled again.
+    pub fn mask_coverage_with_cache(
         &self,
         mask: &MaskId,
         (cells_w, cells_h): (u32, u32),
         cached: Option<u64>,
         cancel: &Cancel,
+        input_cache: &mut crate::InputGridCache,
     ) -> Result<MaskCoverage, Error> {
+        cancel.check()?;
         let recipe = self.recipe();
         let held = recipe
             .masks
@@ -500,7 +592,7 @@ impl Evaluation {
             transform.output.height,
         )
             .hash(&mut hasher);
-        transform.forward.map(f64::to_bits).hash(&mut hasher);
+        transform.sha256().hash(&mut hasher);
         (cells_w, cells_h).hash(&mut hasher);
         hash_json(&mut hasher, held)?;
         // A position-only mask is a function of its own geometry and the stage alone. A mask that
@@ -512,6 +604,23 @@ impl Evaluation {
             match crate::mask::commands::input_layer_index(recipe, mask) {
                 Ok(index) => {
                     index.hash(&mut hasher);
+                    crate::render::MaskInputMode::for_layer(self.registry(), recipe, index)
+                        .hash(&mut hasher);
+                    // Later units determine a restoration boundary's byte precision. An
+                    // unchanged prefix can therefore receive different values after its bound
+                    // Basic layer becomes active (or a later replacement is added).
+                    let (width, height) = self.source().dimensions();
+                    let prefix = self.registry().compile_layers(
+                        width,
+                        height,
+                        &recipe.layers[..index],
+                        &recipe.masks,
+                        &recipe.strokes,
+                        &recipe.artifacts,
+                    )?;
+                    self.compiled()?
+                        .prefix_spatial_input_wide(&prefix)
+                        .hash(&mut hasher);
                     for layer in &recipe.layers[..index] {
                         hash_json(&mut hasher, layer)?;
                         if let Some(bound) = layer.mask.as_ref().and_then(|bound| {
@@ -538,7 +647,7 @@ impl Evaluation {
             cells_w,
             cells_h,
         };
-        let outcome = mask_overlay_for(
+        let outcome = mask_overlay_for_cached(
             self.registry(),
             &frame,
             recipe,
@@ -546,6 +655,7 @@ impl Evaluation {
             None,
             cancel,
             self.context(),
+            input_cache,
         );
         // The overlay reports a cancel as an absence with no reason, which is right for a frame a
         // newer one replaces and wrong for a grid a caller would keep: say it was cancelled.
@@ -634,6 +744,81 @@ mod tests {
             mask: mask.id.clone(),
             component: None,
         }
+    }
+
+    #[test]
+    fn coverage_cache_key_is_the_mapping_hash() {
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let initial = held
+            .mask_coverage(&mask.id, (12, 8), None, &Cancel::never())
+            .unwrap();
+        let perspective = Layer {
+            id: LayerId::new(),
+            effect_id: "luxforge.perspective".into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload: json!({"horizontal":25,"vertical":0}),
+            mask: None,
+            artifacts: Vec::new(),
+        };
+        let mut warped = recipe;
+        warped.layers.push(perspective);
+        let moved = changed(&held, warped.clone())
+            .mask_coverage(&mask.id, (12, 8), Some(initial.key), &Cancel::never())
+            .unwrap();
+        assert_ne!(moved.key, initial.key);
+        assert!(moved.outcome.is_some());
+        warped.layers.insert(
+            0,
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: json!({"exposure":1.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        );
+        let colour = changed(&held, warped)
+            .mask_coverage(&mask.id, (12, 8), Some(moved.key), &Cancel::never())
+            .unwrap();
+        assert_eq!(colour.key, moved.key);
+        assert!(colour.outcome.is_none());
+    }
+
+    #[test]
+    fn mask_overlay_cache_misses_when_only_lens_changes() {
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            layers: vec![crate::render::testing::frozen_lens(60, 40, 24.0)],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let first = held
+            .mask_coverage(&mask.id, (12, 8), None, &Cancel::never())
+            .unwrap();
+        let mut edited = recipe;
+        let replacement = crate::render::testing::frozen_lens(60, 40, 35.0);
+        edited.layers[0].payload = replacement.payload;
+        let changed = changed(&held, edited);
+        let next = changed
+            .mask_coverage(&mask.id, (12, 8), Some(first.key), &Cancel::never())
+            .unwrap();
+        assert_ne!(next.key, first.key);
+        assert!(
+            next.outcome.is_some(),
+            "the new map is evaluated even when a coarse grid quantises to the same bytes"
+        );
+        let hit = changed
+            .mask_coverage(&mask.id, (12, 8), Some(next.key), &Cancel::never())
+            .unwrap();
+        assert!(hit.outcome.is_none());
+        assert_eq!(changed.recipe().masks, held.recipe().masks);
     }
 
     #[test]
@@ -884,6 +1069,98 @@ mod tests {
         assert!(
             refused.absent.unwrap().contains("spatial"),
             "value-based coverage never approximates a spatial prefix"
+        );
+    }
+
+    #[test]
+    fn detail_thumbnail_cached_key_tracks_the_actual_boundary_precision() {
+        let mut mask = Mask::new("Detail input");
+        mask.components.push(Component::new(
+            "Range 1",
+            ComponentMode::Add,
+            "luminance-range",
+            json!({"low":20.0,"low_feather":10.0,"high":80.0,"high_feather":10.0}),
+        ));
+        let mut basic = Layer::new(BASIC_EFFECT, json!({}));
+        basic.mask = Some(mask.id.clone());
+        let mut recipe = Recipe {
+            layers: vec![
+                Layer::new(crate::DETAIL_EFFECT, json!({"sharpening":40.0})),
+                basic,
+            ],
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let narrow = evaluation(recipe.clone(), recipe.clone(), None);
+        let mut cache = crate::InputGridCache::default();
+        let first = narrow
+            .mask_coverage_with_cache(&mask.id, (28, 19), None, &Cancel::never(), &mut cache)
+            .unwrap();
+        assert!(first.outcome.as_ref().unwrap().grid.is_some());
+        assert!(
+            narrow
+                .mask_coverage_with_cache(
+                    &mask.id,
+                    (28, 19),
+                    Some(first.key),
+                    &Cancel::never(),
+                    &mut cache,
+                )
+                .unwrap()
+                .outcome
+                .is_none()
+        );
+        recipe.layers[1].payload = json!({"exposure":0.5});
+        let wide = changed(&narrow, recipe);
+        assert_eq!(narrow.recipe().layers[0], wide.recipe().layers[0]);
+        let updated = wide
+            .mask_coverage_with_cache(
+                &mask.id,
+                (28, 19),
+                Some(first.key),
+                &Cancel::never(),
+                &mut cache,
+            )
+            .unwrap();
+        assert_ne!(updated.key, first.key);
+        assert!(updated.outcome.as_ref().unwrap().grid.is_some());
+        assert_eq!(
+            updated.outcome,
+            wide.mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+                .unwrap()
+                .outcome
+        );
+        let restored = narrow
+            .mask_coverage_with_cache(
+                &mask.id,
+                (28, 19),
+                Some(updated.key),
+                &Cancel::never(),
+                &mut cache,
+            )
+            .unwrap();
+        assert_eq!(restored.key, first.key);
+        assert_eq!(restored.outcome, first.outcome);
+    }
+
+    #[test]
+    fn a_cancelled_thumbnail_cached_hit_is_not_a_completed_answer() {
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe, None);
+        let first = held
+            .mask_coverage(&mask.id, (28, 19), None, &Cancel::never())
+            .unwrap();
+        let cancel = Cancel::new();
+        cancel.cancel();
+        assert_eq!(
+            held.mask_coverage(&mask.id, (28, 19), Some(first.key), &cancel)
+                .unwrap_err()
+                .kind,
+            crate::ErrorKind::Cancelled
         );
     }
 

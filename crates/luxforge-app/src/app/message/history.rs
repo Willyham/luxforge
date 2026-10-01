@@ -15,6 +15,13 @@ pub(crate) enum HistoryMessage {
     /// A history selection or a return to current answered. It set `busy`, and this answer is what
     /// clears it.
     Selected(Result<Box<PreviewPayload>, String>),
+    /// Physical keyboard input; a tap toggles and a held key temporarily shows Before.
+    CompareKeyPressed {
+        uncropped: bool,
+    },
+    CompareKeyReleased,
+    CompareKeyCancelled,
+    CompareHoldElapsed(u64),
     /// Hold the Original entry's preview, framed by the displayed entry's geometry (orientation,
     /// straighten and crop) so only the adjustments differ.
     CompareBegin,
@@ -22,6 +29,10 @@ pub(crate) enum HistoryMessage {
     CompareUncropped,
     /// Release the compare hold and restore the previous selection.
     CompareEnd,
+    /// Toggle the persistent before/after divider; Escape exits it explicitly.
+    CompareToggle,
+    CompareExit,
+    ComparePosition(f32),
     LoadOlder,
     /// An older history page.
     OlderLoaded(Result<HistoryPage, String>),

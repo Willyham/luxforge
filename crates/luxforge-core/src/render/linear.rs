@@ -286,6 +286,7 @@ impl PixelDomain for Linear<'_> {
         runs: impl Iterator<Item = ColorRun<'r>>,
         x: u32,
         y: u32,
+        _: bool,
     ) -> Result<[f64; 3], Error> {
         let mut linear = [pixel.map(|value| value as f32)];
         // One pixel of snapshot scratch on the stack: a masked operation blends against its own
@@ -305,6 +306,7 @@ impl PixelDomain for Linear<'_> {
         y: u32,
         x0: u32,
         scratch: &mut RowScratch,
+        _: bool,
     ) -> Result<(), Error> {
         let RowScratch { linear, snapshot } = scratch;
         linear.clear();
@@ -376,7 +378,7 @@ impl PixelDomain for Linear<'_> {
     }
 
     #[inline]
-    fn spatial_output(rgb: [f32; 3]) -> Result<[f64; 3], Error> {
+    fn spatial_output(rgb: [f32; 3], _: bool) -> Result<[f64; 3], Error> {
         Ok(rgb.map(f64::from))
     }
 
@@ -386,7 +388,7 @@ impl PixelDomain for Linear<'_> {
     }
 
     /// The RAW planar limit applies to this float frame exactly as it does to the source's.
-    fn spatial_frame(stage: Stage) -> Result<Vec<f32>, Error> {
+    fn spatial_frame(stage: Stage, _: bool) -> Result<Vec<f32>, Error> {
         let (values, _) = layout(stage.width, stage.height)?;
         Ok(vec![0.0_f32; values])
     }
@@ -399,6 +401,7 @@ impl PixelDomain for Linear<'_> {
         values: Vec<f32>,
         _: Region,
         _: Parallelism,
+        _: bool,
     ) -> (Region, Vec<f32>) {
         (region, values)
     }
@@ -655,6 +658,7 @@ impl LinearRows<'_, '_, '_> {
             row,
         } = scratch;
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
+            self.evaluation.checkpoint()?;
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
             // The block's rectangle of the resample's full output: the segment's exact geometry
             // maps the block onto one, placed at the entry window's origin.
@@ -705,6 +709,7 @@ impl LinearRows<'_, '_, '_> {
 }
 
 impl SegmentRows for LinearRows<'_, '_, '_> {
+    type Sample = u8;
     type Scratch = LinearScratch;
 
     fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {

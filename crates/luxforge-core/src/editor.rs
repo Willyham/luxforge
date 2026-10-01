@@ -35,6 +35,7 @@ mod entries;
 mod evaluate;
 mod history;
 mod masks;
+pub(crate) mod pixels;
 mod plan;
 mod source;
 #[cfg(test)]
@@ -227,6 +228,24 @@ pub struct MutationResult {
     pub current_entry_id: EntryId,
     pub created_entry_id: Option<EntryId>,
     pub deduplicated: bool,
+}
+
+/// What one module's first-open action came to when a photograph was first opened
+/// ([`crate::ToolModule::first_open`]): the entry it committed by the `system` actor, or why it
+/// committed nothing. `job.read` of that preparation lists one per module that proposed an action
+/// or could not plan one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstOpen {
+    pub module_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<EntryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::jobs::JobError>,
 }
 
 /// What one action answers with, and what the request table stores for its retry: the mutation
@@ -499,6 +518,9 @@ pub struct RecipeDescription {
     /// for that row; `null` exactly when `output_stage` is, or when an orientation cannot be read.
     #[serde(default)]
     pub output_orientation: Option<Orientation>,
+    /// Bounded geometry diagnostics from the same compilation the renderer uses.
+    #[serde(default)]
+    pub geometry: Option<Value>,
 }
 
 /// A named reference to one retained history entry: the Lightroom-style saved state.
@@ -572,6 +594,7 @@ pub struct EditorService {
     /// What the last one-file Develop read of its file, kept for the preparation that follows it
     /// (the open): the next preparation takes it ([`source::ReadOriginal`]).
     read_original: RefCell<Option<source::ReadOriginal>>,
+    pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
     registry: Arc<ModuleRegistry>,
     /// The budgets and the estimate store every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -655,6 +678,7 @@ impl EditorService {
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
             read_original: RefCell::new(None),
+            pixel_reads: RefCell::new(pixels::PixelReads::default()),
             registry,
             render: RenderContext::new(),
             catalog_id,

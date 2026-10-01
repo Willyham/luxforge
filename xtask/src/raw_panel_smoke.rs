@@ -264,6 +264,12 @@ fn raw_payload(frame: &Value) -> Result<&Value> {
         .ok_or_else(|| "The stack has no RAW layer".into())
 }
 
+/// The sensor gains the frame's RAW layer develops at.
+fn development_gains(frame: &Value) -> Result<[f32; 3]> {
+    serde_json::from_value(raw_payload(frame)?["gains"].clone())
+        .map_err(|error| format!("The RAW layer's gains are unreadable: {error}").into())
+}
+
 /// The most the released exact frame may differ from the tested draft view state, as a share of
 /// the drag's own change from the frame before it (owner decision, 2026-09-27).
 const MAX_WB_ACCURACY_SHARE: f64 = 0.1;
@@ -308,11 +314,98 @@ fn check_white_balance_accuracy(
     }
 }
 
-/// How far the photo surface of one capture is from another's: the mean absolute channel
-/// difference in codes over the surface columns the frame records, between its top and bottom
-/// tenths (the title and status bars stay outside), and the share of those pixels differing by more
-/// than two codes in any channel. The surface draws the photograph and nothing else here: no
-/// overlay is on and no draft bar is shown for a slider gesture.
+/// The exception the owner recorded on 2026-09-30 for the white-balance accuracy gates: a Bayer
+/// scene with enough sites at sensor white keeps the approved `W` draft, whose first-order
+/// `diag(g'/g)` cannot follow the demosaic's input clamp there. See
+/// `docs/decisions.md#raw-white-balance-drafts`.
+const HIGHLIGHT_CLIP_EXCEPTION: &str = "highlight-clipped Bayer scene";
+/// A site counts as clipped when its normalized, gained value reaches this share of sensor white.
+const CLIP_FRACTION: f32 = 0.99;
+/// The share of the default crop's sites, clipped at any of the drags' developments, from which a
+/// Bayer scene qualifies. Chosen from the 2026-09-30 measurement of 33 sources (see
+/// `docs/design/instant-preview.md#popular-cameras`): the five that miss a limit clip 1.25% to
+/// 4.07%, and the next Bayer scene below 1% clips 0.61%. Two passing scenes (2.50%, 1.42%) also
+/// qualify, which changes nothing for them while their figures stay within the limits.
+const MIN_HIGHLIGHT_CLIP_SHARE: f64 = 0.01;
+
+/// How much of the scene the drags' developments clip, from the source itself: the share of its
+/// Bayer sites at [`CLIP_FRACTION`] of sensor white or above under the channel-wise largest of the
+/// gains the scenario develops at (as shot and each committed temperature), since a site clipped
+/// at any of them is one the draft's `diag(g'/g)` cannot follow. `share` is `None` for a
+/// development without one clip ceiling: X-Trans, or a DNG corrected after the demosaic.
+#[derive(Debug, Clone, PartialEq)]
+struct Highlights {
+    gains: [f32; 3],
+    share: Option<f64>,
+}
+
+impl Highlights {
+    fn of(source: &Path, developments: &[[f32; 3]]) -> Result<Self> {
+        let gains = developments.iter().fold([0.0_f32; 3], |most, gains| {
+            std::array::from_fn(|c| most[c].max(gains[c]))
+        });
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let raw = luxforge_raw::RawSource::decode(std::fs::read(source)?, &cancel)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        let share = raw
+            .highlight_clip_share(gains, CLIP_FRACTION, &cancel)
+            .map_err(|error| format!("{}: {error}", source.display()))?;
+        Ok(Self { gains, share })
+    }
+
+    fn qualifies(&self) -> bool {
+        self.share
+            .is_some_and(|share| share >= MIN_HIGHLIGHT_CLIP_SHARE)
+    }
+
+    fn record(&self) -> Value {
+        json!({
+            "gains": self.gains,
+            "clip_fraction_of_sensor_white": CLIP_FRACTION,
+            "clipped_share": self.share,
+            "uniform_clip_ceiling": self.share.is_some(),
+            "minimum_share": MIN_HIGHLIGHT_CLIP_SHARE,
+            "exception": self.qualifies().then_some(HIGHLIGHT_CLIP_EXCEPTION),
+        })
+    }
+}
+
+/// The white-balance accuracy verdict for one drag: the gate of [`check_white_balance_accuracy`],
+/// except that a limit a highlight-clipped Bayer scene misses is recorded, not failed. A missing
+/// held capture is never excused.
+fn white_balance_accuracy_verdict(
+    fit: bool,
+    moving_mean: f64,
+    moving_ratio: f64,
+    held: Option<(f64, f64)>,
+    change_mean: f64,
+    highlights: &Highlights,
+) -> Result<Value> {
+    ensure(
+        fit || held.is_some(),
+        "The 100% draft has no held full-detail capture",
+    )?;
+    let view_state = if fit { "moving" } else { "held_full_detail" };
+    match check_white_balance_accuracy(fit, moving_mean, moving_ratio, held, change_mean) {
+        Ok(checked) => Ok(json!({"checked": checked, "held": true, "exception": null})),
+        Err(failure) if highlights.qualifies() => Ok(json!({
+            "checked": view_state,
+            "held": false,
+            "exception": HIGHLIGHT_CLIP_EXCEPTION,
+            "clipped_share": highlights.share,
+            "failed_limit": failure.to_string(),
+        })),
+        Err(failure) => Err(failure),
+    }
+}
+
+/// How far the photograph in one capture is from another's: the mean absolute channel difference
+/// in codes over the photograph as the second frame draws it on screen (its photo rectangle clipped
+/// to the canvas and to the surface columns, between the frame's top and bottom tenths, so the
+/// title and status bars stay outside), and the share of those pixels differing by more than two
+/// codes in any channel. Only the photograph counts: the canvas beside a 3:2 or 4:3 photo at Fit
+/// never changes and would dilute the mean. No overlay is on and no draft bar is shown for a
+/// slider gesture.
 fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
     let frame = second;
     let first = first.image()?;
@@ -323,9 +416,10 @@ fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
     )?;
     let (width, height) = first.dimensions();
     let [left, right] = frame.columns()?.unwrap_or([0, width]);
+    let [photo_left, photo_top, photo_right, photo_bottom] = frame.visible_photo()?;
     let (mut total, mut over, mut count) = (0_u64, 0_u64, 0_u64);
-    for y in height / 10..height - height / 10 {
-        for x in left..right.min(width) {
+    for y in (height / 10).max(photo_top)..(height - height / 10).min(photo_bottom) {
+        for x in left.max(photo_left)..right.min(photo_right).min(width) {
             let (a, b) = (first.get_pixel(x, y).0, second.get_pixel(x, y).0);
             let differences = [0, 1, 2].map(|channel| a[channel].abs_diff(b[channel]));
             total += differences
@@ -336,7 +430,7 @@ fn surface_difference(first: &Frame, second: &Frame) -> Result<(f64, f64)> {
             count += 1;
         }
     }
-    ensure(count > 0, "The frame records no photo surface")?;
+    ensure(count > 0, "The frame draws no photograph on its surface")?;
     Ok((
         total as f64 / (3 * count) as f64,
         over as f64 / count as f64,
@@ -366,6 +460,28 @@ fn step_log<'a>(launch: &'a Checked, step: &str) -> Result<Vec<&'a Value>> {
     Ok(step_events(&launch.events, number as usize))
 }
 
+/// The frames presented among `events`.
+fn presented<'a>(events: &[&'a Value]) -> Vec<&'a Value> {
+    events
+        .iter()
+        .copied()
+        .filter(|event| event["event"] == "preview_displayed")
+        .collect()
+}
+
+/// One step's events split at its last `script_step_settled`: what happened up to the outcome its
+/// frame was captured for, and what the editor went on to do before the next step began. The next
+/// step's `script_step` is logged only once this step's capture is written, which can take longer
+/// than the shared 120 ms quiet interval, so a held gesture's quiet refinement can land in the
+/// tail. A step that never settled has no tail.
+fn split_at_settle<'a>(events: &[&'a Value]) -> (Vec<&'a Value>, Vec<&'a Value>) {
+    let settled = events
+        .iter()
+        .rposition(|event| event["event"] == "script_step_settled")
+        .map_or(events.len(), |index| index + 1);
+    (events[..settled].to_vec(), events[settled..].to_vec())
+}
+
 /// The frame captured just before the named step's.
 fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
     launch
@@ -378,7 +494,7 @@ fn frame_before<'a>(launch: &'a Checked, step: &str) -> Result<&'a Frame> {
 /// What each frame shows beyond its plan, once the plan has held: every frame ready with Basic's
 /// section and no RAW section, the drags' drafted and committed frames, each double-click's events
 /// and As shot fields, Basic's dot, the sensor pick `W` enters and the crop on screen.
-pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let mut checks = Checks::new();
     for (step, frame) in launch.names().iter().zip(&launch.frames) {
@@ -410,11 +526,29 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "Basic's White balance group, the RAW development's own",
         white_balance_group(opened)?,
     );
+    // Whether the scene is a highlight-clipped Bayer one, from the source at the gains the drags
+    // develop at, recorded before any gate can fail.
+    let developments = std::iter::once(names::OPENED)
+        .chain(DRAGS.iter().map(|drag| drag.release))
+        .map(|step| development_gains(launch.at(step)?))
+        .collect::<Result<Vec<_>>>()?;
+    let source = run
+        .sources()
+        .first()
+        .ok_or("The raw-panel run records no source")?
+        .clone();
+    let highlights = Highlights::of(&source, &developments)?;
+    run.record("highlight_clip", highlights.record());
+    checks.note(
+        opened,
+        "how much of the scene the drags' developments clip at sensor white",
+        highlights.record(),
+    );
     for drag in &DRAGS {
         checks.note(
             launch.at(drag.release)?,
             "a temperature drag's approximate draft and its exact release",
-            white_balance_drag(launch, drag)?,
+            white_balance_drag(launch, drag, &highlights)?,
         );
     }
 
@@ -727,80 +861,253 @@ fn canvas_background(image: &image::RgbImage, frame: &Value) -> Result<([u8; 3],
     Ok((image.get_pixel(rect[0] + 4, rect[1] + 4).0, rect))
 }
 
-/// A straightened draft draws its whole input stage as one rotated picture: sampled on a grid over
-/// the stage's interior, mapped through the draft's Fit view and rotation, almost no sample shows
-/// the canvas background. Drawn as the toolkit's own fragments of an image wider than one atlas
-/// layer, each turned about its own centre, it showed the background through 12% of these samples
-/// on the X100VI at 7°, and 66% at 44°.
-fn draft_is_whole(frame: &Frame, source: [u32; 2]) -> Result<Value> {
-    let draft = &frame["state"]["crop"];
-    let angle = draft["angle"]
-        .as_f64()
-        .ok_or("The draft records no angle")?;
-    let stage = luxforge_core::CropStage {
-        width: source[0],
-        height: source[1],
-        angle,
+/// How much of the input stage a crop draft draws outside its crop rectangle: the crop canvas's
+/// `DIM_OPACITY`, which the photo surface applies as the stage's alpha over the canvas, so a dimmed
+/// pixel is the canvas plus this share of the stage's difference from it.
+const DRAFT_DIM_OPACITY: f64 = 0.35;
+/// How far, in physical pixels, a sample must be from a draft's crop rectangle for the opacity it
+/// is drawn at to be known: the rectangle's own edge, its stroke and its handles are skipped.
+const DRAFT_BRIGHT_MARGIN: f64 = 4.0;
+
+/// One crop draft at Fit, as its frame records it: where a stage point lands on screen through the
+/// draft's rotation and Fit view, and the crop rectangle the stage is drawn at full opacity in.
+struct DraftView {
+    stage: luxforge_core::CropStage,
+    zoom: f64,
+    origin: (f64, f64),
+    /// The crop rectangle on screen, `[left, top, right, bottom]` physical pixels.
+    bright: [f64; 4],
+}
+
+impl DraftView {
+    /// The rotated box centred in `fit`, the area the layout fits into, with the crop rectangle
+    /// `rect` (`[x, y, width, height]` in box pixels) drawn bright.
+    fn new(stage: luxforge_core::CropStage, fit: [u32; 4], rect: [f64; 4]) -> Self {
+        let (box_width, box_height) = stage.bounding_box();
+        let [fit_left, fit_top, fit_right, fit_bottom] = fit.map(f64::from);
+        let available = (fit_right - fit_left, fit_bottom - fit_top);
+        let zoom = (available.0 / box_width).min(available.1 / box_height);
+        let origin = (
+            fit_left + (available.0 - box_width * zoom) / 2.0,
+            fit_top + (available.1 - box_height * zoom) / 2.0,
+        );
+        let [x, y, width, height] = rect;
+        Self {
+            stage,
+            zoom,
+            origin,
+            bright: [
+                origin.0 + x * zoom,
+                origin.1 + y * zoom,
+                origin.0 + (x + width) * zoom,
+                origin.1 + (y + height) * zoom,
+            ],
+        }
+    }
+
+    /// The draft a frame records, on the `source` input stage.
+    fn of(frame: &Value, source: [u32; 2]) -> Result<Self> {
+        let draft = &frame["state"]["crop"];
+        let angle = draft["angle"]
+            .as_f64()
+            .ok_or("The draft records no angle")?;
+        let rect: [f64; 4] = serde_json::from_value(draft["rect"].clone())
+            .map_err(|_| format!("The draft records no crop rectangle: {draft}"))?;
+        let stage = luxforge_core::CropStage {
+            width: source[0],
+            height: source[1],
+            angle,
+        };
+        Ok(Self::new(stage, fit_area(frame)?, rect))
+    }
+
+    /// Where stage point `(u, v)` is drawn, in physical pixels.
+    fn screen(&self, u: f64, v: f64) -> (f64, f64) {
+        let (x, y) = self.stage.to_box(u, v);
+        (self.origin.0 + x * self.zoom, self.origin.1 + y * self.zoom)
+    }
+
+    /// The opacity the stage is drawn at here: full inside the crop rectangle, dimmed outside it,
+    /// and unknown within [`DRAFT_BRIGHT_MARGIN`] of its edge.
+    fn opacity(&self, (x, y): (f64, f64)) -> Option<f64> {
+        let [left, top, right, bottom] = self.bright;
+        let margin = DRAFT_BRIGHT_MARGIN;
+        if x >= left + margin && x <= right - margin && y >= top + margin && y <= bottom - margin {
+            Some(1.0)
+        } else if x < left - margin || x > right + margin || y < top - margin || y > bottom + margin
+        {
+            Some(DRAFT_DIM_OPACITY)
+        } else {
+            None
+        }
+    }
+}
+
+/// How far a sample's scene must be from the canvas, in 8-bit codes on its furthest channel as the
+/// straightened draft would draw it, for the canvas there to be a gap rather than dark content.
+const SCENE_APART: f64 = 8.0;
+/// The largest share of those samples that may show the canvas.
+const GAP_SHARE: f64 = 0.005;
+/// The fewest samples a straightened draft must be judged on, a quarter of the grid, so a photo
+/// dark enough to leave little to judge fails rather than passing unexamined.
+const JUDGED_AT_LEAST: u32 = 1200;
+
+/// What a scan of a straightened draft against its unstraightened one found.
+#[derive(Debug, PartialEq)]
+struct Wholeness {
+    /// Grid samples on screen in both drafts, clear of the bars drawn over the canvas.
+    sampled: u32,
+    /// Those at a known opacity in both whose scene the unstraightened draft shows at least
+    /// [`SCENE_APART`] from the canvas throughout a 5 × 5 neighbourhood.
+    judged: u32,
+    /// Judged samples the straightened draft shows as the canvas, within a code on every channel.
+    gaps: u32,
+    /// Samples showing the canvas colour anywhere, judged or not: dark content included.
+    canvas_coloured: u32,
+}
+
+/// Scan a straightened draft against the unstraightened draft of the same input stage, drawn with
+/// nothing turned. An 80 × 60 grid of stage points over the stage's interior is mapped into both.
+/// The unstraightened draft says what the scene is at each: its distance from the canvas colour,
+/// the least over a 5 × 5 neighbourhood so a registration pixel, a thin guide line or noise cannot
+/// lift it, taken back through the opacity it is drawn at there and forward through the opacity
+/// the straightened draft draws it at. Where that is at least [`SCENE_APART`], the straightened
+/// draft cannot show the canvas colour by drawing the scene; showing it there is a gap. Dark scene
+/// content is the canvas's colour in both drafts and is never judged, however much of it there is.
+fn draft_gaps(
+    straightened: (&image::RgbImage, &DraftView),
+    reference: (&image::RgbImage, &DraftView),
+    background: [u8; 3],
+    rows: (f64, f64),
+    source: [u32; 2],
+) -> Wholeness {
+    let (image, view) = straightened;
+    let (reference, reference_view) = reference;
+    let on = |image: &image::RgbImage, (x, y): (f64, f64)| {
+        x >= 0.0
+            && y >= rows.0
+            && y <= rows.1
+            && x < f64::from(image.width())
+            && y < f64::from(image.height())
     };
-    let (box_width, box_height) = stage.bounding_box();
+    let apart = |pixel: [u8; 3]| {
+        pixel
+            .iter()
+            .zip(background)
+            .map(|(a, b)| a.abs_diff(b))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut found = Wholeness {
+        sampled: 0,
+        judged: 0,
+        gaps: 0,
+        canvas_coloured: 0,
+    };
+    for j in 0..60 {
+        for i in 0..80 {
+            let u = f64::from(source[0]) * (0.03 + 0.94 * (f64::from(i) + 0.5) / 80.0);
+            let v = f64::from(source[1]) * (0.03 + 0.94 * (f64::from(j) + 0.5) / 60.0);
+            let (at, then) = (view.screen(u, v), reference_view.screen(u, v));
+            if !on(image, at) || !on(reference, then) {
+                continue;
+            }
+            found.sampled += 1;
+            let canvas = apart(image.get_pixel(at.0 as u32, at.1 as u32).0) <= 1;
+            found.canvas_coloured += u32::from(canvas);
+            let (Some(drawn), Some(drawn_then)) = (view.opacity(at), reference_view.opacity(then))
+            else {
+                continue;
+            };
+            let (cx, cy) = (then.0 as i64, then.1 as i64);
+            let nearest = (-2..=2)
+                .flat_map(|dy| (-2..=2).map(move |dx| (cx + dx, cy + dy)))
+                .map(|(x, y)| {
+                    let x = x.clamp(0, i64::from(reference.width()) - 1) as u32;
+                    let y = y.clamp(0, i64::from(reference.height()) - 1) as u32;
+                    apart(reference.get_pixel(x, y).0)
+                })
+                .min()
+                .unwrap_or(0);
+            if f64::from(nearest) / drawn_then * drawn >= SCENE_APART {
+                found.judged += 1;
+                found.gaps += u32::from(canvas);
+            }
+        }
+    }
+    found
+}
+
+/// A straightened draft draws its whole input stage as one rotated picture: at the stage points
+/// where the unstraightened draft of the same stage shows a scene clearly apart from the canvas,
+/// almost no sample of the straightened draft shows the canvas ([`draft_gaps`]). Drawn as the
+/// toolkit's own fragments of an image wider than one atlas layer, each turned about its own
+/// centre, it showed the background through 12% of the grid on the X100VI at 7°, and 66% at 44°.
+/// Counting every canvas-coloured sample instead failed the 5D Mark IV's chart on a dark ground,
+/// whose scene is the canvas colour, within a code, at 1.4% of the grid.
+fn draft_is_whole(frame: &Frame, reference: &Frame, source: [u32; 2]) -> Result<Value> {
+    let view = DraftView::of(frame, source)?;
+    let reference_view = DraftView::of(reference, source)?;
+    ensure(
+        reference_view.stage.angle == 0.0,
+        format!(
+            "The unstraightened draft is at {}°",
+            reference_view.stage.angle
+        ),
+    )?;
     let image = frame.image()?;
     let (background, [_, top, _, bottom]) = canvas_background(image, frame)?;
     let scale = frame["scale"]
         .as_f64()
         .ok_or("The frame records no scale")?;
-    // The Fit view: the rotated box centred in the area the layout fits into, the canvas less the
-    // Fit padding, as the frame records it.
-    let [fit_left, fit_top, fit_right, fit_bottom] = fit_area(frame)?;
-    let available = (
-        f64::from(fit_right - fit_left),
-        f64::from(fit_bottom - fit_top),
-    );
-    let zoom = (available.0 / box_width).min(available.1 / box_height);
-    let origin = (
-        f64::from(fit_left) + (available.0 - box_width * zoom) / 2.0,
-        f64::from(fit_top) + (available.1 - box_height * zoom) / 2.0,
-    );
     // The draft bar and the mode strip are drawn over the canvas; rows under them are skipped.
-    let (first_row, last_row) = (
+    let rows = (
         f64::from(top) + 70.0 * scale,
         f64::from(bottom) - 70.0 * scale,
     );
-    let (mut sampled, mut background_samples) = (0u32, 0u32);
-    for j in 0..60 {
-        for i in 0..80 {
-            let u = f64::from(source[0]) * (0.03 + 0.94 * (f64::from(i) + 0.5) / 80.0);
-            let v = f64::from(source[1]) * (0.03 + 0.94 * (f64::from(j) + 0.5) / 60.0);
-            let (x, y) = stage.to_box(u, v);
-            let (sx, sy) = (origin.0 + x * zoom, origin.1 + y * zoom);
-            if sy < first_row || sy > last_row {
-                continue;
-            }
-            sampled += 1;
-            let pixel = image.get_pixel(sx as u32, sy as u32).0;
-            if pixel
-                .iter()
-                .zip(background)
-                .all(|(a, b)| a.abs_diff(b) <= 1)
-            {
-                background_samples += 1;
-            }
-        }
-    }
-    let share = f64::from(background_samples) / f64::from(sampled.max(1));
+    let found = draft_gaps(
+        (image, &view),
+        (reference.image()?, &reference_view),
+        background,
+        rows,
+        source,
+    );
+    whole(&found)?;
+    Ok(json!({
+        "angle": view.stage.angle,
+        "samples": found.sampled,
+        "judged_samples": found.judged,
+        "gap_samples": found.gaps,
+        "canvas_coloured_samples": found.canvas_coloured,
+        "background_rgb": background,
+        "scene_apart_codes": SCENE_APART,
+        "threshold_share": GAP_SHARE,
+        "judged_at_least": JUDGED_AT_LEAST,
+    }))
+}
+
+/// The verdict on a scan: enough judged samples, and under [`GAP_SHARE`] of them gaps.
+fn whole(found: &Wholeness) -> Result {
+    let Wholeness {
+        sampled,
+        judged,
+        gaps,
+        ..
+    } = *found;
     ensure(
-        sampled >= 2000 && share < 0.01,
+        sampled >= 2000 && judged >= JUDGED_AT_LEAST,
         format!(
-            "The straightened draft shows the canvas through {background_samples} of {sampled} samples of its input stage ({:.1}%): it is not drawn as one picture",
-            share * 100.0
+            "Only {judged} of {sampled} samples of the straightened draft have a scene clearly apart from the canvas: too few to judge whether it is drawn as one picture"
         ),
     )?;
-    Ok(json!({
-        "angle": angle,
-        "samples": sampled,
-        "background_samples": background_samples,
-        "background_rgb": background,
-        "threshold_share": 0.01,
-    }))
+    let share = f64::from(gaps) / f64::from(judged);
+    ensure(
+        share < GAP_SHARE,
+        format!(
+            "The straightened draft shows the canvas at {gaps} of {judged} samples whose scene is clearly apart from it ({:.1}%): it is not drawn as one picture",
+            share * 100.0
+        ),
+    )
 }
 
 /// A committed crop at Fit: the photograph on the canvas — where the editor records drawing it, its
@@ -925,7 +1232,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
         straightened["state"]["crop"]["angle"] == json!(CROP_ANGLE),
         "The draft was not straightened",
     )?;
-    let whole = draft_is_whole(straightened, source)?;
+    let whole = draft_is_whole(straightened, started, source)?;
 
     let applied = launch.at(names::CROP_APPLIED)?;
     expect_no_failure(launch, names::CROP_APPLIED, "Apply")?;
@@ -995,7 +1302,7 @@ fn raw_crop(launch: &Checked) -> Result<Value> {
 /// 100% capture with the release, within a tenth of the drag's own image change; Fit is also within
 /// a code. Moving 100% differences remain reported for independent visual assessment. The plan
 /// checks one history entry.
-fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
+fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) -> Result<Value> {
     let kelvin = drag.kelvin;
     let (before, drafted, released) = (
         frame_before(launch, drag.drag)?,
@@ -1049,25 +1356,31 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         format!("The histogram was adopted from the approximate frame: {histogram}"),
     )?;
     let drag_events = step_log(launch, drag.drag)?;
-    let displayed: Vec<&&Value> = drag_events
-        .iter()
-        .filter(|event| event["event"] == "preview_displayed")
-        .collect();
+    // The moving frames are those up to the drag's settle, which its capture shows. At 100% the
+    // held draft's quiet refinement, a later generation, may begin before the next step is logged:
+    // the quiet check below reads that tail.
+    let (moving_events, held_tail) = split_at_settle(&drag_events);
+    let displayed = presented(&moving_events);
+    let all_displayed = presented(&drag_events);
     ensure(
         !displayed.is_empty()
-            && displayed
+            && all_displayed
                 .iter()
                 .all(|event| event["detail"]["approximate_white_balance"] == true),
-        format!("The drafted generation's frames are not all labelled approximate: {displayed:?}"),
+        format!(
+            "The drafted generation's frames are not all labelled approximate: {all_displayed:?}"
+        ),
     )?;
     ensure(
-        displayed.iter().all(|event| {
-            let detail = &event["detail"];
-            detail["generation"] == generation
-                && detail["draft_revision"] == state["displayed_draft_revision"]
-                && detail["entry_id"] == state["stack"]["displayed"]["entry"]
-                && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
-        }),
+        displayed
+            .iter()
+            .all(|event| event["detail"]["generation"] == generation)
+            && all_displayed.iter().all(|event| {
+                let detail = &event["detail"];
+                detail["draft_revision"] == state["displayed_draft_revision"]
+                    && detail["entry_id"] == state["stack"]["displayed"]["entry"]
+                    && detail["snapshot_id"] == state["stack"]["displayed"]["snapshot"]
+            }),
         "A drafted frame has the wrong generation, revision, entry or snapshot",
     )?;
     if drag.fit {
@@ -1082,7 +1395,7 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         let full = state["preview_dimensions"]
             .as_array()
             .ok_or("The 100% draft has no full-stage dimensions")?;
-        let region_matches = |event: &&&Value| {
+        let region_matches = |event: &&Value| {
             let detail = &event["detail"];
             let half = detail["region_stage"].as_array();
             let rect = detail["region"].as_array();
@@ -1161,11 +1474,14 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         let quiet = launch.at(name)?;
         let paused = &quiet["state"];
         let quiet_generation = &paused["surface"]["generation"];
-        let quiet_events = step_log(launch, name)?;
-        let presented: Vec<&&Value> = quiet_events
+        // The held draft's quiet interval runs from the drag's last input, so its refinement may
+        // begin in the drag step's tail, after the moving frame was captured.
+        let quiet_events: Vec<&Value> = held_tail
             .iter()
-            .filter(|event| event["event"] == "preview_displayed")
+            .copied()
+            .chain(step_log(launch, name)?)
             .collect();
+        let presented = presented(&quiet_events);
         ensure(
             quiet_events
                 .iter()
@@ -1338,12 +1654,13 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     let moving_ratio = moving_mean / change_mean;
     let held_accuracy = held_difference.map(|(mean, _)| (mean, mean / change_mean));
     let held_ratio = held_accuracy.map(|(_, ratio)| ratio);
-    let checked_view_state = check_white_balance_accuracy(
+    let accuracy = white_balance_accuracy_verdict(
         drag.fit,
         moving_mean,
         moving_ratio,
         held_accuracy,
         change_mean,
+        highlights,
     )?;
     let accuracy_ratio = if drag.fit {
         moving_ratio
@@ -1369,7 +1686,8 @@ fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
         "released_against_before": {"mean_codes": change_mean},
         "moving_share_of_change": moving_ratio,
         "held_full_detail_share_of_change": held_ratio,
-        "accuracy_checked_view_state": checked_view_state,
+        "accuracy_checked_view_state": accuracy["checked"],
+        "accuracy": accuracy,
         "accuracy_share_of_change": accuracy_ratio,
         "surface_versions": [versions.0, versions.1],
     }))
@@ -1419,6 +1737,170 @@ fn keeps_the_tint_in_force(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measurement, not a gate: the highlight clip share of recorded runs, one `RUN_DIR SOURCE`
+    /// pair per line of the file `RAW_PANEL_CLIP_RUNS` names, from each run's opened and released
+    /// frames' RAW gains. `RAW_PANEL_CLIP_RUNS=list cargo test -p xtask clip_share_of_recorded
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads recorded runs and their RAW sources"]
+    fn clip_share_of_recorded_runs() {
+        let list = std::fs::read_to_string(std::env::var("RAW_PANEL_CLIP_RUNS").unwrap()).unwrap();
+        for line in list.lines().filter(|line| !line.trim().is_empty()) {
+            let (run, source) = line.split_once(' ').unwrap();
+            let state = |index: usize| -> Value {
+                let path = Path::new(run).join(format!("app/state-{index}.json"));
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+            };
+            // The opened frame and the two releases: frames 1, 3 and 7 of the plan.
+            let gains: Vec<[f32; 3]> = [1, 3, 7]
+                .map(|index| development_gains(&state(index)).unwrap())
+                .into();
+            let highlights = Highlights::of(Path::new(source), &gains).unwrap();
+            println!("{run} {}", highlights.record());
+        }
+    }
+
+    /// The draft dimming this check undoes is the app's own: xtask does not link the app, so the
+    /// copy is held to `DIM_OPACITY` in the crop canvas source.
+    #[test]
+    fn draft_dim_opacity_is_the_crop_canvas_constant() {
+        let source = include_str!("../../crates/luxforge-app/src/view/crop_canvas.rs");
+        let value = source
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("const DIM_OPACITY: f32 = "))
+            .and_then(|rest| rest.strip_suffix(';'))
+            .expect("the crop canvas declares DIM_OPACITY");
+        assert_eq!(value.parse::<f64>().unwrap(), DRAFT_DIM_OPACITY);
+    }
+
+    /// The recorded Z6 and Canon 90D failures on a loaded host: the 100% drag settled on its
+    /// half-detail draft, its capture took longer than the 120 ms quiet interval, and the quiet
+    /// refinement began (and on the Z6 presented its exact region) before the wait step was logged.
+    /// The drag's moving frames end at its settle; the quiet check reads the tail with the wait.
+    #[test]
+    fn a_quiet_refinement_before_the_next_step_belongs_to_the_held_draft() {
+        let event = |name: &str, detail: Value| json!({"event": name, "detail": detail});
+        let events = [
+            event("script_step", json!({"step": 4})),
+            event("slider_draft_preview", json!({"generation": 6})),
+            event(
+                "preview_displayed",
+                json!({"generation": 6, "path": "region", "quality": "interactive"}),
+            ),
+            event(
+                "script_step_settled",
+                json!({"step": 4, "waited_for": "slider_draft", "by": "presented_draft"}),
+            ),
+            event("preview_quiet_refine", json!({})),
+            event(
+                "preview_displayed",
+                json!({"generation": 7, "path": "region", "quality": "exact"}),
+            ),
+            event("script_step", json!({"step": 5})),
+            event(
+                "preview_displayed",
+                json!({"generation": 7, "path": "surface", "proxy": false}),
+            ),
+        ];
+        let drag = step_events(&events, 4);
+        let (moving, tail) = split_at_settle(&drag);
+        assert_eq!(
+            presented(&moving)
+                .iter()
+                .map(|event| &event["detail"]["generation"])
+                .collect::<Vec<_>>(),
+            [&json!(6)],
+            "only the frame the drag's capture shows is a moving frame"
+        );
+        assert_eq!(tail[0]["event"], "preview_quiet_refine");
+        assert_eq!(presented(&tail)[0]["detail"]["quality"], "exact");
+        assert_eq!(step_events(&events, 5).len(), 2);
+        // A step that never settled keeps every event as its own.
+        let (all, none) = split_at_settle(&drag[..3]);
+        assert_eq!((all.len(), none.len()), (3, 0));
+    }
+
+    /// A scene qualifies as highlight-clipped Bayer from its clip share alone: at or above the
+    /// minimum, and only with one clip ceiling. The lowest failing source measured, the A7 IV
+    /// (6932), clipped 1.25%; the highest below it, the A6700 (6735), 0.61%.
+    #[test]
+    fn a_highlight_clipped_bayer_scene_is_decided_by_its_clip_share() {
+        let scene = |share| Highlights {
+            gains: [2.0, 1.0, 2.5],
+            share,
+        };
+        assert!(scene(Some(0.012_54)).qualifies());
+        assert!(scene(Some(MIN_HIGHLIGHT_CLIP_SHARE)).qualifies());
+        assert!(!scene(Some(0.006_11)).qualifies());
+        assert!(!scene(Some(0.0)).qualifies());
+        assert!(
+            !scene(None).qualifies(),
+            "X-Trans or a corrected DNG never qualifies"
+        );
+        let record = scene(Some(0.04)).record();
+        assert_eq!(record["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+        assert_eq!(record["uniform_clip_ceiling"], true);
+        assert!(scene(None).record()["exception"].is_null());
+    }
+
+    /// A qualifying scene's missed limits are recorded with the exception, its share and the limit
+    /// it failed; a non-qualifying scene fails exactly as the gate does; figures within the limits
+    /// carry no exception either way; a missing held capture is never excused.
+    #[test]
+    fn a_highlight_clipped_scene_records_its_missed_accuracy_limits_and_others_fail() {
+        let clipped = Highlights {
+            gains: [2.4, 1.0, 2.6],
+            share: Some(0.0407),
+        };
+        let unclipped = Highlights {
+            gains: [2.0, 1.0, 1.8],
+            share: Some(0.0),
+        };
+        // The OM-1's Fit drag and the S5II's held 100% drag, as measured on 2026-09-30.
+        let om1 = |highlights| {
+            white_balance_accuracy_verdict(true, 1.133, 0.0618, None, 18.335, highlights)
+        };
+        let s5ii = |highlights| {
+            white_balance_accuracy_verdict(
+                false,
+                12.0,
+                0.5134,
+                Some((11.142, 0.4758)),
+                23.42,
+                highlights,
+            )
+        };
+        for verdict in [om1(&clipped).unwrap(), s5ii(&clipped).unwrap()] {
+            assert_eq!(verdict["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+            assert_eq!(verdict["held"], false);
+            assert_eq!(verdict["clipped_share"], 0.0407);
+            assert!(
+                verdict["failed_limit"]
+                    .as_str()
+                    .unwrap()
+                    .contains("the limit is")
+            );
+        }
+        assert_eq!(om1(&clipped).unwrap()["checked"], "moving");
+        assert_eq!(s5ii(&clipped).unwrap()["checked"], "held_full_detail");
+        assert!(
+            om1(&unclipped)
+                .unwrap_err()
+                .to_string()
+                .contains("the limit is 1 code")
+        );
+        assert!(
+            s5ii(&unclipped)
+                .unwrap_err()
+                .to_string()
+                .contains("held full-detail")
+        );
+        let within = white_balance_accuracy_verdict(true, 0.5, 0.05, None, 10.0, &clipped).unwrap();
+        assert_eq!(within["held"], true);
+        assert!(within["exception"].is_null());
+        assert!(white_balance_accuracy_verdict(false, 0.5, 0.05, None, 10.0, &clipped).is_err());
+    }
 
     #[test]
     fn hundred_percent_accuracy_uses_held_full_detail_after_refinement() {
@@ -1650,4 +2132,197 @@ mod tests {
 
     // The gap stays inside the window iced gives a double-click's two presses.
     const _: () = assert!(GAP_MS <= 250);
+
+    const STAGE: [u32; 2] = [1200, 800];
+    const FIT: [u32; 4] = [20, 20, 980, 680];
+    const BACKGROUND: [u8; 3] = crate::scenario::pixels::CANVAS;
+
+    fn stage(angle: f64) -> luxforge_core::CropStage {
+        luxforge_core::CropStage {
+            width: STAGE[0],
+            height: STAGE[1],
+            angle,
+        }
+    }
+
+    /// The unstraightened draft on the whole stage, and a 7° draft with an inner crop rectangle,
+    /// so both opacities are drawn.
+    fn views() -> (DraftView, DraftView) {
+        let turned = stage(7.0);
+        let (width, height) = turned.bounding_box();
+        (
+            DraftView::new(stage(0.0), FIT, [0.0, 0.0, 1200.0, 800.0]),
+            DraftView::new(turned, FIT, [150.0, 150.0, width - 300.0, height - 300.0]),
+        )
+    }
+
+    /// A chart on a ground exactly the canvas's colour at the right, and dark specks within a code
+    /// of it scattered over a lit gradient elsewhere: canvas-coloured scene content, lots of it.
+    fn dark_scene(u: f64, v: f64) -> [u8; 3] {
+        let [width, height] = STAGE.map(f64::from);
+        if u > 0.55 * width && v > 0.35 * height {
+            let (column, row) = ((u / 60.0) as u32, (v / 60.0) as u32);
+            return if (column + row) % 3 == 0 {
+                [200, 60, 90]
+            } else {
+                BACKGROUND
+            };
+        }
+        let (column, row) = ((u / 8.0) as u64, (v / 8.0) as u64);
+        if (column * 7919 + row * 104_729) % 29 == 0 {
+            return [26, 25, 27];
+        }
+        [
+            70 + (130.0 * u / width) as u8,
+            90 + (90.0 * v / height) as u8,
+            150,
+        ]
+    }
+
+    /// A draft drawn as the photo surface draws it: the stage, turned, at full opacity inside the
+    /// crop rectangle and at the dim opacity over the canvas outside it, and the canvas elsewhere.
+    fn render(view: &DraftView, scene: impl Fn(f64, f64) -> [u8; 3]) -> image::RgbImage {
+        image::RgbImage::from_fn(1000, 700, |x, y| {
+            let (sx, sy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (u, v) = view.stage.to_input(
+                (sx - view.origin.0) / view.zoom,
+                (sy - view.origin.1) / view.zoom,
+            );
+            if !(0.0..f64::from(STAGE[0])).contains(&u) || !(0.0..f64::from(STAGE[1])).contains(&v)
+            {
+                return image::Rgb(BACKGROUND);
+            }
+            let [left, top, right, bottom] = view.bright;
+            let opacity = if (left..right).contains(&sx) && (top..bottom).contains(&sy) {
+                1.0
+            } else {
+                DRAFT_DIM_OPACITY
+            };
+            let pixel = scene(u, v);
+            image::Rgb(std::array::from_fn(|channel| {
+                let (drawn, under) = (f64::from(pixel[channel]), f64::from(BACKGROUND[channel]));
+                (under + opacity * (drawn - under)).round() as u8
+            }))
+        })
+    }
+
+    fn scan(straightened: &image::RgbImage, reference: &image::RgbImage) -> Wholeness {
+        let (unturned, turned) = views();
+        draft_gaps(
+            (straightened, &turned),
+            (reference, &unturned),
+            BACKGROUND,
+            (0.0, 700.0),
+            STAGE,
+        )
+    }
+
+    /// Paint the canvas over a region of a draft, where the picture does not cover it.
+    fn expose(image: &mut image::RgbImage, inside: impl Fn(f64, f64) -> bool) {
+        for (x, y, pixel) in image.enumerate_pixels_mut() {
+            if inside(f64::from(x), f64::from(y)) {
+                *pixel = image::Rgb(BACKGROUND);
+            }
+        }
+    }
+
+    /// Dark content the canvas's colour, more of it than the 1% of the grid a canvas-colour count
+    /// allowed, is never taken for a gap: the unstraightened draft shows the same dark scene there.
+    #[test]
+    fn a_straightened_draft_with_canvas_coloured_content_is_whole() {
+        let (unturned, turned) = views();
+        let found = scan(&render(&turned, dark_scene), &render(&unturned, dark_scene));
+        assert!(
+            f64::from(found.canvas_coloured) > 0.1 * f64::from(found.sampled),
+            "{found:?}"
+        );
+        assert_eq!(found.gaps, 0, "{found:?}");
+        whole(&found).unwrap();
+    }
+
+    /// A wedge of canvas between two fragments, and a hole of a few grid steps, each fail.
+    #[test]
+    fn a_straightened_draft_with_a_canvas_wedge_or_hole_is_not_whole() {
+        let (unturned, turned) = views();
+        let reference = render(&unturned, dark_scene);
+        let straightened = render(&turned, dark_scene);
+
+        let mut wedge = straightened.clone();
+        // From a point at the top of the Fit area to 60 px wide at its bottom.
+        expose(&mut wedge, |x, y| {
+            (x - 500.0).abs() * 660.0 <= 30.0 * (y - 20.0)
+        });
+        let found = scan(&wedge, &reference);
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("not drawn as one picture"), "{failure}");
+
+        let mut hole = straightened;
+        // 64 px square over the lit gradient, a quarter of the way into the stage.
+        let (x, y) = turned.screen(300.0, 200.0);
+        expose(&mut hole, |px, py| {
+            (px - x).abs() <= 32.0 && (py - y).abs() <= 32.0
+        });
+        let found = scan(&hole, &reference);
+        assert!(found.gaps >= 25, "{found:?}");
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("not drawn as one picture"), "{failure}");
+    }
+
+    /// A scene all the canvas's colour leaves nothing to judge, which fails rather than passing.
+    #[test]
+    fn a_straightened_draft_too_dark_to_judge_fails() {
+        let (unturned, turned) = views();
+        let dark = |_: f64, _: f64| BACKGROUND;
+        let found = scan(&render(&turned, dark), &render(&unturned, dark));
+        assert_eq!(found.judged, 0);
+        let failure = whole(&found).unwrap_err().to_string();
+        assert!(failure.contains("too few to judge"), "{failure}");
+    }
+
+    /// The recorded runs under `STRAIGHTENED_RECORDED` (each `DIR/raw-panel*`, a `verify`
+    /// component's or a `smoke --output` directory), their straightened draft judged against their
+    /// unstraightened one and printed, whatever an earlier check of the run found; any failure is
+    /// listed.
+    #[test]
+    #[ignore = "needs recorded raw-panel runs"]
+    fn straightened_drafts_recorded() {
+        let root = PathBuf::from(std::env::var("STRAIGHTENED_RECORDED").expect("a directory"));
+        let plan = plan(&[]);
+        let frame = |app: &Path, step: &str| -> Frame {
+            let number = plan.index(step).expect("a planned step") + 1;
+            let record = std::fs::read_to_string(app.join(format!("state-{number}.json")))
+                .expect("a frame record");
+            Frame::unchecked(
+                serde_json::from_str(&record).expect("a frame record"),
+                &app.join(format!("frame-{number}.png")),
+            )
+        };
+        let mut runs = std::fs::read_dir(&root)
+            .expect("a directory")
+            .map(|entry| entry.unwrap().path())
+            .filter(|run| {
+                run.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(SCENARIO)
+            })
+            // A `verify` component's run is under `run/`; a `smoke --output` directory is the run.
+            .flat_map(|run| [run.join("run/app"), run.join("app")])
+            .filter(|app| app.join("state-1.json").is_file())
+            .collect::<Vec<_>>();
+        runs.sort();
+        assert!(!runs.is_empty(), "no run under {}", root.display());
+        let mut failures = Vec::new();
+        for app in runs {
+            let started = frame(&app, names::CROP_STARTED);
+            let source: [u32; 2] =
+                serde_json::from_value(started["state"]["crop"]["input_stage"].clone()).unwrap();
+            let verdict = draft_is_whole(&frame(&app, names::CROP_STRAIGHTENED), &started, source);
+            println!("{}: {verdict:?}", app.display());
+            if let Err(error) = verdict {
+                failures.push(format!("{}: {error}", app.display()));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }

@@ -83,6 +83,7 @@ mod preview_failure_tests;
 mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
+mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
@@ -107,6 +108,7 @@ pub(crate) mod thumbnails;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
+mod view_zoom;
 pub(crate) mod waker;
 
 pub(crate) use lifecycle::{Boot, run};
@@ -151,6 +153,9 @@ pub(crate) struct Activity {
     /// frame's own phase, for the status bar. Set by every presented frame, including a retained
     /// one a zoom hands back, which brings the time recorded with it.
     pub(crate) render: Option<state::status::RenderTime>,
+    /// The bar over the photograph while a long render's exact phase runs, kept from one
+    /// derivation to the next so it stays until that phase ends ([`state::canvas::render_bar`]).
+    pub(crate) render_bar: Option<state::canvas::RenderBar>,
 }
 
 impl Activity {
@@ -168,6 +173,7 @@ impl Activity {
             backend: None,
             request_started: Instant::now(),
             render: None,
+            render_bar: None,
         }
     }
 }
@@ -260,6 +266,8 @@ pub(crate) struct Editor {
     pub(crate) presentation: preview::Presentation,
     /// The one desired view admitted through the shared gate, and the quiet policy that settles it.
     pub(crate) view_plan: preview::ViewPlan,
+    /// The pending backslash tap or temporary hold; its deadline exists only while pending.
+    pub(crate) compare_key: keymap::CompareKey,
     /// The clipping overlays' worker and the request on screen.
     pub(crate) overlays: overlay::Overlays,
     /// This desktop's own view state: window, zoom and pan, menu, gallery page and file dialog.
@@ -408,8 +416,9 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 3] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 13] = [
     keymap::subscription,
+    view_state::subscription,
     mask_panel::subscription,
     preview::subscription,
     sync::subscription,
@@ -456,6 +465,7 @@ impl Editor {
             document: Default::default(),
             presentation: Default::default(),
             view_plan: Default::default(),
+            compare_key: Default::default(),
             overlays: Default::default(),
             view_state: state::ViewState::new(window),
             hover: Default::default(),
@@ -516,6 +526,7 @@ impl Editor {
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
+        let trackpad = view_state::install_trackpad();
         let backend = iced::system::information()
             .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
         // Tool controls are discovered once, through the same API every other client uses, and the
@@ -537,7 +548,7 @@ impl Editor {
         editor.rederive();
         (
             editor,
-            Task::batch([scale, backend, modules, presets, first]),
+            Task::batch([scale, trackpad, backend, modules, presets, first]),
         )
     }
 
@@ -607,6 +618,10 @@ impl Editor {
     /// Bring the screen up to date with the state this message left behind: every region is
     /// derived again from it.
     fn rederive(&mut self) {
+        // The worker wakes this client as its exact phase advances, so the reading is current
+        // whenever a message arrives, and nothing polls it.
+        self.activity.render_bar =
+            state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
         let mut workspace = std::mem::take(&mut self.workspace);
         let inputs = state::Inputs {
             document: &self.document,
@@ -656,6 +671,7 @@ impl Editor {
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
+            render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
             analysis_updating: self.presentation.analysis_updating(),
@@ -740,12 +756,29 @@ impl Editor {
     /// What the canvas draws the photograph from: the presentation's frames, the open mask gesture
     /// and the crop draft.
     fn surfaces(&self) -> view::Surfaces<'_> {
-        view::Surfaces {
+        let mut surfaces = view::Surfaces {
+            comparison: self
+                .presentation
+                .compare_after
+                .as_ref()
+                .zip(self.session.preview.comparison.as_ref())
+                .filter(|_| {
+                    !self.document.compare_hold
+                        && self.presentation.presented_entry == self.document.original_entry
+                })
+                .map(|(frame, comparison)| (frame, comparison.position)),
             mask_draft: self.mask_shape(),
-            mask_map: self.held_mask().and_then(|mask| mask.map),
+            mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
+        };
+        if self.presentation.compare_after.is_some() {
+            surfaces.clipping = None;
+            surfaces.coverage = None;
+            surfaces.region_clipping = None;
+            surfaces.region_coverage = None;
         }
+        surfaces
     }
 
     /// Where the canvas draws the photograph in the window now, in logical pixels, through
@@ -821,6 +854,7 @@ impl Editor {
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
             gallery_open: self.gallery_page().is_some(),
+            comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some() || self.held_mask().is_some(),
             crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),

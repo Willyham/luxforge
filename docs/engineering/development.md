@@ -28,15 +28,20 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
-| Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]` |
-| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, Tone curve and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Core timing on a real-sized JPEG; `--lens-only` accepts JPEG or RAW and measures profile queries, commits, matched exact renders, point picks, serial export and cancellation | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]`; for Lens, `--lens-only --source JPEG\|RAW` |
+| Headless Detail full render/export, reopened-owner neutral picks, first/later colour-limited draft ticks, active cancellation cleanup and neutral source sharing; accepts the planned 24 MP or 60 MP JPEG | `cargo run --release --locked --package xtask -- detail-performance --source JPEG --output NEW_DIR [--samples N] [--case all\|render\|export\|points\|cancel\|sharing]` |
+| Detail value-mask input grids through the production coverage evaluator: dense overlay 2880×1800 and sparse thumbnail 28×19, first build and mask-amount-only reuse | `cargo run --release --locked --package xtask -- detail-grid-performance --source JPEG --output NEW_DIR [--samples N]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--curve-layer` commits a nonneutral global Tone curve before a numeric-source workload, independently of the `--control curve` gesture target. `--detail` commits moderate sharpening 60, luminance 40 and colour 40 before the gesture. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. `--control curve` drags the developer proof curve; with `--action set-curve --parameter luminance` (any curve parameter of a non-developer field-patch action) it seeds the Tone curve with `[[0, 0], [0.5, 0.5], [1, 1]]` and drags that mid-tone point instead, in drag or commit mode. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle]` |
+| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, the `mask-range` scenario's own colour-chart patches and the `curve` scenario's grey ramp and colour patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Catalog test data, deterministic from the seed (default 1), from one shoot plan (trips across six bodies, with and without GPS, a same-day jump of over 25 km, bursts, brackets with and without exposure bias and with no metadata step, undated files; bodies that write no time offset keep UTC). `--images N` (93 to 5,000): N real 640 × 427 JPEGs with full EXIF and a 160 × 107 embedded thumbnail, laid out as a camera card (`images/card/DCIM/100NZ8_1/`, `100NZ8_2/`), card dumps (`images/Card dumps/<date>/`), user-named folders (`images/2026-09-14 Lake/`, `images/From Anna/`) and `images/iPhone export/`, with their ground truth in `images/manifest.json`. `--files N` (at least 93): a format-12 `catalog.sqlite` and its index `catalog.index/index.sqlite` of N files with no image files, on a fictional disk (a mounted `NIKON Z 8` card, `/Users/generated/Pictures` and the unconnected `Photos SSD`), some picked and some developed already. `--assets M`: M developed photographs in `catalog.sqlite` (those developed from the files, then older trips over several years), with catalog folders, collections, a smart collection, and removed, offline, missing and changed originals; a million takes under a minute in a release build | `cargo xtask generate-catalog --output NEW_DIR [--files N] [--assets M] [--images N] [--seed N]` |
 | Adding a camera: download selected CC0 samples from the raw.pixls.us index, verify their SHA-256 and read each with the RAW adapter, or see why it refuses them | `cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR [--max-source-mib N]` |
 | Regenerating the bundled gazetteer from a downloaded GeoNames `cities15000.txt`, offline ([dependencies](dependencies.md#bundled-place-names)) | `cargo xtask gazetteer --source FILE --output NEW_FILE` |
 | Adding a camera: a DNG or TIFF's IFDs, geometry and calibration tags and opcode-list layouts, read-only | `cargo xtask inspect-dng --source DNG [--json NEW_FILE]` |
 | Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
+| Rebuild the pinned offline Lensfun resource | `cargo xtask lensfun-import --source UPSTREAM_DIR --output NEW_DIR` |
+| Lens selection/export and marked-edge qualification through the JSON API | `cargo xtask lens-qualification --manifest FILE --edges FILE --output NEW_DIR` |
+| Rendered Lens correction and Perspective workflow | `cargo xtask smoke --scenario lens-perspective --output NEW_DIR` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
@@ -49,6 +54,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Tone curve over a generated grey ramp and the orientation fixture's four colours: section expand, three on-diagonal points through the API (identity bytes), a point drag held and released, a point added and one removed, the Points list opened, a fourth point added and an S-curve typed one coordinate per Enter, the module reset from the band, and a radial mask with the curve dragged through it (scope chip); against the neutral frame, no new decrease along the ramp rows, channel spread within one code, each unclipped patch's Oklab hue kept within 1°, the S-curve lowering the ramp's lower half and raising its upper half, and an identity curve drawing the neutral pixels exactly | `cargo xtask smoke --scenario curve --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered 100% viewport with two masks and a rotated crop: draft, pan, refinement, release, settled reuse, history and overlay identity; GPU draw counters must record no blank or stale photo | `cargo xtask smoke --scenario viewport-region --output NEW_DIR` |
@@ -57,7 +63,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered Presets: section expand, an XMP and a Luxforge preset imported, each applied from its row, undo, the create form filled and submitted, a native preset applied to the Original, `preset.list` through the `api` step and a delete through the row menu | `cargo xtask smoke --scenario presets --output NEW_DIR` |
 | Rendered export over the EXIF orientation 6 fixture, brightened and cropped to 16:9: the title bar's Export menu open, the displayed entry exported with metadata stripped and again keeping it into the run's evidence directory (only the save dialog is bypassed), each file decoded independently for its dimensions against the captured output stage, its byte length, ICC profile, APP1 segments and EXIF orientation, and a Keep metadata export to the stripped file's name refused with the status bar's reason and the file unchanged | `cargo xtask smoke --scenario export --output NEW_DIR` |
 | Rendered Performance section: open and sampling from the launch, a filled window, a straighten and a commit of all three Presence fields whose render is listed as long work and then as finished, collapsed and asleep, then reopened on a fresh window, over the generated 60 MP JPEG, with the editor's memory read by the runner from outside the process; `--source RAW` runs the same over a RAW photograph, outside `rendered` | `cargo xtask smoke --scenario performance --output NEW_DIR [--source RAW]` |
-| Rendered Basic section over a supplied RAW file, in place of a RAW section, which no frame lists: the White balance group's four controls in the JPEG's order, each the RAW development's (Temperature in K and Tint over `set-raw`, the Neutral picker entering the sensor pick, As shot sending `set-raw {white-balance: as-shot}`); a Temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit and carries its own report; at Fit its moving approximate frame is within 10% of the drag's own change and within one code on average, while at 100% the 10% gate compares the held approximate draft after full-detail refinement under the shared 120 ms quiet policy and before release; moving 100% separately verifies viewport identity, approximate label, visible response and refinement, and records softness without a numeric threshold, each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Tint field throughout; then a double-click on Temperature, Tint and Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Temperature and Tint back to As shot (`set-raw {white-balance: as-shot}`, the entry labelled Reset White balance, both fields showing the core's as-shot equivalent, checked back through the forward map), Exposure back to 0 EV; Basic's dot, absent on the untouched photograph, present after the committed custom temperature and absent again at As shot and 0 EV; `W` entering the RAW development's sensor pick with Basic's Neutral picker selected, and Escape leaving it; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (under 1% of up to 4800 samples of its interior show the canvas), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
+| Rendered Basic section over a supplied RAW file, in place of a RAW section, which no frame lists: the White balance group's four controls in the JPEG's order, each the RAW development's (Temperature in K and Tint over `set-raw`, the Neutral picker entering the sensor pick, As shot sending `set-raw {white-balance: as-shot}`); a Temperature drag left open and then released, at Fit and at 100%, whose drafted frame differs from the one before, is labelled approximate and adopts no histogram, and whose release's exact frame is the first drawn after the commit and carries its own report; at Fit its moving approximate frame is within 10% of the drag's own change and within one code on average, each averaged over the photograph alone, while at 100% the 10% gate compares the held approximate draft after full-detail refinement under the shared 120 ms quiet policy and before release (the quiet interval runs from the drag's last input, so the refinement can begin while the drag's frame is still being written: the moving checks read the drag's events up to its settle, and the held checks read the rest with the wait's); moving 100% separately verifies viewport identity, approximate label, visible response and refinement, and records softness without a numeric threshold; a highlight-clipped Bayer scene (at least 1% of its Bayer sites at 0.99 of sensor white or above under the drags' gains, with no DNG correction after the demosaic) records a missed white-balance accuracy limit with the exception, its clip share and the limit instead of failing, while every other check stays a gate; each drag keeping the tint in force (the first, from As shot, the core's as-shot tint) in the committed payload and in the Tint field throughout; then a double-click on Temperature, Tint and Exposure: the first press's committed jump and the reset that follows it, each checked as two entries with the reset sent against the jump's revision and never refused — Temperature and Tint back to As shot (`set-raw {white-balance: as-shot}`, the entry labelled Reset White balance, both fields showing the core's as-shot equivalent, checked back through the forward map), Exposure back to 0 EV; Basic's dot, absent on the untouched photograph, present after the committed custom temperature and absent again at As shot and 0 EV; `W` entering the RAW development's sensor pick with Basic's Neutral picker selected, and Escape leaving it; then a crop drafted on the RAW's whole input stage, 16:9 and straightened by 7°, whose draft is one picture (an 80 × 60 grid of stage points is compared with the unstraightened draft at the same points; of the at least 1,200 whose scene is 8 codes or more from the canvas colour there, after the draft's dimming outside the crop rectangle, under 0.5% may show the canvas, so dark scene content the canvas's colour is never taken for a gap; `STRAIGHTENED_RECORDED=DIR cargo test -p xtask straightened_drafts_recorded -- --ignored` judges the straightened draft of each recorded `DIR/raw-panel*` run this way, whatever an earlier check found), applied at Fit, read at 100% through two pointer readouts and replaced by a −12° 3:2 `edit.crop-fit` at 100%: no step logs a failure, every committed frame shows the current entry at the output its payload declares, placed and centred at Fit within 4 px, and each readout's codes are the canvas's own at that stage pixel within one code; not in `rendered`, because no RAW photograph is checked in | `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR` |
 | Rendered module capabilities: settings, a profile, its key, a download grant and install through `api` steps, the photo-data consent denied then allowed, a task with progress, Apply and a refused task through the desktop, against a loopback proof endpoint | `cargo xtask smoke --scenario capabilities --output NEW_DIR` |
 | Rendered Masks panel over the photograph the design boards use: Sky, Face (a radial, a subtracting brush of two strokes and an intersecting luminance range) and Foreground built through the panel and renamed through `mask.rename` and `mask.rename-component`, Foreground's overlay hidden with its eye, Face's amount, Exposure and Clarity through it; then the Brush section armed and put down, a held stroke's draft bar, the New mask menu and Escape, Radial 1's fields, the overlay in each mode and both tints, a hovered row, and Radial 1 reopened with its grip swung to −12°, the mask-mode board's own state. Every frame's list, open mask, selected component, overlay and mode are checked against the plan, and the draft bar, scope chips, dot and bound layers by state | `cargo xtask smoke --scenario mask-panel --output NEW_DIR` |
 | Native masking interaction regressions: unplaced creation, selected/armed targets, live and committed brush flow/feather, deliberate hiding and analytic live-gradient coverage under rotated crop at Fit/100% | `cargo xtask smoke --scenario mask-interactions --output NEW_DIR` |
@@ -156,7 +162,7 @@ timing run elsewhere on the host. Run each check where its answer can change wha
 | Milestone claim | `full`, with `--manifest`. |
 
 Timing runs wait until feature work is complete: the `timing` tier, `editor-performance`,
-`editor-latency`, `measure` and every `--samples 30` distribution. A figure taken
+`editor-latency`, `detail-performance`, `detail-grid-performance`, `measure` and every `--samples 30` distribution. A figure taken
 mid-implementation measures code that is about to change, on a host loaded by builds and tests. The
 exception is work whose subject is performance (a budget, a regression, an optimization), where
 measurement is the feedback: iterate with the one targeted command at its default sample count, and
@@ -302,14 +308,14 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and all 41 smoke scenarios a checkout can open, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `loupe`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, `select`, `resolve-missing`, `develop-picks`, `filmstrip` (its RAW steps pending without `--source`), `loupe`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
+| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run and a `smoke --scenario raw-detail` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
 runs in `full` whether or not a manifest is given. Without a manifest, `full` lists `raw-editor` and
 `raw-authentic` as `skipped` with the reason `no --manifest`, and adds no per-source `raw-editor`,
-`raw-panel` or RAW `performance` components at all, since there is no source to run them over.
+`raw-panel`, `raw-detail` or RAW `performance` components at all, since there is no source to run them over.
 `verify` reads the manifest through the one RAW manifest reader, so a manifest the `raw-editor`
 scenario would refuse is refused before anything runs. `raw-authentic` runs the
 `#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and the `raw::` module of
@@ -326,7 +332,7 @@ process of the release `xtask` executable with its console output in `<out>/<com
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
-generated fixture — 24 MP, 60 MP, hue-wheel, presence or range — is missing. A component that has
+generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component that has
 stopped making progress is killed after twenty minutes and recorded as `timed_out`. `quick` builds
 nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
 `xtask` executable running `verify`, and its summary names no editor binary.
@@ -401,7 +407,7 @@ smoke run per manifest source and one RAW `performance` smoke run over the first
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
-Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only.
+Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only. The Performance scenario has a 75-second process ceiling around the editor's 60-second script deadline, allowing its full 60 MP render and fixed sampler windows to report a result. Its checks validate sampled state and completion; latency measurements use the timing tier's quiet-host conditions. External memory comparisons use observation intervals wholly before and after each app sample, excluding calls that overlap it; the complete intervals must stay within 1,000 ms, with the existing 8 MiB memory slack.
 
 ## Running the application
 
@@ -422,13 +428,13 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse eighteen pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 124 named widget states and the return to the unchanged editor via
+The `gallery` smoke covers all 126 named widget states and the return to the unchanged editor via
 the same view message as the button; the page is desktop view state, so the session's workspace
 stays unchanged throughout.
 
 ## Rendered evidence
 
-Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Every scenario is one row of the runner's table, which `cargo xtask smoke --list` prints with its launches and frame counts, what it opens and its window; generate the large fixtures first. Each launch has a plan: every frame it captures, in order, with the script step that produces it and what that frame must show. The script the launch runs and the number of frames it must capture are derived from the plan, and every frame of every scenario is checked against it before the scenario's own checks: its run identity, backend, renderer-readback provenance and state file; for a scripted frame, the step the editor recorded equal to the scripted one as its parser reads it back, listed in the run's script and log and `sent` unless the plan expects it refused; an input error exactly when the plan expects a refusal; then the step's own expectations, such as the commit it makes, the history label, a layer's payload or identity, a field's text, the draft, the sections expanded, what the Masks panel shows (the masks, the open mask, its components' names, modes and kinds, the selected row, the overlay control, its menu and the Brush section), the notices, the status line, workspace fields such as the canvas mode and the overlays, and the zoom. Each launch's `plan-checks.json` records what every step was checked against, and a failure names the step. What a plan cannot say, mostly what the pixels show, a scenario checks itself, and records through one recorder, `scenario::Checks`: each pixel claim is a comparison of two readings under a stated tolerance, recorded with both readings whether it holds or not, beside notes of what a frame shows, all written once as `<scenario>-checks.json`. Ignored `xtask` tests check a change to the plans or to how scripts are written: `SCRIPT_DUMP=DIR cargo test -p xtask dump_script -- --ignored` writes every launch's script and argument list as a launch writes them, every script and argument list `editor-latency` can write (its viewport mode, `--zoom` and `--moving-pan` included), and the argument list of every `measure` and `hardening` launch, to compare against the same dump from before the change (a row whose plans read more than its sources, such as `raw-editor`'s neutral point, is dumped over the placeholder its table plan names), and `SMOKE_RECORDED=DIR cargo test -p xtask mutations -- --ignored` (`DIR` absolute, since the test runs in `xtask/`; it fails when no run is found) replays each `DIR/smoke-<scenario>/run`, a supplied source given again as the one its first launch opened, with its plan's last step removed and with its first expected label changed, and fails unless each replay fails on the frame count and on the named step. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`; a scenario of several launches writes each one's evidence to its own directory and log instead, and `result.json` lists every editor process a run started under `launches`, with its command and exit code, which is what `verify` counts. An editor's diagnostics log holds at most 4,096 events: past that it counts what it drops, writes one `diagnostics_truncated` record naming the count when it finishes, and an evidence run whose log was truncated fails exactly as one whose log could not be written does. `smoke --verify-only RUN_DIR --output NEW_DIR` copies a recorded run, less the checks files its checks wrote, and runs the scenario's own code over the copy with each launch taken as the recorded one: the checks files it writes are that run's checks again, and `replay.json` is the verdict. The scenario comes from the run's `result.json` unless `--scenario` names it, and a `--source` run is given its source again. The `capabilities` scenario's endpoint record and secret scan are what the live run's own process saw, so a replay carries them from the recorded checks. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, `canvas_rect`, the canvas region between the panels and the bars as `[left, top, right, bottom]` physical pixels, which at a percentage zoom is exactly the scrollable the photograph pans in, `fit_rect`, the area Fit lays the photograph out in, and `photo_rect`, the rectangle the canvas draws the photograph into, right and bottom exclusive and snapped as the photo surface snaps it, carried past the capture's edges by a percentage zoom and `null` when no photograph is drawn. Scenarios locate the photograph by `photo_rect` alone: `Frame::photo` requires it inside the capture and holding a drawn picture, `Frame::visible_photo` clips it to the canvas, and where a claim is about placement `Frame::photo_edges` ties it to the capture, the pixel just inside the middle of each edge drawn and the one just outside the canvas surface; the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A script step's `script_step` record is followed, once what the step waits for has happened, by one `script_step_settled` record naming the wait (`waited_for`, such as `preview`, `slider_draft` or `session`) and the outcome that ended it (`by`, such as `presented_photo`, `presented_draft`, `draft_refused` or `session_answered`); a refused step records `script_step_failed`. The desktop's seams report those outcomes as typed values (`app/outcome.rs`) that only the evidence driver reads, and the desktop builds an event only when it has a log to write it to: an evidence directory, `--data-root`, or stderr when either was asked for and the log could not be opened. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have 60 seconds for repeated RAW redevelopment. Smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline. These are harness hang bounds, not interactive latency targets.
+Smoke runs the built or packaged editor through a deterministic evidence sequence (repeated `--open`, evidence directory, fixed window size, bounded deadlines); there is no separate viewer, so the captured frame is the editor window with its sidebar. Every scenario is one row of the runner's table, which `cargo xtask smoke --list` prints with its launches and frame counts, what it opens and its window; generate the large fixtures first. Each launch has a plan: every frame it captures, in order, with the script step that produces it and what that frame must show. The script the launch runs and the number of frames it must capture are derived from the plan, and every frame of every scenario is checked against it before the scenario's own checks: its run identity, backend, renderer-readback provenance and state file; for a scripted frame, the step the editor recorded equal to the scripted one as its parser reads it back, listed in the run's script and log and `sent` unless the plan expects it refused; an input error exactly when the plan expects a refusal; then the step's own expectations, such as the commit it makes, the history label, a layer's payload or identity, a field's text, the draft, the sections expanded, what the Masks panel shows (the masks, the open mask, its components' names, modes and kinds, the selected row, the overlay control, its menu and the Brush section), the notices, the status line, workspace fields such as the canvas mode and the overlays, and the zoom. Each launch's `plan-checks.json` records what every step was checked against, and a failure names the step. What a plan cannot say, mostly what the pixels show, a scenario checks itself, and records through one recorder, `scenario::Checks`: each pixel claim is a comparison of two readings under a stated tolerance, recorded with both readings whether it holds or not, beside notes of what a frame shows, all written once as `<scenario>-checks.json`. Ignored `xtask` tests check a change to the plans or to how scripts are written: `SCRIPT_DUMP=DIR cargo test -p xtask dump_script -- --ignored` writes every launch's script and argument list as a launch writes them, every script and argument list `editor-latency` can write (its viewport mode, `--zoom` and `--moving-pan` included), and the argument list of every `measure` and `hardening` launch, to compare against the same dump from before the change (a row whose plans read more than its sources, such as `raw-editor`'s neutral point, is dumped over the placeholder its table plan names), and `SMOKE_RECORDED=DIR cargo test -p xtask mutations -- --ignored` (`DIR` absolute, since the test runs in `xtask/`; it fails when no run is found) replays each `DIR/smoke-<scenario>/run`, a supplied source given again as the one its first launch opened, with its plan's last step removed and with its first expected label changed, and fails unless each replay fails on the frame count and on the named step. Each run writes `result.json`, `app/events.jsonl`, `app/state.json`, `app/frame-*.png` (window-renderer readbacks, not OS screenshots), `subprocess.log` and `reproduce.md`; a scenario of several launches writes each one's evidence to its own directory and log instead, and `result.json` lists every editor process a run started under `launches`, with its command and exit code, which is what `verify` counts. An editor's diagnostics log holds at most 4,096 events: past that it counts what it drops, writes one `diagnostics_truncated` record naming the count when it finishes, and an evidence run whose log was truncated fails exactly as one whose log could not be written does. `smoke --verify-only RUN_DIR --output NEW_DIR` copies a recorded run, less the checks files its checks wrote, and runs the scenario's own code over the copy with each launch taken as the recorded one: the checks files it writes are that run's checks again, and `replay.json` is the verdict. The scenario comes from the run's `result.json` unless `--scenario` names it, and a `--source` run is given its source again. The `capabilities` scenario's endpoint record and secret scan are what the live run's own process saw, so a replay carries them from the recorded checks. Each frame records `surface_columns`, the physical x range of the photo surface derived from the editor's layout constants, `canvas_rect`, the canvas region between the panels and the bars as `[left, top, right, bottom]` physical pixels, which at a percentage zoom is exactly the scrollable the photograph pans in, `fit_rect`, the area Fit lays the photograph out in, and `photo_rect`, the rectangle the canvas draws the photograph into, right and bottom exclusive and snapped as the photo surface snaps it, carried past the capture's edges by a percentage zoom and `null` when no photograph is drawn. Scenarios locate the photograph by `photo_rect` alone: `Frame::photo` requires it inside the capture and holding a drawn picture, `Frame::visible_photo` clips it to the canvas, and where a claim is about placement `Frame::photo_edges` ties it to the capture, the pixel just inside the middle of each edge drawn and the one just outside the canvas surface; the runner verifies fixture colors, Fit geometry and centering within that range, generation and state, backend, exit status and unchanged source hashes before writing `passed`; blank, stale or missing frames fail. The `render_ready` event marks the upload of the open request's preview raster, which is when a frame becomes capturable. A script step's `script_step` record is followed, once what the step waits for has happened, by one `script_step_settled` record naming the wait (`waited_for`, such as `preview`, `slider_draft` or `session`) and the outcome that ended it (`by`, such as `presented_photo`, `presented_draft`, `draft_refused` or `session_answered`); a refused step records `script_step_failed`. The desktop's seams report those outcomes as typed values (`app/outcome.rs`) that only the evidence driver reads, and the desktop builds an event only when it has a log to write it to: an evidence directory, `--data-root`, or stderr when either was asked for and the log could not be opened. Single-open evidence has a 25-second application deadline; multi-step evidence scripts have a 300-second application deadline for repeated full-photo and RAW evaluations. Ordinary smoke retains its 35-second process deadline; the RAW editor journey has a 70-second process deadline and the Detail journeys have a 310-second process deadline. Detail functional quiet waits are 10 seconds. These are harness hang bounds, not interactive latency targets.
 
 At Fit, and at any zoom that draws the stage smaller than itself, the frame a scenario captures is
 the **display proxy**: the whole recipe rendered against a source downscaled once to the photo area,
@@ -488,20 +494,21 @@ own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 ### What editor-acceptance proves
 
 `editor-acceptance` keeps only what `cargo test` cannot prove at the same layer: a chapter or step
-exists only if no `cargo test` proves it at that layer. Four things remain, each driven through the
+exists only if no `cargo test` proves it at that layer. Five things remain, each driven through the
 JSON method table with `OwnerHandle::call` as an independent client, against its own catalog inside
-the run's output directory: the [field-patch conformance suite](#the-field-patch-conformance-chapter)
-in release, [Basic's numerics on the photo fixture against the independent
-reference](#the-basic-and-histogram-acceptance-chapter), the [placement of Presence, the mixer and
-the vignette](#the-field-patch-conformance-chapter), and a [masked catalog reopened through a fresh
-owner](#the-masking-acceptance-chapter). Everything the core's own tests prove stays there: history
-order, the read-only preview, undo, redo and restore, the orientation layer, the crop and reopen are
-`editor::history`, `editor::plan`, `modules::transform` and `modules::crop`'s tests, the module and
-method discovery is the [descriptor snapshot](#the-built-in-descriptor-snapshot) and the method
-table's, and the mask commands, their refusals, a disabled maskable module and a missing or changed
-original are the `mask` test binary's, the command family's own tests and the conformance suite.
-A new step here needs a property that only a release build, an independent oracle, a second process
-lifetime or a fresh owner can show.
+the run's output directory: the [field-patch conformance
+suite](#the-field-patch-conformance-chapter) in release, [Basic's numerics on the photo fixture
+against the independent reference](#the-basic-and-histogram-acceptance-chapter), the [placement of
+Presence, the mixer and the vignette](#the-field-patch-conformance-chapter), the [Tone curve's
+placement, masked order and sample query](#the-field-patch-conformance-chapter) (`tone_curve`), and
+a [masked catalog reopened through a fresh owner](#the-masking-acceptance-chapter). Everything the
+core's own tests prove stays there: history order, the read-only preview, undo, redo and restore,
+the orientation layer, the crop and reopen are `editor::history`, `editor::plan`,
+`modules::transform` and `modules::crop`'s tests, the module and method discovery is the [descriptor
+snapshot](#the-built-in-descriptor-snapshot) and the method table's, and the mask commands, their
+refusals, a disabled maskable module and a missing or changed original are the `mask` test binary's,
+the command family's own tests and the conformance suite. A new step here needs a property that only
+a release build, an independent oracle, a second process lifetime or a fresh owner can show.
 
 ### The Basic and histogram acceptance chapter
 
@@ -535,15 +542,15 @@ and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
 
-Basic, Presence, the colour mixer, the vignette and the developer controls proof are one
-declarative field-patch module each, and the host behaviour they share is proved once, for every
-module the built-in registry and the controls proof hold in that shape, by one suite in
-`crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from their
-descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
+Basic, the Tone curve (`luxforge.curve`), Presence, the colour mixer, the vignette and the developer
+controls proof are one declarative field-patch module each, and the host behaviour they share is
+proved once, for every module the built-in registry and the controls proof hold in that shape, by
+one suite in `crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from
+their descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
 number, integer, boolean, enum, colour or curve), and the parameterless action the module reset
 names — and derives every payload it sends from the declared field table, so a new field-patch
 module is checked the day it is registered. It refuses to run when it no longer recognises one of
-the four built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
+the five built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
 proof's layer changes no pixel, so it is held to the in-process checks below and to compiling to
 nothing and sharing the source allocation whatever it holds, not to the pixel consequences and the
 journey through the method table. Every `patch: true` action of every registered module, `set-raw`
@@ -552,8 +559,8 @@ default alone is exactly that field, and a value its declaration refuses is refu
 same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev
 profile, a [slow test](#how-check-runs-the-tests) the quick tier leaves out, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
-Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
-a failure names the module, the step and the property that broke.
+Each module runs against its own new catalog under the run's `field-patch-conformance` directory,
+and a failure names the module, the step and the property that broke.
 
 For each module the suite checks, in process: every neutral spelling of the payload (`{}`, every
 field at its default, each field alone at its default and in another spelling of it, zero number
@@ -603,7 +610,17 @@ mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette cha
 (`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in
 `result.json`), driven the same way: Presence after the colour run and before the geometry tail in
 every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
-last and recentred on the stage each crop update produces.
+last and recentred on the stage each crop update produces. The Tone curve's own behaviour is
+`editor-acceptance`'s Tone curve chapter (`xtask/src/curve_acceptance.rs`, under `tone_curve` in
+`result.json`, with its time as `tone_curve_chapter` under `timings_ms`), driven the same way: the
+curve after Basic and before the mixer in every touch order with an identical rendered raster;
+masked curve layers on two masks after the global one in mask-list order and before the mixer, and
+re-sorted with the masks by `mask.reorder {mask, index}`; `query.sample-curve` for the displayed
+entry's stored points equal to `luxforge_reference::curve::curve` at all 257 samples to `1e-12`;
+and a generated 8-bit grey ramp of every code (whole flat JPEG blocks, so each decodes to exactly
+its code) through an S-curve layer within one code of the quantized reference at every code, with
+the number of off-by-one codes recorded. The frozen fixture through render on both paths is the
+core's `modules` test (`curve`).
 
 ### The built-in descriptor snapshot
 
@@ -641,17 +658,25 @@ pixels are the kind-conformance suite's.
 The first owner builds the catalog: all five component kinds created from JSON (a gradient, a
 radial, the two range selections and a brush through `mask.add-stroke`), one mask composing three
 kinds in the three modes, a second stroke on a brush, an amount, an inversion, a geometry patch, a
-rename, a masked Basic layer, a masked Presence layer and a masked mixer layer, and a duplicate that
-copies the bound layer. It then stops. A fresh owner over the same file returns the same revision
+rename, a masked Basic layer, a masked Presence layer, a masked mixer layer and a masked Tone curve
+layer beside the mixer on the radial mask, and two duplicates that copy the bound layers. On the way
+it proves the masked curve's placement: `mask.list` lists it once, before the mixer; it changes the
+pixels the inverted radial covers and not the core it excludes; the radial mask's duplicate holds
+the same layers in the same order, its curve layer placed after its source's; and `mask.reorder`
+moving the copy first re-sorts the masked curve layers in `asset.state` into the new mask order.
+`render.sample` equals the rendered byte at every probe after the curve and after the reorder. It
+then stops. A fresh owner over the same file returns the same revision
 and current entry, the masks, components, payloads and bound layers by identity, and the same
 `render.sample` values at six positions across the frame. Everything lands in `result.json` under
-`masks`, and any mismatch fails the command.
+`masks`, the masked curve's figures under `masks.masked_curve`, and any mismatch fails the command.
 
-One contract shapes how it reads pixels: it uses `render.sample` and never renders a recipe in
-process. A brush component's payload holds its strokes by content address and the resolved strokes are
-never serialized, so a recipe fetched over JSON has addresses and no points and rendering it outside
-the catalog that holds the store is refused by name. That is the retention contract working. The owner
-has the store, so the owner is asked.
+One contract shapes how it reads pixels: it reads them with `render.sample` and never renders a recipe
+fetched over JSON. A brush component's payload holds its strokes by content address and the resolved
+strokes are never serialized, so such a recipe has addresses and no points and rendering it outside
+the catalog that holds the store is refused by name. That is the retention contract working. The
+oracle `render.sample` is compared with is therefore the owner's own bound stack for the current
+entry — its preview evaluation, with every stroke's points bound in from the store — rendered in
+process on the fixture's decoded source with the owner's registry.
 
 ### Authentic RAW evidence
 
@@ -669,6 +694,8 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p lux
 The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.
 
 ### Evidence scripts
+
+`{"pinch":{"delta":0.1823215567939546,"x":0.37,"y":0.42}}` supplies a synthetic native magnification increment through the trackpad handler. `delta` is finite and logarithmic (`ln(1.2)` zooms in by 20%); `x` and `y` are canvas fractions in 0–1. It waits for the resulting view's pixels. The `zoom` scenario checks off-centre pinch in and out on both generated photo sizes, source-point anchoring, unchanged history and source hashes, and on macOS installation of the native event monitor. This proves the input handler and rendered result, not physical trackpad delivery or feel.
 
 `--evidence-script FILE` takes a JSON array of steps. They run in order after the last `--open`
 outcome, each ends in exactly one captured frame numbered after the open frames, and each frame gets
@@ -769,6 +796,14 @@ Each step is an object with exactly one key.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
+- `curve` drives one curve editor gesture, named by `event` beside the control's `action` and
+  `parameter`: `move` drags point `index` through `points` (one pointer move each) and drafts, with
+  `finish` `open`, `release` or `cancel`; `add` (`point`) and `remove` (`index`) commit at once, as
+  the editor's own add and remove do; `channel` (`index`) selects a channel; `points` (`open`)
+  opens or closes the Points list, which sends nothing and captures the next frame; `type`
+  (`index`, `axis` 0 for the input or 1 for the output, `text`) types into that point's field and
+  presses Enter, which commits that one coordinate. A `type` into a closed list, a refused add or
+  remove, and a typed value the kind refuses fail the step with the status bar's text.
 - `reset` runs a declared reset: `{"module": "luxforge.basic"}` is the module's own header reset and
   `{"module": "luxforge.basic", "group": "Tone"}` is that control group's, found by its label.
 - `pick` clicks the photograph at a pixel of the raster on screen: `{"x": 120, "y": 80}`. What the
@@ -933,10 +968,85 @@ frame, so a refused step is visible in the evidence instead of missing from it.
 
 Each scenario's plan and checks are documented in its own module (`xtask/src/*_smoke.rs`, with the table of rows in `xtask/src/smoke.rs`), and `cargo xtask smoke --list` names every scenario with what it proves, the launches and frames it makes, what it opens and its window. Most write the values they measured and their tolerances to a `*-checks.json` file in the run's output. A scenario's script is the steps above, so what a step does is specified here and what a scenario asks of it is in the scenario. The gallery board and the controls scenario's generated panel are different widths; both need visual review alongside their automated checks.
 
-`editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
+`editor-latency --control curve` drags point 1 of a curve with the curve editor visible, in drag or commit mode only. Without `--action` it is the developer controls proof's middle point, in a developer launch with the proof section expanded and the tools panel scrolled to its end; the proof's colour stage is identity, so this measures the control, query, draft, preview and upload path and no image algorithm. `--control curve --action set-curve --parameter luminance` measures the Tone curve instead: the action must be a registered, non-developer field-patch action and the parameter one of its curve parameters, so a number parameter is refused with `--control curve` and a curve parameter without it, each by name. The ordinary launch commits `[[0, 0], [0.5, 0.5], [1, 1]]` through the action first (naming `Mask 1` with `--mask`), so point 1 is a mid-tone point rather than the white point, collapses every section the panel lists above the module, expands the module's and scrolls the panel to its top, and checks that frame for the seeded, sampled curve before timing; every drafted frame then runs the curve's colour unit. Slider remains the default workload. Every workload reports against the same provisional input-to-presented-frame target (16 ms p95, acceptable below 32 ms) and retains all samples.
 
-`editor-latency` is the desktop counterpart to `editor-performance`, which measures `render` on the
-catalog owner's thread and so cannot see scheduling, GPU upload or presentation. It writes its own
+`detail-performance` complements the desktop measurements with the public core renderer and catalog
+API, including the real point and export workers. It requires a release xtask build, accepts only the
+planned 24 MP and 60 MP JPEG workloads, defaults to 30 samples and takes the host-wide timing lock.
+Run each source sequentially on a quiet host after integration code and relevant native functional
+checks are finished. Outstanding photographic gates or an unavailable display density stay
+unqualified; scoped measurements at the tested density can proceed with that limit recorded. No
+timing runs overlap builds, tests or another plan's measurements.
+
+```sh
+cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/24mp.jpg --output NEW_24MP_DIR --samples 30
+cargo run --release --locked --package xtask -- detail-performance --source fixtures/generated/60mp.jpg --output NEW_60MP_DIR --samples 30
+```
+
+`--case render|export|points|cancel|sharing` isolates a workload in a fresh process/output directory;
+`all` is the default. The helper commits luminance 25, colour 25 and sharpening 40 plus Basic
+exposure +0.5 EV. Full render includes compilation, while export measures request-to-ready,
+quality-90 encoding and durable publication with metadata off. Decode/preparation is outside these
+timers. The points case reopens and prepares an owner for every sample, then measures its first and
+second 25-point neutral query. Warm means the second request on that owner; each query still owns
+its own tile cache. It also measures the first colour-limited brush tick through the point worker
+and a later tick using the same draft memo. Cancellation begins during a live spatial reservation,
+measures cancel-to-worker-idle, checks released reservations and stale-frame refusal, and rebuilds
+the prefix on the same queue outside the timer. Sharing checks allocation identity for prepared
+jobs and default/ancillary-only Detail; it is a functional check without a latency distribution.
+
+`result.json` retains every observation, nearest-rank distributions from `luxforge-testbase`,
+executable/source/lockfile hashes, git identity, recipe, run identity and host load. It writes failed
+status explicitly and preserves completed cases. `resources` separates exact colour/spatial budget
+counters from OS process memory. OS high-water marks include earlier cases in the process, so use
+isolated `--case` runs for attribution. Retained RGB16 prefix bytes in cancellation recovery are
+derived from the actual uncropped proxy dimensions and the known six-byte boundary; private cache
+counters, GPU residency and backend staging remain unmeasured. This helper launches no editor and
+does not measure native presentation, RAW residency or photographic quality. The generic `timing`
+tier does not run this Detail matrix automatically.
+
+`detail-grid-performance --source JPEG --output NEW_DIR --samples 30` requires a release build and
+the exact planned 24 MP or 60 MP JPEG dimensions. It measures value-mask input grids through a public
+`Latest` worker and its per-worker input-grid cache. It calls the production
+coverage evaluator for a 2880×1800 dense overlay and a 28×19 sparse thumbnail, pairing a first grid
+build with reuse after changing only `mask.amount`. The report keeps generation, evaluation and
+source identity, grid keys/hashes/cell counts, publicly reported cache bytes and resource budgets.
+These are headless coverage timings; private hit counters, GPU presentation and backend staging
+remain unmeasured. It is a separate command with the same quiet-host timing lock and is not run by
+the generic timing tier.
+
+```sh
+cargo run --release --locked --package xtask -- detail-grid-performance --source fixtures/generated/24mp.jpg --output NEW_GRID_DIR --samples 30
+```
+
+Desktop `editor-latency --detail` commits sharpening 60, luminance 40 and colour 40. Paint commits
+that global layer before selecting its brush mask and verifies it in the captured stack. The
+`--idle` workload reopens the gesture catalog with Detail preserved, settles and samples 30 seconds
+of idle CPU with the worker caches held. Its idle process has no frame captures,
+so its private cache bytes and scratch counters are unavailable. Paint and hover use an unlimited
+brush, which reads no input pixels: their overlay/coverage figures exercise restoration-prefix
+reuse but do not prove value-mask input-grid build/reuse. Use the separate value-mask grid
+workload above for that scope. `--mode viewport --detail --presence` can take Dehaze's whole-frame fallback; a run without
+region events reports `unavailable`, which cannot establish region latency. Commit-to-frame and
+commit-to-histogram rows describe release; latency after the quiet gate needs correlated quiet and
+settled-display events. Preserve all of these gaps in the performance task and evidence record.
+
+`editor-performance --lens-only` accepts JPEG or RAW. It prepares one source before measurement,
+queries the first eligible profile, freezes its terms and compares exact full renders with Lens
+neutral and selected while holding Perspective at +20/-10 and an original-aspect crop at 2.5°.
+Each selection sample resets Lens first, so the timed selection must make a durable change rather
+than return a no-op. Query, selection, render, a centre-point `render.sample`, serial JPEG export
+completion and immediate export cancellation each have their own distribution. Completed files
+are removed outside the timed window; cancellation must reach the cancelled terminal state
+without leaving a destination or staging file. The report records both render identities,
+dimensions, frame hashes, the exact point result, source preservation, scratch high-water and
+process resources. Baseline and corrected renders alternate order over the same warm prepared
+source. This is a comparison within the current build; it excludes decoding, desktop scheduling,
+GPU upload and presentation. Cancellation timing starts at `job.cancel`, after export admission,
+and terminal-job polling has a 2 ms interval.
+
+`editor-latency` is the desktop counterpart to `editor-performance`, which measures exact core
+rendering over cached sources and so cannot see desktop scheduling, GPU upload or presentation. It writes its own
 evidence script, drives the release binary through a background evidence launch, and reads the
 timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
 open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
@@ -962,13 +1072,21 @@ was refused — logged as `slider_draft_unpreviewed`, a RAW draft whose developm
 because a redevelopment is in flight — has no frame of its own, and a drag with one is refused with
 that reason rather than timed. A RAW slider's gesture values start from zero when its range holds
 it and from its declared default otherwise (Custom temperature's 6504 K); `--mode burst` takes
-`--action`/`--parameter` too. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
-carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
-field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
-run commits a Basic layer with all ten fields non-neutral into a catalog that outlives it, then an
-ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
-is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
-every sample, the scratch budget's high-water mark and the correlated state.
+`--action`/`--parameter` too. `--lens` selects the first eligible profile through the Lens control,
+carrying the assume-uncorrected acknowledgement explicitly. `--perspective` commits +20 horizontal
+and -10 vertical before measurement. `--crop DEGREES` commits a straightening 16:9 crop first, so
+the measured stack carries the fused geometry resample as well as the colour pass. These flags
+apply to drag, commit, burst, viewport, paint, hover and crop-start. `--basic` commits a Basic layer
+with every field non-neutral first, so each measured frame runs every one of the module's colour
+units. `--idle`, available in drag and commit modes, reopens the gesture's own committed catalog
+and source in an ordinary launch. After the exact histogram is adopted and one second of settling,
+it measures CPU time and sampled RSS for thirty seconds with the same Detail, Lens, Perspective, crop and
+colour stack. This includes the open Performance section's sampler. The harness then stops the
+process; this is no clean-close check. `latency.json` and `resources.json` keep every sample,
+scratch high-water and correlated state. Native GPU allocation, when the platform provides it,
+and the photo surface's full, region, retiring and crop-stage texture bytes are captured levels
+from the gesture, not idle-process measurements or peaks. Surface bytes exclude backend staging;
+invisible windows provide no compositor or scanout figures. Missing counters remain null.
 
 `--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
 measure: one scripted `slider` step, paced through `interval_ms` at 120 values a second for 3
@@ -998,21 +1116,31 @@ revision, quality, generation and geometry alongside the captured surface GPU co
 still measures adoption rather than scanout; multiple adoptions can occur before one draw.
 
 `--zoom PERCENT` sets the view before the measured gesture. `--mode viewport` requires `--zoom
-100` or `--zoom 200`; it opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
+100` or `--zoom 200`; each journey opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
 moves the slider again, pans and pauses again, then releases and pans after the full report
 settles. The captured states and `preview_displayed` events must name interactive and exact
 regions for each draft revision. The first viewport-only frame keeps the histogram updating;
 release must produce a current full-image histogram. The final settled pan must draw the same
-full texture without another photograph write. `latency.json` records region geometry, quality,
-generation and draft revision, and its rows hold `input_to_first_region_adoption_ms` and the photo
-surface's actual draw and write counters, each a one-sample row.
-`preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
-binary with no region events is reported as `unavailable`, never as a passing viewport run.
+full texture without another photograph write. `--samples` is 1 to 60 sequential journeys, with
+one background editor at a time. Each imports and prepares its source before measured inputs;
+filesystem caches are warm, while prepared buffers belong to that journey. A journey contributes
+two observations each for pan-to-interactive adoption, pan-to-exact adoption and refinement-request
+to exact adoption. The first two start at the pan's scripted input; the refinement row starts at
+the quiet-settlement request and excludes the preceding quiet delay. Every pair must name its
+own requested generations and the same draft revision, entry and source. Thirty journeys therefore
+give sixty pan and refinement observations. `latency.json` pools actual observations into
+distributions; `viewport-NNN.json` and the matching evidence directory retain each journey's
+frames, regions, draw/write counters, RSS, scratch and GPU levels. Readbacks and step settling occur
+between measured pans. Aggregate reliability uses the highest observed load before or after any
+journey, with each endpoint retained. `preview_displayed` remains an adoption timestamp, not GPU
+upload or display scanout. A binary with no region events leaves an `unavailable` journey report
+and fails the aggregate run.
 
 `--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch
-and the slider modes cannot drive one. It builds the bare recipe the figure is about — one brush mask
+and the slider modes cannot drive one. It builds the recipe the figure is about — one brush mask
 of one component, seeded by one stroke, and one masked Basic exposure layer, asserted in the captured
-state rather than assumed — and then paints one stroke whose positions are handed to the desktop one
+state rather than assumed, plus any requested global Detail, Lens, Perspective and crop — and then paints one stroke
+whose positions are handed to the desktop one
 per 24 ms in real time: the first tick presses, each later one moves and the last releases, so one
 paced step is still one stroke and one history entry. `--samples` is the number of positions, 2 to 1000.
 Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
@@ -1041,9 +1169,11 @@ exact-query versus retained-readout counts, coalescing, photo writes and sampled
 the emitted count is the distribution's sample count.
 
 `--mode crop-start` measures opening a crop draft at Fit. It commits the recipe the flags ask for
-(`--basic`, and `--presence` for a Presence layer with all three fields at 100), opens the
+(`--detail`, `--lens`, `--perspective`, `--crop`, `--basic`, and `--presence` for a Presence layer with all three fields at 100), opens the
 Performance section, settles for 1.5 s, then per sample Starts a crop draft, holds it open for 1.5 s,
-cancels it and settles 1.5 s more; `--samples` is 1 to 14. From events every binary logs it reads
+cancels it and settles 1.5 s more; `--samples` is 1 to 14 and `--zoom` is refused. The complete
+script must remain within the 64-step evidence bound, including all preconditions; fourteen samples
+with Lens, Perspective and crop use 63 steps, or 64 with Detail too; additional preconditions need fewer repetitions. From events every binary logs it reads
 the Start step's `script_step` to `crop_draft_started` and to the `frame_captured` of that step, which
 the editor captures once the crop layer's input stage is on screen, so that figure includes the
 window readback. The Performance section's `resources.read` memory and GPU allocation are read from
@@ -1090,4 +1220,8 @@ Rules for any UI or image check:
 
 ## CI
 
-`.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64, Windows x64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+`.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Windows CI is disabled; Windows support will come later. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+
+### Lens edge annotations
+
+`lens-qualification` reads the existing RAW manifest reader and an annotation file with `{"format":1,"sources":[{"id":"manifest-id","edges":[[[x,y],...],...]}]}`. Coordinates are full-resolution content pixel centres before optional recipe geometry. Each marked photo needs at least three edges with at least five points each. A corrected edge must have at most 25% of the original maximum orthogonal line-fit deviation and at most 3 px after normalization to a 6,048-px long side. An empty `sources` array exercises selection and export for every manifest photo while reporting edge quality untested. It does not qualify missing photographs or fabricate edges. Outputs include the query, frozen selection, mapping descriptor, export result and unchanged source hash.

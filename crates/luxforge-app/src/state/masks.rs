@@ -1025,6 +1025,7 @@ fn control_action(control: &Control) -> Option<&str> {
         Control::Number(number) => Some(&number.action),
         Control::Toggle(toggle) => Some(&toggle.action),
         Control::Choice(choice) => Some(&choice.action),
+        Control::QueryChoice(choice) => Some(&choice.action),
         Control::Color(color) => Some(&color.action),
         Control::Curve(curve) => Some(&curve.action),
         Control::Range(range) => Some(&range.action),

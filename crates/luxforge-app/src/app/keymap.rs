@@ -23,12 +23,88 @@ use iced::{
     keyboard::{Event as Keys, Key, key::Named},
 };
 use luxforge_core::{MASK_MODE, POINTER_MODE};
+use std::time::{Duration, Instant};
+
+pub(crate) const COMPARE_HOLD_DELAY: Duration = Duration::from_millis(200);
+
+/// One physical press. A deadline exists only while deciding between a tap and a hold; the
+/// sequence rejects a deadline delivered after release, cancellation or a newer press.
+#[derive(Default)]
+pub(crate) struct CompareKey {
+    sequence: u64,
+    down: Option<ComparePress>,
+}
+
+struct ComparePress {
+    sequence: u64,
+    started: Instant,
+    holding: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompareRelease {
+    Tap,
+    Hold,
+}
+
+impl CompareKey {
+    pub(crate) fn press(&mut self, now: Instant, uncropped: bool) -> bool {
+        if self.down.is_some() {
+            return false;
+        }
+        self.sequence = self.sequence.saturating_add(1);
+        self.down = Some(ComparePress {
+            sequence: self.sequence,
+            started: now,
+            holding: uncropped,
+        });
+        true
+    }
+
+    pub(crate) fn pending(&self) -> Option<u64> {
+        self.down
+            .as_ref()
+            .filter(|press| !press.holding)
+            .map(|press| press.sequence)
+    }
+
+    pub(crate) fn is_down(&self) -> bool {
+        self.down.is_some()
+    }
+
+    pub(crate) fn elapsed(&mut self, sequence: u64) -> bool {
+        let Some(press) = self
+            .down
+            .as_mut()
+            .filter(|press| press.sequence == sequence && !press.holding)
+        else {
+            return false;
+        };
+        press.holding = true;
+        true
+    }
+
+    pub(crate) fn release(&mut self, now: Instant) -> Option<CompareRelease> {
+        self.down.take().map(|press| {
+            if press.holding || now.duration_since(press.started) >= COMPARE_HOLD_DELAY {
+                CompareRelease::Hold
+            } else {
+                CompareRelease::Tap
+            }
+        })
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        self.down = None;
+    }
+}
 
 /// What the mapping depends on: whether a draft is open, whether the palette has the keyboard, and
 /// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
     pub(crate) gallery_open: bool,
+    pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
     /// through the one draft lifecycle, whichever it is.
     pub(crate) drafting: bool,
@@ -83,6 +159,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if matches!(event, Event::Window(iced::window::Event::CloseRequested)) {
         return Some(Message::Close);
     }
+    if matches!(event, Event::Window(iced::window::Event::Unfocused)) {
+        return Some(Message::History(HistoryMessage::CompareKeyCancelled));
+    }
     let Event::Keyboard(keyboard) = event else {
         return None;
     };
@@ -112,7 +191,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if let Keys::KeyReleased { key, .. } = keyboard
         && (character(key, "\\") || character(key, "|"))
     {
-        return Some(Message::History(HistoryMessage::CompareEnd));
+        return Some(Message::History(HistoryMessage::CompareKeyReleased));
     }
     // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
     // reaches it, so nothing acts on a photograph it does not show.
@@ -203,6 +282,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if context.export_menu_open && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::View(ViewMessage::CloseMenu));
     }
+    if context.comparing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::History(HistoryMessage::CompareExit));
+    }
     // The Masks panel's text field answers Escape by closing with nothing sent. The field has
     // focus and has already taken the key, so this acts whatever `status` says.
     if context.mask_typing && matches!(key, Key::Named(Named::Escape)) {
@@ -254,6 +336,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     }
     if context.crop && matches!(key, Key::Named(Named::Space)) {
         return Some(Message::Crop(CropMessage::Space(true)));
+    }
+    if context.crop && character(key, "x") && !repeat && modifiers.is_empty() {
+        return Some(Message::Crop(CropMessage::Swap));
     }
     // The crop draft and a mask shape gesture answer the same two keys, because they are the same
     // kind of draft.
@@ -366,13 +451,17 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return (!modifiers.shift() && !modifiers.alt() && !modifiers.control())
             .then(|| Message::View(ViewMessage::SetMode(MASK_MODE.into())));
     }
-    // Compare holds the Original framed as the displayed entry is framed; Shift holds the whole,
-    // uncropped Original. A layout that shifts the backslash to `|` reports that character.
+    // Backslash is classified on release or at its hold deadline. Shift keeps the immediate
+    // whole-original hold; a layout that shifts backslash to `|` reports that character.
     if character(key, "|") || (character(key, "\\") && modifiers.shift()) {
-        return Some(Message::History(HistoryMessage::CompareUncropped));
+        return Some(Message::History(HistoryMessage::CompareKeyPressed {
+            uncropped: true,
+        }));
     }
-    if character(key, "\\") {
-        return Some(Message::History(HistoryMessage::CompareBegin));
+    if character(key, "\\") && !modifiers.alt() && !modifiers.control() {
+        return Some(Message::History(HistoryMessage::CompareKeyPressed {
+            uncropped: false,
+        }));
     }
     // A module's declared canvas-mode letter. The host's own letters above are reserved: the
     // registry rejects a duplicate shortcut, but not one that collides with a host key.
@@ -537,9 +626,10 @@ pub(super) fn raw_event(
     _: iced::window::Id,
 ) -> Option<Message> {
     match &event {
-        iced::Event::Keyboard(_) | iced::Event::Window(iced::window::Event::CloseRequested) => {
-            Some(Message::Key(event, status))
-        }
+        iced::Event::Keyboard(_)
+        | iced::Event::Window(
+            iced::window::Event::CloseRequested | iced::window::Event::Unfocused,
+        ) => Some(Message::Key(event, status)),
         // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
         // overlay's cells may be. It rides the subscription that is already listening; nothing new
         // polls for it, and a resize with no overlay on starts no work.
@@ -569,8 +659,16 @@ pub(super) fn drag_release(
 }
 
 /// Every raw window and keyboard event reaches the keyboard table, always.
-pub(super) fn subscription(_: &Editor) -> Subscription<Message> {
-    iced::event::listen_with(raw_event)
+pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
+    let deadline = editor.compare_key.pending().map(|sequence| {
+        iced::time::every(COMPARE_HOLD_DELAY)
+            .with(sequence)
+            .map(|(sequence, _)| Message::History(HistoryMessage::CompareHoldElapsed(sequence)))
+    });
+    Subscription::batch([
+        iced::event::listen_with(raw_event),
+        deadline.unwrap_or_else(Subscription::none),
+    ])
 }
 
 #[cfg(test)]
@@ -609,12 +707,114 @@ mod tests {
         })
     }
 
+    #[test]
+    fn compare_slider_keys_respect_focus_repeat_and_escape() {
+        let context = KeyContext::default();
+        let backslash = pressed(letter("\\"), Modifiers::empty());
+        assert!(matches!(
+            keymap(&backslash, Status::Ignored, &context),
+            Some(Message::History(HistoryMessage::CompareKeyPressed {
+                uncropped: false
+            }))
+        ));
+        assert!(keymap(&backslash, Status::Captured, &context).is_none());
+        assert!(
+            keymap(
+                &pressed(letter(","), Modifiers::empty()),
+                Status::Ignored,
+                &context
+            )
+            .is_none()
+        );
+        assert!(
+            keymap(
+                &held(letter("\\"), Modifiers::empty(), true),
+                Status::Ignored,
+                &context
+            )
+            .is_none()
+        );
+        let comparing = KeyContext {
+            comparing: true,
+            mode_active: true,
+            ..context
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Captured,
+                &comparing
+            ),
+            Some(Message::History(HistoryMessage::CompareExit))
+        ));
+        let focus_lost = Event::Window(iced::window::Event::Unfocused);
+        assert!(matches!(
+            keymap(&focus_lost, Status::Captured, &comparing),
+            Some(Message::History(HistoryMessage::CompareKeyCancelled))
+        ));
+        assert!(raw_event(focus_lost, Status::Ignored, iced::window::Id::unique()).is_some());
+    }
+
+    #[test]
+    fn compare_key_distinguishes_taps_holds_and_cancelled_deadlines() {
+        let now = Instant::now();
+        let mut key = CompareKey::default();
+        assert!(key.press(now, false));
+        let first = key.pending().unwrap();
+        assert!(!key.press(now, false), "duplicate key-down is ignored");
+        assert_eq!(
+            key.release(now + COMPARE_HOLD_DELAY / 2),
+            Some(CompareRelease::Tap)
+        );
+        assert!(!key.elapsed(first), "released press cannot become a hold");
+        assert!(key.pending().is_none() && !key.is_down());
+
+        assert!(key.press(now, false));
+        let second = key.pending().unwrap();
+        assert!(
+            !key.elapsed(first),
+            "older deadline cannot consume the new press"
+        );
+        assert!(key.elapsed(second));
+        assert!(key.pending().is_none(), "deadline timer ends once held");
+        assert!(!key.elapsed(second), "hold begins once");
+        assert_eq!(
+            key.release(now + COMPARE_HOLD_DELAY),
+            Some(CompareRelease::Hold)
+        );
+        assert_eq!(key.release(now + COMPARE_HOLD_DELAY), None);
+
+        assert!(key.press(now, false));
+        let cancelled = key.pending().unwrap();
+        key.cancel();
+        assert!(!key.elapsed(cancelled));
+        assert_eq!(
+            key.release(now),
+            None,
+            "focus loss/Escape never counts as a tap"
+        );
+
+        assert!(key.press(now, false));
+        assert_eq!(
+            key.release(now + COMPARE_HOLD_DELAY),
+            Some(CompareRelease::Hold),
+            "a delayed deadline cannot turn a long press into a tap"
+        );
+        assert!(key.press(now, true));
+        assert!(
+            key.pending().is_none(),
+            "Shift keeps the immediate uncropped hold"
+        );
+        assert_eq!(key.release(now), Some(CompareRelease::Hold));
+    }
+
     fn letter(value: &str) -> Key {
         Key::Character(value.into())
     }
 
     fn context() -> KeyContext {
         KeyContext {
+            comparing: false,
             gallery_open: false,
             drafting: false,
             crop: false,
@@ -635,6 +835,30 @@ mod tests {
             develop_confirm: false,
             development_set: false,
         }
+    }
+
+    #[test]
+    fn x_swaps_only_the_crop_ratio_and_respects_focus_modifiers_and_repeat() {
+        let crop = KeyContext {
+            crop: true,
+            drafting: true,
+            ..context()
+        };
+        let x = pressed(letter("x"), Modifiers::empty());
+        assert!(matches!(
+            keymap(&x, Status::Ignored, &crop),
+            Some(Message::Crop(CropMessage::Swap))
+        ));
+        assert!(keymap(&x, Status::Captured, &crop).is_none());
+        assert!(keymap(&x, Status::Ignored, &context()).is_none());
+        for modifiers in [Modifiers::ALT, Modifiers::SHIFT, Modifiers::COMMAND] {
+            assert!(keymap(&pressed(letter("x"), modifiers), Status::Ignored, &crop).is_none());
+        }
+        let mut repeated = x;
+        if let Event::Keyboard(Keys::KeyPressed { repeat, .. }) = &mut repeated {
+            *repeat = true;
+        }
+        assert!(keymap(&repeated, Status::Ignored, &crop).is_none());
     }
 
     #[test]
@@ -963,25 +1187,25 @@ mod tests {
                 Some("View(SetMode"),
             ),
             (
-                "compare begins on the first press",
+                "backslash starts the tap/hold decision",
                 pressed(letter("\\"), Modifiers::empty()),
                 Status::Ignored,
                 &plain,
-                Some("History(CompareBegin)"),
+                Some("History(CompareKeyPressed { uncropped: false }"),
             ),
             (
                 "shift and backslash hold the whole original",
                 pressed(letter("\\"), Modifiers::SHIFT),
                 Status::Ignored,
                 &plain,
-                Some("History(CompareUncropped)"),
+                Some("History(CompareKeyPressed { uncropped: true }"),
             ),
             (
                 "the shifted backslash as a US layout reports it",
                 pressed(letter("|"), Modifiers::SHIFT),
                 Status::Ignored,
                 &plain,
-                Some("History(CompareUncropped)"),
+                Some("History(CompareKeyPressed { uncropped: true }"),
             ),
             (
                 "a repeated shifted backslash press",
@@ -1159,9 +1383,10 @@ mod tests {
             for key in ["\\", "|"] {
                 let mapped = keymap(&released(letter(key)), status, context);
                 assert!(
-                    mapped.as_ref().is_some_and(
-                        |message| format!("{message:?}").starts_with("History(CompareEnd)")
-                    ),
+                    mapped
+                        .as_ref()
+                        .is_some_and(|message| format!("{message:?}")
+                            .starts_with("History(CompareKeyReleased)")),
                     "{case}, {key}: {mapped:?}"
                 );
             }

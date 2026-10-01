@@ -59,16 +59,16 @@ pub use api::{
     OwnerHandle, POINTER_MODE, PreviewRequest, WorkspaceState, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
-pub use cancel::Cancel;
+pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
-    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, HistoryPage,
-    LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome, MutationResult,
-    PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting, SourceKind,
-    SourceTag, Version,
+    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, FirstOpen,
+    HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
+    MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
+    SourceKind, SourceTag, Version,
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::CaptureMetadata;
@@ -80,21 +80,22 @@ pub use model::{
 };
 pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle, Availability,
-    BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CanvasInteraction, CapabilityModule,
-    ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle, Control, ControlVariant,
-    Controls, ControlsModule, CropAspect, CropPayload, CropStage, CurveBackground, CurveChannel,
-    CurveControl, Edge, EffectDescriptor, EffectStage, ExactGeometry, FieldPatch, FieldPatchModule,
-    GroupControl, IdentityKind, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE,
+    BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction,
+    CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
+    CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
+    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GroupControl,
+    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE,
     MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
-    NumberStyle, ORIENTATION_EFFECT, OutputRect, PIXEL_EFFECT, PRESENCE_EFFECT,
+    NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
-    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SpatialOperation, Spec, Stage, StageContext, StageQuestions,
-    TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, Values, WhiteBalanceMode,
-    check_parameters, check_value, gains_from_temperature_tint, guide_angle, insertion_index_among,
-    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
-    temperature_tint_from_gains,
+    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec,
+    Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    Values, WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint,
+    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    resolve_group_reset, temperature_tint_from_gains,
 };
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
@@ -102,17 +103,18 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
-    PreviewQueue, PreviewResult, PreviewSession, PreviewSource, ProxyOutcome, Queued,
-    RegionOutcome, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
+    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
+    PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{
-    ContentPoint, LinearSettings, Raster, RegionFrame, Render, RenderContext, RenderOptions,
-    RenderSource, Sample, ScratchBudget, StageSize, StageTransform, WhiteBalanceApproximation,
+    ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
+    MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
+    RenderOptions, RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation,
     render, stage_transform,
 };
-pub use source::{LinearImage, SourceImage, open_source};
+pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
 // The catalog's public surface beyond `catalog_types`.
 pub use index::{INDEX_FILE, INDEX_FORMAT, IndexDb, IndexOpened, PREVIEWS_DIR, index_dir};

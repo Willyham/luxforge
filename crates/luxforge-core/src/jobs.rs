@@ -268,6 +268,10 @@ pub struct JobRecord {
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<JobError>,
+    /// What each module's first-open action came to, for the preparation that first opened its
+    /// photograph ([`crate::FirstOpen`]). Empty for every other job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_open: Vec<crate::FirstOpen>,
     /// The request that started the job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
@@ -443,7 +447,9 @@ pub(crate) type Deliver = Arc<dyn Fn(JobId, Result<Value, Error>) + Send + Sync>
 /// its own compact form; each is encoded only when a client reads it.
 pub(crate) enum Output {
     Value(Value),
-    Asset(Box<EditorState>),
+    /// A prepared asset's state, and a new asset's first-open reports, which the job's record
+    /// lists beside its result.
+    Asset(Box<EditorState>, Vec<crate::FirstOpen>),
     Report(Box<Report>),
 }
 
@@ -451,7 +457,7 @@ impl Output {
     fn value(&self) -> Value {
         match self {
             Self::Value(value) => value.clone(),
-            Self::Asset(state) => json!(state),
+            Self::Asset(state, _) => json!(state),
             Self::Report(report) => json!(report),
         }
     }
@@ -582,6 +588,9 @@ impl Entry {
             None if live => self.control.partial(),
             None => None,
         };
+        if let Some(Output::Asset(_, first_open)) = &self.output {
+            record.first_open.clone_from(first_open);
+        }
         record.error = self.error.as_ref().map(JobError::from);
         record.request_id = self.origin.as_ref().map(|origin| origin.request_id.clone());
         record
@@ -932,6 +941,7 @@ impl Jobs {
                 resource_id: None,
                 identity: None,
                 result: None,
+                first_open: Vec::new(),
                 error: None,
                 request_id: None,
             },
@@ -967,6 +977,7 @@ impl Jobs {
                 identity,
                 result: None,
                 error: None,
+                first_open: Vec::new(),
                 request_id: None,
             },
             control,
@@ -1226,6 +1237,7 @@ impl Jobs {
                 identity: None,
                 result: None,
                 error: None,
+                first_open: Vec::new(),
                 request_id: None,
             },
             control,

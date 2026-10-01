@@ -70,20 +70,36 @@ pub(crate) struct ThumbnailResult {
 /// The thumbnails of every mask `evaluation` holds, reusing each one `cache` holds under the same
 /// key. `cache` becomes exactly this stack's masks, so it never holds more than
 /// [`MASKS_PER_RECIPE`]. `None` when `cancel` ended the job: what it filled before then is kept.
+#[cfg(test)]
 fn thumbnails(
     evaluation: &ThumbnailJob,
     cache: &mut Vec<Cached>,
     cancel: &luxforge_core::Cancel,
 ) -> Option<ThumbnailResult> {
+    thumbnails_with_cache(
+        evaluation,
+        cache,
+        cancel,
+        &mut luxforge_core::InputGridCache::default(),
+    )
+}
+
+fn thumbnails_with_cache(
+    evaluation: &ThumbnailJob,
+    cache: &mut Vec<Cached>,
+    cancel: &luxforge_core::Cancel,
+    input_cache: &mut luxforge_core::InputGridCache,
+) -> Option<ThumbnailResult> {
     let mut result = ThumbnailResult::default();
     let mut next = Vec::new();
     for mask in evaluation.recipe().masks.iter().take(MASKS_PER_RECIPE) {
         let held = cache.iter().find(|cached| cached.mask == mask.id);
-        match evaluation.mask_coverage(
+        match evaluation.mask_coverage_with_cache(
             &mask.id,
             Thumbnail::CELLS,
             held.map(|cached| cached.key),
             cancel,
+            input_cache,
         ) {
             Ok(MaskCoverage { key, outcome: None }) => {
                 let thumbnail = held.and_then(|cached| cached.thumbnail.clone());
@@ -146,11 +162,12 @@ pub(crate) struct ThumbnailQueue {
 impl Default for ThumbnailQueue {
     fn default() -> Self {
         let mut cache = Vec::new();
+        let mut input_cache = luxforge_core::InputGridCache::default();
         Self {
             worker: Latest::new(
                 "luxforge-mask-thumbnails",
                 move |job: ThumbnailJob, running: &Running<'_, _, _>| {
-                    thumbnails(&job, &mut cache, running.superseded())
+                    thumbnails_with_cache(&job, &mut cache, running.superseded(), &mut input_cache)
                 },
             ),
             newest: 0,
@@ -450,18 +467,12 @@ mod tests {
             height: 40,
         };
         let compiled = CompiledMask::new(mask, stage, &Default::default()).unwrap();
-        let transform = luxforge_core::StageTransform {
-            content: luxforge_core::StageSize {
-                width: 60,
-                height: 40,
-            },
-            output: luxforge_core::StageSize {
-                width: 60,
-                height: 40,
-            },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        let size = luxforge_core::StageSize {
+            width: 60,
+            height: 40,
         };
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let transform = luxforge_core::GeometryMap::affine(size, size, identity, identity);
         coverage_grid(
             &compiled,
             &transform,

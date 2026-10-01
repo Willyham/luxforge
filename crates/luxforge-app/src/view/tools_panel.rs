@@ -237,6 +237,9 @@ fn section_view<'a>(
             ),
             SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot),
         });
+        if let Some(summary) = &section.geometry_summary {
+            rows.push(PanelRow::Plain(caption(summary.clone())));
+        }
         finish_rows(rows, menu)
     });
     module_section(
@@ -531,6 +534,9 @@ pub(crate) fn control_view<'a>(
         ControlModel::Range(range) => range_view(enabled, range, menu),
         ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
+        ControlModel::QueryChoice(choice) => {
+            super::query_choice::query_choice_view(choice, enabled)
+        }
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
         ControlModel::Group(group) => column(finish_rows(
@@ -1569,20 +1575,23 @@ fn curve_view<'a>(
         dragging: curve.dragging,
         enabled,
         version,
+        points_open: curve.points_open,
+        points_max: curve.points_max,
+        hint: curve.hint.clone(),
     };
     let action = curve.action.clone();
     let parameter = channel.parameter.clone();
-    let widget = column![
-        label_line(curve.label.clone(), enabled),
-        curve_editor(&model, move |event| Message::Control(
-            ControlMessage::Curve {
-                action: action.clone(),
-                parameter: parameter.clone(),
-                event,
-            }
-        ))
-    ]
-    .spacing(theme::SLIDER_GAP);
+    let mut widget = column![].spacing(theme::SLIDER_GAP);
+    if curve.label_shown {
+        widget = widget.push(label_line(curve.label.clone(), enabled));
+    }
+    let widget = widget.push(curve_editor(&model, move |event| {
+        Message::Control(ControlMessage::Curve {
+            action: action.clone(),
+            parameter: parameter.clone(),
+            event,
+        })
+    }));
     with_control_menu(widget.into(), &curve.action, Some(&channel.parameter), menu)
 }
 
@@ -1758,9 +1767,10 @@ fn picker_view<'a>(
 }
 
 /// The crop section, driven by [`CropMessage`]: the API-equivalent path and this panel share the
-/// same state machine. Idle and drafting it lays out the same Ratio group (chips, custom ratio,
-/// lock and swap) and Angle group (stepper, rail and straighten guide), so opening a draft moves
-/// none of them; idle they read the committed crop, and a change to one opens the draft with it.
+/// same state machine. The Ratio group holds custom ratio, lock and swap;
+/// its preset chips move into the floating bar while drafting. The Angle group holds the stepper,
+/// rail and one-shot Straighten button; idle they read the committed crop, and a change to one
+/// opens the draft with it.
 /// Drafting adds the draft's exact readout and Cancel and Apply below them, every row a widget of
 /// the library.
 fn crop_section_view<'a>(
@@ -1815,7 +1825,7 @@ fn crop_section_view<'a>(
             (
                 IconButtonModel {
                     icon: Icon::Swap,
-                    tooltip: "Swap".into(),
+                    tooltip: "Swap ratio orientation (X)".into(),
                     enabled: model.can_swap,
                     selected: false,
                 },
@@ -1823,7 +1833,7 @@ fn crop_section_view<'a>(
             ),
         ],
     ));
-    if !model.presets.is_empty() {
+    if !model.drafting && !model.presets.is_empty() {
         let chips = model
             .presets
             .iter()
@@ -1888,7 +1898,7 @@ fn crop_section_view<'a>(
             theme::FIELD_ROW_HEIGHT,
         ));
     }
-    rows.push(straighten_toggle(model));
+    rows.push(straighten_button(model));
     if !model.drafting {
         return column(rows).spacing(theme::ROW_SPACING).into();
     }
@@ -1991,14 +2001,24 @@ fn custom_field<'a>(
     .into()
 }
 
-fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
-    let control = toggle(
-        &ToggleModel {
-            label: "Straighten guide".into(),
-            on: model.guide,
+fn straighten_button(model: &CropSectionModel) -> Element<'_, Message> {
+    let control = labelled_button(
+        &LabelledButtonModel {
+            label: "Straighten".into(),
+            icon: Some(Icon::Ruler),
+            key_hint: None,
+            tone: if model.guide {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Control
+            },
+            size: ButtonSize::Regular,
+            fill: true,
             enabled: model.enabled,
         },
-        |on| Message::Crop(CropMessage::Guide(on)),
+        model
+            .enabled
+            .then_some(Message::Crop(CropMessage::Guide(!model.guide))),
     );
     let on = model.guide;
     focus_control(control, model.enabled, move |event| {

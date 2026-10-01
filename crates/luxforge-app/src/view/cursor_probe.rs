@@ -30,6 +30,7 @@ struct State {
     path: VecDeque<(Instant, Point)>,
     completed: Vec<Value>,
     coalesced: usize,
+    geometry: Option<Value>,
 }
 
 struct Input {
@@ -44,6 +45,31 @@ struct Input {
     pointer_ms: Option<f64>,
     loop_ms: Option<[f64; 2]>,
     loop_pending: bool,
+}
+
+impl Input {
+    fn new(epoch: u64, point: Point, requested: Instant) -> Self {
+        Self {
+            epoch,
+            point,
+            requested,
+            dispatched: None,
+            update_ms: 0.0,
+            readout_position: None,
+            message_count: 0,
+            pointer_at_ms: None,
+            pointer_ms: None,
+            loop_ms: None,
+            loop_pending: false,
+        }
+    }
+
+    /// Nothing more will be recorded for this input: its editor loop was observed, or it was
+    /// routed with no readout position, so no pointer update and no loop will follow and the
+    /// trace records their absence rather than waiting for the step's deadline.
+    fn settled(&self) -> bool {
+        self.loop_ms.is_some() || (self.dispatched.is_some() && self.readout_position.is_none())
+    }
 }
 
 thread_local! {
@@ -66,6 +92,7 @@ impl Probe {
                 )
             })
             .collect();
+        // `pending` numbers each due position as it dispatches it; the first is this one.
         state.serial.saturating_add(1)
     }
     pub(crate) fn arm(&self, point: Point) -> u64 {
@@ -73,25 +100,16 @@ impl Probe {
         let mut state = self.0.lock().expect("cursor probe lock");
         state.serial = state.serial.saturating_add(1);
         let epoch = state.serial;
-        state.input = Some(Input {
-            epoch,
-            point,
-            requested: Instant::now(),
-            dispatched: None,
-            update_ms: 0.0,
-            readout_position: None,
-            message_count: 0,
-            pointer_at_ms: None,
-            pointer_ms: None,
-            loop_ms: None,
-            loop_pending: false,
-        });
+        state.input = Some(Input::new(epoch, point, Instant::now()));
         state.trace = None;
         epoch
     }
 
+    /// Forget every input and trace. Epochs start again at 1, so a sweep's traces are numbered
+    /// from its own first position whatever ran before it.
     pub(crate) fn clear(&self) {
         let mut state = self.0.lock().expect("cursor probe lock");
+        state.serial = 0;
         state.input = None;
         state.trace = None;
         state.path.clear();
@@ -99,12 +117,15 @@ impl Probe {
         state.coalesced = 0;
     }
 
+    pub(crate) fn geometry(&self) -> Option<Value> {
+        self.0.lock().expect("cursor probe lock").geometry.clone()
+    }
     fn pending(&self) -> Option<(u64, Point)> {
         let mut state = self.0.lock().expect("cursor probe lock");
         let ready = state
             .input
             .as_ref()
-            .is_none_or(|input| input.loop_ms.is_some() && state.trace.is_some());
+            .is_none_or(|input| input.settled() && state.trace.is_some());
         if ready
             && state
                 .path
@@ -125,19 +146,7 @@ impl Probe {
             }
             state.serial = state.serial.saturating_add(1);
             let epoch = state.serial;
-            state.input = Some(Input {
-                epoch,
-                point: next.1,
-                requested: next.0,
-                dispatched: None,
-                update_ms: 0.0,
-                readout_position: None,
-                message_count: 0,
-                pointer_at_ms: None,
-                pointer_ms: None,
-                loop_ms: None,
-                loop_pending: false,
-            });
+            state.input = Some(Input::new(epoch, next.1, next.0));
             state.trace = None;
         }
         state
@@ -172,7 +181,7 @@ impl Probe {
             || state
                 .input
                 .as_ref()
-                .is_some_and(|input| state.trace.is_none() || input.loop_ms.is_none())
+                .is_some_and(|input| state.trace.is_none() || !input.settled())
     }
 
     pub(crate) fn trace(&self) -> Option<Value> {
@@ -280,6 +289,7 @@ fn trace(state: &State) -> Option<Value> {
     result["input_to_pointer_update_ms"] = json!(input.pointer_at_ms);
     result["pointer_update_ms"] = json!(input.pointer_ms);
     result["editor_update_ms"] = json!(input.loop_ms.map(|timing| timing[0]));
+    result["mask_geometry"] = json!(state.geometry);
     result["editor_rederive_ms"] = json!(input.loop_ms.map(|timing| timing[1]));
     Some(result)
 }
@@ -290,6 +300,14 @@ pub(crate) fn mask_cursor_drawn(centre: Point, bounds: Rectangle, geometry_ms: f
         if let Some(probe) = active.borrow().as_ref() {
             probe.drawn(centre, bounds, geometry_ms);
         }
+    });
+}
+
+/// Bounded diagnostics for the real mapped outline, retained only by an evidence wrapper.
+pub(crate) fn mask_geometry(mapping: Value, approximate: bool, segments: usize) {
+    DRAWING.with(|active|if let Some(probe)=active.borrow().as_ref(){
+        let mut state=probe.0.lock().expect("cursor probe lock");
+        state.geometry=Some(json!({"mapping":mapping,"approximate":approximate,"segments":segments,"max_segments_per_outline":1024,"max_depth":10,"error_physical_pixels":0.25}));
     });
 }
 
@@ -483,11 +501,26 @@ mod tests {
         assert_eq!(trace["editor_update_ms"], json!(0.04));
         assert_eq!(trace["editor_rederive_ms"], json!(0.02));
         assert!(!probe.waiting());
+        // A new input replaces the old one's trace, and its epochs start again from 1.
         let newest = probe.arm(Point::new(30.0, 40.0));
-        assert!(newest > epoch && probe.trace().is_none());
+        assert!(newest == 1 && probe.trace().is_none());
         assert_eq!(probe.pending(), Some((newest, Point::new(30.0, 40.0))));
         probe.clear();
         assert!(!probe.waiting() && probe.pending().is_none() && probe.trace().is_none());
+    }
+
+    #[test]
+    fn an_input_routed_without_a_readout_position_settles_without_its_loop() {
+        let probe = Probe::default();
+        let epoch = probe.arm(Point::new(10.0, 20.0));
+        probe.routed(epoch, Instant::now(), 0.01, 1, None);
+        probe.drawn(
+            Point::new(5.0, 7.0),
+            Rectangle::new(Point::new(5.0, 13.0), Size::new(50.0, 50.0)),
+            0.02,
+        );
+        assert!(!probe.waiting(), "no pointer update will ever follow");
+        assert!(probe.trace().unwrap()["editor_update_ms"].is_null());
     }
 
     #[test]

@@ -443,6 +443,8 @@ mod tests {
             .compile_sampled(
                 plan.proxy.width,
                 plan.proxy.height,
+                plan.proxy.width,
+                plan.proxy.height,
                 stack,
                 crate::mask_field::MaskSampling::ThinFeature,
             )
@@ -1015,7 +1017,14 @@ mod tests {
             height: 85,
         };
         let compiled = registry
-            .compile_sampled(width, 128, stack, crate::mask_field::MaskSampling::Point)
+            .compile_sampled(
+                width,
+                128,
+                width,
+                128,
+                stack,
+                crate::mask_field::MaskSampling::Point,
+            )
             .unwrap();
         let plan = WindowPlan::of_rect(&compiled, (width, 128), requested).unwrap();
         let tile = compiled
@@ -1475,8 +1484,6 @@ mod tests {
         .transform()
         .unwrap();
         assert_eq!(cut.output, whole.output);
-        let map =
-            |m: [f64; 6], x: f64, y: f64| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
         for (x, y) in [
             (0.5, 0.5),
             (
@@ -1488,12 +1495,10 @@ mod tests {
                 f64::from(window.height) - 0.5,
             ),
         ] {
-            let actual = map(cut.forward, x, y);
-            let expected = map(
-                whole.forward,
-                x + f64::from(window.x),
-                y + f64::from(window.y),
-            );
+            let actual = cut.to_output(x, y).unwrap();
+            let expected = whole
+                .to_output(x + f64::from(window.x), y + f64::from(window.y))
+                .unwrap();
             assert!((actual.0 - expected.0).abs() < 1e-9, "x at {x},{y}");
             assert!((actual.1 - expected.1).abs() < 1e-9, "y at {x},{y}");
         }
@@ -1614,6 +1619,8 @@ mod tests {
                 let whole = source.proxy(plan.whole()).unwrap();
                 let mut compiled = registry
                     .compile_sampled(
+                        plan.width,
+                        plan.height,
                         plan.width,
                         plan.height,
                         stack,

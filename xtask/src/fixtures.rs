@@ -184,6 +184,41 @@ fn encode_presence(path: &Path) -> Result {
     Ok(())
 }
 
+/// Functional Detail probes; the 24/60 MP fixtures remain separate timing workloads.
+fn encode_detail(path: &Path) -> Result {
+    let (width, height) = (2400, 1600);
+    let image = RgbImage::from_fn(width, height, |x, y| {
+        let mut seed = u64::from(y) * u64::from(width) + u64::from(x) + 0x5eeda11;
+        seed ^= seed >> 30;
+        seed = seed.wrapping_mul(0xbf58476d1ce4e5b9);
+        seed ^= seed >> 27;
+        seed = seed.wrapping_mul(0x94d049bb133111eb);
+        seed ^= seed >> 31;
+        let noise = ((seed >> 11) as f64 / ((1u64 << 53) as f64) - 0.5) * 24.0;
+        let mut rgb = if y < height / 2 && x < width / 2 {
+            let level = 60.0 + 100.0 * f64::from(x) / f64::from(width / 2);
+            [level; 3]
+        } else if y < height / 2 {
+            let edge = f64::from(x)
+                - f64::from(width) * 0.75
+                - (f64::from(y) - f64::from(height) * 0.25) * 5.0_f64.to_radians().tan();
+            [90.0 + 65.0 * (1.0 + edge.tanh()); 3]
+        } else if x < width / 2 {
+            [128.0 + 18.0 * (std::f64::consts::TAU * f64::from(x) / 6.0).sin(); 3]
+        } else {
+            let blotch = 12.0 * (f64::from(x) / 16.0).sin() * (f64::from(y) / 24.0).cos();
+            [128.0 + blotch, 128.0, 128.0 - blotch]
+        };
+        for value in &mut rgb {
+            *value += noise;
+        }
+        Rgb(rgb.map(|v| v.round().clamp(0.0, 255.0) as u8))
+    });
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&image)?;
+    Ok(())
+}
+
 /// The `mask-range` smoke scenario's own fixture: twelve flat patches of the 24-patch reflective
 /// colour chart's own measured sRGB renderings, which is what the
 /// [range study](../../docs/design/range-study.md) measured every one of its figures over. Nothing
@@ -248,6 +283,120 @@ fn encode_range(path: &Path) -> Result {
     Ok(())
 }
 
+/// Photo-sized geometry workload with synthetic capture identity. Pixel data are a regular
+/// line grid; EXIF only supplies the identity used by the profile resolver.
+fn encode_lens_grid(
+    path: &Path,
+    width: u32,
+    height: u32,
+    make: &str,
+    model: &str,
+    lens: &str,
+) -> Result {
+    let image = RgbImage::from_fn(width, height, |x, y| {
+        Rgb(if x % 128 < 3 || y % 128 < 3 {
+            [20; 3]
+        } else {
+            [240; 3]
+        })
+    });
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(&image)?;
+    let (make, model, lens) = (
+        format!("{make}\0").into_bytes(),
+        format!("{model}\0").into_bytes(),
+        format!("{lens}\0").into_bytes(),
+    );
+    let mut tiff = b"II\x2a\0\x08\0\0\0".to_vec();
+    let entry = |tiff: &mut Vec<u8>, tag: u16, kind: u16, count: u32, value: u32| {
+        tiff.extend_from_slice(&tag.to_le_bytes());
+        tiff.extend_from_slice(&kind.to_le_bytes());
+        tiff.extend_from_slice(&count.to_le_bytes());
+        tiff.extend_from_slice(&value.to_le_bytes());
+    };
+    tiff.extend_from_slice(&3_u16.to_le_bytes());
+    entry(&mut tiff, 0x010f, 2, make.len() as u32, 92);
+    entry(
+        &mut tiff,
+        0x0110,
+        2,
+        model.len() as u32,
+        92 + make.len() as u32,
+    );
+    entry(&mut tiff, 0x8769, 4, 1, 50);
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&3_u16.to_le_bytes());
+    let focal = 92 + (make.len() + model.len()) as u32;
+    entry(&mut tiff, 0x920a, 5, 1, focal);
+    entry(&mut tiff, 0xa405, 3, 1, 24);
+    entry(&mut tiff, 0xa434, 2, lens.len() as u32, focal + 8);
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&make);
+    tiff.extend_from_slice(&model);
+    tiff.extend_from_slice(&24_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u32.to_le_bytes());
+    tiff.extend_from_slice(&lens);
+    let payload = [b"Exif\0\0".as_slice(), &tiff].concat();
+    let mut encoded = vec![0xff, 0xd8, 0xff, 0xe1];
+    encoded.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
+    encoded.extend_from_slice(&payload);
+    encoded.extend_from_slice(&jpeg[2..]);
+    fs::write(path, encoded)?;
+    Ok(())
+}
+
+/// The `curve` smoke scenario's own fixture: what a tone curve needs to be read against, which no
+/// photograph has on its own.
+///
+/// - Rows `0..TONE_RAMP_BAND` are an encoded grey ramp, code `round(x · 255 / 511)` in column `x`,
+///   every code from black to white across the width, so a curve's monotonicity, its effect on the
+///   lower and upper halves of the tonal range, and whether it colours a grey can each be read along
+///   a row.
+/// - Rows `TONE_RAMP_BAND..` are four flat patches, [`TONE_RAMP_PATCH`] pixels wide, of the four
+///   quadrant colours of `fixtures/s0/orientation-1.jpg` ([`COLORS`] in its order), so a luminance
+///   curve's hue preservation can be read on saturated colours.
+///
+/// Every boundary falls on a multiple of 16, so a JPEG's chroma subsampling and its ringing stay at
+/// the edges and a probe 16 px inside reads what was drawn.
+pub const TONE_RAMP_FIXTURE: (u32, u32) = (512, 256);
+/// The height of the ramp band and of the patch band below it.
+pub const TONE_RAMP_BAND: u32 = 128;
+/// The width of each colour patch.
+pub const TONE_RAMP_PATCH: u32 = 128;
+/// The patches in column order, named for what they show: `fixtures/s0/orientation-1.jpg`'s
+/// top-left, top-right, bottom-left and bottom-right quadrant colours.
+pub const TONE_RAMP_PATCHES: [(&str, [u8; 3]); 4] = [
+    ("red", COLORS[0]),
+    ("green", COLORS[1]),
+    ("blue", COLORS[2]),
+    ("yellow", COLORS[3]),
+];
+
+/// The ramp's code in column `x` of a ramp `width` pixels wide: black in the first column and white
+/// in the last.
+pub fn tone_ramp_code(x: u32, width: u32) -> u8 {
+    ((f64::from(x) * 255.0 / f64::from(width - 1)).round()) as u8
+}
+
+fn tone_ramp(w: u32, h: u32) -> RgbImage {
+    RgbImage::from_fn(w, h, |x, y| {
+        if y < TONE_RAMP_BAND {
+            Rgb([tone_ramp_code(x, w); 3])
+        } else {
+            let patch = ((x / TONE_RAMP_PATCH) as usize).min(TONE_RAMP_PATCHES.len() - 1);
+            Rgb(TONE_RAMP_PATCHES[patch].1)
+        }
+    })
+}
+
+fn encode_tone_ramp(path: &Path) -> Result {
+    let (w, h) = TONE_RAMP_FIXTURE;
+    let img = tone_ramp(w, h);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 /// One JPEG the rendered and timing tiers need before they can run: its file name inside a
 /// fixtures directory, the function that writes it, and the manifest fields it needs beyond `file`
 /// and `sha256` (both of which `generate` fills in from what it actually wrote, once it has hashed
@@ -259,7 +408,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 5] = [
+pub const TABLE: [Fixture; 9] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -269,6 +418,25 @@ pub const TABLE: [Fixture; 5] = [
         file: "60mp.jpg",
         write: |p| encode(p, 10000, 6000),
         manifest: || json!({"width":10000,"height":6000}),
+    },
+    Fixture {
+        file: "lens-24mp.jpg",
+        write: |p| {
+            encode_lens_grid(
+                p,
+                6048,
+                4024,
+                "NIKON CORPORATION",
+                "NIKON Z 6",
+                "NIKKOR Z 24-70mm f/4 S",
+            )
+        },
+        manifest: || json!({"width":6048,"height":4024}),
+    },
+    Fixture {
+        file: "lens-60mp.jpg",
+        write: |p| encode_lens_grid(p, 9504, 6336, "SONY", "ILCE-7RM4", "FE 24-70mm f/4 ZA OSS"),
+        manifest: || json!({"width":9504,"height":6336}),
     },
     Fixture {
         file: "hue-wheel.jpg",
@@ -291,6 +459,23 @@ pub const TABLE: [Fixture; 5] = [
             json!({
                 "width":w,"height":h,
                 "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes})),
+            })
+        },
+    },
+    Fixture {
+        file: "detail.jpg",
+        write: encode_detail,
+        manifest: || json!({"width":2400,"height":1600,"scope":"Detail functional synthetic probe; timing uses separate 24/60 MP fixtures"}),
+    },
+    Fixture {
+        file: "tone-ramp.jpg",
+        write: encode_tone_ramp,
+        manifest: || {
+            let (w, h) = TONE_RAMP_FIXTURE;
+            json!({
+                "width":w,"height":h,
+                "ramp":{"rows":[0,TONE_RAMP_BAND],"code":"round(x * 255 / (width - 1))"},
+                "patches":TONE_RAMP_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes,"width":TONE_RAMP_PATCH})),
             })
         },
     },
@@ -564,5 +749,45 @@ mod tests {
         assert!(!present(t.path()), "missing range.jpg still reads present");
         fs::write(t.path().join("range.jpg"), b"stub").unwrap();
         assert!(present(t.path()));
+    }
+
+    #[test]
+    fn a_directory_missing_only_tone_ramp_jpg_is_not_present() {
+        let t = tempfile::tempdir().unwrap();
+        for f in TABLE.iter().filter(|f| f.file != "tone-ramp.jpg") {
+            fs::write(t.path().join(f.file), b"stub").unwrap();
+        }
+        assert!(
+            !present(t.path()),
+            "missing tone-ramp.jpg still reads present"
+        );
+        fs::write(t.path().join("tone-ramp.jpg"), b"stub").unwrap();
+        assert!(present(t.path()));
+    }
+
+    /// The ramp runs from black in the first column to white in the last through every code, and
+    /// the patches are the orientation fixture's quadrant colours in its order.
+    #[test]
+    fn the_tone_ramp_holds_every_code_and_the_quadrant_colours() {
+        let (w, h) = TONE_RAMP_FIXTURE;
+        let img = tone_ramp(w, h);
+        assert_eq!(img.get_pixel(0, 0).0, [0; 3]);
+        assert_eq!(img.get_pixel(w - 1, TONE_RAMP_BAND - 1).0, [255; 3]);
+        assert_eq!(img.get_pixel(256, 64).0, [128; 3]);
+        let codes: std::collections::BTreeSet<u8> =
+            (0..w).map(|x| img.get_pixel(x, 0).0[0]).collect();
+        assert_eq!(codes.len(), 256);
+        for (index, (_, colour)) in TONE_RAMP_PATCHES.iter().enumerate() {
+            let x = index as u32 * TONE_RAMP_PATCH + TONE_RAMP_PATCH / 2;
+            assert_eq!(img.get_pixel(x, h - 1).0, *colour);
+            assert_eq!(*colour, COLORS[ORDERS[0][index]]);
+        }
+        let dir = tempfile::tempdir().unwrap();
+        encode_tone_ramp(&dir.path().join("a.jpg")).unwrap();
+        encode_tone_ramp(&dir.path().join("b.jpg")).unwrap();
+        assert_eq!(
+            hash(&dir.path().join("a.jpg")).unwrap(),
+            hash(&dir.path().join("b.jpg")).unwrap()
+        );
     }
 }

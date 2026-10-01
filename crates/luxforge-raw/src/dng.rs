@@ -127,6 +127,13 @@ struct Warp {
     norm_radius: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WarpRole {
+    Distortion,
+    LateralCa,
+    Identity,
+}
+
 /// A big-endian opcode field, through the crate's one reader set.
 fn be_u32(bytes: &[u8], p: usize) -> Result<u32, RawError> {
     u32_at(bytes, p, Endian::Big).ok_or(RawError::InvalidInput("truncated DNG opcode"))
@@ -336,6 +343,17 @@ impl Taps {
 }
 
 impl Warp {
+    /// The reference luminance plane is green (plane 1 of the three supported planes).
+    fn plane_role(&self) -> WarpRole {
+        if !self.is_identity(1) {
+            WarpRole::Distortion
+        } else if !self.is_identity(0) || !self.is_identity(2) {
+            WarpRole::LateralCa
+        } else {
+            WarpRole::Identity
+        }
+    }
+
     fn is_identity(&self, channel: usize) -> bool {
         self.radial[channel] == [1.0, 0.0, 0.0, 0.0] && self.tangential[channel] == [0.0, 0.0]
     }
@@ -909,7 +927,20 @@ impl DngCorrection {
                     stages.push(Stage3::Gain(GainMap::parse(&op.data, active)?))
                 }
                 Some(Opcode::WarpRectilinear) => {
-                    stages.push(Stage3::Warp(Warp::parse(&op.data, active)?))
+                    let warp = Warp::parse(&op.data, active)?;
+                    if let Some(role) = settings.optics.and_then(|optics| optics.warp_rectilinear) {
+                        let expected = match role {
+                            crate::DngOpticalRole::Distortion => WarpRole::Distortion,
+                            crate::DngOpticalRole::LateralCa => WarpRole::LateralCa,
+                            crate::DngOpticalRole::Shading => {
+                                return Err(RawError::UnsupportedMode("DNG optical role".into()));
+                            }
+                        };
+                        if warp.plane_role() != expected {
+                            return Err(RawError::UnsupportedMode("DNG optical role".into()));
+                        }
+                    }
+                    stages.push(Stage3::Warp(warp))
                 }
                 Some(Opcode::FixVignetteRadial) => {
                     stages.push(Stage3::Vignette(parse_vignette_radial(&op.data)?))
@@ -1027,6 +1058,12 @@ impl DngCorrection {
     /// A value that overflows `f32` becomes infinite rather than an error
     /// here: like the development before it, this checks no finiteness, and
     /// the one check is the caller's, where it adopts the converted planes.
+    /// Whether any correction runs on the demosaiced planes (a gain map, a vignette or a warp),
+    /// so the developed planes no longer share the demosaic's one clip ceiling.
+    pub(crate) fn corrects_after_demosaic(&self) -> bool {
+        !self.stages.is_empty()
+    }
+
     pub(crate) fn apply(&self, rgb: &mut PlanarRgb, cancel: &AtomicBool) -> Result<(), RawError> {
         // Photo-sized active areas run their row jobs on the development executor at the pool's
         // width; smaller ones run in order on the caller. A row owns its output; stages and
@@ -1200,6 +1237,107 @@ mod tests {
 
     fn reference() -> Value {
         serde_json::from_str(include_str!("../../../fixtures/raw-dng-reference.json")).unwrap()
+    }
+
+    fn fc3411_warp_payload() -> Vec<u8> {
+        let vectors = reference();
+        let mut payload = vec![0_u8; 164];
+        payload[..4].copy_from_slice(&3_u32.to_be_bytes());
+        for (plane, values) in vectors["opcodes"][1]["coefficients"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            for (i, value) in values.as_array().unwrap().iter().enumerate() {
+                let p = 4 + 48 * plane + 8 * i;
+                payload[p..p + 8].copy_from_slice(&value.as_f64().unwrap().to_be_bytes());
+            }
+        }
+        payload[148..156].copy_from_slice(&0.5_f64.to_be_bytes());
+        payload[156..164].copy_from_slice(&0.5_f64.to_be_bytes());
+        payload
+    }
+
+    #[test]
+    fn fc3411_warp_green_identity_is_lateral_ca_only() {
+        let active = RawRect {
+            x: 96,
+            y: 0,
+            width: 5472,
+            height: 3648,
+        };
+        let warp = Warp::parse(&fc3411_warp_payload(), active).unwrap();
+        assert_eq!(warp.plane_role(), WarpRole::LateralCa);
+    }
+
+    #[test]
+    fn identical_plane_warp_classifies_as_distortion() {
+        let active = RawRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 80,
+        };
+        let mut payload = fc3411_warp_payload();
+        let reference = payload[4..52].to_vec();
+        payload[52..100].copy_from_slice(&reference);
+        payload[100..148].copy_from_slice(&reference);
+        assert_eq!(
+            Warp::parse(&payload, active).unwrap().plane_role(),
+            WarpRole::Distortion
+        );
+        for plane in 0..3 {
+            payload[4 + plane * 48..52 + plane * 48].fill(0);
+            payload[4 + plane * 48..12 + plane * 48].copy_from_slice(&1.0_f64.to_be_bytes());
+        }
+        assert_eq!(
+            Warp::parse(&payload, active).unwrap().plane_role(),
+            WarpRole::Identity
+        );
+    }
+
+    #[test]
+    fn declared_role_mismatch_fails_preparation() {
+        let camera = crate::camera_catalog()
+            .cameras
+            .iter()
+            .find(|camera| camera.model == "FC3411")
+            .unwrap();
+        let mut settings = camera.dng.clone().unwrap();
+        settings.required_opcodes = settings
+            .required_opcodes
+            .iter()
+            .filter(|op| op.id == 1)
+            .copied()
+            .collect::<Vec<_>>()
+            .into();
+        let active = RawRect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 80,
+        };
+        let mut payload = fc3411_warp_payload();
+        payload[52..60].copy_from_slice(&1.001_f64.to_be_bytes());
+        let opcode = DngOpcode {
+            list: crate::opcodes::OPCODE_LIST3,
+            id: 1,
+            version: crate::opcodes::VERSION,
+            flags: 0,
+            ifd: 8,
+            data: payload,
+        };
+        let calibration = DngCalibrationMetadata {
+            illuminants: [17, 21],
+            color_matrix1_sha256: String::new(),
+            color_matrix2_sha256: String::new(),
+            selected: "ColorMatrix2".into(),
+        };
+        assert!(
+            matches!(DngCorrection::parse(&[opcode], active, 8, calibration, &settings),
+            Err(RawError::UnsupportedMode(reason)) if reason == "DNG optical role")
+        );
     }
 
     fn row_fixture(width: u32, height: u32) -> (DngCorrection, PlanarRgb) {

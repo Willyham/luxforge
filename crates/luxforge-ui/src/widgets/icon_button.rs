@@ -21,6 +21,7 @@ pub enum Icon {
     Lock,
     Swap,
     Guide,
+    Ruler,
     Pointer,
     Versions,
     Undo,
@@ -85,7 +86,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 69] = [
+    pub const NAMED: [(&'static str, Icon); 70] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -99,6 +100,7 @@ impl Icon {
         ("lock", Self::Lock),
         ("swap", Self::Swap),
         ("guide", Self::Guide),
+        ("ruler", Self::Ruler),
         ("pointer", Self::Pointer),
         ("versions", Self::Versions),
         ("undo", Self::Undo),
@@ -510,6 +512,21 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             );
             line(frame, (8.0, 2.0), (8.0, 14.0));
             line(frame, (2.0, 8.0), (14.0, 8.0));
+        }
+        Icon::Ruler => {
+            poly(
+                frame,
+                &[
+                    (1.5, 10.5),
+                    (10.5, 1.5),
+                    (14.5, 5.5),
+                    (5.5, 14.5),
+                    (1.5, 10.5),
+                ],
+            );
+            for (x, y, length) in [(4.0, 8.0, 2.0), (6.0, 6.0, 3.0), (8.0, 4.0, 2.0)] {
+                line(frame, (x, y), (x + length, y + length));
+            }
         }
         Icon::Pointer => poly(
             frame,

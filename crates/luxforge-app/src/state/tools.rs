@@ -29,6 +29,7 @@ use std::{
 /// refresh only reads these values, so a recipe refresh cannot reset a selected channel or point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ControlsUi {
+    pub(crate) query_choices: BTreeMap<String, super::query_choice::QueryChoiceUi>,
     pub(crate) group_expanded: BTreeMap<String, bool>,
     /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
     /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
@@ -61,6 +62,10 @@ pub(crate) struct CurveUi {
     pub(crate) edits: BTreeMap<(String, usize, usize), String>,
     /// The accepted sampled curve of each channel, by channel parameter.
     pub(crate) samples: BTreeMap<String, CurveSamples>,
+    /// The Points disclosure is open. View state, closed by default, shared by the global and
+    /// masked targets and kept while the window is open: a sample refresh or a photo change
+    /// leaves it as it is.
+    pub(crate) points_open: bool,
 }
 
 /// A colour control's local state.
@@ -281,6 +286,8 @@ pub(crate) struct SectionModel {
     /// A word for the section's own state, shown in its band while expanded: Draft while the
     /// module's canvas draft is open.
     pub(crate) status: Option<String>,
+    /// The covered canvas reported by the host, shared by all geometry sections.
+    pub(crate) geometry_summary: Option<String>,
     /// The name of the mask this section's controls edit through, drawn as the band's accent scope
     /// chip: set on a maskable module's section while the sections are bound to an open mask, and
     /// `None` everywhere else, so leaving Mask mode drops it.
@@ -498,6 +505,9 @@ pub(crate) struct CurveControl {
     pub(crate) id: (String, String),
     pub(crate) action: String,
     pub(crate) label: String,
+    /// Draw the label line above the plot. False for a curve that is the only control of a
+    /// [`headerless_group`], whose band already names it.
+    pub(crate) label_shown: bool,
     pub(crate) channels: Vec<CurveChannelModel>,
     pub(crate) sample_query: String,
     pub(crate) background: bool,
@@ -509,7 +519,17 @@ pub(crate) struct CurveControl {
     pub(crate) point_rows: Vec<CurvePointRowModel>,
     pub(crate) dragging: bool,
     pub(crate) version: u64,
+    /// The Points disclosure is open ([`CurveUi::points_open`]).
+    pub(crate) points_open: bool,
+    /// The most points the shown channel's kind declares.
+    pub(crate) points_max: usize,
+    /// [`CURVE_HINT`] when points can be added and removed: the kind fixes no `x` and its point
+    /// count may vary.
+    pub(crate) hint: Option<String>,
 }
+
+/// The line under a curve plot whose points can be added and removed.
+pub(crate) const CURVE_HINT: &str = "Click to add a point, or double-click one to remove it";
 
 pub(crate) fn group_key(module_id: &str, path: &[usize]) -> String {
     let mut key = format!("{module_id}/");
@@ -656,6 +676,7 @@ pub(crate) enum ControlModel {
     Range(Box<RangeControl>),
     Toggle(ToggleControl),
     Enum(EnumControl),
+    QueryChoice(Box<super::query_choice::QueryChoiceModel>),
     Color(ColorControl),
     Curve(CurveControl),
     Group(GroupControl),
@@ -683,8 +704,8 @@ pub(crate) struct PresetChip {
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
 ///
 /// Idle, the same Ratio and Angle controls read the displayed entry's committed crop exactly as a
-/// draft opened on it would seed them, so opening the draft moves nothing; a change to one of
-/// them opens that draft and applies the change to it.
+/// draft opened on it would seed them; a change opens that draft and applies the change to it.
+/// While drafting the preset chips appear in the floating bar rather than in the section.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CropSectionModel {
     pub(crate) title: String,
@@ -765,6 +786,28 @@ impl ToolsModel {
     }
 }
 
+/// Geometry diagnostics are host data: the desktop only formats the reported stage covers.
+fn geometry_summary(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<String> {
+    if !module
+        .effects
+        .iter()
+        .any(|effect| effect.stage == EffectStage::Geometry)
+    {
+        return None;
+    }
+    let geometry = inputs.document.recipe.as_ref()?.geometry.as_ref()?;
+    let cover = &geometry["cover"];
+    let combined = cover["combined"].as_f64()?;
+    if combined <= 1.0 {
+        return None;
+    }
+    Some(format!(
+        "Lens ×{:.3} · Perspective ×{:.3} · cover ×{combined:.3}",
+        cover["lens"].as_f64()?,
+        cover["perspective"].as_f64()?
+    ))
+}
+
 /// One module's section.
 fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let expanded = expanded(module, inputs);
@@ -803,6 +846,11 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                     &[0, index],
                 ));
             }
+            // A curve that is the headerless group's only control is named by the band above
+            // it, so it draws no label line of its own.
+            if let [ControlModel::Curve(curve)] = controls.as_mut_slice() {
+                curve.label_shown = false;
+            }
         }
         None => {
             for (index, control) in module.controls.iter().enumerate() {
@@ -833,6 +881,7 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
         controls,
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
+        geometry_summary: geometry_summary(module, inputs),
         scope: scope.map(str::to_owned),
         enabled,
         disabled_reason,
@@ -1121,6 +1170,34 @@ fn resolved_model(
                 high,
                 low_feather,
                 high_feather,
+            }))
+        }
+        Control::QueryChoice(control) => {
+            let ui = inputs
+                .control_ui
+                .query_choices
+                .get(&control.action)
+                .cloned()
+                .unwrap_or_default();
+            let shared = control
+                .shared
+                .iter()
+                .filter(|name| ui.shows_shared(name))
+                .filter_map(|name| {
+                    let parameter = owner.parameter(&control.action, name)?.clone();
+                    let text = inputs
+                        .fields
+                        .get(&control.action, name)
+                        .map(str::to_owned)
+                        .unwrap_or_default();
+                    Some(super::query_choice::SharedInput { parameter, text })
+                })
+                .collect();
+            ControlModel::QueryChoice(Box::new(super::query_choice::QueryChoiceModel {
+                control: control.clone(),
+                ui,
+                shared,
+                enabled,
             }))
         }
         Control::Toggle(toggle) => value_model(
@@ -1559,6 +1636,18 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
     let precision = declared
         .and_then(|parameter| parameter.precision)
         .unwrap_or(3) as usize;
+    let (points_max, hint) = match declared.map(|declared| &declared.kind) {
+        Some(ParameterKind::Curve {
+            points_min,
+            points_max,
+            fixed_x,
+            ..
+        }) => (
+            *points_max,
+            (fixed_x.is_none() && points_min != points_max).then(|| CURVE_HINT.to_owned()),
+        ),
+        _ => (0, None),
+    };
     let parsed = declared.and_then(|declared| parse_field(declared, text).ok());
     let points = parsed
         .as_ref()
@@ -1632,6 +1721,7 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
         id,
         action: action.to_owned(),
         label: curve.label.clone(),
+        label_shown: true,
         channels: channels
             .iter()
             .map(|channel| CurveChannelModel {
@@ -1651,6 +1741,9 @@ fn curve_model(inputs: &Inputs<'_>, curve: &luxforge_core::CurveControl) -> Cont
         point_rows,
         dragging,
         version: hasher.finish(),
+        points_open: local.is_some_and(|local| local.points_open),
+        points_max,
+        hint,
     })
 }
 
@@ -1756,7 +1849,7 @@ fn angle_control(
 }
 
 /// One chip per declared ratio preset, with `chosen` the option that reads selected.
-fn preset_chips(presets: &[AspectPreset], chosen: &str) -> Vec<PresetChip> {
+pub(crate) fn preset_chips(presets: &[AspectPreset], chosen: &str) -> Vec<PresetChip> {
     presets
         .iter()
         .enumerate()
@@ -2030,6 +2123,9 @@ pub(crate) fn labelled_control<'a>(
         Control::Color(color) => field(&color.action, &color.parameter, &color.label),
         Control::Toggle(toggle) => field(&toggle.action, &toggle.parameter, &toggle.label),
         Control::Choice(choice) => field(&choice.action, &choice.parameter, &choice.label),
+        Control::QueryChoice(choice) => (choice.action == action
+            && choice.shared.iter().any(|name| name == parameter))
+        .then_some(choice.label.as_str()),
         Control::Curve(curve) => (curve.action == action
             && curve
                 .channels

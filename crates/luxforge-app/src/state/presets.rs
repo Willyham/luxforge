@@ -197,7 +197,8 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
             | Control::Action(_)
             | Control::Picker(_)
             | Control::Task(_)
-            | Control::Presets(_) => Vec::new(),
+            | Control::Presets(_)
+            | Control::QueryChoice(_) => Vec::new(),
         };
         if fields.is_empty() {
             continue;
@@ -211,7 +212,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
         for (action, parameter) in fields {
             let declared = module
                 .action(action)
-                .is_some_and(|declared| declared.parameter(parameter).is_some());
+                .is_some_and(|declared| declared.preset && declared.parameter(parameter).is_some());
             if !declared || !is_patch(modules, action) {
                 continue;
             }
@@ -566,13 +567,27 @@ mod tests {
                 "Basic \u{00b7} White balance",
                 "Basic \u{00b7} Tone",
                 "Basic \u{00b7} Colour",
+                "Tone curve \u{00b7} Tone curve",
+                "Detail \u{00b7} Sharpening",
+                "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",
                 "Colour mixer \u{00b7} Hue",
                 "Colour mixer \u{00b7} Saturation",
                 "Colour mixer \u{00b7} Luminance",
                 "Vignette \u{00b7} Vignette",
             ],
-            "RAW, transforms, crop and the pixel proof declare no field patch"
+            "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.id == "luxforge.perspective")
+        );
+        assert!(
+            groups
+                .iter()
+                .flat_map(|group| &group.fields)
+                .all(|(action, _)| action != "set-perspective")
         );
         let tone = &groups[1];
         assert_eq!(
@@ -599,6 +614,21 @@ mod tests {
                 vec!["temperature".to_owned(), "tint".to_owned()]
             )]
         );
+        for (group, fields) in [
+            (
+                4,
+                ["sharpening", "radius", "sharpen-detail", "sharpen-masking"],
+            ),
+            (
+                5,
+                ["luminance", "luminance-detail", "colour", "colour-detail"],
+            ),
+        ] {
+            assert_eq!(
+                groups[group].fields,
+                [("set-detail".to_owned(), fields.map(str::to_owned).to_vec())]
+            );
+        }
         // The white-balance rule is the only default: every other group starts checked.
         let unchecked: Vec<_> = groups
             .iter()

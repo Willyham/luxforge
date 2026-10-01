@@ -9,7 +9,9 @@ use crate::{
     *,
 };
 use luxforge_core::CROP_EFFECT;
-use luxforge_evidence::{self as script, DraftStep, PaletteStep, PreviewStep, WorkspaceStep};
+use luxforge_evidence::{
+    self as script, CompareStep, DraftStep, PaletteStep, PreviewStep, WorkspaceStep,
+};
 
 /// `edit.transform rotate-right` on an orientation-1 fixture reorders its quadrants exactly as
 /// EXIF orientation 6 does (a 90 degree clockwise turn: new top-left is old bottom-left, and so
@@ -126,6 +128,58 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             POINTER_MODE,
             true,
         ),
+        Step::new("compare-ready", PaletteStep::Run("Fit".into())).commits(0),
+        Step::new("compare-guides-off", WorkspaceStep::default().thirds(false)).commits(0),
+        Step::new(
+            "compare-adjusted",
+            script::Step::call("edit.set-basic", json!({"exposure":-1.0})),
+        )
+        .commits(1),
+        Step::new(
+            "compare-cropped",
+            script::Step::call(
+                "edit.crop",
+                json!({"x":0.1,"y":0.1,"width":0.8,"height":0.8}),
+            ),
+        )
+        .commits(1),
+        Step::new(
+            "compare-after",
+            script::Step::call("edit.transform", json!({"transform":"rotate-right"})),
+        )
+        .commits(1),
+        Step::new("compare-slider", CompareStep::Tap).commits(0),
+        Step::new("compare-quarter", CompareStep::Position(0.25)).commits(0),
+        Step::new("compare-before", CompareStep::Position(1.0)).commits(0),
+        Step::new("compare-after-only", CompareStep::Position(0.0)).commits(0),
+        Step::new("compare-middle", CompareStep::Position(0.5)).commits(0),
+        Step::new("compare-press", script::Step::Key { key: "\\".into() }).commits(0),
+        Step::new("compare-held", script::Step::Wait { ms: 250 }).commits(0),
+        Step::new("compare-released", CompareStep::Release).commits(0),
+        Step::new("compare-zoomed", script::ViewStep::Percent(200.0)).commits(0),
+        Step::new("compare-zoom-before", CompareStep::Position(1.0)).commits(0),
+        Step::new("compare-zoom-after", CompareStep::Position(0.0)).commits(0),
+        Step::new("compare-fit", script::ViewStep::Fit).commits(0),
+        Step::new("compare-fit-middle", CompareStep::Position(0.5)).commits(0),
+        Step::new(
+            "compare-exited",
+            script::Step::Key {
+                key: script::KEY_ESCAPE.into(),
+            },
+        )
+        .commits(0),
+        Step::new("compare-toggled", CompareStep::Tap).commits(0),
+        Step::new("compare-toggled-off", CompareStep::Tap).commits(0),
+        Step::new("compare-full-press", script::Step::Key { key: "\\".into() }).commits(0),
+        Step::new("compare-full-held", script::Step::Wait { ms: 250 }).commits(0),
+        Step::new("compare-full-released", CompareStep::Release).commits(0),
+        Step::new(
+            "compare-cancel-press",
+            script::Step::Key { key: "\\".into() },
+        )
+        .commits(0),
+        Step::new("compare-cancelled", CompareStep::FocusLoss).commits(0),
+        Step::new("compare-cancel-late", script::Step::Wait { ms: 300 }).commits(0),
     ])
 }
 
@@ -285,7 +339,142 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "draft.cancel did not end the draft",
     )?;
 
-    checks.write(&launch.evidence, "workspace", json!({}))
+    let before = launch.at("compare-before")?;
+    let after = launch.at("compare-after")?;
+    for (name, position) in [
+        ("compare-slider", 0.5),
+        ("compare-quarter", 0.25),
+        ("compare-before", 1.0),
+        ("compare-after-only", 0.0),
+        ("compare-middle", 0.5),
+        ("compare-released", 0.5),
+    ] {
+        let frame = launch.at(name)?;
+        ensure(
+            frame.state()["comparison"]["position"] == json!(position),
+            format!("{name}: divider position"),
+        )?;
+        ensure(
+            frame.state()["comparison"]["after_entry"]
+                == after.state()["stack"]["displayed"]["entry"],
+            format!("{name}: the After entry changed"),
+        )?;
+        ensure(
+            frame.photo_rect()? == after.photo_rect()?,
+            format!("{name}: comparison lost the crop/orientation framing"),
+        )?;
+        for x in [0.15, 0.85] {
+            let reference = if x < position { before } else { after };
+            for (channel, (a, b)) in frame
+                .rgb_at([x, 0.35], 2)?
+                .into_iter()
+                .zip(reference.rgb_at([x, 0.35], 2)?)
+                .enumerate()
+            {
+                checks.compare(
+                    frame,
+                    &format!("{name} side at {x} channel {channel}"),
+                    a,
+                    b,
+                    crate::scenario::Tolerance::Within(1.0),
+                )?;
+            }
+        }
+    }
+    checks.compare(
+        before,
+        "Before visibly differs from adjusted After",
+        before.luminance_at([0.15, 0.35], 2)?,
+        after.luminance_at([0.15, 0.35], 2)?,
+        crate::scenario::Tolerance::Apart(5.0),
+    )?;
+    for (name, position) in [
+        ("compare-zoomed", 0.5),
+        ("compare-zoom-before", 1.0),
+        ("compare-zoom-after", 0.0),
+    ] {
+        let frame = launch.at(name)?;
+        for x in [0.15, 0.85] {
+            let reference = if x < position { before } else { after };
+            for (channel, (a, b)) in frame
+                .rgb_at([x, 0.35], 2)?
+                .into_iter()
+                .zip(reference.rgb_at([x, 0.35], 2)?)
+                .enumerate()
+            {
+                checks.compare(
+                    frame,
+                    &format!("{name} preserves zoom alignment at {x} channel {channel}"),
+                    a,
+                    b,
+                    crate::scenario::Tolerance::Within(1.0),
+                )?;
+            }
+        }
+    }
+    let held = launch.at("compare-held")?;
+    ensure(
+        held.state()["compare_hold"] == true,
+        "backslash did not replace the slider",
+    )?;
+    ensure(
+        launch.at("compare-press")?.state()["compare_key_pending"] == true,
+        "backslash press did not arm its hold deadline",
+    )?;
+    ensure(
+        held.state()["compare_key_pending"] == false,
+        "hold deadline remained active after recognition",
+    )?;
+    checks.compare(
+        held,
+        "Held Before fills the After side",
+        held.luminance_at([0.85, 0.35], 2)?,
+        before.luminance_at([0.85, 0.35], 2)?,
+        crate::scenario::Tolerance::Within(1.0),
+    )?;
+    let middle = launch.at("compare-slider")?;
+    let quarter = launch.at("compare-quarter")?;
+    ensure(
+        middle.state()["surface"]["texture_writes"] == quarter.state()["surface"]["texture_writes"],
+        "divider motion uploaded an unchanged photograph",
+    )?;
+    let full_held = launch.at("compare-full-held")?;
+    ensure(
+        full_held.state()["compare"] == true && full_held.state()["comparison"].is_null(),
+        "a long backslash press outside the slider did not hold Before",
+    )?;
+    checks.compare(
+        full_held,
+        "Held Before outside the slider",
+        full_held.luminance_at([0.85, 0.35], 2)?,
+        before.luminance_at([0.85, 0.35], 2)?,
+        crate::scenario::Tolerance::Within(1.0),
+    )?;
+    for name in [
+        "compare-exited",
+        "compare-toggled-off",
+        "compare-full-released",
+        "compare-cancelled",
+        "compare-cancel-late",
+    ] {
+        let frame = launch.at(name)?;
+        ensure(
+            frame.state()["comparison"].is_null() && frame.state()["compare"] == false,
+            format!("{name}: compare did not exit"),
+        )?;
+        ensure(
+            frame.state()["compare_key_pending"] == false,
+            format!("{name}: hold deadline remained active"),
+        )?;
+        checks.compare(
+            frame,
+            "Exit restores adjusted After",
+            frame.luminance_at([0.85, 0.35], 2)?,
+            after.luminance_at([0.85, 0.35], 2)?,
+            crate::scenario::Tolerance::Within(1.0),
+        )?;
+    }
+    checks.write(&launch.evidence, "workspace", json!({"comparison":"aligned crop/orientation, divider endpoints, backslash tap/hold, Escape/focus loss and unchanged uploads"}))
 }
 
 pub const UNAVAILABLE_NOTE: &str = "Two launches: the first commits a crop layer with every built-in module registered; the second reuses its catalog with `--disable-module luxforge.crop` and reopens the same fixture, which the catalog dedupes to the same asset, so the stack's crop layer is reported unavailable instead of silently rendered without it.";

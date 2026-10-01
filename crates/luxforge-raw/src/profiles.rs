@@ -119,9 +119,31 @@ pub(crate) struct Dng {
     pub calibration_identity: Text,
     pub corrections: DngCorrections,
     pub interpretation: Text,
+    #[serde(default)]
+    pub optics: Option<DngOptics>,
     pub required_opcodes: List<Opcode>,
     #[serde(default)]
     pub decoder_active_bottom_trim: u32,
+}
+
+/// Declared optical roles of required DNG opcodes. This is camera policy, not persisted metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DngOptics {
+    #[serde(default, rename = "GainMap")]
+    pub gain_map: Option<DngOpticalRole>,
+    #[serde(default, rename = "WarpRectilinear")]
+    pub warp_rectilinear: Option<DngOpticalRole>,
+    #[serde(default, rename = "FixVignetteRadial")]
+    pub fix_vignette_radial: Option<DngOpticalRole>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DngOpticalRole {
+    Distortion,
+    LateralCa,
+    Shading,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -220,6 +242,31 @@ impl Catalog {
                 }
             }
             if let Some(dng) = &camera.dng {
+                if let Some(optics) = dng.optics {
+                    for (id, role, allowed) in [
+                        (9, optics.gain_map, &[DngOpticalRole::Shading][..]),
+                        (
+                            1,
+                            optics.warp_rectilinear,
+                            &[DngOpticalRole::Distortion, DngOpticalRole::LateralCa][..],
+                        ),
+                        (
+                            3,
+                            optics.fix_vignette_radial,
+                            &[DngOpticalRole::Shading][..],
+                        ),
+                    ] {
+                        if let Some(role) = role
+                            && (!allowed.contains(&role)
+                                || !dng
+                                    .required_opcodes
+                                    .iter()
+                                    .any(|op| op.list == opcodes::OPCODE_LIST3 && op.id == id))
+                        {
+                            return fail("invalid DNG optical role");
+                        }
+                    }
+                }
                 if !matches!(
                     dng.container,
                     DngContainer::UncompressedU16SingleStrip

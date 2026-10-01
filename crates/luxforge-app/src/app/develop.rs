@@ -740,15 +740,18 @@ impl Editor {
         self.open_generation.store(generation, Ordering::Release);
         self.presentation.preview_generation = self.cancel_preview_queue();
         // The photograph on screen is closed: nothing reads back into it, and no panel, readout or
-        // control describes it while the next one prepares.
+        // control describes it while the next one prepares, nor does a Before/After slider's
+        // After frame; the adopted session ends its comparison.
         self.document = Default::default();
+        self.presentation.compare_after = None;
         self.hover.readout = None;
         self.controls.editing = None;
         self.controls.dragging = None;
         self.busy = true;
         self.develop.state.switching = Some(photo.name.clone());
         self.develop.state.preview = None;
-        let key_frames = luxforge_ui::surface_diagnostics().drawn_frames;
+        let key_frames =
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE).drawn_frames;
         self.develop.switch = Some(Switch {
             asset: photo.asset_id.clone(),
             generation,
@@ -1002,7 +1005,7 @@ impl Editor {
         if timing.presented_after.is_some() {
             return;
         }
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if gpu.drawn_full_version == Some(version) {
             timing.presented_after = Some(
                 gpu.drawn_full_version_frame
@@ -1101,7 +1104,7 @@ impl Editor {
                 "source": document.asset.source.tag().label(),
             })
         });
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         json!({
             "planning": state.planning,
             "confirm": confirm,

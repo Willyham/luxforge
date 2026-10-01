@@ -330,6 +330,8 @@ pub struct ClientSession {
     /// history and never outlives the session.
     #[serde(default)]
     pub draft: Option<Draft>,
+    #[serde(skip)]
+    pub pixel_memo: crate::editor::pixels::PixelMemo,
     #[serde(default)]
     pub revision: u64,
     /// The authority this client registered with. The owner sets it before the client's first call

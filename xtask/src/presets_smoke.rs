@@ -205,8 +205,9 @@ fn layers(frame: &Frame) -> Result<BTreeMap<String, Value>> {
 }
 
 /// Each registered field-patch action's module effect and its parameters' declared defaults: what
-/// a stored payload omits.
-struct Patches(BTreeMap<String, (String, BTreeMap<String, f64>)>);
+/// a stored payload omits. A default is a JSON value, a number and a curve's points alike, compared
+/// by [`same_value`].
+struct Patches(BTreeMap<String, (String, BTreeMap<String, Value>)>);
 
 impl Patches {
     fn load() -> Result<Self> {
@@ -222,10 +223,7 @@ impl Patches {
                     .parameters
                     .iter()
                     .filter_map(|parameter| {
-                        Some((
-                            parameter.name.clone(),
-                            parameter.default.as_ref()?.as_f64()?,
-                        ))
+                        Some((parameter.name.clone(), parameter.default.clone()?))
                     })
                     .collect();
                 actions.insert(action.id.clone(), (module.effects[0].id.clone(), defaults));
@@ -256,11 +254,13 @@ impl Patches {
                 .as_object()
                 .ok_or("A settings value is not an object")?
             {
-                let number = value.as_f64().ok_or("A preset field is not a number")?;
-                if defaults.get(field) == Some(&number) {
+                if defaults
+                    .get(field)
+                    .is_some_and(|default| same_value(default, value))
+                {
                     payload.remove(field);
                 } else {
-                    payload.insert(field.clone(), json!(number));
+                    payload.insert(field.clone(), value.clone());
                 }
             }
             after.insert(effect.clone(), Value::Object(payload));
@@ -269,7 +269,23 @@ impl Patches {
     }
 }
 
-/// Two payload maps hold the same fields at the same numbers.
+/// Two field values are the same in canonical form: numbers as `f64` within readback rounding, so
+/// `1` and `1.0` agree; arrays, such as a curve's points, element by element; anything else
+/// exactly.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(_), Value::Number(_)) => match (a.as_f64(), b.as_f64()) {
+            (Some(x), Some(y)) => (x - y).abs() < 1e-9,
+            _ => false,
+        },
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(x, y)| same_value(x, y))
+        }
+        _ => a == b,
+    }
+}
+
+/// Two payload maps hold the same fields at the same values.
 fn same_layers(a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool {
     a.len() == b.len()
         && a.iter().all(|(effect, payload)| {
@@ -281,10 +297,9 @@ fn same_layers(a: &BTreeMap<String, Value>, b: &BTreeMap<String, Value>) -> bool
             };
             left.len() == right.len()
                 && left.iter().all(|(field, value)| {
-                    match (value.as_f64(), right.get(field).and_then(Value::as_f64)) {
-                        (Some(x), Some(y)) => (x - y).abs() < 1e-9,
-                        _ => false,
-                    }
+                    right
+                        .get(field)
+                        .is_some_and(|other| same_value(value, other))
                 })
         })
 }
@@ -560,4 +575,65 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "scope": "Stored payloads against a stepwise merge of the fixtures' imported settings; mean RGB of one patch per quadrant of the photograph the editor records drawing, read back from the renderer. A direction and correlation check, not a colorimetric claim",
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A curve field is a point list: the patch model stores it as sent, omits it at the declared
+    /// identity whether written with integers or floats, and compares it point by point.
+    #[test]
+    fn patches_compare_a_curve_field_by_value() {
+        let patches = Patches::load().unwrap();
+        let curve = luxforge_core::CURVE_EFFECT.to_owned();
+        let points = json!([[0.0, 0.1], [0.5, 0.45], [1.0, 0.9]]);
+        let settings = |luminance: Value| {
+            json!({"set-curve": {"luminance": luminance}, "set-basic": {"exposure": 0.5}})
+                .as_object()
+                .unwrap()
+                .clone()
+        };
+        let applied = patches
+            .applied(&BTreeMap::new(), &settings(points.clone()))
+            .unwrap();
+        assert_eq!(applied[&curve], json!({"luminance": points}));
+        let basic = luxforge_core::BASIC_EFFECT.to_owned();
+        assert_eq!(applied[&basic], json!({"exposure": 0.5}));
+
+        // The identity is the declared default, `[[0, 0], [1, 1]]`, however its numbers are written.
+        let identity = patches
+            .applied(&applied, &settings(json!([[0.0, 0.0], [1.0, 1.0]])))
+            .unwrap();
+        assert_eq!(identity[&curve], json!({}));
+
+        // The stored payload's numbers as the renderer writes them compare equal; a moved point,
+        // a missing point or a number where a list belongs does not.
+        let stored = |luminance: Value| {
+            let mut layers = applied.clone();
+            layers.insert(curve.clone(), json!({"luminance": luminance}));
+            layers
+        };
+        assert!(same_layers(
+            &applied,
+            &stored(json!([[0, 0.1], [0.5, 0.45], [1, 0.9]]))
+        ));
+        assert!(same_layers(
+            &applied,
+            &stored(json!([[0.0, 0.1], [0.5, 0.45 + 1e-12], [1.0, 0.9]]))
+        ));
+        for different in [
+            json!([[0.0, 0.1], [0.5, 0.46], [1.0, 0.9]]),
+            json!([[0.0, 0.1], [1.0, 0.9]]),
+            json!([[0.0, 0.1], [0.5, 0.45], [1.0, 0.9], [1.0, 0.9]]),
+            json!(0.1),
+        ] {
+            assert!(
+                !same_layers(&applied, &stored(different.clone())),
+                "{different}"
+            );
+        }
+        assert!(same_value(&json!(1), &json!(1.0)));
+        assert!(!same_value(&json!("as-shot"), &json!("custom")));
+    }
 }

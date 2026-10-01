@@ -29,7 +29,7 @@ pub(crate) enum CropMessage {
     CustomHeight(String),
     Swap,
     Lock,
-    /// The Straighten guide toggle: a drag on the image draws a levelling line instead.
+    /// Arm or put down the one-shot Straighten tool; its next drag draws a levelling line.
     Guide(bool),
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     Option(bool),

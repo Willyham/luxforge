@@ -940,6 +940,11 @@ fn capture_refuses_unknown_non_patch_and_unavailable_actions_and_bad_field_lists
             "transform is not a field-patch action",
         ),
         (
+            json!({"set-perspective": ["horizontal"]}),
+            ErrorKind::Validation,
+            "set-perspective is not presettable",
+        ),
+        (
             json!({"reset-basic": true}),
             ErrorKind::Validation,
             "reset-basic is not a field-patch action",
@@ -1122,6 +1127,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
         title: "Sketch".into(),
         hint: None,
         effects: vec![EffectDescriptor {
+            fit_settle: Default::default(),
             id: "test.sketch.effect".into(),
             format: EFFECT_FORMAT,
             stage: EffectStage::Pixel,
@@ -1136,6 +1142,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             title: "Set sketch".into(),
             notes: "a field patch with one parameter that declares no default".into(),
             patch: true,
+            preset: true,
             parameters: vec![
                 parameter("weight", None),
                 parameter("size", Some(json!(1.0))),

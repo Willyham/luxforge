@@ -32,12 +32,27 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Packaged dependency delivery and portability
 - M4 responsiveness, memory and JPEG regression measurements
 - End-to-end RAW editing journey
+- Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, then reconsider it against the highlight-clipped exception to the `raw-panel` gates. The candidate is in [instant previews](design/instant-preview.md#popular-cameras) and the exception in [decisions](decisions.md#raw-white-balance-drafts)
 
 **Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).
 - Nikon High Efficiency NEF once upstream LibRaw decodes it; refused explicitly until then
 - Sony A7 V compressed ARW once a pinned decoder reads it
 
 ## Editing tools
+
+**Tone curve follow-ups** ([design](design/tone-curve.md), [plan](../tasks/tone-curve.json)). The Tone curve is delivered ([feature status](features.md)).
+- Photo-sized measurement at 24 MP and 60 MP: the point drag to the presented frame, its settled histogram and the unit's frame cost
+- Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
+- Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
+
+**Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
+- Bounded numerical kernels and shared restoration/scale contracts
+- Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence), a restoration-prefix proxy cache and an input-grid overlay cache
+- Generated controls/API, masks, native presets and history
+- Approximate motion, exact-derived settled Fit and 100% inspection
+- Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
+
+**Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
 - Owner decisions: behaviour, repair-stage order, scope
@@ -95,7 +110,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 **Full-editor verification.** Native M4 handoff of the complete editor, then Windows and Linux.
 
 **Cross-platform builds.**
-- Three-platform CI with GUI smoke results and artifact retention
+- macOS and Linux CI with GUI smoke results and artifact retention; Windows CI is disabled and Windows support will come later
 - Windows and Linux packaging, checked in real desktop sessions
 - Reproducible Linux VM route
 - Developer guide checked on Windows and Linux

@@ -5,7 +5,7 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     EffectDescriptor, EffectStage, LayerReport, ModuleDescriptor, NewLayer, ParameterDescriptor,
-    Processing, Stage, StageContext, ToolModule, decode_parameters, label_value,
+    Processing, StageContext, ToolModule, decode_parameters, label_value,
 };
 use crate::{EFFECT_FORMAT, Error, Layer, PixelReplace};
 use serde_json::{Map, Value, json};
@@ -199,8 +199,9 @@ impl ToolModule for PixelModule {
         effect_id: &str,
         format: u32,
         value: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         let pixel = payload(effect_id, format, value)?;
         if pixel.x >= stage.width || pixel.y >= stage.height {
             return Err(Error::validation(format!(

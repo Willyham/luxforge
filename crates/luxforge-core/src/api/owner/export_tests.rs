@@ -312,6 +312,112 @@ const MAX_TOLERANCE: u8 = 80;
 const NEAR: u8 = 8;
 const FAR_SHARE: f64 = 0.05;
 
+/// Count the real Detail operation on the export lane, then compare its file with the same
+/// deterministic encoder reading an independently evaluated exact raster. JPEG decoding is not
+/// used as an exact-pixel oracle.
+#[test]
+fn detail_export_evaluates_exact_detail_once() {
+    use sha2::{Digest, Sha256};
+
+    let mut harness = Harness::start("detail-once");
+    let state = harness.import("detail-original.jpg");
+    let original = harness.dir.join("detail-original.jpg");
+    let original_hash = format!("{:x}", Sha256::digest(fs::read(&original).unwrap()));
+    let asset = state["asset"]["id"].clone();
+    harness.ok(
+        "edit.set-detail",
+        json!({
+            "asset_id":asset,
+            "luminance":40,"colour":40,"sharpening":50,"radius":1,
+            "mutation":{"expected_revision":0,"request_id":"detail-export-settings","actor":"test"}
+        }),
+    );
+    let edited = harness.ok("asset.state", json!({"asset_id":asset}));
+    let entry = edited["current_entry"]["id"].clone();
+    let recipe: crate::Recipe =
+        serde_json::from_value(edited["current_entry"]["snapshot"]["recipe"].clone()).unwrap();
+    assert_eq!(recipe.layers.len(), 1);
+    assert_eq!(recipe.layers[0].effect_id, crate::DETAIL_EFFECT);
+
+    // The 480x320 stage fits one spatial tile, so run_tile is called on the export thread even
+    // when its internal rows use the pool. This observer counts that worker alone.
+    let tiles = Arc::new(AtomicU64::new(0));
+    let observed = tiles.clone();
+    let (entered, reached) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let entered = Mutex::new(entered);
+    let released = Mutex::new(released);
+    harness.owner.hold_exports(Some(Arc::new(move |phase| {
+        if phase == "rendering" {
+            crate::render::spatial::observe_tiles(observed.clone());
+            let _ = entered.lock().unwrap().send(());
+            let _ = released.lock().unwrap().recv();
+        }
+    })));
+    let destination = destinations(&harness).join("detail.jpg");
+    let parameters = json!({
+        "asset_id":asset,"entry_id":entry,"destination":destination,
+        "mutation":{"request_id":"detail-export-once","actor":"test"}
+    });
+    let accepted = harness.ok("export.jpeg", parameters.clone());
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        0,
+        "the export is held before rendering"
+    );
+    // The accepted entry stays frozen while a different Detail recipe becomes current.
+    harness.ok(
+        "edit.set-detail",
+        json!({
+            "asset_id":asset,"sharpening":120,"luminance":90,
+            "mutation":{"expected_revision":1,"request_id":"detail-after-export","actor":"test"}
+        }),
+    );
+    release.send(()).unwrap();
+    assert_eq!(harness.settle(&accepted["job_id"])["status"], "ready");
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        1,
+        "one exact Detail tile chain"
+    );
+    let retry = harness.ok("export.jpeg", parameters);
+    assert_eq!(retry["job_id"], accepted["job_id"]);
+    assert_eq!(retry["deduplicated"], true);
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        1,
+        "retry evaluates no Detail tile"
+    );
+
+    harness.stop();
+    let exact = reference(&harness.catalog, &asset, &entry);
+    let source = crate::open_source(&original).unwrap();
+    let independently_evaluated = crate::render(
+        &ModuleRegistry::builtin(),
+        &source,
+        &recipe,
+        crate::RenderOptions::default(),
+        &crate::RenderContext::new(),
+    )
+    .unwrap()
+    .frame(exact.snapshot_id.clone())
+    .unwrap();
+    assert_eq!(
+        exact.rgba, independently_evaluated.rgba,
+        "exact saved-entry RGBA"
+    );
+    assert_ne!(
+        exact.rgba, source.rgba,
+        "the fixture exercises active Detail"
+    );
+    assert_encodes(&destination, &exact, "one exact Detail evaluation");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs::read(&original).unwrap())),
+        original_hash
+    );
+}
+
 /// An export plans the entry's output stage and suggests a name beside the original, writes the
 /// exact render of that entry as a new JPEG, reports every phase on the board and records one
 /// event under the request that asked for it.
@@ -993,4 +1099,107 @@ fn a_raw_export_matches_the_exact_render() {
     // and noise; it is reported, and the byte equality above is the proof.
     let (mean, max, far) = difference(&out.join("raw.jpg"), &frame);
     eprintln!("RAW export: mean {mean:?}, max {max:?}, share beyond {NEAR}: {far}");
+}
+
+/// A metadata-bearing generated JPEG selects the real pinned record through the same query and
+/// action as the desktop. It is a numerical fixture, not photographic profile qualification.
+fn lens_asset(h: &Harness) -> (Value, PathBuf) {
+    let path = h.dir.join("lens-original.jpg");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg"),
+        &path,
+    )
+    .unwrap();
+    let asset = h.opened(&path)["asset"]["id"].clone();
+    let profiles =
+        luxforge_testbase::wait_for("the offline lens index to finish its one parse", || {
+            let response = h.send(
+                "query.lens-profiles",
+                json!({"asset_id":asset,"assume-uncorrected":true}),
+            );
+            if let Some(error) = response.error {
+                assert_eq!(error.code, "not-ready", "{error:?}");
+                None
+            } else {
+                response.result
+            }
+        });
+    let row = &profiles["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{profiles}"
+    );
+    h.ok("edit.select-lens-profile",json!({"asset_id":asset,"profile":row["key"],"assume-uncorrected":true,"mutation":{"expected_revision":0,"request_id":"lens-selection","actor":"test"}}));
+    let revision = h.ok("asset.state", json!({"asset_id":asset}))["revision"].clone();
+    h.ok("edit.set-perspective",json!({"asset_id":asset,"horizontal":40,"vertical":-25,"mutation":{"expected_revision":revision,"request_id":"perspective-selection","actor":"test"}}));
+    (asset, path)
+}
+#[test]
+fn warped_export_cancellation_publishes_nothing() {
+    let h = Harness::start("lens-cancel");
+    let (asset, original) = lens_asset(&h);
+    let original_bytes = fs::read(&original).unwrap();
+    let entry = h.ok("asset.state", json!({"asset_id":asset}))["current_entry"].clone();
+    for phase in ["rendering", "encoding", "writing"] {
+        let (reaches, release) = h.hold_at(phase);
+        let destination = h.dir.join(format!("lens-cancel-{phase}.jpg"));
+        let job = h.export(json!({"asset_id":asset,"destination":destination}));
+        reaches
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the named export phase");
+        h.ok("job.cancel", json!({"job_id":job["job_id"]}));
+        release.send(()).unwrap();
+        assert_eq!(h.settle(&job["job_id"])["status"], "cancelled");
+        assert!(!destination.exists());
+        assert_eq!(
+            h.ok("asset.state", json!({"asset_id":asset}))["current_entry"],
+            entry
+        );
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+    }
+    let leftovers: Vec<_> = fs::read_dir(&h.dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.contains(".luxforge-export"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+#[test]
+fn export_refuses_forged_lens_payload_before_publication() {
+    let mut h = Harness::start("lens-forged");
+    let (asset, original) = lens_asset(&h);
+    let original_bytes = fs::read(&original).unwrap();
+    let current = h.ok("asset.state", json!({"asset_id":asset}))["current_entry"].clone();
+    let mut forged = current.clone();
+    let lens = forged["snapshot"]["recipe"]["layers"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|l| l["effect_id"] == crate::LENS_EFFECT)
+        .unwrap();
+    lens["payload"]["profile"]["normalization"]["unit_scale"] = json!(4.0);
+    h.stop();
+    let connection = rusqlite::Connection::open(&h.catalog).unwrap();
+    // Fault injection into an isolated catalog: production history remains immutable.
+    connection
+        .execute_batch("DROP TRIGGER entries_are_immutable;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE entries SET entry_json=?1 WHERE id=?2",
+            rusqlite::params![forged.to_string(), current["id"].as_str().unwrap()],
+        )
+        .unwrap();
+    connection.execute_batch("CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'history entries are immutable'); END;").unwrap();
+    drop(connection);
+    h = h.reopen(Arc::new(ModuleRegistry::builtin()));
+    let destination = h.dir.join("forged.jpg");
+    let refused = h.refused(
+        "export.jpeg",
+        with_envelope(json!({"asset_id":asset,"destination":destination})),
+    );
+    assert_eq!(refused.code, "validation");
+    assert!(!destination.exists());
+    assert_eq!(fs::read(&original).unwrap(), original_bytes);
 }

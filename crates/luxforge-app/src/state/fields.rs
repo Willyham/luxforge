@@ -114,6 +114,21 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
             Control::Color(color) => seed(&color.action, &color.parameter),
             Control::Toggle(toggle) => seed(&toggle.action, &toggle.parameter),
             Control::Choice(choice) => seed(&choice.action, &choice.parameter),
+            Control::QueryChoice(choice) => {
+                for name in &choice.shared {
+                    if let Some(parameter) = owner.parameter(&choice.action, name) {
+                        fields.set(
+                            &choice.action,
+                            name,
+                            if parameter.default.is_some() {
+                                seed_text(parameter)
+                            } else {
+                                String::new()
+                            },
+                        );
+                    }
+                }
+            }
             Control::Curve(curve) => {
                 for channel in &curve.channels {
                     seed(&curve.action, &channel.parameter);
@@ -438,6 +453,8 @@ pub(crate) fn undeclared_label(action: &str, parameter: &str) -> String {
 /// parsed field text, preset wins, so crop and pixel requests are unchanged. A parameter with a
 /// declared default is left out so the host applies that default, and so is an identity: it names
 /// the object the request addresses, which the caller's selection adds as the request's target.
+/// A blank optional input without a default stays absent, so leaving a focal override blank
+/// preserves the source's EXIF value rather than parsing a synthetic override.
 pub(crate) fn action_params(
     action: &ActionDescriptor,
     preset: &Map<String, Value>,
@@ -454,6 +471,9 @@ pub(crate) fn action_params(
         if let Some(value) = preset.get(&parameter.name) {
             params.insert(parameter.name.clone(), value.clone());
         } else if let Some(text) = fields.get(&action.id, &parameter.name) {
+            if text.trim().is_empty() && !parameter.required && parameter.default.is_none() {
+                continue;
+            }
             params.insert(parameter.name.clone(), parse_field(parameter, text)?);
         } else if parameter.default.is_none() && parameter.required {
             return Err(format!("{} requires {}", action.title, parameter.name));
@@ -545,6 +565,29 @@ fn control_preset<'a>(controls: &'a [Control], action: &str) -> Option<&'a Map<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_choice_optional_blank_input_stays_absent_from_selection() {
+        let action = ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::new("key", ParameterKind::String { max_length: 32 })
+                    .required(true),
+                ParameterDescriptor::number("focal", 0.5, 2000.0),
+            ],
+            ..ActionDescriptor::new("select-choice", "Select choice", "test")
+        };
+        let mut fields = Fields::default();
+        fields.set("select-choice", "focal", String::new());
+        let preset = Map::from_iter([("key".into(), Value::String("one".into()))]);
+        assert_eq!(action_params(&action, &preset, &fields).unwrap(), preset);
+        fields.set("select-choice", "focal", "35".into());
+        assert_eq!(
+            action_params(&action, &preset, &fields).unwrap()["focal"],
+            35.0
+        );
+        fields.set("select-choice", "focal", "invalid".into());
+        assert!(action_params(&action, &preset, &fields).is_err());
+    }
     use crate::state::tools::{declared_action, point_pick};
     use serde_json::json;
 
@@ -667,8 +710,25 @@ mod tests {
         assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
         assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
         assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.00"));
+        for (name, expected) in [
+            ("sharpening", "0"),
+            ("radius", "1.0"),
+            ("sharpen-detail", "25"),
+            ("sharpen-masking", "0"),
+            ("luminance", "0"),
+            ("luminance-detail", "50"),
+            ("colour", "0"),
+            ("colour-detail", "50"),
+        ] {
+            assert_eq!(fields.get("set-detail", name), Some(expected), "{name}");
+        }
+        // A curve field seeds its declared default points: the Tone curve's identity.
+        assert_eq!(
+            fields.get("set-curve", "luminance"),
+            Some("[[0.0,0.0],[1.0,1.0]]")
+        );
         // Only declared fields exist: an action driven by presets alone has none, and every
-        // declared number, integer and colour parameter of a built-in has exactly one.
+        // declared number, integer, colour and curve parameter of a built-in has exactly one.
         assert_eq!(
             fields
                 .summary()
@@ -696,6 +756,8 @@ mod tests {
                 "mask.set-radial.radius_y",
                 "mask.set-radial.x",
                 "mask.set-radial.y",
+                "select-controls-choice.show-disabled",
+                "select-lens-profile.focal",
                 "set-basic.blacks",
                 "set-basic.contrast",
                 "set-basic.exposure",
@@ -717,6 +779,15 @@ mod tests {
                 "set-controls.red",
                 "set-controls.rgb",
                 "set-controls.rgb-fields",
+                "set-curve.luminance",
+                "set-detail.colour",
+                "set-detail.colour-detail",
+                "set-detail.luminance",
+                "set-detail.luminance-detail",
+                "set-detail.radius",
+                "set-detail.sharpen-detail",
+                "set-detail.sharpen-masking",
+                "set-detail.sharpening",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",
@@ -741,6 +812,8 @@ mod tests {
                 "set-mixer.yellow-hue",
                 "set-mixer.yellow-luminance",
                 "set-mixer.yellow-saturation",
+                "set-perspective.horizontal",
+                "set-perspective.vertical",
                 "set-pixel.rgb",
                 "set-pixel.x",
                 "set-pixel.y",

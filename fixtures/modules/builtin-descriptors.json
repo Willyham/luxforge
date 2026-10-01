@@ -20,6 +20,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Delete mask"
           },
           {
@@ -50,6 +51,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Rename mask"
           },
           {
@@ -91,6 +93,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Rename component"
           },
           {
@@ -110,6 +113,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Duplicate mask"
           },
           {
@@ -141,6 +145,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Amount"
           },
           {
@@ -170,6 +175,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Invert mask"
           },
           {
@@ -201,6 +207,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Move mask"
           },
           {
@@ -246,6 +253,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Component mode"
           },
           {
@@ -286,6 +294,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Invert component"
           },
           {
@@ -316,6 +325,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Delete component"
           },
           {
@@ -358,6 +368,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Move component"
           },
           {
@@ -486,6 +497,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Paint"
           },
           {
@@ -595,6 +607,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New linear mask"
           },
           {
@@ -689,6 +702,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add linear"
           },
           {
@@ -779,6 +793,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update linear"
           },
           {
@@ -875,6 +890,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New radial mask"
           },
           {
@@ -997,6 +1013,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add radial"
           },
           {
@@ -1115,6 +1132,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update radial"
           },
           {
@@ -1177,6 +1195,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New luminance range mask"
           },
           {
@@ -1265,6 +1284,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add luminance range"
           },
           {
@@ -1349,6 +1369,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update luminance range"
           },
           {
@@ -1371,6 +1392,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New colour range mask"
           },
           {
@@ -1419,6 +1441,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add colour range"
           },
           {
@@ -1463,6 +1486,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update colour range"
           },
           {
@@ -1538,6 +1562,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Sample colour range"
           },
           {
@@ -1580,6 +1605,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Remove colour range sample"
           }
         ],
@@ -1807,6 +1833,212 @@
       }
     ],
     "modules": [
+      {
+        "actions": [
+          {
+            "id": "crop",
+            "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
+            "parameters": [
+              {
+                "default": 0.0,
+                "fine_step": 0.05,
+                "kind": "number",
+                "max": 45.0,
+                "min": -45.0,
+                "name": "angle",
+                "notes": "straightening angle, positive turns the image clockwise on screen",
+                "precision": null,
+                "required": false,
+                "step": 0.5,
+                "unit": "deg"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "x",
+                "notes": "left edge, as a fraction of the rotated box width at angle, measured from the box's left edge",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "y",
+                "notes": "top edge, as a fraction of the rotated box height at angle, measured from the box's top edge",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "notes": "width as a fraction of the rotated box width at angle; x + width may not exceed 1",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "height",
+                "notes": "height as a fraction of the rotated box height at angle; y + height may not exceed 1",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              }
+            ],
+            "patch": false,
+            "title": "Crop"
+          },
+          {
+            "id": "crop-fit",
+            "notes": "commits the largest covered rectangle with the chosen ratio about the chosen center",
+            "parameters": [
+              {
+                "default": "free",
+                "kind": "enum",
+                "name": "aspect",
+                "notes": "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio",
+                "options": [
+                  "free",
+                  "original",
+                  "1:1",
+                  "3:2",
+                  "4:3",
+                  "16:9",
+                  "custom"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 100000.0,
+                "min": 0.001,
+                "name": "aspect-width",
+                "notes": "the aspect-width of a custom ratio; required with aspect custom and rejected with any other aspect",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 100000.0,
+                "min": 0.001,
+                "name": "aspect-height",
+                "notes": "the aspect-height of a custom ratio; required with aspect custom and rejected with any other aspect",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "fine_step": 0.05,
+                "kind": "number",
+                "max": 45.0,
+                "min": -45.0,
+                "name": "angle",
+                "notes": "straightening angle, positive turns the image clockwise on screen",
+                "precision": null,
+                "required": false,
+                "step": 0.5,
+                "unit": "deg"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "center-x",
+                "notes": "center-x of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "center-y",
+                "notes": "center-y of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "box"
+              }
+            ],
+            "patch": false,
+            "title": "Fit crop to a ratio"
+          },
+          {
+            "id": "crop-reset",
+            "notes": "returns an existing crop layer to the neutral payload; a no-op without one",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset crop"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": {
+          "action": "crop",
+          "angle": "angle",
+          "aspect": "aspect",
+          "fit_action": "crop-fit",
+          "height": "height",
+          "icon": "crop",
+          "kind": "crop-frame",
+          "shortcut": "R",
+          "title": "Crop",
+          "width": "width",
+          "x": "x",
+          "y": "y"
+        },
+        "collapsed": true,
+        "controls": [],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.geometry.crop",
+            "order": 10,
+            "single": true,
+            "stage": "geometry"
+          }
+        ],
+        "hint": "Frame, ratio and angle",
+        "id": "luxforge.crop",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "crop-reset",
+          "preset": {}
+        },
+        "title": "Crop and straighten"
+      },
       {
         "actions": [
           {
@@ -2424,6 +2656,358 @@
           "preset": {}
         },
         "title": "Basic"
+      },
+      {
+        "actions": [
+          {
+            "id": "set-curve",
+            "notes": "A monotone point curve over encoded luminance, placed after Basic and before the colour mixer by declared order",
+            "parameters": [
+              {
+                "default": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ],
+                "kind": "curve",
+                "monotone": true,
+                "name": "luminance",
+                "notes": "",
+                "points_max": 16,
+                "points_min": 2,
+                "precision": 2,
+                "required": false,
+                "step": 0.01,
+                "unit": null
+              }
+            ],
+            "patch": true,
+            "title": "Set Tone curve"
+          },
+          {
+            "id": "reset-curve",
+            "notes": "returns the stack's one Tone curve layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Tone curve"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-curve",
+                "background": "histogram",
+                "channels": [
+                  {
+                    "label": "Luminance",
+                    "parameter": "luminance"
+                  }
+                ],
+                "kind": "curve",
+                "label": "Tone curve",
+                "sample_query": "sample-curve"
+              }
+            ],
+            "kind": "group",
+            "label": "Tone curve",
+            "reset": {
+              "action": "set-curve",
+              "preset": {
+                "luminance": [
+                  [
+                    0.0,
+                    0.0
+                  ],
+                  [
+                    1.0,
+                    1.0
+                  ]
+                ]
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.curve.tone",
+            "maskable": true,
+            "order": 5,
+            "single": true,
+            "stage": "color"
+          }
+        ],
+        "hint": "A point curve over the photograph's tones",
+        "id": "luxforge.curve",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "sample-curve",
+            "notes": "257 samples of the curve through the submitted points",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "curve",
+                "monotone": true,
+                "name": "luminance",
+                "notes": "",
+                "points_max": 16,
+                "points_min": 2,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Sample tone curve"
+          }
+        ],
+        "reset": {
+          "action": "reset-curve",
+          "preset": {}
+        },
+        "title": "Tone curve"
+      },
+      {
+        "actions": [
+          {
+            "id": "set-detail",
+            "notes": "merges the named Detail fields into one layer per target before the colour run; omitted fields keep their stored values; noise reduction precedes capture sharpening; a patch that changes nothing is a reported no-op",
+            "parameters": [
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 150.0,
+                "min": 0.0,
+                "name": "sharpening",
+                "notes": "capture-sharpening gain; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 1.0,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.5,
+                "name": "radius",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 1,
+                "required": false,
+                "step": 0.1,
+                "unit": "px"
+              },
+              {
+                "default": 25.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "sharpen-detail",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "sharpen-masking",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "luminance",
+                "notes": "lightness-noise suppression; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "luminance-detail",
+                "notes": "Takes effect when Luminance is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "colour",
+                "notes": "chroma-noise suppression; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "colour-detail",
+                "notes": "Takes effect when Colour is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              }
+            ],
+            "patch": true,
+            "title": "Set Detail"
+          },
+          {
+            "id": "reset-detail",
+            "notes": "returns the stack's one Detail layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Detail"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Amount",
+                "parameter": "sharpening"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Radius",
+                "parameter": "radius"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Detail",
+                "parameter": "sharpen-detail"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Masking",
+                "parameter": "sharpen-masking"
+              }
+            ],
+            "kind": "group",
+            "label": "Sharpening",
+            "reset": {
+              "action": "set-detail",
+              "preset": {
+                "radius": 1.0,
+                "sharpen-detail": 25.0,
+                "sharpen-masking": 0.0,
+                "sharpening": 0.0
+              }
+            }
+          },
+          {
+            "controls": [
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Luminance",
+                "parameter": "luminance"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Luminance detail",
+                "parameter": "luminance-detail"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Colour",
+                "parameter": "colour"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Colour detail",
+                "parameter": "colour-detail"
+              }
+            ],
+            "kind": "group",
+            "label": "Noise reduction",
+            "reset": {
+              "action": "set-detail",
+              "preset": {
+                "colour": 0.0,
+                "colour-detail": 50.0,
+                "luminance": 0.0,
+                "luminance-detail": 50.0
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "fit_settle": "exact",
+            "format": 1,
+            "id": "luxforge.detail.adjust",
+            "maskable": true,
+            "order": 0,
+            "single": true,
+            "stage": "restoration"
+          }
+        ],
+        "hint": "Judge fine detail at 100%",
+        "id": "luxforge.detail",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "reset-detail",
+          "preset": {}
+        },
+        "title": "Detail"
       },
       {
         "actions": [
@@ -3663,208 +4247,244 @@
       {
         "actions": [
           {
-            "id": "crop",
-            "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
+            "id": "select-lens-profile",
+            "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
             "parameters": [
               {
-                "default": 0.0,
-                "fine_step": 0.05,
+                "default": null,
+                "kind": "string",
+                "max_length": 32,
+                "name": "profile",
+                "notes": "",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
                 "kind": "number",
-                "max": 45.0,
-                "min": -45.0,
-                "name": "angle",
-                "notes": "straightening angle, positive turns the image clockwise on screen",
+                "max": 2000.0,
+                "min": 0.5,
+                "name": "focal",
+                "notes": "a focal length supplied explicitly when EXIF has none",
                 "precision": null,
                 "required": false,
-                "step": 0.5,
-                "unit": "deg"
+                "step": null,
+                "unit": "mm"
               },
               {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "x",
-                "notes": "left edge, as a fraction of the rotated box width at angle, measured from the box's left edge",
+                "default": false,
+                "kind": "boolean",
+                "name": "assume-uncorrected",
+                "notes": "acknowledge that this selection assumes no existing distortion correction",
                 "precision": null,
-                "required": true,
+                "required": false,
                 "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "y",
-                "notes": "top edge, as a fraction of the rotated box height at angle, measured from the box's top edge",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "width",
-                "notes": "width as a fraction of the rotated box width at angle; x + width may not exceed 1",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "height",
-                "notes": "height as a fraction of the rotated box height at angle; y + height may not exceed 1",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
+                "unit": null
               }
             ],
             "patch": false,
-            "title": "Crop"
+            "preset": false,
+            "title": "Select lens profile"
           },
           {
-            "id": "crop-fit",
-            "notes": "commits the largest covered rectangle with the chosen ratio about the chosen center",
-            "parameters": [
-              {
-                "default": "free",
-                "kind": "enum",
-                "name": "aspect",
-                "notes": "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio",
-                "options": [
-                  "free",
-                  "original",
-                  "1:1",
-                  "3:2",
-                  "4:3",
-                  "16:9",
-                  "custom"
-                ],
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 100000.0,
-                "min": 0.001,
-                "name": "aspect-width",
-                "notes": "the aspect-width of a custom ratio; required with aspect custom and rejected with any other aspect",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 100000.0,
-                "min": 0.001,
-                "name": "aspect-height",
-                "notes": "the aspect-height of a custom ratio; required with aspect custom and rejected with any other aspect",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": 0.0,
-                "fine_step": 0.05,
-                "kind": "number",
-                "max": 45.0,
-                "min": -45.0,
-                "name": "angle",
-                "notes": "straightening angle, positive turns the image clockwise on screen",
-                "precision": null,
-                "required": false,
-                "step": 0.5,
-                "unit": "deg"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "center-x",
-                "notes": "center-x of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "center-y",
-                "notes": "center-y of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": "box"
-              }
-            ],
-            "patch": false,
-            "title": "Fit crop to a ratio"
-          },
-          {
-            "id": "crop-reset",
-            "notes": "returns an existing crop layer to the neutral payload; a no-op without one",
+            "id": "reset-lens-profile",
+            "notes": "clears the selected profile while keeping the lens layer identity",
             "parameters": [],
             "patch": false,
-            "title": "Reset crop"
+            "preset": false,
+            "title": "Reset Lens correction"
           }
         ],
         "availability": {
           "kind": "available"
         },
-        "canvas": {
-          "action": "crop",
-          "angle": "angle",
-          "aspect": "aspect",
-          "fit_action": "crop-fit",
-          "height": "height",
-          "icon": "crop",
-          "kind": "crop-frame",
-          "shortcut": "R",
-          "title": "Crop",
-          "width": "width",
-          "x": "x",
-          "y": "y"
-        },
+        "canvas": null,
         "collapsed": true,
-        "controls": [],
+        "controls": [
+          {
+            "action": "select-lens-profile",
+            "key": "profile",
+            "kind": "query-choice",
+            "label": "Profile",
+            "page": "page",
+            "query": "lens-profiles",
+            "shared": [
+              "focal"
+            ],
+            "text": "text"
+          }
+        ],
         "developer": false,
         "effects": [
           {
             "format": 1,
-            "id": "luxforge.geometry.crop",
-            "order": 10,
+            "id": "luxforge.lens.distortion",
+            "order": 2,
             "single": true,
             "stage": "geometry"
           }
         ],
-        "hint": "Frame, ratio and angle",
-        "id": "luxforge.crop",
+        "hint": "Profile distortion correction",
+        "id": "luxforge.lens",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "lens-profiles",
+            "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
+            "parameters": [
+              {
+                "default": "",
+                "kind": "string",
+                "max_length": 64,
+                "name": "text",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 99,
+                "min": 0,
+                "name": "page",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2000.0,
+                "min": 0.5,
+                "name": "focal",
+                "notes": "a focal length supplied explicitly when EXIF has none",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "mm"
+              },
+              {
+                "default": false,
+                "kind": "boolean",
+                "name": "assume-uncorrected",
+                "notes": "acknowledge that this selection assumes no existing distortion correction",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Lens profiles"
+          }
+        ],
+        "reset": {
+          "action": "reset-lens-profile",
+          "preset": {}
+        },
+        "title": "Lens correction"
+      },
+      {
+        "actions": [
+          {
+            "id": "set-perspective",
+            "notes": "merges the named perspective fields into the stack's one Perspective layer, which the host places by its effect's declared stage and order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            "parameters": [
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 100,
+                "min": -100,
+                "name": "horizontal",
+                "notes": "manual keystone amount; positive values compress the right or bottom side",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 100,
+                "min": -100,
+                "name": "vertical",
+                "notes": "manual keystone amount; positive values compress the right or bottom side",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              }
+            ],
+            "patch": true,
+            "preset": false,
+            "title": "Set Perspective"
+          },
+          {
+            "id": "reset-perspective",
+            "notes": "returns the stack's one Perspective layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Perspective"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-perspective",
+                "kind": "number",
+                "label": "Horizontal",
+                "parameter": "horizontal"
+              },
+              {
+                "action": "set-perspective",
+                "kind": "number",
+                "label": "Vertical",
+                "parameter": "vertical"
+              }
+            ],
+            "kind": "group",
+            "label": "Perspective",
+            "reset": {
+              "action": "set-perspective",
+              "preset": {
+                "horizontal": 0,
+                "vertical": 0
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.perspective",
+            "order": 4,
+            "single": true,
+            "stage": "geometry"
+          }
+        ],
+        "hint": "Keystone correction",
+        "id": "luxforge.perspective",
         "layout": "stacked",
         "queries": [],
         "reset": {
-          "action": "crop-reset",
+          "action": "reset-perspective",
           "preset": {}
         },
-        "title": "Crop and straighten"
+        "title": "Perspective"
       },
       {
         "actions": [
@@ -4312,6 +4932,68 @@
           "unit": null
         }
       },
+      "edit.reset-curve": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Tone curve layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.reset-detail": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Detail layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.reset-lens-profile": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "clears the selected profile while keeping the lens layer identity",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
+      },
       "edit.reset-mixer": {
         "mutates": true,
         "mutation": "revision",
@@ -4336,6 +5018,18 @@
           "step": null,
           "unit": null
         }
+      },
+      "edit.reset-perspective": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Perspective layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
       },
       "edit.reset-presence": {
         "mutates": true,
@@ -4372,6 +5066,56 @@
         "required": [
           "asset_id",
           "mutation"
+        ]
+      },
+      "edit.select-lens-profile": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
+        "optional": {
+          "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
+          "focal": "a focal length supplied explicitly when EXIF has none"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 32,
+            "name": "profile",
+            "notes": "",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2000.0,
+            "min": 0.5,
+            "name": "focal",
+            "notes": "a focal length supplied explicitly when EXIF has none",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "mm"
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "assume-uncorrected",
+            "notes": "acknowledge that this selection assumes no existing distortion correction",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "profile"
         ]
       },
       "edit.set-basic": {
@@ -4523,6 +5267,192 @@
             "required": false,
             "step": 1.0,
             "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.set-curve": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "A monotone point curve over encoded luminance, placed after Basic and before the colour mixer by declared order",
+        "optional": {
+          "luminance": "",
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [
+          {
+            "default": [
+              [
+                0.0,
+                0.0
+              ],
+              [
+                1.0,
+                1.0
+              ]
+            ],
+            "kind": "curve",
+            "monotone": true,
+            "name": "luminance",
+            "notes": "",
+            "points_max": 16,
+            "points_min": 2,
+            "precision": 2,
+            "required": false,
+            "step": 0.01,
+            "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.set-detail": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "merges the named Detail fields into one layer per target before the colour run; omitted fields keep their stored values; noise reduction precedes capture sharpening; a patch that changes nothing is a reported no-op",
+        "optional": {
+          "colour": "chroma-noise suppression; zero is off",
+          "colour-detail": "Takes effect when Colour is above 0",
+          "luminance": "lightness-noise suppression; zero is off",
+          "luminance-detail": "Takes effect when Luminance is above 0",
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "radius": "Takes effect when Amount is above 0",
+          "sharpen-detail": "Takes effect when Amount is above 0",
+          "sharpen-masking": "Takes effect when Amount is above 0",
+          "sharpening": "capture-sharpening gain; zero is off"
+        },
+        "parameters": [
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 150.0,
+            "min": 0.0,
+            "name": "sharpening",
+            "notes": "capture-sharpening gain; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 1.0,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.5,
+            "name": "radius",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 1,
+            "required": false,
+            "step": 0.1,
+            "unit": "px"
+          },
+          {
+            "default": 25.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "sharpen-detail",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "sharpen-masking",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "luminance",
+            "notes": "lightness-noise suppression; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "luminance-detail",
+            "notes": "Takes effect when Luminance is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "colour",
+            "notes": "chroma-noise suppression; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "colour-detail",
+            "notes": "Takes effect when Colour is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
           }
         ],
         "patch": true,
@@ -4903,6 +5833,46 @@
           "step": null,
           "unit": null
         }
+      },
+      "edit.set-perspective": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "merges the named perspective fields into the stack's one Perspective layer, which the host places by its effect's declared stage and order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+        "optional": {
+          "horizontal": "manual keystone amount; positive values compress the right or bottom side",
+          "vertical": "manual keystone amount; positive values compress the right or bottom side"
+        },
+        "parameters": [
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 100,
+            "min": -100,
+            "name": "horizontal",
+            "notes": "manual keystone amount; positive values compress the right or bottom side",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 100,
+            "min": -100,
+            "name": "vertical",
+            "notes": "manual keystone amount; positive values compress the right or bottom side",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
       },
       "edit.set-presence": {
         "mutates": true,
@@ -7078,6 +8048,67 @@
           "component"
         ]
       },
+      "query.lens-profiles": {
+        "mutates": false,
+        "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
+        "optional": {
+          "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
+          "entry_id": "entry to ask about; default the session's selection",
+          "focal": "a focal length supplied explicitly when EXIF has none",
+          "page": "",
+          "text": ""
+        },
+        "parameters": [
+          {
+            "default": "",
+            "kind": "string",
+            "max_length": 64,
+            "name": "text",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 99,
+            "min": 0,
+            "name": "page",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2000.0,
+            "min": 0.5,
+            "name": "focal",
+            "notes": "a focal length supplied explicitly when EXIF has none",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "mm"
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "assume-uncorrected",
+            "notes": "acknowledge that this selection assumes no existing distortion correction",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
+        ]
+      },
       "query.neutral-sample": {
         "mutates": false,
         "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
@@ -7115,6 +8146,44 @@
           "asset_id",
           "x",
           "y"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "query.sample-curve": {
+        "mutates": false,
+        "notes": "257 samples of the curve through the submitted points",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection",
+          "luminance": "",
+          "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "curve",
+            "monotone": true,
+            "name": "luminance",
+            "notes": "",
+            "points_max": 16,
+            "points_min": 2,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
         ],
         "target": {
           "default": null,

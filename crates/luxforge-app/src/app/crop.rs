@@ -396,6 +396,7 @@ impl Editor {
                     }
                     CropPointer::End => {
                         draft.end();
+                        self.crop_section.guide = false;
                         return self.crop_changed("crop_draft_changed");
                     }
                 }
@@ -490,6 +491,15 @@ impl Editor {
         if self.crop().is_none() {
             return begin;
         }
+        // Keep the exact disclosure choices, including sections still following their defaults.
+        // Repeated starts and Reapply never replace this snapshot; every exit restores it once.
+        self.crop_section.previous_expanded = Some(self.controls.expanded.clone());
+        for module in &self.modules {
+            self.controls.expanded.insert(module.id.clone(), false);
+        }
+        if let Some(frame) = crop_frame(&self.modules) {
+            self.controls.expanded.insert(frame.module.id.clone(), true);
+        }
         // The opened frame is the draft's first fields, sent at once: `draft.begin` has answered.
         let fields = self.crop_changed("crop_draft_started");
         let stage = crop_preview_task(
@@ -500,7 +510,11 @@ impl Editor {
             StagePlan::Open,
         );
         self.status.text = "Preparing the crop's input stage…".into();
-        Task::batch([begin, fields, stage])
+        let focus = operation::snap_to(
+            crate::view::tools_panel::scroll_id(),
+            iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.0 },
+        );
+        Task::batch([begin, fields, stage, focus])
     }
 
     /// The Changed elsewhere notice's Reapply for the crop draft: the frame is rebased at once onto
@@ -1038,6 +1052,9 @@ impl Editor {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
         self.crop_section.guide = false;
+        if let Some(expanded) = self.crop_section.previous_expanded.take() {
+            self.controls.expanded = expanded;
+        }
         if self.editing_angle() {
             self.controls.editing = None;
         }

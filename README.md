@@ -12,9 +12,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/design/develop-workspace/default.png" alt="The Luxforge Develop workspace: history and recipe on the left, the photograph in the centre, histogram and Basic adjustments on the right" width="900">
+  <img src="docs/screenshots/develop.png" alt="The running Luxforge editor: edit history and Performance on the left, a terraced landscape in the centre, histogram and Basic adjustments on the right" width="1100">
   <br>
-  <sub>The Develop workspace, from the design reference the app is built and checked against.</sub>
+  <sub>The current Develop workspace, captured from the app on an M4 Mac.</sub>
 </p>
 
 ---
@@ -45,21 +45,23 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
 - **Non-destructive editing** with ordered layers, persistent history, undo and redo, append-only restore, and named versions. Nothing in history is ever deleted.
 - **Basic adjustments**: white balance with a neutral picker, exposure, contrast, highlights, shadows, whites, blacks, vibrance and saturation, each checked against an independent high-precision reference.
 - **Presence** (texture, clarity, dehaze), an eight-range **colour mixer**, and a **vignette**.
-- **Masks**: linear and radial gradients, brushes, and luminance and colour range selections that feed Basic, the colour mixer and Presence.
+- **Local masking**: linear and radial gradients, feathered brushes with erase and colour constraints, and luminance and colour range selections. Combine components with Add, Subtract and Intersect, invert them or adjust the mask's amount, then use the same Basic, colour mixer and Presence controls locally. Live coverage overlays and editable canvas handles show what you're adjusting.
 - **Crop and straighten**, rotate, mirror and flip, with exact integer transforms.
-- **RAW editing** Nikon Z6, Fujifilm X100VI and DJI Air 2S DNG files are developed from sensor data, and changing the white balance later redevelops the RAW. It never works from a baked JPEG. Camera profiles are configured for 100 more models, each verified on one sample file; qualifying them properly is ongoing.
+- **RAW editing**: Nikon Z6, Fujifilm X100VI and DJI Air 2S DNG files are developed from sensor data, and changing the white balance later redevelops the RAW. The camera catalog now covers **107 models and 126 recording modes**, with authentic-file adapter evidence for every model; controlled colour, remaining modes and broader editor qualification are ongoing. [Camera coverage](docs/design/raw-camera-profiles.md) records the exact scope.
 - **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets, with a report of anything that couldn't be carried over.
-- **An RGB histogram** with clipping overlays and a pixel readout.
-- **Instant previews**: a quick preview first, then a cancellable exact render.
+- **JPEG export** from JPEG or RAW originals: an exact saved edit at its output size, quality 90, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
+- **An RGB histogram** with clipping overlays and a pixel readout, plus original comparison, a command palette and **Copy as JSON request** on controls.
+- **Instant previews**: a quick preview first, then a cancellable exact render, with visible-region refinement at 100% and above.
+- **Live performance counters** for memory, CPU and GPU, alongside background jobs.
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
 
 <p align="center">
-  <img src="docs/design/develop-workspace/changed-elsewhere.png" alt="A notice reading 'Changed elsewhere: lf-assist committed Rotate right while your Exposure gesture was open. Your draft is kept.' with Discard draft and Reapply buttons" width="900">
+  <img src="docs/screenshots/masking.png" alt="Luxforge Mask mode with Sky, Face and Foreground masks; Face combines a radial gradient, a subtracting brush and an intersecting luminance range, with a green coverage overlay and local Clarity controls" width="1100">
   <br>
-  <sub>An agent commits while you're dragging a slider. Your draft is kept until you choose what happens to it.</sub>
+  <sub>Masking in the app: a radial gradient, subtracting brush and luminance intersection shape a local adjustment. The green overlay shows coverage.</sub>
 </p>
 
-Export, relinking moved originals, an MCP adapter and a multi-photo library are the next big pieces. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
+RAW qualification, relinking moved originals, an MCP adapter and a multi-photo library are the next big pieces. Clone, Heal and AI Remove remain proposals. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
 
 ## Getting started
 
@@ -92,17 +94,12 @@ target/release/luxforge-json --catalog path/to/catalog.sqlite
 
 ## How it's built
 
-<p align="center">
-  <img src="docs/design/develop-workspace/module-panels.png" alt="Every tool panel expanded side by side: RAW, Basic, Presence, Transforms, Vignette, Colour mixer, Crop and straighten, and Developer" width="900">
-  <br>
-  <sub>Tool panels are generated from each module's descriptor. The same descriptor generates its API.</sub>
-</p>
-
 Luxforge is written in Rust with a deliberately small core. The core owns the catalog, recipes, history and undo, rendering and the command service. Each tool (Basic, the colour mixer, crop and the rest) is a module that declares its parameters, controls and processing. The desktop builds its panels from those declarations, and the API generates `edit.*` methods from the same ones, so the two can't drift apart.
 
 | Crate | What it holds |
 | --- | --- |
 | `luxforge-core` | Images, recipes, rendering, the SQLite catalog and history, preview scheduling, the JSON API |
+| `luxforge-net` | The host's checked network transport and secure secret store, kept outside the core |
 | `luxforge-jpeg` | The one JPEG codec (libjpeg-turbo) for reading originals and writing exports, with the JPEG container around it; depends on no workspace crate |
 | `luxforge-process` | CPU, memory and GPU counters for the editor process |
 | `luxforge-raw` | RAW decoding and development |
@@ -117,10 +114,6 @@ Luxforge is written in Rust with a deliberately small core. The core owns the ca
 
 The editor tells you what it's doing. The Performance section shows memory, CPU and GPU use alongside whatever is running in the background, and the same numbers are available to any client through `resources.read` and `activity.list`.
 
-<p align="center">
-  <img src="docs/design/performance-panel/mockup.png" alt="The state panel in four states, showing history, the recipe and a performance section with memory, CPU and GPU sparklines" width="720">
-</p>
-
 More detail is in the [architecture](docs/design/architecture.md) and [tool module](docs/design/modules-and-api.md) docs.
 
 ## Platforms
@@ -132,7 +125,7 @@ macOS on Apple silicon is the primary target and the only platform with native G
 Luxforge is developed in the open by a human owner working alongside coding agents, and the docs are written for both. Start with [AGENTS.md](AGENTS.md) for the pillars and working rules, then [CONTRIBUTING.md](CONTRIBUTING.md) for the layout and checks. Before handing off a change:
 
 ```sh
-cargo xtask check
+cargo xtask verify --tier quick --output artifacts/my-change-quick
 ```
 
 Useful reading:

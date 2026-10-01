@@ -8,8 +8,19 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | --- | --- |
 | [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
+| [Tone curve](tone-curve.json) | The Tone curve module: frozen curve numerics, the shared curve-editor changes, the field-patch module, conformance and placement, the desktop scenario, presets, masks, harness preparation and measurement |
+| [Detail](detail.json) | Capture sharpening and manual noise reduction in implementation: the restoration stage and compile context, off-owner pixel queries and mutations, the 16-bit JPEG hand-off, exact settled Fit, the restoration-prefix proxy cache, the input-grid overlay cache, shared controls/masks/presets/history and quality/performance qualification |
+| [Lens and perspective](lens-and-perspective.json) | Implemented and functionally verified offline profile distortion and manual perspective; native performance and photographic qualification pending: the pinned Lensfun resource index, the optics ledger, the mapping refactor and warp chain with closed-form coverage, the query-choice control, coordinate preservation and bounded verification |
 
 The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
+
+Detail's choices are delegated and recorded in its [design](../docs/design/detail.md), with the owner's four decisions of 2026-09-30 (the 16-bit JPEG hand-off, the restoration-prefix proxy cache, the input-grid overlay cache and the off-owner mutation path) in [decisions](../docs/decisions.md#detail). The plan has no owner-review prerequisite; implementation is authorized and in progress.
+
+The Lens and perspective plan runs on the owner's decisions of 2026-09-30 in [decisions](../docs/decisions.md#lens-and-perspective-planning) and the recorded defaults in its [design](../docs/design/lens-and-perspective.md); functional implementation and native integration are complete. Its measurement task waits for the other feature work and a quiet host. Profile accuracy qualification needs authentic photographs and marked edges the owner supplies; without them it stays incomplete.
+
+The Tone curve's features are implemented (authorized by the owner on 2026-09-30); only the measurement task, TASK-009's point-drag and unit-cost figures, remains. The module runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
+
+The three modules share the restoration stage, compile context, window planner, mask input mapping and Fit settlement contracts, with combined exact-buffer and native rendering checks. Their outstanding measurements run after all feature work, one plan at a time on a quiet host.
 
 ## Other plans
 

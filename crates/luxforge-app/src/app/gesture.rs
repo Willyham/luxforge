@@ -66,6 +66,17 @@ pub(crate) struct MaskGesture {
     /// The content-to-output map, read once from `render.transform` when the gesture opened and
     /// then applied locally per pointer move.
     pub(crate) map: Option<ContentMap>,
+    /// A Reapply asks for the rebased draft's geometry. The answer must still belong to this
+    /// draft and base when it arrives; an intervening commit cannot give the kept stroke a map
+    /// from another stack.
+    pub(crate) map_draft: Option<MaskMapDraft>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MaskMapDraft {
+    pub(crate) draft_id: DraftId,
+    pub(crate) base_revision: u64,
+    pub(crate) draft_revision: u64,
 }
 
 impl MaskGesture {
@@ -98,8 +109,8 @@ pub(crate) enum Starting {
     /// The components gallery: one draft and no request in flight. The gallery is this desktop's
     /// own view, so a historical preview does not hold it back.
     Gallery,
-    /// Compare with the original: one draft only. It selects the Original entry, from the current
-    /// state or a previewed one, and never waits for a request.
+    /// Compare with the original: one draft and no request in flight. It selects the Original
+    /// entry from the current state or a previewed one.
     Compare,
     /// A preset applied to the photograph, as the section's rows read it: one draft only. The
     /// section's own enabled state carries the rest, and the apply itself is a
@@ -146,13 +157,10 @@ impl Starting {
                 (true, true, true)
             }
             Self::Slider => (true, true, false),
-            Self::Gallery | Self::History => (true, false, true),
-            Self::Mode
-            | Self::Compare
-            | Self::Preset
-            | Self::Refit
-            | Self::Workspace
-            | Self::Photograph => (true, false, false),
+            Self::Gallery | Self::History | Self::Compare => (true, false, true),
+            Self::Mode | Self::Preset | Self::Refit | Self::Workspace | Self::Photograph => {
+                (true, false, false)
+            }
             Self::Export => (false, false, true),
         };
         Halves {
@@ -1018,11 +1026,36 @@ impl Editor {
         if self.core_gesture().is_none() {
             return Task::none();
         }
+        let mut transform = Task::none();
         match &result {
             Ok(rebased) => {
                 self.session.draft = Some(rebased.clone());
                 if let Some(open) = self.core_gesture_mut() {
                     open.kind.interrupt();
+                }
+                // The kept shape is in content coordinates. Its previous map belongs to the
+                // displaced stack, so a rebased mask must acquire the new map before another
+                // pointer gesture. A new identity also rejects an older transform still in flight.
+                if self.mask_gesture().is_some() {
+                    let id = self.next_gesture();
+                    let open = self.core_gesture_mut().expect("the rebased gesture");
+                    open.draft.gesture = id;
+                    if let Kind::Mask(mask) = &mut open.kind {
+                        mask.map = None;
+                        mask.map_draft = Some(MaskMapDraft {
+                            draft_id: rebased.draft_id.clone(),
+                            base_revision: rebased.base_revision,
+                            draft_revision: rebased.draft_revision,
+                        });
+                    }
+                    transform = tasks::transform_task(
+                        self.owner.clone(),
+                        self.client,
+                        id,
+                        rebased.asset_id.clone(),
+                        None,
+                        Some(rebased.draft_id.clone()),
+                    );
                 }
                 if let Some(slider) = self.slider_gesture() {
                     self.status.text = format!("Drafting {}…", slider.label);
@@ -1034,6 +1067,6 @@ impl Editor {
         // A crop draft's Reapply is over once its draft is rebased and the rebased frame's stage
         // is on screen.
         self.report_crop_stage();
-        task
+        Task::batch([task, transform])
     }
 }

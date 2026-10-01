@@ -1,7 +1,8 @@
 //! The field-patch conformance suite: one set of checks every registered field-patch module passes.
 //!
-//! Basic, the colour mixer, Presence, the vignette and the developer controls proof share one
-//! implementation of everything but their field tables and their compilation
+//! Basic, the Tone curve, Detail, the colour mixer, Presence, Perspective, the vignette and the
+//! developer controls proof
+//! share one implementation of everything but their field tables and their compilation
 //! (`modules/field_patch.rs`), and the host behaviour they rely on — discovery, drafts, no-ops,
 //! request deduplication, resets that keep a layer's identity, one layer per target, history,
 //! sample-equals-render on both paths, unavailable providers and reopen — is the host's. So it is
@@ -57,10 +58,13 @@ impl Evidence {
 /// proof, whose fields are the non-numeric kinds. A new field-patch module needs no entry here to
 /// be checked; this list only makes sure a descriptor change can never drop one of these from the
 /// suite silently.
-pub const KNOWN: [&str; 5] = [
+pub const KNOWN: [&str; 8] = [
     "luxforge.basic",
+    "luxforge.curve",
+    "luxforge.detail",
     "luxforge.presence",
     "luxforge.mixer",
+    "luxforge.perspective",
     "luxforge.vignette",
     "luxforge.controls",
 ];
@@ -150,7 +154,7 @@ fn check(
     let mut evidence = Evidence::default();
     let payloads = within("payloads", || pixels::payloads(registry, module, sources))?;
     evidence.record(
-        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field alone and each whole payload has exactly the consequences of the module's own neutrality rule, and a developer proof's renders nothing",
+        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field retains its declared values independently of compiled pixel work; an inactive stored configuration preserves exact byte and linear identity with source sharing; active payloads compile processing, whole payloads render distinct images, and a developer proof renders nothing",
         payloads,
     );
     let rules = within("the field-patch rules", || {

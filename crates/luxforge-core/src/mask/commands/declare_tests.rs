@@ -738,6 +738,7 @@ impl crate::ToolModule for Colliding {
                     title: "Create".into(),
                     notes: String::new(),
                     patch: false,
+                    preset: true,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),
@@ -777,7 +778,7 @@ impl crate::ToolModule for Colliding {
         _: &str,
         _: u32,
         _: &Value,
-        _: crate::Stage,
+        _: crate::CompileStage,
     ) -> Result<crate::Processing, crate::Error> {
         unreachable!("registration is refused before anything is compiled")
     }

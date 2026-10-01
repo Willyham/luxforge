@@ -37,6 +37,8 @@ pub enum EffectStage {
     Source,
     Geometry,
     Pixel,
+    /// Bounded pre-tone restoration in content coordinates.
+    Restoration,
     /// Pointwise colour over the whole stage, compiled into [`crate::Processing::Color`].
     Color,
     /// Depends on a bounded neighbourhood of its input stage, in content coordinates.
@@ -53,6 +55,7 @@ impl EffectStage {
             Self::Source => "source",
             Self::Geometry => "geometry",
             Self::Pixel => "pixel",
+            Self::Restoration => "restoration",
             Self::Color => "color",
             Self::Spatial => "spatial",
             Self::Finish => "finish",
@@ -62,6 +65,15 @@ impl EffectStage {
 
 /// A durable effect identity stored in every layer, with its internal payload format marker and the
 /// order it takes among layers of its own stage.
+/// Which pixels a settled Fit preview presents for a non-empty operation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FitSettle {
+    #[default]
+    Proxy,
+    Exact,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectDescriptor {
@@ -102,6 +114,8 @@ pub struct EffectDescriptor {
     /// Serialized only when it is true, like every other flag here.
     #[serde(default, skip_serializing_if = "is_default")]
     pub single: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub fit_settle: FitSettle,
     /// The source kinds a layer of this effect may exist on, named by the `kind` tags `asset.state`
     /// reports for a photo's source (`jpeg`, `raw`). Empty, the default, is every kind, and is not
     /// serialized, so an effect that exists on every photo describes itself exactly as it did
@@ -125,6 +139,7 @@ impl EffectDescriptor {
             maskable: false,
             artifacts: false,
             single: false,
+            fit_settle: FitSettle::default(),
             sources: Vec::new(),
         }
     }
@@ -765,7 +780,17 @@ pub struct ActionDescriptor {
     /// state. Every parameter of a patch action is optional, whatever it declares.
     #[serde(default)]
     pub patch: bool,
+    /// Whether this action may be captured or applied by the preset service.
+    #[serde(default = "preset_default", skip_serializing_if = "preset_enabled")]
+    pub preset: bool,
     pub parameters: Vec<ParameterDescriptor>,
+}
+
+fn preset_default() -> bool {
+    true
+}
+fn preset_enabled(value: &bool) -> bool {
+    *value
 }
 
 impl ActionDescriptor {
@@ -777,6 +802,7 @@ impl ActionDescriptor {
             title: title.into(),
             notes: notes.into(),
             patch: false,
+            preset: true,
             parameters: Vec::new(),
         }
     }
@@ -813,6 +839,7 @@ pub enum Control {
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
+    QueryChoice(QueryChoiceControl),
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
@@ -1104,6 +1131,21 @@ pub struct PresetsControl {
     pub action: String,
 }
 
+/// Search and paging supplied by this module's query; an eligible row submits its key to this
+/// module's non-patch action. Shared inputs have equal kinds in both declarations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryChoiceControl {
+    pub label: String,
+    pub query: String,
+    pub text: String,
+    pub page: String,
+    pub action: String,
+    pub key: String,
+    #[serde(default)]
+    pub shared: Vec<String>,
+}
+
 macro_rules! control_kinds {
     ($($kind:ident($control:ident)),* $(,)?) => {
         $(
@@ -1121,6 +1163,7 @@ control_kinds!(
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
+    QueryChoice(QueryChoiceControl),
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
@@ -1283,6 +1326,7 @@ impl Control {
             Self::Number(_) => "number",
             Self::Toggle(_) => "toggle",
             Self::Choice(_) => "choice",
+            Self::QueryChoice(_) => "query-choice",
             Self::Color(_) => "color",
             Self::Curve(_) => "curve",
             Self::Range(_) => "range",

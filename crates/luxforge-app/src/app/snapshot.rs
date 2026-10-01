@@ -28,7 +28,11 @@ impl Editor {
                             "sample_source":sampled.map(|sample| &sample.source),
                             "sample_source_entry":sampled.map(|sample| &sample.entry),
                             "sample_asset":sampled.map(|sample| &sample.asset),
-                            "display_entry":entry,"dragging":curve.dragging}));
+                            "display_entry":entry,"dragging":curve.dragging,
+                            "points":curve.points,"identity":curve.identity,
+                            "background":curve.background,"points_open":curve.points_open,
+                            "points_max":curve.points_max,"hint":curve.hint,
+                            "label_shown":curve.label_shown}));
                     }
                     tools::ControlModel::Color(color) => {
                         pickers.push(json!({"action":color.action,"parameter":color.parameter,
@@ -80,7 +84,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary(),"select":self.select_summary(),"missing":self.missing_summary(),"long_work":self.long_work_summary(),"develop":self.develop_summary()})
+        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary(),"select":self.select_summary(),"missing":self.missing_summary(),"long_work":self.long_work_summary(),"develop":self.develop_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -145,6 +149,20 @@ impl Editor {
         };
         let mut summary = mask.shape.summary();
         if let Some(object) = summary.as_object_mut() {
+            object.insert(
+                "mapping".into(),
+                mask.map
+                    .as_ref()
+                    .map(|map| map.summary())
+                    .unwrap_or(Value::Null),
+            );
+            object.insert(
+                "outline".into(),
+                self.evidence
+                    .as_ref()
+                    .and_then(|e| e.sync.cursor.geometry())
+                    .unwrap_or(Value::Null),
+            );
             object.insert("base_revision".into(), json!(gesture.draft.base_revision));
             object.insert("conflicted".into(), json!(gesture.draft.conflicted));
         }
@@ -179,7 +197,7 @@ impl Editor {
                 let surface = self.overlay_surface();
                 let assigned = surface.is_some();
                 let version = surface.map(luxforge_ui::Frame::version);
-                let gpu = luxforge_ui::surface_diagnostics();
+                let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
                 let clipping_drawn = surface
                     .is_some_and(|overlay| gpu.drawn_clipping_version == Some(overlay.version()));
                 let drawn = clipping_drawn
@@ -232,7 +250,7 @@ impl Editor {
     /// with the same version and the same write count prove nothing was written between them,
     /// however often the view was rebuilt meanwhile.
     pub(super) fn surface_summary(&self) -> Value {
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         json!({
             "view": serde_json::to_value(&self.session.preview.view).unwrap_or(Value::Null),
             "generation": self.presentation.presented_generation,
@@ -243,6 +261,18 @@ impl Editor {
             "version": self.presentation.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
             "detail_updating":self.visible_detail_updating(),
+            // The bar over the photograph and the worker reading behind it, so a capture shows
+            // which generation's exact phase it follows and how far that phase had got.
+            "render_bar": self.activity.render_bar.map(|bar| json!({
+                "generation": bar.generation,
+                "fraction": bar.fraction,
+            })),
+            "render_progress": self.presentation.queue.progress().map(|progress| json!({
+                "generation": progress.generation,
+                "elapsed_ms": progress.elapsed.as_secs_f64() * 1000.0,
+                "done": progress.counts.done,
+                "planned": progress.counts.planned,
+            })),
             "desired_view_dirty":self.view_plan.dirty,
             "view_plan_in_flight":self.view_plan.in_flight,
             "view_request_generation":self.view_plan.request_generation,
@@ -298,7 +328,7 @@ impl Editor {
     pub(super) fn proxy_summary(&self) -> Value {
         let bounds = self.proxy_bounds();
         json!({
-            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy_frame.is_some()) {
+            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy().is_some()) {
                 (Some(_), _) => Some(false),
                 (None, true) => Some(true),
                 (None, false) => None,
@@ -315,6 +345,8 @@ impl Editor {
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "presented": self.presentation.presented_proxy,
+            "settled_from_exact": self.presentation.presented_settled,
+            "restoration_prefix": self.presentation.restoration_prefix,
         })
     }
 
@@ -354,7 +386,8 @@ impl Editor {
         match &self.workspace.canvas.draft_bar {
             Some(bar) => json!({"title":bar.title,"subject":bar.subject,"kind":bar.kind,
                 "readout":bar.readout,"can_apply":bar.can_apply,"done":bar.done,
-                "conflicted":bar.conflicted}),
+                "conflicted":bar.conflicted,
+                "crop_ratios":bar.crop_ratios.iter().map(|ratio| json!({"label":ratio.label,"selected":ratio.chosen})).collect::<Vec<_>>() }),
             None => Value::Null,
         }
     }

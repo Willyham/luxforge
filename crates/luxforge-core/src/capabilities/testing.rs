@@ -17,8 +17,8 @@ use super::{
 use crate::{
     ActionDescriptor, ActionInput, ActionPlan, ApiFailure, ApiRequest, ApiResponse,
     CapabilityModule, ClientAuthority, ClientId, Control, EffectDescriptor, EffectStage, Error,
-    ModuleDescriptor, ModuleRegistry, OwnerHandle, ParameterDescriptor, Processing, Stage,
-    StageContext, ToolModule, editor::mutation_json, jobs::JOB_READ,
+    ModuleDescriptor, ModuleRegistry, OwnerHandle, ParameterDescriptor, Processing, StageContext,
+    ToolModule, editor::mutation_json, jobs::JOB_READ,
 };
 use luxforge_testbase::wait_for;
 use luxforge_testbase::{ProofEndpoint, ProofProtocol};
@@ -94,6 +94,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
         id: MODULE.into(),
         title: "Capabilities test".into(),
         effects: vec![EffectDescriptor {
+            fit_settle: Default::default(),
             id: "test.capabilities.tint".into(),
             format: 1,
             stage: EffectStage::Color,
@@ -109,6 +110,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 title: "Apply tint".into(),
                 notes: "test".into(),
                 patch: false,
+                preset: true,
                 parameters: vec![
                     ParameterDescriptor::artifact("tint")
                         .required(true)
@@ -120,6 +122,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 title: "Reset tint".into(),
                 notes: "test".into(),
                 patch: false,
+                preset: true,
                 parameters: Vec::new(),
             },
         ],
@@ -287,7 +290,13 @@ impl ToolModule for LifecycleModule {
             "test layer of {effect_id}"
         )))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Err(Error::internal("the lifecycle module never renders"))
     }
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
