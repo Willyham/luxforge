@@ -114,7 +114,7 @@ impl Editor {
                     SetStep::Previous => -1,
                     SetStep::Next => 1,
                 };
-                if !self.filmstrip_shown() {
+                if self.select_shown() || !self.filmstrip_shown() {
                     return self.fail_step("Develop shows no development set");
                 }
                 let task = self.update(develop(DevelopMessage::Step(delta)));
@@ -122,7 +122,7 @@ impl Editor {
                 task
             }
             DevelopStep::Cell(index) => {
-                if !self.filmstrip_shown() {
+                if self.select_shown() || !self.filmstrip_shown() {
                     return self.fail_step("Develop shows no filmstrip");
                 }
                 let task = self.update(develop(DevelopMessage::Show(index)));

@@ -95,8 +95,7 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
                 inputs.view_state.window,
                 workspace.state_panel,
                 workspace.tools_panel,
-                inputs.develop.strip_shown()
-                    && inputs.select.shown == crate::state::select::Shown::Develop,
+                inputs.develop.strip_shown(),
             );
             let (width, _) = histogram::displayed_size(
                 ZoomView::Fit,
