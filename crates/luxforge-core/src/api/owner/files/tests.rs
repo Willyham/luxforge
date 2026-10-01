@@ -391,6 +391,79 @@ fn reconciling_reads_only_what_changed_and_carries_moves() {
     }
 }
 
+/// Hard links to a few files, more than a batch of them, are each their own row and move nothing;
+/// among them a link renamed and one moved to another folder keep their rows, unread, a new link is
+/// its own row, and a link removed is dropped. (Each change is to a different file: a link removed
+/// and a new link of the same file are a move, as a rename is.)
+#[cfg(unix)]
+#[test]
+fn hard_links_are_each_their_own_row_and_a_move_among_them_carries_its_row() {
+    const LINKS: usize = 600;
+    let fixture = Fixture::new("hard-links");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let root = fixture.dir.join("photos");
+    let sources: Vec<PathBuf> = (0..5)
+        .map(|index| fixture.dir.join(format!("sources/source-{index}.jpg")))
+        .collect();
+    for source in &sources {
+        put(source, &camera_jpeg());
+    }
+    let link = |number: usize| root.join(format!("{:02}/IMG_{number:04}.jpg", number / 200));
+    for number in 0..LINKS {
+        std::fs::create_dir_all(link(number).parent().unwrap()).unwrap();
+        std::fs::hard_link(&sources[number % 5], link(number)).unwrap();
+    }
+    let first = refresh(owner, client, json!({"kind": "folder", "path": root}));
+    assert_eq!(
+        [&first["added"], &first["moved"], &first["headers_read"]],
+        [&json!(LINKS), &json!(0), &json!(LINKS)],
+        "{first}"
+    );
+    let rows = fixture.rows();
+    assert_eq!(
+        rows.iter()
+            .map(|(path, ..)| path.clone())
+            .collect::<Vec<_>>(),
+        (0..LINKS).map(link).collect::<Vec<_>>(),
+        "every link is its own row"
+    );
+    // Links of the first, second and fourth files, and a new link of the third.
+    let (renamed, moved, removed) = (link(5), link(201), link(403));
+    let (renamed_id, moved_id) = (fixture.row_id(&renamed), fixture.row_id(&moved));
+    let removed_id = fixture.row_id(&removed).unwrap();
+
+    std::fs::rename(&renamed, root.join("00/renamed.jpg")).unwrap();
+    std::fs::rename(&moved, root.join("02/moved.jpg")).unwrap();
+    std::fs::hard_link(&sources[2], root.join("01/new link.jpg")).unwrap();
+    std::fs::remove_file(&removed).unwrap();
+    let second = refresh(owner, client, json!({"kind": "folder", "path": root}));
+    assert_eq!(
+        [
+            &second["added"],
+            &second["moved"],
+            &second["removed"],
+            &second["headers_read"]
+        ],
+        [&json!(1), &json!(2), &json!(1), &json!(1)],
+        "{second}"
+    );
+    assert_eq!(fixture.row_id(&root.join("00/renamed.jpg")), renamed_id);
+    assert_eq!(fixture.row_id(&root.join("02/moved.jpg")), moved_id);
+    let new_link = fixture.row_id(&root.join("01/new link.jpg")).unwrap();
+    assert!(rows.iter().all(|(_, id, _)| *id != new_link), "its own row");
+    let after = fixture.rows();
+    assert_eq!(after.len(), LINKS);
+    assert!(after.iter().all(|(_, id, _)| *id != removed_id));
+    let changed = [&renamed, &moved, &removed];
+    assert!(
+        rows.iter()
+            .filter(|(path, ..)| !changed.contains(&path))
+            .all(|row| after.contains(row)),
+        "every other link keeps its row"
+    );
+}
+
 /// Every batch advances the index's revision once, in its own transaction, and records one event
 /// naming it; a listing too large for one batch commits several.
 #[test]
