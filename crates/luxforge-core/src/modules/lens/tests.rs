@@ -36,15 +36,18 @@ fn query(service: &EditorService, asset: &crate::AssetId, assume: bool) -> Value
         .run_query(asset, &entry, QUERY, json!({"assume-uncorrected":assume}))
         .unwrap()
 }
+/// The detected profile's Apply request: its key and the parameters the answer says it sends.
 fn selection(service: &EditorService, asset: &crate::AssetId) -> Value {
-    let rows = query(service, asset, true);
-    let row = rows["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["match"] == "lens-model" && r["eligible"] == true)
-        .unwrap();
-    json!({"profile":row["key"],"assume-uncorrected":true})
+    let answer = query(service, asset, false);
+    let suggestion = &answer["status"]["suggestion"];
+    assert_eq!(suggestion["eligible"], true, "{answer}");
+    assert_eq!(suggestion["match"], "lens-model");
+    let mut parameters = suggestion["parameters"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    parameters.insert("profile".into(), suggestion["key"].clone());
+    Value::Object(parameters)
 }
 #[test]
 fn lens_module_declares_nonpreset_actions_and_query_choice() {
@@ -62,7 +65,7 @@ fn lens_module_declares_nonpreset_actions_and_query_choice() {
     assert!(module.descriptor.effects[0].single);
     assert_eq!(module.descriptor.controls.len(), 1);
     assert!(
-        matches!(&module.descriptor.controls[0],Control::QueryChoice(control) if control.shared==["focal","assume-uncorrected"])
+        matches!(&module.descriptor.controls[0],Control::QueryChoice(control) if control.shared==["focal"])
     );
     let registry = ModuleRegistry::builtin();
     assert!(registry.resolve_action(SELECT).is_some());
@@ -77,11 +80,13 @@ fn lens_select_reset_and_same_selection_keep_identity_and_noop() {
     let asset = initial.asset.id;
     let rows = query(&service, &asset, false);
     assert_eq!(rows["status"]["distortion"]["status"], "unknown");
+    assert_eq!(rows["status"]["visible_shared"], json!([]));
     assert_eq!(
-        rows["status"]["visible_shared"],
-        json!(["assume-uncorrected"])
+        rows["status"]["suggestion"]["parameters"],
+        json!({"assume-uncorrected": true})
     );
     let parameters = selection(&service, &asset);
+    assert_eq!(parameters["assume-uncorrected"], true);
     let refused = service
         .apply_action(
             &asset,
@@ -110,8 +115,31 @@ fn lens_select_reset_and_same_selection_keep_identity_and_noop() {
         state.current_entry.label,
         "Lens profile NIKKOR Z 24-70mm f/4 S at 35 mm"
     );
+    let applied = query(&service, &asset, false);
+    assert_eq!(applied["status"]["state"], "applied");
+    assert_eq!(applied["status"]["current"]["key"], parameters["profile"]);
+    assert_eq!(
+        applied["status"]["current"]["title"],
+        "NIKKOR Z 24-70mm f/4 S"
+    );
+    assert_eq!(
+        applied["status"]["current"]["subtitle"],
+        "Nikon Z 6 · 35 mm"
+    );
+    assert!(
+        applied["status"]["current"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("assuming")
+    );
+    assert!(applied["status"].get("suggestion").is_none());
     let same = service
-        .apply_action(&asset, mutation(state.revision, "same"), SELECT, parameters)
+        .apply_action(
+            &asset,
+            mutation(state.revision, "same"),
+            SELECT,
+            parameters.clone(),
+        )
         .unwrap();
     assert_eq!(same.outcome, MutationOutcome::NoOp);
     let reset = service
@@ -129,6 +157,13 @@ fn lens_select_reset_and_same_selection_keep_identity_and_noop() {
         .unwrap();
     assert_eq!(reset_layer.id, layer.id);
     assert_eq!(reset_layer.payload, json!({"profile":null}));
+    // A reset leaves the detected lens offered again, never applied.
+    let after_reset = query(&service, &asset, false);
+    assert_eq!(after_reset["status"]["state"], "detected");
+    assert_eq!(
+        after_reset["status"]["suggestion"]["key"],
+        parameters["profile"]
+    );
     let reset_again = service
         .apply_action(
             &asset,
@@ -513,7 +548,7 @@ fn lens_described_fields_preserve_exif_focal_source_after_refresh() {
     let asset = service.import(&grid()).unwrap().asset.id;
     let parameters = selection(&service, &asset);
     service
-        .apply_action(&asset, mutation(0, "select"), SELECT, parameters)
+        .apply_action(&asset, mutation(0, "select"), SELECT, parameters.clone())
         .unwrap();
     let state = service.state(&asset).unwrap();
     let layer = state
@@ -538,7 +573,7 @@ fn lens_described_fields_preserve_exif_focal_source_after_refresh() {
         )
         .unwrap();
     assert_eq!(same.outcome, MutationOutcome::NoOp);
-    let mut override_parameters = selection(&service, &asset);
+    let mut override_parameters = parameters;
     override_parameters["focal"] = json!(35.0);
     service
         .apply_action(
@@ -889,4 +924,119 @@ fn integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains
     assert_eq!(linear_source.planes(), original_planes);
     drop(service);
     fs::remove_file(catalog).unwrap();
+}
+
+/// A stack's questions with fixed optics and stage: what a prepared source answers.
+struct Optical {
+    stage: Stage,
+    optics: SourceOptics,
+}
+impl super::super::StageQuestions for Optical {
+    fn optics(&self) -> Result<SourceOptics, Error> {
+        Ok(self.optics.clone())
+    }
+    fn stage_before(&self, _: usize) -> Result<Stage, Error> {
+        Ok(self.stage)
+    }
+    fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
+        Ok(None)
+    }
+}
+fn air2s(ledger: luxforge_raw::OpticalLedger) -> Optical {
+    Optical {
+        stage: Stage {
+            width: 5472,
+            height: 3648,
+        },
+        optics: SourceOptics {
+            identity: crate::OpticalIdentity {
+                make: Some("DJI".into()),
+                model: Some("FC3411".into()),
+                lens_make: None,
+                lens_model: None,
+                focal_mm: Some(8.38),
+                focal_35mm: Some(22),
+            },
+            ledger,
+        },
+    }
+}
+fn mosaic_ledger(distortion: luxforge_raw::OpticalStatus) -> luxforge_raw::OpticalLedger {
+    let entry = |status| luxforge_raw::OpticalEntry {
+        status,
+        provenance: "raw-mosaic".into(),
+    };
+    luxforge_raw::OpticalLedger {
+        distortion: entry(distortion),
+        lateral_ca: entry(luxforge_raw::OpticalStatus::KnownUnapplied),
+        shading: entry(luxforge_raw::OpticalStatus::KnownUnapplied),
+        interpretation: "raw-mosaic:test".into(),
+    }
+}
+
+#[test]
+fn first_open_selects_only_a_known_uncorrected_photos_eligible_detected_profile() {
+    let _index = IndexGuard::ready();
+    let registry = ModuleRegistry::builtin();
+    let module = LensModule::new();
+    let ask = |questions: &Optical, layers: &[Layer], kind| {
+        let context = StageContext {
+            layers,
+            registry: &registry,
+            target: None,
+            kind,
+            masks: &[],
+            questions,
+        };
+        module.first_open(&context).inspect(|proposed| {
+            // What it proposes is an ordinary selection that plans as it stands.
+            if let Some(input) = proposed {
+                assert!(matches!(
+                    module.plan(input, &context).unwrap(),
+                    ActionPlan::Commit(_)
+                ));
+            }
+        })
+    };
+    let raw = air2s(mosaic_ledger(luxforge_raw::OpticalStatus::KnownUnapplied));
+    let proposed = ask(&raw, &[], crate::SourceTag::Raw).unwrap().unwrap();
+    assert_eq!(proposed.action_id, SELECT);
+    let expected = resolve::detect(
+        &committed_index(),
+        &resolve::ResolveInput {
+            make: "DJI".into(),
+            model: "FC3411".into(),
+            lens_model: None,
+            focal_mm: Some(8.38),
+            focal_35mm: Some(22),
+            focal_override: None,
+            stage: raw.stage,
+        },
+    )
+    .detected
+    .unwrap();
+    assert_eq!(
+        proposed.parameters,
+        Map::from_iter([("profile".to_owned(), json!(expected.key))]),
+        "no acknowledgement and no focal override: the profile applies as detected"
+    );
+    // A layer of its own, neutral or not, means a person or agent already decided.
+    let neutral = Layer::new(LENS_EFFECT, json!({"profile": null}));
+    assert_eq!(ask(&raw, &[neutral], crate::SourceTag::Raw).unwrap(), None);
+    // A JPEG's in-camera correction is unknown and an embedded warp already corrects: neither is
+    // corrected on first open.
+    let jpeg = air2s(SourceOptics::jpeg_ledger());
+    assert_eq!(ask(&jpeg, &[], crate::SourceTag::Jpeg).unwrap(), None);
+    let corrected = air2s(mosaic_ledger(luxforge_raw::OpticalStatus::Applied));
+    assert_eq!(ask(&corrected, &[], crate::SourceTag::Raw).unwrap(), None);
+    // A camera the database does not hold detects nothing.
+    let mut unknown = air2s(mosaic_ledger(luxforge_raw::OpticalStatus::KnownUnapplied));
+    unknown.optics.identity.model = Some("FC9999".into());
+    assert_eq!(ask(&unknown, &[], crate::SourceTag::Raw).unwrap(), None);
+    // An unavailable index is an explicit refusal, never a silent skip.
+    index::set_for_test(Err(Error::not_ready("test index unavailable")));
+    assert_eq!(
+        ask(&raw, &[], crate::SourceTag::Raw).unwrap_err().kind,
+        ErrorKind::NotReady
+    );
 }

@@ -718,12 +718,12 @@ fn crop_reapply_after_external_geometry_edit_rebinds_mapping() {
             None => response.result,
         }
     });
-    let row = rows["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-        .unwrap();
+    // The detected profile, offered in the answer's status rather than as a row.
+    let row = &rows["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{rows}"
+    );
     crate::app::tasks::call(
         &owner,
         agent,

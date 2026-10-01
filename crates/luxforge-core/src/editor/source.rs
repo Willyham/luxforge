@@ -161,6 +161,10 @@ pub(crate) enum SourceWork {
         path: PathBuf,
         signature: SourceSignature,
         target: Option<Box<FilePreparation>>,
+        /// For a file no asset names yet, the registry whose first-open readiness the worker
+        /// awaits after decoding ([`crate::ModuleRegistry::await_first_open`]), so the owner can
+        /// plan a new asset's first-open actions without waiting.
+        first_open: Option<Arc<crate::ModuleRegistry>>,
     },
     /// Redevelop the cached RAW mosaic at new gains.
     Develop(Box<RawDevelopment>),
@@ -174,6 +178,27 @@ pub(crate) enum SourceWork {
 pub(crate) enum Preparing {
     Ready(Box<EditorState>),
     Work(SourceWork, Vec<ArtifactRead>),
+}
+
+/// What completing one source job came to ([`EditorService::complete_preparation`]).
+#[derive(Debug)]
+pub(crate) struct Completion {
+    /// The asset's state after the completion, and after a new asset's first-open entries.
+    pub(crate) state: EditorState,
+    /// Whether an import inserted a new asset, for event publication.
+    pub(crate) created: bool,
+    /// A new asset's first-open reports ([`EditorService::first_open`]); empty otherwise.
+    pub(crate) first_open: Vec<crate::FirstOpen>,
+}
+
+impl Completion {
+    fn of(state: EditorState) -> Self {
+        Self {
+            state,
+            created: false,
+            first_open: Vec::new(),
+        }
+    }
 }
 
 /// What one source job prepared, for [`EditorService::complete_preparation`] to adopt.
@@ -192,6 +217,7 @@ impl SourceWork {
             path,
             signature,
             target: target.map(Box::new),
+            first_open: None,
         })
     }
 
@@ -227,10 +253,15 @@ impl SourceWork {
                 path,
                 signature,
                 target,
+                first_open,
             } => {
                 let prepared = EditorService::prepare_file(&path, target.as_deref(), cancel)?;
                 if prepared.signature != signature {
                     return Err(Error::conflict("source changed after job was queued"));
+                }
+                // Usually loaded long before; otherwise this waits off the owner, once.
+                if let Some(registry) = first_open {
+                    registry.await_first_open();
                 }
                 Ok(Prepared::File(prepared, read()?))
             }
@@ -593,7 +624,16 @@ impl EditorService {
             return Ok(Preparing::Ready(Box::new(state)));
         }
         let target = self.known_file_preparation(path)?;
-        Ok(Preparing::Work(SourceWork::file(path, target)?, Vec::new()))
+        let mut work = SourceWork::file(path, target)?;
+        if let SourceWork::File {
+            target: None,
+            first_open,
+            ..
+        } = &mut work
+        {
+            *first_open = Some(self.registry.clone());
+        }
+        Ok(Preparing::Work(work, Vec::new()))
     }
 
     /// What preparing exactly what `needs` names takes — the asset's original, its RAW development
@@ -733,33 +773,33 @@ impl EditorService {
             self.evict_development(work.redevelops());
         }
         let prepared = work.run(&reads, &AtomicBool::new(false))?;
-        self.complete_preparation(prepared).map(|(state, _)| state)
+        self.complete_preparation(prepared)
+            .map(|completion| completion.state)
     }
 
     /// Complete one source job's preparation, on the thread that owns the catalog: commit an
     /// import, or adopt a new original, a development and the verified artifacts into the caches.
     /// The one completion, which the catalog owner runs for each source job and the blocking
-    /// helpers run after the same work. The bool says whether a new asset was inserted, for event
-    /// publication.
-    pub(crate) fn complete_preparation(
-        &mut self,
-        prepared: Prepared,
-    ) -> Result<(EditorState, bool), Error> {
+    /// helpers run after the same work.
+    pub(crate) fn complete_preparation(&mut self, prepared: Prepared) -> Result<Completion, Error> {
         let (completed, verified) = match prepared {
             Prepared::File(file, verified) => (self.import_prepared(file)?, verified),
             Prepared::Develop(request, developed, verified) => (
-                (self.install_development(&request, developed)?, false),
+                Completion::of(self.install_development(&request, developed)?),
                 verified,
             ),
-            Prepared::Artifacts(asset_id, verified) => ((self.state(&asset_id)?, false), verified),
+            Prepared::Artifacts(asset_id, verified) => {
+                (Completion::of(self.state(&asset_id)?), verified)
+            }
         };
         self.adopt_artifacts(verified);
         Ok(completed)
     }
 
-    /// Complete an import only after a worker has verified and decoded its exact source bytes.
-    /// The bool says whether a new asset was inserted for event publication.
-    fn import_prepared(&mut self, prepared: PreparedFile) -> Result<(EditorState, bool), Error> {
+    /// Complete an import only after a worker has verified and decoded its exact source bytes. A
+    /// new asset's Original is written first, then its first-open actions are committed after it
+    /// ([`Self::first_open`]), so the state answered is the asset's current one.
+    fn import_prepared(&mut self, prepared: PreparedFile) -> Result<Completion, Error> {
         let PreparedFile {
             canonical,
             signature,
@@ -792,7 +832,7 @@ impl EditorService {
                 source,
                 second: SecondDevelopment::default(),
             }));
-            return Ok((state, false));
+            return Ok(Completion::of(state));
         }
         let (width, height) = source.dimensions();
         let source_kind = SourceKind::of(&source)?;
@@ -868,15 +908,22 @@ impl EditorService {
             source,
             second: SecondDevelopment::default(),
         }));
-        Ok((
+        let first_open = self.first_open(&asset.id);
+        let state = if first_open.iter().any(|report| report.entry_id.is_some()) {
+            self.state(&asset.id)?
+        } else {
             EditorState {
                 asset,
                 revision: 0,
                 current_entry: entry,
                 redo: Vec::new(),
-            },
-            true,
-        ))
+            }
+        };
+        Ok(Completion {
+            state,
+            created: true,
+            first_open,
+        })
     }
 
     /// The asset's prepared original from the verified cache, once its file still has the
@@ -1850,7 +1897,18 @@ mod tests {
         let initial = service.import(&path).unwrap();
         assert_eq!(initial.asset.fingerprint, original_hash);
         assert!(matches!(initial.asset.source, SourceKind::Raw { .. }));
-        assert_eq!(initial.current_entry.snapshot.recipe.layers.len(), 1);
+        // The development is the first layer. A RAW whose detected lens profile applies as it
+        // stands also carries that profile, committed as the import's one first-open entry.
+        let first_open = usize::try_from(initial.revision).unwrap();
+        assert!(first_open <= 1);
+        assert_eq!(
+            initial.current_entry.snapshot.recipe.layers.len(),
+            1 + first_open
+        );
+        if first_open == 1 {
+            assert_eq!(initial.current_entry.action_id, "select-lens-profile");
+            assert_eq!(initial.current_entry.actor, "system");
+        }
         let source_layer = initial.current_entry.snapshot.recipe.layers[0].id.clone();
         let original = service
             .preview_job(&initial.asset.id, None, None, None, None)
@@ -1865,7 +1923,7 @@ mod tests {
         let exposure = service
             .apply_action(
                 &initial.asset.id,
-                mutation(0, "raw-exposure"),
+                mutation(initial.revision, "raw-exposure"),
                 "set-basic",
                 json!({"exposure":1.5}),
             )
@@ -1997,7 +2055,7 @@ mod tests {
             service
                 .apply_action(
                     &asset,
-                    mutation(0, "raw-red"),
+                    mutation(initial.revision, "raw-red"),
                     "set-raw-red-gain",
                     json!({"gain": gain}),
                 )
@@ -2100,7 +2158,7 @@ mod tests {
             service
                 .apply_action(
                     &asset,
-                    mutation(0, "raw-red"),
+                    mutation(initial.revision, "raw-red"),
                     "set-raw-red-gain",
                     json!({"gain": gain}),
                 )

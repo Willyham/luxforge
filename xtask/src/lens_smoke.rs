@@ -48,32 +48,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             script::Step::section("luxforge.basic", false),
         ),
         quiet("lens-expanded", script::Step::section(LENS, true)).expanded(LENS),
+        // The section's own answer for empty text: the detected lens as a card, and no list.
         quiet(
-            "candidates",
+            "detected",
             ControlsStep::QueryChoiceSearch {
                 action: SELECT.into(),
-                text: "NIKKOR Z 24-70mm".into(),
-            },
-        ),
-        quiet(
-            "unknown-refused",
-            ControlsStep::QueryChoiceSelectFirst {
-                action: SELECT.into(),
+                text: String::new(),
             },
         )
-        .refused("query-choice has no eligible displayed row")
         .no_layer(LENS_EFFECT),
-        quiet(
-            "acknowledged",
-            ControlsStep::QueryChoiceShared {
-                action: SELECT.into(),
-                parameter: "assume-uncorrected".into(),
-                text: "true".into(),
-            },
-        ),
         Step::new(
             "selected-fit",
-            ControlsStep::QueryChoiceSelectFirst {
+            ControlsStep::QueryChoiceApply {
                 action: SELECT.into(),
             },
         )
@@ -83,6 +69,41 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .percent(100.0)
             .same_layer(LENS_EFFECT, "selected-fit"),
         quiet("fit", ViewStep::Fit).fit(),
+        quiet(
+            "change-open",
+            ControlsStep::QueryChoiceChange {
+                action: SELECT.into(),
+                open: true,
+            },
+        ),
+        quiet(
+            "compatible",
+            ControlsStep::QueryChoiceSearch {
+                action: SELECT.into(),
+                text: "NIKKOR Z 24-70".into(),
+            },
+        ),
+        quiet(
+            "no-compatible",
+            ControlsStep::QueryChoiceSearch {
+                action: SELECT.into(),
+                text: "Summilux".into(),
+            },
+        ),
+        quiet(
+            "report-recorded",
+            ControlsStep::QueryChoiceReport {
+                action: SELECT.into(),
+            },
+        ),
+        quiet(
+            "change-closed",
+            ControlsStep::QueryChoiceChange {
+                action: SELECT.into(),
+                open: false,
+            },
+        )
+        .same_layer(LENS_EFFECT, "selected-fit"),
         quiet("lens-collapsed", script::Step::section(LENS, false)).collapsed(LENS),
         quiet(
             "perspective-expanded",
@@ -178,6 +199,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .field("set-perspective", "horizontal", "-30")
             .field("set-perspective", "vertical", "15"),
         quiet("query-lens-expanded", script::Step::section(LENS, true)).expanded(LENS),
+        quiet(
+            "query-change-open",
+            ControlsStep::QueryChoiceChange {
+                action: SELECT.into(),
+                open: true,
+            },
+        ),
         quiet(
             "query-error",
             ControlsStep::QueryChoiceSearch {
@@ -297,6 +325,101 @@ fn photo_difference(a: &Frame, b: &Frame) -> Result<f64> {
     Ok(sum as f64 / (f64::from(width) * f64::from(height) * 3.0))
 }
 
+/// The Lens section's states as captured: no list before a search, the detected lens offered as a
+/// card whose Apply carries the JPEG acknowledgement, the applied card after it, a search that
+/// lists only compatible profiles, and a report link recorded rather than opened.
+fn lens_section_states(launch: &Checked) -> Result<Value> {
+    let choice = |name: &str| -> Result<Value> {
+        Ok(launch.at(name)?["state"]["control_ui"]["query_choices"][SELECT].clone())
+    };
+    let detected = choice("detected")?;
+    let suggestion = &detected["suggestion"];
+    ensure(
+        detected["rows"].as_array().is_some_and(Vec::is_empty)
+            && detected["current"].is_null()
+            && detected["report"].is_null()
+            && detected["changing"] == false
+            && suggestion["title"] == "NIKKOR Z 24-70mm f/4 S"
+            && suggestion["eligible"] == true
+            && suggestion["parameters"] == json!({"assume-uncorrected": true})
+            && suggestion["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("assumes it did not")),
+        format!("The Lens section did not offer its detected lens without a list: {detected}"),
+    )?;
+    let profile = launch
+        .at("selected-fit")?
+        .payload(LENS_EFFECT)
+        .ok_or("Apply produced no lens layer")?;
+    ensure(
+        profile["profile"]["key"] == suggestion["key"]
+            && profile["profile"]["optics"]["acknowledged"] == "assume-uncorrected",
+        "Apply did not freeze the detected profile with its acknowledgement",
+    )?;
+    let opened = choice("change-open")?;
+    ensure(
+        opened["changing"] == true
+            && opened["current"]["key"] == suggestion["key"]
+            && opened["suggestion"].is_null()
+            && opened["rows"].as_array().is_some_and(Vec::is_empty),
+        format!("The applied card or Change did not show as answered: {opened}"),
+    )?;
+    let compatible = choice("compatible")?;
+    let rows = compatible["rows"]
+        .as_array()
+        .ok_or("The compatible search has no rows")?;
+    let lens_level = [
+        "incompatible-mount",
+        "calibration-sensor-smaller",
+        "aspect-mismatch",
+        "focal-out-of-range",
+    ];
+    ensure(
+        rows.iter().any(|row| row["key"] == suggestion["key"])
+            && rows.iter().all(|row| {
+                row["eligible"] == true
+                    && row["parameters"] == json!({"assume-uncorrected": true})
+                    && row["reasons"].as_array().is_none_or(|reasons| {
+                        reasons
+                            .iter()
+                            .all(|reason| !lens_level.iter().any(|level| reason == level))
+                    })
+            }),
+        format!("The search listed an incompatible or unselectable profile: {compatible}"),
+    )?;
+    let empty = choice("no-compatible")?;
+    let report = empty["report"]["url"]
+        .as_str()
+        .ok_or("A search without a compatible profile offered no report")?;
+    ensure(
+        empty["rows"].as_array().is_some_and(Vec::is_empty)
+            && empty["notice"]["level"] == "warning"
+            && empty["notice"]["text"]
+                .as_str()
+                .is_some_and(|text| text.contains("Summilux"))
+            && report.starts_with("https://github.com/Willyham/luxforge/issues/new?title="),
+        format!("The empty search did not warn and offer the report: {empty}"),
+    )?;
+    let recorded = choice("report-recorded")?;
+    ensure(
+        recorded["opened"] == report,
+        "The report link did not record the page it would open",
+    )?;
+    let closed = choice("change-closed")?;
+    ensure(
+        closed["changing"] == false
+            && closed["text"] == ""
+            && closed["rows"].as_array().is_some_and(Vec::is_empty)
+            && closed["notice"].is_null()
+            && closed["report"].is_null(),
+        format!("Closing Change did not return to the applied card: {closed}"),
+    )?;
+    Ok(
+        json!({"suggestion":suggestion,"compatible_rows":rows.len(),"report_url_length":report.len(),
+        "frozen":profile["profile"]["key"]}),
+    )
+}
+
 /// A retry is an explicit new request for the same failed input. Error and recovery frames must
 /// stay on the same immutable entry, so neither list interaction can masquerade as an edit.
 fn query_retry_states(states: [&Value; 4]) -> Result<Value> {
@@ -357,15 +480,14 @@ fn query_retry_states(states: [&Value; 4]) -> Result<Value> {
             && recovered_ui["request"]["entry"] == retried_ui["request"]["entry"]
             && recovered_ui["error"].is_null()
             && recovered_ui["loading"] == false
-            && recovered_ui["rows"]
-                .as_array()
-                .is_some_and(|rows| !rows.is_empty()),
-        "Clearing the Lens search did not recover real query rows",
+            && recovered_ui["rows"].as_array().is_some_and(Vec::is_empty)
+            && recovered_ui["current"]["key"].is_string(),
+        "Clearing the Lens search did not recover the section's own answer",
     )?;
     Ok(
         json!({"failed_request":failed_ui["request"],"retry_request":retried_ui["request"],
         "recovered_request":recovered_ui["request"],"error":QUERY_ERROR,
-        "recovered_rows":recovered_ui["rows"].as_array().map(Vec::len),"entry":before["stack"]["entry"]}),
+        "recovered_current":recovered_ui["current"],"entry":before["stack"]["entry"]}),
     )
 }
 
@@ -573,36 +695,13 @@ fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -
 
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
-    let candidates = launch.at("candidates")?;
-    let choices = &candidates["state"]["control_ui"]["query_choices"][SELECT];
-    let rows = choices["rows"]
-        .as_array()
-        .ok_or("The lens list has no rows")?;
-    ensure(
-        !rows.is_empty(),
-        "The metadata grid produces no lens candidates",
-    )?;
-    ensure(
-        rows.iter().all(|row| row["eligible"] == false),
-        "Unknown distortion was selectable without acknowledgement",
-    )?;
-    ensure(
-        rows.iter().any(|row| {
-            row["reasons"]
-                .as_array()
-                .is_some_and(|reasons| reasons.iter().any(|r| r == "assume-uncorrected-required"))
-        }),
-        "The lens list does not show why acknowledgement is required",
-    )?;
-    let selected = launch.at("selected-fit")?;
-    let profile = selected
-        .payload(LENS_EFFECT)
-        .ok_or("Selection produced no lens layer")?;
-    ensure(
-        profile["profile"]["optics"]["acknowledged"] == "assume-uncorrected",
-        "Selection did not freeze its acknowledgement",
-    )?;
+    let lens = lens_section_states(launch)?;
     let mut checks = Checks::new();
+    checks.note(
+        launch.at("report-recorded")?,
+        "Lens section states: detected card, applied card, compatible search, report",
+        lens,
+    );
     for name in [
         "selected-fit",
         "selected-100",
@@ -771,7 +870,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         0.0,
         Tolerance::Within(0.0),
     )?;
-    checks.write(&launch.evidence,"lens-perspective",json!({"scope":"Generated grid and descriptor-backed desktop gestures with correlated native captures; a real global Tone curve and global and masked Detail survive Lens/Perspective, crop and mask editing, explicit current captures settle exact and Undo restores byte-identical native photo pixels (a repeat/undo proof, not an independent numerical oracle); mask Reapply preserves stored content coordinates and refreshes the pointer map after another client's Perspective commit; explicit Lens query Retry issues a fresh request with the same rejected input and clearing the search recovers rows without changing history; photographic lens qualification is separate"}))
+    checks.write(&launch.evidence,"lens-perspective",json!({"scope":"Generated grid and descriptor-backed desktop gestures with correlated native captures; a real global Tone curve and global and masked Detail survive Lens/Perspective, crop and mask editing, explicit current captures settle exact and Undo restores byte-identical native photo pixels (a repeat/undo proof, not an independent numerical oracle); mask Reapply preserves stored content coordinates and refreshes the pointer map after another client's Perspective commit; the Lens section answers with its detected lens as a card and no list, Apply freezes it with the JPEG acknowledgement, Change searches only compatible profiles and an empty search records its report link without opening a browser; explicit Lens query Retry issues a fresh request with the same rejected input and clearing the search recovers the applied card without changing history; photographic lens qualification is separate"}))
 }
 
 #[cfg(test)]
@@ -783,12 +882,12 @@ mod tests {
         plan.validate().unwrap();
         let script = script::parse(&plan.script().to_string()).unwrap();
         assert_eq!(script.len(), plan.len() - 1);
-        assert_eq!(plan.len(), 44);
+        assert_eq!(plan.len(), 48);
         assert_eq!(script[0], crate::scenario::recipe::moderate_curve());
         assert_eq!(script[1], crate::scenario::recipe::moderate_detail());
         assert!(script.iter().any(|step| matches!(
             step,
-            script::Step::Controls(ControlsStep::QueryChoiceSelectFirst { .. })
+            script::Step::Controls(ControlsStep::QueryChoiceApply { .. })
         )));
         assert_eq!(
             script[plan.index("brush-mask-mode").unwrap() - 1],
@@ -910,7 +1009,8 @@ mod tests {
         ui["request"]["text"] = json!("");
         ui["request"]["sequence"] = json!(7);
         ui["error"] = Value::Null;
-        ui["rows"] = json!([{"key":"real-row","title":"Real row","eligible":true}]);
+        ui["rows"] = json!([]);
+        ui["current"] = json!({"key":"lf1-applied","title":"Applied"});
         let mut states = [before, failed, retried, recovered];
         assert!(query_retry_states(states.each_ref()).is_ok());
         states[2]["control_ui"]["query_choices"][SELECT]["request"]["sequence"] = json!(5);
@@ -923,7 +1023,12 @@ mod tests {
         states[3]["stack"]["revision"] = json!(9);
         assert!(query_retry_states(states.each_ref()).is_err());
         states[3]["stack"]["revision"] = json!(8);
+        // A recovered answer that lists rows for empty text, or lost its card, is refused.
+        states[3]["control_ui"]["query_choices"][SELECT]["rows"] =
+            json!([{"key":"listed","title":"Listed","eligible":true}]);
+        assert!(query_retry_states(states.each_ref()).is_err());
         states[3]["control_ui"]["query_choices"][SELECT]["rows"] = json!([]);
+        states[3]["control_ui"]["query_choices"][SELECT]["current"] = Value::Null;
         assert!(query_retry_states(states.each_ref()).is_err());
     }
 

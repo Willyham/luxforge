@@ -132,6 +132,17 @@ pub(crate) fn load_in_background() {
         })
     });
 }
+/// Block until the one background parse has finished, starting it if nothing has, whether it
+/// loaded or failed. For the source worker before a new import completes, never the catalog owner
+/// or a UI thread: the parse runs on the shared pool, so the caller must not be a pool thread.
+pub(crate) fn wait_ready() {
+    #[cfg(test)]
+    if TEST_INDEX.with(|cell| cell.borrow().is_some()) {
+        return;
+    }
+    load_in_background();
+    INDEX.wait();
+}
 pub(crate) fn shared() -> Result<Arc<LensIndex>, Error> {
     #[cfg(test)]
     if let Some(value) = TEST_INDEX.with(|cell| cell.borrow().clone()) {
