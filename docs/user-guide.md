@@ -665,7 +665,7 @@ The catalog's browsing methods work over the index of the files Luxforge has rea
 
 `browse.select {mode?, items?, range?, all?, active?, revision?}` changes your selection and answers your session: the union of `items` (`[{file_id}]` or `[{asset_id}]`), `range` (`{start, len}`) and `all` is what `mode` (`replace`, the default, `add`, `remove` or `toggle`) applies; without any of them only `active` moves, and `{"all": false}` selects none. It writes nothing. `session.state` reports the view as `browse: {query, revision, count, stale, selection: {count, ranges, active}}`, the selection as disjoint ascending position ranges. Evaluating the view again carries the selection over to the same items at their new positions.
 
-A request naming another `revision` is refused with `conflict`. A view is stamped with the catalog's latest library change and the index's revision; once either moves on it is `stale`. A stale view still answers rows for its items, but a window whose file has gone is a `conflict`: evaluate it again.
+A request naming another `revision` is refused with `conflict`. A view is stamped with the catalog's latest library change and the index's revision; once either moves on it is `stale`. A stale view still answers rows for its items, but a window whose file has gone is a `conflict`: evaluate it again. A request that targets the selection of a stale view evaluates it again first and goes ahead when the selection still names the same items, and is refused with `conflict` when it does not; `pick.plan` and `pick.develop` with no targets take the view's picks as they are now.
 
 ### Originals: availability and Locate
 

@@ -14,7 +14,8 @@
 //! library change never acts on a selection its client has not seen since a later change.
 //! [`current_items`] instead evaluates a stale view again in place from its stored query, since
 //! what it answers — every item of the view, whose picks a Develop takes — names no positions the
-//! person saw.
+//! person saw; and [`freshen_selection`], before any request that targets the selection, does the
+//! same and keeps the view fresh only when its selection still names the same items.
 
 use super::{Call, ClientId, Owner};
 use crate::{
@@ -197,6 +198,50 @@ pub(super) fn current_items(owner: &mut Owner, client: ClientId) -> Result<Vec<V
         .ok_or_else(no_view)?
         .items
         .clone())
+}
+
+/// Before a request that targets `client`'s selection: a view the catalog or the index has moved on
+/// from is evaluated again in place from its query, and stays fresh only when the selection it
+/// carries over names exactly the items the stale one did, in order — grid previews landing move
+/// the index's revision without changing what anyone selected. Otherwise it is left stale, so the
+/// selection seam refuses the request: a selection names positions the person saw. Nothing happens
+/// without a view, or to a fresh one.
+pub(super) fn freshen_selection(owner: &mut Owner, client: ClientId) -> Result<(), Error> {
+    let (stale, before) = {
+        let Owner {
+            service,
+            sessions,
+            catalog,
+            ..
+        } = &mut *owner;
+        let Ok((view, _)) = current_view(service, sessions, &mut catalog.views, client) else {
+            return Ok(());
+        };
+        (view.stale, browse::selected_items(view))
+    };
+    if !stale {
+        return Ok(());
+    }
+    let Some(query) = owner
+        .sessions
+        .get(&client)
+        .and_then(|session| session.browse.query.clone())
+    else {
+        return Ok(());
+    };
+    evaluate_into(owner, client, query)?;
+    let Owner {
+        sessions, catalog, ..
+    } = &mut *owner;
+    if let Some(view) = catalog.views.views.get_mut(&client)
+        && browse::selected_items(view) != before
+    {
+        view.stale = true;
+        if let Some(session) = sessions.get_mut(&client) {
+            session.browse.stale = true;
+        }
+    }
+    Ok(())
 }
 
 /// `browse.view`: evaluate the query into the caller's one view, carrying its selection over by
@@ -723,6 +768,40 @@ mod tests {
             ok(&owner, client, "session.state", json!({}))["browse"]["revision"],
             revision + 2
         );
+        owner.stop();
+        join.join().unwrap();
+    }
+
+    /// A selection the index's revision alone left stale — grid previews landing — still names the
+    /// items the person saw, so a request on it is answered, its view evaluated again first.
+    #[test]
+    fn browse_a_selection_the_index_alone_left_stale_is_acted_on() {
+        let fx = testing::fixture("owner-selection-stale");
+        let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
+        let client = owner.register();
+        let card = json!({"kind": "card", "volume_id": testing::volume("card")});
+        let summary = ok(&owner, client, "browse.view", json!({ "source": card }));
+        let revision = summary["revision"].as_u64().unwrap();
+        ok(&owner, client, "browse.select", json!({"range": {"start": 0, "len": 1}, "active": 0}));
+        testing::set_index_revision(&index(&fx), 7);
+        assert_eq!(
+            ok(&owner, client, "session.state", json!({}))["browse"]["stale"],
+            true
+        );
+        let answer = ok(
+            &owner,
+            client,
+            "pick.set",
+            json!({
+                "targets": {"kind": "selection"},
+                "picked": true,
+                "mutation": {"request_id": "pick", "actor": "test"},
+            }),
+        );
+        assert!(answer["change"].is_u64(), "{answer}");
+        let session = ok(&owner, client, "session.state", json!({}));
+        assert_eq!(session["browse"]["revision"], revision + 1);
+        assert_eq!(session["browse"]["selection"]["active"], 0);
         owner.stop();
         join.join().unwrap();
     }
