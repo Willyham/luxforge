@@ -445,6 +445,13 @@ impl Segment {
 #[derive(Clone)]
 pub(crate) struct Compiled {
     pub(crate) segments: Vec<Segment>,
+    /// Where each layer of the compiled stack begins, in stack order: the segment that was being
+    /// filled when the layer compiled and how many operations it held then. A layer's operation,
+    /// when it compiled to one, is at that position, and a boundary it opened is the next
+    /// segment's entry; a neutral layer, or a warp fused into the entry before it, holds the
+    /// position of the layer after it. What a GPU plan reads to find the input of a named layer
+    /// ([`super::gpu`]). `O(layers)`, like the rest of the compilation.
+    pub(crate) layers: Box<[(usize, usize)]>,
 }
 
 impl Compiled {
