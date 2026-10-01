@@ -24,7 +24,9 @@
 //! - **Cursors.** On macOS each event may carry where the root's notifications resume. The newest is
 //!   recorded on the root's row in the transaction that writes the last change of the unit it came
 //!   in, after every header read of that unit, so a restart replays from there; a unit that fails
-//!   records none, and its roots are listed again before any later cursor of theirs is recorded.
+//!   records none, and its roots are listed again before any later cursor of theirs is recorded. A
+//!   unit the lane's stop ends records none either (the reads answered after the stop are dropped
+//!   unwritten), so its changes replay from the cursor recorded before it as the catalog opens.
 //! - **Volumes.** A volume mounted brings its folders back: their roots are online again and
 //!   watched from their cursors; one taken out takes its roots offline and out of the watcher. The
 //!   owner hears both, to survey the volumes again and to list a card.
@@ -339,6 +341,16 @@ impl Keeper {
     pub(super) fn recorded(&mut self) {
         self.applied.clear();
         for root in &mut self.roots {
+            root.touched = false;
+        }
+    }
+
+    /// The lane's stop ended the unit: its cursors are not recorded, and its changes replay from
+    /// each root's cursor recorded before it.
+    pub(super) fn stopped(&mut self) {
+        self.applied.clear();
+        for root in &mut self.roots {
+            root.cursor = None;
             root.touched = false;
         }
     }
