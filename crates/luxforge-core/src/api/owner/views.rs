@@ -883,4 +883,83 @@ mod tests {
             crate::ErrorKind::Validation
         );
     }
+
+    /// A view evaluated again into the same items keeps the preview lane's job for it rather than
+    /// cancelling it and reading and queuing the same previews again; another view replaces it.
+    #[test]
+    fn browse_a_view_read_again_keeps_its_preview_job() {
+        let fx = testing::fixture("owner-same-job");
+        let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
+        let client = owner.register();
+        let card = json!({"kind": "card", "volume_id": testing::volume("card")});
+        let jobs = |owner: &OwnerHandle| -> Vec<Value> {
+            let board = ok(owner, client, "activity.list", json!({}));
+            board["active"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(board["recent"].as_array().unwrap())
+                .filter(|entry| entry["kind"] == "preview.extract")
+                .map(|entry| entry["job_id"].clone())
+                .collect()
+        };
+        ok(&owner, client, "browse.view", json!({ "source": card }));
+        let first = jobs(&owner);
+        ok(&owner, client, "browse.view", json!({ "source": card }));
+        assert_eq!(jobs(&owner), first, "the same items keep their job");
+        owner.stop();
+        join.join().unwrap();
+    }
+
+    /// The photographs' view over a generated catalog, in process: `browse.view` of every
+    /// photograph, its first evaluation and then `LUXFORGE_VIEW_SAMPLES` (default 30) more, with the
+    /// owner's memory before and after the first. Run over a copy of a catalog made by
+    /// `cargo xtask generate-catalog` (the `catalog-measure` scratch's `generated/`):
+    /// `LUXFORGE_VIEW_BENCH=/path/catalog.sqlite cargo test --release -p luxforge-core --lib
+    /// browse_view_bench -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a bench over a generated catalog named by LUXFORGE_VIEW_BENCH"]
+    fn browse_view_bench() {
+        let Ok(catalog) = std::env::var("LUXFORGE_VIEW_BENCH") else {
+            eprintln!("LUXFORGE_VIEW_BENCH names no catalog");
+            return;
+        };
+        let samples: usize = std::env::var("LUXFORGE_VIEW_SAMPLES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(30);
+        let (owner, join) = OwnerHandle::start(std::path::Path::new(&catalog)).unwrap();
+        let client = owner.register();
+        let memory = |owner: &OwnerHandle| {
+            ok(owner, client, "resources.read", json!({}))["memory"]["bytes"]
+                .as_f64()
+                .unwrap()
+                / 1_048_576.0
+        };
+        let query = json!({"source": {"kind": "all-photographs"}});
+        let before = memory(&owner);
+        let started = std::time::Instant::now();
+        let summary = ok(&owner, client, "browse.view", query.clone());
+        let first = started.elapsed().as_secs_f64() * 1000.0;
+        let after = memory(&owner);
+        let mut times: Vec<f64> = (0..samples)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                ok(&owner, client, "browse.view", query.clone());
+                started.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        times.sort_by(f64::total_cmp);
+        let at = |q: f64| times[((times.len() as f64 * q).ceil() as usize).saturating_sub(1)];
+        eprintln!(
+            "photos {} items: first {first:.1} ms, p50 {:.1} ms, p95 {:.1} ms; memory {before:.1} -> {after:.1} MiB (+{:.1}), after the samples {:.1} MiB",
+            summary["count"],
+            at(0.5),
+            at(0.95),
+            after - before,
+            memory(&owner),
+        );
+        owner.stop();
+        join.join().unwrap();
+    }
 }
