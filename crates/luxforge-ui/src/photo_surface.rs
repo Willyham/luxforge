@@ -90,27 +90,32 @@
 //! The GPU stage ([`gpu_preview`]) gives a whole-frame photograph one more slot: a held
 //! `rgba16float` boundary, the output its programs write and the buffers they read, all charged to
 //! the separate GPU-preview budget and retired through the same worker. While a surface is handed
-//! a GPU plan it draws that output in place of its frame, and its frame stays the fallback.
+//! a GPU plan it draws that output in place of its frame, and its frame stays the fallback. When a
+//! settle hands it the CPU frame with a [`Dissolve`] instead, it dissolves from the GPU output it
+//! last drew to that frame, asking for redraws only while the dissolve runs.
 
 mod mips;
 
 pub use mips::admissible as mips_admissible;
 
 use iced::{
-    ContentFit, Element, Length, Point, Rectangle, Size, Vector,
-    advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree},
+    ContentFit, Element, Event, Length, Point, Rectangle, Size, Vector,
+    advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget::Tree},
     widget::shader::{self, Viewport},
+    window,
 };
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicU8, AtomicU64, Ordering},
 };
+use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    DrawingPath, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram, GpuStep,
-    PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, validate_step,
+    DISSOLVE_DURATION, Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary,
+    GpuFallback, GpuPlan, GpuProgram, GpuStep, PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap,
+    validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -166,6 +171,8 @@ impl SurfaceFigures {
         overall.drawn_path = drawn.drawn_path;
         overall.gpu_fallback = drawn.gpu_fallback;
         overall.drawn_gpu_boundary = drawn.drawn_gpu_boundary;
+        overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
+        overall.drawn_dissolve = drawn.drawn_dissolve;
         // Read live: a retirement discharges the budget on the worker, between draws.
         overall.gpu_preview_budget_bytes = self.preview.budget();
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
@@ -303,13 +310,20 @@ pub struct SurfaceDiagnostics {
     pub drawn_regions: [Option<DrawnRegion>; 2],
     /// Clipping frame whose draw call was encoded with the photograph, if any.
     pub drawn_clipping_version: Option<u64>,
-    /// Which path drew the last photograph: the GPU stage's output or the CPU frame. `None` when
-    /// none was drawn.
+    /// Which path drew the last photograph: the GPU stage's output in place of the CPU frame, or
+    /// the CPU frame, alone or over a dissolving GPU frame. `None` when none was drawn.
     pub drawn_path: Option<DrawingPath>,
     /// Why the last draw that was handed a GPU plan drew the CPU frame instead.
     pub gpu_fallback: Option<GpuFallback>,
-    /// The boundary version whose GPU-stage output the last draw drew.
+    /// The boundary version whose GPU-stage output the last draw drew, in place of the CPU frame
+    /// or under a dissolve.
     pub drawn_gpu_boundary: Option<u64>,
+    /// The interface thread's time, in microseconds, to prepare the GPU frame the last draw drew:
+    /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
+    /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
+    pub gpu_preview_frame_us: Option<u64>,
+    /// The settle dissolve the last draw drew, with its identities and progress.
+    pub drawn_dissolve: Option<DrawnDissolve>,
     /// The GPU-preview budget, beside the photo-texture figures above but not part of them.
     pub gpu_preview_budget_bytes: u64,
     /// Every surface's GPU-preview textures and buffers, resident or retiring.
@@ -636,6 +650,10 @@ pub struct PhotoSurface {
     /// What the GPU stage evaluates in place of the photograph's frame; see
     /// [`PhotoSurface::gpu_preview`].
     gpu: Option<GpuPlan>,
+    /// A settle's dissolve from the GPU frame to this frame; see [`PhotoSurface::dissolve`].
+    dissolve: Option<Dissolve>,
+    /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
+    clock: Option<Instant>,
     width: Length,
     height: Length,
 }
@@ -665,6 +683,8 @@ pub fn photo_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -700,6 +720,8 @@ pub fn viewport_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -724,6 +746,8 @@ pub fn stage_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -779,6 +803,27 @@ impl PhotoSurface {
     pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
         self.gpu = plan.cloned();
         self
+    }
+
+    /// Dissolve from the GPU frame this surface last drew to its frame, which must be the version
+    /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]).
+    /// The widget asks for redraws only while it runs. A plan handed beside it cancels it, and a
+    /// surface whose last frame was not the GPU stage's draws its frame alone.
+    pub fn dissolve(mut self, dissolve: Option<Dissolve>) -> Self {
+        self.dissolve = dissolve;
+        self
+    }
+
+    /// The dissolve this surface draws at `now`, if one runs.
+    fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
+        let whole =
+            matches!(self.base, Base::Photo(_)) && self.viewport.is_none() && self.gpu.is_none();
+        let frame = self
+            .layers
+            .first()
+            .filter(|(layer, _)| *layer == Layer::Photo)
+            .map(|(_, frame)| frame);
+        gpu_preview::dissolving(self.dissolve, whole, frame, now)
     }
 
     /// The size the picture is placed by: a percentage view's full stage, the exact stage a
@@ -972,6 +1017,7 @@ where
                     Base::Photo(_) if self.viewport.is_none() => self.gpu.clone(),
                     _ => None,
                 },
+                dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
                 offset: visible.offset,
                 size: visible.size,
                 clip_size: visible.clip.size(),
@@ -980,6 +1026,28 @@ where
                 snap,
             },
         );
+    }
+
+    /// Each redraw's own time is the dissolve's clock: the widget keeps it for its draw and asks
+    /// for the next frame only while a dissolve still runs at it, so the redraw that finds the
+    /// dissolve ended asks for nothing.
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(now)) = event {
+            self.clock = Some(*now);
+            if self.dissolving(*now).is_some() {
+                shell.request_redraw();
+            }
+        }
     }
 
     fn mouse_interaction(
@@ -1008,12 +1076,33 @@ pub struct PhotoPrimitive {
     region_overlays: [Option<RegionOverlay>; 2],
     /// A whole-frame photograph's GPU plan, drawn in place of its frame when the stage can.
     gpu: Option<GpuPlan>,
+    /// A whole-frame photograph's dissolve from the GPU frame last drawn, at this frame's share.
+    dissolve: Option<gpu_preview::DissolveFrame>,
     offset: Vector,
     size: Size,
     clip_size: Size,
     bright: Option<(Rectangle, f32)>,
     angle: f32,
     snap: bool,
+}
+
+impl PhotoPrimitive {
+    /// Whether `surface`'s photograph texture holds exactly the frame this primitive draws, or it
+    /// draws none.
+    fn photo_ready(&self, surface: &SurfaceSlots) -> bool {
+        self.layers
+            .iter()
+            .find(|(layer, _)| *layer == Layer::Photo)
+            .is_none_or(|(_, frame)| {
+                surface.slots[Layer::Photo.index()]
+                    .as_ref()
+                    .is_some_and(|picture| {
+                        picture.matching_frame(frame, None, None)
+                            && picture.width == frame.width
+                            && picture.height == frame.height
+                    })
+            })
+    }
 }
 
 /// The uniform block's first two rectangles, in physical pixels of the whole frame: the render
@@ -1311,27 +1400,27 @@ impl shader::Primitive for PhotoPrimitive {
         }
         pipeline.generate_mips(device, queue, &mut surface, drawn);
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
-        // without a plan it releases the slot.
-        pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref());
+        // without a plan it releases the slot, unless a dissolve into a frame already in its
+        // texture keeps it for the GPU frame it dissolves from.
+        let dissolve = self.dissolve.filter(|_| self.photo_ready(&surface));
+        pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
-        if let Some(output) = surface.gpu_output() {
+        if let Some(output) = surface.gpu_output().or(surface.dissolved_output()) {
             write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
         }
         for (layer, _) in &self.layers {
             if let Some(picture) = &surface.slots[layer.index()] {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                // Over a dissolving GPU frame the photograph is drawn at the dissolve's share.
+                let (bright, turn) = match surface.dissolving.filter(|_| *layer == Layer::Photo) {
+                    Some(frame) => gpu_preview::photo_uniform(frame.share),
+                    None => ([x0, y0, x1, y1], turn),
+                };
+                write_uniforms(queue, picture, viewport, destination, bright, turn);
             }
         }
         if self.viewport.is_some() {
@@ -1416,6 +1505,8 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_content = None;
         let mut drawn_fallback_content = None;
         let mut drawn_gpu_boundary = None;
+        let mut gpu_frame_us = None;
+        let mut drawn_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
         if let Some(view) = &self.viewport {
@@ -1558,19 +1649,7 @@ impl shader::Primitive for PhotoPrimitive {
                 }
             }
         } else {
-            let photo_ready = self
-                .layers
-                .iter()
-                .find(|(layer, _)| *layer == Layer::Photo)
-                .is_none_or(|(_, frame)| {
-                    surface.slots[Layer::Photo.index()]
-                        .as_ref()
-                        .is_some_and(|picture| {
-                            picture.matching_frame(frame, None, None)
-                                && picture.width == frame.width
-                                && picture.height == frame.height
-                        })
-                });
+            let photo_ready = self.photo_ready(surface);
             for (layer, frame) in &self.layers {
                 if matches!(*layer, Layer::Clipping | Layer::Coverage) && !photo_ready {
                     continue;
@@ -1581,7 +1660,20 @@ impl shader::Primitive for PhotoPrimitive {
                     draw_picture(render_pass, output);
                     drew_photo = true;
                     drawn_gpu_boundary = Some(output.version);
+                    gpu_frame_us = surface.gpu_frame_us();
                     continue;
+                }
+                // A dissolve draws the GPU frame it starts from first; the photograph's own draw
+                // below lays the CPU frame over it at the dissolve's share.
+                if *layer == Layer::Photo
+                    && photo_ready
+                    && let Some(output) = surface.dissolved_output()
+                    && let Some(frame) = surface.dissolving
+                {
+                    draw_picture(render_pass, output);
+                    drawn_gpu_boundary = Some(output.version);
+                    gpu_frame_us = surface.gpu_frame_us();
+                    drawn_dissolve = Some(frame.drawn(output.version));
                 }
                 if let Some(picture) = &surface.slots[layer.index()] {
                     draw_picture(render_pass, picture);
@@ -1607,23 +1699,28 @@ impl shader::Primitive for PhotoPrimitive {
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
-        let drawn_path = drew_photo.then_some(if drawn_gpu_boundary.is_some() {
-            DrawingPath::Gpu
-        } else {
-            DrawingPath::Cpu
-        });
+        // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
+        let drawn_path =
+            drew_photo.then_some(if drawn_gpu_boundary.is_some() && drawn_dissolve.is_none() {
+                DrawingPath::Gpu
+            } else {
+                DrawingPath::Cpu
+            });
         let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
         // Each surface compares against its own last draw, so two surfaces in different states
-        // do not wake each other every frame. A change of drawing path, or a new fallback, wakes
-        // the desktop once too.
+        // do not wake each other every frame. A change of drawing path, a new fallback, or a
+        // dissolve's start or end wakes the desktop once too.
         let status = u8::from(blank_photo)
             | (u8::from(stale_photo) << 1)
             | (u8::from(drawn_path == Some(DrawingPath::Gpu)) << 2)
-            | (u8::from(gpu_fallback.is_some()) << 3);
+            | (u8::from(gpu_fallback.is_some()) << 3)
+            | (u8::from(drawn_dissolve.is_some()) << 4);
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_path = drawn_path;
         diagnostic.gpu_fallback = gpu_fallback;
         diagnostic.drawn_gpu_boundary = drawn_gpu_boundary;
+        diagnostic.gpu_preview_frame_us = gpu_frame_us;
+        diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
@@ -1872,14 +1969,17 @@ struct SurfaceSlots {
     retiring: Arc<Retiring>,
     /// Prepared since the last end-of-frame trim.
     shown: bool,
-    /// The last draw's blank (bit 0), stale (bit 1), GPU-drawn (bit 2) and fallback (bit 3)
-    /// status, so a change wakes the desktop once.
+    /// The last draw's blank (bit 0), stale (bit 1), GPU-drawn (bit 2), fallback (bit 3) and
+    /// dissolve (bit 4) status, so a change wakes the desktop once.
     drawn_status: AtomicU8,
-    /// The GPU stage's one slot, charged to the GPU-preview budget, while a plan is given.
+    /// The GPU stage's one slot, charged to the GPU-preview budget, while a plan is given or a
+    /// dissolve starts from its output.
     gpu: Option<gpu_preview::GpuSlot>,
     /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
     /// `None` when the frame was handed no plan.
     gpu_outcome: Option<Result<u64, GpuFallback>>,
+    /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
+    dissolving: Option<gpu_preview::DissolveFrame>,
 }
 
 impl SurfaceSlots {
@@ -1890,6 +1990,17 @@ impl SurfaceSlots {
         } else {
             None
         }
+    }
+
+    /// The GPU stage's output, when this frame dissolves from it to the photograph's frame.
+    fn dissolved_output(&self) -> Option<&Picture> {
+        self.dissolving?;
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
+    }
+
+    /// The interface thread's time to prepare the GPU output this surface holds.
+    fn gpu_frame_us(&self) -> Option<u64> {
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::frame_us)
     }
 
     fn full_bytes(&self) -> u64 {
@@ -2028,7 +2139,8 @@ impl PhotoPipeline {
         let status = u8::from(diagnostic.drawn_photo_blank)
             | (u8::from(diagnostic.drawn_stale_photo) << 1)
             | (u8::from(diagnostic.drawn_path == Some(DrawingPath::Gpu)) << 2)
-            | (u8::from(diagnostic.gpu_fallback.is_some()) << 3);
+            | (u8::from(diagnostic.gpu_fallback.is_some()) << 3)
+            | (u8::from(diagnostic.drawn_dissolve.is_some()) << 4);
         SurfaceSlots {
             slots: [None, None, None, None],
             regions: [None, None],
@@ -2040,6 +2152,7 @@ impl PhotoPipeline {
             drawn_status: AtomicU8::new(status),
             gpu: None,
             gpu_outcome: None,
+            dissolving: None,
         }
     }
 
@@ -4076,6 +4189,7 @@ mod gpu_surface_tests {
             viewport: None,
             region_overlays: [None, None],
             gpu: None,
+            dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
@@ -4102,6 +4216,7 @@ mod gpu_surface_tests {
             }),
             region_overlays: [None, None],
             gpu: None,
+            dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
