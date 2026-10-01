@@ -260,7 +260,7 @@
     {
       "id": "TASK-004",
       "description": "Prove the module through the method table in release: the conformance suite inside editor-acceptance and a Tone curve acceptance chapter for placement, masked order and the sample query.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
