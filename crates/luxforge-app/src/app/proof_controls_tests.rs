@@ -563,21 +563,17 @@ fn query_choice_desktop_retry_recovers_with_same_inputs_and_no_automatic_polling
     proof.finish();
 }
 
+/// The Lens section over a camera JPEG: no list on opening, the detected lens offered with an
+/// Apply that carries its acknowledgement, the applied card with Change revealing a search that
+/// lists only compatible profiles, and a report link when a search finds none. Every state comes
+/// from the core's answer; the desktop only draws and forwards it.
 #[test]
-fn lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_focal() {
+fn lens_section_offers_the_detected_lens_then_shows_it_applied_with_a_compatible_search() {
     const SELECT: &str = "select-lens-profile";
     let catalog = temp_catalog("desktop-lens-query-choice");
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
     let (mut editor, asset, client) = super::testing::real_photo_at(&catalog, &fixture);
-    editor
-        .controls
-        .expanded
-        .insert("luxforge.lens".into(), true);
-    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
-        action: SELECT.into(),
-        text: "NIKKOR Z 24-70mm".into(),
-    }));
     let control = editor
         .modules
         .iter()
@@ -589,6 +585,7 @@ fn lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_fo
             _ => None,
         })
         .unwrap();
+    assert_eq!(control.shared, ["focal"]);
     let answer_current = |editor: &mut Editor| {
         let identity = editor.controls.ui.query_choices[SELECT]
             .request
@@ -613,61 +610,58 @@ fn lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_fo
             result: Ok(answer),
         }));
     };
+    let submit = |editor: &mut Editor, parameters: &Map<String, Value>| {
+        let request = editor
+            .request_for_preset(SELECT, None, Some(parameters))
+            .unwrap();
+        call(
+            &editor.owner,
+            client,
+            "edit.select-lens-profile",
+            request["params"].clone(),
+        )
+        .0
+    };
+    let refresh = |editor: &mut Editor| {
+        let refreshed = tasks::refresh(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            tasks::Scope::Elsewhere,
+            None,
+        )
+        .unwrap();
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+            refreshed,
+        )))));
+    };
+
+    // Expanding the collapsed section asks for the status alone: empty text, so no list.
+    assert!(!editor.controls.ui.query_choices.contains_key(SELECT));
+    let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+        "luxforge.lens".into(),
+    )));
     answer_current(&mut editor);
     let ui = &editor.controls.ui.query_choices[SELECT];
-    assert_eq!(
-        ui.status.as_ref().unwrap()["distortion"]["status"],
-        "unknown"
-    );
-    assert!(ui.shows_shared("assume-uncorrected"));
-    assert!(ui.rows.iter().all(|row| !row.eligible));
-    assert!(ui.rows.iter().any(|row| {
-        row.reasons
-            .iter()
-            .any(|reason| reason == "assume-uncorrected-required")
-    }));
-    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceShared {
-        action: SELECT.into(),
-        parameter: "assume-uncorrected".into(),
-        text: "true".into(),
-    }));
-    answer_current(&mut editor);
-    let key = editor.controls.ui.query_choices[SELECT]
-        .rows
-        .iter()
-        .find(|row| row.eligible)
-        .unwrap()
-        .key
-        .clone();
-    let shared = editor.controls.ui.query_choices[SELECT]
-        .request
-        .as_ref()
-        .unwrap()
-        .shared
-        .clone();
-    let parameters = editor.controls.ui.query_choices[SELECT]
-        .selection(&control, &key, shared)
-        .unwrap();
-    let request = editor
-        .request_for_preset(SELECT, None, Some(&parameters))
-        .unwrap();
-    call(
-        &editor.owner,
-        client,
-        "edit.select-lens-profile",
-        request["params"].clone(),
-    );
-    let refreshed = tasks::refresh(
-        &editor.owner,
-        editor.client,
-        asset.clone(),
-        tasks::Scope::Elsewhere,
-        None,
-    )
-    .unwrap();
-    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
-        refreshed,
-    )))));
+    assert_eq!(ui.request.as_ref().unwrap().text, "");
+    assert!(ui.rows.is_empty());
+    assert!(!ui.shows_search(), "a card hides the search until Change");
+    assert!(ui.current.is_none() && ui.report.is_none() && ui.notice.is_none());
+    let suggestion = ui.suggestion.clone().unwrap();
+    assert_eq!(suggestion.title, "NIKKOR Z 24-70mm f/4 S");
+    assert_eq!(suggestion.subtitle.as_deref(), Some("Nikon Z 6 · 35 mm"));
+    assert!(suggestion.eligible);
+    assert!(suggestion.note.unwrap().contains("assumes it did not"));
+    assert!(!ui.shows_shared("focal") && !ui.shows_shared("assume-uncorrected"));
+
+    // Apply sends the suggestion's key and its acknowledgement.
+    let shared = ui.request.as_ref().unwrap().shared.clone();
+    let parameters = ui.suggested(&control, shared).unwrap();
+    assert_eq!(parameters["assume-uncorrected"], true);
+    assert_eq!(parameters["profile"], json!(suggestion.key));
+    let applied = submit(&mut editor, &parameters);
+    assert_eq!(applied["outcome"], "applied");
+    refresh(&mut editor);
     assert_eq!(editor.controls.fields.get(SELECT, "focal"), Some(""));
     let layer = editor
         .document
@@ -680,50 +674,82 @@ fn lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_fo
         .layers
         .iter()
         .find(|layer| layer.effect_id == "luxforge.lens.distortion")
-        .unwrap();
+        .unwrap()
+        .clone();
     assert_eq!(layer.payload["profile"]["focal"]["source"], "exif");
-    let frozen = layer.payload.clone();
-    let revision = editor.document.state.as_ref().unwrap().revision;
+    assert_eq!(
+        layer.payload["profile"]["optics"]["acknowledged"],
+        "assume-uncorrected"
+    );
+
+    // The new entry's answer: the applied card, and still no list.
+    let _ = editor.request_visible_query_choices();
+    answer_current(&mut editor);
+    let ui = &editor.controls.ui.query_choices[SELECT];
+    let current = ui.current.clone().unwrap();
+    assert_eq!(current.key, suggestion.key);
+    assert_eq!(current.title, "NIKKOR Z 24-70mm f/4 S");
+    assert!(ui.suggestion.is_none() && ui.rows.is_empty() && !ui.shows_search());
+
+    // Change reveals the search, which asks nothing until text is typed.
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceChange {
+        action: SELECT.into(),
+        open: true,
+    }));
+    assert!(editor.controls.ui.query_choices[SELECT].shows_search());
+    assert!(editor.controls.query_choice_slot.idle());
     let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
         action: SELECT.into(),
         text: "NIKKOR Z 24-70mm".into(),
     }));
     answer_current(&mut editor);
-    let shared = editor.controls.ui.query_choices[SELECT]
-        .request
-        .as_ref()
-        .unwrap()
-        .shared
-        .clone();
-    let parameters = editor.controls.ui.query_choices[SELECT]
-        .selection(&control, &key, shared)
-        .unwrap();
-    let request = editor
-        .request_for_preset(SELECT, None, Some(&parameters))
-        .unwrap();
-    let answer = call(
-        &editor.owner,
-        client,
-        "edit.select-lens-profile",
-        request["params"].clone(),
-    )
-    .0;
-    assert_eq!(answer["outcome"], "no-op");
-    assert_eq!(answer["revision"], revision);
-    let described = call(
-        &editor.owner,
-        client,
-        "asset.state",
-        json!({"asset_id":asset}),
-    )
-    .0;
-    let layer = described["current_entry"]["snapshot"]["recipe"]["layers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|layer| layer["effect_id"] == "luxforge.lens.distortion")
-        .unwrap();
-    assert_eq!(layer["payload"], frozen);
+    let ui = &editor.controls.ui.query_choices[SELECT];
+    assert!(!ui.rows.is_empty());
+    assert!(ui.rows.iter().all(|row| {
+        row.eligible && row.parameters.get("assume-uncorrected") == Some(&json!(true))
+    }));
+    // Choosing the applied profile again keeps the frozen payload and writes nothing.
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    let shared = ui.request.as_ref().unwrap().shared.clone();
+    let parameters = ui.selection(&control, &current.key, shared).unwrap();
+    let again = submit(&mut editor, &parameters);
+    assert_eq!(again["outcome"], "no-op");
+    assert_eq!(again["revision"], revision);
+
+    // A search that finds no compatible profile warns and offers the report, which a test
+    // records rather than opening a browser.
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
+        action: SELECT.into(),
+        text: "Summilux".into(),
+    }));
+    answer_current(&mut editor);
+    let ui = &editor.controls.ui.query_choices[SELECT];
+    assert!(ui.rows.is_empty());
+    let notice = ui.notice.clone().unwrap();
+    assert_eq!(
+        notice.level,
+        crate::state::query_choice::NoticeLevel::Warning
+    );
+    assert!(notice.text.contains("Summilux"));
+    let report = ui.report.clone().unwrap();
+    assert_eq!(report.label, "Report missing lens");
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceReport {
+        action: SELECT.into(),
+    }));
+    assert_eq!(
+        editor.controls.ui.query_choices[SELECT].opened.as_deref(),
+        Some(report.url.as_str())
+    );
+    assert!(editor.status.text.contains("no browser"));
+
+    // Closing Change drops the search and asks for the status again.
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceChange {
+        action: SELECT.into(),
+        open: false,
+    }));
+    let ui = &editor.controls.ui.query_choices[SELECT];
+    assert!(!ui.changing && ui.text.is_empty() && ui.rows.is_empty());
+    assert!(editor.controls.query_choice_slot.in_flight());
     super::testing::finish(editor, catalog);
 }
 

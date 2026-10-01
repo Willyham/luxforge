@@ -191,6 +191,12 @@ impl<J, R> Running<'_, J, R> {
         &self.abandoned
     }
 
+    /// The consumer's waker, for a job that reports progress the consumer reads from state it
+    /// shares, rather than as a result. Like a result's wake it runs on the worker thread.
+    pub(crate) fn waker(&self) -> Option<Wake> {
+        self.shared.lock().waker.clone()
+    }
+
     /// Hand one result to the consumer before the job returns its last one, and wake the consumer.
     ///
     /// Waits while [`WAITING_RESULTS`] results are already waiting. `false` means the result will

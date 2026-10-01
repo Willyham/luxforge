@@ -2476,6 +2476,50 @@ impl Editor {
                 }
                 task
             }
+            ControlsStep::QueryChoiceApply { action } => {
+                let ready = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .filter(|ui| !ui.loading)
+                    .and_then(|ui| ui.suggestion.as_ref())
+                    .is_some_and(|card| card.eligible);
+                if !ready {
+                    return self.fail_step("query-choice has no eligible suggestion");
+                }
+                self.begin_request();
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceApply {
+                    action,
+                }));
+                if !self.busy {
+                    return self.fail_step(format!(
+                        "the suggestion did not submit: {}",
+                        self.status.text
+                    ));
+                }
+                task
+            }
+            ControlsStep::QueryChoiceChange { action, open } => {
+                self.query_choice_evidence_input(ControlMessage::QueryChoiceChange { action, open })
+            }
+            ControlsStep::QueryChoiceReport { action } => {
+                let offered = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .and_then(|ui| ui.report.as_ref());
+                if offered.is_none() {
+                    return self.fail_step("query-choice offers no report page");
+                }
+                // An evidence run records the page and opens no browser.
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceReport {
+                    action,
+                }));
+                self.capture_next_frame();
+                task
+            }
             ControlsStep::Slider {
                 action,
                 parameter,
@@ -2516,6 +2560,7 @@ impl Editor {
             ControlMessage::QueryChoiceSearch { action, .. }
             | ControlMessage::QueryChoicePage { action, .. }
             | ControlMessage::QueryChoiceShared { action, .. }
+            | ControlMessage::QueryChoiceChange { action, .. }
             | ControlMessage::QueryChoiceRetry { action } => action.clone(),
             _ => unreachable!("only query inputs reach this step"),
         };

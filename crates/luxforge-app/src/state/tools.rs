@@ -529,7 +529,7 @@ pub(crate) struct CurveControl {
 }
 
 /// The line under a curve plot whose points can be added and removed.
-pub(crate) const CURVE_HINT: &str = "Double-click to add a point, or on one to remove it";
+pub(crate) const CURVE_HINT: &str = "Click to add a point, or double-click one to remove it";
 
 pub(crate) fn group_key(module_id: &str, path: &[usize]) -> String {
     let mut key = format!("{module_id}/");

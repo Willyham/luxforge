@@ -636,6 +636,15 @@ pub enum ControlsStep {
     QueryChoiceSelectFirst { action: String },
     #[serde(rename = "query-choice-retry")]
     QueryChoiceRetry { action: String },
+    /// Press the suggestion card's Apply.
+    #[serde(rename = "query-choice-apply")]
+    QueryChoiceApply { action: String },
+    /// Open or close Change, which reveals the search under a card.
+    #[serde(rename = "query-choice-change")]
+    QueryChoiceChange { action: String, open: bool },
+    /// Press the report link: the run records the page and opens no browser.
+    #[serde(rename = "query-choice-report")]
+    QueryChoiceReport { action: String },
     Slider {
         action: String,
         parameter: String,
@@ -688,9 +697,11 @@ impl ControlsStep {
                 }
                 Ok(())
             }
-            Self::QueryChoiceSelectFirst { action } | Self::QueryChoiceRetry { action } => {
-                text(action, "query-choice action")
-            }
+            Self::QueryChoiceSelectFirst { action }
+            | Self::QueryChoiceRetry { action }
+            | Self::QueryChoiceApply { action }
+            | Self::QueryChoiceChange { action, .. }
+            | Self::QueryChoiceReport { action } => text(action, "query-choice action"),
             Self::Slider {
                 action,
                 parameter,

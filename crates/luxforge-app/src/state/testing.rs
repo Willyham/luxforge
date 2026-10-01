@@ -525,12 +525,12 @@ pub(crate) fn nonlinear_mapping(
                     Err(error) => panic!("{error}"),
                 }
             });
-            let row = rows["rows"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-                .unwrap();
+            // The detected profile, offered in the answer's status rather than as a row.
+            let row = &rows["status"]["suggestion"];
+            assert!(
+                row["match"] == "lens-model" && row["eligible"] == true,
+                "{rows}"
+            );
             service
                 .apply_action(
                     &asset,
