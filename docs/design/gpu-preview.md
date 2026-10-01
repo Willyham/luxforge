@@ -72,8 +72,8 @@ The plan runs on these; each is a proposal the owner can revise.
 **The measure.** Per-pixel CIEDE2000 (ΔE00), from sRGB through CIELAB under D65, computed in `f64` by an independent reference. As a common guide, ΔE00 below 1 is not perceptible, 1 to 2 is perceptible on close inspection and 2 to 10 at a glance. Four statistics:
 
 - **Mean ΔE00** over the photograph: the overall shift.
-- **Worst block**: the largest mean ΔE00 of any 16 × 16-pixel block. A region that changes is what reads as a jump, more than scattered pixels do.
-- **p99 ΔE00**: edges and fine detail.
+- **Worst block**: the largest mean ΔE00 of any 16 × 16-pixel block. A region that changes is what reads as a jump, more than scattered pixels do. Blocks tile the photograph from its top-left corner; the last block in each direction moves inward to end at the edge, so none is partial.
+- **p99 ΔE00**: edges and fine detail. Nearest rank: the largest value left after discarding the worst 1% of pixels, rounded down.
 - **Signed mean ΔL\***: whole-picture brightening or darkening, which reads as a jump even when small.
 
 **Limits** (proposed):
@@ -85,7 +85,7 @@ The plan runs on these; each is a proposal the owner can revise.
 | p99 ΔE00 | ≤ 2.0 | ≤ 5.0 |
 | Signed mean ΔL\* | within ±0.25 | within ±0.5 |
 
-The pointwise mean matches the precedent the owner already set: the RAW white-balance draft gate is a mean within one code at Fit. The spatial limits are deliberately generous. They leave room for half-precision storage, single-precision running sums and estimates taken at the scale the GPU holds. Under a 150 ms dissolve, a regional difference of about 2 reads as the picture settling rather than popping. The first task measures today's accepted CPU approximations under the same measure, for comparison:
+The pointwise mean matches the precedent the owner already set: the RAW white-balance draft gate is a mean within one code at Fit. The spatial limits are deliberately generous. They leave room for half-precision storage, single-precision running sums and estimates taken at the scale the GPU holds. Under a 150 ms dissolve, a regional difference of about 2 reads as the picture settling rather than popping. The first task measured today's accepted CPU approximations under the same measure, for comparison ([recorded baseline](../specs/performance.md#preview-error-baseline)):
 
 - the Presence proxy against the exact downscale
 - the half-scale 100% motion region against the exact region
@@ -210,9 +210,9 @@ The task first confirms this with a zone-plate capture of compare at Fit. It the
 
 ## Verification
 
-- **Reference.** An `f64` CIEDE2000 and the four statistics in `luxforge-reference`, checked against the published CIEDE2000 test pairs.
+- **Reference.** An `f64` CIEDE2000 and the four statistics in `luxforge-reference` (`preview_error`), checked against the published CIEDE2000 test pairs. `cargo xtask preview-error` reads two captures, or two frames of an evidence run, and writes the statistics and both classes' verdicts ([development](../engineering/development.md#commands)).
 - **Per program.** A headless readback test against the CPU unit over dense synthetic inputs, including negative and over-range linear values, judged by the limits and the hard rules. A test without an adapter reports that it was skipped, never a pass.
-- **Corpus.**
+- **Corpus**, listed with hashes or explicit gaps in [`fixtures/preview/corpus.json`](../../fixtures/preview/corpus.json) (`cargo xtask preview-corpus`).
   - Sources: the generated 24 MP and 60 MP JPEGs, the zone plate, the Presence fixture and the Z6, X100VI and Air 2S RAWs.
   - Recipes: full Basic, the Tone curve, the Mixer, the Vignette, every mask kind, a straightened crop, a lens and perspective warp, Presence combinations and Detail.
   - Both Fit and 100%, each program judged against its class's limits.
