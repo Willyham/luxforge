@@ -104,7 +104,7 @@ pub(super) struct FilesLane {
     /// Whether the lane's watcher reports volumes mounted and taken out, which keeps the survey
     /// current without a survey per call.
     notified: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     hold: Option<crate::index::lane::Hold>,
     #[cfg(test)]
     hold_reads: Option<crate::index::lane::Hold>,
@@ -160,7 +160,7 @@ pub(super) enum FilesMessage {
     QueriesWaiting(std::sync::mpsc::SyncSender<usize>),
     /// Hold every listing under the folder at each of its folders while the gate is shut, from the
     /// lane's next start: only the test's own, not a card the host mounts meanwhile.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     Hold(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Hold every header read of a file under the folder while the gate is shut, until its work is
     /// cancelled, from the lane's next start.
@@ -192,7 +192,7 @@ impl FilesLane {
             surveys: Surveys::default(),
             watching: HashMap::new(),
             notified: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-holds"))]
             hold: None,
             #[cfg(test)]
             hold_reads: None,
@@ -496,7 +496,7 @@ fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
         limits: files.limits,
         post: files.post(),
         board: files.board.clone(),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-holds"))]
         hold: files.hold.clone(),
         #[cfg(test)]
         hold_reads: files.hold_reads.clone(),
@@ -630,7 +630,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         FilesMessage::QueriesWaiting(reply) => {
             let _ = reply.send(owner.catalog.files.queries_waiting());
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-holds"))]
         FilesMessage::Hold(gate, under) => owner.catalog.files.hold = Some((gate, under)),
         #[cfg(test)]
         FilesMessage::HoldReads(gate, under) => {
@@ -685,4 +685,20 @@ fn absolute(path: &Path) -> Result<(), Error> {
 /// The indexed folders, in path order.
 fn indexed_folders(owner: &Owner) -> Result<Vec<crate::catalog_types::IndexedFolder>, Error> {
     folder_rows::indexed_folders(&owner.service.connection)
+}
+
+#[cfg(any(test, feature = "test-holds"))]
+impl super::OwnerHandle {
+    /// Hold every listing under `folder`, from the index lane's next start, at each folder it
+    /// walks while `gate` is shut; a cancel of the listing releases it. A walk's folders are
+    /// canonical paths, so `folder` is one too. For a test that acts while
+    /// a listing runs, whatever the host's load: the core's own, and through the `test-holds`
+    /// feature, which only `[dev-dependencies]` turn on, the desktop's.
+    pub fn hold_listings(&self, gate: Arc<luxforge_testbase::Gate>, folder: PathBuf) {
+        self.sender
+            .send(super::OwnerMessage::Catalog(
+                super::catalog::CatalogMessage::Files(FilesMessage::Hold(gate, folder)),
+            ))
+            .expect("the owner is running");
+    }
 }

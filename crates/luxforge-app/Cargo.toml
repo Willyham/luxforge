@@ -27,9 +27,9 @@ serde_json.workspace = true
 image = { workspace = true, features = ["jpeg"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
-# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
-# `test-skip-disk-flush`).
-luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"] }
+# The core with the disk flush skipped and its index listings held at a test's gate, for this
+# crate's tests only (luxforge-core's `test-skip-disk-flush` and `test-holds`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds"] }
 
 [lints]
 workspace = true

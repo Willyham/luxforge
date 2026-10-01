@@ -280,6 +280,14 @@ samples) that every timing figure is read from: the crates' own ignored timing t
 through it, and `xtask`'s timing tools write theirs through it. The `one-distribution` rule refuses
 a second percentile or median definition.
 
+The core holds its own work at a gate through crate-private, `cfg(test)` hooks. A test outside the
+core that needs core work held reaches it through `luxforge-core`'s `test-holds` feature, which
+only `[dev-dependencies]` turn on, like the disk-flush skip above (`test-holds-only-in-tests`
+refuses it in any normal, build or workspace dependency). It has one hold so far:
+`OwnerHandle::hold_listings`, which holds every index listing under a folder at each folder it
+walks while the gate is shut; the desktop's long-work tests hold a listing there while they read
+the board.
+
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
 build inheriting them would rebuild `ring`, `rustls`, `luxforge-core` and everything above them

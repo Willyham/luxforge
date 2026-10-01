@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 idna_adapter.workspace = true
 luxforge-jpeg = { path = "../luxforge-jpeg" }
+# Only for `test-holds` below; no build of a shipped binary names it.
+luxforge-testbase = { path = "../luxforge-testbase", optional = true }
 luxforge-process = { path = "../luxforge-process" }
 luxforge-raw = { path = "../luxforge-raw" }
 luxforge-watch = { path = "../luxforge-watch" }
@@ -30,6 +32,12 @@ zeroize.workspace = true
 # on (`cargo xtask check-repository`'s `disk-flush-only-in-tests` rule), so a `cargo build` of any
 # binary never has it. See docs/engineering/development.md#tests-skip-the-disk-flush.
 test-skip-disk-flush = []
+# Lets a test outside the core hold the index lane's listings at a `luxforge_testbase::Gate`
+# (`OwnerHandle::hold_listings`), as the core's own tests do, so a desktop test acts while a listing
+# runs whatever the host's load. Only `[dev-dependencies]` tables turn it on (`cargo xtask
+# check-repository`'s `test-holds-only-in-tests` rule), so a `cargo build` of any binary has neither
+# the hold nor `luxforge-testbase`.
+test-holds = ["dep:luxforge-testbase"]
 
 [target.'cfg(windows)'.dependencies]
 winapi-util = "=0.1.11"
