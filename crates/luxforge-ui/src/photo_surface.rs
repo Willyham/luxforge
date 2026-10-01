@@ -416,6 +416,11 @@ impl Frame {
     pub fn version(&self) -> u64 {
         self.version
     }
+
+    /// The RGBA8 bytes, borrowed from the buffer the frame shares.
+    pub fn pixels(&self) -> &[u8] {
+        (*self.pixels).as_ref()
+    }
 }
 
 /// The detail of a region published to the surface.

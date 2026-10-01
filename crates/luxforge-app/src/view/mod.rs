@@ -68,6 +68,9 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) draft: Option<&'a CropDraft>,
+    /// A GPU plan the photograph at Fit is drawn from in place of its frame, which stays the
+    /// surface's fallback. Only an evidence run's GPU identity hook gives one.
+    pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {

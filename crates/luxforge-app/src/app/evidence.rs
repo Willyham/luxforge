@@ -117,6 +117,9 @@ pub(crate) struct Evidence {
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
+    /// The GPU identity hook, for a run launched with `--evidence-gpu-identity`: the photograph at
+    /// Fit is drawn through the GPU stage, and a capture waits for that draw.
+    pub(crate) gpu_identity: Option<super::gpu_identity::GpuIdentity>,
 }
 
 /// What only a captured frame's state reports, kept by the evidence driver from the outcomes the
@@ -186,6 +189,7 @@ impl Evidence {
             agent_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
+            gpu_identity: None,
         }
     }
 }
@@ -490,6 +494,11 @@ enum ExpectedPhotoDraw {
         generation: u64,
         quality: luxforge_ui::RegionQuality,
     },
+    /// The GPU identity hook's draw: the GPU stage's output over the boundary held from the frame
+    /// of this version.
+    Gpu {
+        boundary: u64,
+    },
 }
 
 fn photo_drawn(
@@ -497,6 +506,10 @@ fn photo_drawn(
     gpu: luxforge_ui::photo_surface::SurfaceDiagnostics,
 ) -> bool {
     match expected {
+        ExpectedPhotoDraw::Gpu { boundary } => {
+            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+                && gpu.drawn_gpu_boundary == Some(boundary)
+        }
         ExpectedPhotoDraw::Full { version, content } => {
             gpu.drawn_full_version == Some(version)
                 && content.is_none_or(|content| gpu.drawn_content == Some(content))
@@ -596,13 +609,28 @@ impl Editor {
             None
         }
         .or_else(|| {
-            full.map(|photo| ExpectedPhotoDraw::Full {
-                version: photo.version(),
-                content: (matches!(
+            full.map(|photo| {
+                let percent = matches!(
                     self.session.preview.view.zoom,
                     luxforge_core::Zoom::Percent { .. }
-                ) && full_current)
-                    .then_some(self.presentation.presented_content),
+                );
+                // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
+                // frame to capture is that draw, over the boundary held from this frame.
+                let forced = self
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.gpu_identity.is_some());
+                if forced && !percent && self.presentation.compare_after.is_none() {
+                    ExpectedPhotoDraw::Gpu {
+                        boundary: photo.version(),
+                    }
+                } else {
+                    ExpectedPhotoDraw::Full {
+                        version: photo.version(),
+                        content: (percent && full_current)
+                            .then_some(self.presentation.presented_content),
+                    }
+                }
             })
         });
         expected.is_some_and(|expected| {
@@ -651,6 +679,15 @@ impl Editor {
     /// One of evidence mode's own messages.
     pub(super) fn evidence_update(&mut self, message: EvidenceMessage) -> Task<Message> {
         match message {
+            EvidenceMessage::GpuBoundary(boundary) => {
+                if let Some(hook) = self
+                    .evidence
+                    .as_mut()
+                    .and_then(|evidence| evidence.gpu_identity.as_mut())
+                {
+                    hook.adopt(boundary);
+                }
+            }
             EvidenceMessage::Info(info) => {
                 self.activity.backend =
                     Some(json!({"backend":info.graphics_backend,"adapter":info.graphics_adapter}));
@@ -4386,7 +4423,20 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
-    Task::none()
+    // The GPU identity hook follows the photograph at Fit, the one view it draws.
+    let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+    let photo = editor
+        .presentation
+        .presenter
+        .photo_for(editor.presentation.presented_content);
+    match editor
+        .evidence
+        .as_mut()
+        .and_then(|evidence| evidence.gpu_identity.as_mut())
+    {
+        Some(hook) if fit => hook.follow(photo),
+        _ => Task::none(),
+    }
 }
 
 #[cfg(test)]
@@ -4860,6 +4910,7 @@ mod tests {
             agent_wait: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
+            gpu_identity: None,
         });
         editor.activity.requested = 1;
 
