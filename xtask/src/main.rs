@@ -8,6 +8,7 @@ mod check;
 mod conformance;
 mod controls_smoke;
 mod crop_smoke;
+mod curve_acceptance;
 mod curve_smoke;
 mod diagnostics;
 mod editor_acceptance;
