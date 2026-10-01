@@ -6,6 +6,7 @@
 //! trait it holds are re-exported through this module's parent alongside everything here.
 use super::spatial::SpatialOperation;
 use crate::mask_field::MaskField;
+use crate::render::gpu::GpuDescription;
 use crate::render::map::{Mapping, WarpStep};
 use std::sync::Arc;
 
@@ -108,6 +109,15 @@ pub trait PointwiseColor: Send + Sync {
     /// write every coefficient exactly, with the shortest round-trip form (`{}`), and never rounded
     /// to a display precision.
     fn describe(&self) -> String;
+    /// This unit's GPU program and the uniform words it reads, for a preview during a gesture
+    /// (`docs/design/gpu-preview.md`). The program is WGSL text the module keeps beside this unit;
+    /// the words are a pure function of the coefficients `describe` writes, so two units that
+    /// describe themselves identically answer identical descriptions. `None`, the default, sends
+    /// every stack holding this unit down the CPU path. Settled frames, samples, analysis and
+    /// export never read a GPU pixel, so a program changes no CPU byte.
+    fn gpu(&self) -> Option<GpuDescription> {
+        None
+    }
 }
 
 /// What one colour-stage layer compiles into: an ordered, bounded list of pointwise units evaluated

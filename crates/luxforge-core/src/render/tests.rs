@@ -486,6 +486,12 @@ impl PointwiseColor for Exposure {
     fn describe(&self) -> String {
         format!("exposure {:+} EV", self.ev)
     }
+    fn gpu(&self) -> Option<super::gpu::GpuDescription> {
+        Some(super::gpu::GpuDescription::new(
+            &super::gpu::testing::EXPOSURE,
+            vec![self.gain.to_bits()],
+        ))
+    }
 }
 
 /// A unit whose coefficients are finite but whose result is not: two of them in one operation
@@ -531,6 +537,12 @@ impl PointwiseColor for Positional {
     }
     fn describe(&self) -> String {
         format!("positional {}x{}", self.width, self.height)
+    }
+    fn gpu(&self) -> Option<super::gpu::GpuDescription> {
+        Some(super::gpu::GpuDescription::new(
+            &super::gpu::testing::POSITIONAL,
+            vec![self.width.to_bits(), self.height.to_bits()],
+        ))
     }
 }
 

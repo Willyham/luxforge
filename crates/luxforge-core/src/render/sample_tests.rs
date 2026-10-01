@@ -11,9 +11,9 @@ use crate::{
 use serde_json::{Value, json};
 
 /// One stack shape of the table.
-struct Case {
-    name: &'static str,
-    layers: Vec<Layer>,
+pub(super) struct Case {
+    pub(super) name: &'static str,
+    pub(super) layers: Vec<Layer>,
     masks: Vec<Mask>,
     /// Whether the linear domain evaluates it: it refuses a stack with more than one resample
     /// (`render::linear::tests::malformed_sources_views_and_multiple_resamples_fail_closed`).
@@ -48,7 +48,7 @@ impl Case {
         self
     }
 
-    fn recipe(&self) -> Recipe {
+    pub(super) fn recipe(&self) -> Recipe {
         Recipe {
             format: crate::RECIPE_FORMAT,
             layers: self.layers.clone(),
@@ -69,8 +69,9 @@ fn effect(effect_id: &str, payload: Value) -> Layer {
     }
 }
 
-/// Every stack shape the rows, the resample, the spatial frames and the point evaluator cover.
-fn cases() -> Vec<Case> {
+/// Every stack shape the rows, the resample, the spatial frames and the point evaluator cover. The
+/// GPU plan's tests plan every one of them too (`gpu::plan_tests`).
+pub(super) fn cases() -> Vec<Case> {
     let basic = effect(
         crate::BASIC_EFFECT,
         json!({"exposure": 0.4, "contrast": 20.0, "vibrance": 15.0}),
