@@ -54,42 +54,91 @@ pub(crate) fn order(
             }
         }
     }
-    let ascending = |a: &FrameFacts, b: &FrameFacts| -> Ordering {
-        let body_rank = |frame: &FrameFacts| {
-            frame
-                .local_day
-                .and_then(|day| first_of_body.get(&(day, frame.body)).copied())
-        };
-        let by_day = match grouping {
-            Grouping::None => Ordering::Equal,
-            Grouping::Day | Grouping::DayCameraMoment => a.local_day.cmp(&b.local_day),
-        };
-        let by_body = match grouping {
-            Grouping::DayCameraMoment => body_rank(a)
-                .cmp(&body_rank(b))
-                .then_with(|| a.body.cmp(&b.body)),
-            Grouping::Day | Grouping::None => Ordering::Equal,
-        };
-        by_day
-            .then(by_body)
-            .then_with(|| a.instant_ms.cmp(&b.instant_ms))
-            .then_with(|| caseless(&a.name, &b.name))
-            .then_with(|| a.item.cmp(&b.item))
+    // Each frame's key, worked out once, so sorting compares a few words and moves 40 bytes; the
+    // names and folders are read only for frames the key cannot tell apart.
+    let keys: Vec<OrderKey> = frames
+        .iter()
+        .enumerate()
+        .map(|(at, frame)| OrderKey {
+            dated: frame.instant_ms.is_some(),
+            day: match grouping {
+                Grouping::None => None,
+                Grouping::Day | Grouping::DayCameraMoment => frame.local_day,
+            },
+            rank: match grouping {
+                Grouping::DayCameraMoment => frame
+                    .local_day
+                    .and_then(|day| first_of_body.get(&(day, frame.body)).copied()),
+                Grouping::Day | Grouping::None => None,
+            },
+            body: match grouping {
+                Grouping::DayCameraMoment => frame.body.0,
+                Grouping::Day | Grouping::None => 0,
+            },
+            instant: frame.instant_ms,
+            at: at as u32,
+        })
+        .collect();
+    let ascending = |a: &OrderKey, b: &OrderKey| -> Ordering {
+        let (x, y) = (&frames[a.at as usize], &frames[b.at as usize]);
+        a.day
+            .cmp(&b.day)
+            .then(a.rank.cmp(&b.rank))
+            .then(a.body.cmp(&b.body))
+            .then(a.instant.cmp(&b.instant))
+            .then_with(|| caseless(&x.name, &y.name))
+            .then_with(|| x.item.cmp(&y.item))
     };
-    frames.sort_by(|a, b| {
-        let dated = |frame: &FrameFacts| frame.instant_ms.is_some();
-        match (dated(a), dated(b)) {
-            (true, false) => Ordering::Less,
-            (false, true) => Ordering::Greater,
-            (false, false) => tables
-                .folder_path(a.folder)
-                .cmp(tables.folder_path(b.folder))
-                .then_with(|| caseless(&a.name, &b.name))
-                .then_with(|| a.item.cmp(&b.item)),
-            (true, true) if descending => ascending(b, a),
-            (true, true) => ascending(a, b),
+    let mut keys = keys;
+    keys.sort_unstable_by(|a, b| match (a.dated, b.dated) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => {
+            let (x, y) = (&frames[a.at as usize], &frames[b.at as usize]);
+            tables
+                .folder_path(x.folder)
+                .cmp(tables.folder_path(y.folder))
+                .then_with(|| caseless(&x.name, &y.name))
+                .then_with(|| x.item.cmp(&y.item))
         }
+        (true, true) if descending => ascending(b, a),
+        (true, true) => ascending(a, b),
     });
+    // The order is total — every tie falls to the item — so the unstable sort gives the one order.
+    let order: Vec<usize> = keys.iter().map(|key| key.at as usize).collect();
+    permute(frames, &order);
+}
+
+/// A frame's place in [`order`]'s sort: whether it is dated, then, as the grouping asks, its day,
+/// its body's rank that day and the body, then its capture time; `at` is its index.
+struct OrderKey {
+    dated: bool,
+    day: Option<crate::catalog_types::LocalDay>,
+    rank: Option<i64>,
+    body: u32,
+    instant: Option<i64>,
+    at: u32,
+}
+
+/// Put `items` in the order `order` names: `items[i]` becomes the old `items[order[i]]`, moving
+/// each item once along its cycle.
+fn permute<T>(items: &mut [T], order: &[usize]) {
+    let mut done = vec![false; items.len()];
+    for start in 0..items.len() {
+        if done[start] {
+            continue;
+        }
+        let mut at = start;
+        loop {
+            done[at] = true;
+            let from = order[at];
+            if from == start {
+                break;
+            }
+            items.swap(at, from);
+            at = from;
+        }
+    }
 }
 
 /// Two names compared ignoring case, allocating nothing.
