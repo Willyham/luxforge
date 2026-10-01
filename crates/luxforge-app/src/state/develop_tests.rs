@@ -261,6 +261,20 @@ fn filmstrip_confirmation_says_what_happens_to_card_picks() {
     assert!(params.get("use_copies").is_none());
     assert_eq!(params["confirm_removable"], true);
 
+    assert_eq!(
+        confirm_model(&with(card(3, 2), 0)).notes,
+        [
+            "3 picks are on NIKON Z 8. 2 have copies in indexed folders, used once the fingerprints \
+          match; the other is developed from it, and the catalog points at it."
+        ]
+    );
+    assert_eq!(
+        confirm_model(&with(card(3, 1), 0)).notes,
+        [
+            "3 picks are on NIKON Z 8. 1 has a copy in indexed folders, used once the fingerprints \
+          match; the other 2 are developed from it, and the catalog points at it."
+        ]
+    );
     let mixed = with(card(12, 8), 0);
     assert_eq!(
         confirm_model(&mixed).notes,

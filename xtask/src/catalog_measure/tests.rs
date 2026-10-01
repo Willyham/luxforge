@@ -151,14 +151,13 @@ fn catalog_measure_desktop_probes_and_develop_switch_name_their_lane() {
                 && row["reason"].as_str().unwrap().contains("lane B")
                 && row["target"].is_string())
     );
-    let switch: Vec<Value> = develop_switch(&context)
-        .unwrap()
-        .into_iter()
-        .map(Row::value)
-        .collect();
-    assert_eq!(switch.len(), 1);
-    assert_eq!(switch[0]["status"], report::NOT_MEASURED);
-    assert!(switch[0]["reason"].as_str().unwrap().contains("TASK-021"));
+    // The Develop switch launches the editor: without one it says which binary is missing, which
+    // the report's step records as a failure.
+    let switch = develop_switch(&context).unwrap_err().to_string();
+    assert!(
+        switch.contains("luxforge") && switch.contains("does not exist"),
+        "{switch}"
+    );
 }
 
 #[test]

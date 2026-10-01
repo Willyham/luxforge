@@ -251,11 +251,20 @@ fn notes(confirmation: &Confirmation) -> Vec<String> {
                 };
                 format!("{on} {their} in indexed folders will be used once the fingerprints match.")
             } else {
+                let have = if copies == 1 {
+                    "1 has a copy".to_owned()
+                } else {
+                    format!("{} have copies", thousands(copies))
+                };
+                let rest = count - copies;
+                let other = if rest == 1 {
+                    "the other is".to_owned()
+                } else {
+                    format!("the other {} are", thousands(rest))
+                };
                 format!(
-                    "{on} {} have copies in indexed folders, used once the fingerprints match; \
-                     the other {} are developed from it, and the catalog points at it.",
-                    thousands(copies),
-                    thousands(count - copies)
+                    "{on} {have} in indexed folders, used once the fingerprints match; {other} \
+                     developed from it, and the catalog points at it."
                 )
             }
         })
