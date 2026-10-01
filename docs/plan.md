@@ -39,11 +39,8 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Editing tools
 
-**Tone curve** (planned, [design](design/tone-curve.md), [plan](../tasks/tone-curve.json)). One composite point curve over encoded luminance, drawn by the delivered curve editor and posted as the same points; the next module candidate by the owner's decision of 2026-09-21, not yet authorized for implementation.
-- Frozen curve numerics against an independent reference
-- The `luxforge.curve` field-patch module after Basic and before the mixer, with `edit.set-curve` and `query.sample-curve`
-- Conformance, placement, the `curve` smoke scenario, presets with the Lightroom composite-curve transfer, masks, and photo-sized measurement
-- The shared curve-editor changes: double-click on a point removes it, and the point list starts closed
+**Tone curve follow-ups** ([design](design/tone-curve.md), [plan](../tasks/tone-curve.json)). The Tone curve is delivered ([feature status](features.md)).
+- Photo-sized measurement at 24 MP and 60 MP: the point drag to the presented frame, its settled histogram and the unit's frame cost
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
 - Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
 
