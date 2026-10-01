@@ -251,7 +251,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         version: 0,
         points_open: false,
         points_max: 8,
-        hint: Some("Double-click to add a point, or on one to remove it".into()),
+        hint: Some("Click to add a point, or double-click one to remove it".into()),
     };
     states.push(curve_editor(&curve, |_| ()));
     states.push(curve_editor(

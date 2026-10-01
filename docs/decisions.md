@@ -285,6 +285,7 @@ Decided by the owner on 2026-09-30, when the plan was made prescriptive:
 ## Tone curve
 
 - The curve editor removes a point on a double-click on that point, beside Delete for the selected point, and keeps its numeric point list closed behind a Points disclosure until the person opens it (owner, 2026-09-30). Both are changes to the shared curve editor, made with the Tone curve module; the other [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) remain open below.
+- A single click on the plot away from every point adds a point, and a double-click on a point removes it; the plot fills the panel's width up to a maximum and is centred beyond it (owner, 2026-10-01). A double-click on empty plot therefore adds one point and never removes it.
 - Below black the curve uses a floor-subtracted luminance ratio (owner, 2026-09-30): with `L_floor` the linear output of the curve at encoded zero, `rgb_out = L_floor + rgb·(L_out − L_floor)/L`, which equals Basic's frozen ratio rule whenever the curve keeps black at zero. A lifted black then fades the deepest shadows toward grey instead of turning their noise into coloured speckle. Basic's Blacks keeps its frozen rule; changing it is a separate follow-up.
 
 ## Open product questions
