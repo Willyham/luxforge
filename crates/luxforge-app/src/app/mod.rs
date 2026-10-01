@@ -138,6 +138,9 @@ pub(crate) struct Activity {
     /// frame's own phase, for the status bar. Set by every presented frame, including a retained
     /// one a zoom hands back, which brings the time recorded with it.
     pub(crate) render: Option<state::status::RenderTime>,
+    /// The bar over the photograph while a long render's exact phase runs, kept from one
+    /// derivation to the next so it stays until that phase ends ([`state::canvas::render_bar`]).
+    pub(crate) render_bar: Option<state::canvas::RenderBar>,
 }
 
 impl Activity {
@@ -155,6 +158,7 @@ impl Activity {
             backend: None,
             request_started: Instant::now(),
             render: None,
+            render_bar: None,
         }
     }
 }
@@ -575,6 +579,10 @@ impl Editor {
     /// Bring the screen up to date with the state this message left behind: every region is
     /// derived again from it.
     fn rederive(&mut self) {
+        // The worker wakes this client as its exact phase advances, so the reading is current
+        // whenever a message arrives, and nothing polls it.
+        self.activity.render_bar =
+            state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
         let mut workspace = std::mem::take(&mut self.workspace);
         let inputs = state::Inputs {
             document: &self.document,
@@ -624,6 +632,7 @@ impl Editor {
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
+            render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
             analysis_updating: self.presentation.analysis_updating(),

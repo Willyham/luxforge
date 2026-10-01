@@ -743,8 +743,18 @@ pub(crate) fn run_batches<T: Send>(
         for (tile, result) in batch.iter().zip(results) {
             write(*tile, result)?;
         }
+        if let Some(progress) = cancel.progress() {
+            progress.advance(batch.len() as u64);
+        }
     }
     Ok(())
+}
+
+/// How many tiles [`run_batches`] runs for `operation` over `stage`: what a whole-frame render
+/// plans its progress in, without building the tiles.
+pub(crate) fn tile_count(operation: &SpatialOperation, stage: Stage, tiling: Tiling) -> u64 {
+    let side = u64::from(tiling.tile(operation, stage).max(1));
+    u64::from(stage.width).div_ceil(side) * u64::from(stage.height).div_ceil(side)
 }
 
 /// How a batch's tiles schedule their own passes: on the pool only for a stage at or above the

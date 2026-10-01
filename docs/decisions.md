@@ -272,6 +272,8 @@ Decided by the owner on 2026-09-30, when the plan was made prescriptive; these a
 - **Value-based mask overlays keep working behind Detail** through a bounded input-grid cache on the overlay worker, rather than the refusal that applies to a spatial prefix today.
 - **No pixel work on the catalog owner.** A mutation that must read pixels through a spatial prefix, such as the colour-limited brush's seed, goes owner → point worker → owner with its revision and draft identity checked on return; performance rule 5 gains no exception.
 
+Decided by the owner on 2026-10-01, after heavy sharpening left a long settlement visible only in the status bar and the Performance section: a render expected to take more than a second shows its progress on the photograph itself, as a bar across it. The settlement is not made faster here; the full-resolution restoration frame cache that would avoid it stays not planned ([instant previews](design/instant-preview.md#progress-of-a-long-exact-phase)).
+
 ## Lens and perspective planning
 
 Lens and perspective scope and approach are selected for planning under the owner's delegation on 2026-09-30: [design and rationale](design/lens-and-perspective.md#scope-and-decisions). The initial scope is explicit offline Lensfun profile distortion plus manual two-axis perspective, with fixed-canvas coverage and no duplicate embedded DNG correction. These are planning decisions, not implemented or verified behavior; the plan adds no owner-review gate.

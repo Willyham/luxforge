@@ -24,10 +24,11 @@ mod worker;
 
 pub use coverage::{MaskCoverage, MaskCoverageTarget, MaskOverlayOutcome};
 pub use job::{PreviewIntent, PreviewJob, PreviewSource};
-pub use queue::{PreviewQueue, Queued};
+pub use queue::{PreviewProgress, PreviewQueue, Queued};
 pub use result::{
     ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome, RegionOutcome,
 };
+pub use worker::PROGRESS_QUIET as PREVIEW_PROGRESS_QUIET;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

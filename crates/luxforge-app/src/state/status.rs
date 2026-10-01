@@ -250,7 +250,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
-        render: if inputs.rendering {
+        render: if let Some(bar) = inputs.render_bar {
+            format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
+        } else if inputs.rendering {
             "Rendering…".into()
         } else {
             match inputs.render {

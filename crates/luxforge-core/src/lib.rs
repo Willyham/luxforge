@@ -43,7 +43,7 @@ pub use api::{
     OwnerHandle, POINTER_MODE, PreviewRequest, WorkspaceState, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
-pub use cancel::Cancel;
+pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
@@ -87,9 +87,9 @@ pub use presets::{
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
-    MaskCoverageTarget, MaskOverlayOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewPhase,
-    PreviewQueue, PreviewResult, PreviewSession, PreviewSource, ProxyOutcome, Queued,
-    RegionOutcome, ViewState, Zoom,
+    MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
+    PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
+    PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{

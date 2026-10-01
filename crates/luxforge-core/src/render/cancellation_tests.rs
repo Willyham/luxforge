@@ -165,3 +165,102 @@ fn a_colour_pass_cancelled_mid_chunk_yields_no_frame_and_releases_every_reservat
         );
     }
 }
+
+/// A whole-frame render plans every spatial tile before its first one runs and advances by each
+/// finished batch, so on both pixel domains what it planned is what it finished, the reading never
+/// moves backwards and it is notified once per batch. Detail and Presence are two spatial segments
+/// at different stages of the stack, and the crop after them changes the stage the terminal pass
+/// writes, which no tile count reads. A stack without a spatial operation plans nothing.
+#[test]
+fn a_render_finishes_exactly_the_spatial_tiles_it_planned_and_reports_each_batch() {
+    use crate::cancel::{ProgressCounts, RenderProgress};
+    use std::sync::Mutex;
+
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (64, 48);
+    let source = cancellation_source(width, height);
+    let planes = varied(width, height);
+    let spatial = Recipe {
+        format: crate::RECIPE_FORMAT,
+        layers: vec![
+            Layer::new(
+                crate::DETAIL_EFFECT,
+                json!({"sharpening": 60, "luminance": 30}),
+            ),
+            Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.25})),
+            Layer::new(
+                crate::PRESENCE_EFFECT,
+                json!({"texture": 30.0, "clarity": 20.0}),
+            ),
+            Layer::crop(fitted_crop(width, height, 0.0, [0.1, 0.1, 0.8, 0.8])),
+        ],
+        masks: Vec::new(),
+        ..Recipe::default()
+    };
+    // 16 px tiles over the 64 × 48 stage: 4 × 3 tiles for each of the two spatial segments.
+    let tiles_per_segment = 12;
+    for (domain, input) in [
+        ("byte", RenderSource::Byte(&source)),
+        ("linear", linear(&planes, LinearSettings::default())),
+    ] {
+        let readings = Arc::new(Mutex::new(Vec::<ProgressCounts>::new()));
+        let sink = readings.clone();
+        let meter = RenderProgress::new(move |counts| sink.lock().unwrap().push(counts));
+        let cancel = Cancel::new().with_progress(&meter);
+        frame_in(
+            &RenderContext::new(),
+            &registry,
+            input,
+            SnapshotId::new(),
+            &spatial,
+            RenderOptions::exact(&cancel).with_tile(16),
+        )
+        .unwrap_or_else(|error| panic!("{domain}: {error:?}"));
+        let readings = readings.lock().unwrap().clone();
+        assert_eq!(
+            meter.counts(),
+            ProgressCounts {
+                done: 2 * tiles_per_segment,
+                planned: 2 * tiles_per_segment,
+            },
+            "{domain}: the render finished exactly the tiles it planned"
+        );
+        assert!(
+            readings.len() >= 2,
+            "{domain}: each segment notifies at least once"
+        );
+        assert!(
+            readings
+                .iter()
+                .all(|counts| counts.planned == 2 * tiles_per_segment),
+            "{domain}: every tile was planned before the first one ran: {readings:?}"
+        );
+        assert!(
+            readings.windows(2).all(|pair| pair[0].done < pair[1].done),
+            "{domain}: each batch advances the reading: {readings:?}"
+        );
+        assert_eq!(readings.last().unwrap().fraction(), Some(1.0));
+
+        // Without a spatial operation there is no extent to report, and nothing is notified.
+        let notified = Arc::new(Mutex::new(0));
+        let count = notified.clone();
+        let meter = RenderProgress::new(move |_| *count.lock().unwrap() += 1);
+        let cancel = Cancel::new().with_progress(&meter);
+        let input = match domain {
+            "byte" => RenderSource::Byte(&source),
+            _ => linear(&planes, LinearSettings::default()),
+        };
+        frame_in(
+            &RenderContext::new(),
+            &registry,
+            input,
+            SnapshotId::new(),
+            &cancellation_stack(width, height),
+            RenderOptions::exact(&cancel).with_tile(16),
+        )
+        .unwrap_or_else(|error| panic!("{domain}: {error:?}"));
+        assert_eq!(meter.counts(), ProgressCounts::default(), "{domain}");
+        assert_eq!(meter.counts().fraction(), None);
+        assert_eq!(*notified.lock().unwrap(), 0, "{domain}");
+    }
+}
