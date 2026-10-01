@@ -74,7 +74,23 @@ fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan {
 /// prelude and the convention. The stage checks each program the same way before it compiles.
 #[test]
 fn a_step_is_checked_against_the_convention_on_its_own() {
-    for program in [identity(), scale(0.5), swap(true), stripe(0.5, 4)] {
+    // The core names its entries lf_<module>_<unit>, as the Basic exposure program does, with its
+    // helpers and constants after the entry.
+    let core_named = GpuProgram::new(
+        "lf_basic_exposure",
+        "const lf_basic_exposure_floor: f32 = 0.0;\n\
+         fn lf_basic_exposure_gain(words: u32) -> f32 { return lf_f32(words); }\n\
+         fn lf_basic_exposure(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) \
+         -> vec3<f32> {\n    return rgb * lf_basic_exposure_gain(words) + \
+         lf_basic_exposure_floor;\n}\n",
+    );
+    for program in [
+        identity(),
+        scale(0.5),
+        swap(true),
+        stripe(0.5, 4),
+        core_named,
+    ] {
         validate_step(&GpuStep::Colour(program.clone()))
             .unwrap_or_else(|error| panic!("{}: {error}", program.entry));
     }
@@ -91,7 +107,7 @@ fn a_step_is_checked_against_the_convention_on_its_own() {
                  fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
                  return rgb * f32(bad_more[0]);\n}\n",
             ),
-            "binding or global",
+            "binding, global variable",
         ),
         (
             "a private global",
@@ -101,7 +117,7 @@ fn a_step_is_checked_against_the_convention_on_its_own() {
                  fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
                  return rgb;\n}\n",
             ),
-            "binding or global",
+            "binding, global variable",
         ),
         (
             "an entry point",
@@ -135,7 +151,51 @@ fn a_step_is_checked_against_the_convention_on_its_own() {
             ),
             "expected",
         ),
-        ("a reserved name", colour("lf_bad", ""), "lf_"),
+        (
+            "a helper not named after its entry",
+            colour(
+                "bad",
+                "fn helper(x: f32) -> f32 { return x; }\n\
+                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
+                 return rgb * helper(1.0);\n}\n",
+            ),
+            "does not start with its entry's name",
+        ),
+        (
+            "a constant not named after its entry",
+            colour(
+                "bad",
+                "const half_gain: f32 = 0.5;\n\
+                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
+                 return rgb * half_gain;\n}\n",
+            ),
+            "does not start with its entry's name",
+        ),
+        (
+            "a named type",
+            colour(
+                "bad",
+                "struct bad_pair { a: f32, b: f32 }\n\
+                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
+                 let p = bad_pair(1.0, 2.0);\n    return rgb * p.a;\n}\n",
+            ),
+            "declares the type",
+        ),
+        (
+            "an override",
+            colour(
+                "bad",
+                "override bad_gain: f32 = 1.0;\n\
+                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
+                 return rgb * bad_gain;\n}\n",
+            ),
+            "override",
+        ),
+        (
+            "one of the surface's names",
+            colour("lf_fragment", ""),
+            "surface's own",
+        ),
     ] {
         assert!(error.contains(expected), "{what}: {error}");
     }
@@ -158,7 +218,8 @@ fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() 
 
     let refused = |program: GpuProgram| assemble(&[GpuStep::Colour(program)]);
     for (entry, why) in [
-        ("lf_mine", "lf_"),
+        ("lf_boundary", "surface's own"),
+        ("lf_word", "surface's own"),
         ("", "needs a name"),
         ("9lives", "identifier"),
         ("__hidden", "identifier"),
@@ -900,7 +961,7 @@ fn a_failed_pipeline_makes_the_frame_the_cpus_and_is_not_compiled_again() {
                  return rgb.g;\n}\n",
             )],
         ),
-        ("reserved name", vec![GpuProgram::new("lf_mine", "")]),
+        ("surface name", vec![GpuProgram::new("lf_vertex", "")]),
         ("conflicting sources", vec![identity(), conflicting]),
     ];
     for (index, (what, programs)) in failing.into_iter().enumerate() {
