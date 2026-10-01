@@ -110,9 +110,9 @@ pub(crate) struct LaneConfig {
     /// Held at each folder of a walk, for a test that acts while a listing runs.
     #[cfg(test)]
     pub hold: Option<Arc<luxforge_testbase::Gate>>,
-    /// Counts every header read the lane takes in, for a test that counts them.
+    /// The path of every header read the lane takes in, for a test that counts them.
     #[cfg(test)]
-    pub reads: Arc<std::sync::atomic::AtomicUsize>,
+    pub reads: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 /// One piece of the lane's work.
@@ -580,6 +580,9 @@ impl Coordinator {
             }
             keeper.drop_gone(&mut run, &mounts)?;
             run.settle()?;
+            // Reads answered after the lane began to stop were dropped unwritten: the unit's
+            // cursors would skip what they came after, so they are not recorded.
+            run.stop.checkpoint()?;
             keeper.record_cursors(&mut run);
             run.batch.commit(run.connection, &config.post)
         }))
@@ -587,6 +590,12 @@ impl Coordinator {
         drop(run);
         match outcome {
             Ok(()) => keeper.recorded(),
+            // Ended by the lane's stop: what was written stays and no cursor is recorded, so the
+            // next start replays the unit's changes from the cursor recorded before it. (A listing
+            // of its own the stop cancelled has left its root stale already.)
+            Err(error) if error.kind == crate::ErrorKind::Cancelled && keeping.is_cancelled() => {
+                keeper.stopped();
+            }
             // What was written stays; the cursors are not recorded, and the roots the unit touched
             // are stale, listed again before any later cursor of theirs is.
             Err(_) => {
@@ -1282,7 +1291,11 @@ impl Run<'_> {
             Some(HeaderOutcome::Read(record)) => {
                 self.report.headers_read += 1;
                 #[cfg(test)]
-                self.config.reads.fetch_add(1, Ordering::SeqCst);
+                self.config
+                    .reads
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(record.path.clone());
                 if matches!(record.header, HeaderState::Unreadable(_)) {
                     self.report.unreadable += 1;
                 }
