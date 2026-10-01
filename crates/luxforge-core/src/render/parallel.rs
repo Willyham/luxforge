@@ -155,6 +155,8 @@ mod tests {
     /// What one case runs: a render of the recipe, or a proxy build.
     enum Work {
         Render(Vec<Layer>),
+        /// Synthetic frozen terms isolate the nonlinear kernel from profile lookup.
+        Warp(Vec<Layer>),
         Proxy,
     }
 
@@ -186,10 +188,13 @@ mod tests {
     }
 
     fn run(domain: Domain, (width, height): (u32, u32), work: Work, counted: u64) -> Run {
-        let registry = ModuleRegistry::builtin();
+        let registry = match &work {
+            Work::Warp(_) => crate::render::warp_tests::registry(),
+            _ => ModuleRegistry::builtin(),
+        };
         let context = RenderContext::new();
         let once: Box<dyn Fn() -> Output> = match (work, domain) {
-            (Work::Render(layers), Domain::Byte) => {
+            (Work::Render(layers) | Work::Warp(layers), Domain::Byte) => {
                 let source = gradient(width, height);
                 let stack = recipe(layers);
                 Box::new(move || {
@@ -205,7 +210,7 @@ mod tests {
                     Output::Frame(frame.unwrap())
                 })
             }
-            (Work::Render(layers), Domain::Linear) => {
+            (Work::Render(layers) | Work::Warp(layers), Domain::Linear) => {
                 let source = linear_gradient(width, height);
                 let stack = recipe(layers);
                 Box::new(move || {
@@ -242,6 +247,18 @@ mod tests {
         let stage = stage_of(megapixels);
         let whole = pixels(stage);
         let render = |domain, layers| run(domain, stage, Work::Render(layers), whole);
+        let lens = || {
+            layer(
+                "luxforge.lens.distortion",
+                json!({"model":"ptlens","terms":[0.019,-0.056,0.063],"unit":1.0}),
+            )
+        };
+        let perspective = || {
+            layer(
+                "luxforge.perspective",
+                json!({"horizontal":35,"vertical":-25}),
+            )
+        };
         match label {
             "segment: quarter turn" => render(Domain::Byte, vec![turn(Transform::RotateRight)]),
             "segment: exposure +1 EV" => render(Domain::Byte, vec![exposure()]),
@@ -254,6 +271,25 @@ mod tests {
                 let input = stage_of(megapixels / 0.43);
                 let (crop, output) = straightened_crop(input.0, input.1);
                 run(Domain::Byte, input, Work::Render(vec![crop]), output)
+            }
+            "warp: lens, byte" => run(Domain::Byte, stage, Work::Warp(vec![lens()]), whole),
+            "warp: lens, linear" => run(Domain::Linear, stage, Work::Warp(vec![lens()]), whole),
+            "warp: perspective, byte" => render(Domain::Byte, vec![perspective()]),
+            "warp: perspective, linear" => render(Domain::Linear, vec![perspective()]),
+            "warp: lens + perspective + crop, byte" | "warp: lens + perspective + crop, linear" => {
+                let input = stage_of(megapixels / 0.43);
+                let (crop, output) = straightened_crop(input.0, input.1);
+                let domain = if label.ends_with("linear") {
+                    Domain::Linear
+                } else {
+                    Domain::Byte
+                };
+                run(
+                    domain,
+                    input,
+                    Work::Warp(vec![lens(), perspective(), crop]),
+                    output,
+                )
             }
             "spatial: texture +100" => {
                 render(Domain::Byte, vec![presence(json!({"texture": 100.0}))])
@@ -324,7 +360,7 @@ mod tests {
                 "{pass:?}: {counted} pixels lie between the thresholds"
             );
             let layers = match &work {
-                Work::Render(layers) => Some(layers.clone()),
+                Work::Render(layers) | Work::Warp(layers) => Some(layers.clone()),
                 Work::Proxy => None,
             };
             for domain in [Domain::Byte, Domain::Linear] {
@@ -345,13 +381,19 @@ mod tests {
         }
     }
 
-    const CASES: [&str; 13] = [
+    const CASES: [&str; 19] = [
         "segment: quarter turn",
         "segment: exposure +1 EV",
         "segment: exposure +1 EV, linear",
         "heavy colour: full Basic",
         "heavy colour: full Basic, linear",
         "resample: 10 degree crop",
+        "warp: lens, byte",
+        "warp: lens, linear",
+        "warp: perspective, byte",
+        "warp: perspective, linear",
+        "warp: lens + perspective + crop, byte",
+        "warp: lens + perspective + crop, linear",
         "spatial: texture +100",
         "spatial: clarity +100",
         "spatial: dehaze +100",

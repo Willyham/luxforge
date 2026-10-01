@@ -164,6 +164,15 @@ impl ModuleDescriptor {
                 self.id
             )));
         }
+        if Self::count(&self.controls, &|control| {
+            matches!(control, Control::QueryChoice(_))
+        }) > 1
+        {
+            return Err(Error::validation(format!(
+                "module {} declares more than one query-choice control",
+                self.id
+            )));
+        }
         self.check_reset(self.reset.as_ref())?;
         if self.layout == ModuleLayout::Tabs {
             let all_groups = self
@@ -690,6 +699,50 @@ impl ModuleDescriptor {
                 let declared = self.declared_action(action)?;
                 self.check_presets_action(declared)?;
             }
+            Control::QueryChoice(control) => {
+                if control.label.trim().is_empty() {
+                    return Err(Error::validation(format!(
+                        "module {} has an unlabelled query-choice",
+                        self.id
+                    )));
+                }
+                let query = self.declared_query(&control.query)?;
+                let action = self.declared_action(&control.action)?;
+                if action.patch
+                    || !matches!(
+                        self.declared_parameter(query, &control.text)?.kind,
+                        ParameterKind::String { .. }
+                    )
+                    || !matches!(
+                        self.declared_parameter(query, &control.page)?.kind,
+                        ParameterKind::Integer { .. }
+                    )
+                    || !matches!(
+                        self.declared_parameter(action, &control.key)?.kind,
+                        ParameterKind::String { .. }
+                    )
+                {
+                    return Err(Error::validation(format!(
+                        "module {} query-choice needs string text/key, integer page and a non-patch action",
+                        self.id
+                    )));
+                }
+                let mut shared = HashSet::new();
+                for name in &control.shared {
+                    if !shared.insert(name)
+                        || name == &control.text
+                        || name == &control.page
+                        || name == &control.key
+                        || self.declared_parameter(query, name)?.kind
+                            != self.declared_parameter(action, name)?.kind
+                    {
+                        return Err(Error::validation(format!(
+                            "module {} query-choice shared parameter {name} is duplicated, reserved or has mismatched kinds",
+                            self.id
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -746,6 +799,60 @@ impl ModuleDescriptor {
                 control => usize::from(kind(control)),
             })
             .sum()
+    }
+}
+
+impl ModuleDescriptor {
+    /// Verify a module's query-choice answer at the host boundary, before any client sees rows.
+    pub(crate) fn validate_query_choice_answer(
+        &self,
+        query: &str,
+        answer: &serde_json::Value,
+    ) -> Result<(), Error> {
+        fn bound(controls: &[Control], query: &str) -> bool {
+            controls.iter().any(|control| match control {
+                Control::QueryChoice(control) => control.query == query,
+                Control::Group(group) => bound(&group.controls, query),
+                _ => false,
+            })
+        }
+        if !bound(&self.controls, query) {
+            return Ok(());
+        }
+        let invalid = || {
+            Error::internal(format!(
+                "module {} query-choice query {query} returned invalid rows",
+                self.id
+            ))
+        };
+        let rows = answer
+            .get("rows")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(invalid)?;
+        if rows.len() > 100 {
+            return Err(invalid());
+        }
+        for row in rows {
+            if row.get("key").and_then(serde_json::Value::as_str).is_none()
+                || row
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .is_none()
+                || row
+                    .get("eligible")
+                    .and_then(serde_json::Value::as_bool)
+                    .is_none()
+                || row.get("subtitle").is_some_and(|value| !value.is_string())
+                || row.get("reasons").is_some_and(|value| {
+                    !value
+                        .as_array()
+                        .is_some_and(|values| values.iter().all(serde_json::Value::is_string))
+                })
+            {
+                return Err(invalid());
+            }
+        }
+        Ok(())
     }
 }
 

@@ -20,6 +20,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Delete mask"
           },
           {
@@ -50,6 +51,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Rename mask"
           },
           {
@@ -91,6 +93,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Rename component"
           },
           {
@@ -110,6 +113,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Duplicate mask"
           },
           {
@@ -141,6 +145,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Amount"
           },
           {
@@ -170,6 +175,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Invert mask"
           },
           {
@@ -201,6 +207,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Move mask"
           },
           {
@@ -246,6 +253,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Component mode"
           },
           {
@@ -286,6 +294,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Invert component"
           },
           {
@@ -316,6 +325,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Delete component"
           },
           {
@@ -358,6 +368,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Move component"
           },
           {
@@ -486,6 +497,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Paint"
           },
           {
@@ -595,6 +607,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New linear mask"
           },
           {
@@ -689,6 +702,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add linear"
           },
           {
@@ -779,6 +793,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update linear"
           },
           {
@@ -875,6 +890,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New radial mask"
           },
           {
@@ -997,6 +1013,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add radial"
           },
           {
@@ -1115,6 +1132,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update radial"
           },
           {
@@ -1177,6 +1195,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New luminance range mask"
           },
           {
@@ -1265,6 +1284,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add luminance range"
           },
           {
@@ -1349,6 +1369,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update luminance range"
           },
           {
@@ -1371,6 +1392,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "New colour range mask"
           },
           {
@@ -1419,6 +1441,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Add colour range"
           },
           {
@@ -1463,6 +1486,7 @@
               }
             ],
             "patch": true,
+            "preset": false,
             "title": "Update colour range"
           },
           {
@@ -1538,6 +1562,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Sample colour range"
           },
           {
@@ -1580,6 +1605,7 @@
               }
             ],
             "patch": false,
+            "preset": false,
             "title": "Remove colour range sample"
           }
         ],
@@ -3663,6 +3689,249 @@
       {
         "actions": [
           {
+            "id": "select-lens-profile",
+            "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 32,
+                "name": "profile",
+                "notes": "",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2000.0,
+                "min": 0.5,
+                "name": "focal",
+                "notes": "a focal length supplied explicitly when EXIF has none",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "mm"
+              },
+              {
+                "default": false,
+                "kind": "boolean",
+                "name": "assume-uncorrected",
+                "notes": "acknowledge that this selection assumes no existing distortion correction",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Select lens profile"
+          },
+          {
+            "id": "reset-lens-profile",
+            "notes": "clears the selected profile while keeping the lens layer identity",
+            "parameters": [],
+            "patch": false,
+            "preset": false,
+            "title": "Reset Lens correction"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "action": "select-lens-profile",
+            "key": "profile",
+            "kind": "query-choice",
+            "label": "Profile",
+            "page": "page",
+            "query": "lens-profiles",
+            "shared": [
+              "focal",
+              "assume-uncorrected"
+            ],
+            "text": "text"
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.lens.distortion",
+            "order": 2,
+            "single": true,
+            "stage": "geometry"
+          }
+        ],
+        "hint": "Profile distortion correction",
+        "id": "luxforge.lens",
+        "layout": "stacked",
+        "queries": [
+          {
+            "id": "lens-profiles",
+            "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+            "parameters": [
+              {
+                "default": "",
+                "kind": "string",
+                "max_length": 64,
+                "name": "text",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 99,
+                "min": 0,
+                "name": "page",
+                "notes": "",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 2000.0,
+                "min": 0.5,
+                "name": "focal",
+                "notes": "a focal length supplied explicitly when EXIF has none",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "mm"
+              },
+              {
+                "default": false,
+                "kind": "boolean",
+                "name": "assume-uncorrected",
+                "notes": "acknowledge that this selection assumes no existing distortion correction",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Lens profiles"
+          }
+        ],
+        "reset": {
+          "action": "reset-lens-profile",
+          "preset": {}
+        },
+        "title": "Lens correction"
+      },
+      {
+        "actions": [
+          {
+            "id": "set-perspective",
+            "notes": "merges the named perspective fields into the stack's one Perspective layer, which the host places by its effect's declared stage and order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            "parameters": [
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 100,
+                "min": -100,
+                "name": "horizontal",
+                "notes": "manual keystone amount; positive values compress the right or bottom side",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0,
+                "kind": "integer",
+                "max": 100,
+                "min": -100,
+                "name": "vertical",
+                "notes": "manual keystone amount; positive values compress the right or bottom side",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              }
+            ],
+            "patch": true,
+            "preset": false,
+            "title": "Set Perspective"
+          },
+          {
+            "id": "reset-perspective",
+            "notes": "returns the stack's one Perspective layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Perspective"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-perspective",
+                "kind": "number",
+                "label": "Horizontal",
+                "parameter": "horizontal"
+              },
+              {
+                "action": "set-perspective",
+                "kind": "number",
+                "label": "Vertical",
+                "parameter": "vertical"
+              }
+            ],
+            "kind": "group",
+            "label": "Perspective",
+            "reset": {
+              "action": "set-perspective",
+              "preset": {
+                "horizontal": 0,
+                "vertical": 0
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.perspective",
+            "order": 4,
+            "single": true,
+            "stage": "geometry"
+          }
+        ],
+        "hint": "Keystone correction",
+        "id": "luxforge.perspective",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "reset-perspective",
+          "preset": {}
+        },
+        "title": "Perspective"
+      },
+      {
+        "actions": [
+          {
             "id": "crop",
             "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
             "parameters": [
@@ -4312,6 +4581,18 @@
           "unit": null
         }
       },
+      "edit.reset-lens-profile": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "clears the selected profile while keeping the lens layer identity",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
+      },
       "edit.reset-mixer": {
         "mutates": true,
         "mutation": "revision",
@@ -4336,6 +4617,18 @@
           "step": null,
           "unit": null
         }
+      },
+      "edit.reset-perspective": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Perspective layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {},
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
       },
       "edit.reset-presence": {
         "mutates": true,
@@ -4372,6 +4665,56 @@
         "required": [
           "asset_id",
           "mutation"
+        ]
+      },
+      "edit.select-lens-profile": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+        "optional": {
+          "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
+          "focal": "a focal length supplied explicitly when EXIF has none"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 32,
+            "name": "profile",
+            "notes": "",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2000.0,
+            "min": 0.5,
+            "name": "focal",
+            "notes": "a focal length supplied explicitly when EXIF has none",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "mm"
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "assume-uncorrected",
+            "notes": "acknowledge that this selection assumes no existing distortion correction",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "profile"
         ]
       },
       "edit.set-basic": {
@@ -4903,6 +5246,46 @@
           "step": null,
           "unit": null
         }
+      },
+      "edit.set-perspective": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "merges the named perspective fields into the stack's one Perspective layer, which the host places by its effect's declared stage and order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+        "optional": {
+          "horizontal": "manual keystone amount; positive values compress the right or bottom side",
+          "vertical": "manual keystone amount; positive values compress the right or bottom side"
+        },
+        "parameters": [
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 100,
+            "min": -100,
+            "name": "horizontal",
+            "notes": "manual keystone amount; positive values compress the right or bottom side",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 100,
+            "min": -100,
+            "name": "vertical",
+            "notes": "manual keystone amount; positive values compress the right or bottom side",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ]
       },
       "edit.set-presence": {
         "mutates": true,
@@ -7076,6 +7459,67 @@
           "mutation",
           "mask",
           "component"
+        ]
+      },
+      "query.lens-profiles": {
+        "mutates": false,
+        "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+        "optional": {
+          "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
+          "entry_id": "entry to ask about; default the session's selection",
+          "focal": "a focal length supplied explicitly when EXIF has none",
+          "page": "",
+          "text": ""
+        },
+        "parameters": [
+          {
+            "default": "",
+            "kind": "string",
+            "max_length": 64,
+            "name": "text",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 0,
+            "kind": "integer",
+            "max": 99,
+            "min": 0,
+            "name": "page",
+            "notes": "",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 2000.0,
+            "min": 0.5,
+            "name": "focal",
+            "notes": "a focal length supplied explicitly when EXIF has none",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "mm"
+          },
+          {
+            "default": false,
+            "kind": "boolean",
+            "name": "assume-uncorrected",
+            "notes": "acknowledge that this selection assumes no existing distortion correction",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "asset_id"
         ]
       },
       "query.neutral-sample": {

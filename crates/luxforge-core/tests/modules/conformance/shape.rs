@@ -1,9 +1,10 @@
 //! What the suite knows about a field-patch module, read from its registered descriptor alone.
 //!
-//! A module is a field patch when it declares exactly one effect and exactly two actions: one
+//! A module is a field patch when it declares exactly one effect and one
 //! `patch` action whose every parameter is a field — a number, an integer, a boolean, an enum, a
-//! colour or a curve — with a default, and one parameterless action that the module's own reset
-//! names. That is the shape `modules/field_patch.rs` builds from a spec, and nothing here reads a
+//! colour or a curve — with a default, and a parameterless non-patch action that the module's own
+//! reset names. Additional non-patch actions, such as query-choice selection, do not change that
+//! shape. This is what `modules/field_patch.rs` builds from a spec, and nothing here reads a
 //! spec, a module type or a module identity, so a module registered in that shape is covered the
 //! day it is registered.
 //!
@@ -403,15 +404,13 @@ impl FieldPatch {
             return None;
         };
         let reset = descriptor.reset.as_ref()?;
-        let [first, second] = descriptor.actions.as_slice() else {
+        let reset_action = descriptor.action(&reset.action)?;
+        if reset_action.patch || !reset_action.parameters.is_empty() {
             return None;
-        };
-        let (set, reset_action) = match (first.patch, second.patch) {
-            (true, false) => (first, second),
-            (false, true) => (second, first),
-            _ => return None,
-        };
-        if reset_action.id != reset.action || !reset_action.parameters.is_empty() {
+        }
+        let mut patches = descriptor.actions.iter().filter(|action| action.patch);
+        let set = patches.next()?;
+        if patches.next().is_some() {
             return None;
         }
         let fields = set

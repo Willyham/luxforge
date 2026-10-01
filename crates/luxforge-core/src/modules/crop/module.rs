@@ -597,7 +597,9 @@ impl ToolModule for CropModule {
             )));
         }
         Ok(Processing::Resample(Resample {
-            inverse: crop_stage.inverse_map((rect.x as f64, rect.y as f64)),
+            map: crate::modules::Mapping::Affine(
+                crop_stage.inverse_map((rect.x as f64, rect.y as f64)),
+            ),
             output_width: rect.width,
             output_height: rect.height,
         }))
@@ -1260,7 +1262,10 @@ mod tests {
                     (rect.width, rect.height)
                 );
                 assert_eq!(
-                    resample.inverse,
+                    match resample.map {
+                        crate::modules::Mapping::Affine(m) => m,
+                        _ => unreachable!(),
+                    },
                     stage.inverse_map((rect.x as f64, rect.y as f64))
                 );
             }

@@ -14,7 +14,7 @@
 use crate::{
     app::message::{Message, mask::MaskMessage, mask::MaskPointer},
     mask_draft::{ContentMap, Grip, MaskDraft, MaskHandle, Pen},
-    view::canvas_view::{self, CanvasView},
+    view::canvas_view::CanvasView,
 };
 use iced::{
     Point, Rectangle, Renderer, Theme,
@@ -36,28 +36,32 @@ const SQUARE_CORNER: f32 = 2.0;
 const HELD_GROWTH: f32 = 1.0;
 /// Content-normalized to canvas-local, and back: the map and the view composed, which is the whole
 /// of what a pointer move costs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Placement {
     pub(crate) map: ContentMap,
     /// The output stage as it is drawn in this canvas.
     pub(crate) view: CanvasView,
+    pub(crate) scale_factor: f32,
 }
 
 impl Placement {
-    pub(crate) fn canvas_point(self, x: f64, y: f64) -> Point {
-        let (ox, oy) = self.map.to_output(x, y);
-        self.view.canvas_point(ox, oy)
+    pub(crate) fn canvas_point(&self, x: f64, y: f64) -> Option<Point> {
+        let (ox, oy) = self.map.to_output(x, y)?;
+        Some(self.view.canvas_point(ox, oy))
     }
-
-    pub(crate) fn content_point(self, point: Point) -> (f64, f64) {
+    pub(crate) fn content_point(&self, point: Point) -> Option<(f64, f64)> {
         let (ox, oy) = self.view.stage_point(point);
         self.map.to_content(ox, oy)
     }
-
-    /// The hit radius in normalized content units: the pixel radius through the view, then through
-    /// the affine.
-    pub(crate) fn tolerance(self) -> f64 {
-        self.map.tolerance(self.view.tolerance(HIT_RADIUS))
+    pub(crate) fn tolerance(&self, point: Point) -> Option<f64> {
+        let (x, y) = self.view.stage_point(point);
+        self.map.tolerance_at(x, y, self.view.tolerance(HIT_RADIUS))
+    }
+    fn visible_handle(&self, x: f64, y: f64) -> Option<Point> {
+        let (ox, oy) = self.map.to_output(x, y)?;
+        self.map
+            .visible(ox, oy)
+            .then(|| self.view.canvas_point(ox, oy))
     }
 }
 
@@ -80,10 +84,16 @@ impl<'a> MaskCanvas<'a> {
     }
 
     fn handle_at(&self, point: Point) -> Option<MaskHandle> {
-        self.draft.hit(
-            self.placement.content_point(point),
-            self.placement.tolerance(),
-        )
+        let content = self.placement.content_point(point)?;
+        let tolerance = self.placement.tolerance(point)?;
+        self.draft
+            .handles()
+            .into_iter()
+            .find(|(_, (x, y))| {
+                self.placement.visible_handle(*x, *y).is_some()
+                    && (content.0 - x).hypot(content.1 - y) <= tolerance
+            })
+            .map(|(h, _)| h)
     }
 
     fn pointer(&self, pointer: MaskPointer) -> Action<Message> {
@@ -99,14 +109,22 @@ impl<'a> MaskCanvas<'a> {
         radii: (f64, f64),
         angle: f64,
         dashed: bool,
-    ) -> Path {
+    ) -> super::warped_path::Outline {
         let aspect = self.draft.aspect();
-        canvas_view::ellipse(
-            (centre.0 * aspect, centre.1),
-            radii,
-            angle * std::f64::consts::PI / 180.0,
+        let angle = angle * std::f64::consts::PI / 180.0;
+        let (ca, sa) = (angle.cos(), angle.sin());
+        super::warped_path::curve(
+            &self.placement,
+            |t| {
+                let t = t * std::f64::consts::TAU;
+                let (a, b) = (radii.0 * t.cos(), radii.1 * t.sin());
+                (
+                    (centre.0 * aspect + ca * a - sa * b) / aspect,
+                    centre.1 + sa * a + ca * b,
+                )
+            },
+            32,
             dashed,
-            |u, v| self.placement.canvas_point(u / aspect, v),
         )
     }
 
@@ -115,10 +133,11 @@ impl<'a> MaskCanvas<'a> {
     #[cfg(test)]
     fn brush_radius(&self, radius: f64, at: (f64, f64)) -> f32 {
         let aspect = self.draft.aspect();
-        let centre = self.placement.canvas_point(at.0, at.1);
+        let centre = self.placement.canvas_point(at.0, at.1).unwrap();
         let edge = self
             .placement
-            .canvas_point((at.0 * aspect + radius) / aspect, at.1);
+            .canvas_point((at.0 * aspect + radius) / aspect, at.1)
+            .unwrap();
         (edge.x - centre.x).hypot(edge.y - centre.y).max(1.0)
     }
 }
@@ -129,17 +148,20 @@ impl<'a> MaskCanvas<'a> {
 struct FramePen<'c, 'f> {
     canvas: &'c MaskCanvas<'c>,
     frame: &'f mut Frame,
+    approximate: bool,
+    segments: usize,
 }
 
 impl Pen for FramePen<'_, '_> {
     fn line(&mut self, from: (f64, f64), to: (f64, f64), alpha: f32) {
-        let placement = self.canvas.placement;
+        let outline = super::warped_path::line(&self.canvas.placement, from, to);
+        self.approximate |= outline.approximate;
+        self.segments += outline.segments.len();
         self.frame.stroke(
-            &Path::line(
-                placement.canvas_point(from.0, from.1),
-                placement.canvas_point(to.0, to.1),
-            ),
-            Stroke::default().with_color(outline(alpha)).with_width(1.0),
+            &outline.path(),
+            Stroke::default()
+                .with_color(super::mask_canvas::outline(alpha))
+                .with_width(1.0),
         );
     }
 
@@ -151,8 +173,11 @@ impl Pen for FramePen<'_, '_> {
         alpha: f32,
         dashed: bool,
     ) {
+        let path = self.canvas.mask_ellipse(centre, radii, angle, dashed);
+        self.approximate |= path.approximate;
+        self.segments += path.segments.len();
         self.frame.stroke(
-            &self.canvas.mask_ellipse(centre, radii, angle, dashed),
+            &path.path(),
             Stroke::default().with_color(outline(alpha)).with_width(1.0),
         );
     }
@@ -182,12 +207,12 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
                 if self.draft.paints() =>
             {
                 let point = cursor.position_in(bounds)?;
-                let (x, y) = self.placement.content_point(point);
+                let (x, y) = self.placement.content_point(point)?;
                 Some(self.pointer(MaskPointer::PaintBegin { x, y }))
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) if self.draft.paints() => {
                 let point = local(cursor, bounds)?;
-                let (x, y) = self.placement.content_point(point);
+                let (x, y) = self.placement.content_point(point)?;
                 if !self.draft.dragging() {
                     // The cursor's circles follow the pointer whether or not it is down, so the
                     // brush's size is visible before the stroke starts. Redrawing is the canvas's
@@ -205,7 +230,7 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let point = cursor.position_in(bounds)?;
-                let (x, y) = self.placement.content_point(point);
+                let (x, y) = self.placement.content_point(point)?;
                 if self.draft.unplaced() {
                     state.sweep_from = None;
                     return Some(self.pointer(MaskPointer::Begin {
@@ -230,7 +255,7 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 let point = local(cursor, bounds)?;
-                let to = self.placement.content_point(point);
+                let to = self.placement.content_point(point)?;
                 if let Some(from) = state.sweep_from.take() {
                     return Some(self.pointer(MaskPointer::Sweep { from, to }));
                 }
@@ -270,19 +295,27 @@ impl canvas::Program<Message> for MaskCanvas<'_> {
         // pointing, and a capture with no pointer at all must show no cursor rather than a stale one.
         let pointer = cursor
             .position_in(bounds)
-            .map(|point| self.placement.content_point(point));
-        self.draft.draw(
-            pointer,
-            &mut FramePen {
+            .and_then(|point| self.placement.content_point(point));
+        let (approximate, segments) = {
+            let mut pen = FramePen {
                 canvas: self,
                 frame: &mut frame,
-            },
-        );
+                approximate: false,
+                segments: 0,
+            };
+            self.draft.draw(pointer, &mut pen);
+            (pen.approximate, pen.segments)
+        };
+        if super::cursor_probe::geometry_started().is_some() {
+            super::cursor_probe::mask_geometry(self.placement.map.summary(), approximate, segments);
+        }
         // One grip per drawn handle, whatever the figure under them is: white, except the one that
         // moves the whole figure, which is the accent, and each ringed in a hairline of black so it
         // reads over a bright sky as well as a dark one.
         for (handle, (x, y)) in self.draft.handles() {
-            let centre = self.placement.canvas_point(x, y);
+            let Some(centre) = self.placement.visible_handle(x, y) else {
+                continue;
+            };
             let grip = handle.grip();
             let growth = if self.draft.held() == Some(handle) {
                 HELD_GROWTH
@@ -399,6 +432,7 @@ mod tests {
                 .expect("a drawable stage"),
             view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
+            scale_factor: 1.0,
         }
     }
 
@@ -410,11 +444,11 @@ mod tests {
         for kind in [LINEAR, RADIAL] {
             let mut draft = existing_gradient(kind);
             draft.set_aspect(placement.map.aspect());
-            let canvas = MaskCanvas::new(&draft, placement);
+            let canvas = MaskCanvas::new(&draft, placement.clone());
             assert!(!draft.handles().is_empty());
             for (handle, (x, y)) in draft.handles() {
-                let drawn = placement.canvas_point(x, y);
-                let (back_x, back_y) = placement.content_point(drawn);
+                let drawn = placement.canvas_point(x, y).unwrap();
+                let (back_x, back_y) = placement.content_point(drawn).unwrap();
                 // Canvas coordinates are `f32`, so the round trip is exact to the drawn pixel and
                 // not to the `f64` the geometry is kept in: a hundredth of a pixel on this stage.
                 assert!(
@@ -424,7 +458,7 @@ mod tests {
                 assert_eq!(canvas.handle_at(drawn), Some(handle), "{kind} {handle:?}");
             }
             // A point well away from every handle grabs none, and is the start of a sweep instead.
-            let away = placement.canvas_point(0.02, 0.02);
+            let away = placement.canvas_point(0.02, 0.02).unwrap();
             assert_eq!(canvas.handle_at(away), None, "{kind}");
         }
     }
@@ -434,7 +468,7 @@ mod tests {
         use canvas::Program;
         let placement = placement((480, 320), Size::new(480.0, 320.0));
         let draft = existing_gradient(LINEAR);
-        let program = MaskCanvas::new(&draft, placement);
+        let program = MaskCanvas::new(&draft, placement.clone());
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
         let mut state = Interaction::default();
 
@@ -443,7 +477,7 @@ mod tests {
             draft.value("x0").expect("a gradient"),
             draft.value("y0").expect("a gradient"),
         );
-        let grip = placement.canvas_point(x0, y0);
+        let grip = placement.canvas_point(x0, y0).unwrap();
         let action = program.update(
             &mut state,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -455,7 +489,7 @@ mod tests {
 
         // A press away from every handle records a sweep origin and publishes nothing yet.
         let mut state = Interaction::default();
-        let empty = placement.canvas_point(0.02, 0.02);
+        let empty = placement.canvas_point(0.02, 0.02).unwrap();
         program.update(
             &mut state,
             &Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
@@ -505,6 +539,7 @@ mod tests {
             .expect("a drawable stage"),
             view: CanvasView::fit((f64::from(output.0), f64::from(output.1)), available)
                 .expect("a fitted view"),
+            scale_factor: 1.0,
         }
     }
 
@@ -516,10 +551,10 @@ mod tests {
         let placement = placement((480, 320), Size::new(480.0, 320.0));
         let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).expect("a drawn kind");
         let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(480.0, 320.0));
-        let at = placement.canvas_point(0.5, 0.5);
+        let at = placement.canvas_point(0.5, 0.5).unwrap();
 
         {
-            let program = MaskCanvas::new(&draft, placement);
+            let program = MaskCanvas::new(&draft, placement.clone());
             let mut state = Interaction::default();
             // Nothing is a handle, so nothing is grabbed and nothing is a sweep.
             assert_eq!(program.handle_at(at), None);
@@ -577,7 +612,7 @@ mod tests {
             (Size::new(480.0, 640.0), 1.0),
         ] {
             let placement = placement((480, 320), available);
-            let canvas = MaskCanvas::new(&draft, placement);
+            let canvas = MaskCanvas::new(&draft, placement.clone());
             let drawn = f64::from(canvas.brush_radius(radius, (0.5, 0.5)));
             assert!(
                 (drawn - expected(scale)).abs() < 1e-6,
@@ -588,7 +623,7 @@ mod tests {
         // A quarter turn is a rotation and not a stretch, so the circle keeps its size: the stage is
         // 480x320 of content shown as 320x480 of output.
         let placement = rotated((480, 320), (320, 480), Size::new(320.0, 480.0));
-        let canvas = MaskCanvas::new(&draft, placement);
+        let canvas = MaskCanvas::new(&draft, placement.clone());
         let drawn = f64::from(canvas.brush_radius(radius, (0.5, 0.5)));
         assert!(
             (drawn - expected(1.0)).abs() < 1e-6,
@@ -605,7 +640,7 @@ mod tests {
         for kind in [LINEAR, RADIAL] {
             let mut draft = existing_gradient(kind);
             draft.set_aspect(placement.map.aspect());
-            let canvas = MaskCanvas::new(&draft, placement);
+            let canvas = MaskCanvas::new(&draft, placement.clone());
             let mut anchors = 0;
             for (handle, (x, y)) in draft.handles() {
                 let grip = handle.grip();
@@ -627,7 +662,7 @@ mod tests {
                 }
                 // Every grip, whatever its size, is grabbed within the one hit radius.
                 assert_eq!(
-                    canvas.handle_at(placement.canvas_point(x, y)),
+                    canvas.handle_at(placement.canvas_point(x, y).unwrap()),
                     Some(handle),
                     "{kind} {handle:?}"
                 );

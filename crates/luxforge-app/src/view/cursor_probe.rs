@@ -30,6 +30,7 @@ struct State {
     path: VecDeque<(Instant, Point)>,
     completed: Vec<Value>,
     coalesced: usize,
+    geometry: Option<Value>,
 }
 
 struct Input {
@@ -116,6 +117,9 @@ impl Probe {
         state.coalesced = 0;
     }
 
+    pub(crate) fn geometry(&self) -> Option<Value> {
+        self.0.lock().expect("cursor probe lock").geometry.clone()
+    }
     fn pending(&self) -> Option<(u64, Point)> {
         let mut state = self.0.lock().expect("cursor probe lock");
         let ready = state
@@ -285,6 +289,7 @@ fn trace(state: &State) -> Option<Value> {
     result["input_to_pointer_update_ms"] = json!(input.pointer_at_ms);
     result["pointer_update_ms"] = json!(input.pointer_ms);
     result["editor_update_ms"] = json!(input.loop_ms.map(|timing| timing[0]));
+    result["mask_geometry"] = json!(state.geometry);
     result["editor_rederive_ms"] = json!(input.loop_ms.map(|timing| timing[1]));
     Some(result)
 }
@@ -295,6 +300,14 @@ pub(crate) fn mask_cursor_drawn(centre: Point, bounds: Rectangle, geometry_ms: f
         if let Some(probe) = active.borrow().as_ref() {
             probe.drawn(centre, bounds, geometry_ms);
         }
+    });
+}
+
+/// Bounded diagnostics for the real mapped outline, retained only by an evidence wrapper.
+pub(crate) fn mask_geometry(mapping: Value, approximate: bool, segments: usize) {
+    DRAWING.with(|active|if let Some(probe)=active.borrow().as_ref(){
+        let mut state=probe.0.lock().expect("cursor probe lock");
+        state.geometry=Some(json!({"mapping":mapping,"approximate":approximate,"segments":segments,"max_segments_per_outline":1024,"max_depth":10,"error_physical_pixels":0.25}));
     });
 }
 

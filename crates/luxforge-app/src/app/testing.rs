@@ -223,6 +223,7 @@ pub(crate) fn refresh_for(
             next_entry_id: truncated.then(EntryId::new),
         }),
         recipe: RecipeDescription {
+            geometry: None,
             entry_id: current.id.clone(),
             layers: Vec::new(),
             output_stage: None,

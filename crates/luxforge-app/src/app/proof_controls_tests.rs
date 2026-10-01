@@ -322,6 +322,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
             ControlModel::Slider(number) => format!("number:{:?}", number.style),
             ControlModel::Toggle(_) => "toggle".into(),
             ControlModel::Enum(choice) => format!("choice:{:?}", choice.style),
+            ControlModel::QueryChoice(_) => "query-choice".into(),
             ControlModel::Color(color) => format!("color:{:?}", color.style),
             ControlModel::Curve(curve) => {
                 assert_eq!(curve.channels.len(), 2);
@@ -338,6 +339,7 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
         })
         .collect();
     let expected = BTreeSet::from([
+        "query-choice".into(),
         "number:Slider".into(),
         "number:Field".into(),
         "number:Stepper { rail: false }".into(),
@@ -355,6 +357,374 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     assert_eq!(signatures, expected);
     assert!(proof.descriptor().action(ACTION).unwrap().patch);
     proof.finish();
+}
+
+#[test]
+fn query_choice_desktop_uses_the_declared_query_and_shared_selection_request() {
+    let mut proof = Proof::new();
+    const SELECT: &str = "select-controls-choice";
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceSearch {
+            action: SELECT.into(),
+            text: "Three".into(),
+        }));
+    let stale = proof.editor.controls.ui.query_choices[SELECT]
+        .request
+        .clone()
+        .unwrap();
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceSearch {
+            action: SELECT.into(),
+            text: "Two".into(),
+        }));
+    let current = proof.editor.controls.ui.query_choices[SELECT]
+        .request
+        .clone()
+        .unwrap();
+    let _ = proof.editor.update(Message::Control(ControlMessage::QueryChoiceAnswered {
+        identity: stale,
+        result: Ok(json!({"rows":[{"key":"three", "title":"Three", "eligible":false, "reasons":["Developer refusal example"]}]})),
+    }));
+    assert!(
+        proof.editor.controls.ui.query_choices[SELECT]
+            .rows
+            .is_empty()
+    );
+    let declared = crate::state::control_tree::walk(&proof.descriptor().controls)
+        .find_map(|control| match control {
+            luxforge_core::Control::QueryChoice(control) => Some(control.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut params = crate::state::query_choice::query_parameters(&declared, &current);
+    assert_eq!(params["show-disabled"], true);
+    params.insert("asset_id".into(), json!(proof.asset));
+    params.insert("entry_id".into(), json!(current.entry));
+    let answer = call(
+        &proof.editor.owner,
+        proof.json_client,
+        "query.controls-choices",
+        Value::Object(params),
+    )
+    .0;
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity: current,
+            result: Ok(answer),
+        }));
+    assert_eq!(
+        proof.editor.controls.ui.query_choices[SELECT].rows[0].key,
+        "two"
+    );
+    let parameters = proof.editor.controls.ui.query_choices[SELECT]
+        .selection(
+            &declared,
+            "two",
+            Map::from_iter([("show-disabled".into(), json!(true))]),
+        )
+        .unwrap();
+    let copied = proof
+        .editor
+        .request_for_preset(SELECT, None, Some(&parameters))
+        .unwrap();
+    assert_eq!(copied["method"], "edit.select-controls-choice");
+    assert_eq!(copied["params"]["key"], "two");
+    assert_eq!(copied["params"]["show-disabled"], true);
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceSelect {
+            action: SELECT.into(),
+            key: "three".into(),
+        }));
+    assert!(
+        !proof.editor.busy,
+        "an undisplayed or ineligible choice never submits"
+    );
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceSelect {
+            action: SELECT.into(),
+            key: "two".into(),
+        }));
+    assert!(
+        proof.editor.busy,
+        "an eligible choice reaches the ordinary action service"
+    );
+    proof.finish();
+}
+
+#[test]
+fn query_choice_desktop_retry_recovers_with_same_inputs_and_no_automatic_polling() {
+    const SELECT: &str = "select-controls-choice";
+    let mut proof = Proof::new();
+    let first = proof.editor.controls.ui.query_choices[SELECT]
+        .request
+        .clone()
+        .unwrap();
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity: first.clone(),
+            result: Err("not-ready: choices are still being prepared".into()),
+        }));
+    assert!(proof.editor.controls.ui.query_choices[SELECT].can_retry());
+    assert!(
+        proof.editor.controls.query_choice_slot.idle(),
+        "a failure does not poll"
+    );
+    let _ = proof.editor.request_visible_query_choices();
+    assert!(
+        proof.editor.controls.query_choice_slot.idle(),
+        "deriving the same screen does not retry"
+    );
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceRetry {
+            action: SELECT.into(),
+        }));
+    let retry = proof.editor.controls.ui.query_choices[SELECT]
+        .request
+        .clone()
+        .unwrap();
+    assert_eq!(retry.sequence, first.sequence + 1);
+    let mut same_inputs = retry.clone();
+    same_inputs.sequence = first.sequence;
+    assert_eq!(same_inputs, first);
+    assert!(proof.editor.controls.query_choice_slot.in_flight());
+    assert!(proof.editor.controls.query_choice_slot.pending().is_none());
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceRetry {
+            action: SELECT.into(),
+        }));
+    assert_eq!(
+        proof.editor.controls.ui.query_choices[SELECT]
+            .request
+            .as_ref(),
+        Some(&retry),
+        "repeated Retry while loading queues nothing"
+    );
+    assert!(proof.editor.controls.query_choice_slot.pending().is_none());
+    assert!(
+        !proof
+            .editor
+            .controls
+            .ui
+            .query_choices
+            .get_mut(SELECT)
+            .unwrap()
+            .accept(
+                &first,
+                Ok(json!({"rows":[{"key":"old","title":"Old","eligible":true}]}))
+            ),
+        "a pre-Retry answer cannot replace the new request"
+    );
+    let declared = crate::state::control_tree::walk(&proof.descriptor().controls)
+        .find_map(|control| match control {
+            luxforge_core::Control::QueryChoice(control) => Some(control.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let mut params = crate::state::query_choice::query_parameters(&declared, &retry);
+    params.insert("asset_id".into(), json!(retry.asset));
+    params.insert("entry_id".into(), json!(retry.entry));
+    let answer = call(
+        &proof.editor.owner,
+        proof.json_client,
+        "query.controls-choices",
+        Value::Object(params),
+    )
+    .0;
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity: retry.clone(),
+            result: Ok(answer),
+        }));
+    let ui = &proof.editor.controls.ui.query_choices[SELECT];
+    assert!(!ui.rows.is_empty() && ui.error.is_none() && !ui.can_retry());
+    assert!(proof.editor.controls.query_choice_slot.idle());
+    let _ = proof
+        .editor
+        .update(Message::Control(ControlMessage::QueryChoiceRetry {
+            action: SELECT.into(),
+        }));
+    assert_eq!(
+        proof.editor.controls.ui.query_choices[SELECT]
+            .request
+            .as_ref(),
+        Some(&retry),
+        "Retry after success is inert"
+    );
+    assert!(proof.editor.controls.query_choice_slot.idle());
+    proof.finish();
+}
+
+#[test]
+fn lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_focal() {
+    const SELECT: &str = "select-lens-profile";
+    let catalog = temp_catalog("desktop-lens-query-choice");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+    let (mut editor, asset, client) = super::testing::real_photo_at(&catalog, &fixture);
+    editor
+        .controls
+        .expanded
+        .insert("luxforge.lens".into(), true);
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
+        action: SELECT.into(),
+        text: "NIKKOR Z 24-70mm".into(),
+    }));
+    let control = editor
+        .modules
+        .iter()
+        .flat_map(|module| crate::state::control_tree::walk(&module.controls))
+        .find_map(|control| match control {
+            luxforge_core::Control::QueryChoice(control) if control.action == SELECT => {
+                Some(control.clone())
+            }
+            _ => None,
+        })
+        .unwrap();
+    let answer_current = |editor: &mut Editor| {
+        let identity = editor.controls.ui.query_choices[SELECT]
+            .request
+            .clone()
+            .unwrap();
+        let mut params = crate::state::query_choice::query_parameters(&control, &identity);
+        assert!(
+            !params.contains_key("focal"),
+            "EXIF focal is an absent override"
+        );
+        params.insert("asset_id".into(), json!(asset));
+        params.insert("entry_id".into(), json!(identity.entry));
+        let answer = call(
+            &editor.owner,
+            client,
+            "query.lens-profiles",
+            Value::Object(params),
+        )
+        .0;
+        let _ = editor.update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity,
+            result: Ok(answer),
+        }));
+    };
+    answer_current(&mut editor);
+    let ui = &editor.controls.ui.query_choices[SELECT];
+    assert_eq!(
+        ui.status.as_ref().unwrap()["distortion"]["status"],
+        "unknown"
+    );
+    assert!(ui.shows_shared("assume-uncorrected"));
+    assert!(ui.rows.iter().all(|row| !row.eligible));
+    assert!(ui.rows.iter().any(|row| {
+        row.reasons
+            .iter()
+            .any(|reason| reason == "assume-uncorrected-required")
+    }));
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceShared {
+        action: SELECT.into(),
+        parameter: "assume-uncorrected".into(),
+        text: "true".into(),
+    }));
+    answer_current(&mut editor);
+    let key = editor.controls.ui.query_choices[SELECT]
+        .rows
+        .iter()
+        .find(|row| row.eligible)
+        .unwrap()
+        .key
+        .clone();
+    let shared = editor.controls.ui.query_choices[SELECT]
+        .request
+        .as_ref()
+        .unwrap()
+        .shared
+        .clone();
+    let parameters = editor.controls.ui.query_choices[SELECT]
+        .selection(&control, &key, shared)
+        .unwrap();
+    let request = editor
+        .request_for_preset(SELECT, None, Some(&parameters))
+        .unwrap();
+    call(
+        &editor.owner,
+        client,
+        "edit.select-lens-profile",
+        request["params"].clone(),
+    );
+    let refreshed = tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        tasks::Scope::Elsewhere,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    assert_eq!(editor.controls.fields.get(SELECT, "focal"), Some(""));
+    let layer = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .find(|layer| layer.effect_id == "luxforge.lens.distortion")
+        .unwrap();
+    assert_eq!(layer.payload["profile"]["focal"]["source"], "exif");
+    let frozen = layer.payload.clone();
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
+        action: SELECT.into(),
+        text: "NIKKOR Z 24-70mm".into(),
+    }));
+    answer_current(&mut editor);
+    let shared = editor.controls.ui.query_choices[SELECT]
+        .request
+        .as_ref()
+        .unwrap()
+        .shared
+        .clone();
+    let parameters = editor.controls.ui.query_choices[SELECT]
+        .selection(&control, &key, shared)
+        .unwrap();
+    let request = editor
+        .request_for_preset(SELECT, None, Some(&parameters))
+        .unwrap();
+    let answer = call(
+        &editor.owner,
+        client,
+        "edit.select-lens-profile",
+        request["params"].clone(),
+    )
+    .0;
+    assert_eq!(answer["outcome"], "no-op");
+    assert_eq!(answer["revision"], revision);
+    let described = call(
+        &editor.owner,
+        client,
+        "asset.state",
+        json!({"asset_id":asset}),
+    )
+    .0;
+    let layer = described["current_entry"]["snapshot"]["recipe"]["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["effect_id"] == "luxforge.lens.distortion")
+        .unwrap();
+    assert_eq!(layer["payload"], frozen);
+    super::testing::finish(editor, catalog);
 }
 
 #[test]

@@ -519,11 +519,16 @@ impl Editor {
         let target = self.section_target().cloned();
         let modules = std::mem::take(&mut self.modules);
         for module in modules.iter() {
+            // Only maskable modules edit the bound target. Global geometry and source controls
+            // keep reading their global layer even while the mask workspace is open.
+            let target = target
+                .as_ref()
+                .filter(|_| module.effects.iter().any(|effect| effect.maskable));
             let mut layers = recipe
                 .layers
                 .iter()
                 .filter(|layer| layer.module.as_deref() == Some(module.id.as_str()))
-                .filter(|layer| layer.mask.as_ref() == target.as_ref());
+                .filter(|layer| layer.mask.as_ref() == target);
             // "The one layer of that module": a stack holding two of them says nothing about which
             // one the controls represent, so nothing is seeded rather than guessing.
             let values = match (layers.next(), layers.next()) {

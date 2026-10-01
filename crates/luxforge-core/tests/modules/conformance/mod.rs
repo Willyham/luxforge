@@ -57,10 +57,11 @@ impl Evidence {
 /// proof, whose fields are the non-numeric kinds. A new field-patch module needs no entry here to
 /// be checked; this list only makes sure a descriptor change can never drop one of these from the
 /// suite silently.
-pub const KNOWN: [&str; 5] = [
+pub const KNOWN: [&str; 6] = [
     "luxforge.basic",
     "luxforge.presence",
     "luxforge.mixer",
+    "luxforge.perspective",
     "luxforge.vignette",
     "luxforge.controls",
 ];

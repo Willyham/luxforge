@@ -197,7 +197,8 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
             | Control::Action(_)
             | Control::Picker(_)
             | Control::Task(_)
-            | Control::Presets(_) => Vec::new(),
+            | Control::Presets(_)
+            | Control::QueryChoice(_) => Vec::new(),
         };
         if fields.is_empty() {
             continue;
@@ -211,7 +212,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
         for (action, parameter) in fields {
             let declared = module
                 .action(action)
-                .is_some_and(|declared| declared.parameter(parameter).is_some());
+                .is_some_and(|declared| declared.preset && declared.parameter(parameter).is_some());
             if !declared || !is_patch(modules, action) {
                 continue;
             }
@@ -572,7 +573,18 @@ mod tests {
                 "Colour mixer \u{00b7} Luminance",
                 "Vignette \u{00b7} Vignette",
             ],
-            "RAW, transforms, crop and the pixel proof declare no field patch"
+            "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.id == "luxforge.perspective")
+        );
+        assert!(
+            groups
+                .iter()
+                .flat_map(|group| &group.fields)
+                .all(|(action, _)| action != "set-perspective")
         );
         let tone = &groups[1];
         assert_eq!(

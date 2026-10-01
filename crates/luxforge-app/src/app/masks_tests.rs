@@ -77,7 +77,7 @@ fn armed_tools_requery_maps_after_an_external_crop_and_reject_late_coordinates()
         masking.message(MaskMessage::New(kind.into()));
         masking.open_gesture();
         let old_id = masking.editor.armed.as_ref().unwrap().id;
-        let old_map = masking.editor.held_mask().unwrap().map.unwrap();
+        let old_map = masking.editor.held_mask().unwrap().map.clone().unwrap();
         let (old_transform, _) = call(
             &masking.owner(),
             masking.editor.client,
@@ -124,7 +124,10 @@ fn armed_tools_requery_maps_after_an_external_crop_and_reject_late_coordinates()
         );
         assert_eq!(masking.editor.status.text, "Waiting for mask coordinates");
         masking.open_gesture();
-        assert_ne!(masking.editor.held_mask().unwrap().map.unwrap(), old_map);
+        assert_ne!(
+            masking.editor.held_mask().unwrap().map.clone().unwrap(),
+            old_map
+        );
         masking.message(MaskMessage::Handle(pointer));
         assert!(
             masking.editor.mask_gesture().is_some(),
@@ -492,12 +495,18 @@ impl Masking {
     /// update that opened it; a brush in hand has neither until its press.
     fn open_gesture(&mut self) {
         assert!(self.editor.mask_shape().is_some(), "a gesture is open");
-        // `render.transform` answers the affine the handles are mapped through.
+        // Reapply resolves the retained draft, rather than whichever entry becomes current
+        // before this request reaches the owner.
+        let draft_id = self
+            .editor
+            .held_mask()
+            .and_then(|mask| mask.map_draft.as_ref())
+            .map(|expected| expected.draft_id.clone());
         let (transform, _) = call(
             &self.owner(),
             self.editor.client,
             "render.transform",
-            json!({"asset_id": self.asset}),
+            json!({"asset_id": self.asset, "draft_id": draft_id}),
         )
         .unwrap();
         let gesture = match (self.editor.core_gesture(), &self.editor.armed) {
@@ -3989,6 +3998,168 @@ fn the_brush_in_hand_is_put_down_by_done_and_when_its_component_is_gone() {
 /// Changed elsewhere notice with Discard and Reapply, and nothing is rebased behind its back.
 #[test]
 fn a_painted_brush_changed_elsewhere_shows_the_notice() {
+    for perspective in [false, true] {
+        for reapply in [false, true] {
+            let mut masking = Masking::opened();
+            masking.enter_mask_mode();
+            masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+            masking.open_gesture();
+            let (old_transform, _) = call(
+                &masking.owner(),
+                masking.editor.client,
+                "render.transform",
+                json!({"asset_id":masking.asset}),
+            )
+            .unwrap();
+            let old_map = masking.editor.held_mask().unwrap().map.clone().unwrap();
+            masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+                x: 0.3,
+                y: 0.3,
+            }));
+            masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.4 }));
+            masking.assert_geometry_sent();
+            assert!(
+                !masking.editor.armed_brush(),
+                "the stroke holds the brush now"
+            );
+            let old_id = masking.editor.core_gesture().unwrap().draft.gesture;
+            let kept = masking
+                .editor
+                .session
+                .draft
+                .as_ref()
+                .unwrap()
+                .fields
+                .clone();
+
+            if perspective {
+                let revision = masking.editor.document.state.as_ref().unwrap().revision;
+                call(&masking.owner(), masking.agent, "edit.set-perspective",
+                    json!({"asset_id":masking.asset,"horizontal":20,"vertical":-15,
+                        "mutation":{"expected_revision":revision,"request_id":"external-perspective","actor":"agent"}}),
+                ).unwrap();
+                masking.refresh();
+            } else {
+                agent_commits(&mut masking);
+            }
+            assert!(masking.editor.gesture_conflicted());
+            assert_eq!(
+                masking.editor.status.text,
+                "Changed elsewhere: discard the mask gesture or reapply it"
+            );
+            assert!(
+                masking
+                    .editor
+                    .workspace
+                    .canvas
+                    .notices
+                    .iter()
+                    .any(|notice| notice.title == "Changed elsewhere")
+            );
+            assert!(testing::core_draft(&masking.editor).unwrap().conflicted);
+            assert_eq!(masking.editor.session.draft.as_ref().unwrap().fields, kept);
+            assert_eq!(
+                masking.editor.held_mask().unwrap().map.as_ref(),
+                Some(&old_map),
+                "a conflicted stroke keeps its original content coordinates and map"
+            );
+            masking.draft(DraftMessage::Commit);
+            assert!(
+                masking.editor.gesture_conflicted(),
+                "Apply cannot publish a conflicted stroke"
+            );
+            assert!(masking.listing().masks.is_empty());
+
+            let (current_transform, _) = call(
+                &masking.owner(),
+                masking.editor.client,
+                "render.transform",
+                json!({"asset_id":masking.asset}),
+            )
+            .unwrap();
+            if perspective {
+                assert_ne!(
+                    old_transform["mapping_sha256"], current_transform["mapping_sha256"],
+                    "the external geometry commit changed the mapping"
+                );
+            }
+            if reapply {
+                masking.draft(DraftMessage::Reapply);
+                assert!(!masking.editor.gesture_conflicted());
+                let new_id = masking.editor.core_gesture().unwrap().draft.gesture;
+                assert_ne!(new_id, old_id);
+                assert!(masking.editor.held_mask().unwrap().map.is_none());
+                masking.message(MaskMessage::Transform(
+                    old_id,
+                    Ok(serde_json::from_value(old_transform).unwrap()),
+                ));
+                assert!(
+                    masking.editor.held_mask().unwrap().map.is_none(),
+                    "a late answer cannot restore the displaced map"
+                );
+                masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.7, y: 0.7 }));
+                assert_eq!(masking.editor.status.text, "Waiting for mask coordinates");
+                assert_eq!(masking.editor.session.draft.as_ref().unwrap().fields, kept);
+                masking.open_gesture();
+                let rebound_map = masking.editor.held_mask().unwrap().map.clone().unwrap();
+                assert_eq!(
+                    rebound_map.summary()["mapping_sha256"],
+                    current_transform["mapping_sha256"]
+                );
+                if perspective {
+                    assert_ne!(rebound_map, old_map);
+                }
+                masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.7, y: 0.7 }));
+                assert_eq!(
+                    masking.editor.session.draft.as_ref().unwrap().fields,
+                    kept,
+                    "the interrupted stroke cannot extend across mapping identities"
+                );
+                masking.apply();
+                assert_eq!(masking.listing().masks.len(), 1);
+                masking.open_gesture();
+                assert_eq!(
+                    masking
+                        .editor
+                        .held_mask()
+                        .unwrap()
+                        .map
+                        .as_ref()
+                        .unwrap()
+                        .summary()["mapping_sha256"],
+                    rebound_map.summary()["mapping_sha256"]
+                );
+            } else {
+                masking.draft(DraftMessage::Cancel);
+                assert!(testing::core_draft(&masking.editor).is_none());
+                assert!(masking.listing().masks.is_empty());
+                masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+                assert!(masking.editor.held_mask().unwrap().map.is_none());
+                masking.open_gesture();
+                if perspective {
+                    assert_ne!(
+                        masking.editor.held_mask().unwrap().map.as_ref(),
+                        Some(&old_map)
+                    );
+                }
+            }
+            masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+                x: 0.6,
+                y: 0.6,
+            }));
+            assert!(
+                testing::core_draft(&masking.editor).is_some_and(|draft| !draft.conflicted),
+                "the next stroke uses the current stack's map"
+            );
+            masking.draft(DraftMessage::Cancel);
+        }
+    }
+}
+
+/// A map prepared for a rebased stroke must not be installed after another geometry commit,
+/// and a request delayed until that commit must refuse instead of reading the new head.
+#[test]
+fn mask_reapply_rejects_a_delayed_map_after_a_second_geometry_commit() {
     let mut masking = Masking::opened();
     masking.enter_mask_mode();
     masking.message(MaskMessage::Paint(PaintTarget::NewMask));
@@ -3998,32 +4169,253 @@ fn a_painted_brush_changed_elsewhere_shows_the_notice() {
         y: 0.3,
     }));
     masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.4 }));
-    masking.assert_geometry_sent();
+    let kept = masking
+        .editor
+        .session
+        .draft
+        .as_ref()
+        .unwrap()
+        .fields
+        .clone();
+
+    let geometry_commit = |masking: &mut Masking, horizontal| {
+        let revision = masking.editor.document.state.as_ref().unwrap().revision;
+        call(
+            &masking.owner(),
+            masking.agent,
+            "edit.set-perspective",
+            json!({"asset_id":masking.asset,"horizontal":horizontal,"vertical":-15,
+                "mutation":{"expected_revision":revision,
+                    "request_id":format!("external-perspective-{revision}"),"actor":"agent"}}),
+        )
+        .unwrap();
+        masking.refresh();
+    };
+    geometry_commit(&mut masking, 20);
+    masking.draft(DraftMessage::Reapply);
+    let first_gesture = masking.editor.core_gesture().unwrap().draft.gesture;
+    let expected = masking
+        .editor
+        .held_mask()
+        .unwrap()
+        .map_draft
+        .clone()
+        .unwrap();
+    assert_eq!(expected.base_revision, 1);
+    let (delayed, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "render.transform",
+        json!({"asset_id":masking.asset,"draft_id":expected.draft_id}),
+    )
+    .unwrap();
+    let first_map: luxforge_core::MappingDescriptor = serde_json::from_value(delayed).unwrap();
+    let mut unstamped = first_map.clone();
+    unstamped.draft = None;
+    masking.message(MaskMessage::Transform(first_gesture, Ok(unstamped)));
     assert!(
-        !masking.editor.armed_brush(),
-        "the stroke holds the brush now"
+        masking.editor.held_mask().unwrap().map.is_none(),
+        "an entry map cannot stand in for the requested rebased draft"
     );
 
-    agent_commits(&mut masking);
+    // The same gesture ID is still held, so an ID-only response gate would accept this map.
+    geometry_commit(&mut masking, 60);
     assert!(masking.editor.gesture_conflicted());
-    assert_eq!(
-        masking.editor.status.text,
-        "Changed elsewhere: discard the mask gesture or reapply it"
+    masking.message(MaskMessage::Transform(first_gesture, Ok(first_map.clone())));
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.8, y: 0.8 }));
+    assert_eq!(masking.editor.session.draft.as_ref().unwrap().fields, kept);
+    assert!(
+        call(
+            &masking.owner(),
+            masking.editor.client,
+            "render.transform",
+            json!({"asset_id":masking.asset,"draft_id":expected.draft_id}),
+        )
+        .is_err(),
+        "a delayed request cannot evaluate the retained draft over a different base"
     );
+    assert!(masking.listing().masks.is_empty());
+    assert_eq!(masking.editor.document.state.as_ref().unwrap().revision, 2);
+
+    masking.draft(DraftMessage::Reapply);
+    let second_gesture = masking.editor.core_gesture().unwrap().draft.gesture;
+    assert_ne!(second_gesture, first_gesture);
+    assert_eq!(
+        masking
+            .editor
+            .held_mask()
+            .unwrap()
+            .map_draft
+            .as_ref()
+            .unwrap()
+            .base_revision,
+        2
+    );
+    // A delayed first request may even resolve after the next Reapply. Its identity still cannot
+    // replace the map requested by this newer Reapply.
+    masking.message(MaskMessage::Transform(first_gesture, Ok(first_map.clone())));
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    masking.open_gesture();
+    let mapped = masking
+        .editor
+        .held_mask()
+        .unwrap()
+        .map
+        .as_ref()
+        .unwrap()
+        .summary();
+    assert_ne!(mapped["mapping_sha256"], first_map.geometry.sha256());
+    assert_eq!(
+        mapped["identity"]["entry_id"],
+        json!(
+            masking
+                .editor
+                .document
+                .state
+                .as_ref()
+                .unwrap()
+                .current_entry
+                .id
+        )
+    );
+    assert_eq!(
+        mapped["identity"]["draft"]["draft_id"],
+        json!(expected.draft_id)
+    );
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.8, y: 0.8 }));
+    assert_eq!(masking.editor.session.draft.as_ref().unwrap().fields, kept);
+    masking.apply();
+    assert_eq!(masking.listing().masks.len(), 1);
+    assert_eq!(masking.editor.document.state.as_ref().unwrap().revision, 3);
+}
+
+/// A set can be accepted before its preview planning fails. The next map names that accepted
+/// revision even though the desktop has not adopted it; the matching base still makes it valid.
+#[test]
+fn mask_reapply_installs_a_newer_same_base_map_after_accepted_set_preview_failure() {
+    let source = scratch("preview-recovery.jpg");
+    let displaced = scratch("preview-recovery-away.jpg");
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/s0/orientation-1.jpg"),
+    )
+    .unwrap();
+    std::fs::write(&source, &bytes).unwrap();
+    let catalog = scratch("preview-recovery.sqlite");
+    let (editor, asset, agent) = testing::real_photo_at(&catalog, &source);
+    let mut masking = Masking {
+        editor,
+        catalog,
+        asset,
+        agent,
+    };
+    masking.enter_mask_mode();
+    masking.message(MaskMessage::Paint(PaintTarget::NewMask));
+    masking.open_gesture();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo { x: 0.5, y: 0.4 }));
+    agent_commits(&mut masking);
+
+    // Only this test's disposable original is temporarily unavailable. The host's mask set needs
+    // no source pixels, so Reapply accepts the resend before its preview checks the missing file.
+    std::fs::rename(&source, &displaced).unwrap();
+    tasks::owner_calls::take();
+    masking.draft(DraftMessage::Reapply);
+    let requests = tasks::owner_calls::take();
+    std::fs::rename(&displaced, &source).unwrap();
+    assert_eq!(requests, ["draft.reapply", "draft.set", "preview_job"]);
     assert!(
         masking
             .editor
-            .workspace
-            .canvas
-            .notices
-            .iter()
-            .any(|notice| notice.title == "Changed elsewhere"),
-        "the notice offers Discard and Reapply"
+            .status
+            .text
+            .starts_with("source-unavailable:")
     );
+    let expected = masking
+        .editor
+        .held_mask()
+        .unwrap()
+        .map_draft
+        .clone()
+        .unwrap();
+    let gesture = masking.editor.core_gesture().unwrap().draft.gesture;
+    let local_revision = masking.editor.core_gesture().unwrap().draft.draft_revision;
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    assert!(!masking.editor.gesture_conflicted());
+    let (held, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "draft.read",
+        json!({"draft_id":expected.draft_id}),
+    )
+    .unwrap();
+    assert!(held["draft_revision"].as_u64().unwrap() > local_revision);
+
+    // Renaming may have changed the file's signature. Reprepare on the usual bounded worker so
+    // the next transform evaluates the same immutable source again.
+    let entry = masking
+        .editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    let _ = tasks::thumbnail_source(
+        &masking.owner(),
+        masking.editor.client,
+        masking.asset.clone(),
+        entry,
+    )
+    .unwrap();
+    let (value, _) = call(
+        &masking.owner(),
+        masking.editor.client,
+        "render.transform",
+        json!({"asset_id":masking.asset,"draft_id":expected.draft_id}),
+    )
+    .unwrap();
+    let map: luxforge_core::MappingDescriptor = serde_json::from_value(value).unwrap();
+    assert!(map.draft.as_ref().unwrap().draft_revision > local_revision);
+
+    let mut stale = map.clone();
+    stale.draft.as_mut().unwrap().draft_revision = expected.draft_revision - 1;
+    masking.message(MaskMessage::Transform(gesture, Ok(stale)));
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    let mut other = map.clone();
+    other.draft.as_mut().unwrap().draft_id = luxforge_core::DraftId::new();
+    masking.message(MaskMessage::Transform(gesture, Ok(other)));
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    tasks::owner_calls::take();
+    masking.message(MaskMessage::Transform(gesture, Ok(map.clone())));
     assert!(
-        testing::core_draft(&masking.editor).is_some_and(|draft| draft.conflicted),
-        "nothing is rebased until the person chooses"
+        tasks::owner_calls::take().is_empty(),
+        "acceptance asks for no extra owner request"
     );
+    assert!(masking.editor.held_mask().unwrap().map.is_some());
+    assert_eq!(
+        masking.editor.core_gesture().unwrap().draft.draft_revision,
+        local_revision
+    );
+
+    // A different base remains a conflict even when its answer has a newer accepted revision.
+    masking.editor.mask_gesture_mut().unwrap().map = None;
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    call(&masking.owner(), masking.agent, "edit.set-perspective",
+        json!({"asset_id":masking.asset,"horizontal":20,"vertical":-15,
+            "mutation":{"expected_revision":revision,"request_id":"new-base-after-recovery","actor":"agent"}}),
+    ).unwrap();
+    masking.refresh();
+    assert!(masking.editor.gesture_conflicted());
+    masking.message(MaskMessage::Transform(gesture, Ok(map)));
+    assert!(masking.editor.held_mask().unwrap().map.is_none());
+    assert_eq!(std::fs::read(&source).unwrap(), bytes);
+    std::fs::remove_file(source).unwrap();
 }
 
 /// An independent client commits an edit, and the desktop reads it back as its poll would.

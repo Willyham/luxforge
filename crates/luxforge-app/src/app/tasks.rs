@@ -21,9 +21,9 @@ use iced::Task;
 use luxforge_core::{
     ActionResult, ApiRequest, AssetId, ClientId, ClientSession, ContentPoint, Draft, DraftId,
     DraftTarget, EditorState, EntryId, ErrorKind, EventsResult, HistoryPage, HistoryRow,
-    HistorySelection, JobId, Lineage, MAX_PRESET_BYTES, ModuleDescriptor, Mutation,
-    MutationOutcome, MutationRequest, OwnerHandle, PresetSummary, PreviewJob, PreviewRequest,
-    ProxyBounds, RecipeDescription, StageTransform, Version,
+    HistorySelection, JobId, Lineage, MAX_PRESET_BYTES, MappingDescriptor, ModuleDescriptor,
+    Mutation, MutationOutcome, MutationRequest, OwnerHandle, PresetSummary, PreviewJob,
+    PreviewRequest, ProxyBounds, RecipeDescription, Version,
     jobs::{JOB_CANCEL, JOB_READ},
     mask::commands::MaskListing,
 };
@@ -1322,7 +1322,8 @@ fn current_preview(
     })
 }
 
-/// The geometry tail of the displayed stack as one affine, read once when a mask gesture opens.
+/// The identity-stamped geometry map of the displayed entry or rebased draft, read once when a
+/// mask gesture opens or is reapplied.
 /// Every later pointer position is mapped from it locally, so a drag costs no host call per move.
 /// The answer names the gesture that asked, so a map is never given to another one.
 pub(crate) fn transform_task(
@@ -1331,6 +1332,7 @@ pub(crate) fn transform_task(
     gesture: GestureId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
+    draft_id: Option<DraftId>,
 ) -> Task<Message> {
     owner_task(
         move || {
@@ -1338,9 +1340,9 @@ pub(crate) fn transform_task(
                 &owner,
                 client,
                 "render.transform",
-                json!({"asset_id":asset_id,"entry_id":entry_id}),
+                json!({"asset_id":asset_id,"entry_id":entry_id,"draft_id":draft_id}),
             )?;
-            parse::<StageTransform>(transform)
+            parse::<MappingDescriptor>(transform)
         },
         move |result| Message::Mask(MaskMessage::Transform(gesture, result)),
     )

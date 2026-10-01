@@ -757,7 +757,17 @@ pub struct ActionDescriptor {
     /// state. Every parameter of a patch action is optional, whatever it declares.
     #[serde(default)]
     pub patch: bool,
+    /// Whether this action may be captured or applied by the preset service.
+    #[serde(default = "preset_default", skip_serializing_if = "preset_enabled")]
+    pub preset: bool,
     pub parameters: Vec<ParameterDescriptor>,
+}
+
+fn preset_default() -> bool {
+    true
+}
+fn preset_enabled(value: &bool) -> bool {
+    *value
 }
 
 impl ActionDescriptor {
@@ -769,6 +779,7 @@ impl ActionDescriptor {
             title: title.into(),
             notes: notes.into(),
             patch: false,
+            preset: true,
             parameters: Vec::new(),
         }
     }
@@ -805,6 +816,7 @@ pub enum Control {
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
+    QueryChoice(QueryChoiceControl),
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
@@ -1096,6 +1108,21 @@ pub struct PresetsControl {
     pub action: String,
 }
 
+/// Search and paging supplied by this module's query; an eligible row submits its key to this
+/// module's non-patch action. Shared inputs have equal kinds in both declarations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryChoiceControl {
+    pub label: String,
+    pub query: String,
+    pub text: String,
+    pub page: String,
+    pub action: String,
+    pub key: String,
+    #[serde(default)]
+    pub shared: Vec<String>,
+}
+
 macro_rules! control_kinds {
     ($($kind:ident($control:ident)),* $(,)?) => {
         $(
@@ -1113,6 +1140,7 @@ control_kinds!(
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
+    QueryChoice(QueryChoiceControl),
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
@@ -1275,6 +1303,7 @@ impl Control {
             Self::Number(_) => "number",
             Self::Toggle(_) => "toggle",
             Self::Choice(_) => "choice",
+            Self::QueryChoice(_) => "query-choice",
             Self::Color(_) => "color",
             Self::Curve(_) => "curve",
             Self::Range(_) => "range",
