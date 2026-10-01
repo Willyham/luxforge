@@ -42,7 +42,7 @@ use crate::app::tasks::call_detailed;
 use crate::state::loupe::{Held as HeldFrame, Picture};
 use iced::widget::image::Handle;
 use luxforge_core::{
-    ClientId, DecodedPreview, ErrorKind, OwnerHandle,
+    ClientId, DecodedPreview, EntryId, ErrorKind, OwnerHandle,
     catalog_types::{
         PreviewAnswer, PreviewInfo, PreviewItem, PreviewOrigin, PreviewPriority, PreviewTier,
     },
@@ -109,6 +109,14 @@ pub(crate) struct Refusal {
     pub(crate) message: String,
 }
 
+/// A decoded preview held for a frame: its handle, what it is, and the entry a photograph's
+/// preview is of.
+pub(crate) struct HeldPhoto<'a> {
+    pub(crate) handle: &'a Handle,
+    pub(crate) picture: &'a Picture,
+    pub(crate) entry: Option<&'a EntryId>,
+}
+
 /// One frame the loupe wants: its item, the pixels the area it is drawn in needs, and whether it
 /// is on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,6 +175,8 @@ enum Read {
 #[derive(Clone, Debug)]
 struct Source {
     key: String,
+    /// The entry a photograph's preview is of, as the answer names it.
+    entry: Option<EntryId>,
     path: PathBuf,
     width: u32,
     height: u32,
@@ -179,6 +189,10 @@ impl Source {
     fn of(info: PreviewInfo, stand_in: bool) -> Self {
         Self {
             approximate: approximate(&info),
+            entry: match &info.item {
+                PreviewItem::Photo { entry_id, .. } => entry_id.clone(),
+                PreviewItem::File { .. } => None,
+            },
             key: info.key,
             path: info.path,
             width: info.width.max(1),
@@ -193,6 +207,8 @@ impl Source {
 struct Held {
     handle: Handle,
     picture: Picture,
+    /// The entry a photograph's preview is of.
+    entry: Option<EntryId>,
     /// The side it was decoded to fit.
     side: u32,
     bytes: usize,
@@ -262,7 +278,8 @@ struct DecodeWorker {
 }
 
 impl DecodeWorker {
-    fn start() -> Self {
+    /// Start the worker; `wake` is called on it each time a decode lands.
+    fn start(wake: fn()) -> Self {
         let (sender, decoded) = mpsc::sync_channel(DECODED_WAITING);
         let newest = Arc::new(AtomicU64::new(0));
         let running = Arc::new(Mutex::new(None::<Decode>));
@@ -293,7 +310,7 @@ impl DecodeWorker {
                     if sender.send(Decoded { decode, result }).is_err() {
                         return None;
                     }
-                    super::loupe::post();
+                    wake();
                 }
                 None
             },
@@ -341,6 +358,9 @@ pub(crate) struct LoupeFrames {
     plan_number: u64,
     /// Decoded frames dropped because they could not fit, for evidence.
     dropped: u64,
+    /// What the decode worker calls when a decode lands: the signal of the seam that holds the
+    /// cache.
+    wake: fn(),
     /// Tests plan decodes without starting the worker, and hand the decodes in themselves.
     #[cfg(test)]
     pub(crate) paused: bool,
@@ -412,6 +432,12 @@ pub(crate) fn region_handle(decoded: DecodedPreview) -> Handle {
 
 impl LoupeFrames {
     pub(crate) fn with_budget(budget: usize) -> Self {
+        Self::waking(budget, super::loupe::post)
+    }
+
+    /// A cache of `budget` bytes whose decodes wake the seam that holds it through `wake`: Develop
+    /// holds one for the large previews it switches photographs with.
+    pub(crate) fn waking(budget: usize, wake: fn()) -> Self {
         Self {
             entries: HashMap::new(),
             wanted: Vec::new(),
@@ -428,6 +454,7 @@ impl LoupeFrames {
             planned: Vec::new(),
             plan_number: 0,
             dropped: 0,
+            wake,
             #[cfg(test)]
             paused: false,
         }
@@ -570,6 +597,17 @@ impl LoupeFrames {
         (held.picture.key == picture.key).then_some(&held.handle)
     }
 
+    /// The handle, picture and entry held for `item`, whatever its newest answer names: what Develop
+    /// presents in place of a photograph while it prepares.
+    pub(crate) fn photo(&self, item: &PreviewItem) -> Option<HeldPhoto<'_>> {
+        let held = self.entries.get(item)?.held.as_ref()?;
+        Some(HeldPhoto {
+            handle: &held.handle,
+            picture: &held.picture,
+            entry: held.entry.as_ref(),
+        })
+    }
+
     /// What is held for `item`, as the model reads it.
     pub(crate) fn held(&self, item: &PreviewItem) -> HeldFrame {
         let entry = self.entries.get(item);
@@ -698,6 +736,7 @@ impl LoupeFrames {
         {
             return;
         }
+        let photo_entry = source.entry.clone();
         let picture = Picture {
             item: decode.item.clone(),
             key: decode.key.clone(),
@@ -727,6 +766,7 @@ impl LoupeFrames {
         let held = Held {
             handle: Handle::from_rgba(width, height, rgba),
             picture,
+            entry: photo_entry,
             side: decode.side,
             bytes,
         };
@@ -908,7 +948,10 @@ impl LoupeFrames {
             }
             return;
         }
-        let decoder = self.decoder.get_or_insert_with(DecodeWorker::start);
+        let wake = self.wake;
+        let decoder = self
+            .decoder
+            .get_or_insert_with(|| DecodeWorker::start(wake));
         self.plan_number += 1;
         let running = decoder.running();
         decoder.newest.store(self.plan_number, Ordering::Release);

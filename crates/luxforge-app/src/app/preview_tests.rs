@@ -654,7 +654,7 @@ fn the_fit_bounds_are_the_padded_photo_surface_in_physical_pixels() {
     editor.view_state.scale_factor = 2.0;
     editor.session.workspace.state_panel = true;
     editor.session.workspace.tools_panel = true;
-    let surface = crate::layout::photo_surface(editor.view_state.window, true, true);
+    let surface = crate::layout::photo_surface(editor.view_state.window, true, true, false);
     let inset = crate::layout::FIT_INSET;
     let bounds = editor
         .proxy_bounds()
