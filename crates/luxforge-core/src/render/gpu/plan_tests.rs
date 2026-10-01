@@ -241,9 +241,8 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             false,
             "pixel-stage",
         ),
-        // Every colour unit of Basic, the mixer and the vignette has a program; a disabled one is
-        // planned only when qualifying.
-        ("Basic and the colour mixer", 0, false, "disabled-program"),
+        // Every colour unit of Basic, the mixer and the vignette has an enabled program.
+        ("Basic and the colour mixer", 0, false, "plan"),
         ("Basic and the colour mixer", 0, true, "plan"),
         ("Basic and the colour mixer", 1, true, "plan"),
         (
@@ -256,7 +255,7 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             "colour after a straightened crop's resample",
             2,
             false,
-            "disabled-program",
+            "plan",
         ),
         (
             "colour after a straightened crop's resample",
@@ -282,7 +281,8 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             true,
             "spatial-unit",
         ),
-        ("a masked colour layer", 0, false, "disabled-program"),
+        // The units have programs; the linear mask component has none yet.
+        ("a masked colour layer", 0, false, "no-program"),
         (
             "a masked spatial operation behind geometry",
             1,

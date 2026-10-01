@@ -24,7 +24,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("colour.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 2,
-    enabled: false,
+    enabled: true,
 };
 
 /// Reference Oklab chroma of the most saturated point on the sRGB gamut surface (`(255, 0, 255)`,

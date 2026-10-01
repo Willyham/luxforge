@@ -31,7 +31,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("unit.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 4,
-    enabled: false,
+    enabled: true,
 };
 
 /// The curve's interpolant over its checked points, built once in `f64`: the knots, the segment

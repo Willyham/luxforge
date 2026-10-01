@@ -30,7 +30,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("white_balance.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 9,
-    enabled: false,
+    enabled: true,
 };
 
 // ---------------------------------------------------------------------------------------------

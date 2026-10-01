@@ -30,7 +30,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("unit.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 48,
-    enabled: false,
+    enabled: true,
 };
 
 /// The eight hue ranges, in wheel order (ascending Oklab hue angle).
