@@ -635,20 +635,25 @@ impl Editor {
                 }
             })
         });
-        expected.is_some_and(|expected| {
-            photo_drawn(
-                expected,
-                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
-            )
-        }) && self.surfaces().comparison.is_none_or(|(after, _)| {
-            photo_drawn(
-                ExpectedPhotoDraw::Full {
-                    version: after.version(),
-                    content: None,
-                },
-                luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
-            )
-        })
+        // The status bar names the frame the surface drew last, which only that draw can say: a
+        // change of drawing path wakes the desktop, whose next update derives the label again.
+        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
+        label_current
+            && expected.is_some_and(|expected| {
+                photo_drawn(
+                    expected,
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                )
+            })
+            && self.surfaces().comparison.is_none_or(|(after, _)| {
+                photo_drawn(
+                    ExpectedPhotoDraw::Full {
+                        version: after.version(),
+                        content: None,
+                    },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+                )
+            })
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
