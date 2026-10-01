@@ -19,6 +19,7 @@ mod field_grid;
 mod floating_bar;
 mod focus_control;
 mod histogram;
+mod hover_panel;
 mod icon_button;
 mod inline_menu;
 mod inline_notice;
@@ -29,6 +30,7 @@ mod menu_choice;
 mod metric_row;
 mod mode_control;
 mod mode_strip;
+mod notched_slider;
 mod notice_card;
 mod number_field;
 mod overlay_control;
@@ -71,6 +73,7 @@ pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, histogram_inspector,
 };
+pub use hover_panel::hover_panel;
 pub use icon_button::{
     Icon, IconButtonModel, header_icon_button, icon_button, title_bar_icon_button, with_tooltip,
 };
@@ -87,6 +90,7 @@ pub use menu_choice::{MenuChoiceModel, menu_choice};
 pub use metric_row::{MetricRowModel, metric_row};
 pub use mode_control::{CombineMode, ModeControlModel, mode_control};
 pub use mode_strip::{ModeEntry, ToggleEntry, mode_strip};
+pub use notched_slider::{NotchedSliderModel, StepKeys, arrow_step, notched_panel, notched_slider};
 pub use notice_card::{NoticeCardModel, Tone, notice_card};
 pub use number_field::{
     NumberFieldModel, ValueEdit, boxed_input, channel_row, compact_number_field, label_line,
@@ -97,7 +101,7 @@ pub use popover::popover;
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::readout_card;
 pub use section_header::{SectionHeaderModel, band_header, module_section};
-pub use segmented::{SegmentedModel, segment, segment_track, segmented};
+pub use segmented::{SegmentedModel, chevron_segment, segment, segment_track, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};

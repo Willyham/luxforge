@@ -4,11 +4,13 @@
 //!
 //! [`segmented`] builds the whole control from its options. [`segment`] and [`segment_track`] are
 //! its two parts, for a control whose last segment is sometimes something other than a label (the
-//! title bar's typed zoom field).
+//! title bar's typed zoom field). [`chevron_segment`] is a segment that has more behind it (the
+//! title bar's percentage, which drops the zoom stops).
 
 use crate::theme;
+use crate::widgets::icon_button::{Icon, icon};
 use iced::widget::text::{LineHeight, Wrapping};
-use iced::widget::{Row, button, container, text};
+use iced::widget::{Row, button, container, row, text};
 use iced::{Alignment, Element, Length};
 
 /// Plain data for a segmented control.
@@ -47,20 +49,48 @@ pub fn segment<'a, M: Clone + 'a>(
     selected: bool,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    button(
-        container(
-            text(label)
-                .size(theme::SIZE_CONTROL)
-                .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
-                .wrapping(Wrapping::None),
-        )
-        .center_y(Length::Fill),
-    )
-    .padding([0.0, theme::SEGMENT_PADDING])
-    .height(Length::Fixed(theme::SEGMENT_HEIGHT))
-    .style(theme::segment(selected))
-    .on_press_maybe(on_press)
-    .into()
+    segment_with(segment_label(label).into(), selected, on_press)
+}
+
+/// A [`segment`] with a small chevron after its label, in the label's own ink, for a segment that
+/// has more behind it.
+pub fn chevron_segment<'a, M: Clone + 'a>(
+    label: String,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let ink = match (on_press.is_some(), selected) {
+        (false, _) => theme::TEXT_TERTIARY,
+        (true, true) => theme::TEXT_BRIGHT,
+        (true, false) => theme::TEXT_SECONDARY,
+    };
+    let content = row![
+        segment_label(label),
+        icon(Icon::ChevronDown, theme::SEGMENT_CHEVRON_SIZE, ink),
+    ]
+    .spacing(theme::SEGMENT_CHEVRON_SPACING)
+    .align_y(Alignment::Center);
+    segment_with(content.into(), selected, on_press)
+}
+
+fn segment_label<'a>(label: String) -> iced::widget::Text<'a> {
+    text(label)
+        .size(theme::SIZE_CONTROL)
+        .line_height(LineHeight::Absolute(theme::SLIDER_LABEL_HEIGHT.into()))
+        .wrapping(Wrapping::None)
+}
+
+fn segment_with<'a, M: Clone + 'a>(
+    content: Element<'a, M>,
+    selected: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    button(container(content).center_y(Length::Fill))
+        .padding([0.0, theme::SEGMENT_PADDING])
+        .height(Length::Fixed(theme::SEGMENT_HEIGHT))
+        .style(theme::segment(selected))
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// The track the segments sit on, [`theme::SEGMENT_INSET`] around and between them.
@@ -95,6 +125,8 @@ mod tests {
         let _: Element<'_, ()> = segment_track(vec![
             segment("Fit".into(), true, Some(())),
             segment("18%".into(), false, None),
+            chevron_segment("18%".into(), true, Some(())),
+            chevron_segment("18%".into(), false, None),
         ]);
     }
 }

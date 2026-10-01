@@ -648,5 +648,6 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         (),
         None,
     ));
+    states.extend(crate::gallery_components::gallery_zoom_stops());
     states
 }

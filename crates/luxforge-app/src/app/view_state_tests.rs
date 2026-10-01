@@ -208,3 +208,89 @@ fn the_percentage_segment_opens_as_the_zoom_field_and_a_zoom_closes_it() {
     );
     finish(editor, catalog);
 }
+
+/// A zoom stop asks for its percentage as the 100% segment does, and closes the typed field; the
+/// stops then read the session's zoom: a percentage on a stop selects it and rests the thumb on
+/// its notch, one between two stops rests it between their notches, and Fit selects none.
+#[test]
+fn a_zoom_stop_asks_for_its_percentage_and_the_stops_read_the_session() {
+    use luxforge_core::Zoom;
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+    editor.presentation.dimensions = Some((480, 320));
+    editor.rederive();
+    let _ = editor.update(Message::View(ViewMessage::EditZoom));
+    let _ = editor.update(Message::View(ViewMessage::ZoomTo(300.0)));
+    assert!(editor.busy, "the stop asked the session");
+    assert_eq!(editor.status.text, "Running view.set\u{2026}");
+    assert_eq!(editor.view_state.zoom, "300");
+    assert!(!editor.workspace.title.zoom_editing);
+    editor.busy = false;
+    // The session's percentage, the stop it selects and the range the thumb rests in.
+    for (value, stop, low, high) in [
+        (300.0, Some(4), 4.0, 4.0),
+        (50.0, Some(0), 0.0, 0.0),
+        (250.0, None, 3.0, 4.0),
+    ] {
+        editor.session.preview.view.zoom = Zoom::Percent { value };
+        editor.rederive();
+        let title = &editor.workspace.title;
+        assert_eq!(title.zoom_stop, stop, "{value}%");
+        let position = title.zoom_stop_position.unwrap();
+        assert!(
+            position >= low && position <= high,
+            "{value}% at {position}"
+        );
+        if low < high {
+            assert!(position > low && position < high, "{value}% at {position}");
+        }
+    }
+    editor.session.preview.view.zoom = Zoom::Percent { value: 25.0 };
+    editor.rederive();
+    assert_eq!(
+        editor.workspace.title.zoom_stop_position, None,
+        "below the stops"
+    );
+    editor.session.preview.view.zoom = Zoom::Fit;
+    editor.rederive();
+    assert_eq!(editor.workspace.title.zoom_stop, None, "Fit is no stop");
+    finish(editor, catalog);
+}
+
+/// A zoom step asks for the next stop from the zoom on screen and shows the stops for a moment;
+/// past the last stop it asks for nothing but still shows them, and with no photograph it does
+/// nothing at all.
+#[test]
+fn a_zoom_step_asks_for_the_next_stop_and_shows_the_stops() {
+    use luxforge_core::Zoom;
+    let (mut editor, catalog) = boot();
+    let _ = editor.update(Message::View(ViewMessage::ZoomStep(1)));
+    assert!(!editor.busy);
+    assert_eq!(
+        editor.workspace.title.zoom_reveal, 0,
+        "no photograph, no stops"
+    );
+    finish(editor, catalog);
+
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+    editor.presentation.dimensions = Some((480, 320));
+    editor.session.preview.view.zoom = Zoom::Percent { value: 250.0 };
+    editor.rederive();
+    let _ = editor.update(Message::View(ViewMessage::ZoomStep(1)));
+    assert!(editor.busy, "the step asked the session");
+    assert_eq!(editor.view_state.zoom, "300");
+    assert_eq!(editor.workspace.title.zoom_reveal, 1);
+    editor.busy = false;
+    let _ = editor.update(Message::View(ViewMessage::ZoomStep(-1)));
+    assert_eq!(editor.view_state.zoom, "200", "down from 250% is 200%");
+    assert_eq!(editor.workspace.title.zoom_reveal, 2);
+    editor.busy = false;
+    editor.session.preview.view.zoom = Zoom::Percent { value: 1200.0 };
+    editor.rederive();
+    let _ = editor.update(Message::View(ViewMessage::ZoomStep(1)));
+    assert!(!editor.busy, "nothing past the last stop");
+    assert_eq!(
+        editor.workspace.title.zoom_reveal, 3,
+        "but the stops still show"
+    );
+    finish(editor, catalog);
+}
