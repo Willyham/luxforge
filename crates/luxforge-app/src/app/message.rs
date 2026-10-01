@@ -96,7 +96,10 @@ impl Message {
                     | V::EditZoom
             ),
             Self::Palette(message) => matches!(message, palette::PaletteMessage::Open),
-            Self::Control(message) => !matches!(message, C::CurveSampled { .. }),
+            Self::Control(message) => !matches!(
+                message,
+                C::CurveSampled { .. } | C::QueryChoiceAnswered { .. }
+            ),
             Self::Overlay(message) => {
                 matches!(message, overlay::OverlayMessage::ToggleClipping(_))
             }

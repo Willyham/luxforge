@@ -598,8 +598,10 @@ fn expect_expanded(step: &str, frame: &Value) -> Result<Value> {
 }
 
 /// Compare one frame's recorded figure with the runner's own readings of the same counter: the last
-/// one taken at or before the moment the editor read it and the first one at or after. The figure
-/// must lie between the two, widened by [`MEMORY_SLACK`], and both must be within
+/// read whose whole observation interval ends at or before the sample and the first whose interval
+/// starts at or after it. An external command may read its counter anywhere inside that interval;
+/// its midpoint alone cannot establish which side of the sample it observed. The figure must lie
+/// between the two, widened by [`MEMORY_SLACK`], and both intervals must be wholly within
 /// [`BRACKET_MS`] of that moment.
 fn compare_memory(
     step: &str,
@@ -610,47 +612,74 @@ fn compare_memory(
     tool: &str,
     key: &str,
 ) -> Result<Value> {
-    let of_tool: Vec<(u64, u64)> = readings
+    #[derive(Clone, Copy)]
+    struct Reading {
+        wall_ms: u64,
+        start_ms: u64,
+        end_ms: u64,
+        bytes: u64,
+    }
+    let of_tool: Vec<Reading> = readings
         .iter()
         .filter(|reading| reading["tool"] == tool)
-        .filter_map(|reading| Some((reading["wall_ms"].as_u64()?, reading[key].as_u64()?)))
+        .filter_map(|reading| {
+            let wall_ms = reading["wall_ms"].as_u64()?;
+            let span_ms = reading["span_ms"].as_u64()?;
+            // watch records floor((start + end) / 2), so an odd span extends one millisecond
+            // further after that midpoint than before it.
+            Some(Reading {
+                wall_ms,
+                start_ms: wall_ms.checked_sub(span_ms / 2)?,
+                end_ms: wall_ms.checked_add(span_ms.div_ceil(2))?,
+                bytes: reading[key].as_u64()?,
+            })
+        })
         .collect();
-    let before = of_tool.iter().rev().find(|(ms, _)| *ms <= at).copied();
-    let after = of_tool.iter().find(|(ms, _)| *ms >= at).copied();
+    let before = of_tool
+        .iter()
+        .rev()
+        .find(|reading| reading.end_ms <= at)
+        .copied();
+    let after = of_tool
+        .iter()
+        .find(|reading| reading.start_ms >= at)
+        .copied();
     let (Some(before), Some(after)) = (before, after) else {
         return Err(format!(
-            "Step {step:?}: the runner has no {tool} reading on both sides of the sample"
+            "Step {step:?}: the runner has no nonoverlapping {tool} observation interval on both sides of the sample"
         )
         .into());
     };
     ensure(
-        at - before.0 <= BRACKET_MS && after.0 - at <= BRACKET_MS,
+        at - before.start_ms <= BRACKET_MS && after.end_ms - at <= BRACKET_MS,
         format!(
-            "Step {step:?}: the runner's {tool} readings are {} ms before and {} ms after the sample",
-            at - before.0,
-            after.0 - at
+            "Step {step:?}: the runner's {tool} observation intervals extend {} ms before and {} ms after the sample",
+            at - before.start_ms,
+            after.end_ms - at
         ),
     )?;
-    let low = before.1.min(after.1).saturating_sub(MEMORY_SLACK);
-    let high = before.1.max(after.1) + MEMORY_SLACK;
+    let low = before.bytes.min(after.bytes).saturating_sub(MEMORY_SLACK);
+    let high = before.bytes.max(after.bytes) + MEMORY_SLACK;
     ensure(
         (low..=high).contains(&recorded),
         format!(
             "Step {step:?}: recorded {what} {recorded} is outside the runner's {tool} readings {}..={} around it, even with {MEMORY_SLACK} bytes of slack",
-            before.1, after.1
+            before.bytes, after.bytes
         ),
     )?;
-    let nearest = if at - before.0 <= after.0 - at {
+    let nearest = if at - before.wall_ms <= after.wall_ms - at {
         before
     } else {
         after
     };
     Ok(json!({
         "recorded": recorded,
-        "before": {"ms_before": at - before.0, "bytes": before.1},
-        "after": {"ms_after": after.0 - at, "bytes": after.1},
-        "difference_to_nearest": recorded as i64 - nearest.1 as i64,
-        "equals_nearest": recorded == nearest.1,
+        "before": {"ms_before": at - before.wall_ms, "bytes": before.bytes,
+            "start_wall_ms": before.start_ms, "end_wall_ms": before.end_ms},
+        "after": {"ms_after": after.wall_ms - at, "bytes": after.bytes,
+            "start_wall_ms": after.start_ms, "end_wall_ms": after.end_ms},
+        "difference_to_nearest": recorded as i64 - nearest.bytes as i64,
+        "equals_nearest": recorded == nearest.bytes,
     }))
 }
 
@@ -833,7 +862,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             "tolerance": {
                 "bracket_ms": BRACKET_MS,
                 "memory_slack_bytes": MEMORY_SLACK,
-                "rule": "the recorded figure lies between the runner's last reading of the same counter at or before the sample's wall-clock time and its first at or after, widened by the slack; both readings within the bracket distance of the sample",
+                "rule": "the recorded figure lies between the runner's last observation interval of the same counter ending at or before the sample's wall-clock time and its first starting at or after, widened by the slack; both whole observation intervals within the bracket distance of the sample",
             },
             "scope": "Displayed text against the frame's own recorded resources.read and activity.list, re-derived without the editor's code; resident memory and footprint against ps and footprint run by the runner on the same pid. A consistency check of the section against the process, not a measurement of the sampler's cost.",
         }),
@@ -843,6 +872,90 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn footprint_reading(wall_ms: u64, span_ms: u64, bytes: u64) -> Value {
+        json!({"tool":"footprint", "wall_ms":wall_ms, "span_ms":span_ms,
+            "footprint_bytes":bytes})
+    }
+
+    fn compare_footprint(recorded: u64, at: u64, readings: &[Value]) -> Result<Value> {
+        compare_memory(
+            "straightened",
+            "footprint",
+            recorded,
+            at,
+            readings,
+            "footprint",
+            "footprint_bytes",
+        )
+    }
+
+    #[test]
+    fn memory_bracket_excludes_external_reads_crossing_the_app_sample() {
+        // The 240 ms footprint command straddled the app's sample while an exact preview
+        // allocated memory. Its midpoint was before the sample, but its kernel read need not be.
+        let at = 1_790_813_067_980;
+        let crossing = footprint_reading(1_790_813_067_960, 240, 1_093_158_448);
+        let readings = [
+            footprint_reading(1_790_813_067_576, 66, 831_997_296),
+            crossing.clone(),
+            footprint_reading(1_790_813_068_345, 72, 1_225_082_512),
+        ];
+        let checked = compare_footprint(1_064_519_216, at, &readings).unwrap();
+        assert_eq!(checked["before"]["bytes"], json!(831_997_296));
+        assert_eq!(checked["after"]["bytes"], json!(1_225_082_512));
+        assert_eq!(
+            checked["before"]["end_wall_ms"],
+            json!(1_790_813_067_609u64)
+        );
+        assert_eq!(
+            checked["after"]["start_wall_ms"],
+            json!(1_790_813_068_309u64)
+        );
+        assert!(compare_footprint(1_064_519_216, at, &[crossing]).is_err());
+    }
+
+    #[test]
+    fn memory_bracket_reconstructs_odd_spans_and_accepts_touching_boundaries() {
+        let at = 1_000;
+        for span in [1u64, 3] {
+            let readings = [
+                footprint_reading(at - span.div_ceil(2), span, 90),
+                footprint_reading(at + span / 2, span, 110),
+            ];
+            let checked = compare_footprint(100, at, &readings).unwrap();
+            assert_eq!(checked["before"]["start_wall_ms"], json!(at - span));
+            assert_eq!(checked["before"]["end_wall_ms"], json!(at));
+            assert_eq!(checked["after"]["start_wall_ms"], json!(at));
+            assert_eq!(checked["after"]["end_wall_ms"], json!(at + span));
+        }
+        // A one-millisecond call with its midpoint at the sample ends after it, so cannot
+        // provide a before observation. A three-millisecond call at that midpoint crosses it.
+        for span in [1, 3] {
+            assert!(compare_footprint(100, at, &[footprint_reading(at, span, 100)]).is_err());
+        }
+    }
+
+    #[test]
+    fn memory_bracket_keeps_whole_observation_intervals_within_the_time_bound() {
+        let at = 2_000;
+        let before = footprint_reading(1_050, 100, 90);
+        let after = footprint_reading(2_950, 100, 110);
+        assert!(compare_footprint(100, at, &[before.clone(), after.clone()]).is_ok());
+        // The midpoints remain inside the existing bound, but their outer endpoints do not.
+        assert!(compare_footprint(100, at, &[footprint_reading(1_049, 100, 90), after]).is_err());
+        assert!(compare_footprint(100, at, &[before, footprint_reading(2_951, 100, 110)]).is_err());
+    }
+
+    #[test]
+    fn memory_bracket_keeps_the_existing_memory_slack() {
+        let readings = [
+            footprint_reading(900, 10, 100),
+            footprint_reading(1_100, 10, 200),
+        ];
+        assert!(compare_footprint(200 + MEMORY_SLACK, 1_000, &readings).is_ok());
+        assert!(compare_footprint(201 + MEMORY_SLACK, 1_000, &readings).is_err());
+    }
 
     #[test]
     fn the_runners_formatters_follow_the_design() {

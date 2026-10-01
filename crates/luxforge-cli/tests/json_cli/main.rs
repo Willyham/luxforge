@@ -4,6 +4,7 @@
 //! unless the owner's RAW files are supplied. Narrow a run with the module path, for example
 //! `cargo test -p luxforge-cli --test json_cli presets::`.
 
+mod lens;
 mod presets;
 mod process;
 mod raw;

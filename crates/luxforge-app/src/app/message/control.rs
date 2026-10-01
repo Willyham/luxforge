@@ -6,6 +6,30 @@ use serde_json::Value;
 /// A generated control or a tools-panel section changed. Handled in `app/controls.rs`.
 #[derive(Clone, Debug)]
 pub(crate) enum ControlMessage {
+    QueryChoiceSearch {
+        action: String,
+        text: String,
+    },
+    QueryChoicePage {
+        action: String,
+        page: u32,
+    },
+    QueryChoiceRetry {
+        action: String,
+    },
+    QueryChoiceShared {
+        action: String,
+        parameter: String,
+        text: String,
+    },
+    QueryChoiceSelect {
+        action: String,
+        key: String,
+    },
+    QueryChoiceAnswered {
+        identity: crate::state::query_choice::QueryChoiceIdentity,
+        result: Result<Value, String>,
+    },
     /// A generated field changed: the text the user typed for one declared parameter.
     Field {
         action: String,
@@ -150,6 +174,12 @@ impl ControlMessage {
             | Self::ToggleGroup { .. }
             | Self::SelectTab { .. }
             | Self::CurveSampled { .. }
+            | Self::QueryChoiceSearch { .. }
+            | Self::QueryChoicePage { .. }
+            | Self::QueryChoiceRetry { .. }
+            | Self::QueryChoiceShared { .. }
+            | Self::QueryChoiceSelect { .. }
+            | Self::QueryChoiceAnswered { .. }
             | Self::ToggleSection(_)
             | Self::ResetModule(_)
             | Self::ResetGroup { .. } => None,

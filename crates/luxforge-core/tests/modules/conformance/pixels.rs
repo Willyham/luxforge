@@ -4,8 +4,8 @@
 //! layers for one target, a refused payload), assembled directly to prove the refusal.
 use super::{Checked, ensure, shape::FieldPatch};
 use luxforge_core::{
-    ErrorKind, Layer, LinearImage, LinearSettings, ModuleRegistry, Processing, RECIPE_FORMAT,
-    Raster, Recipe, SnapshotId, SourceImage, Stage, open_source,
+    ErrorKind, ExactGeometry, Layer, LinearImage, LinearSettings, ModuleRegistry, Processing,
+    RECIPE_FORMAT, Raster, Recipe, SnapshotId, SourceImage, Stage, open_source,
 };
 use luxforge_reference::srgb;
 use luxforge_testkit::fixtures::{render, render_linear, sample, sample_linear};
@@ -171,8 +171,8 @@ pub fn sample_equals_render(
     }))
 }
 
-/// How many units a payload compiles to at `stage`: a field patch compiles to one colour or one
-/// spatial operation, and a neutral payload to one with no units, which the host drops entirely.
+/// How many units a payload compiles to at `stage`: a field patch compiles to colour, spatial or
+/// geometry processing. A neutral payload has no units or an identity mapping, which the host drops.
 fn compiled_units(
     registry: &ModuleRegistry,
     module: &FieldPatch,
@@ -188,8 +188,23 @@ fn compiled_units(
     match processing {
         Processing::Color(operation) => Ok(operation.len()),
         Processing::Spatial(operation) => Ok(operation.len()),
+        Processing::ExactGeometry(mapping) => Ok(usize::from(
+            mapping
+                != ExactGeometry {
+                    a: 1,
+                    b: 0,
+                    c: 0,
+                    d: 1,
+                    tx: 0,
+                    ty: 0,
+                    output_width: stage.width,
+                    output_height: stage.height,
+                },
+        )),
+        Processing::Warp(step) => Ok(usize::from(!step.is_identity())),
+        Processing::Resample(_) => Ok(1),
         other => Err(format!(
-            "{payload} compiled to {other:?}, which is neither a colour nor a spatial operation"
+            "{payload} compiled to {other:?}, which is not field-patch processing"
         )),
     }
 }

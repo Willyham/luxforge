@@ -601,6 +601,60 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let colour_render = colour_samples;
     let toned_render = toned_samples;
     let vibrance_saturation_render = vibrance_saturation_samples;
+    // A source without a calibrated camera remains a valid general workload: the query is timed,
+    // and the profile-dependent rows are explicitly untested. Named lens workloads must select.
+    let mut lens_queries = Vec::with_capacity(samples);
+    let mut candidate = None;
+    for _ in 0..samples {
+        let started = Instant::now();
+        let answer = service.run_query(
+            &asset,
+            &original,
+            "lens-profiles",
+            json!({"assume-uncorrected":true}),
+        )?;
+        lens_queries.push(milliseconds(started));
+        candidate = answer["rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["eligible"] == true))
+            .and_then(|row| row["key"].as_str())
+            .map(str::to_owned);
+    }
+    let mut lens_selections = Vec::with_capacity(samples);
+    let mut lens_render = Vec::with_capacity(samples);
+    let lens_measurement = match candidate {
+        Some(profile) => {
+            for index in 0..samples {
+                let revision = service.state(&asset)?.revision;
+                service.apply_action(
+                    &asset,
+                    mutation(revision, format!("performance-lens-reset-{index}")),
+                    "reset-lens-profile",
+                    json!({}),
+                )?;
+                let revision = service.state(&asset)?.revision;
+                let started = Instant::now();
+                service.apply_action(
+                    &asset,
+                    mutation(revision, format!("performance-lens-select-{index}")),
+                    "select-lens-profile",
+                    json!({"profile":profile,"assume-uncorrected":true}),
+                )?;
+                lens_selections.push(milliseconds(started));
+                let started = Instant::now();
+                let raster = service.render_current(&asset)?;
+                lens_render.push(milliseconds(started));
+                ensure(
+                    (raster.width, raster.height) == (crop_raster.width, crop_raster.height),
+                    "A lens warp changed the existing crop output dimensions",
+                )?;
+            }
+            json!({"status":"measured","profile":profile,"selection":"First eligible row returned by query.lens-profiles; reset between samples so each measured selection commits","recipe":"Existing exact orientation and 10-degree crop, with the lens warp fused into its geometry pass"})
+        }
+        None => {
+            json!({"status":"untested","reason":"The source has no eligible offline profile; the query is measured, selection and warped render are untested"})
+        }
+    };
     drop(service);
 
     // The cold path is the catalog owner's own: the source job's read, hash and decode and the
@@ -648,6 +702,19 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         ),
     ] {
         rows.push(stats::row(metric, "ms", samples));
+    }
+    rows.push(stats::row("lens_profiles_query", "ms", lens_queries));
+    if !lens_selections.is_empty() {
+        rows.push(stats::row(
+            "lens_profile_selection_commit",
+            "ms",
+            lens_selections,
+        ));
+        rows.push(stats::row(
+            "lens_and_straightened_crop_render",
+            "ms",
+            lens_render,
+        ));
     }
     rows.push(stats::scalar(
         "crop_fit_commit",
@@ -737,6 +804,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "frame_sha256":small_frames,
         },
         "samples_per_recipe":samples,
+        "lens":lens_measurement,
         "frame_sha256":{
             "one_transform":one_transform_sha256,
             "exposure_only_1ev_basic_layer":exposure_only_sha256,

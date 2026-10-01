@@ -10,6 +10,7 @@ mod colour;
 mod colour_visual;
 mod dng;
 mod exposure;
+mod geometry;
 mod mask;
 mod mixer;
 mod presence;

@@ -19,106 +19,96 @@
 //! a press, a drag and a sweep do to it, what a typed number may be and what its figure looks like —
 //! is that kind's [`editor::ShapeEditor`], in its own module beside this one, and the draft never asks which
 //! kind it holds.
-use luxforge_core::{
-    ComponentId, ComponentMode, MaskId, StageTransform, mask::commands::GeometryOp,
-};
+use luxforge_core::{ComponentId, ComponentMode, GeometryMap, MaskId, mask::commands::GeometryOp};
 use serde_json::{Map, Value, json};
 
-/// The content-to-output map a gesture uses, taken from one `render.transform` answer and then
-/// applied locally for every pointer position and every drawn handle.
-///
-/// The host answers this once per gesture, because the geometry tail is exact transforms plus at
-/// most one crop and is therefore affine: asking per pointer move would put a runtime hop on the
-/// input path, which [performance rule 12](../../../docs/engineering/performance-rules.md) forbids and
-/// which `render.locate` exists for instead, for picks.
-///
-/// A mask stores **normalized** content positions — fractions of the content stage — and the affine
-/// is in the host's continuous, pixel-centre coordinates, so this type owns exactly the two
-/// multiplications between them and nothing else.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One host map retained by the gesture and evaluated locally for every pointer move.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ContentMap {
-    content: (f64, f64),
-    output: (f64, f64),
-    forward: [f64; 6],
-    inverse: [f64; 6],
+    geometry: std::sync::Arc<GeometryMap>,
+    identity: Option<luxforge_core::MappingDescriptor>,
 }
-
 impl ContentMap {
-    /// The map one `render.transform` answer describes, or `None` for a degenerate stage, which is
-    /// a stack that has no output to draw handles over.
-    pub(crate) fn new(transform: &StageTransform) -> Option<Self> {
-        Self::from_affine(
-            (transform.content.width, transform.content.height),
-            (transform.output.width, transform.output.height),
-            transform.forward,
-            transform.inverse,
-        )
+    pub(crate) fn new(geometry: &GeometryMap) -> Option<Self> {
+        (geometry.content.width > 0
+            && geometry.content.height > 0
+            && geometry.output.width > 0
+            && geometry.output.height > 0)
+            .then(|| Self {
+                geometry: std::sync::Arc::new(geometry.clone()),
+                identity: None,
+            })
     }
-
-    /// The same map in plain numbers: the content and output stages' pixel sizes and the affine
-    /// between them, forward (content to output) and inverse, each as `[a, b, c, d, e, f]` for
-    /// `x' = a·x + b·y + c`, `y' = d·x + e·y + f`.
+    pub(crate) fn from_descriptor(descriptor: luxforge_core::MappingDescriptor) -> Option<Self> {
+        let mut map = Self::new(&descriptor.geometry)?;
+        map.identity = Some(descriptor);
+        Some(map)
+    }
+    #[cfg(test)]
     pub(crate) fn from_affine(
         content: (u32, u32),
         output: (u32, u32),
         forward: [f64; 6],
         inverse: [f64; 6],
     ) -> Option<Self> {
-        let content = (f64::from(content.0), f64::from(content.1));
-        let output = (f64::from(output.0), f64::from(output.1));
-        (content.0 > 0.0 && content.1 > 0.0 && output.0 > 0.0 && output.1 > 0.0).then_some(Self {
-            content,
-            output,
+        Self::new(&GeometryMap::affine(
+            luxforge_core::StageSize {
+                width: content.0,
+                height: content.1,
+            },
+            luxforge_core::StageSize {
+                width: output.0,
+                height: output.1,
+            },
             forward,
             inverse,
+        ))
+    }
+    pub(crate) fn output(&self) -> (f64, f64) {
+        (
+            self.geometry.output.width as f64,
+            self.geometry.output.height as f64,
+        )
+    }
+    pub(crate) fn aspect(&self) -> f64 {
+        self.geometry.content.width as f64 / self.geometry.content.height as f64
+    }
+    pub(crate) fn to_output(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        self.geometry
+            .to_output(
+                x * self.geometry.content.width as f64,
+                y * self.geometry.content.height as f64,
+            )
+            .ok()
+    }
+    pub(crate) fn to_content(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let (x, y) = self.geometry.to_content(x, y).ok()?;
+        Some((
+            x / self.geometry.content.width as f64,
+            y / self.geometry.content.height as f64,
+        ))
+    }
+    /// Output-pixel tolerance through the core's local Jacobian at this pointer.
+    pub(crate) fn tolerance_at(&self, x: f64, y: f64, output_pixels: f64) -> Option<f64> {
+        self.geometry.local_scale_at(x, y).ok().map(|scale| {
+            output_pixels * scale
+                / self
+                    .geometry
+                    .content
+                    .width
+                    .min(self.geometry.content.height) as f64
         })
     }
-
-    /// The output stage's pixel size, which is the raster the canvas draws the handles over.
-    pub(crate) fn output(self) -> (f64, f64) {
-        self.output
+    pub(crate) fn domain(&self) -> (f64, f64) {
+        (1.0, 1.0)
     }
-
-    /// The **content** stage's aspect, `W/H`. Mask space is defined in terms of it — one unit is the
-    /// content stage's height on both axes — so a radial's stored radii cannot be placed without it.
-    /// It is the content stage's own ratio and not the output's: a crop changes what is shown, and
-    /// the geometry a mask stores is in the stage the mask is compiled against.
-    pub(crate) fn aspect(self) -> f64 {
-        self.content.0 / self.content.1
+    pub(crate) fn visible(&self, x: f64, y: f64) -> bool {
+        let (w, h) = self.output();
+        x >= 0.0 && y >= 0.0 && x <= w && y <= h
     }
-
-    /// A stored normalized position as a coordinate of the output stage.
-    pub(crate) fn to_output(self, x: f64, y: f64) -> (f64, f64) {
-        apply(self.forward, x * self.content.0, y * self.content.1)
+    pub(crate) fn summary(&self) -> Value {
+        json!({"mapping_sha256":self.geometry.sha256(),"identity":self.identity.as_ref().map(|d|json!({"entry_id":d.entry_id,"snapshot_id":d.snapshot_id,"source_fingerprint":d.source_fingerprint,"draft":d.draft})),"mapping":self.geometry.mapping})
     }
-
-    /// An output-stage coordinate back to a stored normalized position. Exact inverse of
-    /// [`Self::to_output`], because the host answers both matrices rather than one and an inverse.
-    pub(crate) fn to_content(self, x: f64, y: f64) -> (f64, f64) {
-        let (cx, cy) = apply(self.inverse, x, y);
-        (cx / self.content.0, cy / self.content.1)
-    }
-
-    /// A length in output pixels as one in normalized content units, for a handle's hit radius. The
-    /// affine may scale the two axes differently only through a reflection or a quarter turn, which
-    /// swaps them rather than stretching either, so the larger of the two keeps a handle reachable
-    /// whatever the tail does.
-    pub(crate) fn tolerance(self, output_pixels: f64) -> f64 {
-        let across = (self.to_content(output_pixels, 0.0).0 - self.to_content(0.0, 0.0).0).abs();
-        let down = (self.to_content(0.0, output_pixels).1 - self.to_content(0.0, 0.0).1).abs();
-        let other = (self.to_content(output_pixels, 0.0).1 - self.to_content(0.0, 0.0).1)
-            .abs()
-            .max((self.to_content(0.0, output_pixels).0 - self.to_content(0.0, 0.0).0).abs());
-        across.max(down).max(other)
-    }
-}
-
-/// `x' = m0·x + m1·y + m2`, `y' = m3·x + m4·y + m5`: the coefficient order the host fixes.
-fn apply(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
-    (
-        matrix[0] * x + matrix[1] * y + matrix[2],
-        matrix[3] * x + matrix[4] * y + matrix[5],
-    )
 }
 
 /// This build's drawn kinds and their editors: one [`editor::ShapeEditor`] per kind, reached through the kind
@@ -421,6 +411,7 @@ impl MaskDraft {
     ///
     /// A painted gesture has no handles at all: every press on the photograph paints, which is why a
     /// brush draws its cursor rather than grips.
+    #[cfg(test)]
     pub(crate) fn hit(&self, point: (f64, f64), tolerance: f64) -> Option<MaskHandle> {
         let tolerance = tolerance.max(0.0);
         self.handles()
@@ -1058,7 +1049,7 @@ mod tests {
     /// delivered modules produce: the identity, a crop, and a quarter turn that swaps the axes.
     #[test]
     fn the_content_map_round_trips_every_tail_the_geometry_produces() {
-        use luxforge_core::{StageSize, StageTransform};
+        use luxforge_core::{GeometryMap, StageSize};
         let stage = |w, h| StageSize {
             width: w,
             height: h,
@@ -1066,30 +1057,30 @@ mod tests {
         let cases = [
             (
                 "identity",
-                StageTransform {
-                    content: stage(480, 320),
-                    output: stage(480, 320),
-                    forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                    inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                },
+                GeometryMap::affine(
+                    stage(480, 320),
+                    stage(480, 320),
+                    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                    [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                ),
             ),
             (
                 "a crop of 40 by 30",
-                StageTransform {
-                    content: stage(480, 320),
-                    output: stage(400, 260),
-                    forward: [1.0, 0.0, -40.0, 0.0, 1.0, -30.0],
-                    inverse: [1.0, 0.0, 40.0, 0.0, 1.0, 30.0],
-                },
+                GeometryMap::affine(
+                    stage(480, 320),
+                    stage(400, 260),
+                    [1.0, 0.0, -40.0, 0.0, 1.0, -30.0],
+                    [1.0, 0.0, 40.0, 0.0, 1.0, 30.0],
+                ),
             ),
             (
                 "a quarter turn",
-                StageTransform {
-                    content: stage(480, 320),
-                    output: stage(320, 480),
-                    forward: [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
-                    inverse: [0.0, 1.0, 0.0, -1.0, 0.0, 320.0],
-                },
+                GeometryMap::affine(
+                    stage(480, 320),
+                    stage(320, 480),
+                    [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, -1.0, 0.0, 320.0],
+                ),
             ),
         ];
         for (what, transform) in cases {
@@ -1108,8 +1099,8 @@ mod tests {
                 map.aspect()
             );
             for (x, y) in [(0.0, 0.0), (0.5, 0.5), (1.0, 1.0), (-0.25, 1.75)] {
-                let (ox, oy) = map.to_output(x, y);
-                let (bx, by) = map.to_content(ox, oy);
+                let (ox, oy) = map.to_output(x, y).unwrap();
+                let (bx, by) = map.to_content(ox, oy).unwrap();
                 assert!(
                     (bx - x).abs() < 1e-9 && (by - y).abs() < 1e-9,
                     "{what}: ({x}, {y}) came back as ({bx}, {by})"
@@ -1117,7 +1108,7 @@ mod tests {
             }
             // The origin of the content stage is the origin of the output stage under the identity
             // and is moved by exactly the crop's offset under a crop.
-            let tolerance = map.tolerance(8.0);
+            let tolerance = map.tolerance_at(100.0, 100.0, 8.0).unwrap();
             assert!(
                 tolerance > 0.0 && tolerance < 1.0,
                 "{what}: a hit radius of {tolerance} is not a usable fraction of the frame"
@@ -1125,12 +1116,12 @@ mod tests {
         }
         // A stage with no extent has no map rather than an invented one.
         assert!(
-            ContentMap::new(&StageTransform {
-                content: stage(0, 320),
-                output: stage(480, 320),
-                forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            })
+            ContentMap::new(&GeometryMap::affine(
+                stage(0, 320),
+                stage(480, 320),
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            ))
             .is_none()
         );
     }
@@ -1180,6 +1171,67 @@ mod tests {
             stroke.points().expect("accepted capture"),
             luxforge_core::path::decimate(&[[0.5, 0.5], [0.6, 0.55]], stroke.brush.size)
                 .expect("a decimated path")
+        );
+    }
+
+    #[test]
+    fn brush_tolerance_uses_local_scale_under_warp() {
+        let geometry =
+            crate::state::testing::nonlinear_mapping(luxforge_core::Orientation::NEUTRAL, 40, -25);
+        let map = ContentMap::new(&geometry).unwrap();
+        let mut scales = Vec::new();
+        for (x, y) in [(300.0, 200.0), (3000.0, 2000.0), (5700.0, 3800.0)] {
+            let scale = geometry.local_scale_at(x, y).unwrap();
+            let tolerance = map.tolerance_at(x, y, 18.0).unwrap();
+            assert!((tolerance - 18.0 * scale / 4000.0).abs() < 1e-12);
+            scales.push(scale);
+            let centre = geometry.to_content(x, y).unwrap();
+            // A small circle in output space fits the local content-space hit radius. Its maximum
+            // magnification is the Jacobian singular value, independent of brush direction.
+            for i in 0..32 {
+                let angle = i as f64 * std::f64::consts::TAU / 32.0;
+                let edge = geometry
+                    .to_content(x + 0.01 * angle.cos(), y + 0.01 * angle.sin())
+                    .unwrap();
+                assert!((edge.0 - centre.0).hypot(edge.1 - centre.1) <= 0.01 * scale + 1e-6);
+            }
+        }
+        assert!(
+            scales.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                - scales.iter().copied().fold(f64::INFINITY, f64::min)
+                > 0.05
+        );
+    }
+
+    #[test]
+    fn pointer_maps_to_content_before_quantization_under_warp() {
+        let geometry =
+            crate::state::testing::nonlinear_mapping(luxforge_core::Orientation::NEUTRAL, 40, -25);
+        let map = ContentMap::new(&geometry).unwrap();
+        let output = [(1900.123, 1400.456), (3200.789, 2400.321)];
+        let points: Vec<_> = output
+            .iter()
+            .map(|&(x, y)| {
+                let point = map.to_content(x, y).unwrap();
+                [point.0, point.1]
+            })
+            .collect();
+        let mut draft = MaskDraft::creating(BRUSH, NEUTRAL_BRUSH).unwrap();
+        draft.paint_begin((points[0][0], points[0][1]));
+        draft.paint_to((points[1][0], points[1][1]));
+        let stored = draft.brush().unwrap().points().unwrap();
+        let expected = luxforge_core::path::decimate(&points, NEUTRAL_BRUSH.size).unwrap();
+        assert_eq!(stored, expected);
+        let quantized_first: Vec<_> = output
+            .iter()
+            .map(|&(x, y)| {
+                let point = map.to_content(x.floor() + 0.5, y.floor() + 0.5).unwrap();
+                [point.0, point.1]
+            })
+            .collect();
+        assert_ne!(
+            stored,
+            luxforge_core::path::decimate(&quantized_first, NEUTRAL_BRUSH.size).unwrap()
         );
     }
 }

@@ -500,7 +500,7 @@ fn coverage(
 struct Tail {
     content: (f64, f64),
     output: (f64, f64),
-    forward: [f64; 6],
+    mapping: luxforge_core::GeometryMap,
 }
 
 impl Tail {
@@ -511,14 +511,6 @@ impl Tail {
                 .as_f64()
                 .ok_or_else(|| format!("render.transform answered {answer}").into())
         };
-        let forward = answer["forward"]
-            .as_array()
-            .ok_or("render.transform answered no forward affine")?;
-        ensure(forward.len() == 6, "An affine has six coefficients")?;
-        let mut coefficients = [0.0; 6];
-        for (slot, value) in coefficients.iter_mut().zip(forward) {
-            *slot = number(value)?;
-        }
         Ok(Self {
             content: (
                 number(&answer["content"]["width"])?,
@@ -528,7 +520,8 @@ impl Tail {
                 number(&answer["output"]["width"])?,
                 number(&answer["output"]["height"])?,
             ),
-            forward: coefficients,
+            mapping: serde_json::from_value::<luxforge_core::MappingDescriptor>(answer.clone())?
+                .geometry,
         })
     }
 
@@ -536,11 +529,8 @@ impl Tail {
     /// photograph: the same map the canvas puts the brush cursor through.
     fn place(&self, at: [f64; 2]) -> [f64; 2] {
         let (x, y) = (at[0] * self.content.0, at[1] * self.content.1);
-        let f = self.forward;
-        [
-            (f[0] * x + f[1] * y + f[2]) / self.output.0,
-            (f[3] * x + f[4] * y + f[5]) / self.output.1,
-        ]
+        let (ox, oy) = self.mapping.to_output(x, y).expect("captured geometry");
+        [ox / self.output.0, oy / self.output.1]
     }
 }
 

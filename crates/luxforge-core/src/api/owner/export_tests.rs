@@ -990,3 +990,113 @@ fn a_raw_export_matches_the_exact_render() {
     let (mean, max, far) = difference(&out.join("raw.jpg"), &frame);
     eprintln!("RAW export: mean {mean:?}, max {max:?}, share beyond {NEAR}: {far}");
 }
+
+/// A metadata-bearing generated JPEG selects the real pinned record through the same query and
+/// action as the desktop. It is a numerical fixture, not photographic profile qualification.
+fn lens_asset(h: &Harness) -> (Value, PathBuf) {
+    let path = h.dir.join("lens-original.jpg");
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg"),
+        &path,
+    )
+    .unwrap();
+    let queued = h.ok(
+        "catalog.import",
+        json!({"path":path,"mutation":request_envelope()}),
+    );
+    let imported = h.settle_source(&queued["job_id"]);
+    assert_eq!(imported["status"], "ready");
+    let asset = imported["result"]["asset"]["id"].clone();
+    let profiles =
+        luxforge_testbase::wait_for("the offline lens index to finish its one parse", || {
+            let response = h.send(
+                "query.lens-profiles",
+                json!({"asset_id":asset,"assume-uncorrected":true}),
+            );
+            if let Some(error) = response.error {
+                assert_eq!(error.code, "not-ready", "{error:?}");
+                None
+            } else {
+                response.result
+            }
+        });
+    let row = profiles["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["match"] == "lens-model" && r["eligible"] == true)
+        .unwrap();
+    h.ok("edit.select-lens-profile",json!({"asset_id":asset,"profile":row["key"],"assume-uncorrected":true,"mutation":{"expected_revision":0,"request_id":"lens-selection","actor":"test"}}));
+    let revision = h.ok("asset.state", json!({"asset_id":asset}))["revision"].clone();
+    h.ok("edit.set-perspective",json!({"asset_id":asset,"horizontal":40,"vertical":-25,"mutation":{"expected_revision":revision,"request_id":"perspective-selection","actor":"test"}}));
+    (asset, path)
+}
+#[test]
+fn warped_export_cancellation_publishes_nothing() {
+    let h = Harness::start("lens-cancel");
+    let (asset, original) = lens_asset(&h);
+    let original_bytes = fs::read(&original).unwrap();
+    let entry = h.ok("asset.state", json!({"asset_id":asset}))["current_entry"].clone();
+    for phase in ["rendering", "encoding", "writing"] {
+        let (reaches, release) = h.hold_at(phase);
+        let destination = h.dir.join(format!("lens-cancel-{phase}.jpg"));
+        let job = h.export(json!({"asset_id":asset,"destination":destination}));
+        reaches
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the named export phase");
+        h.ok("job.cancel", json!({"job_id":job["job_id"]}));
+        release.send(()).unwrap();
+        assert_eq!(h.settle(&job["job_id"])["status"], "cancelled");
+        assert!(!destination.exists());
+        assert_eq!(
+            h.ok("asset.state", json!({"asset_id":asset}))["current_entry"],
+            entry
+        );
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+    }
+    let leftovers: Vec<_> = fs::read_dir(&h.dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.contains(".luxforge-export"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+#[test]
+fn export_refuses_forged_lens_payload_before_publication() {
+    let mut h = Harness::start("lens-forged");
+    let (asset, original) = lens_asset(&h);
+    let original_bytes = fs::read(&original).unwrap();
+    let current = h.ok("asset.state", json!({"asset_id":asset}))["current_entry"].clone();
+    let mut forged = current.clone();
+    let lens = forged["snapshot"]["recipe"]["layers"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|l| l["effect_id"] == crate::LENS_EFFECT)
+        .unwrap();
+    lens["payload"]["profile"]["normalization"]["unit_scale"] = json!(4.0);
+    h.stop();
+    let connection = rusqlite::Connection::open(&h.catalog).unwrap();
+    // Fault injection into an isolated catalog: production history remains immutable.
+    connection
+        .execute_batch("DROP TRIGGER entries_are_immutable;")
+        .unwrap();
+    connection
+        .execute(
+            "UPDATE entries SET entry_json=?1 WHERE id=?2",
+            rusqlite::params![forged.to_string(), current["id"].as_str().unwrap()],
+        )
+        .unwrap();
+    connection.execute_batch("CREATE TRIGGER entries_are_immutable BEFORE UPDATE ON entries BEGIN SELECT RAISE(ABORT, 'history entries are immutable'); END;").unwrap();
+    drop(connection);
+    h = h.reopen(Arc::new(ModuleRegistry::builtin()));
+    let destination = h.dir.join("forged.jpg");
+    let refused = h.refused(
+        "export.jpeg",
+        with_envelope(json!({"asset_id":asset,"destination":destination})),
+    );
+    assert_eq!(refused.code, "validation");
+    assert!(!destination.exists());
+    assert_eq!(fs::read(&original).unwrap(), original_bytes);
+}

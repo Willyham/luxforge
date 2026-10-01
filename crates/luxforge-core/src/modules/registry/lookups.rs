@@ -114,6 +114,9 @@ impl ModuleRegistry {
                 "{id} is not a field-patch action"
             )));
         }
+        if !action.preset {
+            return Err(Error::validation(format!("{id} is not presettable")));
+        }
         module.descriptor().check_available()?;
         Ok((module, action))
     }

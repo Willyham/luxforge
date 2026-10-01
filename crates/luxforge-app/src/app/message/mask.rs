@@ -1,7 +1,7 @@
 //! The Masks panel and the mask gestures.
 use crate::state::masks::{DragItem, TypingTarget};
 use crate::{app::draft::GestureId, mask_draft::MaskHandle};
-use luxforge_core::StageTransform;
+use luxforge_core::MappingDescriptor;
 
 /// One pointer step of a mask shape gesture, already mapped into normalized content coordinates by
 /// the canvas through `render.transform`'s affine and the canvas view.
@@ -136,7 +136,7 @@ pub(crate) enum MaskMessage {
     /// on top of a gradient legible, and the composed mask again when the pointer leaves.
     Hover(Option<String>),
     /// `render.transform` answered for the mask gesture it names: the affine it maps pointers with.
-    Transform(GestureId, Result<StageTransform, String>),
+    Transform(GestureId, Result<MappingDescriptor, String>),
 }
 
 /// Which kind menu a kind was chosen from.

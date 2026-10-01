@@ -763,7 +763,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "render.transform",
         RenderTransform,
         render_transform,
-        "the geometry tail as one affine map, {content, output, forward, inverse}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move"
+        "the identity-stamped geometry tail, {entry_id, snapshot_id, source_fingerprint, draft?, content, output, mapping, mapping_sha256}, in continuous pixel-center coordinates, so a gesture maps pointer positions between the content stage and the rendered image without asking per move; a draft whose base revision changed returns conflict until reapplied"
     ),
     owner!(
         "events.since",
@@ -1464,6 +1464,7 @@ host_params! {
     pub(super) struct RenderTransform {
         asset_id: AssetId = asset(),
         entry_id: Option<EntryId> = entry().notes("entry to answer for; default the session's selection"),
+        draft_id: Option<DraftId> = draft().notes("this client's draft mapping instead of the stored stack"),
     }
 }
 
@@ -2133,15 +2134,32 @@ fn render_locate(
     )?)
 }
 
-/// The geometry tail of one entry as a single affine map. Read-only in every sense: it resolves the
+/// The identity-stamped geometry tail of one entry or draft. Read-only in every sense: it resolves the
 /// entry exactly as `render.locate` does, compiles the stack, composes the tail and touches nothing —
 /// no history entry, no event, no session state. A gesture asks once and maps pointer positions
-/// itself, which is the whole reason it is a matrix and not a point query.
+/// itself through the core evaluator.
 fn render_transform(
     service: &mut EditorService,
     session: &mut ClientSession,
     p: RenderTransform,
 ) -> Result<Value, Error> {
+    if let Some(draft_id) = &p.draft_id {
+        if p.entry_id.is_some() {
+            return Err(Error::validation(
+                "render.transform accepts an entry or a draft, not both",
+            ));
+        }
+        let draft = session.held_draft(draft_id)?;
+        if draft.asset_id != p.asset_id {
+            return Err(Error::validation("draft belongs to another asset"));
+        }
+        if draft.base_revision != service.revision(&p.asset_id)? {
+            return Err(Error::conflict(
+                "the asset changed under this draft; discard it or reapply it",
+            ));
+        }
+        return value(service.transform_selected(&p.asset_id, AnalysisSelection::Draft(draft))?);
+    }
     let framing = session_framing(session, &p.asset_id, p.entry_id.as_ref());
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
     value(service.transform_selected(
@@ -2769,10 +2787,10 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// The same geometry `render.locate` walks a point through, as one matrix, because a gesture
+    /// The same geometry `render.locate` walks a point through, as one map, because a gesture
     /// cannot ask per pointer move.
     #[test]
-    fn render_transform_answers_the_geometry_tail_as_one_affine() {
+    fn render_transform_reports_entry_identity_and_mapping_hash() {
         let catalog =
             std::env::temp_dir().join(format!("luxforge-transform-{}.sqlite", std::process::id()));
         let mut service = EditorService::open(&catalog).unwrap();
@@ -2826,18 +2844,27 @@ mod tests {
         .result
         .expect("the geometry tail as a matrix");
         assert_eq!(
-            mapped,
+            json!({"content": mapped["content"], "output": mapped["output"], "mapping": mapped["mapping"]}),
             json!({
                 "content": {"width": 480, "height": 320},
                 "output": {"width": 320, "height": 480},
-                "forward": [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
-                "inverse": [0.0, 1.0, 0.0, -1.0, 0.0, 320.0],
+                "mapping": {"kind": "affine", "forward": [0.0, -1.0, 320.0, 1.0, 0.0, 0.0],
+                "inverse": [0.0, 1.0, 0.0, -1.0, 0.0, 320.0]},
             })
         );
         assert_eq!(
             session.revision, revision,
             "reading the transform changes no session state"
         );
+        let current = service.state(&asset).unwrap().current_entry;
+        assert_eq!(mapped["entry_id"], json!(current.id));
+        assert_eq!(mapped["snapshot_id"], json!(current.snapshot.id));
+        assert_eq!(
+            mapped["source_fingerprint"],
+            json!(service.state(&asset).unwrap().asset.fingerprint)
+        );
+        assert_eq!(mapped["mapping_sha256"].as_str().unwrap().len(), 64);
+        assert!(mapped.get("draft").is_none());
 
         // A named entry answers for its own stack, which here is the untransformed original.
         let untouched = call(
@@ -2849,12 +2876,12 @@ mod tests {
         .result
         .expect("the original entry's matrix");
         assert_eq!(
-            untouched,
+            json!({"content": untouched["content"], "output": untouched["output"], "mapping": untouched["mapping"]}),
             json!({
                 "content": {"width": 480, "height": 320},
                 "output": {"width": 480, "height": 320},
-                "forward": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-                "inverse": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "mapping": {"kind": "affine", "forward": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+                "inverse": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]},
             })
         );
 
@@ -2869,6 +2896,251 @@ mod tests {
         .expect("an unknown entry");
         assert_eq!(error.code, "validation");
 
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn nonlinear_api_locate_agrees_with_the_stamped_map_in_all_orientations() {
+        for mirror in [false, true] {
+            for turns in 0..4 {
+                let catalog = luxforge_testbase::paths::temp_catalog("nonlinear-api-locate");
+                let mut service = EditorService::open(&catalog).unwrap();
+                let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+                let asset = service.import(&source).unwrap().asset.id;
+                let mut session = ClientSession::default();
+                let mut revision = 0;
+                let transforms = if mirror {
+                    vec!["mirror-horizontal"]
+                } else {
+                    vec![]
+                };
+                for transform in transforms
+                    .into_iter()
+                    .chain(std::iter::repeat_n("rotate-right", turns))
+                {
+                    ok(
+                        &mut service,
+                        &mut session,
+                        "edit.transform",
+                        json!({
+                            "asset_id":asset,"mutation":mutation_json(revision,&format!("orient-{revision}")),"transform":transform
+                        }),
+                    );
+                    revision += 1;
+                }
+                let entry = service.state(&asset).unwrap().current_entry.id;
+                let rows = luxforge_testbase::wait_for("the lens index", || {
+                    match service.run_query(
+                        &asset,
+                        &entry,
+                        "lens-profiles",
+                        json!({"assume-uncorrected":true}),
+                    ) {
+                        Ok(rows) => Some(rows),
+                        Err(error) if error.kind == crate::ErrorKind::NotReady => None,
+                        Err(error) => panic!("{error}"),
+                    }
+                });
+                let key = rows["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row["eligible"] == true)
+                    .unwrap()["key"]
+                    .clone();
+                ok(
+                    &mut service,
+                    &mut session,
+                    "edit.select-lens-profile",
+                    json!({
+                        "asset_id":asset,"mutation":mutation_json(revision,"lens"),
+                        "profile":key,"assume-uncorrected":true
+                    }),
+                );
+                revision += 1;
+                ok(
+                    &mut service,
+                    &mut session,
+                    "edit.set-perspective",
+                    json!({
+                        "asset_id":asset,"mutation":mutation_json(revision,"perspective"),"horizontal":40,"vertical":-25
+                    }),
+                );
+                let state = service.state(&asset).unwrap();
+                let core = service
+                    .transform_entry(&asset, &state.current_entry.id)
+                    .unwrap();
+                let api: crate::MappingDescriptor = serde_json::from_value(ok(
+                    &mut service,
+                    &mut session,
+                    "render.transform",
+                    json!({"asset_id":asset}),
+                ))
+                .unwrap();
+                assert_eq!(api.mapping_sha256, core.mapping_sha256);
+                for (x, y) in [(11.125, 17.75), (120.25, 200.5)] {
+                    let a = core.to_content(x, y).unwrap();
+                    let b = api.to_content(x, y).unwrap();
+                    assert!((a.0 - b.0).abs() <= 1e-9 && (a.1 - b.1).abs() <= 1e-9);
+                }
+                for (x, y) in [
+                    (0, 0),
+                    (api.output.width / 2, api.output.height / 2),
+                    (api.output.width - 1, api.output.height - 1),
+                ] {
+                    let expected = api
+                        .to_content(f64::from(x) + 0.5, f64::from(y) + 0.5)
+                        .unwrap();
+                    let located = ok(
+                        &mut service,
+                        &mut session,
+                        "render.locate",
+                        json!({"asset_id":asset,"x":x,"y":y}),
+                    );
+                    assert_eq!(located["content_x"], json!(expected.0.floor() as u32));
+                    assert_eq!(located["content_y"], json!(expected.1.floor() as u32));
+                }
+                assert_eq!(
+                    service.state(&asset).unwrap().current_entry,
+                    state.current_entry
+                );
+                drop(service);
+                std::fs::remove_file(catalog).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn render_transform_describes_warp_chain_and_draft_identity() {
+        let (mut service, catalog, asset) = patched("warp-map");
+        let mut session = ClientSession::default();
+        ok(
+            &mut service,
+            &mut session,
+            "edit.set-perspective",
+            json!({
+                "asset_id":asset,"mutation":mutation_json(0,"perspective"),"horizontal":35,"vertical":-25
+            }),
+        );
+        let committed = ok(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(committed["mapping"]["kind"], "warp");
+        assert_eq!(committed["mapping"]["steps"].as_array().unwrap().len(), 1);
+        assert_eq!(committed["mapping"]["steps"][0]["kind"], "projective");
+        assert_eq!(committed["mapping"]["domain"], committed["output"]);
+        assert!(committed["mapping"]["cover"]["combined"].as_f64().unwrap() > 1.0);
+        let diagnostics = described(&mut service, &mut session, &asset);
+        assert_eq!(
+            diagnostics["geometry"]["mapping_sha256"],
+            committed["mapping_sha256"]
+        );
+        assert_eq!(
+            diagnostics["geometry"]["cover"],
+            committed["mapping"]["cover"]
+        );
+        let before_history = service
+            .history(&serde_json::from_value(asset.clone()).unwrap(), None, 10)
+            .unwrap();
+        let begun = ok(
+            &mut service,
+            &mut session,
+            "draft.begin",
+            json!({"asset_id":asset,"action":"set-perspective"}),
+        );
+        let draft_id = begun["draft_id"].clone();
+        ok(
+            &mut service,
+            &mut session,
+            "draft.set",
+            json!({"draft_id":draft_id,"fields":{"horizontal":45}}),
+        );
+        let drafted = ok(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id":asset,"draft_id":draft_id}),
+        );
+        assert_eq!(
+            drafted["draft"],
+            json!({"draft_id":draft_id,"draft_revision":1})
+        );
+        assert_eq!(drafted["entry_id"], committed["entry_id"]);
+        assert_eq!(
+            drafted["source_fingerprint"],
+            committed["source_fingerprint"]
+        );
+        assert_ne!(drafted["mapping_sha256"], committed["mapping_sha256"]);
+        assert_eq!(
+            service
+                .history(&serde_json::from_value(asset.clone()).unwrap(), None, 10)
+                .unwrap(),
+            before_history
+        );
+        let mut stranger = ClientSession::default();
+        let denied = call(
+            &mut service,
+            &mut stranger,
+            "render.transform",
+            json!({"asset_id":asset,"draft_id":draft_id}),
+        );
+        assert!(denied.error.is_some(), "a draft map belongs to its session");
+        let conflicting = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id":asset,"draft_id":draft_id,"entry_id":committed["entry_id"]}),
+        );
+        assert_eq!(conflicting.error.unwrap().code, "validation");
+
+        // A map request delayed until after another client's geometry commit must not evaluate
+        // the retained draft over that newer head. Reapply explicitly chooses its new base.
+        ok(
+            &mut service,
+            &mut stranger,
+            "edit.set-perspective",
+            json!({"asset_id":asset,"mutation":mutation_json(1,"external-perspective"),"vertical":-15}),
+        );
+        let kept = session.draft.clone();
+        let history = service
+            .history(&serde_json::from_value(asset.clone()).unwrap(), None, 10)
+            .unwrap();
+        let late = call(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id":asset,"draft_id":draft_id}),
+        );
+        assert_eq!(late.error.unwrap().code, "conflict");
+        assert_eq!(session.draft, kept, "the refused read keeps the draft");
+        assert_eq!(
+            service
+                .history(&serde_json::from_value(asset.clone()).unwrap(), None, 10)
+                .unwrap(),
+            history
+        );
+        let reapplied = ok(
+            &mut service,
+            &mut session,
+            "draft.reapply",
+            json!({"draft_id":draft_id}),
+        );
+        assert_eq!(reapplied["base_revision"], 2);
+        assert_eq!(reapplied["fields"], json!({"horizontal":45}));
+        let refreshed = ok(
+            &mut service,
+            &mut session,
+            "render.transform",
+            json!({"asset_id":asset,"draft_id":draft_id}),
+        );
+        assert_eq!(refreshed["draft"], drafted["draft"]);
+        assert_ne!(refreshed["entry_id"], drafted["entry_id"]);
+        assert_ne!(refreshed["mapping_sha256"], drafted["mapping_sha256"]);
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
@@ -3202,6 +3474,7 @@ mod tests {
                     title: "Set angle".into(),
                     notes: "test".into(),
                     patch: false,
+                    preset: true,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -3293,6 +3566,7 @@ mod tests {
                     title: "Mark".into(),
                     notes: "test".into(),
                     patch: false,
+                    preset: true,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),

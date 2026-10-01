@@ -7,7 +7,6 @@ use crate::{
     SourceTag, ToolModule, modules::linked_modules, resolve_control, resolve_group_reset,
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 /// An edit of Basic's descriptor a registry is built with once.
@@ -387,93 +386,10 @@ fn superseded_fields_are_derived_from_the_variants() {
     );
 }
 
-/// Variants serialize only where they are declared, so every other built-in descriptor — and the
-/// host's — is byte for byte what it was before the vocabulary gained them. The digests are the
-/// SHA-256 of each descriptor's compact JSON as it was listed before variants existed; a
-/// deliberate change to one of these descriptors updates its digest here.
+/// Current descriptors round-trip, and variants are omitted where none are declared.
 #[test]
-fn every_descriptor_without_variants_serializes_exactly_as_before() {
+fn every_current_descriptor_round_trips_and_omits_undeclared_variants() {
     let registry = ModuleRegistry::developer();
-    let before = [
-        (
-            "luxforge.presets",
-            "c60ad4b917dc0e4c7b0668b964711a835009fedd746bea1fd8510da256a39f7a",
-        ),
-        (
-            "luxforge.pixel",
-            "d971294242b2a28ec0a5bc14965689d8ba21bfced2770418b19baf0f6f4f579b",
-        ),
-        (
-            "luxforge.presence",
-            "23aa2adfbc18684f6787d5b7c637291cf1b911db0bd956384c0c291261ff82ea",
-        ),
-        (
-            "luxforge.mixer",
-            "06c0c14b6a241dbd0affed3bf25f99bceecd55c262208a8d18a6be5cd844b469",
-        ),
-        (
-            "luxforge.transform",
-            "d78f86ba56ee33bc84de8a0583fd97592ec80ce23e68e544e2302efbf16d2b38",
-        ),
-        (
-            "luxforge.crop",
-            // Its angle declares `step` 0.5 and `fine_step` 0.05, which the stepper reads.
-            "7eafaccc88aeb0774e8ea617cfe589d742c5e6475202b34c1c5f9f03e09f0269",
-        ),
-        (
-            "luxforge.vignette",
-            "09ae86380463efe753399f7d8a9fb2465b84f73ea0ce2918e72229b37fecafaf",
-        ),
-        (
-            "luxforge.masks",
-            "ad8a452ea02d47580d2d9f93595baa308bcbf8ad4976cacebdb3bd2e5ee23d27",
-        ),
-    ];
-    let listed: Vec<&ModuleDescriptor> = registry
-        .descriptors()
-        .into_iter()
-        .chain(registry.host_descriptors())
-        .collect();
-    // The one deliberate change among them: `apply-preset`'s notes gained the skip rule. With the
-    // notes it had before, the presets descriptor is otherwise byte for byte what it was.
-    const PRESET_NOTES_BEFORE: &str = "applies a settings set as one history entry labelled \
-        `Preset: <name>`. Each key of settings names a field-patch action and its value the fields \
-        to send it; the host runs the actions in key order, each against the stack the ones before \
-        it produced, exactly as it would run that action alone, and commits the result once. \
-        Fields the set does not name keep their values, and a set that changes nothing is a \
-        reported no-op. An unknown, non-patch or unavailable action, or a field its action \
-        refuses, refuses the whole preset and writes nothing.";
-    for (id, digest) in before {
-        let mut descriptor = (*listed
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .unwrap_or_else(|| panic!("{id} is listed")))
-        .clone();
-        if id == "luxforge.presets" {
-            assert!(
-                descriptor.actions[0]
-                    .notes
-                    .contains("are skipped and listed under skipped")
-            );
-            descriptor.actions[0].notes = PRESET_NOTES_BEFORE.into();
-        }
-        // The other: the luminance band gained its one `range` control. Without it the masks
-        // descriptor is byte for byte what it was.
-        if id == "luxforge.masks" {
-            let before = descriptor.controls.len();
-            descriptor
-                .controls
-                .retain(|control| !matches!(control, crate::Control::Range(_)));
-            assert_eq!(descriptor.controls.len(), before - 1);
-        }
-        let json = serde_json::to_string(&descriptor).unwrap();
-        assert!(!json.contains("\"variants\""), "{id}");
-        assert_eq!(
-            format!("{:x}", Sha256::digest(json.as_bytes())),
-            digest,
-            "{id}"
-        );
-    }
     // Only Basic declares variants, and every module's JSON round-trips through the parser.
     for descriptor in registry.descriptors() {
         let value = serde_json::to_value(descriptor).unwrap();

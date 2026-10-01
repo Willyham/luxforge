@@ -167,7 +167,7 @@ A pointwise colour operation is not a stage boundary. It joins its segment's ope
 
 A recipe compiles into at most one raster pass per segment, and point queries answer from the compiled geometry. Two operations separate segments:
 
-- **A resample** (the crop module's non-zero-angle case). Each segment is an exact raster pass, so at most two full frames — one segment's output feeding the next resample's input — exist at once, each within the applicable JPEG 512 MiB or RAW 1.5 GiB per-buffer bound.
+- **A resample** (a fused lens/perspective/straightening chain, or crop straightening alone). Each segment is an exact raster pass, so at most two full frames — one segment's output feeding the next resample's input — exist at once, each within the applicable JPEG 512 MiB or RAW 1.5 GiB per-buffer bound.
 - **A spatial operation**, at the same dimensions as the stage it receives. It reads the finished frame before it and writes the next one in square tiles anchored at the stage origin — 512 px, or 1024 px once the operation's summed halo at its stage passes 128 px, so a wide halo is not recomputed around every small tile (`luxforge_raw::spatial_tile`, the one rule a render, a point sample and a windowed proxy ask). Each tile is read as the tile grown by the operation's summed halo and clamped to the stage.
 
 The compiled `Entry` that produces a segment's input frame is the one place the kinds are told apart. Everything the renderer asks of a boundary is one of its methods, each a single dispatch over the kinds: the stage it produces and the rectangle of that stage its frame holds, the rectangle of the stage before it that it reads, a windowed proxy's plan and cut of it, one point mapped back through it (locate) or evaluated through it, its forward map, its frame in the byte driver and in a frame-mode evaluation, its estimates, how the linear rows load it, and whether a point query evaluates it in tiles. No caller matches on the kind, so a new kind of boundary, such as the [Corrections](corrections.md) proposal's repair stage, is one more variant with one arm in each of those methods.
@@ -180,17 +180,13 @@ The rectangle a resample reads is one rule, `Resample::reads`, for the colour ba
 
 ### Geometry beyond an exact orientation
 
-The [lens and perspective design](lens-and-perspective.md) plans the nonlinear mapping primitive and its consumers; it is not implemented.
+The canonical geometry tail is exact orientation, Lens correction, Perspective and crop/straighten. A `Mapping` is an affine or a bounded warp chain. Adjacent lens, perspective and straightening compile into one resample; crop alone retains its exact integer and affine paths. Colour and spatial stages precede geometry, and finish stages follow it. A noncanonical interleaving of a warp is refused without changing the stored recipe.
 
-The geometry tail is the exact orientation, then the crop, whose straightening is the one resample. The `ToolModule::carry` hook ([module trait](modules-and-api.md#module-trait)) lets a transform reposition a later geometry layer through an exact quarter turn or reflection, and nothing more: it rewrites a stored payload, it does not change how the host evaluates a stage. A geometry effect that is not affine over the whole stage, such as a perspective or lens warp, is a new host primitive, not a use of the hook, and a module must not fake one through it. That primitive would have to be carried through every place that today knows only exact mappings and the resample:
+`GeometryMap` evaluates both directions and the local Jacobian. Rendering, point sampling, Locate, region/window planning and mask coverage use it. `render.transform` returns the same mapping with entry, snapshot, source fingerprint, optional draft stamp and mapping SHA-256. The desktop retains one descriptor per gesture and maps pointers locally. Mask outlines subdivide through that map to a quarter physical pixel, with depth 10 and at most 1,024 segments per outline; clipped or unfinished subdivision is reported in evidence.
 
-- `modules/processing.rs`, the `Processing` primitives a module compiles to;
-- the output stage the registry compiles (`output_stage` in `modules/registry/compile.rs`);
-- the point walk (`Evaluation::entry_pixel` in `render/pipeline.rs`);
-- the byte driver and locate in `render.rs`;
-- the linear driver (`render/linear.rs`) and the windowed proxy (`render/window.rs`).
+Lens selections freeze coefficients, normalization, calibration provenance and source optics in the layer. The optional Lensfun index loads once on a bounded worker and is used only for discovery and selection. Saved edits evaluate from their payloads if the index resource is missing. Source admission derives the current optical ledger from persisted source metadata and explicitly refuses incompatible or duplicated distortion correction. Originals and history remain intact.
 
-The places that hold these move with the `render.rs` split, so the list follows wherever it puts them.
+The `ToolModule::carry` hook carries Perspective by exact orientation conjugation and carries crop in box space. Lens distortion is radial and invariant under quarter turns and reflections. Lens and Perspective cover the same fixed stage, so changing either preserves the crop's identity and payload. The mathematical interpretation and photographic qualification limits are in the [lens and perspective design](lens-and-perspective.md).
 
 ### Point queries
 

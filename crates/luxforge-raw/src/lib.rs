@@ -22,6 +22,7 @@ mod native_tiles;
 mod neutral;
 mod normalize;
 mod opcodes;
+mod optics;
 mod profiles;
 mod rawspeed;
 mod unpacker;
@@ -35,7 +36,9 @@ pub use limits::{
 };
 use native_status::NativeStatus;
 pub use native_tiles::refill_each;
+pub use optics::{OpticalEntry, OpticalLedger, OpticalStatus, optical_ledger};
 use profiles::{Catalog, Crop, Mode};
+pub use profiles::{DngOpticalRole, DngOptics};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`
 /// after validating it: nothing is parsed at run time.
@@ -130,6 +133,18 @@ impl RawMode {
     /// which its validation enforces, so the mode answers for its camera.
     pub fn requires_dng_corrections(self) -> bool {
         self.0.dng_version.is_some()
+    }
+
+    /// The camera's declared DNG optical roles, derived from its static catalog record.
+    pub fn dng_optics(self) -> Option<&'static DngOptics> {
+        camera_catalog()
+            .cameras
+            .iter()
+            .find(|camera| camera.modes.iter().any(|mode| mode.id == self.0.id))?
+            .dng
+            .as_ref()?
+            .optics
+            .as_ref()
     }
 }
 

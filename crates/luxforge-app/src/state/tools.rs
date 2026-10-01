@@ -29,6 +29,7 @@ use std::{
 /// refresh only reads these values, so a recipe refresh cannot reset a selected channel or point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ControlsUi {
+    pub(crate) query_choices: BTreeMap<String, super::query_choice::QueryChoiceUi>,
     pub(crate) group_expanded: BTreeMap<String, bool>,
     /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
     /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
@@ -281,6 +282,8 @@ pub(crate) struct SectionModel {
     /// A word for the section's own state, shown in its band while expanded: Draft while the
     /// module's canvas draft is open.
     pub(crate) status: Option<String>,
+    /// The covered canvas reported by the host, shared by all geometry sections.
+    pub(crate) geometry_summary: Option<String>,
     /// The name of the mask this section's controls edit through, drawn as the band's accent scope
     /// chip: set on a maskable module's section while the sections are bound to an open mask, and
     /// `None` everywhere else, so leaving Mask mode drops it.
@@ -656,6 +659,7 @@ pub(crate) enum ControlModel {
     Range(Box<RangeControl>),
     Toggle(ToggleControl),
     Enum(EnumControl),
+    QueryChoice(Box<super::query_choice::QueryChoiceModel>),
     Color(ColorControl),
     Curve(CurveControl),
     Group(GroupControl),
@@ -765,6 +769,28 @@ impl ToolsModel {
     }
 }
 
+/// Geometry diagnostics are host data: the desktop only formats the reported stage covers.
+fn geometry_summary(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<String> {
+    if !module
+        .effects
+        .iter()
+        .any(|effect| effect.stage == EffectStage::Geometry)
+    {
+        return None;
+    }
+    let geometry = inputs.document.recipe.as_ref()?.geometry.as_ref()?;
+    let cover = &geometry["cover"];
+    let combined = cover["combined"].as_f64()?;
+    if combined <= 1.0 {
+        return None;
+    }
+    Some(format!(
+        "Lens ×{:.3} · Perspective ×{:.3} · cover ×{combined:.3}",
+        cover["lens"].as_f64()?,
+        cover["perspective"].as_f64()?
+    ))
+}
+
 /// One module's section.
 fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     let expanded = expanded(module, inputs);
@@ -833,6 +859,7 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
         controls,
         layout,
         status: (inputs.draft.is_some() && owns_mode(module, inputs)).then(|| "Draft".to_owned()),
+        geometry_summary: geometry_summary(module, inputs),
         scope: scope.map(str::to_owned),
         enabled,
         disabled_reason,
@@ -1121,6 +1148,34 @@ fn resolved_model(
                 high,
                 low_feather,
                 high_feather,
+            }))
+        }
+        Control::QueryChoice(control) => {
+            let ui = inputs
+                .control_ui
+                .query_choices
+                .get(&control.action)
+                .cloned()
+                .unwrap_or_default();
+            let shared = control
+                .shared
+                .iter()
+                .filter(|name| ui.shows_shared(name))
+                .filter_map(|name| {
+                    let parameter = owner.parameter(&control.action, name)?.clone();
+                    let text = inputs
+                        .fields
+                        .get(&control.action, name)
+                        .map(str::to_owned)
+                        .unwrap_or_default();
+                    Some(super::query_choice::SharedInput { parameter, text })
+                })
+                .collect();
+            ControlModel::QueryChoice(Box::new(super::query_choice::QueryChoiceModel {
+                control: control.clone(),
+                ui,
+                shared,
+                enabled,
             }))
         }
         Control::Toggle(toggle) => value_model(
@@ -2030,6 +2085,9 @@ pub(crate) fn labelled_control<'a>(
         Control::Color(color) => field(&color.action, &color.parameter, &color.label),
         Control::Toggle(toggle) => field(&toggle.action, &toggle.parameter, &toggle.label),
         Control::Choice(choice) => field(&choice.action, &choice.parameter, &choice.label),
+        Control::QueryChoice(choice) => (choice.action == action
+            && choice.shared.iter().any(|name| name == parameter))
+        .then_some(choice.label.as_str()),
         Control::Curve(curve) => (curve.action == action
             && curve
                 .channels

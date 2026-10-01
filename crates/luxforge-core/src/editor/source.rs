@@ -926,7 +926,9 @@ impl EditorService {
 /// ([`crate::EffectDescriptor::applies_to`]); a layer of an effect no provider declares is left to
 /// the registry's own refusal, which reports it as an unavailable edit. A RAW stack also keeps the
 /// RAW source's own invariants, which are not a matter of declaration: exactly one development
-/// layer at index zero, whose calibration equals the original's. `O(layers)`, no allocation.
+/// layer at index zero, whose calibration equals the original's. A frozen lens profile also keeps
+/// the source optics admission and full input dimensions. `O(layers)` with bounded payload parsing
+/// and geometry compilation; no pixel work or profile-index I/O.
 pub(super) fn validate_source_recipe(
     registry: &crate::ModuleRegistry,
     asset: &AssetRecord,
@@ -942,6 +944,7 @@ pub(super) fn validate_source_recipe(
                 .not_applicable_refusal(crate::ErrorKind::Incompatible, kind));
         }
     }
+    validate_lens_optics(registry, asset, recipe)?;
     reject_superseded_fields(registry, kind, recipe)?;
     if let SourceKind::Raw { ref metadata } = asset.source {
         let payload = raw_payload(recipe)?;
@@ -949,6 +952,74 @@ pub(super) fn validate_source_recipe(
             return Err(Error::incompatible(
                 "RAW source layer calibration differs from original",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Source eligibility is derived from the persisted source interpretation, so Restore, reopen,
+/// export and unprepared drafts enforce the same rule as a new profile selection. No index lookup.
+fn validate_lens_optics(
+    registry: &crate::ModuleRegistry,
+    asset: &AssetRecord,
+    recipe: &crate::Recipe,
+) -> Result<(), Error> {
+    use crate::modules::lens::{
+        LENS_EFFECT,
+        payload::{self, Acknowledgement},
+    };
+    use luxforge_raw::OpticalStatus;
+    for (index, layer) in recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| layer.effect_id == LENS_EFFECT)
+    {
+        let Some(profile) = payload::parse(&layer.payload)?.profile else {
+            continue;
+        };
+        let ledger = match &asset.source {
+            SourceKind::Jpeg => crate::SourceOptics::jpeg_ledger(),
+            SourceKind::Raw { metadata } => luxforge_raw::optical_ledger(metadata),
+        };
+        if ledger.distortion.status == OpticalStatus::Applied {
+            return Err(Error::incompatible(format!(
+                "this photo's source already corrects lens distortion ({}); a profile would correct it twice",
+                ledger.distortion.provenance
+            )).with_data(json!({"reason":"embedded-distortion-applied"})));
+        }
+        if ledger.distortion.status == OpticalStatus::Unknown
+            && profile.optics.acknowledged != Some(Acknowledgement::AssumeUncorrected)
+        {
+            return Err(Error::incompatible("assume-uncorrected is required: this photo's distortion correction status is unknown")
+                .with_data(json!({"reason":"assume-uncorrected-required"})));
+        }
+        if ledger.interpretation != profile.optics.source_interpretation
+            || ledger.distortion.status != profile.optics.distortion
+        {
+            return Err(Error::incompatible(format!(
+                "the profile was admitted against source optics {}; the source now reports {}",
+                profile.optics.source_interpretation, ledger.interpretation
+            ))
+            .with_data(json!({"reason":"source-optics-changed"})));
+        }
+        let stage = registry
+            .compile_layers(
+                asset.width,
+                asset.height,
+                &recipe.layers[..index],
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?
+            .stage();
+        if stage.width.max(stage.height) != profile.normalization.resolved_long
+            || stage.width.min(stage.height) != profile.normalization.resolved_short
+        {
+            return Err(Error::incompatible(
+                "The full-resolution lens input stage differs from the frozen profile",
+            )
+            .with_data(json!({"reason":"lens-input-stage-changed"})));
         }
     }
     Ok(())
@@ -2222,3 +2293,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "lens_admission_tests.rs"]
+mod lens_admission_tests;
