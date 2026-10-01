@@ -1041,3 +1041,54 @@ pub fn drag_during_preview_backlog(cx: &Context) -> Result<Vec<Row>> {
         .map(|row| row.detail(json!({"background": note})))
         .collect())
 }
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// The browse-generated step's owner over a catalog named by `LUXFORGE_VIEW_BENCH`, through the
+    /// harness's own client: files then photographs, each evaluated once and then 30 times more,
+    /// with the settled footprint around each, as `browse_generated` measures them.
+    #[test]
+    #[ignore = "a bench over a generated catalog named by LUXFORGE_VIEW_BENCH"]
+    fn catalog_measure_browse_generated_bench() {
+        let Ok(catalog) = std::env::var("LUXFORGE_VIEW_BENCH") else {
+            return;
+        };
+        let core = Core::open(Path::new(&catalog)).unwrap();
+        for (name, source) in [
+            (
+                "files",
+                json!({"kind": "folder", "path": "/", "subfolders": true}),
+            ),
+            ("photos", json!({"kind": "all-photographs"})),
+        ] {
+            let query = json!({ "source": source });
+            let before = settled_memory(&core).unwrap();
+            let (first, summary) = timed(|| core.ask("browse.view", query.clone())).unwrap();
+            drop(summary);
+            let after = settled_memory(&core).unwrap();
+            let mut views: Vec<f64> = (0..30)
+                .map(|_| timed(|| core.ask("browse.view", query.clone())).unwrap().0)
+                .collect();
+            let again = settled_memory(&core).unwrap();
+            let count = core.ask("session.state", json!({})).unwrap()["browse"]["count"]
+                .as_u64()
+                .unwrap();
+            let window = count.min(SCREEN);
+            for sample in 0..30u64 {
+                let from = sample * 7919 % (count - window + 1);
+                core.ask("browse.rows", json!({"from": from, "count": window}))
+                    .unwrap();
+            }
+            views.sort_by(f64::total_cmp);
+            eprintln!(
+                "{name}: first {first:.1} ms, p50 {:.1}, p95 {:.1}; settled {before:.1} -> {after:.1} -> {again:.1} MiB (growth {:.1})",
+                views[14],
+                views[28],
+                again - after
+            );
+        }
+        core.close().unwrap();
+    }
+}
