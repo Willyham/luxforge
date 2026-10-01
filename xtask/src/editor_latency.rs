@@ -443,7 +443,7 @@ const TOOL: &str = "editor-latency";
 
 /// Editor-latency's argument order: the evidence directory, the catalog and the data root first,
 /// then the script, the photograph and the developer flag.
-const ORDER: [Flag; 9] = [
+const ORDER: [Flag; 10] = [
     Flag::Evidence,
     Flag::Catalog,
     Flag::DataRoot,
@@ -453,6 +453,7 @@ const ORDER: [Flag; 9] = [
     Flag::Disable,
     Flag::Endpoint,
     Flag::Window,
+    Flag::GpuIdentity,
 ];
 
 /// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
