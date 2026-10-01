@@ -1465,6 +1465,10 @@ impl Owner {
         if let Some(fault) = &self.fault {
             fault(&request.method);
         }
+        // A selection the index's revision alone left stale is the selection still.
+        if request.params["targets"]["kind"] == "selection" {
+            views::freshen_selection(self, client)?;
+        }
         let result = match method.route() {
             Route::Owner(handler) => handler(self, &call).map(Planned::Value),
             // A task queues a capability job and announces nothing: the task is announced when it
