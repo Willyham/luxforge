@@ -17,10 +17,12 @@ mod gallery;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
 pub(crate) mod palette;
+pub(crate) mod query_choice;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
+mod warped_path;
 
 pub(crate) use gallery::{gallery, page_info as gallery_page_info};
 
@@ -64,7 +66,7 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) coverage: Option<&'a luxforge_ui::Frame>,
     /// The open mask shape gesture and the affine its handles are drawn through.
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
-    pub(crate) mask_map: Option<crate::mask_draft::ContentMap>,
+    pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) draft: Option<&'a CropDraft>,
 }
 

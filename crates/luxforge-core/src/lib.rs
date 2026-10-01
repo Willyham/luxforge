@@ -68,17 +68,18 @@ pub use modules::{
     ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle, CompileStage, Control,
     ControlVariant, Controls, ControlsModule, CropAspect, CropPayload, CropStage, CurveBackground,
     CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor, EffectStage, ExactGeometry,
-    FieldPatch, FieldPatchModule, FitSettle, GroupControl, IdentityKind, LayerEdit, LayerReport,
-    LayerUpdate, MAX_ANGLE, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
+    FieldPatch, FieldPatchModule, FitSettle, GroupControl, IdentityKind, LENS_EFFECT, LayerEdit,
+    LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
     ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
-    PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
-    ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing,
-    Provider, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region,
-    RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
-    SpatialOperation, Spec, Stage, StageContext, StageQuestions, TaskControl, ToggleControl,
-    ToolModule, VIGNETTE_EFFECT, Values, WhiteBalanceMode, check_parameters, check_value,
-    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
+    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
+    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
+    ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec, Stage, StageContext,
+    StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, Values,
+    WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint, guide_angle,
+    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    resolve_group_reset, temperature_tint_from_gains,
 };
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
@@ -92,11 +93,12 @@ pub use preview::{
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{
-    ContentPoint, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, PrefixUse, Raster,
-    RegionFrame, Render, RenderContext, RenderOptions, RenderSource, Sample, ScratchBudget,
-    StageSize, StageTransform, WhiteBalanceApproximation, render, stage_transform,
+    ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
+    MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
+    RenderOptions, RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation,
+    render, stage_transform,
 };
-pub use source::{LinearImage, SourceImage, open_source};
+pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};

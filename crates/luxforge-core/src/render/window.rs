@@ -1484,8 +1484,6 @@ mod tests {
         .transform()
         .unwrap();
         assert_eq!(cut.output, whole.output);
-        let map =
-            |m: [f64; 6], x: f64, y: f64| (m[0] * x + m[1] * y + m[2], m[3] * x + m[4] * y + m[5]);
         for (x, y) in [
             (0.5, 0.5),
             (
@@ -1497,12 +1495,10 @@ mod tests {
                 f64::from(window.height) - 0.5,
             ),
         ] {
-            let actual = map(cut.forward, x, y);
-            let expected = map(
-                whole.forward,
-                x + f64::from(window.x),
-                y + f64::from(window.y),
-            );
+            let actual = cut.to_output(x, y).unwrap();
+            let expected = whole
+                .to_output(x + f64::from(window.x), y + f64::from(window.y))
+                .unwrap();
             assert!((actual.0 - expected.0).abs() < 1e-9, "x at {x},{y}");
             assert!((actual.1 - expected.1).abs() < 1e-9, "y at {x},{y}");
         }

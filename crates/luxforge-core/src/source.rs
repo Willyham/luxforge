@@ -3,9 +3,11 @@
 //! JPEG or an immutable RAW mosaic with one WB development. The two sources' own data types are
 //! [`SourceImage`], here, and [`LinearImage`], in [`linear`].
 mod linear;
+mod optics;
 
 pub use linear::LinearImage;
 pub(crate) use linear::{ViewReader, layout};
+pub use optics::{OpticalIdentity, SourceOptics};
 
 use crate::{
     Error, ErrorKind, Raster,

@@ -18,6 +18,48 @@ use serde_json::Map;
 use std::collections::BTreeMap;
 
 #[test]
+fn perspective_integer_drag_is_one_draft_and_cancel_writes_nothing() {
+    for parameter in ["horizontal", "vertical"] {
+        let (mut editor, catalog, log, _, _, _) = drafting();
+        let history = editor.document.history.entries.len();
+        for value in [10.0, 25.0, 40.0, 40.0] {
+            let _ = testing::slide(&mut editor, "set-perspective", parameter, value);
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(events(&records, "slider_draft_begin").len(), 1);
+        let sent: Vec<_> = events(&records, "slider_draft_set")
+            .iter()
+            .map(|record| record["fields"].clone())
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                json!({parameter:10}),
+                json!({parameter:25}),
+                json!({parameter:40})
+            ]
+        );
+        let log = attach_log(&mut editor);
+        let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+        assert!(events(&logged(&mut editor, &log), "slider_draft_commit").is_empty());
+        assert!(editor.gesture.is_none());
+        assert_eq!(editor.document.history.entries.len(), history);
+        assert_eq!(editor.document.state.as_ref().unwrap().revision, 4);
+
+        // A second release while the first commit is outstanding cannot submit another entry.
+        let log = attach_log(&mut editor);
+        let _ = testing::slide(&mut editor, "set-perspective", parameter, 40.0);
+        let _ = testing::let_go(&mut editor, "set-perspective", parameter);
+        let _ = testing::let_go(&mut editor, "set-perspective", parameter);
+        assert_eq!(
+            events(&logged(&mut editor, &log), "slider_draft_commit").len(),
+            1
+        );
+        finish(editor, catalog);
+    }
+}
+
+#[test]
 fn releasing_or_cancelling_clears_the_displayed_draft_stamp_immediately() {
     for cancel in [false, true] {
         let (mut editor, catalog, _, _, action, parameter) = drafting();

@@ -237,6 +237,9 @@ fn section_view<'a>(
             ),
             SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot),
         });
+        if let Some(summary) = &section.geometry_summary {
+            rows.push(PanelRow::Plain(caption(summary.clone())));
+        }
         finish_rows(rows, menu)
     });
     module_section(
@@ -531,6 +534,9 @@ pub(crate) fn control_view<'a>(
         ControlModel::Range(range) => range_view(enabled, range, menu),
         ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
+        ControlModel::QueryChoice(choice) => {
+            super::query_choice::query_choice_view(choice, enabled)
+        }
         ControlModel::Color(color) => color_view(enabled, color, menu),
         ControlModel::Curve(curve) => curve_view(enabled, curve, menu, plot),
         ControlModel::Group(group) => column(finish_rows(

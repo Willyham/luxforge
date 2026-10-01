@@ -33,9 +33,9 @@ use super::{
     ColorOperation, ColorStyle, Control, ControlVariant, EffectDescriptor, EffectStage,
     GroupControl, LayerReport, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer,
     NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, Processing, RailDecoration,
-    ResetAction, SpatialOperation, StageContext, ToolModule, check_value, label_value,
+    ResetAction, SpatialOperation, Stage, StageContext, ToolModule, check_value, label_value,
 };
-use crate::{Error, SourceTag};
+use crate::{Error, Orientation, SourceTag};
 use serde_json::{Map, Number, Value};
 
 /// A finite f64 as a JSON number. Every value written here is finite, so the fallback is never
@@ -435,11 +435,13 @@ pub struct Spec {
     fields: Vec<Field>,
     groups: Vec<Group>,
     queries: Vec<ActionDescriptor>,
+    actions: Vec<ActionDescriptor>,
     canvas: Option<CanvasInteraction>,
     collapsed: bool,
     layout: ModuleLayout,
     /// Whether the module is a developer proof, listed and registered only in developer mode.
     developer: bool,
+    presettable: bool,
 }
 
 impl Spec {
@@ -488,16 +490,24 @@ impl Spec {
             fields: Vec::new(),
             groups: Vec::new(),
             queries: Vec::new(),
+            actions: Vec::new(),
             canvas: None,
             collapsed: false,
             layout: ModuleLayout::Stacked,
             developer: false,
+            presettable: true,
         }
     }
 
     /// The order the effect takes among layers of its stage.
     pub(crate) fn order(mut self, order: u16) -> Self {
         self.effect.order = order;
+        self
+    }
+
+    /// Whether the patch action participates in presets.
+    pub(crate) fn presettable(mut self, enabled: bool) -> Self {
+        self.presettable = enabled;
         self
     }
 
@@ -540,6 +550,12 @@ impl Spec {
     /// A read-only query the module answers through [`FieldPatch::query`].
     pub(crate) fn query(mut self, query: ActionDescriptor) -> Self {
         self.queries.push(query);
+        self
+    }
+
+    /// A discrete action that the module plans through `FieldPatch::plan_extra`.
+    pub(crate) fn action(mut self, action: ActionDescriptor) -> Self {
+        self.actions.push(action);
         self
     }
 
@@ -672,6 +688,7 @@ impl Spec {
             actions: vec![
                 ActionDescriptor {
                     patch: true,
+                    preset: self.presettable,
                     parameters: self
                         .fields
                         .iter()
@@ -688,7 +705,10 @@ impl Spec {
                     self.reset.title.clone(),
                     self.reset.notes.clone(),
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(self.actions.iter().cloned())
+            .collect(),
             queries: self.queries.clone(),
             controls,
             reset: Some(ResetAction {
@@ -706,12 +726,13 @@ impl Spec {
 }
 
 /// The shape of the processing a field patch's effect compiles to, by its stage: pointwise colour
-/// for a colour or finish effect, a spatial operation for a spatial one. No other stage can hold a
-/// field patch.
+/// for a colour or finish effect, spatial processing for restoration or spatial effects,
+/// and a mapping for geometry effects.
 #[derive(Clone, Copy, Debug)]
 enum Shape {
     Color,
     Spatial,
+    Geometry,
 }
 
 impl Shape {
@@ -719,16 +740,20 @@ impl Shape {
         match stage {
             EffectStage::Color | EffectStage::Finish => Some(Self::Color),
             EffectStage::Restoration | EffectStage::Spatial => Some(Self::Spatial),
-            EffectStage::Source | EffectStage::Geometry | EffectStage::Pixel => None,
+            EffectStage::Geometry => Some(Self::Geometry),
+            EffectStage::Source | EffectStage::Pixel => None,
         }
     }
 
     /// What a neutral layer compiles to: no units, which the host drops entirely, keeping the
     /// identity byte path and the shared source buffer.
-    fn neutral(self) -> Processing {
+    fn neutral(self, stage: Stage) -> Processing {
         match self {
             Self::Color => Processing::Color(ColorOperation::neutral()),
             Self::Spatial => Processing::Spatial(SpatialOperation::neutral()),
+            Self::Geometry => {
+                Processing::ExactGeometry(super::ExactGeometry::identity(stage.width, stage.height))
+            }
         }
     }
 }
@@ -772,6 +797,20 @@ impl Values<'_> {
 /// What one field-patch module provides beyond its table: turning canonical values into processing,
 /// and, when the rule differs from "every field at its default", which values change nothing.
 pub trait FieldPatch: Send + Sync + 'static {
+    /// Plan a declared discrete action alongside the patch and reset. The same host transaction
+    /// rules apply to its plan, including composition through this module's own patch.
+    fn plan_extra(
+        &self,
+        input: &ActionInput,
+        context: &StageContext<'_>,
+    ) -> Result<ActionPlan, Error> {
+        let _ = context;
+        Err(Error::validation(format!(
+            "unknown action {}",
+            input.action_id
+        )))
+    }
+
     /// The module's identity, effect, actions and field table.
     fn spec() -> Spec
     where
@@ -781,6 +820,17 @@ pub trait FieldPatch: Send + Sync + 'static {
     /// only for values [`FieldPatch::is_neutral`] calls not neutral: a neutral layer compiles to no
     /// units, in its effect stage's shape, once for every field-patch module.
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error>;
+
+    /// Re-express this payload after an exact orientation; never evaluates a raster.
+    fn carry(
+        &self,
+        values: &Values<'_>,
+        input: Stage,
+        orientation: Orientation,
+    ) -> Result<Option<Value>, Error> {
+        let _ = (values, input, orientation);
+        Ok(None)
+    }
 
     /// Whether these values change nothing, so a first set that reaches them commits no layer and
     /// a layer holding them compiles to no units. The default is every field at its default; the
@@ -980,7 +1030,13 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         action_id: &str,
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
-        let parameters = if action_id == self.spec.set.id {
+        let parameters = if action_id == self.spec.set.id
+            || self
+                .spec
+                .actions
+                .iter()
+                .any(|action| action.id == action_id)
+        {
             // A patch stores exactly the fields the caller sent, which the generic check has
             // already validated against their declarations: the history entry, the label and
             // request deduplication all describe the patch, not the merged payload.
@@ -1002,6 +1058,13 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
     /// places by the effect's declared stage and order.
     fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let spec = &self.spec;
+        if spec
+            .actions
+            .iter()
+            .any(|action| action.id == input.action_id)
+        {
+            return self.module.plan_extra(input, context);
+        }
         let existing = context.own_layer(&spec.effect.id)?.map(|(_, layer)| layer);
         let current = match existing {
             Some(layer) => {
@@ -1159,9 +1222,21 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         // which the host drops entirely: the identity byte path and the shared source buffer are
         // kept, and the module is never asked to compile it.
         if self.module.is_neutral(&values) {
-            return Ok(self.shape.neutral());
+            return Ok(self.shape.neutral(at.stage));
         }
         self.module.compile(&values, at)
+    }
+
+    fn carry(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        input: Stage,
+        orientation: Orientation,
+    ) -> Result<Option<Value>, Error> {
+        let values = self.read(effect_id, format, payload)?;
+        self.module.carry(&values, input, orientation)
     }
 }
 
@@ -1258,7 +1333,9 @@ mod tests {
         let (_, descriptor, shape) = spec.build().unwrap();
         assert_eq!(descriptor.effects[0].stage, EffectStage::Restoration);
         assert!(matches!(shape, Shape::Spatial));
-        assert!(matches!(shape.neutral(),Processing::Spatial(op) if op.is_empty()));
+        assert!(
+            matches!(shape.neutral(Stage { width: 16, height: 12 }),Processing::Spatial(op) if op.is_empty())
+        );
     }
 
     fn module() -> FieldPatchModule<Test> {
@@ -1597,7 +1674,10 @@ mod tests {
             (EffectStage::Finish, true),
             (EffectStage::Spatial, false),
         ] {
-            match Shape::of(stage).expect("a field patch stage").neutral() {
+            match Shape::of(stage)
+                .expect("a field patch stage")
+                .neutral(STAGE)
+            {
                 Processing::Color(operation) if color => assert!(operation.is_empty()),
                 Processing::Spatial(operation) if !color => assert!(operation.is_empty()),
                 _ => panic!("{} compiles to the wrong shape", stage.as_str()),

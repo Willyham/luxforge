@@ -283,6 +283,68 @@ fn encode_range(path: &Path) -> Result {
     Ok(())
 }
 
+/// Photo-sized geometry workload with synthetic capture identity. Pixel data are a regular
+/// line grid; EXIF only supplies the identity used by the profile resolver.
+fn encode_lens_grid(
+    path: &Path,
+    width: u32,
+    height: u32,
+    make: &str,
+    model: &str,
+    lens: &str,
+) -> Result {
+    let image = RgbImage::from_fn(width, height, |x, y| {
+        Rgb(if x % 128 < 3 || y % 128 < 3 {
+            [20; 3]
+        } else {
+            [240; 3]
+        })
+    });
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(&image)?;
+    let (make, model, lens) = (
+        format!("{make}\0").into_bytes(),
+        format!("{model}\0").into_bytes(),
+        format!("{lens}\0").into_bytes(),
+    );
+    let mut tiff = b"II\x2a\0\x08\0\0\0".to_vec();
+    let entry = |tiff: &mut Vec<u8>, tag: u16, kind: u16, count: u32, value: u32| {
+        tiff.extend_from_slice(&tag.to_le_bytes());
+        tiff.extend_from_slice(&kind.to_le_bytes());
+        tiff.extend_from_slice(&count.to_le_bytes());
+        tiff.extend_from_slice(&value.to_le_bytes());
+    };
+    tiff.extend_from_slice(&3_u16.to_le_bytes());
+    entry(&mut tiff, 0x010f, 2, make.len() as u32, 92);
+    entry(
+        &mut tiff,
+        0x0110,
+        2,
+        model.len() as u32,
+        92 + make.len() as u32,
+    );
+    entry(&mut tiff, 0x8769, 4, 1, 50);
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&3_u16.to_le_bytes());
+    let focal = 92 + (make.len() + model.len()) as u32;
+    entry(&mut tiff, 0x920a, 5, 1, focal);
+    entry(&mut tiff, 0xa405, 3, 1, 24);
+    entry(&mut tiff, 0xa434, 2, lens.len() as u32, focal + 8);
+    tiff.extend_from_slice(&0_u32.to_le_bytes());
+    tiff.extend_from_slice(&make);
+    tiff.extend_from_slice(&model);
+    tiff.extend_from_slice(&24_u32.to_le_bytes());
+    tiff.extend_from_slice(&1_u32.to_le_bytes());
+    tiff.extend_from_slice(&lens);
+    let payload = [b"Exif\0\0".as_slice(), &tiff].concat();
+    let mut encoded = vec![0xff, 0xd8, 0xff, 0xe1];
+    encoded.extend_from_slice(&(payload.len() as u16 + 2).to_be_bytes());
+    encoded.extend_from_slice(&payload);
+    encoded.extend_from_slice(&jpeg[2..]);
+    fs::write(path, encoded)?;
+    Ok(())
+}
+
 /// One JPEG the rendered and timing tiers need before they can run: its file name inside a
 /// fixtures directory, the function that writes it, and the manifest fields it needs beyond `file`
 /// and `sha256` (both of which `generate` fills in from what it actually wrote, once it has hashed
@@ -294,7 +356,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 6] = [
+pub const TABLE: [Fixture; 8] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -304,6 +366,25 @@ pub const TABLE: [Fixture; 6] = [
         file: "60mp.jpg",
         write: |p| encode(p, 10000, 6000),
         manifest: || json!({"width":10000,"height":6000}),
+    },
+    Fixture {
+        file: "lens-24mp.jpg",
+        write: |p| {
+            encode_lens_grid(
+                p,
+                6048,
+                4024,
+                "NIKON CORPORATION",
+                "NIKON Z 6",
+                "NIKKOR Z 24-70mm f/4 S",
+            )
+        },
+        manifest: || json!({"width":6048,"height":4024}),
+    },
+    Fixture {
+        file: "lens-60mp.jpg",
+        write: |p| encode_lens_grid(p, 9504, 6336, "SONY", "ILCE-7RM4", "FE 24-70mm f/4 ZA OSS"),
+        manifest: || json!({"width":9504,"height":6336}),
     },
     Fixture {
         file: "hue-wheel.jpg",

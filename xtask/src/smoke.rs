@@ -6,7 +6,7 @@
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
     crop_smoke as crop, detail_smoke as detail, export_smoke as export, gallery_smoke as gallery,
-    histogram_smoke as histogram, mask_brush_smoke as mask_brush,
+    histogram_smoke as histogram, lens_smoke as lens, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
@@ -495,6 +495,22 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: "lens-perspective",
+        about: "Detail with Lens/Perspective, warped mask editing, crop and exact native Undo pixels",
+        launches: &[LaunchSpec {
+            plan: lens::plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: lens::verify,
+        source: Source::Fixtures(&[lens::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(
+            "Exercises the generated metadata grid through the descriptor-backed profile list and real desktop messages. This is rendering evidence; photographic qualification uses supplied photographs.",
+        ),
+        own: None,
+    },
+    Scenario {
         name: "mixer",
         about: "The Colour mixer over a generated hue wheel",
         launches: &[LaunchSpec {
@@ -676,6 +692,10 @@ pub static SCENARIOS: &[Scenario] = &[
         launches: &[LaunchSpec {
             plan: performance::plan,
             watch: Some((performance::READINGS, performance::watch)),
+            // This functional scenario waits for a full 60 MP neighbourhood render and fixed
+            // sampling windows. Let the editor's 60-second script deadline report a failure
+            // before the parent reaps it; latency budgets belong to the quiet-host timing tier.
+            deadline: Some(Duration::from_secs(75)),
             ..APP
         }],
         verify: performance::verify,

@@ -9,7 +9,7 @@
 //! radius through it. It holds no editing state and answers no host question: a pointer is mapped
 //! here, locally, on every move, which is what keeps a runtime hop off the input path
 //! ([performance rule 12](../../../../docs/engineering/performance-rules.md)).
-use iced::{Point, Rectangle, Size, Vector, widget::canvas::Path};
+use iced::{Point, Rectangle, Size, Vector};
 
 /// Where a stage is drawn inside a canvas, in logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -77,44 +77,6 @@ impl CanvasView {
     pub(crate) fn tolerance(self, radius: f32) -> f64 {
         f64::from(radius / self.scale)
     }
-}
-
-/// How many segments one drawn ellipse is built from. Fixed, so a figure costs the same at every
-/// zoom, and fine enough that the boundary reads as a curve on a full-screen ellipse.
-const ELLIPSE_STEPS: usize = 96;
-
-/// One closed ellipse as a canvas path: `radii` about `centre`, turned by `angle` radians, all in the
-/// caller's own space, with every point taken through `map` to the canvas.
-///
-/// The ellipse is built in the space the caller's geometry is defined in and mapped point by point,
-/// so a figure that is a circle in that space stays one under whatever `map` does — a mask's ellipse
-/// is a circle in mask space and follows a crop or a quarter turn with the picture. A dashed ellipse
-/// is drawn as alternate segments rather than with a dash pattern, so it reads as the softer of two
-/// figures at every zoom. [`ELLIPSE_STEPS`] segments is what a bounded figure costs: the path is
-/// rebuilt per frame like every other canvas figure, independent of zoom.
-pub(crate) fn ellipse(
-    centre: (f64, f64),
-    radii: (f64, f64),
-    angle: f64,
-    dashed: bool,
-    map: impl Fn(f64, f64) -> Point,
-) -> Path {
-    let (ca, sa) = (angle.cos(), angle.sin());
-    let point = |step: usize| {
-        let t = step as f64 / ELLIPSE_STEPS as f64 * std::f64::consts::TAU;
-        let (a, b) = (radii.0 * t.cos(), radii.1 * t.sin());
-        map(centre.0 + (ca * a - sa * b), centre.1 + (sa * a + ca * b))
-    };
-    Path::new(|builder| {
-        builder.move_to(point(0));
-        for step in 1..=ELLIPSE_STEPS {
-            if dashed && step % 2 == 0 {
-                builder.move_to(point(step));
-            } else {
-                builder.line_to(point(step));
-            }
-        }
-    })
 }
 
 #[cfg(test)]

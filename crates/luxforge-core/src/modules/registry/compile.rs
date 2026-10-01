@@ -7,7 +7,8 @@ use crate::{
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, Provider, Stage,
+        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Mapping, Processing, Provider,
+        Resample, Stage, WarpStep,
     },
     render::{
         Compiled, Entry, Segment,
@@ -317,6 +318,32 @@ impl ModuleRegistry {
     ) -> Result<Compiled, Error> {
         #[cfg(test)]
         stack_compiles::count();
+        let has_warp = layers.iter().any(|l| {
+            l.effect_id == "luxforge.lens.distortion" || l.effect_id == "luxforge.perspective"
+        });
+        if has_warp {
+            let mut seen_warp = false;
+            let mut geometry_order = 0;
+            for layer in layers {
+                if let Some((_, effect)) = self.effect(&layer.effect_id) {
+                    let bad = if effect.stage == EffectStage::Geometry {
+                        let bad = effect.order < geometry_order;
+                        geometry_order = effect.order;
+                        seen_warp |= layer.effect_id == "luxforge.lens.distortion"
+                            || layer.effect_id == "luxforge.perspective";
+                        bad
+                    } else {
+                        seen_warp && effect.stage != EffectStage::Finish
+                    };
+                    if bad {
+                        return Err(Error::validation(format!(
+                            "lens and perspective layers must follow the orientation and precede the crop, with nothing else between (layer `{}`)",
+                            layer.id
+                        )));
+                    }
+                }
+            }
+        }
         let mut layer_ids = HashSet::with_capacity(layers.len());
         // The effects whose module owns exactly one layer of a stack, seen so far, **per target**:
         // the global layer and each mask are distinct targets, so one effect may hold a layer in
@@ -474,7 +501,46 @@ impl ModuleRegistry {
                         stage.height,
                     ));
                 }
+                Processing::Warp(step) => {
+                    self.refuse_unevaluated_mask(layer)?;
+                    if step.is_identity() {
+                        continue;
+                    }
+                    if let Some(entry) = segment.entry.as_mut()
+                        && !segment.has_pixels
+                        && !segment.has_color
+                        && segment.geometry.is_identity(stage.width, stage.height)
+                        && entry.fuse(step, output)?
+                    {
+                        segment.width = output.width;
+                        segment.height = output.height;
+                        continue;
+                    }
+                    let map = Mapping::Warp(std::sync::Arc::new(
+                        crate::render::map::WarpChain::new(step),
+                    ));
+                    segments.push(Segment::new(
+                        Some(Entry::resample(Resample {
+                            map,
+                            output_width: output.width,
+                            output_height: output.height,
+                        })),
+                        output.width,
+                        output.height,
+                    ));
+                }
                 Processing::Resample(resample) => {
+                    if let Mapping::Affine(matrix) = &resample.map
+                        && !segment.has_pixels
+                        && !segment.has_color
+                        && segment.geometry.is_identity(stage.width, stage.height)
+                        && let Some(entry) = segment.entry.as_mut()
+                        && entry.fuse(WarpStep::Affine(*matrix), output)?
+                    {
+                        segment.width = output.width;
+                        segment.height = output.height;
+                        continue;
+                    }
                     segments.push(Segment::new(
                         Some(Entry::resample(resample)),
                         output.width,
@@ -602,7 +668,7 @@ impl ModuleRegistry {
                         "a resample declares an empty output stage",
                     ));
                 }
-                if !resample.inverse.iter().all(|value| value.is_finite()) {
+                if !resample.map.finite() {
                     return Err(Error::validation(
                         "a resample declares a mapping that is not finite",
                     ));
@@ -611,6 +677,10 @@ impl ModuleRegistry {
                     width: resample.output_width,
                     height: resample.output_height,
                 })
+            }
+            Processing::Warp(step) => {
+                step.validate_for(stage)?;
+                Ok(stage)
             }
             _ => Ok(stage),
         }

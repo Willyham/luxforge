@@ -592,7 +592,7 @@ impl Evaluation {
             transform.output.height,
         )
             .hash(&mut hasher);
-        transform.forward.map(f64::to_bits).hash(&mut hasher);
+        transform.sha256().hash(&mut hasher);
         (cells_w, cells_h).hash(&mut hasher);
         hash_json(&mut hasher, held)?;
         // A position-only mask is a function of its own geometry and the stage alone. A mask that
@@ -744,6 +744,81 @@ mod tests {
             mask: mask.id.clone(),
             component: None,
         }
+    }
+
+    #[test]
+    fn coverage_cache_key_is_the_mapping_hash() {
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let initial = held
+            .mask_coverage(&mask.id, (12, 8), None, &Cancel::never())
+            .unwrap();
+        let perspective = Layer {
+            id: LayerId::new(),
+            effect_id: "luxforge.perspective".into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload: json!({"horizontal":25,"vertical":0}),
+            mask: None,
+            artifacts: Vec::new(),
+        };
+        let mut warped = recipe;
+        warped.layers.push(perspective);
+        let moved = changed(&held, warped.clone())
+            .mask_coverage(&mask.id, (12, 8), Some(initial.key), &Cancel::never())
+            .unwrap();
+        assert_ne!(moved.key, initial.key);
+        assert!(moved.outcome.is_some());
+        warped.layers.insert(
+            0,
+            Layer {
+                id: LayerId::new(),
+                effect_id: crate::BASIC_EFFECT.into(),
+                effect_format: crate::EFFECT_FORMAT,
+                payload: json!({"exposure":1.0}),
+                mask: None,
+                artifacts: Vec::new(),
+            },
+        );
+        let colour = changed(&held, warped)
+            .mask_coverage(&mask.id, (12, 8), Some(moved.key), &Cancel::never())
+            .unwrap();
+        assert_eq!(colour.key, moved.key);
+        assert!(colour.outcome.is_none());
+    }
+
+    #[test]
+    fn mask_overlay_cache_misses_when_only_lens_changes() {
+        let mask = linear();
+        let recipe = Recipe {
+            masks: vec![mask.clone()],
+            layers: vec![crate::render::testing::frozen_lens(60, 40, 24.0)],
+            ..Recipe::default()
+        };
+        let held = evaluation(recipe.clone(), recipe.clone(), None);
+        let first = held
+            .mask_coverage(&mask.id, (12, 8), None, &Cancel::never())
+            .unwrap();
+        let mut edited = recipe;
+        let replacement = crate::render::testing::frozen_lens(60, 40, 35.0);
+        edited.layers[0].payload = replacement.payload;
+        let changed = changed(&held, edited);
+        let next = changed
+            .mask_coverage(&mask.id, (12, 8), Some(first.key), &Cancel::never())
+            .unwrap();
+        assert_ne!(next.key, first.key);
+        assert!(
+            next.outcome.is_some(),
+            "the new map is evaluated even when a coarse grid quantises to the same bytes"
+        );
+        let hit = changed
+            .mask_coverage(&mask.id, (12, 8), Some(next.key), &Cancel::never())
+            .unwrap();
+        assert!(hit.outcome.is_none());
+        assert_eq!(changed.recipe().masks, held.recipe().masks);
     }
 
     #[test]

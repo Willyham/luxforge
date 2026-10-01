@@ -244,6 +244,10 @@ pub(crate) struct Evaluation<'a, D: PixelDomain> {
 }
 
 impl<'a, D: PixelDomain> Evaluation<'a, D> {
+    pub(super) fn checkpoint(&self) -> Result<(), Error> {
+        self.cancel.check()
+    }
+
     /// An evaluation of a stack compiled against the domain's source dimensions. In
     /// [`SpatialMode::Frames`] every spatial operation's output is materialized here, in stage
     /// order, under `cancel`; in [`SpatialMode::Point`] nothing is, and a spatial segment's pixels
@@ -1107,7 +1111,13 @@ pub(super) fn segment_pass<R: SegmentRows>(
         pooled(
             RenderPass::Transform,
             segment.width as u64 * segment.height as u64,
-        ) || colour.is_some_and(|pass| pooled(pass, coloured))
+        ) || segment.entry.as_ref().is_some_and(|entry| {
+            entry.has_warp()
+                && pooled(
+                    RenderPass::Warp,
+                    segment.width as u64 * segment.height as u64,
+                )
+        }) || colour.is_some_and(|pass| pooled(pass, coloured))
     };
     let chunk_rows = color_chunk_rows(segment.width);
     let chunk_bytes = chunk_rows * width * rows.samples_per_pixel();

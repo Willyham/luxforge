@@ -658,6 +658,7 @@ impl LinearRows<'_, '_, '_> {
             row,
         } = scratch;
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
+            self.evaluation.checkpoint()?;
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
             // The block's rectangle of the resample's full output: the segment's exact geometry
             // maps the block onto one, placed at the entry window's origin.

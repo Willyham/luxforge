@@ -110,6 +110,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 title: "Apply tint".into(),
                 notes: "test".into(),
                 patch: false,
+                preset: true,
                 parameters: vec![
                     ParameterDescriptor::artifact("tint")
                         .required(true)
@@ -121,6 +122,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 title: "Reset tint".into(),
                 notes: "test".into(),
                 patch: false,
+                preset: true,
                 parameters: Vec::new(),
             },
         ],

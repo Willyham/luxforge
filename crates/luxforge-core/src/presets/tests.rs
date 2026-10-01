@@ -19,6 +19,32 @@ fn registry() -> ModuleRegistry {
     ModuleRegistry::builtin()
 }
 
+#[test]
+fn lightroom_perspective_keys_are_unsupported_as_different_model() {
+    let keys = [
+        "PerspectiveUpright",
+        "PerspectiveVertical",
+        "PerspectiveHorizontal",
+        "PerspectiveRotate",
+        "PerspectiveAspect",
+        "PerspectiveX",
+        "PerspectiveY",
+        "PerspectiveScale",
+    ];
+    let settings = keys
+        .iter()
+        .map(|key| format!("{key} = 110"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let preset = inspect_preset(&settings_template(&settings), None, &registry()).unwrap();
+    assert!(preset.settings.is_empty());
+    assert_eq!(preset.report.unsupported.len(), keys.len());
+    for row in preset.report.unsupported {
+        assert!(keys.contains(&row.setting.as_str()));
+        assert_eq!(row.reason.as_deref(), Some("different perspective model"));
+    }
+}
+
 fn mapped(setting: &str, value: &str, action: &str, field: &str, applied: Value) -> MappedSetting {
     MappedSetting {
         setting: setting.into(),
@@ -1120,6 +1146,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
             title: "Set away".into(),
             notes: "test".into(),
             patch: true,
+            preset: true,
             parameters: vec![parameter],
         }],
         queries: vec![],

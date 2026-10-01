@@ -13,6 +13,10 @@ use serde_json::Value;
 
 /// One thing that happened in a seam.
 pub(crate) enum Outcome<'a> {
+    QueryChoiceAnswered {
+        action: &'a str,
+        failure: Option<&'a str>,
+    },
     /// A frame of the photograph reached the surface, or the exact phase of the proxy on screen
     /// landed: see [`Presented`].
     Presented(Presented),
@@ -112,6 +116,7 @@ impl Outcome<'_> {
     /// The outcome's name, as the evidence log records the one that ended a step.
     pub(crate) fn name(&self) -> &'static str {
         match self {
+            Self::QueryChoiceAnswered { .. } => "query_choice_answered",
             Self::Presented(Presented::Photo) => "presented_photo",
             Self::Presented(Presented::Exact) => "presented_exact",
             Self::Presented(Presented::Region) => "presented_region",

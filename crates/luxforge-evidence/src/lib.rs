@@ -617,6 +617,20 @@ impl DoubleClickStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "gesture", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ControlsStep {
+    #[serde(rename = "query-choice-search")]
+    QueryChoiceSearch { action: String, text: String },
+    #[serde(rename = "query-choice-page")]
+    QueryChoicePage { action: String, page: u32 },
+    #[serde(rename = "query-choice-shared")]
+    QueryChoiceShared {
+        action: String,
+        parameter: String,
+        text: String,
+    },
+    #[serde(rename = "query-choice-select-first")]
+    QueryChoiceSelectFirst { action: String },
+    #[serde(rename = "query-choice-retry")]
+    QueryChoiceRetry { action: String },
     Slider {
         action: String,
         parameter: String,
@@ -634,6 +648,44 @@ pub enum ControlsStep {
 impl ControlsStep {
     fn validate(&self) -> Result<(), String> {
         match self {
+            Self::QueryChoiceSearch {
+                action,
+                text: search,
+            } => {
+                text(action, "query-choice action")?;
+                // Module validation owns its search limit; this bounded harness must also be
+                // able to exercise a real rejected input and the widget's Retry operation.
+                if search.chars().count() > 256 || search.chars().any(char::is_control) {
+                    return Err(
+                        "query-choice search exceeds 256 characters or holds controls".into(),
+                    );
+                }
+                Ok(())
+            }
+            Self::QueryChoicePage { action, page } => {
+                text(action, "query-choice action")?;
+                if *page > 99 {
+                    return Err("query-choice page exceeds 99".into());
+                }
+                Ok(())
+            }
+            Self::QueryChoiceShared {
+                action,
+                parameter,
+                text: input,
+            } => {
+                text(action, "query-choice action")?;
+                text(parameter, "query-choice parameter")?;
+                if input.chars().count() > 256 || input.chars().any(char::is_control) {
+                    return Err(
+                        "query-choice input exceeds 256 characters or holds controls".into(),
+                    );
+                }
+                Ok(())
+            }
+            Self::QueryChoiceSelectFirst { action } | Self::QueryChoiceRetry { action } => {
+                text(action, "query-choice action")
+            }
             Self::Slider {
                 action,
                 parameter,
@@ -1394,6 +1446,10 @@ pub enum MaskStep {
     /// Discard the open gesture.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Cancel,
+    /// The Changed elsewhere notice's Reapply, retaining the stroke or shape while obtaining the
+    /// current entry's pointer map before another canvas input.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Reapply,
     /// One component row's own list edit, on the row it names rather than on whichever component
     /// happens to be selected.
     Row(MaskRow),
@@ -1459,7 +1515,7 @@ impl MaskStep {
                     .try_for_each(|point| content_point(*point, "mask drag point"))
             }
             Self::Row(row) => row.validate(),
-            Self::Release | Self::Apply | Self::Cancel | Self::Pick => Ok(()),
+            Self::Release | Self::Apply | Self::Cancel | Self::Reapply | Self::Pick => Ok(()),
         }
     }
 }

@@ -7132,6 +7132,198 @@ mod tests {
     }
 
     #[test]
+    fn restoration_colour_limited_stroke_and_mask_input_keep_content_coordinates_with_warps() {
+        let catalog = temp("detail-warp-mask-input.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let painter = owner.register();
+        let other = owner.register();
+        let photo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+        let original = std::fs::read(&photo).unwrap();
+        let state = import_asset(&owner, painter, &photo);
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            painter,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let profiles = luxforge_testbase::wait_for("the offline lens index", || {
+            let response = send(
+                &owner,
+                painter,
+                "profiles",
+                "query.lens-profiles",
+                json!({"asset_id":asset,"assume-uncorrected":true}),
+            );
+            match response.error {
+                Some(error) => {
+                    assert_eq!(error.code, "not-ready", "{error:?}");
+                    None
+                }
+                None => response.result,
+            }
+        });
+        let profile = profiles["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
+            .unwrap()["key"]
+            .clone();
+        ok(
+            &owner,
+            painter,
+            "lens",
+            "edit.select-lens-profile",
+            json!({"asset_id":asset,"profile":profile,"assume-uncorrected":true,
+            "mutation":crate::editor::mutation_json(1,"lens")}),
+        );
+        ok(
+            &owner,
+            painter,
+            "perspective",
+            "edit.set-perspective",
+            json!({"asset_id":asset,"horizontal":40,"vertical":-25,
+            "mutation":crate::editor::mutation_json(2,"perspective")}),
+        );
+        let created = ok(
+            &owner,
+            painter,
+            "brush",
+            "mask.add-stroke",
+            json!({"asset_id":asset,"points":[[0.5,0.5]],"size":0.1,
+            "feather":40.0,"flow":80.0,"erase":false,"limit_to_colour":false,
+            "colour_refine":50.0,"mutation":crate::editor::mutation_json(3,"brush")}),
+        );
+        ok(
+            &owner,
+            painter,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+            "mutation":crate::editor::mutation_json(4,"bind")}),
+        );
+        let asset_id: crate::AssetId = serde_json::from_value(asset.clone()).unwrap();
+        let mask_id = serde_json::from_value(created["mask"].clone()).unwrap();
+        let input = range_input_reference(&owner, painter, asset_id.clone(), &mask_id, 300, 200);
+        let seed =
+            crate::colour::srgb::quantize_pixel([input.r as f32, input.g as f32, input.b as f32]);
+        let owner_tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let sampled = ok(
+            &owner,
+            painter,
+            "input",
+            "mask.sample-input",
+            json!({"asset_id":asset,"mask":mask_id,"x":300,"y":200}),
+        );
+        assert_eq!(sampled, serde_json::to_value(input).unwrap());
+        let mapping = ok(
+            &owner,
+            painter,
+            "mapping",
+            "render.transform",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(mapping["mapping"]["kind"], "warp");
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let held = scope.spawn(|| {
+                send(
+                    &owner,
+                    painter,
+                    "limited-stroke",
+                    "mask.add-stroke",
+                    json!({"asset_id":asset,"mask":created["mask"],
+                    "component":created["component"],"points":[[0.5,0.5],[0.55,0.51]],
+                    "size":0.1,"feather":40.0,"flow":80.0,"erase":false,
+                    "limit_to_colour":true,"colour_refine":50.0,
+                    "mutation":crate::editor::mutation_json(5,"limited-stroke")}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the warp stack's colour seed runs off owner");
+            let draft = ok(
+                &owner,
+                other,
+                "geometry-begin",
+                "draft.begin",
+                json!({"asset_id":asset,"action":"set-perspective"}),
+            );
+            let tick = ok(
+                &owner,
+                other,
+                "geometry-tick",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":{"horizontal":45}}),
+            );
+            assert_eq!(tick["draft_revision"], 1);
+            ok(
+                &owner,
+                other,
+                "geometry-cancel",
+                "draft.cancel",
+                json!({"draft_id":draft["draft_id"]}),
+            );
+            release.send(()).unwrap();
+            let answer = held.join().unwrap();
+            assert!(answer.error.is_none(), "{:?}", answer.error);
+            assert_eq!(answer.result.unwrap()["revision"], 6);
+        });
+        owner.hold_points(None);
+        let masks = ok(
+            &owner,
+            painter,
+            "masks",
+            "mask.list",
+            json!({"asset_id":asset}),
+        );
+        let stroke = &masks["masks"][0]["components"][0]["strokes"][1];
+        assert_eq!(stroke["settings"]["colour"]["seed"], json!(seed));
+        let job = owner
+            .preview_job(PreviewRequest::new(painter, asset_id))
+            .unwrap();
+        let stroke_id = serde_json::from_value(stroke["id"].clone()).unwrap();
+        let stored = job
+            .evaluation
+            .recipe()
+            .strokes
+            .get::<crate::mask::Stroke>(&stroke_id)
+            .unwrap();
+        let captured =
+            crate::mask::Stroke::capture(&[[0.5, 0.5], [0.55, 0.51]], 0.1, 40.0, 80.0, false)
+                .unwrap();
+        assert_eq!(
+            stored.points().collect::<Vec<_>>(),
+            captured.points().collect::<Vec<_>>(),
+            "geometry never rewrites content stroke coordinates"
+        );
+        assert_eq!(
+            ok(
+                &owner,
+                painter,
+                "mapping-after",
+                "render.transform",
+                json!({"asset_id":asset})
+            )["mapping_sha256"],
+            mapping["mapping_sha256"]
+        );
+        assert_eq!(owner_tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(std::fs::read(&photo).unwrap(), original);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
     fn restoration_mask_colour_input_matches_actual_float_run_selection_with_and_without_detail() {
         // A hard range edge separates the true float from its RGB16 rounding. The white case
         // proves that values above one survive the run, with ordinary UI-representable feathers.

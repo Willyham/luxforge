@@ -45,7 +45,7 @@ For newly placed layers the regions are:
 
 ```text
 prepared source → pixel edits → restoration (Detail) → colour (Basic, Tone curve, mixer)
-                → spatial (Presence) → geometry (orientation, crop) → finish (vignette)
+                → spatial (Presence) → geometry (orientation, Lens, Perspective, crop) → finish (vignette)
 ```
 
 `placement_index` changes in two places and nowhere else:
@@ -196,7 +196,7 @@ Global Detail precedes masked Detail, and masked instances follow the mask list 
 
 Range masks read each operation's input and may select differently at Detail than at Basic. A value-based overlay or thumbnail keeps the first-bound-layer input rule. Behind Detail it is answered through the **input-grid cache**:
 
-- `InputGridKey { source, prefix_hash, domain, transform, region, cells }`: the exact source identity, the restoration prefix's hash and domain prefix, a hash of the geometry tail's `StageTransform`, the requested region and the cell dimensions.
+- `InputGridKey { source, prefix_hash, domain, transform, region, cells }`: the exact source identity, the restoration prefix's hash and domain prefix, the geometry tail's `GeometryMap::mapping_sha256` (including nonlinear Lens and Perspective steps), the requested region and the cell dimensions.
 - `InputGrid` holds, for every cell, the restoration prefix's output at the content pixel that cell reads (`[u16; 3]` wide values on JPEG, `[f32; 3]` on RAW, which is exact because every value a spatial prefix answers is an `f32` widened), plus an outside marker. It is built by grouping the cells by the stage-aligned tile that holds them and evaluating each tile once through the render's tile function and parallelism; a tile holding fewer than `tile area / window area` cells evaluates each cell through a window of its pixel grown by the prefix's summed halo instead, which region/full exactness makes identical. Cancellation is checked per tile; a cancelled build stores nothing.
 - Each overlay worker owns one `InputGridCache` of at most one grid: the mask-coverage worker and the Masks-panel thumbnail worker. Grids above `INPUT_GRID_MAX_CELLS` (8,000,000, the proxy pixel bound; 48 MiB on JPEG, 96 MiB on RAW) are refused by name. `Evaluation::mask_overlay_coverage` and `Evaluation::mask_coverage` take the worker's cache.
 - A cell's input is the cached prefix value run through the remaining prefix layers up to the mask's first bound layer, pointwise, `O(remaining layers)` per cell (`MaskPixels::Grid`). A mask inside a colour run reads its unquantized `f32` input, including extended values; the query and grid use that same input rather than encoding the truncated tail to RGB16. A mask on a spatial operation reads the materialized boundary at its compiled width. Point replacements retain their required quantization. The remainder must compile to colour and pixel operations with no boundary; a prefix holding a spatial layer after its leading restoration run (a mask bound after Presence) keeps today's refusal and its sentence.
@@ -208,7 +208,7 @@ One gesture commits one attributed action on release, key-up or Enter; Escape or
 
 ## Cross-plan rules
 
-Tone curve and Lens and perspective are planned beside Detail and share host surfaces:
+Detail and Lens and perspective share these host contracts; the planned Tone curve extends the same surfaces:
 
 - **Order.** `linked_modules` and the panel: Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop · Vignette · (Controls). Each plan inserts relative to the others that are registered; whichever lands second adjusts the array length, its doc comment and the order test in `registry/tests.rs`.
 - **Compile context.** Detail owns `CompileStage` and threads it through `ToolModule::compile`, `FieldPatch::compile` and `compile_bound`; whichever plan lands second adapts the other's `compile` signatures mechanically. Lens freezes a dimensionless scale in its payload and does not need it.
@@ -217,7 +217,6 @@ Tone curve and Lens and perspective are planned beside Detail and share host sur
 - **Generated and registry files.** The descriptor snapshot `fixtures/modules/builtin-descriptors.json`, conformance `KNOWN`, smoke `SCENARIOS`, the `xtask/src/fixtures.rs` table and the reference crate's `lib.rs` and `tests/studies/main.rs` are regenerated or re-added after each rebase; the snapshot is never merged by hand.
 - **Render passes.** Detail uses `RenderPass::Spatial` (0.25 MP) until measured.
 - **Preview.** Detail's settled Fit and prefix cache and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; they land sequentially.
-- **Landing order.** Detail's host contracts (restoration stage, compile context, window planner and Fit settlement) land before Lens's warp-chain and render work, which rebase on them.
 - **Measurements.** Timing runs only after all feature work, sequentially on a quiet host, never beside another plan's builds.
 - **Masked spatial cap.** `MAX_MASKED_SPATIAL_LAYERS = 4` is shared by masked Detail and masked Presence.
 
