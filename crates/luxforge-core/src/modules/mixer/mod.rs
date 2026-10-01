@@ -12,7 +12,7 @@
 mod unit;
 
 use super::{
-    ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration, Stage,
+    ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -203,7 +203,7 @@ impl FieldPatch for Mixer {
 
     /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
     /// to no units.
-    fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
         // FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
         let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
             std::array::from_fn(|range| values.number(FIELDS[offset + range]))
@@ -221,6 +221,7 @@ impl FieldPatch for Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::{ActionInput, ToolModule};
     use serde_json::json;
 
@@ -259,7 +260,12 @@ mod tests {
     fn a_moved_field_compiles_to_the_one_colour_unit() {
         let module = MixerModule::new();
         let coloured = module
-            .compile(MIXER_EFFECT, 1, &json!({"red-hue": 20.0}), STAGE)
+            .compile(
+                MIXER_EFFECT,
+                1,
+                &json!({"red-hue": 20.0}),
+                crate::CompileStage::exact(STAGE),
+            )
             .unwrap();
         match coloured {
             Processing::Color(operation) => assert_eq!(operation.len(), 1),

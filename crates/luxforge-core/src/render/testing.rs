@@ -12,6 +12,40 @@ use super::{
 use crate::{Cancel, Error, LinearImage, ModuleRegistry, Recipe, SnapshotId, SourceImage};
 use std::borrow::Cow;
 
+/// A real frozen Nikon profile, resolved from the committed index without using its asynchronous
+/// singleton. Geometry tests can therefore change profile terms without racing index fault tests.
+pub(crate) fn frozen_lens(width: u32, height: u32, focal: f64) -> crate::Layer {
+    use crate::modules::lens::{index::LensIndex, payload, resolve};
+    let index = LensIndex::parse(include_bytes!("../../data/lensfun/index.json")).unwrap();
+    let input = resolve::ResolveInput {
+        make: "NIKON CORPORATION".into(),
+        model: "NIKON Z 6".into(),
+        lens_model: Some("NIKKOR Z 24-70mm f/4 S".into()),
+        focal_mm: Some(focal),
+        focal_35mm: None,
+        focal_override: None,
+        stage: crate::Stage { width, height },
+    };
+    let row = resolve::candidates(&index, &input)
+        .into_iter()
+        .find(|row| row.eligible && row.matched == resolve::Match::LensModel)
+        .unwrap();
+    let resolved = resolve::resolve(&index, &row.key, &input).unwrap();
+    let profile = payload::Profile::from_resolution(
+        resolved,
+        &crate::SourceOptics::jpeg(&crate::export::CaptureMetadata::default()),
+        true,
+    )
+    .unwrap();
+    crate::Layer::new(
+        crate::LENS_EFFECT,
+        serde_json::to_value(payload::Payload {
+            profile: Some(profile),
+        })
+        .unwrap(),
+    )
+}
+
 /// A frame of `recipe` rendered through `context`, for a test that reads what the render left
 /// in it.
 pub(crate) fn frame_in<'a>(
@@ -391,6 +425,8 @@ impl ModuleRegistry {
         height: u32,
     ) -> crate::ProxyApproximation {
         self.compile_sampled(
+            width,
+            height,
             width,
             height,
             recipe,

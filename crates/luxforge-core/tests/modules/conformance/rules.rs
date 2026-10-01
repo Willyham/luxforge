@@ -9,8 +9,8 @@ use super::{
     shape::{Field, FieldPatch, Label},
 };
 use luxforge_core::{
-    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Orientation, Provider, Stage,
-    StageContext, StageQuestions, check_parameters,
+    ActionInput, ActionPlan, EffectStage, Error, ErrorKind, Layer, ModuleRegistry, Orientation,
+    Provider, Stage, StageContext, StageQuestions, check_parameters,
 };
 use serde_json::{Map, Value, json};
 
@@ -162,20 +162,59 @@ fn stored_payloads(rules: &Rules<'_>) -> Checked<Value> {
             rules
                 .validate(effect.format, &payload)
                 .map_err(|error| format!("{payload} was refused: {error}"))?;
-            // A field patch addresses no coordinates of its input stage, so a turn leaves it as it
-            // is: the carry hook's default, which no geometry module's own answer is checked here.
-            let turned = Orientation {
-                turns: 1,
-                mirror: true,
-            };
-            let carried = rules
-                .provider
-                .carry(&effect.id, effect.format, &payload, rules.stage, turned)
-                .map_err(|error| format!("{payload} was refused a carry: {error}"))?;
-            ensure(
-                carried.is_none(),
-                format!("{payload} was rewritten by a turn: {carried:?}"),
-            )?;
+            for mirror in [false, true] {
+                for turns in 0..4 {
+                    let turned = Orientation { turns, mirror };
+                    let carried = rules
+                        .provider
+                        .carry(&effect.id, effect.format, &payload, rules.stage, turned)
+                        .map_err(|error| format!("{payload} was refused a carry: {error}"))?;
+                    if effect.stage != EffectStage::Geometry {
+                        // Colour and spatial fields do not address input-stage coordinates.
+                        ensure(
+                            carried.is_none(),
+                            format!("{payload} was rewritten by a turn: {carried:?}"),
+                        )?;
+                    } else {
+                        // Geometry fields may move with orientation. Each carried spelling must
+                        // remain valid, and carrying the inverse must restore every field value.
+                        let carried = carried.unwrap_or_else(|| payload.clone());
+                        rules.validate(effect.format, &carried).map_err(|error| {
+                            format!("the carried {carried} is invalid: {error}")
+                        })?;
+                        let stage = if turns % 2 == 0 {
+                            rules.stage
+                        } else {
+                            Stage {
+                                width: rules.stage.height,
+                                height: rules.stage.width,
+                            }
+                        };
+                        let inverse = Orientation {
+                            mirror,
+                            turns: if mirror { turns } else { (4 - turns) % 4 },
+                        };
+                        let restored = rules
+                            .provider
+                            .carry(&effect.id, effect.format, &carried, stage, inverse)
+                            .map_err(|error| {
+                                format!("{carried} was refused an inverse carry: {error}")
+                            })?
+                            .unwrap_or(carried);
+                        let describe = |payload: &Value| {
+                            rules
+                                .provider
+                                .describe(&effect.id, effect.format, payload)
+                                .map(|report| report.values)
+                                .map_err(|error| error.to_string())
+                        };
+                        ensure(
+                            describe(&restored)? == describe(&payload)?,
+                            format!("{payload} did not round-trip through {turned:?}: {restored}"),
+                        )?;
+                    }
+                }
+            }
             accepted.push(payload);
         }
         for (value, reason) in field.refused() {
@@ -259,11 +298,9 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     let (set, reset) = (module.set.as_str(), module.reset.as_str());
     let lead_index = lead(rules)?;
     let lead = &module.fields[lead_index];
-    let other = module
-        .fields
-        .iter()
-        .find(|field| field.name != lead.name)
-        .ok_or("the module declares one field, so a merge cannot be shown")?;
+    // A merge needs a second field; a module of one field (the Tone curve) has none to merge, and
+    // its one field replacing its own stored value is shown by `every_field`.
+    let other = module.fields.iter().find(|field| field.name != lead.name);
 
     let declared = module
         .descriptor
@@ -308,18 +345,25 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
 
     let existing = rules.layer(high.clone());
     let stack = std::slice::from_ref(&existing);
-    let merged = rules.updated(
-        set,
-        json!({other.name.clone(): other.high()}),
-        stack,
-        &existing,
-        "a set of another field",
-    )?;
-    let expected = json!({lead.name.clone(): lead.high(), other.name.clone(): other.high()});
-    ensure(
-        merged == expected,
-        format!("a set of another field over {high} stored {merged}, not {expected}"),
-    )?;
+    let merged = match other {
+        Some(other) => {
+            let merged = rules.updated(
+                set,
+                json!({other.name.clone(): other.high()}),
+                stack,
+                &existing,
+                "a set of another field",
+            )?;
+            let expected =
+                json!({lead.name.clone(): lead.high(), other.name.clone(): other.high()});
+            ensure(
+                merged == expected,
+                format!("a set of another field over {high} stored {merged}, not {expected}"),
+            )?;
+            Some((other, expected))
+        }
+        None => None,
+    };
     rules.no_op(set, high.clone(), stack, "the stored value set again")?;
     if let Some(respelled) = lead.respelled(&lead.high()) {
         rules.no_op(
@@ -331,19 +375,25 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     }
     rules.no_op(set, json!({}), stack, "an empty patch over a stored layer")?;
 
-    let both = rules.layer(expected);
-    let cleared = rules.updated(
-        set,
-        json!({lead.name.clone(): lead.default.clone()}),
-        std::slice::from_ref(&both),
-        &both,
-        "a field set back to its default",
-    )?;
-    let kept = json!({other.name.clone(): other.high()});
-    ensure(
-        cleared == kept,
-        format!("a field set back to its default stored {cleared}, not {kept}"),
-    )?;
+    let cleared = match &merged {
+        Some((other, expected)) => {
+            let both = rules.layer(expected.clone());
+            let cleared = rules.updated(
+                set,
+                json!({lead.name.clone(): lead.default.clone()}),
+                std::slice::from_ref(&both),
+                &both,
+                "a field set back to its default",
+            )?;
+            let kept = json!({other.name.clone(): other.high()});
+            ensure(
+                cleared == kept,
+                format!("a field set back to its default stored {cleared}, not {kept}"),
+            )?;
+            Some(cleared)
+        }
+        None => None,
+    };
 
     for stored in [json!({}), json!({lead.name.clone(): lead.default.clone()})] {
         let layer = rules.layer(stored.clone());
@@ -380,8 +430,8 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     let fields = every_field(rules)?;
     Ok(json!({
         "lead": lead.name,
-        "other": other.name,
-        "merged": merged,
+        "other": merged.as_ref().map(|(other, _)| other.name.clone()),
+        "merged": merged.map(|(_, expected)| expected),
         "cleared": cleared,
         "fields": fields,
     }))

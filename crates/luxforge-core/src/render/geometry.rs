@@ -154,7 +154,7 @@ impl ExactGeometry {
         (self.a, self.b, self.c, self.d) == (1, 0, 0, 1)
     }
 
-    pub(super) fn is_identity(self, input_width: u32, input_height: u32) -> bool {
+    pub(crate) fn is_identity(self, input_width: u32, input_height: u32) -> bool {
         self.output_width == input_width
             && self.output_height == input_height
             && (self.a, self.b, self.c, self.d, self.tx, self.ty) == (1, 0, 0, 1, 0, 0)
@@ -170,14 +170,8 @@ pub(crate) const TAP_MARGIN: u32 = 2;
 impl Resample {
     /// The continuous input coordinate one output pixel center samples.
     #[inline]
-    fn input_at(self, x: u32, y: u32) -> (f64, f64) {
-        let [m0, m1, m2, m3, m4, m5] = self.inverse;
-        let center_x = f64::from(x) + 0.5;
-        let center_y = f64::from(y) + 0.5;
-        (
-            m0 * center_x + m1 * center_y + m2,
-            m3 * center_x + m4 * center_y + m5,
-        )
+    fn input_at(&self, x: u32, y: u32) -> (f64, f64) {
+        self.map.input_at(f64::from(x) + 0.5, f64::from(y) + 0.5)
     }
 
     /// [`Self::input_at`] in a frame that holds only a window of the resample's input stage, whose
@@ -186,7 +180,7 @@ impl Resample {
     /// is exact in `f64`, so every tap of a windowed frame is the same pixel with the same weight
     /// as in the whole one. `(0, 0)` is every exact render's origin, and changes nothing.
     #[inline]
-    pub(super) fn input_from(self, origin: (u32, u32), x: u32, y: u32) -> (f64, f64) {
+    pub(super) fn input_from(&self, origin: (u32, u32), x: u32, y: u32) -> (f64, f64) {
         let (u, v) = self.input_at(x, y);
         if origin == (0, 0) {
             (u, v)
@@ -200,33 +194,27 @@ impl Resample {
     /// rectangle of its full output stage: the one read-rectangle rule, for the colour band before
     /// a resample, a windowed proxy's cut and the linear driver's tap blocks alike.
     ///
-    /// The mapping is affine, so the coordinates the window samples lie in the convex hull of its
-    /// four mapped corners, up to rounding. A bilinear tap reads the pixel at `floor(u - ½)` and
-    /// the one after it, clamped to the stage edge, and [`TAP_MARGIN`] pixels on every side cover
-    /// the rounding with room to spare. `None` when the window is empty, `input` is empty or a
-    /// corner maps to a coordinate that is not finite, which a caller answers by reading
-    /// everything or reading each tap on its own.
-    pub(crate) fn reads(self, origin: (u32, u32), window: Region, input: Stage) -> Option<Region> {
+    /// The mapping supplies conservative continuous bounds, including radial extrema for a warp
+    /// chain. A bilinear tap reads the pixel at `floor(u - ½)` and the one after it, clamped to the
+    /// stage edge, and [`TAP_MARGIN`] pixels on every side cover rounding with room to spare.
+    /// `None` when the window or input is empty or the mapping cannot bound finite coordinates,
+    /// which a caller answers by reading everything or reading each tap on its own.
+    pub(crate) fn reads(&self, origin: (u32, u32), window: Region, input: Stage) -> Option<Region> {
         if window.is_empty() || input.width == 0 || input.height == 0 {
             return None;
         }
-        let mut low = [f64::INFINITY; 2];
-        let mut high = [f64::NEG_INFINITY; 2];
-        for (x, y) in [
-            (window.x0, window.y0),
-            (window.x1() - 1, window.y0),
-            (window.x0, window.y1() - 1),
-            (window.x1() - 1, window.y1() - 1),
-        ] {
-            let (u, v) = self.input_from(origin, x, y);
-            for (axis, value) in [u, v].into_iter().enumerate() {
-                let index = (value - 0.5).floor();
-                if !index.is_finite() {
-                    return None;
-                }
-                low[axis] = low[axis].min(index);
-                high[axis] = high[axis].max(index + 1.0);
-            }
+        let (x0, y0, x1, y1) = self.map.bounds((
+            f64::from(window.x0) + 0.5,
+            f64::from(window.y0) + 0.5,
+            f64::from(window.x1()) - 0.5,
+            f64::from(window.y1()) - 0.5,
+        ))?;
+        let tap = |value: f64| (value - 0.5).floor();
+        let low = [x0 - f64::from(origin.0), y0 - f64::from(origin.1)].map(tap);
+        let high =
+            [x1 - f64::from(origin.0), y1 - f64::from(origin.1)].map(|value| tap(value) + 1.0);
+        if !low.iter().chain(high.iter()).all(|v| v.is_finite()) {
+            return None;
         }
         // Each tap index clamped to the stage as the blend clamps it, then the margin, then the
         // stage again: `first..=last`, never empty.
@@ -307,7 +295,7 @@ pub(super) fn resample_frame(
     input: &[u8],
     input_width: u32,
     input_height: u32,
-    resample: Resample,
+    resample: &Resample,
     origin: (u32, u32),
     window: Region,
     cancel: &Cancel,
@@ -345,7 +333,11 @@ pub(super) fn resample_frame(
         Ok(())
     };
     if parallel::pooled(
-        parallel::RenderPass::Resample,
+        if resample.map.has_warp() {
+            parallel::RenderPass::Warp
+        } else {
+            parallel::RenderPass::Resample
+        },
         u64::from(width) * u64::from(height),
     ) {
         output

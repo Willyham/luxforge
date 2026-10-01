@@ -9,9 +9,9 @@
 //! from [`CompiledMask`] directly, not from the unit that filled the grid.
 use super::*;
 use luxforge_core::{
-    ApiRequest, ApiResponse, AssetId, Cancel, ClientId, ComponentId, Error, MaskCoverageTarget,
-    MaskId, MaskOverlayOutcome, OwnerHandle, PreviewJob, PreviewPhase, PreviewQueue,
-    PreviewRequest, PreviewResult, Recipe, Stage, StageTransform,
+    ApiRequest, ApiResponse, AssetId, Cancel, ClientId, ComponentId, Error, GeometryMap,
+    MaskCoverageTarget, MaskId, MaskOverlayOutcome, OwnerHandle, PreviewJob, PreviewPhase,
+    PreviewQueue, PreviewRequest, PreviewResult, Recipe, Stage,
     analysis::{self, MASK_COVERAGE_FULL, MASK_COVERAGE_NONE, MAX_OVERLAY_CELLS, MaskOverlay},
     mask::CompiledMask,
     stage_transform,
@@ -31,9 +31,13 @@ struct Fixture {
 
 impl Fixture {
     fn open(name: &str) -> Self {
+        Self::open_source(name, &luxforge_testbase::paths::jpeg())
+    }
+
+    fn open_source(name: &str, fixture: &std::path::Path) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
+        std::fs::copy(fixture, &source).unwrap();
         let (owner, join) = OwnerHandle::start(&dir.join("catalog.sqlite")).unwrap();
         let client = owner.register();
         let asset_value = luxforge_testkit::client::open(&owner, client, &source, "test")
@@ -178,7 +182,7 @@ fn expected_grid(
     source: (u32, u32),
     cells_w: u32,
     cells_h: u32,
-) -> (Vec<u8>, StageTransform) {
+) -> (Vec<u8>, GeometryMap) {
     let transform = stage_transform(registry, source.0, source.1, recipe).expect("a tail");
     let stage = Stage {
         width: transform.content.width,
@@ -192,9 +196,7 @@ fn expected_grid(
         for cx in 0..cells_w {
             let px = cell_pixel(cx, transform.output.width, cells_w);
             let (ox, oy) = (f64::from(px) + 0.5, f64::from(py) + 0.5);
-            let inverse = transform.inverse;
-            let x = inverse[0] * ox + inverse[1] * oy + inverse[2];
-            let y = inverse[3] * ox + inverse[4] * oy + inverse[5];
+            let (x, y) = transform.to_content(ox, oy).expect("affine map");
             let inside =
                 x >= 0.0 && y >= 0.0 && x < f64::from(stage.width) && y < f64::from(stage.height);
             grid.push(if inside {
@@ -327,14 +329,80 @@ fn the_grid_follows_the_picture_through_the_geometry_tail() {
         (raster.width, raster.height)
     );
     assert_ne!(
-        transform.forward,
-        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        transform.to_output(0.0, 0.0).unwrap(),
+        (0.0, 0.0),
         "the turn really is in the tail"
     );
     assert_eq!(overlay.coverage, expected);
     // A quarter turn puts the gradient's uncovered end on one side of the frame instead of the top.
     let row = cells_w as usize;
     assert_eq!(overlay.coverage[..row], overlay.coverage[row..2 * row]);
+}
+
+#[test]
+fn mask_overlay_under_warp_matches_content_coverage() {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+    let f = Fixture::open_source("lens-overlay", &source);
+    let created = f.mask_command("mask.create-linear", linear(0.2, 0.1, 0.7, 0.9), "create");
+    let mask = mask_id(&created);
+    let rows = luxforge_testbase::wait_for("the offline lens index", || {
+        let response = f
+            .owner
+            .call(
+                f.client,
+                ApiRequest {
+                    id: "lens-query".into(),
+                    method: "query.lens-profiles".into(),
+                    params: json!({"asset_id":f.asset_value,"assume-uncorrected":true}),
+                    token: None,
+                },
+            )
+            .unwrap();
+        match response.error {
+            Some(error) if error.code == "not-ready" => None,
+            Some(error) => panic!("{error:?}"),
+            None => response.result,
+        }
+    });
+    // The detected profile, which the answer offers in its status rather than as a row.
+    let row = &rows["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{rows}"
+    );
+    f.edit(
+        "select-lens-profile",
+        json!({"profile":row["key"],"focal":24.0,"assume-uncorrected":true}),
+        "select",
+    );
+    for (request, perspective) in [("lens", false), ("combined", true)] {
+        if perspective {
+            f.edit(
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+                "perspective",
+            );
+        }
+        let job = f.job(f.preview());
+        let recipe = job.evaluation.recipe();
+        let held = recipe.masks.iter().find(|held| held.id == mask).unwrap();
+        let (expected, mapping) = expected_grid(
+            job.evaluation.registry(),
+            recipe,
+            held,
+            job.evaluation.source().dimensions(),
+            32,
+            24,
+        );
+        assert!(
+            matches!(mapping.mapping, luxforge_core::MappingShape::Warp { .. }),
+            "{request}"
+        );
+        assert_eq!(grid(&job, &mask, (32, 24)).coverage, expected, "{request}");
+        assert!(expected.iter().any(|value| *value > 0 && *value < 255));
+        assert_eq!(exact(job).raster().unwrap().width, 600);
+    }
 }
 
 /// Hovering one row of the component list asks for that component's own contribution, and gets it:
@@ -869,18 +937,18 @@ fn the_cell_cap_bounds_the_grid_on_a_stage_that_exceeds_it() {
         width: 16384,
         height: 12288,
     };
-    let identity = StageTransform {
-        content: luxforge_core::StageSize {
+    let identity = GeometryMap::affine(
+        luxforge_core::StageSize {
             width: oversized.width,
             height: oversized.height,
         },
-        output: luxforge_core::StageSize {
+        luxforge_core::StageSize {
             width: oversized.width,
             height: oversized.height,
         },
-        forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    };
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+    );
     let held = job
         .evaluation
         .recipe()

@@ -102,6 +102,26 @@ fn bundled_data_notices(root: &Path, out: &Path) -> Result {
     Ok(())
 }
 
+const LENS_FILES: &[&str] = &[
+    "index.json",
+    "provenance.json",
+    "LICENSE-CC-BY-SA-3.0.txt",
+    "ATTRIBUTION.md",
+];
+
+fn lens_resources(root: &Path, destination: &Path) -> Result {
+    fs::create_dir_all(destination)?;
+    for name in LENS_FILES {
+        let source = root.join("crates/luxforge-core/data/lensfun").join(name);
+        ensure(
+            source.is_file(),
+            format!("Missing bundled Lensfun resource: {}", source.display()),
+        )?;
+        fs::copy(source, destination.join(name))?;
+    }
+    Ok(())
+}
+
 pub fn inventory(root: &Path, out: &Path) -> Result {
     let target = host(root)?;
     let data: Value = serde_json::from_str(&output(
@@ -154,6 +174,7 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
     native_jpeg_notices(root, out)?;
     bundled_font_notices(root, out)?;
     bundled_data_notices(root, out)?;
+    lens_resources(root, &out.join("data/lensfun"))?;
     write_json(
         &out.join("dependencies.json"),
         &json!({
@@ -225,6 +246,16 @@ pub fn inventory(root: &Path, out: &Path) -> Result {
                     "license_url":"https://creativecommons.org/licenses/by/4.0/",
                     "notices":"data/luxforge-core",
                     "provenance":"data/luxforge-core/THIRD_PARTY.md"
+                },
+                {
+                    "name":"Lensfun distortion profile index",
+                    "version":"0.3.4",
+                    "revision":"101c745e847a5de4a1e569a94368ce2027198598",
+                    "license":"CC-BY-SA-3.0",
+                    "files":LENS_FILES,
+                    "notices":"data/lensfun",
+                    "provenance":"data/lensfun/provenance.json",
+                    "modifications":"Filtered version-1 XML converted to an offline rectilinear distortion index"
                 }
             ],
             "review_status":"Inventory only; manual license, native and asset reviews deferred"
@@ -276,12 +307,14 @@ pub fn package(root: &Path, out: &Path) -> Result {
         let app = target.join("Luxforge.app/Contents");
         fs::create_dir_all(app.join("MacOS"))?;
         fs::copy(&binary, app.join("MacOS/luxforge"))?;
+        lens_resources(root, &app.join("Resources/lensfun"))?;
         fs::write(
             app.join("Info.plist"),
             r#"<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>org.luxforge.app</string><key>CFBundleName</key><string>Luxforge</string><key>CFBundleExecutable</key><string>luxforge</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>0.0.0</string><key>LSMinimumSystemVersion</key><string>14.0</string><key>NSHighResolutionCapable</key><true/></dict></plist>"#,
         )?;
     } else {
         fs::copy(&binary, target.join(binary.file_name().unwrap()))?;
+        lens_resources(root, &target.join("lensfun"))?;
     }
     write_json(
         &target.join("build.json"),
@@ -376,6 +409,38 @@ mod tests {
             hash(&asset).unwrap()
         );
         assert!(notice.contains(&record), "THIRD_PARTY.md lacks {record}");
+    }
+    #[test]
+    fn package_copies_lens_index_and_its_notices() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        lens_resources(
+            root,
+            &temp.path().join("Luxforge.app/Contents/Resources/lensfun"),
+        )
+        .unwrap();
+        lens_resources(root, &temp.path().join("notices/data/lensfun")).unwrap();
+        for name in LENS_FILES {
+            assert_eq!(
+                fs::read(root.join("crates/luxforge-core/data/lensfun").join(name)).unwrap(),
+                fs::read(
+                    temp.path()
+                        .join("Luxforge.app/Contents/Resources/lensfun")
+                        .join(name)
+                )
+                .unwrap()
+            );
+            assert!(
+                temp.path()
+                    .join("notices/data/lensfun")
+                    .join(name)
+                    .is_file()
+            );
+        }
+        let attribution =
+            fs::read_to_string(temp.path().join("notices/data/lensfun/ATTRIBUTION.md")).unwrap();
+        assert!(attribution.contains("CC BY-SA 3.0"));
+        assert!(attribution.contains("modified, filtered conversion"));
     }
     #[test]
     fn archives_preserve_payload_and_zip_executable() {

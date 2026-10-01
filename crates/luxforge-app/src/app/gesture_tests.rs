@@ -88,6 +88,7 @@ fn every_start_answers_to_the_halves_it_declares() {
         Starting::Pick,
         Starting::Action,
         Starting::Gallery,
+        Starting::Compare,
         Starting::History,
         Starting::Export,
     ];

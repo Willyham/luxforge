@@ -1,7 +1,7 @@
 use crate::*;
 use luxforge_core::{
-    BASIC_EFFECT, CROP_EFFECT, Cancel, CropPayload, CropStage, EditorService, Layer, LayerId,
-    ModuleRegistry, Mutation, PRESENCE_EFFECT, PreviewSource, ProxyBounds, Raster, Recipe,
+    BASIC_EFFECT, CROP_EFFECT, CURVE_EFFECT, Cancel, CropPayload, CropStage, EditorService, Layer,
+    LayerId, ModuleRegistry, Mutation, PRESENCE_EFFECT, PreviewSource, ProxyBounds, Raster, Recipe,
     RenderContext, RenderOptions, SnapshotId, Transform, analysis, render,
 };
 use std::time::Instant;
@@ -35,6 +35,26 @@ fn basic_exposure_and_tone_layer(ev: f64) -> Layer {
             "whites": -10.0,
             "blacks": 10.0,
         }),
+        mask: None,
+        artifacts: Vec::new(),
+    }
+}
+
+/// The Tone curve design's s-curve: the shadows lowered and the highlights raised about the
+/// mid-grey, through four points ([`tone_curve_layer`]).
+const TONE_CURVE_S: [[f64; 2]; 4] = [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]];
+
+/// The Tone curve layer the curve row measures: [`TONE_CURVE_S`] as the `luxforge.curve` module's
+/// own payload, compiled by the real module into its one pointwise unit and placed where the host
+/// would place the curve's commit, after the Basic layer in the colour run. It is the unit's own
+/// frame cost the design compares against the colour baseline and beside the "+1 EV and all five
+/// Tone fields" row.
+fn tone_curve_layer() -> Layer {
+    Layer {
+        id: LayerId::new(),
+        effect_id: CURVE_EFFECT.into(),
+        effect_format: 1,
+        payload: json!({ "luminance": TONE_CURVE_S }),
         mask: None,
         artifacts: Vec::new(),
     }
@@ -366,6 +386,13 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     vibrance_saturation
         .layers
         .insert(index, basic_vibrance_saturation_layer(50.0, 20.0));
+    // The Tone curve row: the same crop stack with one Tone curve layer holding the design's
+    // s-curve, compiled by the real luxforge.curve module into its one unit, so its difference
+    // against the same `stack_render` baseline is the curve unit's own cost on this stack, beside
+    // the exposure-and-tone row's two Basic units.
+    let mut tone_curved = stack.clone();
+    let curve_index = colour_registry.insertion_index_for(&tone_curved.layers, CURVE_EFFECT);
+    tone_curved.layers.insert(curve_index, tone_curve_layer());
     let (identity_samples, identity_stage) = recipe_render_samples(
         &colour_registry,
         colour_job.evaluation.source(),
@@ -420,6 +447,12 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         &colour_registry,
         colour_job.evaluation.source(),
         &vibrance_saturation,
+        samples,
+    )?;
+    let (tone_curve_samples, tone_curve_stage) = recipe_render_samples(
+        &colour_registry,
+        colour_job.evaluation.source(),
+        &tone_curved,
         samples,
     )?;
     // The same stack and the same source through the white-balance unit instead: one composite 3x3
@@ -593,6 +626,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     ensure(
         stack_stage == colour_stage
             && stack_stage == toned_stage
+            && stack_stage == tone_curve_stage
             && stack_stage == vibrance_saturation_stage,
         "A colour operation changed the output stage",
     )?;
@@ -600,7 +634,61 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     let stack_render = stack_samples;
     let colour_render = colour_samples;
     let toned_render = toned_samples;
+    let tone_curve_render = tone_curve_samples;
     let vibrance_saturation_render = vibrance_saturation_samples;
+    // A source without a calibrated camera remains a valid general workload: the query is timed,
+    // and the profile-dependent rows are explicitly untested. Named lens workloads must select.
+    let mut lens_queries = Vec::with_capacity(samples);
+    let mut candidate = None;
+    for _ in 0..samples {
+        let started = Instant::now();
+        let answer = service.run_query(
+            &asset,
+            &original,
+            "lens-profiles",
+            json!({"assume-uncorrected":true}),
+        )?;
+        lens_queries.push(milliseconds(started));
+        candidate = Some(&answer["status"]["detected"])
+            .filter(|detected| detected["eligible"] == true)
+            .and_then(|detected| detected["key"].as_str())
+            .map(str::to_owned);
+    }
+    let mut lens_selections = Vec::with_capacity(samples);
+    let mut lens_render = Vec::with_capacity(samples);
+    let lens_measurement = match candidate {
+        Some(profile) => {
+            for index in 0..samples {
+                let revision = service.state(&asset)?.revision;
+                service.apply_action(
+                    &asset,
+                    mutation(revision, format!("performance-lens-reset-{index}")),
+                    "reset-lens-profile",
+                    json!({}),
+                )?;
+                let revision = service.state(&asset)?.revision;
+                let started = Instant::now();
+                service.apply_action(
+                    &asset,
+                    mutation(revision, format!("performance-lens-select-{index}")),
+                    "select-lens-profile",
+                    json!({"profile":profile,"assume-uncorrected":true}),
+                )?;
+                lens_selections.push(milliseconds(started));
+                let started = Instant::now();
+                let raster = service.render_current(&asset)?;
+                lens_render.push(milliseconds(started));
+                ensure(
+                    (raster.width, raster.height) == (crop_raster.width, crop_raster.height),
+                    "A lens warp changed the existing crop output dimensions",
+                )?;
+            }
+            json!({"status":"measured","profile":profile,"selection":"First eligible row returned by query.lens-profiles; reset between samples so each measured selection commits","recipe":"Existing exact orientation and 10-degree crop, with the lens warp fused into its geometry pass"})
+        }
+        None => {
+            json!({"status":"untested","reason":"The source has no eligible offline profile; the query is measured, selection and warped render are untested"})
+        }
+    };
     drop(service);
 
     // The cold path is the catalog owner's own: the source job's read, hash and decode and the
@@ -649,6 +737,19 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     ] {
         rows.push(stats::row(metric, "ms", samples));
     }
+    rows.push(stats::row("lens_profiles_query", "ms", lens_queries));
+    if !lens_selections.is_empty() {
+        rows.push(stats::row(
+            "lens_profile_selection_commit",
+            "ms",
+            lens_selections,
+        ));
+        rows.push(stats::row(
+            "lens_and_straightened_crop_render",
+            "ms",
+            lens_render,
+        ));
+    }
     rows.push(stats::scalar(
         "crop_fit_commit",
         "ms",
@@ -666,6 +767,10 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         (
             "colour_same_stack_with_exposure_and_five_tone_fields",
             toned_render,
+        ),
+        (
+            "colour_same_stack_with_s_curve_tone_curve_layer",
+            tone_curve_render,
         ),
         (
             "colour_same_stack_with_vibrance_50_saturation_20_basic_layer",
@@ -737,6 +842,13 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "frame_sha256":small_frames,
         },
         "samples_per_recipe":samples,
+        "lens":lens_measurement,
+        "tone_curve":{
+            "points":TONE_CURVE_S,
+            "row":"colour_same_stack_with_s_curve_tone_curve_layer",
+            "baseline":"colour_baseline_same_stack_without_colour",
+            "beside":"colour_same_stack_with_exposure_and_five_tone_fields",
+        },
         "frame_sha256":{
             "one_transform":one_transform_sha256,
             "exposure_only_1ev_basic_layer":exposure_only_sha256,
@@ -752,6 +864,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "A 10 degree crop-fit adds one resample stage boundary and renders its declared stage",
             "One +1 EV Basic exposure layer, compiled by the real luxforge.basic module, renders the same stage as the stack without it; the difference against that baseline is the streamed colour pass",
             "One Basic layer with +1 EV exposure and all five Contrast/Highlights/Shadows/Whites/Blacks fields non-neutral, compiled into two real pointwise units by the real luxforge.basic module, renders the same stage as the stack without it",
+            "One Tone curve layer holding the s-curve [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]], compiled into one real pointwise unit by the real luxforge.curve module, renders the same stage as the stack without it",
             "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
             "One temperature 30 / tint -10 Basic layer renders the same stage as the stack without it; its unit is one composite 3x3 linear-sRGB multiply per pixel",
             "One Basic layer with all ten fields non-neutral renders the same stage as the stack without it, at full resolution and against the display-bounded proxy",
@@ -765,4 +878,51 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     write_json(&out.join("result.json"), &result)?;
     println!("PASS editor performance diagnostics: {}", out.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_core::{Processing, Stage};
+
+    /// The Tone curve row's layer is the real module's: its payload validates, it compiles to
+    /// exactly one pointwise unit, the curve unit over the design's s-curve, and it is placed after
+    /// the Basic layer in the colour run, where the host places a curve commit.
+    #[test]
+    fn the_tone_curve_row_compiles_to_one_real_unit() {
+        let registry = ModuleRegistry::builtin();
+        let layer = tone_curve_layer();
+        let (module, effect) = registry
+            .effect(&layer.effect_id)
+            .expect("the Tone curve module");
+        assert_eq!(effect.id, CURVE_EFFECT);
+        module
+            .validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)
+            .expect("the s-curve is an admissible payload");
+        let Processing::Color(operation) = module
+            .compile(
+                &layer.effect_id,
+                layer.effect_format,
+                &layer.payload,
+                luxforge_core::CompileStage::exact(Stage {
+                    width: 4,
+                    height: 4,
+                }),
+            )
+            .expect("a compiled layer")
+        else {
+            panic!("the Tone curve compiles to a colour operation");
+        };
+        assert_eq!(operation.len(), 1, "one curve unit");
+        assert_eq!(
+            operation.units()[0].describe(),
+            format!("{CURVE_EFFECT}([0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1])")
+        );
+
+        // On the Basic rows' colour run the curve lands after the Basic layer.
+        let layers = vec![basic_exposure_and_tone_layer(1.0)];
+        assert_eq!(registry.insertion_index_for(&layers, CURVE_EFFECT), 1);
+        assert_eq!(registry.insertion_index_for(&[], CURVE_EFFECT), 0);
+        assert_eq!(registry.insertion_index_for(&[], BASIC_EFFECT), 0);
+    }
 }

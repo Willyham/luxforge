@@ -10,17 +10,6 @@ use crate::{
 };
 use serde_json::{Map, Value};
 
-/// One 8-bit RGBA sample as the linear-sRGB triple a mask's value-based parts evaluate on, through the
-/// delivered decode and nothing else, so one definition of "linear sRGB" serves the whole editor.
-fn linear_triple(rgba: [u8; 4]) -> [f64; 3] {
-    let linear = crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]);
-    [
-        f64::from(linear[0]),
-        f64::from(linear[1]),
-        f64::from(linear[2]),
-    ]
-}
-
 impl EditorService {
     /// What one checked `mask.*` command does to `recipe`, the stack of `asset` it is planned
     /// against: the host's half of [`Self::plan_request`], the one planning step a commit and a
@@ -198,12 +187,11 @@ impl EditorService {
                     stage.width, stage.height
                 )));
             }
-            let rgba = context.sample_before(layer, x, y)?.ok_or_else(|| {
+            let [r, g, b] = context.input_before(layer, x, y)?.ok_or_else(|| {
                 Error::validation(format!(
                     "outside the stage: ({x}, {y}) has no pixel to read"
                 ))
             })?;
-            let [r, g, b] = linear_triple(rgba);
             Ok(PixelInput {
                 r,
                 g,

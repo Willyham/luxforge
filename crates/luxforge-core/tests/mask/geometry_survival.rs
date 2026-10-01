@@ -8,7 +8,7 @@
 //! masks, their components, the layers bound to them and the history, with the identities it wrote.
 use super::*;
 use luxforge_core::{
-    AssetId, EditorService, EntryId, MaskId, Mutation, Raster, StageTransform, Transform,
+    AssetId, EditorService, EntryId, GeometryMap, MaskId, Mutation, Raster, Transform,
     mask::commands,
 };
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ struct Tail {
     transforms: &'static [Transform],
 }
 
-const TAILS: [Tail; 5] = [
+const TAILS: [Tail; 8] = [
     Tail {
         name: "no tail",
         transforms: &[],
@@ -47,6 +47,18 @@ const TAILS: [Tail; 5] = [
         name: "reflection",
         transforms: &[Transform::MirrorHorizontal],
     },
+    Tail {
+        name: "lens",
+        transforms: &[],
+    },
+    Tail {
+        name: "perspective",
+        transforms: &[],
+    },
+    Tail {
+        name: "lens perspective straighten turn",
+        transforms: &[Transform::RotateRight],
+    },
 ];
 
 /// The crop each named tail applies, kept beside [`TAILS`] because a `const` cannot build a `Value`.
@@ -55,7 +67,7 @@ fn crop_for(name: &str) -> Option<Value> {
         "crop" => Some(json!({"x": 0.10, "y": 0.20, "width": 0.70, "height": 0.65})),
         // A straighten resamples, so the mask's edge lands between output pixels: the comparison
         // below only checks pixels whose content neighbourhood is unambiguous.
-        "straighten" => {
+        "straighten" | "lens perspective straighten turn" => {
             Some(json!({"angle": 7.0, "x": 0.15, "y": 0.15, "width": 0.60, "height": 0.60}))
         }
         _ => None,
@@ -72,7 +84,12 @@ impl Fixture {
     fn open(name: &str) -> Self {
         let dir = temp(name);
         let source = dir.join("orientation-1.jpg");
-        std::fs::copy(luxforge_testbase::paths::jpeg(), &source).unwrap();
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg"),
+            &source,
+        )
+        .unwrap();
         let mut service = EditorService::open(&dir.join("catalog.sqlite")).unwrap();
         let asset = service.import(&source).unwrap().asset.id;
         Self {
@@ -115,6 +132,33 @@ impl Fixture {
     }
 
     fn apply_tail(&mut self, tail: &Tail) {
+        if tail.name.contains("lens") {
+            let rows = luxforge_testbase::wait_for("the offline lens index", || {
+                match self.service.run_query(
+                    &self.asset,
+                    &self.entry(),
+                    "lens-profiles",
+                    json!({"assume-uncorrected":true}),
+                ) {
+                    Ok(value) => Some(value),
+                    Err(error) if error.kind == luxforge_core::ErrorKind::NotReady => None,
+                    Err(error) => panic!("{error}"),
+                }
+            });
+            // The detected profile, which the answer offers in its status rather than as a row.
+            let row = &rows["status"]["suggestion"];
+            assert!(
+                row["match"] == "lens-model" && row["eligible"] == true,
+                "{rows}"
+            );
+            self.edit(
+                "select-lens-profile",
+                json!({"profile":row["key"],"assume-uncorrected":true}),
+            );
+        }
+        if tail.name.contains("perspective") {
+            self.edit("set-perspective", json!({"horizontal":40,"vertical":-25}));
+        }
         for transform in tail.transforms {
             let mutation = self.mutation("transform");
             self.service
@@ -134,10 +178,10 @@ impl Fixture {
         self.service.render_current(&self.asset).expect("a render")
     }
 
-    fn transform(&self) -> StageTransform {
+    fn transform(&self) -> luxforge_core::MappingDescriptor {
         self.service
             .transform_entry(&self.asset, &self.entry())
-            .expect("the geometry tail as one affine")
+            .expect("the complete geometry map")
     }
 }
 
@@ -158,15 +202,14 @@ fn changed(masked: &Raster, plain: &Raster) -> Vec<bool> {
 
 /// A content coordinate mapped to its pixel index, or `None` outside the content stage.
 fn content_pixel(
-    inverse: &[f64; 6],
+    inverse: &GeometryMap,
     width: u32,
     height: u32,
     x: u32,
     y: u32,
 ) -> Option<(u32, u32)> {
     let (ox, oy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
-    let cx = inverse[0] * ox + inverse[1] * oy + inverse[2];
-    let cy = inverse[3] * ox + inverse[4] * oy + inverse[5];
+    let (cx, cy) = inverse.to_content(ox, oy).ok()?;
     if !(0.0..f64::from(width)).contains(&cx) || !(0.0..f64::from(height)).contains(&cy) {
         return None;
     }
@@ -228,18 +271,70 @@ fn a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
         let plain_render = plain.render();
 
         let mut masked = Fixture::open(&format!("masked-{}", tail.name.replace(' ', "-")));
-        masked.apply_tail(tail);
         let id = masked.mask();
         masked.edit(
             "set-basic",
             json!({"mask": id.as_str(), "exposure": EXPOSURE}),
         );
+        // An unbound painted component still belongs to this recipe and must retain every stored
+        // position, stroke address and identity when the geometry tail changes.
+        let mutation = masked.mutation("paint");
+        masked.service.run_action(&masked.asset, mutation, commands::ADD_STROKE,
+            json!({"points":[[0.2,0.25],[0.4,0.5],[0.6,0.65]],"size":0.02,"feather":50.0,"flow":100.0,"erase":false,"colour_refine":50.0})).unwrap();
+        let before = masked
+            .service
+            .state(&masked.asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe;
+        let masks_before = serde_json::to_vec(&before.masks).unwrap();
+        let strokes_before: Vec<_> = before
+            .strokes
+            .strokes()
+            .map(|(id, stroke)| (id.clone(), stroke.stored_bytes()))
+            .collect();
+        assert_eq!(
+            strokes_before.len(),
+            1,
+            "the proof holds one real painted stroke"
+        );
+        masked.apply_tail(tail);
+        let after = masked
+            .service
+            .state(&masked.asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe;
+        assert_eq!(
+            serde_json::to_vec(&after.masks).unwrap(),
+            masks_before,
+            "{}",
+            tail.name
+        );
+        assert_eq!(
+            after
+                .strokes
+                .strokes()
+                .map(|(id, stroke)| (id.clone(), stroke.stored_bytes()))
+                .collect::<Vec<_>>(),
+            strokes_before,
+            "{}",
+            tail.name
+        );
         let masked_render = masked.render();
 
         let out = changed(&masked_render, &plain_render);
         let transform = masked.transform();
-        // The straighten is the one delivered tail that resamples.
-        let reach = if tail.name == "straighten" { 2 } else { 1 };
+        let reach = if tail.name.contains("straighten")
+            || tail.name.contains("lens")
+            || tail.name.contains("perspective")
+        {
+            2
+        } else {
+            1
+        };
         assert_eq!(
             (transform.content.width, transform.content.height),
             (width, height),
@@ -251,7 +346,7 @@ fn a_mask_lands_on_the_same_content_pixels_through_every_delivered_tail() {
         let mut agreed = 0u32;
         for y in 0..masked_render.height {
             for x in 0..masked_render.width {
-                let Some((cx, cy)) = content_pixel(&transform.inverse, width, height, x, y) else {
+                let Some((cx, cy)) = content_pixel(&transform, width, height, x, y) else {
                     continue;
                 };
                 let Some(expected) = settled(&footprint, width, height, cx, cy, reach) else {

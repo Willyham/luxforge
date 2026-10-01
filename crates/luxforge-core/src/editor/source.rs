@@ -300,6 +300,10 @@ pub(crate) enum SourceWork {
         signature: SourceSignature,
         target: Box<FilePreparation>,
         read: Option<Box<ReadOriginal>>,
+        /// For a photograph whose head has never moved, the registry whose first-open readiness
+        /// the worker awaits after decoding ([`crate::ModuleRegistry::await_first_open`]), so the
+        /// owner can plan its first-open actions without waiting.
+        first_open: Option<Arc<crate::ModuleRegistry>>,
     },
     /// Redevelop the cached RAW mosaic at new gains.
     Develop(Box<RawDevelopment>),
@@ -313,6 +317,25 @@ pub(crate) enum SourceWork {
 pub(crate) enum Preparing {
     Ready(Box<EditorState>),
     Work(SourceWork, Vec<ArtifactRead>),
+}
+
+/// What completing one source job came to ([`EditorService::complete_preparation`]).
+#[derive(Debug)]
+pub(crate) struct Completion {
+    /// The photograph's state after the completion, and after its first-open entries.
+    pub(crate) state: EditorState,
+    /// The first-open reports of a photograph whose head had never moved when its original was
+    /// adopted ([`EditorService::first_open`]); empty otherwise.
+    pub(crate) first_open: Vec<crate::FirstOpen>,
+}
+
+impl Completion {
+    fn of(state: EditorState) -> Self {
+        Self {
+            state,
+            first_open: Vec::new(),
+        }
+    }
 }
 
 /// What one source job prepared, for [`EditorService::complete_preparation`] to adopt.
@@ -349,6 +372,7 @@ impl SourceWork {
             signature,
             target: Box::new(target),
             read: read.map(Box::new),
+            first_open: None,
         })
     }
 
@@ -385,11 +409,16 @@ impl SourceWork {
                 signature,
                 target,
                 read: kept,
+                first_open,
             } => {
                 let prepared =
                     EditorService::prepare_file(&path, &target, kept.map(|kept| *kept), cancel)?;
                 if prepared.signature != signature {
                     return Err(Error::conflict("source changed after job was queued"));
+                }
+                // Usually loaded long before; otherwise this waits off the owner, once.
+                if let Some(registry) = first_open {
+                    registry.await_first_open();
                 }
                 Ok(Prepared::File(prepared, read()?))
             }
@@ -782,7 +811,14 @@ impl EditorService {
         let Some(state) = self.cached_state(asset_id)? else {
             let state = self.state(asset_id)?;
             let target = self.file_preparation(asset_id, Some(&needs.entry_id))?;
-            let work = SourceWork::file_or_read(&state.asset.locator, target, read)?;
+            let mut work = SourceWork::file_or_read(&state.asset.locator, target, read)?;
+            // A photograph whose head has never moved is asked for its first-open actions when
+            // this completes ([`Self::first_open`]); the worker waits for what they read.
+            if state.revision == 0
+                && let SourceWork::File { first_open, .. } = &mut work
+            {
+                *first_open = Some(self.registry.clone());
+            }
             return Ok(Preparing::Work(work, reads));
         };
         let development = match needs.gains {
@@ -819,22 +855,23 @@ impl EditorService {
         }
         let prepared = work.run(&reads, &AtomicBool::new(false))?;
         self.complete_preparation(prepared)
+            .map(|completion| completion.state)
     }
 
     /// Complete one source job's preparation, on the thread that owns the catalog: adopt a
     /// photograph's prepared original, a development and the verified artifacts into the caches.
     /// The one completion, which the catalog owner runs for each source job and the blocking
     /// helpers run after the same work.
-    pub(crate) fn complete_preparation(
-        &mut self,
-        prepared: Prepared,
-    ) -> Result<EditorState, Error> {
+    pub(crate) fn complete_preparation(&mut self, prepared: Prepared) -> Result<Completion, Error> {
         let (completed, verified) = match prepared {
             Prepared::File(file, verified) => (self.adopt_original(file)?, verified),
-            Prepared::Develop(request, developed, verified) => {
-                (self.install_development(&request, developed)?, verified)
+            Prepared::Develop(request, developed, verified) => (
+                Completion::of(self.install_development(&request, developed)?),
+                verified,
+            ),
+            Prepared::Artifacts(asset_id, verified) => {
+                (Completion::of(self.state(&asset_id)?), verified)
             }
-            Prepared::Artifacts(asset_id, verified) => (self.state(&asset_id)?, verified),
         };
         self.adopt_artifacts(verified);
         Ok(completed)
@@ -844,7 +881,9 @@ impl EditorService {
     /// decoded its exact bytes: the file must still have the signature it was read with, and be
     /// the photograph's original by fingerprint and interpretation. A photograph comes into the
     /// catalog only by being developed (`crate::library::develop`); a preparation never adds one.
-    fn adopt_original(&mut self, prepared: PreparedFile) -> Result<EditorState, Error> {
+    /// A photograph whose head has never moved then has its first-open actions committed after its
+    /// Original ([`Self::first_open`]), so the state answered is its current one.
+    fn adopt_original(&mut self, prepared: PreparedFile) -> Result<Completion, Error> {
         let PreparedFile {
             asset_id,
             canonical,
@@ -888,7 +927,16 @@ impl EditorService {
             source,
             second: SecondDevelopment::default(),
         }));
-        Ok(state)
+        if state.revision != 0 {
+            return Ok(Completion::of(state));
+        }
+        let first_open = self.first_open(&state.asset.id);
+        let state = if first_open.iter().any(|report| report.entry_id.is_some()) {
+            self.state(&state.asset.id)?
+        } else {
+            state
+        };
+        Ok(Completion { state, first_open })
     }
 
     /// Keep `read`, what a one-file Develop read of the file it brought in, for the preparation
@@ -1057,7 +1105,9 @@ impl EditorService {
 /// ([`crate::EffectDescriptor::applies_to`]); a layer of an effect no provider declares is left to
 /// the registry's own refusal, which reports it as an unavailable edit. A RAW stack also keeps the
 /// RAW source's own invariants, which are not a matter of declaration: exactly one development
-/// layer at index zero, whose calibration equals the original's. `O(layers)`, no allocation.
+/// layer at index zero, whose calibration equals the original's. A frozen lens profile also keeps
+/// the source optics admission and full input dimensions. `O(layers)` with bounded payload parsing
+/// and geometry compilation; no pixel work or profile-index I/O.
 pub(super) fn validate_source_recipe(
     registry: &crate::ModuleRegistry,
     asset: &AssetRecord,
@@ -1073,6 +1123,7 @@ pub(super) fn validate_source_recipe(
                 .not_applicable_refusal(crate::ErrorKind::Incompatible, kind));
         }
     }
+    validate_lens_optics(registry, asset, recipe)?;
     reject_superseded_fields(registry, kind, recipe)?;
     if let SourceKind::Raw { ref metadata } = asset.source {
         let payload = raw_payload(recipe)?;
@@ -1080,6 +1131,74 @@ pub(super) fn validate_source_recipe(
             return Err(Error::incompatible(
                 "RAW source layer calibration differs from original",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Source eligibility is derived from the persisted source interpretation, so Restore, reopen,
+/// export and unprepared drafts enforce the same rule as a new profile selection. No index lookup.
+fn validate_lens_optics(
+    registry: &crate::ModuleRegistry,
+    asset: &AssetRecord,
+    recipe: &crate::Recipe,
+) -> Result<(), Error> {
+    use crate::modules::lens::{
+        LENS_EFFECT,
+        payload::{self, Acknowledgement},
+    };
+    use luxforge_raw::OpticalStatus;
+    for (index, layer) in recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| layer.effect_id == LENS_EFFECT)
+    {
+        let Some(profile) = payload::parse(&layer.payload)?.profile else {
+            continue;
+        };
+        let ledger = match &asset.source {
+            SourceKind::Jpeg => crate::SourceOptics::jpeg_ledger(),
+            SourceKind::Raw { metadata } => luxforge_raw::optical_ledger(metadata),
+        };
+        if ledger.distortion.status == OpticalStatus::Applied {
+            return Err(Error::incompatible(format!(
+                "this photo's source already corrects lens distortion ({}); a profile would correct it twice",
+                ledger.distortion.provenance
+            )).with_data(json!({"reason":"embedded-distortion-applied"})));
+        }
+        if ledger.distortion.status == OpticalStatus::Unknown
+            && profile.optics.acknowledged != Some(Acknowledgement::AssumeUncorrected)
+        {
+            return Err(Error::incompatible("assume-uncorrected is required: this photo's distortion correction status is unknown")
+                .with_data(json!({"reason":"assume-uncorrected-required"})));
+        }
+        if ledger.interpretation != profile.optics.source_interpretation
+            || ledger.distortion.status != profile.optics.distortion
+        {
+            return Err(Error::incompatible(format!(
+                "the profile was admitted against source optics {}; the source now reports {}",
+                profile.optics.source_interpretation, ledger.interpretation
+            ))
+            .with_data(json!({"reason":"source-optics-changed"})));
+        }
+        let stage = registry
+            .compile_layers(
+                asset.width,
+                asset.height,
+                &recipe.layers[..index],
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?
+            .stage();
+        if stage.width.max(stage.height) != profile.normalization.resolved_long
+            || stage.width.min(stage.height) != profile.normalization.resolved_short
+        {
+            return Err(Error::incompatible(
+                "The full-resolution lens input stage differs from the frozen profile",
+            )
+            .with_data(json!({"reason":"lens-input-stage-changed"})));
         }
     }
     Ok(())
@@ -1962,7 +2081,18 @@ mod tests {
         let initial = service.import(&path).unwrap();
         assert_eq!(initial.asset.fingerprint, original_hash);
         assert!(matches!(initial.asset.source, SourceKind::Raw { .. }));
-        assert_eq!(initial.current_entry.snapshot.recipe.layers.len(), 1);
+        // The development is the first layer. A RAW whose detected lens profile applies as it
+        // stands also carries that profile, committed as the import's one first-open entry.
+        let first_open = usize::try_from(initial.revision).unwrap();
+        assert!(first_open <= 1);
+        assert_eq!(
+            initial.current_entry.snapshot.recipe.layers.len(),
+            1 + first_open
+        );
+        if first_open == 1 {
+            assert_eq!(initial.current_entry.action_id, "select-lens-profile");
+            assert_eq!(initial.current_entry.actor, "system");
+        }
         let source_layer = initial.current_entry.snapshot.recipe.layers[0].id.clone();
         let original = service
             .preview_job(&initial.asset.id, None, None, None, None)
@@ -1977,7 +2107,7 @@ mod tests {
         let exposure = service
             .apply_action(
                 &initial.asset.id,
-                mutation(0, "raw-exposure"),
+                mutation(initial.revision, "raw-exposure"),
                 "set-basic",
                 json!({"exposure":1.5}),
             )
@@ -2109,7 +2239,7 @@ mod tests {
             service
                 .apply_action(
                     &asset,
-                    mutation(0, "raw-red"),
+                    mutation(initial.revision, "raw-red"),
                     "set-raw-red-gain",
                     json!({"gain": gain}),
                 )
@@ -2213,7 +2343,7 @@ mod tests {
             service
                 .apply_action(
                     &asset,
-                    mutation(0, "raw-red"),
+                    mutation(initial.revision, "raw-red"),
                     "set-raw-red-gain",
                     json!({"gain": gain}),
                 )
@@ -2555,3 +2685,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "lens_admission_tests.rs"]
+mod lens_admission_tests;

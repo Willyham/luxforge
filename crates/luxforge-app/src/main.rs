@@ -5,6 +5,7 @@
 #![recursion_limit = "256"]
 
 mod app;
+mod browser;
 mod coalesce;
 mod crop_draft;
 mod diagnostics;

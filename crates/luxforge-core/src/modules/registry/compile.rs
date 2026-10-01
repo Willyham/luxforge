@@ -7,7 +7,8 @@ use crate::{
     artifacts::ArtifactTable,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Processing, Provider, Stage,
+        EffectStage, MAX_COLOR_UNITS, MAX_MASKED_SPATIAL_LAYERS, Mapping, Processing, Provider,
+        Resample, Stage, WarpStep,
     },
     render::{
         Compiled, Entry, Segment,
@@ -39,6 +40,7 @@ impl ModuleRegistry {
             match self.effect_stage(&layer.effect_id) {
                 Some(
                     EffectStage::Source
+                    | EffectStage::Restoration
                     | EffectStage::Color
                     | EffectStage::Spatial
                     | EffectStage::Geometry
@@ -199,6 +201,19 @@ impl ModuleRegistry {
         Error::unavailable_effect(effect_id, &holding)
     }
 
+    /// The leading source/pixel/restoration run, before the first later-stage layer.
+    pub(crate) fn restoration_prefix(&self, layers: &[Layer]) -> usize {
+        layers
+            .iter()
+            .take_while(|layer| {
+                matches!(
+                    self.effect_stage(&layer.effect_id),
+                    Some(EffectStage::Source | EffectStage::Pixel | EffectStage::Restoration)
+                )
+            })
+            .count()
+    }
+
     /// Validate a recipe against the source dimensions and fold its exact geometry into one mapping
     /// per rasterizing pass. A resample is a stage boundary, so it closes the current pass and opens
     /// the next one. Cost is linear in the layer count and allocates only the operation lists.
@@ -208,7 +223,14 @@ impl ModuleRegistry {
         source_height: u32,
         recipe: &Recipe,
     ) -> Result<Compiled, Error> {
-        self.compile_sampled(source_width, source_height, recipe, MaskSampling::Point)
+        self.compile_sampled(
+            source_width,
+            source_height,
+            source_width,
+            source_height,
+            recipe,
+            MaskSampling::Point,
+        )
     }
 
     /// [`Self::compile`] with the way this render samples its masks as a parameter.
@@ -222,6 +244,8 @@ impl ModuleRegistry {
         &self,
         source_width: u32,
         source_height: u32,
+        exact_width: u32,
+        exact_height: u32,
         recipe: &Recipe,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
@@ -249,6 +273,7 @@ impl ModuleRegistry {
             &recipe.strokes,
             &recipe.artifacts,
             sampling,
+            Some(&self.stages(exact_width, exact_height, recipe)),
         )
     }
 
@@ -274,6 +299,7 @@ impl ModuleRegistry {
             strokes,
             artifacts,
             MaskSampling::Point,
+            None,
         )
     }
 
@@ -288,9 +314,36 @@ impl ModuleRegistry {
         strokes: &crate::path::StrokeTable,
         artifacts: &ArtifactTable,
         sampling: MaskSampling,
+        full_stages: Option<&[Stage]>,
     ) -> Result<Compiled, Error> {
         #[cfg(test)]
         stack_compiles::count();
+        let has_warp = layers.iter().any(|l| {
+            l.effect_id == "luxforge.lens.distortion" || l.effect_id == "luxforge.perspective"
+        });
+        if has_warp {
+            let mut seen_warp = false;
+            let mut geometry_order = 0;
+            for layer in layers {
+                if let Some((_, effect)) = self.effect(&layer.effect_id) {
+                    let bad = if effect.stage == EffectStage::Geometry {
+                        let bad = effect.order < geometry_order;
+                        geometry_order = effect.order;
+                        seen_warp |= layer.effect_id == "luxforge.lens.distortion"
+                            || layer.effect_id == "luxforge.perspective";
+                        bad
+                    } else {
+                        seen_warp && effect.stage != EffectStage::Finish
+                    };
+                    if bad {
+                        return Err(Error::validation(format!(
+                            "lens and perspective layers must follow the orientation and precede the crop, with nothing else between (layer `{}`)",
+                            layer.id
+                        )));
+                    }
+                }
+            }
+        }
         let mut layer_ids = HashSet::with_capacity(layers.len());
         // The effects whose module owns exactly one layer of a stack, seen so far, **per target**:
         // the global layer and each mask are distinct targets, so one effect may hold a layer in
@@ -340,7 +393,16 @@ impl ModuleRegistry {
                 width: segment.width,
                 height: segment.height,
             };
-            let processing = self.compile_layer(module, layer, stage, artifacts)?;
+            let full = full_stages
+                .and_then(|stages| stages.get(index))
+                .copied()
+                .unwrap_or(stage);
+            let processing = self.compile_layer(
+                module,
+                layer,
+                crate::CompileStage::sampled(stage, full),
+                artifacts,
+            )?;
             // The stage this layer hands the next one, checked before anything is evaluated.
             let output = Self::output_stage(&processing, stage)?;
             match processing {
@@ -427,12 +489,58 @@ impl ModuleRegistry {
                     SpatialPlan::new(&operation, stage, Tiling::Halo)?;
                     let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
-                        Some(Entry::spatial(operation, prefix_hash)),
+                        Some(Entry::spatial_tagged(
+                            operation,
+                            prefix_hash,
+                            self.effect_stage(&layer.effect_id)
+                                .unwrap_or(EffectStage::Spatial),
+                            self.effect(&layer.effect_id)
+                                .map_or(crate::FitSettle::Proxy, |(_, effect)| effect.fit_settle),
+                        )),
                         stage.width,
                         stage.height,
                     ));
                 }
+                Processing::Warp(step) => {
+                    self.refuse_unevaluated_mask(layer)?;
+                    if step.is_identity() {
+                        continue;
+                    }
+                    if let Some(entry) = segment.entry.as_mut()
+                        && !segment.has_pixels
+                        && !segment.has_color
+                        && segment.geometry.is_identity(stage.width, stage.height)
+                        && entry.fuse(step, output)?
+                    {
+                        segment.width = output.width;
+                        segment.height = output.height;
+                        continue;
+                    }
+                    let map = Mapping::Warp(std::sync::Arc::new(
+                        crate::render::map::WarpChain::new(step),
+                    ));
+                    segments.push(Segment::new(
+                        Some(Entry::resample(Resample {
+                            map,
+                            output_width: output.width,
+                            output_height: output.height,
+                        })),
+                        output.width,
+                        output.height,
+                    ));
+                }
                 Processing::Resample(resample) => {
+                    if let Mapping::Affine(matrix) = &resample.map
+                        && !segment.has_pixels
+                        && !segment.has_color
+                        && segment.geometry.is_identity(stage.width, stage.height)
+                        && let Some(entry) = segment.entry.as_mut()
+                        && entry.fuse(WarpStep::Affine(*matrix), output)?
+                    {
+                        segment.width = output.width;
+                        segment.height = output.height;
+                        continue;
+                    }
                     segments.push(Segment::new(
                         Some(Entry::resample(resample)),
                         output.width,
@@ -476,7 +584,12 @@ impl ModuleRegistry {
                 return stages;
             };
             match self
-                .compile_layer(module, layer, stage, &recipe.artifacts)
+                .compile_layer(
+                    module,
+                    layer,
+                    crate::CompileStage::exact(stage),
+                    &recipe.artifacts,
+                )
                 .and_then(|processing| Self::output_stage(&processing, stage))
             {
                 Ok(output) => stage = output,
@@ -494,11 +607,11 @@ impl ModuleRegistry {
         &self,
         module: Provider<'_>,
         layer: &Layer,
-        stage: Stage,
+        at: crate::CompileStage,
         artifacts: &ArtifactTable,
     ) -> Result<Processing, Error> {
         if layer.artifacts.is_empty() {
-            return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, stage);
+            return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, at);
         }
         // The recipe carries the verified bytes it was bound with, so resolving them is a lookup;
         // an artifact the recipe was not bound with is refused, never skipped.
@@ -527,7 +640,7 @@ impl ModuleRegistry {
             &layer.effect_id,
             layer.effect_format,
             &layer.payload,
-            stage,
+            at,
             &bound,
         )
     }
@@ -555,7 +668,7 @@ impl ModuleRegistry {
                         "a resample declares an empty output stage",
                     ));
                 }
-                if !resample.inverse.iter().all(|value| value.is_finite()) {
+                if !resample.map.finite() {
                     return Err(Error::validation(
                         "a resample declares a mapping that is not finite",
                     ));
@@ -564,6 +677,10 @@ impl ModuleRegistry {
                     width: resample.output_width,
                     height: resample.output_height,
                 })
+            }
+            Processing::Warp(step) => {
+                step.validate_for(stage)?;
+                Ok(stage)
             }
             _ => Ok(stage),
         }

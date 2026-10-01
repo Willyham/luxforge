@@ -187,6 +187,13 @@ impl ModuleRegistry {
             layers,
             output_stage,
             output_orientation: output_stage.and(orientation),
+            geometry: crate::stage_transform(self, source_width, source_height, recipe).ok().map(|map| {
+                let (cover, local_scale_max) = match &map.mapping {
+                    crate::MappingShape::Warp {cover,local_scale_max,..} => (serde_json::to_value(cover).expect("finite geometry cover"), *local_scale_max),
+                    crate::MappingShape::Affine {..} => (serde_json::json!({"lens":1.0,"perspective":1.0,"combined":1.0}), map.local_scale_at(0.0,0.0).unwrap_or(1.0)),
+                };
+                serde_json::json!({"mapping_sha256":map.sha256(), "cover":cover,"local_scale_max":local_scale_max})
+            }),
         }
     }
 
@@ -237,6 +244,7 @@ mod tests {
                 layers: Vec::new(),
                 output_stage: Some(fixture_size),
                 output_orientation: Some(Orientation::NEUTRAL),
+                geometry: service.describe_entry(&asset, None).unwrap().geometry,
             },
             "the original entry has no layers, and a first layer would receive the source"
         );

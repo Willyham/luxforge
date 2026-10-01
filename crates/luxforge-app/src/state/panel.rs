@@ -129,12 +129,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatePanelModel {
             })
             .collect(),
         can_load_older: can_interact && inputs.document.history.next_before_sequence.is_some(),
-        preview: (!super::at_current(inputs.document.state.as_ref(), inputs.session)).then_some(
-            PreviewControls {
+        preview: (!super::at_current(inputs.document.state.as_ref(), inputs.session)
+            && !inputs.compare_held)
+            .then_some(PreviewControls {
                 can_return: can_interact && !inputs.busy,
                 can_restore: can_interact && !inputs.busy && inputs.history_refusal.is_none(),
-            },
-        ),
+            }),
         menu: inputs.view_state.menu.clone(),
         can_select: can_interact && !inputs.busy,
     }

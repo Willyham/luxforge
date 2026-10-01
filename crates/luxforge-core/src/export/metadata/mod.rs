@@ -163,6 +163,60 @@ pub(crate) fn jpeg_orientation(bytes: &[u8]) -> u8 {
 }
 
 impl CaptureMetadata {
+    fn value(&self, ifd: Ifd, tag: u16) -> Option<&Value> {
+        self.fields.iter().find_map(|(index, value)| {
+            let field = &FIELDS[*index];
+            (field.ifd == ifd && field.tag == tag).then_some(value)
+        })
+    }
+
+    fn text(&self, ifd: Ifd, tag: u16) -> Option<&str> {
+        match self.value(ifd, tag)? {
+            Value::Ascii(bytes) => std::str::from_utf8(bytes).ok(),
+            _ => None,
+        }
+    }
+
+    /// The camera maker as captured in EXIF, without decoder normalization.
+    pub fn make(&self) -> Option<&str> {
+        self.text(Ifd::Primary, 0x010f)
+    }
+
+    /// The camera model as captured in EXIF, without decoder normalization.
+    pub fn model(&self) -> Option<&str> {
+        self.text(Ifd::Primary, 0x0110)
+    }
+
+    /// The lens maker as captured in EXIF.
+    pub fn lens_make(&self) -> Option<&str> {
+        self.text(Ifd::Exif, 0xa433)
+    }
+
+    /// The lens model as captured in EXIF.
+    pub fn lens_model(&self) -> Option<&str> {
+        self.text(Ifd::Exif, 0xa434)
+    }
+
+    /// The physical focal length in millimetres. A zero or invalid rational is absent.
+    pub fn focal_length_mm(&self) -> Option<f64> {
+        match self.value(Ifd::Exif, 0x920a)? {
+            Value::Rational(values) => {
+                let [numerator, denominator] = *values.first()?;
+                (numerator > 0 && denominator > 0)
+                    .then(|| f64::from(numerator) / f64::from(denominator))
+            }
+            _ => None,
+        }
+    }
+
+    /// The 35 mm equivalent focal length. EXIF zero means unknown.
+    pub fn focal_length_35mm(&self) -> Option<u16> {
+        match self.value(Ifd::Exif, 0xa405)? {
+            Value::Short(value) if *value > 0 => Some(*value),
+            _ => None,
+        }
+    }
+
     /// The EXIF of a JPEG file's first `Exif` APP1 segment before its scan.
     pub(crate) fn from_jpeg(bytes: &[u8]) -> Self {
         read::jpeg_exif(bytes)

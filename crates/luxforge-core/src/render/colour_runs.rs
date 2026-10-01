@@ -4,7 +4,6 @@
 use super::Segment;
 use crate::{
     Error,
-    colour::srgb::{decode_pixel, quantize_pixel},
     mask_field::MaskField,
     modules::{ColorOperation, ExactGeometry, Processing, Region, Stage},
 };
@@ -65,6 +64,12 @@ impl<'a> ColorRun<'a> {
             })
     }
 
+    pub(super) fn followed_by_replace(self) -> bool {
+        self.operations[self.end + 1..]
+            .iter()
+            .any(|op| matches!(op, Processing::PointReplace { .. }))
+    }
+
     /// Whether any operation of this run is modulated by a mask, which is what decides whether the
     /// pass needs snapshot scratch at all. An unmasked run costs and allocates exactly what it did
     /// before masks existed.
@@ -100,7 +105,8 @@ impl<'a> Iterator for ColorRuns<'a> {
                     Processing::PointReplace { .. } => break,
                     Processing::ExactGeometry(_)
                     | Processing::Spatial(_)
-                    | Processing::Resample(_) => {}
+                    | Processing::Resample(_)
+                    | Processing::Warp(_) => {}
                 }
             }
             self.position = last + 1;
@@ -292,24 +298,4 @@ fn apply_masked_operation(
         at = end;
     }
     Ok(())
-}
-
-/// One pixel through one colour run: decode, every operation in order, clamp and quantize. The point
-/// sampler applies a run with this; the rasterizing pass applies the same three steps to a row of a
-/// chunk, calling `apply_row` once per row instead of once per pixel, which changes no arithmetic
-/// and gives a position-dependent unit the same coordinates. Both paths share `decode_pixel_in`,
-/// `apply_units` and `Quantizer::pixel` (the rows take the table and the quantizer once rather than
-/// per pixel), so a sample cannot disagree with the byte that was rendered —
-/// including the mask coverage, which both reach through the one [`MaskPlacement::coverage`] call
-/// inside that shared function.
-pub(super) fn color_pixel(
-    rgb: [u8; 3],
-    run: &ColorRun<'_>,
-    x: u32,
-    y: u32,
-) -> Result<[u8; 3], Error> {
-    let mut pixel = [decode_pixel(rgb)];
-    let mut scratch = [[0.0f32; 3]; 1];
-    apply_units(run, y, x, &mut pixel, &mut scratch)?;
-    Ok(quantize_pixel(pixel[0]))
 }

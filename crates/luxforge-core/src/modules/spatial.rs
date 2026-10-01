@@ -8,7 +8,7 @@
 //! [`crate::render`](crate::render).
 #[cfg(test)]
 use crate::ErrorKind;
-use crate::{Error, mask_field::MaskField, modules::Stage};
+use crate::{Cancel, Error, mask_field::MaskField, modules::Stage};
 use std::{borrow::Cow, sync::Arc};
 
 /// The largest summed halo, in input pixels, one operation may declare at a stage. An operation
@@ -106,7 +106,8 @@ impl Region {
 
     /// The bytes three `f32` planes of this region occupy.
     pub(crate) fn plane_bytes(self) -> u64 {
-        self.pixels() * 3 * std::mem::size_of::<f32>() as u64
+        self.pixels()
+            .saturating_mul(3 * std::mem::size_of::<f32>() as u64)
     }
 
     pub fn contains(self, x: u32, y: u32) -> bool {
@@ -526,6 +527,23 @@ pub(crate) trait SpatialUnit: Send + Sync {
         scratch: &mut [f32],
         parallelism: Parallelism,
     ) -> Result<(), Error>;
+
+    /// Run one tile under the render's cancellation token. Units with several passes override
+    /// this to check between levels or bounded row chunks; simple units use the default.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_cancellable(
+        &self,
+        input: &Planes<'_>,
+        output: &mut PlanesMut<'_>,
+        global: Option<&Global>,
+        scratch: &mut [f32],
+        parallelism: Parallelism,
+        cancel: &Cancel,
+    ) -> Result<(), Error> {
+        cancel.check()?;
+        self.apply(input, output, global, scratch, parallelism)?;
+        cancel.check()
+    }
 
     /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no, so
     /// a non-finite parameter fails before a frame is touched.

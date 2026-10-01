@@ -59,6 +59,7 @@ pub(crate) fn controls_descriptor() -> ModuleDescriptor {
         id: "fixture.controls".into(),
         title: "Fixture controls".into(),
         actions: vec![ActionDescriptor {
+            preset: true,
             patch: true,
             parameters: vec![
                 ParameterDescriptor::number("amount", -10.0, 10.0)
@@ -93,6 +94,7 @@ pub(crate) fn controls_descriptor() -> ModuleDescriptor {
             ..ActionDescriptor::new(SET, "Set fixture", "One field patch")
         }],
         queries: vec![ActionDescriptor {
+            preset: true,
             parameters: vec![curve("master", true), curve("red", false)],
             ..ActionDescriptor::new("fixture-samples", "Sample curve", "Module samples")
         }],
@@ -164,6 +166,7 @@ pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
         title: "Fixture tabs".into(),
         layout: ModuleLayout::Tabs,
         actions: vec![ActionDescriptor {
+            preset: true,
             patch: true,
             parameters: vec![field("first"), field("second")],
             ..ActionDescriptor::new(SET, "Set fixture", "One field patch")
@@ -256,6 +259,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         title: "Crop".into(),
         hint: Some("Frame, ratio and angle".into()),
         effects: vec![luxforge_core::EffectDescriptor {
+            fit_settle: Default::default(),
             id: CROP_EFFECT.into(),
             format: 1,
             stage: EffectStage::Geometry,
@@ -267,6 +271,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         }],
         actions: vec![
             ActionDescriptor {
+                preset: true,
                 id: "crop".into(),
                 title: "Crop".into(),
                 notes: "test".into(),
@@ -274,6 +279,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 parameters: crop,
             },
             ActionDescriptor {
+                preset: true,
                 id: "crop-fit".into(),
                 title: "Fit crop".into(),
                 notes: "test".into(),
@@ -281,6 +287,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 parameters: fit,
             },
             ActionDescriptor {
+                preset: true,
                 id: "crop-reset".into(),
                 title: "Reset crop".into(),
                 notes: "test".into(),
@@ -466,4 +473,102 @@ pub(crate) fn listed(
         updated_ms: 0,
         unavailable: Vec::new(),
     }
+}
+
+/// A nonlinear fixture shared by canvas mapping tests. It uses the production core registry.
+pub(crate) fn perspective_mapping() -> luxforge_core::GeometryMap {
+    let mut recipe = luxforge_core::Recipe::default();
+    recipe.layers.push(luxforge_core::Layer {
+        id: luxforge_core::LayerId::new(),
+        effect_id: luxforge_core::PERSPECTIVE_EFFECT.into(),
+        effect_format: 1,
+        payload: json!({"horizontal": 40, "vertical": -25}),
+        mask: None,
+        artifacts: Vec::new(),
+    });
+    luxforge_core::stage_transform(
+        &luxforge_core::ModuleRegistry::assemble(&luxforge_core::RegistryOptions::default())
+            .unwrap(),
+        6000,
+        4000,
+        &recipe,
+    )
+    .unwrap()
+}
+
+pub(crate) use luxforge_core::Orientation as TestOrientation;
+pub(crate) fn nonlinear_mapping(
+    orientation: luxforge_core::Orientation,
+    horizontal: i64,
+    vertical: i64,
+) -> luxforge_core::GeometryMap {
+    use luxforge_core::{EditorService, Layer, ModuleRegistry, Mutation, Recipe};
+    use serde_json::json;
+    static LENS: std::sync::OnceLock<Layer> = std::sync::OnceLock::new();
+    let lens = LENS
+        .get_or_init(|| {
+            let catalog = luxforge_testbase::paths::temp_path("canvas-warp.sqlite");
+            let mut service = EditorService::open(&catalog).unwrap();
+            let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+            let asset = service.import(&source).unwrap().asset.id;
+            let entry = service.state(&asset).unwrap().current_entry.id;
+            let rows = luxforge_testbase::wait_for("the offline lens index", || {
+                match service.run_query(
+                    &asset,
+                    &entry,
+                    "lens-profiles",
+                    json!({"assume-uncorrected":true}),
+                ) {
+                    Ok(rows) => Some(rows),
+                    Err(error) if error.kind == luxforge_core::ErrorKind::NotReady => None,
+                    Err(error) => panic!("{error}"),
+                }
+            });
+            // The detected profile, offered in the answer's status rather than as a row.
+            let row = &rows["status"]["suggestion"];
+            assert!(
+                row["match"] == "lens-model" && row["eligible"] == true,
+                "{rows}"
+            );
+            service
+                .apply_action(
+                    &asset,
+                    Mutation {
+                        expected_revision: 0,
+                        request_id: "canvas-lens".into(),
+                        actor: "test".into(),
+                    },
+                    "select-lens-profile",
+                    json!({"profile":row["key"],"focal":24.0,"assume-uncorrected":true}),
+                )
+                .unwrap();
+            let lens = service
+                .state(&asset)
+                .unwrap()
+                .current_entry
+                .snapshot
+                .recipe
+                .layers[0]
+                .clone();
+            drop(service);
+            std::fs::remove_file(catalog).unwrap();
+            lens
+        })
+        .clone();
+    let recipe = Recipe {
+        layers: vec![
+            Layer::orientation(orientation),
+            lens,
+            Layer::new(
+                luxforge_core::PERSPECTIVE_EFFECT,
+                json!({"horizontal":horizontal,"vertical":vertical}),
+            ),
+        ],
+        ..Recipe::default()
+    };
+    let map =
+        luxforge_core::stage_transform(&ModuleRegistry::builtin(), 6000, 4000, &recipe).unwrap();
+    // The map the UI receives has crossed the same JSON boundary as render.transform.
+    serde_json::from_value(serde_json::to_value(map).unwrap()).unwrap()
 }

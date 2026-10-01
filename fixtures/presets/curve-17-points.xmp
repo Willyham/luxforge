@@ -1,0 +1,33 @@
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="Luxforge synthetic fixture">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
+    crs:PresetType="Normal"
+    crs:Name="Fine Curve"
+    crs:ProcessVersion="15.4"
+    crs:Contrast2012="+8"
+    crs:ToneCurveName2012="Custom">
+   <crs:ToneCurvePV2012>
+    <rdf:Seq>
+     <rdf:li>0, 0</rdf:li>
+     <rdf:li>16, 12</rdf:li>
+     <rdf:li>32, 26</rdf:li>
+     <rdf:li>48, 41</rdf:li>
+     <rdf:li>64, 56</rdf:li>
+     <rdf:li>80, 72</rdf:li>
+     <rdf:li>96, 89</rdf:li>
+     <rdf:li>112, 106</rdf:li>
+     <rdf:li>128, 124</rdf:li>
+     <rdf:li>144, 142</rdf:li>
+     <rdf:li>160, 160</rdf:li>
+     <rdf:li>176, 178</rdf:li>
+     <rdf:li>192, 196</rdf:li>
+     <rdf:li>208, 213</rdf:li>
+     <rdf:li>224, 229</rdf:li>
+     <rdf:li>240, 243</rdf:li>
+     <rdf:li>255, 255</rdf:li>
+    </rdf:Seq>
+   </crs:ToneCurvePV2012>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>

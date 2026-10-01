@@ -25,3 +25,38 @@ pub fn platform_secret_store() -> Arc<dyn SecretStore> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use luxforge_core::{
+        ErrorKind,
+        capabilities::secrets::{SecretKey, SecretValue},
+    };
+
+    #[test]
+    fn unsupported_platform_refuses_every_secret_operation() {
+        // Exercise the cross-crate fallback even on macOS, without touching the Keychain.
+        #[cfg(target_os = "macos")]
+        let store = luxforge_core::capabilities::secrets::UnavailableSecretStore::new(
+            "secure storage is not implemented on this platform",
+        );
+        #[cfg(not(target_os = "macos"))]
+        let store = platform_secret_store();
+        let key = SecretKey::new("test.module", None, "api-key");
+        let value = SecretValue::new("sentinel-secret".into());
+        assert_eq!(store.name(), "no secure store");
+        for error in [
+            store.set(&key, &value).unwrap_err(),
+            store.clear(&key).unwrap_err(),
+            store.present(&key).unwrap_err(),
+            store.read(&key).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::NotReady);
+            assert_eq!(
+                error.detail,
+                "secure storage is not implemented on this platform"
+            );
+        }
+    }
+}

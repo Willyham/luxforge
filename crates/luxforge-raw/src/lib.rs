@@ -23,6 +23,7 @@ mod native_tiles;
 mod neutral;
 mod normalize;
 mod opcodes;
+mod optics;
 mod profiles;
 mod rawspeed;
 mod unpacker;
@@ -40,7 +41,9 @@ pub use limits::{
 };
 use native_status::NativeStatus;
 pub use native_tiles::refill_each;
+pub use optics::{OpticalEntry, OpticalLedger, OpticalStatus, optical_ledger};
 use profiles::{Catalog, Crop, Mode};
+pub use profiles::{DngOpticalRole, DngOptics};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`
 /// after validating it: nothing is parsed at run time.
@@ -145,6 +148,18 @@ impl RawMode {
     /// which its validation enforces, so the mode answers for its camera.
     pub fn requires_dng_corrections(self) -> bool {
         self.0.dng_version.is_some()
+    }
+
+    /// The camera's declared DNG optical roles, derived from its static catalog record.
+    pub fn dng_optics(self) -> Option<&'static DngOptics> {
+        camera_catalog()
+            .cameras
+            .iter()
+            .find(|camera| camera.modes.iter().any(|mode| mode.id == self.0.id))?
+            .dng
+            .as_ref()?
+            .optics
+            .as_ref()
     }
 }
 
@@ -800,6 +815,45 @@ impl RawSource {
             correction.apply(&mut image, cancel)?;
         }
         Ok(image)
+    }
+
+    /// The share of the default crop's sensor sites that the development at `gains` feeds the
+    /// demosaic at `fraction` of sensor white or above, for a development whose planes share one
+    /// clip ceiling: a Bayer mosaic, whose demosaic clamps each gained site at sensor white, with
+    /// no DNG correction after the demosaic. `None` for any other development (X-Trans keeps
+    /// values over white; a gain map, vignette or warp moves the ceiling per pixel). A measure of
+    /// how much of a scene is highlight-clipped at those gains, for evidence; it develops nothing.
+    pub fn highlight_clip_share(
+        &self,
+        gains: [f32; 3],
+        fraction: f32,
+        cancel: &AtomicBool,
+    ) -> Result<Option<f64>, RawError> {
+        let bayer = self.metadata.cfa_width == 2 && self.metadata.cfa_height == 2;
+        if !bayer
+            || self
+                .dng_correction
+                .as_ref()
+                .is_some_and(dng::DngCorrection::corrects_after_demosaic)
+        {
+            return Ok(None);
+        }
+        let valid = |value: f32, most: f32| value.is_finite() && value > 0.0 && value <= most;
+        if !gains.iter().all(|gain| valid(*gain, MAX_GAIN)) || !valid(fraction, f32::MAX) {
+            return Err(RawError::InvalidInput(
+                "clip share gains must be finite and positive, <=32",
+            ));
+        }
+        let crop = self.metadata.default_crop;
+        let lanes = develop::development_lanes(self.mosaic.len(), 0, true);
+        self.normalization(gains)
+            .share_at_or_above(
+                fraction,
+                [crop.x, crop.y, crop.width, crop.height].map(|value| value as usize),
+                lanes,
+                cancel,
+            )
+            .map(Some)
     }
 
     /// The normalization of this source's retained mosaic with `gains`.

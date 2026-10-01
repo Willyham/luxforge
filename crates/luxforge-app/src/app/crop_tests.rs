@@ -93,6 +93,104 @@ fn section_angle(editor: &Editor) -> Value {
     editor.snapshot()["crop"]["section"]["angle"].clone()
 }
 
+#[test]
+fn crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
+    for exit in ["cancel", "noop", "failed-stage"] {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.basic".into(), true);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.crop".into(), false);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.controls".into(), true);
+        let before = editor.controls.expanded.clone();
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert!(
+            editor
+                .workspace
+                .tools
+                .all()
+                .all(|section| { section.expanded == (section.module_id == "luxforge.crop") })
+        );
+        // A second Start must not replace the saved layout with the focused one. Changes to
+        // disclosures during crop are temporary too; implicit defaults must remain implicit.
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            "luxforge.basic".into(),
+        )));
+        match exit {
+            "cancel" => draft_message(&mut editor, DraftMessage::Cancel),
+            "noop" => {
+                draft_message(&mut editor, DraftMessage::Commit);
+                answer_commit(&mut editor, Ok(None));
+            }
+            _ => {
+                let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+                    StagePlan::Open,
+                    Err("source unavailable".into()),
+                )));
+            }
+        }
+        assert!(editor.crop().is_none(), "{exit}");
+        assert_eq!(editor.controls.expanded, before, "{exit}");
+        assert!(editor.crop_section.previous_expanded.is_none());
+        finish(editor, catalog);
+    }
+}
+
+#[test]
+fn straighten_is_one_shot_and_the_next_drag_uses_crop_handles() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+    let _ = editor.update(Message::Crop(CropMessage::Guide(true)));
+    assert!(editor.crop_section.guide);
+    for pointer in [
+        CropPointer::Begin {
+            handle: Handle::Guide,
+            x: 100.0,
+            y: 100.0,
+        },
+        CropPointer::Drag {
+            x: 300.0,
+            y: 120.0,
+            option: false,
+        },
+        CropPointer::End,
+    ] {
+        let _ = editor.update(Message::Crop(CropMessage::Pointer(pointer)));
+    }
+    assert!(!editor.crop_section.guide);
+    assert_eq!(
+        editor.workspace.canvas.surface_mode,
+        crate::state::canvas::SurfaceMode::Frame
+    );
+    let angle = editor.crop().expect("a crop draft").stage.angle;
+    assert!(angle.abs() > 1.0);
+    for pointer in [
+        CropPointer::Begin {
+            handle: Handle::Move,
+            x: 200.0,
+            y: 150.0,
+        },
+        CropPointer::Drag {
+            x: 210.0,
+            y: 150.0,
+            option: false,
+        },
+        CropPointer::End,
+    ] {
+        let _ = editor.update(Message::Crop(CropMessage::Pointer(pointer)));
+    }
+    assert_eq!(editor.crop().expect("a crop draft").stage.angle, angle);
+    assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
+    finish(editor, catalog);
+}
+
 /// The stage the rows of [`opened`] give a crop with no geometry ahead of it.
 fn stage() -> CropStage {
     CropStage {
@@ -595,6 +693,146 @@ fn an_external_commit_marks_the_draft_conflicted_and_reapply_rebases_it() {
     finish(editor, catalog);
 }
 
+#[test]
+fn crop_reapply_after_external_geometry_edit_rebinds_mapping() {
+    let catalog = luxforge_testbase::paths::temp_path("crop-warp-reapply.sqlite");
+    let source = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+    let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &source);
+    let owner = editor.owner.clone();
+    let rows = luxforge_testbase::wait_for("the offline lens index", || {
+        let response = owner
+            .call(
+                agent,
+                luxforge_core::ApiRequest {
+                    id: "crop-lens-query".into(),
+                    method: "query.lens-profiles".into(),
+                    params: json!({"asset_id":asset,"assume-uncorrected":true}),
+                    token: None,
+                },
+            )
+            .unwrap();
+        match response.error {
+            Some(error) if error.code == "not-ready" => None,
+            Some(error) => panic!("{error:?}"),
+            None => response.result,
+        }
+    });
+    // The detected profile, offered in the answer's status rather than as a row.
+    let row = &rows["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{rows}"
+    );
+    crate::app::tasks::call(
+        &owner,
+        agent,
+        "edit.select-lens-profile",
+        json!({"asset_id":asset,"profile":row["key"],"assume-uncorrected":true,
+            "mutation":{"expected_revision":0,"request_id":"crop-lens","actor":"test"}}),
+    )
+    .unwrap();
+    let refresh = crate::app::tasks::refresh(
+        &owner,
+        editor.client,
+        asset.clone(),
+        crate::app::tasks::Scope::Elsewhere,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+        refresh,
+    )))));
+    let _ = editor.update(Message::Crop(CropMessage::Start));
+    submit_angle(&mut editor, "2.5");
+    let before = editor.crop().unwrap().payload();
+    let count = editor.crop().unwrap().layer_index;
+    assert_eq!(count, 1);
+    let old_job = owner
+        .preview_job(luxforge_core::PreviewRequest::new(editor.client, asset.clone()).layers(count))
+        .unwrap();
+    let old_map = luxforge_core::stage_transform(
+        old_job.evaluation.registry(),
+        600,
+        400,
+        old_job.evaluation.recipe(),
+    )
+    .unwrap();
+    assert!(matches!(
+        old_map.mapping,
+        luxforge_core::MappingShape::Warp { .. }
+    ));
+
+    crate::app::tasks::call(
+        &owner,
+        agent,
+        "edit.set-perspective",
+        json!({"asset_id":asset,"horizontal":40,"vertical":-25,
+            "mutation":{"expected_revision":1,"request_id":"crop-perspective","actor":"agent"}}),
+    )
+    .unwrap();
+    let refresh = crate::app::tasks::refresh(
+        &owner,
+        editor.client,
+        asset.clone(),
+        crate::app::tasks::Scope::Elsewhere,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(SyncResult::changed(
+        refresh,
+    )))));
+    assert!(editor.gesture_conflicted());
+    assert_eq!(editor.crop().unwrap().payload(), before);
+    editor.busy = false;
+    draft_message(&mut editor, DraftMessage::Reapply);
+    let draft = editor.crop().unwrap();
+    assert_eq!(draft.layer_index, 2);
+    assert_eq!((draft.stage.width, draft.stage.height), (600, 400));
+    assert_eq!(
+        draft.payload(),
+        before,
+        "fixed canvas retains the frame's composition"
+    );
+    assert_eq!(core_draft(&editor).unwrap().base_revision, 2);
+    assert!(!editor.gesture_conflicted());
+    let new_job = owner
+        .preview_job(
+            luxforge_core::PreviewRequest::new(editor.client, asset.clone())
+                .layers(draft.layer_index),
+        )
+        .unwrap();
+    let new_map = luxforge_core::stage_transform(
+        new_job.evaluation.registry(),
+        600,
+        400,
+        new_job.evaluation.recipe(),
+    )
+    .unwrap();
+    assert_ne!(new_map.sha256(), old_map.sha256());
+    let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+        StagePlan::Open,
+        Ok(Box::new(new_job)),
+    )));
+    luxforge_testbase::wait_until("the rebound crop stage", || {
+        let _ = editor.update(Message::Preview(
+            crate::app::message::preview::PreviewMessage::Poll,
+        ));
+        editor.crop_stage() == Some(StageView::Shown)
+    });
+    assert_eq!(editor.crop().unwrap().payload(), before);
+    draft_message(&mut editor, DraftMessage::Cancel);
+    let state = crate::app::tasks::call(&owner, agent, "asset.state", json!({"asset_id":asset}))
+        .unwrap()
+        .0;
+    assert_eq!(
+        state["revision"],
+        json!(2),
+        "reapply and cancellation commit nothing"
+    );
+    finish(editor, catalog);
+}
+
 /// Against a real owner: the open crop draft is this client's core draft, so `session.state`
 /// reports it with the payload's declared fields as each change ends; another client can
 /// neither see nor commit it; Apply commits it through `draft.commit` as one entry on the crop
@@ -750,6 +988,7 @@ fn a_first_draft_stops_before_a_finish_layer() {
     let finishing = luxforge_core::ModuleDescriptor {
         id: "luxforge.vignette".into(),
         effects: vec![luxforge_core::EffectDescriptor {
+            fit_settle: Default::default(),
             id: luxforge_core::VIGNETTE_EFFECT.into(),
             format: 1,
             stage: luxforge_core::EffectStage::Finish,
@@ -939,8 +1178,8 @@ fn a_refused_crop_start_sends_no_workspace_change() {
     let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
     assert_eq!(
         task.units(),
-        1,
-        "its input stage's truncated preview: the draft's begin answered in this update"
+        2,
+        "the input stage's preview and the panel scroll: the draft's begin answered in this update"
     );
     assert!(editor.crop().is_some());
     assert_eq!(editor.sync.mode.as_deref(), Some(crop_id.as_str()));

@@ -6,9 +6,13 @@ mod capabilities_proof;
 mod capability;
 mod controls;
 mod crop;
+mod curve;
 mod descriptor;
+mod detail;
 mod field_patch;
+pub(crate) mod lens;
 mod mixer;
+mod perspective;
 mod pixel;
 mod presence;
 mod presets;
@@ -19,6 +23,7 @@ mod spatial;
 mod transform;
 mod vignette;
 
+pub use crate::render::map::{Mapping, RadialModel, WarpStep};
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
@@ -37,12 +42,15 @@ pub use crop::geometry::{
     largest_with_ratio_inside,
 };
 pub use crop::{CROP_EFFECT, CropAspect};
+pub use curve::CURVE_EFFECT;
+pub(crate) use curve::CurveModule;
 pub use descriptor::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
     ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
-    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
-    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
-    check_parameters, check_value, resolve_control, resolve_group_reset,
+    EffectStage, FitSettle, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl,
+    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
+    QueryChoiceControl, RailDecoration, ResetAction, check_parameters, check_value,
+    resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
@@ -55,16 +63,24 @@ pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
     check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
 };
+pub use detail::DETAIL_EFFECT;
+use detail::DetailModule;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
+pub use lens::LENS_EFFECT;
+pub(crate) use lens::LensModule;
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
+pub use perspective::PERSPECTIVE_EFFECT;
+pub(crate) use perspective::PerspectiveModule;
 pub use pixel::PIXEL_EFFECT;
 pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
 pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
-pub use processing::{ColorOperation, PointwiseColor, Processing, Stage};
+pub use processing::{
+    ColorOperation, CompileStage, PointwiseColor, Processing, SamplingScale, Stage,
+};
 pub use processing::{ExactGeometry, Resample};
 pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
@@ -200,12 +216,26 @@ pub(crate) const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
 /// that reads no pixel never prepares the original, never develops a RAW and never compiles a
 /// prefix evaluation: planning a transform or a RAW white balance asks nothing here but stages.
 pub trait StageQuestions {
+    /// Capture identity and correction status from the cached verified source. No source is
+    /// opened here; an unprepared source explicitly refuses the question.
+    fn optics(&self) -> Result<crate::SourceOptics, Error> {
+        Err(Error::preparation_required(
+            "source optics require a prepared source",
+        ))
+    }
+
     /// The stage the layer at index `index` receives, which is the output stage of the layers
     /// before it. The host compiles that prefix, so this costs `O(layers)` and rasterizes nothing.
     fn stage_before(&self, index: usize) -> Result<Stage, Error>;
     /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
     /// The host evaluates that one point segment by segment, so it allocates no frame.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error>;
+    /// A layer's input in linear light, including the spatial hand-off's precision.
+    fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        Ok(self.sample_before(index, x, y)?.map(|rgba| {
+            crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]).map(f64::from)
+        }))
+    }
     /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
     /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a
     /// sensor, so the default, for a stack without one, refuses.
@@ -244,6 +274,11 @@ pub struct StageContext<'a> {
 }
 
 impl<'a> StageContext<'a> {
+    /// The verified original's optical identity and derived correction ledger.
+    pub fn optics(&self) -> Result<crate::SourceOptics, Error> {
+        self.questions.optics()
+    }
+
     /// The one layer of `effect_id` that belongs to the target this plan or query addresses, with
     /// its index: how a module that owns one layer finds it. It is
     /// [`ModuleRegistry::own_layer`] over these layers and this target, so a masked layer of a
@@ -288,6 +323,15 @@ impl<'a> StageContext<'a> {
         y: u32,
     ) -> Result<Option<[u8; 4]>, Error> {
         self.questions.sample_before(index, x, y)
+    }
+
+    pub(crate) fn input_before(
+        &self,
+        index: usize,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[f64; 3]>, Error> {
+        self.questions.input_before(index, x, y)
     }
 
     /// A RAW original's sensor patch at upright content coordinates
@@ -416,6 +460,13 @@ pub trait ToolModule: Send + Sync {
         let _ = input;
         action.title.clone()
     }
+    /// A history label that needs the resolved result of planning, such as a frozen profile
+    /// and its EXIF focal length. Reads bounded payloads only; never queries or renders.
+    fn planned_label(&self, input: &ActionInput, layers: &[Layer], fallback: &str) -> String {
+        let _ = (input, layers);
+        fallback.to_owned()
+    }
+
     /// What a preset captures of a stored layer: the fields, named as the module's patch action's
     /// parameters, that reproduce this layer's state when applied to another photo. The default is
     /// the values [`ToolModule::describe`] reports; a module whose values report more than a
@@ -455,7 +506,7 @@ pub trait ToolModule: Send + Sync {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error>;
     /// This stored geometry layer re-expressed for its input stage turned or reflected by
     /// `orientation`, so it selects the same content in the turned stage. `input` is the stage the
@@ -487,4 +538,19 @@ pub trait ToolModule: Send + Sync {
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
         None
     }
+    /// One of this module's own actions to commit when a photo is first opened, or `None`, the
+    /// default. The host asks when a preparation of the photo's original completes while its head
+    /// has never moved (revision 0), against its Original's stack, and commits the action as an
+    /// ordinary history entry by the `system` actor, so Undo removes it and the Original stays as
+    /// developed. Once the head has moved it is never asked again for that photo: not when the file
+    /// is developed again, not on reopen. Planning reads metadata through the context, never
+    /// pixels; an error is reported with the preparation and commits nothing.
+    fn first_open(&self, context: &StageContext<'_>) -> Result<Option<ActionInput>, Error> {
+        let _ = context;
+        Ok(None)
+    }
+    /// Block until whatever [`ToolModule::first_open`] reads is loaded. The host calls it on the
+    /// source worker before such a preparation completes, never on the catalog owner or a UI
+    /// thread, so `first_open` itself never waits. The default has nothing to wait for.
+    fn await_first_open(&self) {}
 }

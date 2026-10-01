@@ -13,7 +13,8 @@ use luxforge_core::{EditorState, Zoom};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RenderTime {
     pub(crate) ms: f64,
-    /// The frame is the display-size proxy rather than the exact full-resolution render.
+    /// The displayed frame was evaluated approximately at proxy scale; an exact-derived
+    /// display reduction is false even though its texture uses the proxy slot.
     pub(crate) proxy: bool,
     /// The frame approximates a drafted RAW white balance on planes developed at another one
     /// ([`luxforge_core::PreviewResult::approximate_white_balance`]).
@@ -253,6 +254,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         // while that photograph's render is on its way.
         render: if let Some(preview) = &inputs.develop.preview {
             preview.render_text()
+        } else if let Some(bar) = inputs.render_bar {
+            format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
         } else if inputs.rendering {
             "Rendering…".into()
         } else {

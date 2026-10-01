@@ -1,12 +1,15 @@
 //! Desktop control-to-uploaded-frame measurement: the real editor, gesture and GPU upload.
 //!
-//! [`editor_performance`](crate::editor_performance) measures `render` on the catalog owner's own
-//! thread. Nothing there schedules, uploads or presents, so it cannot answer the responsiveness
+//! [`editor_performance`](crate::editor_performance) measures exact core rendering over a cached
+//! source. Nothing there schedules, uploads or presents, so it cannot answer the responsiveness
 //! question the [Basic design][design] asks: how long after a slider input the frame carrying that
 //! input is on screen. This module answers it by driving the shipped binary in a background
 //! evidence launch, with one `slider` script step per input, and reading the timestamps out of the
 //! run's own `events.jsonl`. The default measures Basic's exposure slider; `--control curve`
-//! measures the developer proof curve while its canvas is visible in the tools panel.
+//! measures the developer proof curve while its canvas is visible in the tools panel, and
+//! `--control curve --action <id> --parameter <name>` a registered module's curve instead
+//! ([`FieldTarget::lookup_curve`]): the Tone curve's `set-curve` `luminance`, seeded with a
+//! mid-tone point ([`MID_TONE_SEED`]) that the gesture drags.
 //!
 //! What "presented" means here: the update in which the rendered raster became the photo surface's
 //! source, recorded as `preview_displayed`. The photograph is drawn by a primitive that owns its
@@ -32,13 +35,13 @@ use crate::{
     },
     *,
 };
-use luxforge_core::{ModuleRegistry, ParameterKind};
+use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
     Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -49,6 +52,16 @@ const EXPOSURE: &str = "exposure";
 const SET_CONTROLS: &str = "set-controls";
 const MASTER: &str = "master";
 const CONTROLS_MODULE: &str = "luxforge.controls";
+
+/// The curve a module-curve run commits through its action before the first sample. A fresh
+/// curve is `[[0, 0], [1, 1]]`, whose point 1 is the white point; with this seed point 1 is a
+/// mid-tone point, at the same `x` as the proof curve's middle point, so the gesture drags a
+/// mid-tone and every drafted frame runs the curve's colour unit.
+const MID_TONE_SEED: [[f64; 2]; 3] = [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]];
+
+/// The point a curve gesture drags: point 1, at `x` 0.5, of the proof curve or the seeded curve.
+const DRAGGED_POINT: usize = 1;
+const DRAGGED_X: f32 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
@@ -65,10 +78,23 @@ impl Control {
     }
 }
 
-/// The field-patch action and parameter a slider gesture measures, with the range and step
+/// Which curve a `--control curve` gesture drags, and so how the run is launched and set up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CurveOwner {
+    /// The developer controls proof's master curve: a developer launch, nothing seeded, the proof
+    /// section expanded at the bottom of the tools panel.
+    Proof,
+    /// A registered, non-developer module's curve, named by the module's identity: an ordinary
+    /// launch, [`MID_TONE_SEED`] committed through the action first, every section above the
+    /// module's collapsed and the module's expanded.
+    Module(String),
+}
+
+/// The action and parameter a gesture measures. A slider's carries the range and step
 /// [`FieldTarget::lookup`] reads from the module registry so every generated gesture value is one
-/// the action would actually accept. `--control curve` never uses this: the proof curve is its own
-/// fraction-based gesture, unrelated to any field's declared range.
+/// the action would actually accept. A curve's ([`FieldTarget::proof_curve`],
+/// [`FieldTarget::lookup_curve`]) carries the curve's own `0..=1` coordinates and no step: its
+/// gesture is the binary fractions [`gesture_values`] makes, unrelated to any field's step.
 struct FieldTarget {
     action: String,
     parameter: String,
@@ -78,6 +104,8 @@ struct FieldTarget {
     /// Where the gesture's values start from: zero when the range holds it, as every field-patch
     /// slider's does, otherwise the declared default (a RAW photo's Temperature, 2000..12000 K).
     origin: f64,
+    /// `Some` for a curve target: whose curve it is.
+    curve: Option<CurveOwner>,
 }
 
 impl FieldTarget {
@@ -92,7 +120,92 @@ impl FieldTarget {
             max: 5.0,
             step: 0.01,
             origin: 0.0,
+            curve: None,
         }
+    }
+
+    /// `--control curve` without `--action`: the developer proof's master curve, unchanged from
+    /// before a module's curve could be named.
+    fn proof_curve() -> Self {
+        Self {
+            action: SET_CONTROLS.into(),
+            parameter: MASTER.into(),
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            origin: 0.0,
+            curve: Some(CurveOwner::Proof),
+        }
+    }
+
+    /// Resolve `--control curve --action <id> --parameter <name>` against the built-in module
+    /// registry, which holds no developer module: the action must be a registered, non-developer
+    /// field-patch action, and the parameter one of its curve parameters that can hold
+    /// [`MID_TONE_SEED`]. A number parameter is refused by name: it is measured without
+    /// `--control curve`.
+    fn lookup_curve(action: &str, parameter: &str) -> Result<Self> {
+        let registry = ModuleRegistry::builtin();
+        let (_, declared) = registry.action(action).ok_or_else(|| {
+            format!(
+                "No product module declares the action {action}; --control curve --action drives a registered, non-developer module's curve"
+            )
+        })?;
+        let module = registry
+            .descriptors()
+            .into_iter()
+            .find(|module| {
+                module
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate.id == action)
+            })
+            .ok_or_else(|| format!("No module descriptor lists the action {action}"))?;
+        ensure(
+            !module.developer,
+            format!(
+                "Action {action} belongs to the developer module {}; --control curve without --action measures the proof curve",
+                module.id
+            ),
+        )?;
+        ensure(
+            declared.patch,
+            format!(
+                "Action {action} is not a field-patch action; --control curve drives a field-patch action's curve"
+            ),
+        )?;
+        let parameter_descriptor = declared
+            .parameter(parameter)
+            .ok_or_else(|| format!("Action {action} declares no parameter {parameter}"))?;
+        match &parameter_descriptor.kind {
+            ParameterKind::Curve {
+                points_min,
+                points_max,
+                fixed_x: None,
+                ..
+            } if (*points_min..=*points_max).contains(&MID_TONE_SEED.len()) => {}
+            ParameterKind::Curve { .. } => {
+                return Err(format!(
+                    "Curve parameter {parameter} of {action} cannot hold the mid-tone seed {MID_TONE_SEED:?}"
+                )
+                .into());
+            }
+            other => {
+                return Err(format!(
+                    "Parameter {parameter} of {action} is a {} parameter, not a curve; measure it without --control curve",
+                    other.name()
+                )
+                .into());
+            }
+        }
+        Ok(Self {
+            action: action.to_owned(),
+            parameter: parameter.to_owned(),
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            origin: 0.0,
+            curve: Some(CurveOwner::Module(module.id.clone())),
+        })
     }
 
     /// Resolve `--action <id> --parameter <name>` against the built-in module registry: the
@@ -119,6 +232,12 @@ impl FieldTarget {
         let (min, max) = match &parameter_descriptor.kind {
             ParameterKind::Integer { min, max } => (*min as f64, *max as f64),
             ParameterKind::Number { min, max } => (*min, *max),
+            ParameterKind::Curve { .. } => {
+                return Err(format!(
+                    "Parameter {parameter} of {action} is a curve; measure it with --control curve"
+                )
+                .into());
+            }
             other => {
                 return Err(format!(
                     "Parameter {parameter} of {action} is {other:?}, not an integer or a number"
@@ -148,6 +267,7 @@ impl FieldTarget {
             max,
             step,
             origin,
+            curve: None,
         })
     }
 
@@ -187,25 +307,39 @@ impl FieldTarget {
     }
 }
 
-/// What `--action`/`--parameter` resolve to: absent, the default Basic exposure slider, unchanged
-/// from before this option existed; present, both are required together and name a field-patch
-/// slider, which only the (default) slider control measures.
+/// What `--control` and `--action`/`--parameter` resolve to. Absent, the default Basic exposure
+/// slider, or with `--control curve` the developer proof curve, both unchanged from before these
+/// options existed; present, both are required together and name a field-patch slider
+/// ([`FieldTarget::lookup`]) or, with `--control curve`, a module's curve
+/// ([`FieldTarget::lookup_curve`]).
 fn resolve_field(
     control: Control,
     action: Option<&str>,
     parameter: Option<&str>,
 ) -> Result<FieldTarget> {
-    match (action, parameter) {
-        (None, None) => Ok(FieldTarget::basic_exposure()),
-        (Some(action), Some(parameter)) => {
-            ensure(
-                control == Control::Slider,
-                "--action/--parameter measure a field-patch slider; pass no --control or --control slider",
-            )?;
-            FieldTarget::lookup(action, parameter)
+    match (control, action, parameter) {
+        (Control::Slider, None, None) => Ok(FieldTarget::basic_exposure()),
+        (Control::Curve, None, None) => Ok(FieldTarget::proof_curve()),
+        (Control::Slider, Some(action), Some(parameter)) => FieldTarget::lookup(action, parameter),
+        (Control::Curve, Some(action), Some(parameter)) => {
+            FieldTarget::lookup_curve(action, parameter)
         }
         _ => Err("--action and --parameter must be given together".into()),
     }
+}
+
+/// The kind of photograph `source` is, read from its first bytes: a JPEG starts with its
+/// start-of-image marker, and anything else the latency harness opens is a RAW file. The tools
+/// panel lists a section only for a module that applies to the photo's kind ([`lists_section`]).
+fn source_tag(source: &Path) -> Result<SourceTag> {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    fs::File::open(source)?.read_exact(&mut magic)?;
+    Ok(if magic == [0xFF, 0xD8] {
+        SourceTag::Jpeg
+    } else {
+        SourceTag::Raw
+    })
 }
 
 /// Every Basic field non-neutral, for the "holds a full Basic layer" resource workload. Each value
@@ -251,7 +385,7 @@ fn gesture_values(samples: usize, control: Control, field: &FieldTarget) -> Vec<
 /// seconds (from [`sampled`]) and the owner render context's scratch high-water mark at the last
 /// captured frame.
 fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
-    vec![
+    let mut rows = vec![
         stats::scalar(
             "sampled_peak_rss_mib",
             "MiB",
@@ -267,7 +401,30 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             "bytes",
             last["state"]["scratch"]["peak_bytes"].as_f64(),
         ),
-    ]
+        stats::scalar(
+            "spatial_scratch_peak_bytes",
+            "bytes",
+            last["state"]["performance"]["resources"]["budgets"]["spatial"]["peak_bytes"].as_f64(),
+        ),
+        stats::scalar(
+            "last_native_gpu_allocated",
+            "MiB",
+            resource_mib(last, &["gpu", "allocated_bytes"]),
+        ),
+    ];
+    for field in [
+        "full_resident_bytes",
+        "region_resident_bytes",
+        "retiring_bytes",
+        "stage_resident_bytes",
+    ] {
+        rows.push(counter(
+            &format!("last_surface_{field}"),
+            "bytes",
+            last["state"]["surface"]["gpu"][field].as_u64(),
+        ));
+    }
+    rows
 }
 
 /// A GPU counter as a one-sample row.
@@ -368,22 +525,18 @@ fn gesture_launch(
     }
 }
 
-/// The hold launch: the full Basic layer committed into a catalog that outlives it.
-fn hold_launch(catalog: &Path, source: &Path) -> Launch {
-    Launch::named("hold")
-        .catalog(catalog)
-        .script("hold-script.json", hold_script())
-        .open_all(&[source.into()])
-        .order(ORDER)
-}
-
 /// The idle launch: the held catalog, reopened by an ordinary launch.
-fn idle_launch(catalog: &Path, data: &Path, source: &Path) -> Launch {
-    Launch::ordinary("idle")
+fn idle_launch(catalog: &Path, data: &Path, source: &Path, developer: bool) -> Launch {
+    let launch = Launch::ordinary("idle")
         .catalog(catalog)
         .data_root(data)
         .open_all(&[source.into()])
-        .order(ORDER)
+        .order(ORDER);
+    if developer {
+        launch.developer()
+    } else {
+        launch
+    }
 }
 
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
@@ -417,11 +570,7 @@ fn event_value(value: &Value, control: Control) -> Option<f64> {
 }
 
 fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec<Input>> {
-    let key = if control == Control::Curve {
-        MASTER
-    } else {
-        field.parameter.as_str()
-    };
+    let key = field.parameter.as_str();
     let mut inputs = Vec::new();
     let mut pending: Option<(f64, f64)> = None;
     for event in events {
@@ -477,10 +626,14 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
     }
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
         let generation = event["detail"]["generation"].as_u64();
-        if let Some(input) = inputs
-            .iter_mut()
-            .find(|input| input.generation.is_some() && input.generation == generation)
-        {
+        let displayed_ms = elapsed(event)?;
+        if let Some(input) = inputs.iter_mut().rev().find(|input| {
+            input.generation.is_some()
+                && input.generation == generation
+                // An unchanged draft may reuse the already displayed generation. Its earlier
+                // committed frame is not a response to this input.
+                && displayed_ms >= input.queued_ms
+        }) {
             ensure(
                 event["detail"]["draft_revision"].as_u64() == input.draft_revision,
                 "A displayed frame names another draft revision than the job it answers",
@@ -488,7 +641,7 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
             // One generation can now display an interactive region, exact refinement and a full
             // frame. Input-to-first-visible-response stops at its first adoption.
             if !input.displayed_ms.is_finite() {
-                input.displayed_ms = elapsed(event)?;
+                input.displayed_ms = displayed_ms;
             }
         }
     }
@@ -508,15 +661,16 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
 /// displayed, which is the queue cancellation this gesture actually performs. Its latency is
 /// therefore excluded from the per-input distribution and measured through to the settled exact
 /// histogram instead.
-/// The middle point of the proof curve dragged through `points`, each a height the widget
-/// publishes in single precision.
-fn curve_step(points: Vec<f64>, finish: SliderEnd) -> script::Step {
+/// Point 1 of the target's curve — the proof curve's middle point, or the seeded mid-tone point of
+/// a module's curve — dragged through `points`, each a height the widget publishes in single
+/// precision, through the target's own action and parameter.
+fn curve_step(field: &FieldTarget, points: Vec<f64>, finish: SliderEnd) -> script::Step {
     script::Step::Curve(CurveStep {
-        action: SET_CONTROLS.into(),
-        parameter: MASTER.into(),
+        action: field.action.clone(),
+        parameter: field.parameter.clone(),
         event: CurveStepEvent::Move {
-            index: 1,
-            points: points.into_iter().map(|y| [0.5, y as f32]).collect(),
+            index: DRAGGED_POINT,
+            points: points.into_iter().map(|y| [DRAGGED_X, y as f32]).collect(),
         },
         finish,
     })
@@ -531,6 +685,7 @@ fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<s
             let release = index == last;
             if control == Control::Curve {
                 return curve_step(
+                    field,
                     vec![*value],
                     if release {
                         SliderEnd::Release
@@ -557,6 +712,7 @@ fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> script::
         // Reverse the middle point's vertical journey while remaining in the declared [0,1]
         // range. The burst measures one replaceable pending draft value, not visible frames.
         return curve_step(
+            field,
             values
                 .iter()
                 .map(|value| f64::from((1.0 - value) as f32))
@@ -582,7 +738,7 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
     values
         .iter()
         .map(|value| match control {
-            Control::Curve => curve_step(vec![*value], SliderEnd::Release),
+            Control::Curve => curve_step(field, vec![*value], SliderEnd::Release),
             _ => script::Step::Slider(
                 SliderStep::new(&field.action, &field.parameter, [*value]).release(),
             ),
@@ -590,22 +746,79 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
         .collect()
 }
 
-/// Keep the proof curve, including its canvas, in the real tools-panel viewport during the
+/// Keep the measured curve, including its canvas, in the real tools-panel viewport during the
 /// measurement. A hidden curve would measure only controller/render work and miss tessellation.
-fn curve_view_steps() -> Vec<script::Step> {
-    // The latency source is JPEG; the RAW section is absent from its tools model entirely.
-    let mut steps: Vec<script::Step> = [
-        "luxforge.basic",
-        "luxforge.pixel",
-        "luxforge.transform",
-        "luxforge.crop",
-    ]
-    .into_iter()
-    .map(|module| script::Step::section(module, false))
-    .collect();
-    steps.push(script::Step::section(CONTROLS_MODULE, true));
-    steps.push(script::Step::tools_scroll(1.0));
-    steps
+///
+/// The proof curve's section is the developer section at the bottom of the panel: the sections
+/// open by default above it are collapsed, it is expanded and the panel is scrolled to its end, as
+/// before a module's curve could be named. A module's curve: every section the panel lists above
+/// the module's is collapsed ([`lists_section`]), the module's own is expanded, and the panel is
+/// scrolled to its top. A slider target has no view steps.
+fn curve_view_steps(field: &FieldTarget, source: SourceTag, masking: bool) -> Vec<script::Step> {
+    match &field.curve {
+        None => Vec::new(),
+        Some(CurveOwner::Proof) => {
+            // The latency source is JPEG; the RAW section is absent from its tools model entirely.
+            let mut steps: Vec<script::Step> = [
+                "luxforge.basic",
+                "luxforge.pixel",
+                "luxforge.transform",
+                "luxforge.crop",
+            ]
+            .into_iter()
+            .map(|module| script::Step::section(module, false))
+            .collect();
+            steps.push(script::Step::section(CONTROLS_MODULE, true));
+            steps.push(script::Step::tools_scroll(1.0));
+            steps
+        }
+        Some(CurveOwner::Module(module)) => {
+            let registry = ModuleRegistry::builtin();
+            let mut steps: Vec<script::Step> = registry
+                .descriptors()
+                .into_iter()
+                .take_while(|descriptor| descriptor.id != *module)
+                .filter(|descriptor| lists_section(descriptor, source, masking))
+                .map(|descriptor| script::Step::section(&descriptor.id, false))
+                .collect();
+            steps.push(script::Step::section(module, true));
+            steps.push(script::Step::tools_scroll(0.0));
+            steps
+        }
+    }
+}
+
+/// Whether an ordinary (non-developer) editor's tools panel lists a section for `module` over a
+/// photograph of kind `source`, by the desktop's own rule (`state::tools::derive`): the module
+/// applies to the photo, draws a section (it declares controls, a capability surface or the crop
+/// frame) and, in the mask workspace, has a maskable effect. A section step naming a module the
+/// panel does not list is refused, so the view steps name exactly these.
+fn lists_section(
+    module: &luxforge_core::ModuleDescriptor,
+    source: SourceTag,
+    masking: bool,
+) -> bool {
+    let draws = !module.controls.is_empty()
+        || module.settings.is_some()
+        || !module.resources.is_empty()
+        || !module.tasks.is_empty()
+        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }));
+    !module.developer
+        && module.applies_to(source)
+        && draws
+        && (!masking || module.effects.iter().any(|effect| effect.maskable))
+}
+
+/// The commit a module-curve run makes before its view steps: [`MID_TONE_SEED`] through the
+/// target's own action, so the gesture's point 1 is a mid-tone point. A masked run seeds the
+/// masked layer its drag drafts, naming the mask [`mask_precondition`] made.
+fn seed_step(field: &FieldTarget, masked: bool) -> script::Step {
+    let mut params = serde_json::Map::new();
+    params.insert(field.parameter.clone(), json!(MID_TONE_SEED));
+    if masked {
+        params.insert("mask".into(), json!(Reference::name("Mask 1")));
+    }
+    script::Step::call(format!("edit.{}", field.action), Value::Object(params))
 }
 
 /// Which distribution a run gathers. Drag and commit drive the same messages and differ in where
@@ -665,9 +878,9 @@ const BURST_RATE_PER_SEC: f64 = 120.0;
 /// every exposure field's scaled burst reproduces value for value.
 #[cfg(test)]
 const BURST_PEAK_EV: f64 = 2.0;
-/// The triangle's peak for any field, as a fraction of the smaller half of its declared range
-/// around its origin: exactly [`BURST_PEAK_EV`] on an exposure's -5..5 EV, 40 on a -100..100 field
-/// and 1802 K either side of a RAW Temperature's 6504 K.
+/// The triangle's peak, as a fraction of the smaller half of its declared range around an interior
+/// origin, or the available range when its origin is a limit: exactly [`BURST_PEAK_EV`] on an
+/// exposure's -5..5 EV, 40 on a -100..100 field and 1802 K either side of RAW Temperature's 6504 K.
 const BURST_PEAK_FRACTION: f64 = 0.4;
 
 /// One value per tick, in milliseconds, at [`BURST_RATE_PER_SEC`].
@@ -709,14 +922,23 @@ fn burst_units() -> Vec<f64> {
 }
 
 impl FieldTarget {
-    /// The burst's values for this field: the triangle of [`burst_units`] about the field's
-    /// origin, peaking at [`BURST_PEAK_FRACTION`] of the smaller half of its declared range, each
+    /// The burst's values for this field: an interior origin follows [`burst_units`], peaking at
+    /// [`BURST_PEAK_FRACTION`] of the smaller half of its declared range. A limit origin instead
+    /// makes one inward triangle to that fraction of the available range and back. Each value is
     /// on the field's own step grid, as a slider on that step would produce. On an exposure field
     /// (origin 0, -5..5 EV, step 0.01) that is [`burst_values`] itself, value for value; on
     /// RAW Temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
     /// field ±40.
     fn burst_values(&self) -> Vec<f64> {
-        let amplitude = BURST_PEAK_FRACTION * (self.max - self.origin).min(self.origin - self.min);
+        let above = self.max - self.origin;
+        let below = self.origin - self.min;
+        let at_limit = above == 0.0 || below == 0.0;
+        let amplitude = BURST_PEAK_FRACTION
+            * if at_limit {
+                above.max(below)
+            } else {
+                above.min(below)
+            };
         // A whole step divides exactly; a fractional one multiplies by its inverse, which is how
         // the two-decimal exposure values have always been rounded.
         let snap = |value: f64| {
@@ -727,9 +949,20 @@ impl FieldTarget {
                 (value * per_step).round() / per_step
             }
         };
-        burst_units()
+        let units = burst_units();
+        let last = (units.len() - 1) as f64;
+        units
             .into_iter()
-            .map(|unit| snap(self.origin + unit * amplitude).clamp(self.min, self.max))
+            .enumerate()
+            .map(|(index, unit)| {
+                let unit = if at_limit {
+                    let inward = 1.0 - (2.0 * index as f64 / last - 1.0).abs();
+                    if above == 0.0 { -inward } else { inward }
+                } else {
+                    unit
+                };
+                snap(self.origin + unit * amplitude).clamp(self.min, self.max)
+            })
             .collect()
     }
 }
@@ -771,15 +1004,15 @@ pub struct Options<'a> {
     pub samples: usize,
     pub mode: Mode,
     pub control: Control,
-    /// `--action`/`--parameter`, resolved by [`resolve_field`]: the default Basic exposure slider
-    /// when absent, or the named field-patch slider `--control slider` (the default) measures.
-    /// Unused when `control` is `Curve`.
+    /// `--action`/`--parameter`, resolved with `control` by [`resolve_field`]: when absent, the
+    /// default Basic exposure slider or, with `--control curve`, the proof curve; when present, the
+    /// named field-patch slider or, with `--control curve`, the named module curve.
     pub action: Option<&'a str>,
     pub parameter: Option<&'a str>,
     /// Commit a straightening crop before the gesture, so the measured stack carries the crop
     /// resample as well as the colour pass.
     pub crop: Option<f64>,
-    /// Also hold a full Basic layer and measure idle CPU for 30 seconds after it settles.
+    /// Reopen the gesture's committed stack and measure idle CPU for 30 seconds after it settles.
     pub idle: bool,
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
@@ -787,6 +1020,14 @@ pub struct Options<'a> {
     /// Commit a Presence layer with all three fields at full strength before a drag, commit or
     /// crop-start gesture, so the measured stack holds its neighbourhood operations.
     pub presence: bool,
+    /// Seed a real moderate global Tone curve, independent of the curve control being measured.
+    pub curve_layer: bool,
+    /// Seed moderate global Detail before binding any masked gesture target.
+    pub detail: bool,
+    /// Resolve and select the first eligible offline profile before the measured gesture.
+    pub lens: bool,
+    /// Seed a nonneutral +20/-10 Perspective before the crop and measured gesture.
+    pub perspective: bool,
     /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
     /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
     /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
@@ -875,15 +1116,34 @@ fn paint_path(positions: usize) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// The steps that build the **bare** recipe the paint measurement wants: one brush mask, one masked
-/// colour layer, and nothing else.
+/// One brush mask and one masked colour layer, plus the requested global Detail precondition.
 ///
 /// The seeding stroke is what creates the mask and its `Brush 1`, because a brush declares no
 /// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
 /// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
 fn paint_precondition(options: &Options) -> Vec<script::Step> {
-    // With `--mask-overlay`, the selected mask's tint is on while the stroke is painted, so every
-    // drafted job also fills the overlay's coverage grid.
+    // Commit global Detail before New Mask changes the action target to the brush mask.
+    let mut steps = Vec::new();
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
+    steps.extend(brushed_mask(options));
+    steps.push(script::Step::Slider(
+        SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release(),
+    ));
+    steps.push(script::Step::Mask(MaskStep::Paint(PaintStep::Component(
+        Reference::Index(0),
+    ))));
+    steps
+}
+
+/// Mask mode with the paint brush's settings and one committed brush mask. With
+/// `--mask-overlay`, the selected mask's tint is on, so every accepted draft also asks for its
+/// coverage grid.
+fn brushed_mask(options: &Options) -> Vec<script::Step> {
     let workspace = WorkspaceStep::default().mode("mask");
     let workspace = if options.mask_overlay {
         workspace.mask_overlay("tint")
@@ -907,8 +1167,6 @@ fn paint_precondition(options: &Options) -> Vec<script::Step> {
             interval_ms: None,
             settle_between: false,
         }),
-        script::Step::Slider(SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release()),
-        script::Step::Mask(MaskStep::Paint(PaintStep::Component(Reference::Index(0)))),
     ]
 }
 
@@ -919,10 +1177,47 @@ fn crop_precondition(options: &Options) -> Option<script::Step> {
         .map(|angle| script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":angle})))
 }
 
+/// Geometry is seeded through the same module actions in every measured mode. Lens remains an
+/// independent option; Perspective is explicit so comparisons can keep that stack unchanged.
+fn geometry_preconditions(options: &Options) -> Vec<script::Step> {
+    let raw = source_tag(options.source).is_ok_and(|kind| kind == SourceTag::Raw);
+    let mut steps = Vec::new();
+    if options.lens {
+        steps.extend(crate::scenario::recipe::lens_profile(raw));
+    } else if raw {
+        // A supported RAW is imported with its detected profile applied; a baseline without Lens
+        // turns it off so the two runs differ only by the profile.
+        steps.push(crate::scenario::recipe::lens_off());
+    }
+    if options.perspective {
+        steps.push(script::Step::call(
+            "edit.set-perspective",
+            json!({"horizontal":20,"vertical":-10}),
+        ));
+    }
+    steps.extend(crop_precondition(options));
+    steps
+}
+
+fn report_geometry(result: &mut Value, options: &Options) {
+    result["curve_layer"] = json!(options.curve_layer);
+    result["curve_seed"] = if options.curve_layer {
+        json!({"luminance":crate::scenario::recipe::MODERATE_CURVE})
+    } else {
+        Value::Null
+    };
+    result["lens_layer"] = json!(options.lens);
+    result["perspective_layer"] = json!(options.perspective);
+    result["perspective_seed"] = if options.perspective {
+        json!({"horizontal":20,"vertical":-10})
+    } else {
+        Value::Null
+    };
+}
+
 /// The paint run's script: its preconditions, then the one paced stroke along `path`.
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
     if options.basic {
         steps.push(basic_precondition());
     }
@@ -941,15 +1236,17 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
     steps
 }
 
-/// A drag or commit run's script: its preconditions, then the gesture's steps.
-fn gesture_script(
-    options: &Options,
-    field: &FieldTarget,
-    values: &[f64],
-    drag: bool,
-) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+/// A drag or commit run's preconditions before any zoom: the crop, mask, Basic and Presence
+/// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
+/// frame captured after the last of them is the one the curve's readiness is checked on.
+fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
+    let mut steps = geometry_preconditions(options);
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
@@ -959,9 +1256,22 @@ fn gesture_script(
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
     }
-    if options.control == Control::Curve {
-        steps.extend(curve_view_steps());
+    if matches!(field.curve, Some(CurveOwner::Module(_))) {
+        steps.push(seed_step(field, options.mask));
     }
+    steps.extend(curve_view_steps(field, source, options.mask));
+    steps
+}
+
+/// A drag or commit run's script: its preconditions, then the gesture's steps.
+fn gesture_script(
+    options: &Options,
+    field: &FieldTarget,
+    source: SourceTag,
+    values: &[f64],
+    drag: bool,
+) -> Vec<script::Step> {
+    let mut steps = setup_steps(options, field, source);
     steps.extend(zoom_step(options));
     if drag {
         steps.extend(gesture_steps(values, options.control, field));
@@ -979,8 +1289,13 @@ fn burst_script(
     values: &[f64],
     interval_ms: u64,
 ) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
@@ -997,16 +1312,80 @@ fn burst_script(
     steps
 }
 
-/// The hold run's script: the full Basic layer it commits.
-fn hold_script() -> Value {
-    script::write(&[basic_precondition()])
+/// Verify the recorded numeric-workload precondition before the measured gesture changes anything.
+/// Curve control gestures use their own independently declared target and mid-tone seed.
+fn check_curve_layer_seed(frames: &[Value], steps: &[script::Step], expected: bool) -> Result {
+    if !expected {
+        return Ok(());
+    }
+    let seed = steps
+        .iter()
+        .position(|step| *step == crate::scenario::recipe::moderate_curve())
+        .ok_or("The real Tone curve precondition step is missing")?;
+    let frame = frames
+        .get(seed + 1)
+        .ok_or("No frame follows the Tone curve precondition")?;
+    let layers = frame["state"]["stack"]["layers"]
+        .as_array()
+        .ok_or("No curve seed stack")?;
+    let curve: Vec<_> = layers
+        .iter()
+        .filter(|layer| layer["effect"] == luxforge_core::CURVE_EFFECT)
+        .collect();
+    ensure(
+        curve.len() == 1
+            && curve[0]["mask"].is_null()
+            && curve[0]["payload"] == json!({"luminance":crate::scenario::recipe::MODERATE_CURVE}),
+        "The numeric workload did not seed its declared real global S-curve layer",
+    )
+}
+
+/// Refuse a measurement whose captured recipe missed the requested global restoration layer.
+fn check_detail_precondition(frame: &Value, expected: bool) -> Result {
+    let layers = frame["state"]["stack"]["layers"]
+        .as_array()
+        .ok_or("The frame records no stack")?;
+    let detail: Vec<_> = layers
+        .iter()
+        .filter(|l| l["effect"] == luxforge_core::DETAIL_EFFECT)
+        .collect();
+    ensure(
+        detail.len() == usize::from(expected),
+        "Captured Detail layer count disagrees with --detail",
+    )?;
+    if expected {
+        ensure(
+            detail[0]["mask"].is_null()
+                && detail[0]["payload"]
+                    == json!({"sharpening":60.0,"luminance":40.0,"colour":40.0}),
+            "The workload requires the declared moderate global Detail precondition",
+        )?;
+        let detail_index = layers
+            .iter()
+            .position(|l| l["effect"] == luxforge_core::DETAIL_EFFECT)
+            .unwrap();
+        ensure(
+            layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l["effect"] == luxforge_core::BASIC_EFFECT)
+                .all(|(index, _)| detail_index < index),
+            "Detail must precede the measured Basic layers",
+        )?;
+    }
+    Ok(())
 }
 
 /// One open draft crosses two pans and a quiet interval. A second value resumes motion before
 /// release; after the exact report settles, a final pan tests the retained full texture slot.
 fn viewport_script(options: &Options, field: &FieldTarget) -> (Vec<script::Step>, [usize; 7]) {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
@@ -1058,9 +1437,82 @@ fn gpu_count(frame: &Value, name: &str) -> Result<u64> {
         .ok_or_else(|| format!("Captured frame has no surface.gpu.{name}").into())
 }
 
+/// Pair each pan with the interactive and quiet-settlement generations requested in its own
+/// script window. A neighbouring input's frame can never stand in for the pan being measured.
+fn pan_region_samples(events: &[Value], windows: &[(usize, usize)]) -> Result<Vec<Value>> {
+    let step_index = |step| {
+        events
+            .iter()
+            .position(|event| {
+                event["event"] == "script_step" && event["detail"]["step"] == json!(step)
+            })
+            .ok_or_else(|| format!("Viewport step {step} was never sent"))
+    };
+    windows.iter().map(|&(pan, end)| {
+        let start = step_index(pan)?;
+        let stop = step_index(end)?;
+        ensure(start < stop, "Viewport pan window is reversed")?;
+        let window = &events[start..stop];
+        let requested = |intent:&str| -> Result<&Value> {
+            window.iter().find(|event|event["event"] == "preview_view_requested" && event["detail"]["intent"] == intent)
+                .ok_or_else(|| format!("Pan step {pan} requested no {intent} region").into())
+        };
+        let interactive = requested("interactive")?;
+        let refined = requested("settle")?;
+        let shown = |request:&Value, quality:&str| -> Result<&Value> {
+            let generation = request["detail"]["generation"].as_u64().ok_or("Viewport request has no generation")?;
+            window.iter().find(|event|event["event"] == "preview_displayed"
+                && event["detail"]["generation"] == generation && event["detail"]["path"] == "region"
+                && event["detail"]["quality"] == quality)
+                .ok_or_else(|| format!("Pan step {pan} has no {quality} adoption for generation {generation}").into())
+        };
+        let interactive_shown = shown(interactive,"interactive")?;
+        let exact_shown = shown(refined,"exact")?;
+        ensure(interactive_shown["detail"]["draft_revision"].is_u64()
+            && interactive_shown["detail"]["draft_revision"] == exact_shown["detail"]["draft_revision"]
+            && interactive_shown["detail"]["entry_id"] == exact_shown["detail"]["entry_id"]
+            && interactive_shown["detail"]["source_fingerprint"] == exact_shown["detail"]["source_fingerprint"],
+            "Pan refinement changed the draft, entry or source identity")?;
+        let pan_ms = elapsed(&events[start])?;
+        let interactive_ms = elapsed(interactive_shown)?;
+        let exact_ms = elapsed(exact_shown)?;
+        let refine_ms = elapsed(refined)?;
+        ensure(pan_ms <= elapsed(interactive)? && interactive_ms <= refine_ms && refine_ms <= exact_ms,
+            "Viewport pan/refinement timestamps are out of order")?;
+        Ok(json!({"step":pan,"interactive_generation":interactive["detail"]["generation"],
+            "exact_generation":refined["detail"]["generation"],"draft_revision":interactive_shown["detail"]["draft_revision"],
+            "source_fingerprint":interactive_shown["detail"]["source_fingerprint"],
+            "pan_to_interactive_ms":interactive_ms-pan_ms,"pan_to_exact_ms":exact_ms-pan_ms,
+            "refinement_request_to_exact_ms":exact_ms-refine_ms}))
+    }).collect()
+}
+
+/// Merge the actual observations, rather than averaging the journeys' percentiles.
+fn combined_rows(reports: &[Value]) -> Vec<Value> {
+    let mut observations: BTreeMap<(String, String), Vec<f64>> = BTreeMap::new();
+    for report in reports {
+        for row in stats::rows(report) {
+            let metric = row["metric"].as_str().unwrap_or_default().to_owned();
+            let unit = row["unit"].as_str().unwrap_or_default().to_owned();
+            let values = observations.entry((metric, unit)).or_default();
+            if let Some(samples) = row["distribution"]["samples"].as_array() {
+                values.extend(samples.iter().filter_map(Value::as_f64));
+            }
+        }
+    }
+    observations
+        .into_iter()
+        .map(|((metric, unit), values)| stats::row(&metric, &unit, values))
+        .collect()
+}
+
 /// A focused native viewport journey. Event timestamps measure desktop adoption; capture-side
 /// `surface.gpu` counters report actual draw encoding and writes, never display scanout.
 fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(
+        (1..=60).contains(&options.samples),
+        "Viewport samples must be 1..60 sequential journeys",
+    )?;
     ensure(
         matches!(options.zoom, Some(100.0 | 200.0)),
         "--mode viewport requires --zoom 100 or --zoom 200",
@@ -1080,15 +1532,28 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
     )?;
     let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
     run.check(|run| {
-        viewport(
-            run,
-            options,
-            &field,
-            &source,
-            &source_hash,
-            &steps,
-            positions,
-        )
+        let mut reports = Vec::with_capacity(options.samples);
+        for journey in 0..options.samples {
+            let report = viewport(run,options,&field,&source,&source_hash,(&steps,positions),journey)?;
+            ensure(report["status"] == "passed", format!("Viewport journey {journey} is unavailable"))?;
+            reports.push(report);
+        }
+        let mut result = reports[0].clone();
+        result.as_object_mut().expect("viewport report").remove("frames");
+        result.as_object_mut().expect("viewport report").remove("regions");
+        result["rows"] = json!(combined_rows(&reports));
+        result["samples"] = json!(options.samples);
+        result["pan_samples"] = json!(options.samples*2);
+        result["journeys"] = json!((0..options.samples).map(|index|format!("viewport-{index:03}.json")).collect::<Vec<_>>());
+        let maximum_load = reports.iter().flat_map(|report|[report["load"]["load_average_1m"].as_f64(),report["load_average_1m_end"].as_f64()]).flatten().reduce(f64::max);
+        result["load_before"] = reports[0]["load"].clone();
+        result["load"] = launch::load(maximum_load);
+        result["load_average_1m_end"] = reports.last().expect("viewport report")["load_average_1m_end"].clone();
+        result["load_scope"] = json!("Maximum observed load before/after all sequential journeys; each journey retains its own endpoints");
+        result["method"] = json!("Each sample is one sequential background viewport journey with two pans over an open draft, quiet exact refinement, release and retained full-texture pan. The pan/refinement rows pool the actual generation-correlated observations from every journey; filesystem cache is warm, each journey imports/prepares its own source before the measured gesture. Readbacks and per-step settling occur between measured pans. No concurrent editor launches.");
+        write_json(&out.join("latency.json"), &result)?;
+        println!("PASS editor latency ({} viewport journeys): {}",options.samples,out.display());
+        Ok(())
     })
 }
 
@@ -1099,19 +1564,16 @@ fn viewport(
     field: &FieldTarget,
     source: &Path,
     source_hash: &str,
-    steps: &[script::Step],
-    positions: [usize; 7],
-) -> Result {
+    sequence: (&[script::Step], [usize; 7]),
+    journey: usize,
+) -> Result<Value> {
+    let (steps, positions) = sequence;
     let out = &run.out().to_path_buf();
-    let viewport = gesture_launch(
-        out,
-        "viewport",
-        "viewport-script.json",
-        steps,
-        source,
-        false,
-    )
-    .watch(sampled(run.root(), "viewport"));
+    let name = format!("viewport-{journey:03}");
+    let load_start = launch::load_average(run.root());
+    let viewport = gesture_launch(out, &name, "viewport-script.json", steps, source, false)
+        .evidence_dir(&out.join(&name))
+        .watch(sampled(run.root(), "viewport"));
     let Launched {
         dir: evidence,
         watched: usage,
@@ -1127,6 +1589,7 @@ fn viewport(
     let frames = app["frames"]
         .as_array()
         .ok_or("Viewport evidence has no frames")?;
+    check_curve_layer_seed(frames, steps, options.curve_layer)?;
     ensure(
         frames.len() == steps.len() + 1,
         "Viewport evidence missed a captured frame",
@@ -1185,12 +1648,13 @@ fn viewport(
             "source_sha256":source_hash,
             "zoom_percent":options.zoom,
         });
+        report_geometry(&mut result, options);
         stamp(&mut result, &header);
-        write_json(&out.join("latency.json"), &result)?;
+        write_json(&out.join(format!("{name}.json")), &result)?;
         run.record("latency", json!("unavailable"));
         ensure(hash(source)? == source_hash, "The source changed")?;
         println!("UNAVAILABLE editor latency (viewport): {}", out.display());
-        return Ok(());
+        return Ok(result);
     }
     let region_summary: Vec<Value> = regions
         .iter()
@@ -1323,7 +1787,14 @@ fn viewport(
         .ok_or("The first draft has no region event")?;
     // The one scalar and the GPU counters, each a one-sample row. The counters are the photo
     // surface's actual texture writes, counted during draw encoding.
-    let rows = vec![
+    let pan_samples = pan_region_samples(
+        &events,
+        &[
+            (positions[1], positions[3]),
+            (positions[4] - 1, positions[5] - 1),
+        ],
+    )?;
+    let mut rows = vec![
         stats::scalar(
             "input_to_first_region_adoption_ms",
             "ms",
@@ -1355,12 +1826,27 @@ fn viewport(
             "bytes",
             Some(gpu_count(final_pan, "upload_bytes")?),
         ),
-        stats::scalar(
-            "sampled_peak_rss_mib",
-            "MiB",
-            usage["peak_rss_mib"].as_f64(),
-        ),
     ];
+    for (metric, field) in [
+        (
+            "pan_to_interactive_region_adoption",
+            "pan_to_interactive_ms",
+        ),
+        ("pan_to_exact_region_adoption", "pan_to_exact_ms"),
+        (
+            "quiet_refinement_request_to_exact_adoption",
+            "refinement_request_to_exact_ms",
+        ),
+    ] {
+        rows.push(stats::row(
+            metric,
+            "ms",
+            pan_samples
+                .iter()
+                .filter_map(|sample| sample[field].as_f64()),
+        ));
+    }
+    rows.extend(resource_rows(&usage, final_pan));
     let mut result = json!({
         "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
         "source":source, "source_sha256":source_hash,
@@ -1368,6 +1854,7 @@ fn viewport(
         "control_action":field.action, "control_parameter":field.parameter,
         "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
         "rows":rows,
+        "pan_samples":pan_samples,"load":launch::load(load_start),"load_average_1m_end":launch::load_average(run.root()),
         "regions":region_summary,
         "frames":{
             "draft":draft["state"], "first_pan":first_pan["state"],
@@ -1378,11 +1865,11 @@ fn viewport(
         "gpu_note":"The photo_writes and upload_bytes rows are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
         "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
-    write_json(&out.join("latency.json"), &result)?;
+    write_json(&out.join(format!("{name}.json")), &result)?;
     ensure(hash(source)? == source_hash, "The source changed")?;
-    println!("PASS editor latency (viewport): {}", out.display());
-    Ok(())
+    Ok(result)
 }
 
 #[derive(Clone, Debug)]
@@ -1758,17 +2245,22 @@ fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
     } else {
         field.gesture_values(1)[0]
     };
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
     if options.basic {
         steps.push(basic_precondition());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
     }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
     }
     // Reproduce the reported route: one committed brush mask with an adjustment, then New Mask
     // and cursor motion with no press. The new tool's overlay is enabled by its own UI path.
-    steps.extend(paint_precondition(options).into_iter().take(4));
+    steps.extend(brushed_mask(options));
     steps.push(script::Step::Slider(
         SliderStep::new(&field.action, &field.parameter, [value]).release(),
     ));
@@ -1820,6 +2312,7 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
         let events = scenario::events(&evidence.join("events.jsonl"))?;
         let header = run.provenance(&events)?;
         let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    check_curve_layer_seed(frames, &steps, options.curve_layer)?;
         let records = app["script"].as_array().ok_or("Missing script records")?;
         let probe = &records[hovers[0]-1]["cursor_probe"];
         let traces: Vec<Value> = probe["samples"].as_array().cloned().unwrap_or_else(|| vec![probe.clone()]);
@@ -1877,6 +2370,7 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "checks":["Each move emitted its real surrounding pointer message and built brush cursor geometry",
                 "No hover queued a photograph job, posted a mask draft or committed a second mask","Source SHA-256 is unchanged"]
         });
+        report_geometry(&mut result, options);
         stamp(&mut result,&header);
         write_json(&out.join("latency.json"),&result)?;
         ensure(hash(&source)? == source_hash,"The source changed")?;
@@ -1923,7 +2417,9 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         format!("A paint step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    check_curve_layer_seed(frames, &steps, options.curve_layer)?;
     let last = frames.last().ok_or("No frame was captured")?;
+    check_detail_precondition(last, options.detail)?;
     // The recipe the stroke was painted on is part of the measurement, not context: the figure this
     // mode exists to replace was taken on four masked layers, so this one states its own.
     let masks = last["state"]["masks"]["masks"]
@@ -2072,6 +2568,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
+        "detail_layer":options.detail,
         "mode":"paint",
         "samples":options.samples,
         "mask_overlay":if options.mask_overlay {"tint"} else {"off"},
@@ -2080,8 +2577,10 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "masks":masks.len(),
             "components":components,
             "masked_layers":masked_layers,
+            "global_detail_layers":usize::from(options.detail),
+            "layers":last["state"]["stack"]["layers"],
             "reads_pixels":false,
-            "note":"One brush mask of one component and one masked Basic exposure layer: the bare recipe, stated because the figure this mode replaces was taken on four masked colour layers, three of whose masks hold a component that reads pixels and therefore bounds the whole stage.",
+            "note":"One unlimited brush mask of one component and one masked Basic exposure layer, with requested global Basic/Detail and crop preconditions recorded. The brush reads no input pixels, so this measures overlay coverage and restoration-prefix reuse rather than the value-mask input-grid cache.",
         },
         "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
             "exposure_ev":PAINT_EV,
@@ -2132,6 +2631,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "Source SHA-256 is unchanged",
         ],
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -2150,9 +2650,15 @@ const CROP_START_HOLD_MS: u64 = 1500;
 /// section opened and a settled baseline, then per sample a Start held open, its Cancel and a
 /// settle.
 fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
-    let mut steps = Vec::new();
+    let mut steps = geometry_preconditions(options);
+    if options.curve_layer {
+        steps.push(crate::scenario::recipe::moderate_curve());
+    }
     if options.basic {
         steps.push(basic_precondition());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
     }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
@@ -2195,6 +2701,10 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
     let (steps, starts) = crop_start_script(options);
+    ensure(
+        steps.len() <= script::MAX_SCRIPT_STEPS,
+        "Crop-start recipe and samples exceed the 64-step evidence bound",
+    )?;
     let load_start = launch::load_average(root);
     let launch = gesture_launch(
         out,
@@ -2221,6 +2731,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
     let events = scenario::events(&evidence.join("events.jsonl"))?;
     let header = run.provenance(&events)?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    check_curve_layer_seed(frames, &steps, options.curve_layer)?;
     // The opened frame comes first, then one frame per step.
     let frame = |step: usize| frame_at(frames, step, "crop-start");
     let baseline = frame(starts[0] - 1)?;
@@ -2301,6 +2812,8 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         "scale":baseline["scale"],
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
+        "detail_layer":options.detail,
+        "lens_layer":options.lens,
         "mode":"crop-start",
         "samples":options.samples,
         "method":format!("Background evidence launch of the release binary, warm filesystem cache, at Fit. Each sample is a crop draft Start step held open for {CROP_START_HOLD_MS} ms, then Cancel and {CROP_START_HOLD_MS} ms more. Times are from the script_step event that sent the Start: to crop_draft_started, which the Start's own update logs, and to the frame_captured of the Start step, which the editor captures once the crop layer's input stage is on screen, so that figure includes the window readback. Memory and GPU are the Performance section's resources.read figures in the frame captured at the end of each hold, sampled at most one second earlier while the draft was open."),
@@ -2311,6 +2824,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         "resources":{"rss_samples":usage["rss_samples"]},
         "scope":"Opening a crop draft at Fit on this source and recipe: CropMessage::Start to crop_draft_started, and to the captured frame showing the input stage; and the process memory and GPU allocation while the draft is open, beside the settled baseline before the first Start.",
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -2323,6 +2837,14 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         cfg!(target_os = "macos"),
         "Editor latency measurement currently reads native macOS ps only",
     )?;
+    ensure(
+        !options.idle || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--idle requires --mode drag or commit",
+    )?;
+    ensure(
+        options.mode != Mode::CropStart || options.zoom.is_none(),
+        "Crop-start is measured at Fit; omit --zoom",
+    )?;
     if let Some(zoom) = options.zoom {
         ensure(
             zoom.is_finite() && (10.0..=1600.0).contains(&zoom),
@@ -2332,6 +2854,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     ensure(
         !options.moving_pan || (options.mode == Mode::Burst && options.zoom.is_some()),
         "--moving-pan requires --mode burst and --zoom PERCENT",
+    )?;
+    ensure(
+        options.control == Control::Slider || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
     )?;
     if options.mode == Mode::Viewport {
         return run_viewport(root, out, bin, &options);
@@ -2362,12 +2888,13 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     run.check(|run| gesture(run, &options, &field))
 }
 
-/// A drag or commit run's launch and its report, in `run`, with the hold and idle launches after
-/// them when `--idle` asks for them.
+/// A drag or commit run's launch and report, followed by an idle launch on its committed catalog
+/// when `--idle` asks for one.
 fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
+    let load_start = launch::load_average(root);
     // A drag needs one more value than the measured sample count: the extra one is the release,
     // whose own drafted preview the commit supersedes, so it is measured to the settled histogram
     // instead. A commit run measures every value it sends.
@@ -2391,7 +2918,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         )?;
     }
 
-    let steps = gesture_script(options, field, &values, drag);
+    let kind = source_tag(&source)?;
+    let steps = gesture_script(options, field, kind, &values, drag);
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
@@ -2402,7 +2930,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "gesture-script.json",
         &steps,
         &source,
-        options.control == Control::Curve,
+        field.curve == Some(CurveOwner::Proof),
     )
     .watch(sampled(root, "gesture"));
     let Launched {
@@ -2425,31 +2953,64 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         format!("A gesture step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    check_curve_layer_seed(frames, &steps, options.curve_layer)?;
     let last = frames.last().ok_or("No frame was captured")?;
+    if options.detail {
+        let seed = steps
+            .iter()
+            .position(|step| *step == crate::scenario::recipe::moderate_detail())
+            .ok_or("The Detail precondition step is missing")?;
+        let seeded = frames
+            .get(seed + 1)
+            .ok_or("No frame follows the Detail precondition")?;
+        check_detail_precondition(seeded, true)?;
+    }
 
-    if options.control == Control::Curve {
-        let setup_index = usize::from(options.crop.is_some()) + curve_view_steps().len();
+    if let Some(owner) = &field.curve {
+        // Frame 0 is the open; frame `n` follows step `n`.
         let setup = frames
-            .get(setup_index)
+            .get(setup_steps(options, field, kind).len())
             .ok_or("No captured frame follows the curve viewport setup")?;
-        let ready = setup["state"]["control_ui"]["curves"]
+        let curve = setup["state"]["control_ui"]["curves"]
             .as_array()
             .and_then(|curves| {
-                curves
-                    .iter()
-                    .find(|curve| curve["action"] == SET_CONTROLS && curve["parameter"] == MASTER)
-            })
-            .is_some_and(|curve| {
-                curve["sample_count"] == 257
-                    && curve["sample_source_entry"] == curve["display_entry"]
+                curves.iter().find(|curve| {
+                    curve["action"] == field.action.as_str()
+                        && curve["parameter"] == field.parameter.as_str()
+                })
             });
-        ensure(
-            ready
-                && setup["state"]["developer"] == true
-                && setup["state"]["expanded"][CONTROLS_MODULE] == true
-                && setup["state"]["tools_scroll"] == 1.0,
-            "The proof curve was not expanded, scrolled into view and sampled to 257 points before timing",
-        )?;
+        let sampled = curve.is_some_and(|curve| {
+            curve["sample_count"] == 257 && curve["sample_source_entry"] == curve["display_entry"]
+        });
+        match owner {
+            CurveOwner::Proof => ensure(
+                sampled
+                    && setup["state"]["developer"] == true
+                    && setup["state"]["expanded"][CONTROLS_MODULE] == true
+                    && setup["state"]["tools_scroll"] == 1.0,
+                "The proof curve was not expanded, scrolled into view and sampled to 257 points before timing",
+            )?,
+            CurveOwner::Module(module) => {
+                let seeded = curve
+                    .and_then(|curve| curve["points"].as_array())
+                    .is_some_and(|points| {
+                        points.len() == MID_TONE_SEED.len()
+                            && points.iter().zip(MID_TONE_SEED).all(|(point, [x, y])| {
+                                point[0].as_f64() == Some(x) && point[1].as_f64() == Some(y)
+                            })
+                    });
+                ensure(
+                    sampled
+                        && seeded
+                        && setup["state"]["developer"] == false
+                        && setup["state"]["expanded"][module.as_str()] == true
+                        && setup["state"]["tools_scroll"] == 0.0,
+                    format!(
+                        "The {module} curve was not seeded with {MID_TONE_SEED:?}, expanded, scrolled into view and sampled to 257 points before timing"
+                    ),
+                )?;
+            }
+        }
     }
 
     let measured = inputs(&events, options.control, field)?;
@@ -2632,23 +3193,34 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
+        "detail_layer":options.detail,
+        "lens_layer":options.lens,
         "mode":options.mode.name(),
         "control":options.control.name(),
-        "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
-        "control_parameter":if options.control == Control::Curve { MASTER } else { field.parameter.as_str() },
+        "control_action":field.action,
+        "control_parameter":field.parameter,
         "field_range":if options.control == Control::Curve { Value::Null } else { json!({"min":field.min,"max":field.max,"step":field.step}) },
         "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
-            (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
+            (Control::Curve, action, parameter) => match &field.curve {
+                Some(CurveOwner::Module(module)) => format!("{module} {action} {parameter}: point {DRAGGED_POINT} of the curve seeded with {MID_TONE_SEED:?}, a mid-tone point, is dragged through draft.begin/set/commit while the curve canvas is visible; every drafted frame runs the curve's colour unit."),
+                _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
+            },
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
             (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
-        "view_setup":if options.control == Control::Curve {
-            json!({"developer":true,"proof_section":CONTROLS_MODULE,
+        "view_setup":match &field.curve {
+            Some(CurveOwner::Proof) => json!({"developer":true,"proof_section":CONTROLS_MODULE,
                 "collapsed":["luxforge.basic","luxforge.pixel","luxforge.transform","luxforge.crop"],
                 "raw_section":"absent for the JPEG latency source",
-                "tools_scroll":1.0})
-        } else { Value::Null },
+                "tools_scroll":1.0}),
+            Some(CurveOwner::Module(module)) => json!({"developer":false,"section":module,
+                "seed":{"action":field.action,"parameter":field.parameter,"points":MID_TONE_SEED},
+                "dragged_point":DRAGGED_POINT,
+                "steps":script::write(&curve_view_steps(field, kind, options.mask)),
+                "tools_scroll":0.0}),
+            None => Value::Null,
+        },
         "samples":options.samples,
         "gesture_values":values,
         "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
@@ -2681,6 +3253,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             "rss_samples":usage["rss_samples"],
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes (the scratch_peak_bytes row) its high-water mark over the whole run.",
         },
+        "load":launch::load(load_start),
+        "load_average_1m_end":launch::load_average(root),
         "workspace":last["state"]["workspace"],
         "histogram":last["state"]["histogram"],
         "checks":[
@@ -2694,12 +3268,13 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     // Beside the rest rather than inside it: the report is already as deep as json! expands.
     result["approximate_white_balance_frames"] = approximate;
     result["zoom_percent"] = json!(options.zoom);
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
     if options.idle {
-        hold_and_idle(run, &source)?;
+        hold_and_idle(run, options, &source, last, &usage)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
@@ -2884,6 +3459,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
+    let load_start = launch::load_average(root);
     let interval_ms = burst_interval_ms();
     // The burst's values are a triangle about the field's own origin, scaled to its declared
     // range: Basic's Exposure by default, any drafting slider with `--action`.
@@ -2929,6 +3505,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         format!("The burst step failed or never ran: {}", app["script"]),
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
+    check_curve_layer_seed(frames, &steps, options.curve_layer)?;
     let mut burst_stale_draws = None;
     if options.moving_pan {
         for (index, frame) in frames.iter().enumerate() {
@@ -2944,6 +3521,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     let before_burst = frames
         .get(frames.len().saturating_sub(2))
         .ok_or("No frame was captured before the burst")?;
+    check_detail_precondition(before_burst, options.detail)?;
     let gpu_delta = |field: &str| {
         before_burst["state"]["surface"]["gpu"][field]
             .as_u64()
@@ -2989,13 +3567,14 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
+        "detail_layer":options.detail,
         "mode":"burst",
         "control_action":field.action,
         "control_parameter":field.parameter,
         "samples":Value::Null,
         "gesture_values":values,
         "approximate_white_balance_frames":approximate,
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s, a triangle about the field's origin peaking at {} of the smaller half of its declared range (±2 EV on exposure), paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s. An interior origin follows a triangle peaking at {} of the smaller half of its declared range (±2 EV on exposure); a limit origin follows one inward triangle to that fraction of the available range and back. Values are paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
         "queue":{
             "scripted_slider_values":values.len(),
             "draft_set_requests":analysis.draft_sets,
@@ -3032,6 +3611,8 @@ fn burst(run: &mut Run, options: &Options) -> Result {
             "Source SHA-256 is unchanged"
         ],
     });
+    result["load"] = launch::load(load_start);
+    result["load_average_1m_end"] = json!(launch::load_average(root));
     result["zoom_percent"] = json!(options.zoom);
     result["moving_pan"] = json!(options.moving_pan);
     result["burst"]["pan_moves"] = json!(analysis.pan_moves);
@@ -3059,6 +3640,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     result["burst"]["adoption_note"] = json!(
         "presented_frames/presented_fps count preview_displayed adoption events. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
     );
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -3067,36 +3649,74 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     Ok(())
 }
 
-/// The resource workload: a 24 MP image holding a full Basic layer with the histogram on, reopened
-/// in a second process that is then left alone for 30 seconds.
-///
-/// Two processes are needed because an evidence run exits when its script ends, and the editor's
-/// own evidence deadline is shorter than the idle window. The first run commits the layer into a
-/// catalog that outlives it; the second opens the same file, which the catalog already holds, so it
-/// renders and reduces the committed stack and then has nothing left to do.
-fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
-    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
-    let catalog = out.join("held-catalog.sqlite");
-    let Launched {
-        dir: evidence,
-        watched: hold_usage,
-    } = run.launch(
-        hold_launch(&catalog, source)
-            .deadline(Duration::from_secs(60))
-            .watch(sampled(root, "hold")),
+/// Reopen the gesture's own committed catalog, then observe its ordinary idle state. This keeps
+/// the selected profile, Perspective, crop and any other committed edits identical to the measured
+/// gesture's final stack. A scripted process has exited by then, so an ordinary second launch is
+/// needed for the 30-second window.
+/// The catalog reopened for idle contains the gesture's final recipe, including edited Detail
+/// strengths. It must retain every committed layer's identity, payload, mask and artifact links.
+fn idle_catalog_stack(catalog: &Path, source: &Path) -> Result<Value> {
+    let service = luxforge_core::EditorService::open(catalog)?;
+    // Two identities say whether a second photograph exists.
+    let assets = service.asset_ids(2)?;
+    ensure(
+        assets.len() == 1,
+        "The idle catalog must contain exactly the measured source",
     )?;
-    let held = read_json(&evidence.join("result.json"))?;
-    let frame = held["frames"]
-        .as_array()
-        .and_then(|frames| frames.last())
-        .ok_or("The hold run captured no frame")?
-        .clone();
+    let state = service.state(&assets[0])?;
+    ensure(
+        state.asset.locator.canonicalize()? == source.canonicalize()?,
+        "The idle catalog reopened a different source",
+    )?;
+    let layers: Vec<_> = state
+        .current_entry
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .map(|layer| {
+            json!({"id":layer.id,"effect":layer.effect_id,"payload":layer.payload,
+            "mask":layer.mask,"artifacts":layer.artifacts})
+        })
+        .collect();
+    Ok(json!({"entry":state.current_entry.id,"revision":state.revision,"layers":layers}))
+}
+
+fn check_idle_stack(frame: &Value, reopened: &Value) -> Result {
+    let captured = &frame["state"]["stack"];
+    ensure(
+        captured["entry"].is_string()
+            && captured["revision"].is_u64()
+            && captured["layers"].is_array()
+            && ["entry", "revision", "layers"]
+                .into_iter()
+                .all(|key| captured[key] == reopened[key]),
+        "The idle catalog differs from the gesture's committed entry or recipe",
+    )
+}
+
+fn hold_and_idle(
+    run: &mut Run,
+    options: &Options,
+    source: &Path,
+    frame: &Value,
+    hold_usage: &Value,
+) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
+    let catalog = out.join("app/catalog.sqlite");
+    ensure(
+        catalog.is_file(),
+        "The gesture catalog is missing for idle measurement",
+    )?;
+    let reopened_stack = idle_catalog_stack(&catalog, source)?;
+    check_idle_stack(frame, &reopened_stack)?;
+    let load_start = launch::load_average(root);
 
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let (log, events) = (out.join("idle.log"), data.join("logs/events.jsonl"));
     let idle_root = root.clone();
-    let idle = idle_launch(&catalog, &data, source)
+    let idle = idle_launch(&catalog, &data, source, options.control == Control::Curve)
         .deadline(Duration::from_secs(30))
         .watch(Box::new(move |child, _, deadline| {
             let poll = Poll {
@@ -3128,15 +3748,20 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
     // The gesture process's resources, then the idle window's figures, as rows of the one shape.
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
-    // above does, and it runs the same colour stack.
-    let mut rows = resource_rows(&hold_usage, &frame);
+    // above does, and it runs the same committed stack.
+    let mut rows = resource_rows(hold_usage, frame);
     rows.extend(stats::rows(&idle).iter().cloned());
     write_json(
         &out.join("resources.json"),
         &json!({
             "status":"passed",
-            "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
-            "basic_payload":full_basic(),
+            "workload":"The gesture's own committed stack, reopened from its catalog with histogram on",
+            "source":source,"source_dimensions":frame["state"]["source_dimensions"],
+            "lens_layer":options.lens,"perspective_layer":options.perspective,"crop_angle_deg":options.crop,
+            "load":launch::load(load_start),"load_average_1m_end":launch::load_average(root),
+            "curve_layer":options.curve_layer,
+            "detail_layer":options.detail,"stack":frame["state"]["stack"],
+            "reopened_stack":reopened_stack,
             "rows":rows,
             "gesture_process":{
                 "scratch":frame["state"]["scratch"],
@@ -3148,7 +3773,7 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
                 "events":idle["events"],
                 "scratch":"not observable: the budget travels in the state snapshot beside a captured frame, and an ordinary launch captures none",
             },
-            "method":"The first process commits the layer into a catalog that outlives it and is sampled by ps about every 50 ms while it edits, with its frame captures included in that RSS. The second opens the same file from that catalog, renders and reduces the committed stack, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated.",
+            "method":"The gesture process's own committed catalog is reused unchanged. The second process opens the same source and exact stack, renders and reduces it, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. This includes the ordinary editor's open Performance section sampler. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated. Native GPU and scratch figures come from the gesture's correlated captured state, not an idle-process capture.",
         }),
     )?;
     Ok(())
@@ -3157,6 +3782,151 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pan_refinement_samples_require_their_own_generation_and_identity() {
+        let mut events = vec![
+            json!({"event":"script_step","elapsed_ms":10,"detail":{"step":1}}),
+            json!({"event":"preview_view_requested","elapsed_ms":12,"detail":{"intent":"interactive","generation":7}}),
+            json!({"event":"preview_displayed","elapsed_ms":15,"detail":{"generation":99,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"preview_displayed","elapsed_ms":20,"detail":{"generation":7,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"preview_view_requested","elapsed_ms":150,"detail":{"intent":"settle","generation":8}}),
+            json!({"event":"preview_displayed","elapsed_ms":180,"detail":{"generation":8,"path":"region","quality":"exact","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"script_step","elapsed_ms":200,"detail":{"step":4}}),
+        ];
+        let samples = pan_region_samples(&events, &[(1, 4)]).unwrap();
+        assert_eq!(samples[0]["pan_to_interactive_ms"], 10.0);
+        assert_eq!(samples[0]["pan_to_exact_ms"], 170.0);
+        assert_eq!(samples[0]["refinement_request_to_exact_ms"], 30.0);
+        events[5]["detail"]["draft_revision"] = json!(4);
+        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
+        events[5]["detail"]["draft_revision"] = json!(3);
+        events[5]["detail"]["generation"] = json!(99);
+        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
+    }
+
+    #[test]
+    fn viewport_combines_raw_observations_instead_of_percentiles() {
+        let reports = [
+            json!({"rows":[stats::row("pan","ms",[1.0,2.0])]}),
+            json!({"rows":[stats::row("pan","ms",[10.0,20.0])]} ),
+        ];
+        let rows = combined_rows(&reports);
+        assert_eq!(rows[0]["distribution"]["count"], 4);
+        assert_eq!(rows[0]["distribution"]["p50"], 2.0);
+        assert_eq!(rows[0]["distribution"]["p95"], 20.0);
+    }
+
+    #[test]
+    fn lens_geometry_is_kept_for_crop_opening_paint_and_viewport() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 14,
+            mode: Mode::CropStart,
+            control: Control::Slider,
+            action: Some("set-perspective"),
+            parameter: Some("horizontal"),
+            crop: Some(2.5),
+            idle: false,
+            basic: false,
+            presence: false,
+            curve_layer: false,
+            detail: false,
+            lens: true,
+            perspective: true,
+            mask: false,
+            zoom: Some(100.0),
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let geometry = geometry_preconditions(&options);
+        // A JPEG's Lens precondition is the section and its Apply.
+        assert_eq!(geometry.len(), 4);
+        assert_eq!(
+            geometry[..2],
+            crate::scenario::recipe::lens_profile(false)[..]
+        );
+        assert_eq!(
+            geometry[2],
+            script::Step::call(
+                "edit.set-perspective",
+                json!({"horizontal":20,"vertical":-10})
+            )
+        );
+        assert_eq!(
+            geometry[3],
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":2.5}))
+        );
+        let (crop, starts) = crop_start_script(&options);
+        let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
+        let (viewport, _) = viewport_script(&options, &field);
+        for steps in [crop, paint_script(&options, paint_path(30)), viewport] {
+            assert_eq!(&steps[..geometry.len()], geometry.as_slice());
+            assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+            assert_eq!(
+                script::parse(&script::write(&steps).to_string()).unwrap(),
+                steps
+            );
+        }
+        assert_eq!(starts.len(), 14);
+    }
+
+    #[test]
+    fn idle_reopens_the_gesture_catalog_with_its_provider_registry() {
+        let out = Path::new("/out");
+        let catalog = out.join("app/catalog.sqlite");
+        let args = idle_launch(
+            &catalog,
+            &out.join("idle-data"),
+            Path::new("/photo.raw"),
+            true,
+        )
+        .command(out);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--catalog", "/out/app/catalog.sqlite"])
+        );
+        assert!(args.iter().any(|arg| arg == "--developer"));
+        assert!(!args.iter().any(|arg| arg == "--evidence-script"));
+    }
+
+    #[test]
+    fn detail_idle_accepts_the_edited_payload_but_requires_the_same_committed_stack() {
+        let edited = json!({"id":"detail-layer","effect":luxforge_core::DETAIL_EFFECT,
+            "payload":{"sharpening":35.0,"luminance":40.0,"colour":40.0},
+            "mask":null,"artifacts":[]});
+        let stack = json!({"entry":"edited-entry","revision":3,"layers":[edited]});
+        let frame = json!({"state":{"stack":stack}});
+        assert!(
+            check_detail_precondition(&frame, true).is_err(),
+            "The seed is intentionally no longer moderate"
+        );
+        assert!(check_idle_stack(&frame, &stack).is_ok());
+        let mut mismatched = stack.clone();
+        mismatched["layers"][0]["payload"]["sharpening"] = json!(60.0);
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["layers"][0]["id"] = json!("replaced-detail");
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["entry"] = json!("old-entry");
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["revision"] = json!(2);
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+    }
+
+    #[test]
+    fn native_resource_rows_keep_gpu_residency_and_missing_counters_explicit() {
+        let last = json!({"state":{"scratch":{"peak_bytes":123},"surface":{"gpu":{"full_resident_bytes":456,"region_resident_bytes":78,"retiring_bytes":90,"stage_resident_bytes":12}}}});
+        let report = json!({"rows":resource_rows(&Value::Null,&last)});
+        assert_eq!(
+            stats::distribution(&report, "last_surface_full_resident_bytes").unwrap()["p50"],
+            456.0
+        );
+        assert!(stats::distribution(&report, "last_native_gpu_allocated").is_none());
+    }
 
     /// Every script this harness can write, into `$SCRIPT_DUMP/editor-latency/`, over each mode,
     /// control, precondition, zoom and `--moving-pan`, and every launch's argument list: the proof
@@ -3180,6 +3950,7 @@ mod tests {
             max: 100.0,
             step: 1.0,
             origin: 0.0,
+            curve: None,
         };
         for crop in [None, Some(8.0)] {
             for mask in [false, true] {
@@ -3196,6 +3967,10 @@ mod tests {
                             idle: false,
                             basic,
                             presence: false,
+                            curve_layer: false,
+                            detail: false,
+                            lens: false,
+                            perspective: false,
                             mask,
                             zoom,
                             moving_pan,
@@ -3208,7 +3983,8 @@ mod tests {
                         for (control, name, field) in [
                             (Control::Slider, "slider", FieldTarget::basic_exposure()),
                             (Control::Slider, "mixer", mixer()),
-                            (Control::Curve, "curve", FieldTarget::basic_exposure()),
+                            (Control::Curve, "curve", FieldTarget::proof_curve()),
+                            (Control::Curve, "tone-curve", tone_curve()),
                         ] {
                             for drag in [true, false] {
                                 let values = gesture_values(5 + usize::from(drag), control, &field);
@@ -3220,6 +3996,7 @@ mod tests {
                                     script::write(&gesture_script(
                                         &options(control, zoom, false),
                                         &field,
+                                        SourceTag::Jpeg,
                                         &values,
                                         drag,
                                     )),
@@ -3270,6 +4047,10 @@ mod tests {
                             idle: false,
                             basic,
                             presence: false,
+                            curve_layer: false,
+                            detail: false,
+                            lens: false,
+                            perspective: false,
                             mask,
                             zoom: Some(zoom),
                             moving_pan: false,
@@ -3289,7 +4070,6 @@ mod tests {
                 }
             }
         }
-        put("hold".into(), hold_script());
         // Every launch's arguments, as it passes them in a run written to `/out`.
         let out = Path::new("/out");
         for (name, log, file, developer) in [
@@ -3300,21 +4080,615 @@ mod tests {
             let launch = gesture_launch(out, log, file, &[], &source, developer);
             put(format!("{name}-arguments"), json!(launch.command(out)));
         }
-        let catalog = out.join("held-catalog.sqlite");
-        put(
-            "hold-arguments".into(),
-            json!(hold_launch(&catalog, &source).command(out)),
-        );
+        let catalog = out.join("app/catalog.sqlite");
         put(
             "idle-arguments".into(),
-            json!(idle_launch(&catalog, &out.join("idle-data"), &source).command(out)),
+            json!(idle_launch(&catalog, &out.join("idle-data"), &source, false).command(out)),
         );
     }
 
-    /// The default Basic exposure target: the field the synthetic burst events carry, and a
-    /// placeholder for the curve control, which ignores its `field` argument entirely.
+    /// The default Basic exposure target: the field the synthetic burst events carry.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
+    }
+
+    #[test]
+    fn detail_measurement_preconditions_keep_paint_global() {
+        let source = PathBuf::from("unused.jpg");
+        let mut options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Paint,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: None,
+            idle: true,
+            basic: false,
+            presence: false,
+            curve_layer: false,
+            detail: true,
+            lens: false,
+            perspective: false,
+            mask: false,
+            mask_overlay: true,
+            zoom: None,
+            moving_pan: false,
+        };
+        let detail = crate::scenario::recipe::moderate_detail();
+        let paint = paint_precondition(&options);
+        assert_eq!(
+            paint.first(),
+            Some(&detail),
+            "Detail must be committed before mask selection changes the target"
+        );
+        assert!(
+            paint
+                .iter()
+                .skip(1)
+                .any(|s| matches!(s, script::Step::Mask(MaskStep::Paint(PaintStep::NewMask))))
+        );
+        options.detail = false;
+        assert!(!paint_precondition(&options).contains(&detail));
+    }
+
+    #[test]
+    fn detail_burst_precondition_preserves_the_basic_gesture_and_other_setup() {
+        let source = PathBuf::from("unused.jpg");
+        let mut options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Burst,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: Some(2.0),
+            idle: false,
+            basic: true,
+            presence: false,
+            curve_layer: false,
+            detail: false,
+            lens: false,
+            perspective: false,
+            mask: true,
+            mask_overlay: false,
+            zoom: Some(100.0),
+            moving_pan: true,
+        };
+        let field = FieldTarget::basic_exposure();
+        let values = field.burst_values();
+        let interval = burst_interval_ms();
+        let baseline = burst_script(&options, &field, &values, interval);
+        let detail = crate::scenario::recipe::moderate_detail();
+        assert!(!baseline.contains(&detail));
+        assert_eq!(
+            baseline.last(),
+            Some(&burst_gesture_step(&field, &burst_values(), interval, true))
+        );
+        assert!(baseline.contains(&basic_precondition()));
+        assert!(baseline.contains(&script::Step::View(ViewStep::Percent(100.0))));
+        for step in crop_precondition(&options)
+            .into_iter()
+            .chain(mask_precondition())
+        {
+            assert!(baseline.contains(&step));
+        }
+
+        options.detail = true;
+        let with_detail = burst_script(&options, &field, &values, interval);
+        assert_eq!(
+            with_detail.iter().filter(|step| **step == detail).count(),
+            1
+        );
+        let detail_index = with_detail.iter().position(|step| *step == detail).unwrap();
+        let mask_index = with_detail
+            .iter()
+            .position(|step| *step == mask_precondition()[0])
+            .unwrap();
+        assert!(detail_index < mask_index, "Detail is a global precondition");
+        assert_eq!(
+            with_detail
+                .into_iter()
+                .filter(|step| *step != detail)
+                .collect::<Vec<_>>(),
+            baseline,
+            "--detail must only add its shared recipe precondition"
+        );
+    }
+
+    #[test]
+    fn combined_viewport_keeps_global_detail_before_the_masked_basic_target() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 5,
+            mode: Mode::Viewport,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: Some(2.5),
+            idle: false,
+            basic: true,
+            presence: false,
+            curve_layer: false,
+            detail: true,
+            lens: true,
+            perspective: true,
+            mask: true,
+            zoom: Some(100.0),
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let field = FieldTarget::basic_exposure();
+        let (steps, positions) = viewport_script(&options, &field);
+        let geometry = geometry_preconditions(&options);
+        let detail = crate::scenario::recipe::moderate_detail();
+        assert_eq!(&steps[..geometry.len()], geometry.as_slice());
+        assert_eq!(steps[geometry.len()], detail);
+        assert_eq!(steps[geometry.len() + 1], mask_precondition()[0]);
+        assert!(steps.contains(&basic_precondition()));
+        assert_eq!(steps.iter().filter(|step| **step == detail).count(), 1);
+        assert!(positions.into_iter().all(|index| index <= steps.len()));
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).unwrap(),
+            steps
+        );
+    }
+
+    #[test]
+    fn detail_measurement_refuses_missing_masked_or_reordered_restoration() {
+        let detail = json!({"effect":luxforge_core::DETAIL_EFFECT,"mask":null,
+            "payload":{"sharpening":60.0,"luminance":40.0,"colour":40.0}});
+        let basic = json!({"effect":luxforge_core::BASIC_EFFECT,"payload":{"exposure":0.5}});
+        let frame = |layers: Value| json!({"state":{"stack":{"layers":layers}}});
+        assert!(check_detail_precondition(&frame(json!([detail, basic])), true).is_ok());
+        assert!(check_detail_precondition(&frame(json!([basic])), true).is_err());
+        assert!(check_detail_precondition(&frame(json!([basic, detail])), true).is_err());
+        assert!(check_detail_precondition(&frame(json!([detail, basic])), false).is_err());
+        let mut masked = detail;
+        masked["mask"] = json!("mask-1");
+        assert!(check_detail_precondition(&frame(json!([masked, basic])), true).is_err());
+    }
+
+    #[test]
+    fn lens_latency_precondition_applies_the_detected_profile_before_the_gesture() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Drag,
+            control: Control::Slider,
+            action: Some("set-perspective"),
+            parameter: Some("horizontal"),
+            crop: Some(2.5),
+            idle: false,
+            basic: false,
+            presence: false,
+            curve_layer: false,
+            detail: false,
+            lens: true,
+            perspective: false,
+            mask: false,
+            zoom: None,
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
+        let values = field.gesture_values(30);
+        let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
+        assert_eq!(
+            &steps[..2],
+            &crate::scenario::recipe::lens_profile(false)[..]
+        );
+        assert!(
+            matches!(&steps[1],script::Step::Controls(script::ControlsStep::QueryChoiceApply {action}) if action=="select-lens-profile")
+        );
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).unwrap(),
+            steps
+        );
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+        // A RAW is imported with its detected profile applied: with Lens the script only opens
+        // the section, and its baseline turns the profile off.
+        let raw = luxforge_testbase::paths::temp_path("lens-latency.nef");
+        fs::write(&raw, [0x49, 0x49, 0x2a, 0x00]).unwrap();
+        let with = Options {
+            source: &raw,
+            ..options
+        };
+        let steps = geometry_preconditions(&with);
+        assert_eq!(steps[..1], crate::scenario::recipe::lens_profile(true)[..]);
+        assert!(!steps.iter().any(|step| matches!(
+            step,
+            script::Step::Controls(script::ControlsStep::QueryChoiceApply { .. })
+        )));
+        let without = Options {
+            lens: false,
+            ..with
+        };
+        assert_eq!(
+            geometry_preconditions(&without)[0],
+            crate::scenario::recipe::lens_off()
+        );
+        fs::remove_file(raw).unwrap();
+    }
+
+    /// `--control curve --action set-curve --parameter luminance`: the Tone curve's own field.
+    fn tone_curve() -> FieldTarget {
+        resolve_field(Control::Curve, Some("set-curve"), Some("luminance")).unwrap()
+    }
+
+    /// A drag or commit run's options over a JPEG with the given control and preconditions.
+    fn curve_options(source: &Path, mask: bool, crop: Option<f64>) -> Options<'_> {
+        Options {
+            source,
+            samples: 5,
+            mode: Mode::Drag,
+            control: Control::Curve,
+            action: Some("set-curve"),
+            parameter: Some("luminance"),
+            curve_layer: false,
+            detail: false,
+            lens: false,
+            perspective: false,
+            crop,
+            idle: false,
+            basic: false,
+            presence: false,
+            mask,
+            zoom: None,
+            moving_pan: false,
+            mask_overlay: false,
+        }
+    }
+
+    #[test]
+    fn real_curve_precondition_keeps_numeric_gestures_and_precedes_mask_selection() {
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            curve_layer: true,
+            detail: true,
+            basic: true,
+            lens: true,
+            perspective: true,
+            zoom: Some(100.0),
+            ..curve_options(&source, true, Some(2.5))
+        };
+        let field = resolve_field(options.control, options.action, options.parameter).unwrap();
+        assert_eq!(field.action, SET_BASIC);
+        assert!(
+            field.curve.is_none(),
+            "A real Curve layer does not select the proof curve"
+        );
+        let geometry = geometry_preconditions(&options);
+        let curve = crate::scenario::recipe::moderate_curve();
+        let numeric = [
+            setup_steps(&options, &field, SourceTag::Jpeg),
+            burst_script(&options, &field, &field.burst_values(), burst_interval_ms()),
+            viewport_script(&options, &field).0,
+        ];
+        for steps in numeric {
+            assert_eq!(&steps[..geometry.len()], geometry.as_slice());
+            assert_eq!(steps[geometry.len()], curve);
+            let mask = steps
+                .iter()
+                .position(|step| *step == mask_precondition()[0])
+                .unwrap();
+            assert!(geometry.len() < mask);
+            assert_eq!(steps.iter().filter(|step| **step == curve).count(), 1);
+            assert!(steps.contains(&crate::scenario::recipe::moderate_detail()));
+            assert!(
+                !steps
+                    .iter()
+                    .any(|step| matches!(step, script::Step::Curve(_)))
+            );
+            assert_eq!(
+                script::parse(&script::write(&steps).to_string()).unwrap(),
+                steps
+            );
+        }
+        for steps in [
+            paint_script(&options, paint_path(6)),
+            hover_script(&options).unwrap().0,
+            crop_start_script(&options).0,
+        ] {
+            assert_eq!(steps.iter().filter(|step| **step == curve).count(), 1);
+            assert_eq!(
+                script::parse(&script::write(&steps).to_string()).unwrap(),
+                steps
+            );
+        }
+    }
+
+    #[test]
+    fn curve_precondition_capture_refuses_identity_missing_or_masked_layers() {
+        let steps = [crate::scenario::recipe::moderate_curve()];
+        let mut frames = [
+            json!({}),
+            json!({"state":{"stack":{"layers":[{
+                "id":"curve-layer","effect":luxforge_core::CURVE_EFFECT,"mask":null,
+                "payload":{"luminance":crate::scenario::recipe::MODERATE_CURVE},"artifacts":[]
+            }]}}}),
+        ];
+        assert!(check_curve_layer_seed(&frames, &steps, true).is_ok());
+        frames[1]["state"]["stack"]["layers"][0]["mask"] = json!("masked");
+        assert!(check_curve_layer_seed(&frames, &steps, true).is_err());
+        frames[1]["state"]["stack"]["layers"][0]["mask"] = Value::Null;
+        frames[1]["state"]["stack"]["layers"][0]["payload"]["luminance"] = json!([[0, 0], [1, 1]]);
+        assert!(check_curve_layer_seed(&frames, &steps, true).is_err());
+        assert!(check_curve_layer_seed(&frames, &[], true).is_err());
+        assert!(check_curve_layer_seed(&[], &[], false).is_ok());
+    }
+
+    /// The curve steps of a script, as `(action, parameter, index, points)`.
+    fn curve_moves(steps: &[script::Step]) -> Vec<(String, String, usize, Vec<[f32; 2]>)> {
+        steps
+            .iter()
+            .filter_map(|step| match step {
+                script::Step::Curve(CurveStep {
+                    action,
+                    parameter,
+                    event: CurveStepEvent::Move { index, points },
+                    ..
+                }) => Some((action.clone(), parameter.clone(), *index, points.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `--control curve --action set-curve --parameter luminance` resolves the Tone curve's
+    /// registered field: its own action and parameter, owned by `luxforge.curve`, over the curve's
+    /// `0..=1` coordinates, and the launch is an ordinary one.
+    #[test]
+    fn a_curve_action_and_parameter_resolve_a_module_curve() {
+        let field = tone_curve();
+        assert_eq!(field.action, "set-curve");
+        assert_eq!(field.parameter, "luminance");
+        assert_eq!(
+            field.curve,
+            Some(CurveOwner::Module("luxforge.curve".into()))
+        );
+        assert_eq!((field.min, field.max), (0.0, 1.0));
+        // The seed is admissible for the declared parameter: the registry's own check accepts it.
+        let registry = ModuleRegistry::builtin();
+        let (_, action) = registry.action("set-curve").unwrap();
+        let declared = action.parameter("luminance").unwrap();
+        assert!(luxforge_core::check_value(declared, &json!(MID_TONE_SEED)).is_ok());
+
+        // Its drafts pair by the module's own parameter, exactly as the proof curve's do by master.
+        let points = json!([[0.0, 0.0], [0.5, 0.625], [1.0, 1.0]]);
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"luminance":points}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":20.0,
+                "detail":{"value":points,"generation":4,"draft_revision":1}}),
+            json!({"event":"preview_displayed","elapsed_ms":31.0,
+                "detail":{"generation":4,"draft_revision":1}}),
+        ];
+        let paired = inputs(&events, Control::Curve, &field).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert_eq!(paired[0].value, 0.625);
+        assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 21.0);
+
+        // Neither half of the pair alone resolves anything.
+        assert!(resolve_field(Control::Curve, Some("set-curve"), None).is_err());
+        assert!(resolve_field(Control::Curve, None, Some("luminance")).is_err());
+    }
+
+    /// A number parameter with `--control curve`, and a curve parameter without it, are refused
+    /// with messages naming the parameter; so are an unknown action, a missing parameter and the
+    /// developer proof's action, which the curve control reaches only without `--action`.
+    #[test]
+    fn a_number_parameter_is_refused_with_control_curve() {
+        let message = |control, action, parameter| {
+            resolve_field(control, Some(action), Some(parameter))
+                .err()
+                .unwrap_or_else(|| panic!("{action} {parameter} resolved"))
+                .to_string()
+        };
+        let number = message(Control::Curve, "set-mixer", "red-hue");
+        assert!(number.contains("red-hue"), "{number}");
+        assert!(number.contains("not a curve"), "{number}");
+        let exposure = message(Control::Curve, "set-basic", "exposure");
+        assert!(exposure.contains("exposure"), "{exposure}");
+        let curve = message(Control::Slider, "set-curve", "luminance");
+        assert!(curve.contains("luminance"), "{curve}");
+        assert!(curve.contains("--control curve"), "{curve}");
+        let missing = message(Control::Curve, "set-curve", "red");
+        assert!(missing.contains("red"), "{missing}");
+        assert!(message(Control::Curve, "edit.nothing", "luminance").contains("edit.nothing"));
+        // The proof's action is not a product module's: without --action is how it is measured.
+        assert!(message(Control::Curve, SET_CONTROLS, MASTER).contains(SET_CONTROLS));
+        assert!(message(Control::Curve, "reset-curve", "luminance").contains("reset-curve"));
+    }
+
+    /// Without `--action`, `--control curve` keeps the developer proof curve: the same target, the
+    /// same view steps and the same gesture through `set-controls` `master`, with nothing seeded.
+    #[test]
+    fn without_an_action_the_curve_control_keeps_the_proof_curve() {
+        let field = resolve_field(Control::Curve, None, None).unwrap();
+        assert_eq!(field.action, SET_CONTROLS);
+        assert_eq!(field.parameter, MASTER);
+        assert_eq!(field.curve, Some(CurveOwner::Proof));
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            action: None,
+            parameter: None,
+            ..curve_options(&source, false, Some(8.0))
+        };
+        let values = gesture_values(6, Control::Curve, &field);
+        let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
+        let mut expected = vec![script::Step::call(
+            "edit.crop-fit",
+            json!({"aspect":"16:9","angle":8.0}),
+        )];
+        expected.extend(
+            [
+                "luxforge.basic",
+                "luxforge.pixel",
+                "luxforge.transform",
+                "luxforge.crop",
+            ]
+            .map(|module| script::Step::section(module, false)),
+        );
+        expected.push(script::Step::section(CONTROLS_MODULE, true));
+        expected.push(script::Step::tools_scroll(1.0));
+        assert_eq!(steps[..expected.len()], expected[..]);
+        assert_eq!(setup_steps(&options, &field, SourceTag::Jpeg), expected);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, script::Step::Api { method, .. } if method.starts_with("edit.set-"))),
+            "the proof curve is seeded"
+        );
+        let moves = curve_moves(&steps);
+        assert_eq!(moves.len(), values.len() + 1);
+        for (action, parameter, index, points) in moves {
+            assert_eq!(
+                (action.as_str(), parameter.as_str(), index),
+                (SET_CONTROLS, MASTER, 1)
+            );
+            assert!(points.iter().all(|point| point[0] == 0.5));
+        }
+    }
+
+    /// A module's curve commits [`MID_TONE_SEED`] through its own action after every other
+    /// precondition and before the first sample, so point 1, the one the gesture drags, is a
+    /// mid-tone point rather than the white point; a masked run seeds the masked layer it drafts.
+    #[test]
+    fn a_module_curve_seeds_a_mid_tone_point_before_the_drag() {
+        let field = tone_curve();
+        let source = PathBuf::from("unused.jpg");
+        for mask in [false, true] {
+            let options = curve_options(&source, mask, None);
+            for drag in [true, false] {
+                let values = gesture_values(6, Control::Curve, &field);
+                let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, drag);
+                let seeds: Vec<usize> = steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, step)| {
+                        matches!(step, script::Step::Api { method, .. } if method == "edit.set-curve")
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                assert_eq!(seeds.len(), 1, "one seed commit");
+                let seed = seeds[0];
+                let mut params = json!({"luminance": [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]});
+                if mask {
+                    params["mask"] = json!({"name": "Mask 1"});
+                    // The mask exists, and is selected, before the seed names it.
+                    assert_eq!(steps[..3], mask_precondition()[..]);
+                    assert!(seed >= 3);
+                }
+                assert_eq!(steps[seed], script::Step::call("edit.set-curve", params));
+                let first_move = steps
+                    .iter()
+                    .position(|step| matches!(step, script::Step::Curve(_)))
+                    .unwrap();
+                assert!(seed < first_move, "the seed precedes the first sample");
+                assert_eq!(
+                    first_move,
+                    setup_steps(&options, &field, SourceTag::Jpeg).len(),
+                    "the readiness frame follows the seed and the view steps"
+                );
+                // Point 1 sits at x 0.5 in the seed, and every move drags that point there.
+                assert_eq!(MID_TONE_SEED[DRAGGED_POINT], [0.5, 0.5]);
+                let moves = curve_moves(&steps);
+                assert_eq!(moves.len(), values.len() + usize::from(drag));
+                for (action, parameter, index, points) in moves {
+                    assert_eq!(
+                        (action.as_str(), parameter.as_str(), index),
+                        ("set-curve", "luminance", DRAGGED_POINT)
+                    );
+                    assert!(
+                        points
+                            .iter()
+                            .all(|point| point[0] == DRAGGED_X && (0.0..=1.0).contains(&point[1]))
+                    );
+                }
+                assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+            }
+        }
+        // The largest run the harness takes still fits the evidence script.
+        let options = Options {
+            samples: 32,
+            basic: true,
+            presence: true,
+            ..curve_options(&source, true, Some(8.0))
+        };
+        let values = gesture_values(33, Control::Curve, &field);
+        let steps = gesture_script(&options, &field, SourceTag::Raw, &values, true);
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS, "{}", steps.len());
+    }
+
+    /// The view steps collapse every section the panel lists above the module's, as it lists them
+    /// for the photo's kind and workspace, expand the module's and scroll the panel to its top.
+    #[test]
+    fn the_view_steps_collapse_the_sections_above_the_module_and_expand_it() {
+        let field = tone_curve();
+        let collapsed = |modules: &[&str]| {
+            let mut steps: Vec<script::Step> = modules
+                .iter()
+                .map(|module| script::Step::section(*module, false))
+                .collect();
+            steps.push(script::Step::section("luxforge.curve", true));
+            steps.push(script::Step::tools_scroll(0.0));
+            steps
+        };
+        // The Crop, Presets and Basic sections sit above the Tone curve. The RAW module, between them in
+        // the registry, declares no controls and so draws no section for either kind of photo.
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Jpeg, false),
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
+        );
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Raw, false),
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
+        );
+        // The mask workspace lists only modules with a maskable effect.
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Jpeg, true),
+            collapsed(&["luxforge.basic"])
+        );
+        // Every collapsed section is one the registry orders before the module, and the panel
+        // lists it: no developer section, and nothing below the module is touched.
+        let registry = ModuleRegistry::builtin();
+        let order: Vec<&str> = registry
+            .descriptors()
+            .into_iter()
+            .map(|module| module.id.as_str())
+            .collect();
+        let curve = order.iter().position(|id| *id == "luxforge.curve").unwrap();
+        for step in curve_view_steps(&field, SourceTag::Raw, false) {
+            if let script::Step::Section(section) = step {
+                let position = order.iter().position(|id| *id == section.module).unwrap();
+                assert_eq!(section.expanded, position == curve, "{}", section.module);
+                assert!(position <= curve, "{} is below the curve", section.module);
+            }
+        }
+        // A slider has no view steps.
+        assert!(
+            curve_view_steps(&FieldTarget::basic_exposure(), SourceTag::Jpeg, false).is_empty()
+        );
+    }
+
+    /// A JPEG is told from a RAW file by its start-of-image marker.
+    #[test]
+    fn the_source_kind_is_read_from_the_first_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("luxforge-latency-kind-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let jpeg = dir.join("a.raw-named-jpeg");
+        fs::write(&jpeg, [0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
+        let raw = dir.join("a.jpg");
+        fs::write(&raw, b"II*\0").unwrap();
+        assert_eq!(source_tag(&jpeg).unwrap(), SourceTag::Jpeg);
+        assert_eq!(source_tag(&raw).unwrap(), SourceTag::Raw);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A crop-start script at its largest sample count fits the evidence script, and the step
@@ -3333,6 +4707,10 @@ mod tests {
             idle: false,
             basic: true,
             presence: true,
+            curve_layer: false,
+            detail: false,
+            lens: false,
+            perspective: false,
             mask: false,
             mask_overlay: false,
             zoom: None,
@@ -3702,7 +5080,7 @@ mod tests {
         assert_eq!(burst_interval_ms(), 8);
     }
 
-    /// Every field's burst is the same triangle, scaled about its own origin: exposure's — Basic's,
+    /// Interior fields follow the same triangle, scaled about their own origin: exposure's — Basic's,
     /// on a JPEG and a RAW photo alike — is the historical ±2 EV one value for value, and the RAW
     /// temperature's and tint's stay inside their declared ranges on their own steps, peaking at
     /// 40% of the smaller half of the range.
@@ -3740,6 +5118,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn detail_strength_bursts_change_values_and_return_to_the_limit_origin() {
+        for parameter in ["sharpening", "luminance", "colour"] {
+            let mut field =
+                resolve_field(Control::Slider, Some("set-detail"), Some(parameter)).unwrap();
+            assert_eq!(field.origin, field.min);
+            assert_eq!(field.min, 0.0);
+            // The declared Detail fields start at their lower limit; also pin the inward direction
+            // for a field whose origin is its upper limit.
+            for origin in [field.min, field.max] {
+                field.origin = origin;
+                let values = field.burst_values();
+                assert_eq!(values.len(), burst_values().len());
+                assert_eq!(values.first(), Some(&origin));
+                assert_eq!(values.last(), Some(&origin));
+                let middle = values.len() / 2;
+                assert_ne!(
+                    values[middle], origin,
+                    "{parameter} must exercise real edits"
+                );
+                let excursion = (values[middle] - origin).abs();
+                assert!(
+                    (excursion - BURST_PEAK_FRACTION * (field.max - field.min)).abs() <= field.step,
+                    "{parameter}: {excursion}"
+                );
+                for value in &values {
+                    assert!(
+                        (field.min..=field.max).contains(value),
+                        "{parameter}: {value}"
+                    );
+                    assert_eq!((value / field.step).round() * field.step, *value);
+                }
+                let direction = if origin == field.min { 1.0 } else { -1.0 };
+                assert!(
+                    values[..=middle]
+                        .windows(2)
+                        .all(|pair| direction * pair[1] >= direction * pair[0])
+                );
+                assert!(
+                    values[middle..]
+                        .windows(2)
+                        .all(|pair| direction * pair[1] <= direction * pair[0])
+                );
+            }
+        }
+    }
+
     /// The report counts the presented frames that approximated a drafted white balance, by phase.
     #[test]
     fn approximate_frames_are_counted_by_phase() {
@@ -3757,7 +5182,7 @@ mod tests {
 
     #[test]
     fn curve_script_keeps_every_point_in_range_and_below_the_evidence_bound() {
-        let field = unused_field();
+        let field = FieldTarget::proof_curve();
         let values = gesture_values(31, Control::Curve, &field);
         let gesture = gesture_steps(&values, Control::Curve, &field);
         assert_eq!(gesture.len(), 31);
@@ -3774,7 +5199,7 @@ mod tests {
             assert_eq!(fraction, *expected);
             assert_eq!(f64::from(fraction as f32), *expected);
         }
-        let setup = curve_view_steps();
+        let setup = curve_view_steps(&field, SourceTag::Jpeg, false);
         assert_eq!(setup.len(), 6);
         assert_eq!(setup.last().unwrap(), &script::Step::tools_scroll(1.0));
         let burst = burst_step(&values, Control::Curve, &field).to_value();
@@ -3783,6 +5208,40 @@ mod tests {
             assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
         }
         assert!(setup.len() + gesture.len() + 2 <= script::MAX_SCRIPT_STEPS); // optional crop, then burst
+    }
+
+    #[test]
+    fn a_reused_generation_pairs_only_frames_after_the_input_was_queued() {
+        let field = FieldTarget::basic_exposure();
+        let mut events = vec![
+            json!({"event":"preview_displayed","elapsed_ms":5.0,
+                "detail":{"generation":4,"draft_revision":null}}),
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"exposure":0.0}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":20.0,
+                "detail":{"value":0.0,"generation":4,"draft_revision":1}}),
+        ];
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert!(paired[0].displayed_ms.is_nan());
+        events.push(json!({"event":"preview_displayed","elapsed_ms":30.0,
+            "detail":{"generation":4,"draft_revision":1}}));
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired[0].displayed_ms, 30.0);
+        events[3]["detail"]["draft_revision"] = json!(2);
+        assert!(inputs(&events, Control::Slider, &field).is_err());
+        events[3]["detail"]["draft_revision"] = json!(1);
+        events.extend([
+            json!({"event":"slider_draft_set","elapsed_ms":40.0,
+                "detail":{"fields":{"exposure":0.0}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":50.0,
+                "detail":{"value":0.0,"generation":4,"draft_revision":2}}),
+            json!({"event":"preview_displayed","elapsed_ms":60.0,
+                "detail":{"generation":4,"draft_revision":2}}),
+        ]);
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired[0].displayed_ms, 30.0);
+        assert_eq!(paired[1].displayed_ms, 60.0);
     }
 
     #[test]
@@ -3796,13 +5255,14 @@ mod tests {
             json!({"event":"preview_displayed","elapsed_ms":35.0,
                 "detail":{"generation":7,"draft_revision":2}}),
         ];
-        let paired = inputs(&events, Control::Curve, &unused_field()).unwrap();
+        let proof = FieldTarget::proof_curve();
+        let paired = inputs(&events, Control::Curve, &proof).unwrap();
         assert_eq!(paired.len(), 1);
         assert_eq!(paired[0].value, 0.375);
         assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 25.0);
         let mut wrong = events;
         wrong[2]["detail"]["draft_revision"] = json!(3);
-        assert!(inputs(&wrong, Control::Curve, &unused_field()).is_err());
+        assert!(inputs(&wrong, Control::Curve, &proof).is_err());
     }
 
     #[test]
@@ -3901,6 +5361,7 @@ mod tests {
             max: 100.0,
             step: 1.0,
             origin: 0.0,
+            curve: None,
         };
         let values = field.gesture_values(31);
         assert_eq!(values.len(), 31);

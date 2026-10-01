@@ -93,41 +93,46 @@ pub(crate) struct ExactFrame {
 #[derive(Clone)]
 pub(crate) enum Retained {
     Proxy(ProxyFrame),
+    Settled(ProxyFrame),
     Exact(ExactFrame),
 }
 
 impl Retained {
     pub(crate) fn generation(&self) -> u64 {
         match self {
-            Self::Proxy(frame) => frame.generation,
+            Self::Proxy(frame) | Self::Settled(frame) => frame.generation,
             Self::Exact(frame) => frame.generation,
         }
     }
 
     pub(crate) fn raster(&self) -> &Arc<Raster> {
         match self {
-            Self::Proxy(frame) => &frame.raster,
+            Self::Proxy(frame) | Self::Settled(frame) => &frame.raster,
             Self::Exact(frame) => &frame.raster,
         }
     }
 
     pub(crate) fn approximate_white_balance(&self) -> bool {
         match self {
-            Self::Proxy(frame) => frame.approximate_white_balance,
+            Self::Proxy(frame) | Self::Settled(frame) => frame.approximate_white_balance,
             Self::Exact(frame) => frame.approximate_white_balance,
         }
     }
 
     pub(crate) fn render_ms(&self) -> f64 {
         match self {
-            Self::Proxy(frame) => frame.render_ms,
+            Self::Proxy(frame) | Self::Settled(frame) => frame.render_ms,
             Self::Exact(frame) => frame.render_ms,
         }
     }
 
+    fn settled(&self) -> bool {
+        matches!(self, Self::Settled(_))
+    }
+
     fn proxy(&self) -> Option<&ProxyFrame> {
         match self {
-            Self::Proxy(frame) => Some(frame),
+            Self::Proxy(frame) | Self::Settled(frame) => Some(frame),
             Self::Exact(_) => None,
         }
     }
@@ -172,6 +177,7 @@ pub(crate) enum Presented {
     Region(Box<(Delivery, RegionOutcome)>),
     /// The display-size frame, already retained for a zoom back to Fit.
     Proxy(Box<(Delivery, ProxyFrame)>),
+    Settled(Box<(Delivery, ProxyFrame)>),
     /// The exact phase — its frame, already received as the retained exact raster or with its
     /// report, or its failure.
     Exact(Box<(Delivery, Result<ExactFrame, luxforge_core::Error>)>),
@@ -211,6 +217,8 @@ pub(crate) struct Presentation {
     /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
     /// overlays over the photograph.
     pub(crate) presenter: Presenter,
+    /// The slider's immutable After frame, sharing the existing render allocation.
+    pub(crate) compare_after: Option<luxforge_ui::Frame>,
     /// One active and one replaceable pending preview job, off the UI thread.
     pub(crate) queue: PreviewQueue,
     /// The generation of the newest preview requested for the photograph.
@@ -228,6 +236,9 @@ pub(crate) struct Presentation {
     /// retains it; bound edits, layer changes and source development get another id.
     content_key: Option<(u64, luxforge_core::ProxyIdentity)>,
     pub(crate) content_serial: u64,
+    /// A draft or commit whose unchanged pixels were reused instead of rendered, waiting to be
+    /// settled once the draft driver has drained ([`Editor::settle_reused_pixels`]).
+    pub(crate) reused: Option<luxforge_core::analysis::AnalysisIdentity>,
     pub(crate) pending_content: BTreeMap<u64, u64>,
     pending_intent: BTreeMap<u64, PreviewIntent>,
     pub(crate) presented_content: u64,
@@ -238,6 +249,10 @@ pub(crate) struct Presentation {
     pub(crate) dimensions: Option<(u32, u32)>,
     /// The proxy frame of the newest job that had a proxy phase.
     pub(crate) proxy_frame: Option<ProxyFrame>,
+    pub(crate) settled_frame: Option<ProxyFrame>,
+    reduction_job: Option<PreviewJob>,
+    pub(crate) presented_settled: bool,
+    pub(crate) restoration_prefix: Option<luxforge_core::PrefixUse>,
     /// The exact frame of the newest job whose exact phase landed.
     pub(crate) exact: Option<ExactFrame>,
     /// The visible pixels the region slot owns.
@@ -320,6 +335,7 @@ impl Presentation {
         if key.is_none() || self.content_key != key {
             self.content_serial = self.content_serial.saturating_add(1);
             self.content_key = key;
+            self.restoration_prefix = None;
         }
         let content = self.content_serial;
         if self.viewport_disabled_content == Some(content) && job.viewport.is_some() {
@@ -335,6 +351,7 @@ impl Presentation {
     /// bounds it was given, and its content and intent. The job still waiting in the pending slot
     /// is replaced and forgotten.
     pub(crate) fn request(&mut self, job: PreviewJob, content: u64, timed: bool) -> Requested {
+        self.remember_reduction_job(&job);
         let bounds = job.proxy;
         let intent = job.intent;
         let viewport = job.viewport;
@@ -368,10 +385,22 @@ impl Presentation {
     /// which nothing is delivered any more.
     pub(crate) fn cancel(&mut self) -> u64 {
         let generation = self.queue.cancel();
+        self.reused = None;
+        self.reduction_job = None;
+        self.restoration_prefix = None;
         self.pending_bounds.clear();
         self.pending_content.clear();
         self.pending_intent.clear();
         generation
+    }
+
+    /// Retain only the whole-image plan whose exact pixels may service a later Fit resize.
+    /// Crop input stages do not replace that plan; a new whole stack does, including a stack
+    /// without restoration. A reused recipe still needs the new entry and draft identity.
+    pub(crate) fn remember_reduction_job(&mut self, job: &PreviewJob) {
+        if job.layer_count.is_none() && job.intent != PreviewIntent::Reduce {
+            self.reduction_job = job.evaluation.settles_from_exact().then(|| job.clone());
+        }
     }
 
     /// Forget what a job whose last phase has been taken up was asked for.
@@ -415,7 +444,11 @@ impl Presentation {
             approximate_white_balance,
             render_ms,
             queue_wait_ms: _,
+            restoration_prefix,
         } = result;
+        if restoration_prefix.is_some() {
+            self.restoration_prefix = restoration_prefix;
+        }
         let delivery = Delivery {
             generation,
             stage: (identity.width, identity.height),
@@ -440,6 +473,7 @@ impl Presentation {
                     render_ms,
                 };
                 self.proxy_frame = Some(frame.clone());
+                self.settled_frame = None;
                 Presented::Proxy(Box::new((delivery, frame)))
             }
             PhaseOutcome::Exact(outcome) => {
@@ -447,6 +481,7 @@ impl Presentation {
                     result,
                     report,
                     proxy_declined,
+                    display,
                 } = *outcome;
                 self.proxy_declined = proxy_declined;
                 let frame = result.map(|raster| ExactFrame {
@@ -462,9 +497,33 @@ impl Presentation {
                         identity,
                         report,
                     });
-                    self.receive(frame.clone(), analysis);
+                    if intent == PreviewIntent::Reduce {
+                        if let Some(exact) = &mut self.exact {
+                            exact.generation = generation;
+                        }
+                        if let Some(analysis) = &mut self.analysis {
+                            analysis.generation = generation;
+                        }
+                    } else {
+                        self.receive(frame.clone(), analysis);
+                    }
                 }
-                Presented::Exact(Box::new((delivery, frame)))
+                if let Some(raster) = display {
+                    let settled = ProxyFrame {
+                        generation,
+                        dimensions: (raster.width, raster.height),
+                        raster: Arc::new(raster),
+                        built: false,
+                        approximation: Default::default(),
+                        approximate_white_balance,
+                        render_ms,
+                    };
+                    self.proxy_frame = None;
+                    self.settled_frame = Some(settled.clone());
+                    Presented::Settled(Box::new((delivery, settled)))
+                } else {
+                    Presented::Exact(Box::new((delivery, frame)))
+                }
             }
         }
     }
@@ -542,7 +601,9 @@ impl Presentation {
         // raster is drawn. Nothing but a new frame moves it.
         self.presenter.clear_region();
         self.region_raster = None;
-        if proxy {
+        if frame.settled() {
+            self.presenter.show_settled(frame.raster(), content);
+        } else if proxy {
             self.presenter.show_proxy(frame.raster(), content);
         } else {
             self.presenter.show_full(frame.raster(), content);
@@ -551,12 +612,13 @@ impl Presentation {
         self.presented_generation = generation;
         self.presented_content = content;
         self.presented_proxy = proxy;
+        self.presented_settled = frame.settled();
         self.presented_approximate_white_balance = frame.approximate_white_balance();
-        if let Some(bounds) = self.pending_bounds.remove(&generation) {
+        if let Some(bounds) = self.pending_bounds.get(&generation).copied() {
             self.presented_bounds = bounds;
         }
         self.pending_bounds
-            .retain(|pending, _| *pending > generation);
+            .retain(|pending, _| *pending >= generation);
         self.refit_pending = false;
         self.presented_entry = Some(entry.clone());
         self.displayed_draft_revision = draft_revision;
@@ -632,6 +694,7 @@ impl Presentation {
         // `presented_proxy` means a whole-output display proxy for Fit/50% hand-over. A
         // half-detail viewport is a different slot and must not enter that zoom rule.
         self.presented_proxy = false;
+        self.presented_settled = false;
         self.presented_approximate_white_balance = delivery.approximate_white_balance;
         self.refit_pending = false;
         self.render_error = None;
@@ -648,7 +711,12 @@ impl Presentation {
             return Zoomed::Withdrawn;
         }
         let held = if wants_proxy {
-            self.proxy().cloned().map(Retained::Proxy)
+            self.settled_frame
+                .as_ref()
+                .filter(|f| f.generation == self.presented_generation)
+                .cloned()
+                .map(Retained::Settled)
+                .or_else(|| self.proxy().cloned().map(Retained::Proxy))
         } else {
             self.exact().cloned().map(Retained::Exact)
         };
@@ -662,12 +730,16 @@ impl Presentation {
         self.presenter.withdraw_photo();
         self.region_raster = None;
         self.proxy_frame = None;
+        self.settled_frame = None;
+        self.reduction_job = None;
+        self.restoration_prefix = None;
         self.exact = None;
         self.incoming = None;
         self.analysis = None;
         self.analysis_content = None;
         self.held_by_proxy = None;
         self.presented_proxy = false;
+        self.presented_settled = false;
         self.presented_approximate_white_balance = false;
         self.displayed_draft_revision = None;
         self.displayed_draft_id = None;
@@ -679,6 +751,7 @@ impl Presentation {
     /// mask draft and the crop draft are the caller's to add.
     pub(crate) fn surfaces(&self, clipping: Option<&OverlayRequest>) -> view::Surfaces<'_> {
         view::Surfaces {
+            comparison: None,
             photo: self.presenter.photo_for(self.presented_content),
             photo_content: self.presenter.full_content(),
             current_content: self.presented_content,
@@ -739,9 +812,14 @@ impl Presentation {
 
     /// The proxy frame retained for the generation on screen, when there is one.
     pub(crate) fn proxy(&self) -> Option<&ProxyFrame> {
-        self.proxy_frame
+        self.settled_frame
             .as_ref()
             .filter(|frame| frame.generation == self.presented_generation)
+            .or_else(|| {
+                self.proxy_frame
+                    .as_ref()
+                    .filter(|frame| frame.generation == self.presented_generation)
+            })
     }
 
     /// The exact frame retained for the generation on screen, when its exact phase has landed.
@@ -888,10 +966,16 @@ impl Editor {
     /// last draw without polling or scheduling another render.
     pub(crate) fn surface_photo_updating(&self) -> bool {
         surface_photo_needs_update(
-            &luxforge_ui::surface_diagnostics(),
+            &luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
             self.presentation.has_picture(),
             self.presentation.render_error.is_some(),
-        )
+        ) || self.surfaces().comparison.is_some_and(|_| {
+            surface_photo_needs_update(
+                &luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+                true,
+                false,
+            )
+        })
     }
 
     pub(crate) fn visible_detail_updating(&self) -> bool {
@@ -918,6 +1002,73 @@ impl Editor {
                     || !contains_region(region.rect, wanted)
             })
     }
+    /// Settle a draft or commit whose photograph pixels were reused instead of rendered, once the
+    /// shared draft driver has drained: the entry, draft and analysis identity advance together.
+    pub(crate) fn settle_reused_pixels(&mut self) {
+        let Some(identity) = self.presentation.reused.clone() else {
+            return;
+        };
+        if self
+            .core_gesture()
+            .is_some_and(|gesture| !gesture.draft.drained())
+        {
+            return;
+        }
+        self.presentation.reused = None;
+        self.show_entry(identity.entry_id.clone());
+        self.presentation.presented_entry = Some(identity.entry_id.clone());
+        self.presentation.displayed_draft_id = identity.draft.as_ref().map(|d| d.draft_id.clone());
+        self.presentation.displayed_draft_revision =
+            identity.draft.as_ref().map(|d| d.draft_revision);
+        // A mask-only or neutral ancillary edit reuses pixel allocations, while its immutable
+        // recipe has a new snapshot. Restamp the small raster headers so reduce-only validation
+        // can verify that identity without copying the shared RGBA buffers.
+        if let Some(frame) = self.presentation.exact.as_mut() {
+            Arc::make_mut(&mut frame.raster).snapshot_id = identity.snapshot_id.clone();
+        }
+        for frame in [
+            &mut self.presentation.proxy_frame,
+            &mut self.presentation.settled_frame,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            Arc::make_mut(&mut frame.raster).snapshot_id = identity.snapshot_id.clone();
+        }
+        let generation = self.presentation.presented_generation;
+        if self.presentation.analysis_content == Some(self.presentation.presented_content)
+            && let Some(analysis) = self.presentation.analysis.as_mut()
+        {
+            analysis.identity = identity.clone();
+            let report = analysis.report.clone();
+            self.owner.submit_analysis(identity.clone(), report);
+            self.event(
+                "analysis_reused",
+                || json!({"generation":generation,"identity":identity}),
+            );
+        }
+        self.event(
+            "preview_pixels_reused",
+            || json!({"generation":generation,"identity":identity}),
+        );
+        self.outcome(Outcome::EntryShown(&identity.entry_id));
+        let presented = match self.core_gesture() {
+            Some(gesture) => outcome::Presented::Draft {
+                slider: gesture.slider().is_some(),
+                newest: true,
+            },
+            None => outcome::Presented::Photo,
+        };
+        self.outcome(Outcome::Presented(presented));
+        if self.activity.pending {
+            self.activity.pending = false;
+            self.activity.displayed = self.activity.requested;
+            self.activity.phase = "ready";
+            self.outcome(Outcome::RequestEnded { failed: false });
+        }
+        self.status.text = self.displayed_status(&identity.entry_id);
+    }
+
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
@@ -1343,7 +1494,25 @@ impl Editor {
     /// Take up one preview result that carries something to show. Returns what it asks the runtime
     /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
     /// input stage.
-    pub(super) fn preview_ready(&mut self, result: PreviewResult) -> (Task<Message>, bool) {
+    pub(super) fn preview_ready(&mut self, mut result: PreviewResult) -> (Task<Message>, bool) {
+        // An exact display reduction belongs to one view and one current content generation.
+        // Its full raster can still be retained when a resize invalidates only the reduction.
+        if let PhaseOutcome::Exact(exact) = &mut result.outcome
+            && exact.display.is_some()
+            && (result.generation != self.presentation.preview_generation
+                || self.presentation.pending_content.get(&result.generation)
+                    != Some(&self.presentation.content_serial)
+                || self
+                    .presentation
+                    .pending_bounds
+                    .get(&result.generation)
+                    .copied()
+                    .flatten()
+                    != self.proxy_bounds())
+        {
+            exact.display = None;
+            self.presentation.refit_pending = false;
+        }
         // The crop draft's truncated preview shares the queue; its generation says which texture
         // the pixels belong to. It is never analysed, because its identity describes the whole
         // stack rather than the layer prefix it renders. A slider gesture's drafted preview is not
@@ -1380,6 +1549,10 @@ impl Editor {
             Presented::Region(region) => {
                 let (delivery, region) = *region;
                 self.region_ready(delivery, region)
+            }
+            Presented::Settled(settled) => {
+                let (delivery, frame) = *settled;
+                self.frame_ready(delivery, Ok(Retained::Settled(frame)))
             }
             Presented::Proxy(proxy) => {
                 let (delivery, frame) = *proxy;
@@ -1907,11 +2080,17 @@ impl Editor {
             Zoomed::Kept | Zoomed::Withdrawn => Task::none(),
             Zoomed::Missing if wants_proxy => {
                 // Nothing to hand over: the frame on screen is a full-resolution render with no
-                // proxy beside it. One preview job produces the display-size frame this zoom wants,
-                // and it is the only render any view change asks for.
+                // display-size frame beside it. Restoration reduces the retained exact allocation;
+                // other stacks ask for the proxy this zoom wants.
                 self.event("preview_proxy_requested", || json!({ "zoom": zoom }));
                 self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
-                self.request_current_preview()
+                if let Some(bounds) = self.proxy_bounds()
+                    && self.reduce_retained(bounds)
+                {
+                    Task::none()
+                } else {
+                    self.request_current_preview()
+                }
             }
             Zoomed::Missing => {
                 // The exact phase of the frame on screen has not landed. It is already running, and
@@ -2049,7 +2228,8 @@ impl Editor {
             };
         self.note_thumbnail_source(&job);
         if reusable {
-            self.coverage_worker.reused = Some(job.identity.clone());
+            self.presentation.remember_reduction_job(&job);
+            self.presentation.reused = Some(job.identity.clone());
             self.presentation.preview_generation = self.presentation.presented_generation;
             self.view_plan.dirty = false;
             return (
@@ -2057,7 +2237,7 @@ impl Editor {
                 timed.then(Instant::now),
             );
         }
-        self.coverage_worker.reused = None;
+        self.presentation.reused = None;
         // The job still waiting in the pending slot is replaced by this one and never starts, so
         // nothing about it will ever be delivered: when it was the crop draft's input stage, the
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
@@ -2116,7 +2296,43 @@ impl Editor {
             || json!({"reason":"bounds","bounds":{"width":bounds.width,"height":bounds.height}}),
         );
         self.outcome(Outcome::FrameRequested(outcome::Requested::Photo));
-        self.request_current_preview()
+        if self.reduce_retained(bounds) {
+            Task::none()
+        } else {
+            self.request_current_preview()
+        }
+    }
+
+    /// Schedule only reduction when this exact frame still describes the displayed content.
+    fn reduce_retained(&mut self, bounds: ProxyBounds) -> bool {
+        let Some(exact) = self.presentation.exact.as_ref().filter(|frame| {
+            !frame.approximate_white_balance
+                && frame.content == Some(self.presentation.presented_content)
+                && self.presentation.presented_content == self.presentation.content_serial
+        }) else {
+            return false;
+        };
+        let Some(mut job) = self.presentation.reduction_job.clone() else {
+            return false;
+        };
+        if Some(&job.evaluation.entry().id) != self.presentation.presented_entry.as_ref()
+            || job.evaluation.draft_revision() != self.presentation.displayed_draft_revision
+        {
+            return false;
+        }
+        job.reduce = Some(exact.raster.clone());
+        job.proxy = Some(bounds);
+        job.viewport = None;
+        job.intent = PreviewIntent::Reduce;
+        job.analyse = false;
+        let content = self.presentation.presented_content;
+        let requested = self.presentation.request(job, content, false);
+        self.presentation.preview_generation = requested.generation;
+        self.event(
+            "preview_reduce_requested",
+            || json!({"generation":requested.generation,"bounds":bounds}),
+        );
+        true
     }
 
     /// Drafts own the preview until they finish, so a layout change deliberately leaves their
@@ -2219,7 +2435,7 @@ impl Editor {
         // zoom hand-over or a refit presents long after.
         self.activity.render = Some(state::status::RenderTime {
             ms: frame.render_ms(),
-            proxy: proxy.is_some(),
+            proxy: proxy.is_some() && !frame.settled(),
             approximate: frame.approximate_white_balance(),
         });
         let raster = frame.raster();
@@ -2235,6 +2451,7 @@ impl Editor {
                 "draft_revision":draft_revision,
                 "dimensions":[stage.0,stage.1],
                 "path":"surface",
+                "settled_from_exact":frame.settled(),
                 "proxy":proxy.is_some(),
                 "proxy_dimensions":proxy.map(|frame| json!([frame.dimensions.0,frame.dimensions.1])),
                 "proxy_built":proxy.is_some_and(|frame| frame.built),
@@ -2261,6 +2478,7 @@ impl Editor {
             None => outcome::Presented::Photo,
         };
         if proxy.is_some()
+            && !frame.settled()
             && self.presentation.intent(generation) != Some(PreviewIntent::Interactive)
         {
             // The photograph is on screen, but every number a captured frame reports — the
@@ -2351,6 +2569,17 @@ impl Editor {
             }
             (None, None) => String::new(),
         };
+        let sentence = if self.presentation.presented_settled {
+            format!("{sentence} · Settled from exact · display reduced")
+        } else if self
+            .presentation
+            .proxy()
+            .is_some_and(|f| f.approximation.restoration)
+        {
+            format!("{sentence} · Moving preview · Detail approximate")
+        } else {
+            sentence
+        };
         match &self.status.skipped {
             Some(skipped) => format!("{sentence} \u{b7} {skipped}"),
             None => sentence,
@@ -2371,6 +2600,7 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
     let zoomed = editor.zoom_changed(&before.zoom);
     let refit = editor.refit_proxy();
     let view = editor.reconcile_view();
+    editor.settle_reused_pixels();
     Task::batch([zoomed, refit, view])
 }
 
@@ -2390,4 +2620,296 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
         );
     }
     Subscription::batch(subscriptions)
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    use super::*;
+    use crate::app::testing::{self, finish, opened};
+    use luxforge_core::{
+        Evaluation, Layer, ModuleRegistry, PreviewSource, RenderContext, SourceImage,
+    };
+
+    fn job(editor: &Editor) -> PreviewJob {
+        let entry = editor
+            .document
+            .state
+            .as_ref()
+            .unwrap()
+            .current_entry
+            .clone();
+        let recipe = entry.snapshot.recipe.clone();
+        PreviewJob::new(Evaluation::new(
+            Arc::new(ModuleRegistry::builtin()),
+            RenderContext::new(),
+            PreviewSource::Jpeg(SourceImage {
+                width: 2,
+                height: 1,
+                rgba: vec![20, 40, 60, 255, 40, 60, 80, 255].into(),
+                fingerprint: "reduction-test".into(),
+                orientation: 1,
+                capture: Default::default(),
+            }),
+            entry,
+            recipe,
+            None,
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn restoration_reduction_plan_releases_source_on_plain_stack_and_cancel() {
+        let (mut editor, catalog, _, _) = opened(
+            vec![Layer::new(
+                luxforge_core::DETAIL_EFFECT,
+                json!({"sharpening":60}),
+            )],
+            4,
+        );
+        let mut active = job(&editor);
+        let (stack, held) = testing::fresh_stack(&active.evaluation);
+        active.evaluation = stack;
+        editor.presentation.remember_reduction_job(&active);
+        drop(active);
+        assert!(held.upgrade().is_some());
+        let mut plain = job(&editor);
+        testing::rebuild(&mut plain, |parts| parts.recipe.layers.clear());
+        editor.presentation.remember_reduction_job(&plain);
+        assert!(
+            held.upgrade().is_none(),
+            "a non-restoration stack releases the preceding source"
+        );
+        let mut active = job(&editor);
+        let (stack, held) = testing::fresh_stack(&active.evaluation);
+        active.evaluation = stack;
+        editor.presentation.remember_reduction_job(&active);
+        drop(active);
+        assert!(held.upgrade().is_some());
+        editor.presentation.cancel();
+        assert!(
+            held.upgrade().is_none(),
+            "cancellation releases its retained reduction plan"
+        );
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn restoration_reused_pixels_resize_with_new_snapshot_without_copying_pixels() {
+        let (mut editor, catalog, _, _) = opened(
+            vec![Layer::new(
+                luxforge_core::DETAIL_EFFECT,
+                json!({"sharpening":60}),
+            )],
+            4,
+        );
+        // `opened` queues its fixture's preview. This test installs a completed presentation
+        // directly, so retire that fixture job before exercising the idle reuse path.
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        let mut original = job(&editor);
+        let content = editor.presentation.admit(&mut original);
+        editor.presentation.pending_content.insert(8, content);
+        let pixels = Arc::new(vec![20, 40, 60, 255, 40, 60, 80, 255]);
+        let raster = Arc::new(Raster {
+            width: 2,
+            height: 1,
+            rgba: pixels.clone(),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(8, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (2, 1),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        editor.presentation.remember_reduction_job(&original);
+        let mut changed = original.clone();
+        testing::rebuild(&mut changed, |parts| {
+            parts.entry.id = luxforge_core::EntryId::new();
+            parts.entry.snapshot.id = luxforge_core::SnapshotId::new();
+        });
+        assert!(editor.presentation.matches_pixel_content(&changed));
+        assert_eq!(editor.presentation.presented_content, content);
+        assert!(editor.presentation.has_picture());
+        assert!(!editor.presentation.queue.is_busy());
+        assert!(!editor.presentation.queue.ready());
+        assert!(editor.presentation.held_by_proxy.is_none());
+        assert!(editor.presentation.render_error.is_none());
+        assert_eq!(
+            editor.request_preview(changed.clone()),
+            8,
+            "same pixel content does not rerender Detail"
+        );
+        editor.settle_reused_pixels();
+        let exact = editor.presentation.exact.as_ref().unwrap();
+        assert_eq!(exact.raster.snapshot_id, changed.identity.snapshot_id);
+        assert!(Arc::ptr_eq(&exact.raster.rgba, &pixels));
+        assert!(
+            editor.reduce_retained(ProxyBounds {
+                width: 1,
+                height: 1
+            }),
+            "resize uses the refreshed immutable plan"
+        );
+        let result = luxforge_testbase::wait_for("the resize's exact-derived Fit", || {
+            editor.presentation.queue.poll()
+        });
+        let luxforge_core::PhaseOutcome::Exact(outcome) = result.outcome else {
+            panic!("reduction has only an exact phase");
+        };
+        assert!(outcome.result.is_ok(), "{outcome:?}");
+        assert!(Arc::ptr_eq(&outcome.result.unwrap().rgba, &pixels));
+        assert_eq!(outcome.display.unwrap().width, 1);
+        finish(editor, catalog);
+    }
+
+    /// Returning from a percentage view after a reused commit must schedule reduction before the
+    /// ordinary same-content shortcut can accept its exact pixels as the requested Fit display.
+    #[test]
+    fn restoration_reused_commit_zoom_to_fit_reduces_retained_exact_pixels() {
+        let (mut editor, catalog, _, _) = opened(
+            vec![Layer::new(
+                luxforge_core::DETAIL_EFFECT,
+                json!({"sharpening":60}),
+            )],
+            4,
+        );
+        editor.presentation.queue = luxforge_core::PreviewQueue::default();
+        let completed_generation = editor.presentation.queue.cancel();
+        editor.view_state.window = (800.0, 600.0);
+        editor.view_state.scale_factor = 1.0;
+        editor.session.preview.view.zoom = Zoom::Percent { value: 200.0 };
+        let mut original = job(&editor);
+        testing::rebuild(&mut original, |parts| {
+            parts.source = PreviewSource::Jpeg(SourceImage {
+                width: 640,
+                height: 480,
+                rgba: vec![40; 640 * 480 * 4].into(),
+                fingerprint: "reduction-zoom-test".into(),
+                orientation: 1,
+                capture: Default::default(),
+            });
+        });
+        let content = editor.presentation.admit(&mut original);
+        editor
+            .presentation
+            .pending_content
+            .insert(completed_generation, content);
+        let pixels = Arc::new(vec![40; 640 * 480 * 4]);
+        let raster = Arc::new(Raster {
+            width: 640,
+            height: 480,
+            rgba: pixels.clone(),
+            source_fingerprint: original.identity.source_fingerprint.clone(),
+            snapshot_id: original.identity.snapshot_id.clone(),
+        });
+        let mut frame = testing::exact(completed_generation, raster, 1.0);
+        frame.content = Some(content);
+        editor.present(
+            Retained::Exact(frame.clone()),
+            Arrival::Rendered {
+                stage: (640, 480),
+                entry: original.identity.entry_id.clone(),
+                draft_revision: None,
+            },
+        );
+        editor.presentation.exact = Some(frame);
+        editor.presentation.analysis_content = Some(content);
+        editor.presentation.analysis = Some(Analysis {
+            generation: completed_generation,
+            identity: original.identity.clone(),
+            report: luxforge_core::analysis::reduce(
+                &pixels,
+                640,
+                480,
+                &luxforge_core::Cancel::never(),
+            )
+            .unwrap(),
+        });
+        editor.presentation.remember_reduction_job(&original);
+
+        let mut committed = original.clone();
+        testing::rebuild(&mut committed, |parts| {
+            parts.entry.id = luxforge_core::EntryId::new();
+            parts.entry.snapshot.id = luxforge_core::SnapshotId::new();
+        });
+        assert_eq!(
+            editor.request_preview(committed.clone()),
+            completed_generation,
+            "the commit reuses identical pixels"
+        );
+        editor.settle_reused_pixels();
+        assert_eq!(
+            editor.presentation.presented_entry.as_ref(),
+            Some(&committed.identity.entry_id)
+        );
+        assert_eq!(
+            editor
+                .presentation
+                .exact
+                .as_ref()
+                .unwrap()
+                .raster
+                .snapshot_id,
+            committed.identity.snapshot_id
+        );
+        assert!(
+            editor.presentation.proxy_frame.is_none()
+                && editor.presentation.settled_frame.is_none()
+        );
+        let report = editor
+            .presentation
+            .analysis
+            .as_ref()
+            .unwrap()
+            .report
+            .clone();
+
+        editor.session.preview.view.zoom = Zoom::Fit;
+        let bounds = editor
+            .proxy_bounds()
+            .expect("the Fit display is smaller than this exact image");
+        let task = editor.zoom_changed(&Zoom::Percent { value: 200.0 });
+        assert_eq!(
+            task.units(),
+            0,
+            "Fit reduction needs no owner planning round trip"
+        );
+        let generation = editor.presentation.preview_generation;
+        assert_eq!(
+            editor.presentation.intent(generation),
+            Some(PreviewIntent::Reduce),
+            "returning to Fit must bypass the same-content request shortcut"
+        );
+        let result = luxforge_testbase::wait_for("the zoom's exact-derived Fit", || {
+            editor.presentation.queue.poll()
+        });
+        assert_eq!(result.generation, generation);
+        assert_eq!(result.identity, committed.identity);
+        assert!(Arc::ptr_eq(
+            &result.exact().unwrap().result.as_ref().unwrap().rgba,
+            &pixels
+        ));
+        let (_, shown) = editor.preview_ready(result);
+        assert!(shown && editor.presentation.presented_settled);
+        assert_eq!(editor.presentation.presented_bounds, Some(bounds));
+        assert_eq!(editor.presentation.presenter.full_content(), None);
+        assert!(Arc::ptr_eq(
+            &editor.presentation.exact.as_ref().unwrap().raster.rgba,
+            &pixels
+        ));
+        let analysis = editor.presentation.analysis.as_ref().unwrap();
+        assert_eq!(analysis.identity, committed.identity);
+        assert_eq!(
+            analysis.report, report,
+            "Fit reduction does not replace exact histogram counts"
+        );
+        assert!(!editor.presentation.analysis_updating());
+        finish(editor, catalog);
+    }
 }

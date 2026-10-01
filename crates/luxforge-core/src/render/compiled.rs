@@ -4,7 +4,7 @@
 use super::{
     Byte, Evaluation, PixelDomain, RenderContext, SpatialEntry,
     linear::{LinearRows, LinearScratch, TAP_BLOCK_PIXELS},
-    locate::Affine,
+    map::WarpStep,
     nearest_index, resample_frame,
     spatial::Tiling,
     window::RegionFallback,
@@ -92,11 +92,42 @@ impl Entry {
         })
     }
 
+    /// Compose another output-to-input step into the one sampling boundary.
+    pub(crate) fn fuse(&mut self, step: WarpStep, output: Stage) -> Result<bool, Error> {
+        let Self::Resample(entry) = self else {
+            return Ok(false);
+        };
+        let crate::modules::Mapping::Warp(chain) = &mut entry.resample.map else {
+            return Ok(false);
+        };
+        Arc::make_mut(chain).prepend(step)?;
+        entry.resample.output_width = output.width;
+        entry.resample.output_height = output.height;
+        Ok(true)
+    }
+
+    pub(crate) fn has_warp(&self) -> bool {
+        matches!(self, Self::Resample(entry) if entry.resample.map.has_warp())
+    }
+
     /// A spatial boundary. `prefix_hash` is the SHA-256 of the canonical JSON of the layers before
     /// this one, which together with the source and the stage identifies what a global estimate
     /// was prepared from.
+    #[cfg(test)]
     pub(crate) fn spatial(operation: SpatialOperation, prefix_hash: String) -> Self {
         Self::Spatial(SpatialEntry::new(operation, prefix_hash))
+    }
+
+    pub(crate) fn spatial_tagged(
+        operation: SpatialOperation,
+        prefix_hash: String,
+        stage: crate::EffectStage,
+        fit_settle: crate::FitSettle,
+    ) -> Self {
+        let mut entry = SpatialEntry::new(operation, prefix_hash);
+        entry.stage = stage;
+        entry.fit_settle = fit_settle;
+        Self::Spatial(entry)
     }
 
     /// The whole stage this boundary produces from the whole stage it receives, before any cut.
@@ -199,34 +230,34 @@ impl Entry {
         }
     }
 
-    /// `forward`, the map from the content stage to the frame this boundary reads, followed by
-    /// this boundary's own forward map to its frame. A resample declares the map from its output
-    /// back to its input, the direction a sampler reads, so its forward map is that inverted; a
-    /// spatial operation moves no coordinate and contributes nothing.
-    pub(super) fn forward(&self, forward: Affine) -> Result<Affine, Error> {
-        match self {
-            Self::Resample(entry) => {
-                // A windowed proxy's frame before the resample is a window of the stage the
-                // resample was compiled against, placed at `origin` in it.
-                let (x, y) = entry.origin;
-                let mut forward = forward
-                    .then(Affine([1.0, 0.0, f64::from(x), 0.0, 1.0, f64::from(y)]))
-                    .then(Affine(entry.resample.inverse).invert()?);
-                // The boundary now holds only this rectangle of the full resample output. Its
-                // segment geometry reads local entry coordinates, not full-stage coordinates.
-                if let Some(window) = entry.window {
-                    forward = forward.then(Affine([
-                        1.0,
-                        0.0,
-                        -f64::from(window.x0),
-                        0.0,
-                        1.0,
-                        -f64::from(window.y0),
-                    ]));
-                }
-                Ok(forward)
+    /// Append this boundary's output-to-input steps in content-to-output traversal order. The
+    /// whole map evaluates these steps backwards for a content read and inverts them for an
+    /// output position. Window translations retain the same global coordinates as rasterization;
+    /// a spatial boundary contributes nothing because it moves no coordinate.
+    pub(super) fn mapping_steps(&self, steps: &mut Vec<WarpStep>) {
+        if let Self::Resample(entry) = self {
+            let (x, y) = entry.origin;
+            if (x, y) != (0, 0) {
+                steps.push(WarpStep::Affine([
+                    1.0,
+                    0.0,
+                    -f64::from(x),
+                    0.0,
+                    1.0,
+                    -f64::from(y),
+                ]));
             }
-            Self::Spatial(_) => Ok(forward),
+            steps.extend(entry.resample.map.steps_forward());
+            if let Some(window) = entry.window {
+                steps.push(WarpStep::Affine([
+                    1.0,
+                    0.0,
+                    f64::from(window.x0),
+                    0.0,
+                    1.0,
+                    f64::from(window.y0),
+                ]));
+            }
         }
     }
 
@@ -277,33 +308,40 @@ impl Entry {
 
     /// The byte driver's frame of this boundary ([`super::rasterize`]) over `input`, the finished
     /// byte frame of the `received` stage before it. Its dimensions are [`Self::held`]'s.
+    // Keep the explicit driver contract: source/input, stage, scheduling, cancellation, shared
+    // context and output precision are independently supplied to the same boundary dispatch.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn byte_frame(
         &self,
         domain: &Byte<'_>,
-        input: &[u8],
+        input: &super::byte::ByteFrame,
         received: Stage,
         tiling: Tiling,
         cancel: &Cancel,
         context: &RenderContext,
-    ) -> Result<Arc<Vec<u8>>, Error> {
+        wide: bool,
+    ) -> Result<super::byte::ByteFrame, Error> {
         match self {
             Self::Resample(entry) => {
+                let super::byte::ByteFrame::Narrow(input) = input else {
+                    unreachable!("a resample reads a narrow frame")
+                };
                 let frame = resample_frame(
                     input,
                     received.width,
                     received.height,
-                    entry.resample,
+                    &entry.resample,
                     entry.origin,
                     entry.window(),
                     cancel,
                 )?;
                 #[cfg(test)]
                 context.note_resample_bytes(frame.len());
-                Ok(frame)
+                Ok(super::byte::ByteFrame::Narrow(frame))
             }
-            Self::Spatial(entry) => {
-                super::byte::spatial_frame(domain, entry, input, received, tiling, cancel, context)
-            }
+            Self::Spatial(entry) => super::byte::spatial_frame(
+                domain, entry, input, received, tiling, cancel, context, wide,
+            ),
         }
     }
 
@@ -410,6 +448,38 @@ pub(crate) struct Compiled {
 }
 
 impl Compiled {
+    /// Plan on `cancel`'s progress meter, when it has one, the spatial tiles a whole-frame render
+    /// of the entries of `segments` runs: each spatial entry over the stage it receives, the
+    /// output of the segment before it, or `source` for segment 0.
+    pub(super) fn plan_progress(
+        &self,
+        cancel: &Cancel,
+        source: Option<Stage>,
+        segments: std::ops::Range<usize>,
+        tiling: Tiling,
+    ) {
+        let Some(progress) = cancel.progress() else {
+            return;
+        };
+        let tiles = segments
+            .filter_map(|index| match &self.segments.get(index)?.entry {
+                Some(Entry::Spatial(entry)) => {
+                    let received = match index.checked_sub(1) {
+                        Some(previous) => self.segments[previous].stage(),
+                        None => source?,
+                    };
+                    Some(super::spatial::tile_count(
+                        &entry.operation,
+                        received,
+                        tiling,
+                    ))
+                }
+                _ => None,
+            })
+            .sum();
+        progress.plan(tiles);
+    }
+
     pub(super) fn last(&self) -> &Segment {
         self.segments
             .last()
@@ -441,10 +511,51 @@ impl Compiled {
     /// supersampled. `O(layers + components)`, no pixel read.
     pub(crate) fn approximation(&self) -> crate::ProxyApproximation {
         crate::ProxyApproximation {
-            spatial: self.evaluates_spatial(),
+            spatial: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Spatial)),
+            restoration: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration)),
             mask: self.supersampled_masks(),
             reduced_detail: false,
         }
+    }
+
+    pub(crate) fn settles_from_exact(&self) -> bool {
+        self.segments.iter().any(|s| {
+            matches!(&s.entry,
+            Some(Entry::Spatial(e)) if e.fit_settle == crate::FitSettle::Exact)
+        })
+    }
+
+    /// The width the full recipe demands at the sampled prefix's last spatial boundary.
+    /// Cutting off later units must not change that earlier hand-off's precision.
+    pub(crate) fn prefix_spatial_input_wide(&self, prefix: &Compiled) -> bool {
+        prefix
+            .segments
+            .iter()
+            .rposition(|segment| matches!(&segment.entry, Some(Entry::Spatial(_))))
+            .and_then(|index| {
+                super::byte::byte_frame_widths(self)
+                    .get(index)
+                    .map(|width| width.input)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Segment whose input holds the last boundary of the leading restoration run.
+    pub(crate) fn restoration_boundary(&self) -> Option<usize> {
+        let mut boundary = None;
+        for (index, segment) in self.segments.iter().enumerate() {
+            match &segment.entry {
+                Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration => {
+                    boundary = Some(index)
+                }
+                Some(_) => break,
+                None => {}
+            }
+            if segment.has_color {
+                break;
+            }
+        }
+        boundary
     }
 
     /// Whether answering one pixel of this compilation evaluates a spatial segment.
@@ -507,7 +618,10 @@ impl Segment {
                 // Colour is applied to the resolved value, not to the coordinate walk, and a
                 // resample or spatial operation is the next segment's entry, never one of its
                 // operations.
-                Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
+                Processing::Color(_)
+                | Processing::Spatial(_)
+                | Processing::Resample(_)
+                | Processing::Warp(_) => {}
             }
         }
         Some(Resolved {
@@ -537,7 +651,10 @@ pub(super) fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u
                     mapped.push((index, x, y, *rgb));
                 }
             }
-            Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
+            Processing::Color(_)
+            | Processing::Spatial(_)
+            | Processing::Resample(_)
+            | Processing::Warp(_) => {}
         }
     }
     mapped.reverse();

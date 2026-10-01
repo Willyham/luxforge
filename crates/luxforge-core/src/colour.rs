@@ -74,6 +74,43 @@ pub mod srgb {
         &TO_LINEAR
     }
 
+    static TO_LINEAR16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
+        let narrow = decode_table();
+        (0..=u16::MAX)
+            .map(|code| {
+                if code % 257 == 0 {
+                    narrow[usize::from(code / 257)]
+                } else {
+                    decode(f64::from(code) / 65535.0) as f32
+                }
+            })
+            .collect()
+    });
+
+    pub(crate) fn decode16_table() -> &'static [f32] {
+        &TO_LINEAR16
+    }
+
+    static CODE_THRESHOLDS16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
+        (0..65535)
+            .map(|index| {
+                let threshold = decode((f64::from(index) + 0.5) / 65535.0);
+                let rounded = threshold as f32;
+                // First representable f32 in the upper code's exact interval.
+                if f64::from(rounded) < threshold {
+                    rounded.next_up()
+                } else {
+                    rounded
+                }
+            })
+            .collect()
+    });
+
+    #[inline]
+    pub(crate) fn quantize16(value: f32) -> u16 {
+        CODE_THRESHOLDS16.partition_point(|threshold| *threshold <= value) as u16
+    }
+
     /// One 8-bit pixel decoded into linear sRGB through a table the caller already holds.
     #[inline]
     pub(crate) fn decode_pixel_in(table: &[f32; 256], rgb: [u8; 3]) -> [f32; 3] {
@@ -246,6 +283,35 @@ pub(crate) mod luma {
         } else {
             let ratio = l_out / l_in;
             [rgb[0] * ratio, rgb[1] * ratio, rgb[2] * ratio]
+        }
+    }
+
+    /// [`reconstruct`] applied to the output above a black level `l_floor`, the Tone curve's
+    /// floor-subtracted reconstruction (`docs/design/tone-curve.md`, "Processing contract"): below
+    /// [`NEAR_BLACK`] the same additive rule, and otherwise `l_floor + rgb * (l_out - l_floor) /
+    /// l_in`, so a lifted black adds its grey to every channel rather than scaling shadow noise by
+    /// a ratio that grows as `l_floor / l_in`. With no lifted black (`l_floor == 0.0`) it is
+    /// [`reconstruct`] itself, bit for bit.
+    #[inline]
+    pub(crate) fn reconstruct_over_floor(
+        rgb: [f32; 3],
+        l_in: f32,
+        l_out: f32,
+        l_floor: f32,
+    ) -> [f32; 3] {
+        if l_floor == 0.0 {
+            return reconstruct(rgb, l_in, l_out);
+        }
+        if l_in.abs() < NEAR_BLACK {
+            let delta = l_out - l_in;
+            [rgb[0] + delta, rgb[1] + delta, rgb[2] + delta]
+        } else {
+            let scale = (l_out - l_floor) / l_in;
+            [
+                l_floor + rgb[0] * scale,
+                l_floor + rgb[1] * scale,
+                l_floor + rgb[2] * scale,
+            ]
         }
     }
 }
@@ -544,6 +610,87 @@ mod tests {
             assert_eq!(srgb::quantizer().rounded(linear), code);
             assert_eq!(srgb::quantizer().channel(linear), code);
         }
+    }
+
+    /// Over a zero floor the reconstruction is the frozen one bit for bit, on both branches and on
+    /// negative, near-black, over-white and non-grey inputs.
+    #[test]
+    fn reconstruct_over_a_zero_floor_is_bit_identical_to_reconstruct() {
+        for (rgb, l_out) in [
+            ([0.3f32, 0.1, 0.05], 0.27f32),
+            ([0.5, 0.5, 0.5], 0.61),
+            ([3e-4, 1e-5, 1e-5], 2e-4),
+            ([2e-7, -1e-7, 3e-7], 5e-7),
+            ([-0.1, 0.0, 0.0], -0.03),
+            ([1.5, 1.2, 0.9], 1.4),
+            ([0.0, 0.0, 0.0], 0.0),
+        ] {
+            let l_in = luma::rec709(rgb);
+            let floored = luma::reconstruct_over_floor(rgb, l_in, l_out, 0.0);
+            let frozen = luma::reconstruct(rgb, l_in, l_out);
+            assert_eq!(
+                floored.map(f32::to_bits),
+                frozen.map(f32::to_bits),
+                "{rgb:?}"
+            );
+        }
+    }
+
+    /// Three equal channels go through the same operations under a lifted floor and stay
+    /// bit-identical to each other, on both branches; a coloured pixel keeps the sign of each
+    /// channel's offset from the floor grey.
+    #[test]
+    fn reconstruct_over_a_floor_keeps_greys_equal() {
+        let l_floor = 0.01f32;
+        for grey in [-0.2f32, -1e-7, 0.0, 5e-7, 1e-4, 0.18, 0.5, 1.0, 1.7] {
+            let rgb = [grey; 3];
+            let l_in = luma::rec709(rgb);
+            let l_out = l_floor + 0.9 * l_in.max(0.0);
+            let [r, g, b] = luma::reconstruct_over_floor(rgb, l_in, l_out, l_floor);
+            assert_eq!(r.to_bits(), g.to_bits(), "{grey}");
+            assert_eq!(g.to_bits(), b.to_bits(), "{grey}");
+            assert!(r.is_finite(), "{grey}");
+        }
+        let rgb = [0.3f32, 0.1, 0.05];
+        let l_in = luma::rec709(rgb);
+        let out = luma::reconstruct_over_floor(rgb, l_in, 0.2, l_floor);
+        let scale = (0.2 - l_floor) / l_in;
+        assert!(scale > 0.0);
+        for channel in 0..3 {
+            assert_eq!(out[channel], l_floor + rgb[channel] * scale);
+            assert!(out[channel] > l_floor);
+        }
+    }
+
+    #[test]
+    fn byte_decode16_table_matches_the_8_bit_table_at_every_code() {
+        for code in 0..=255_usize {
+            assert_eq!(
+                srgb::decode16_table()[257 * code].to_bits(),
+                srgb::decode_table()[code].to_bits()
+            );
+        }
+        for code in 0..=65535_usize {
+            assert_eq!(
+                usize::from(srgb::quantize16(srgb::decode16_table()[code])),
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn byte_quantize16_is_monotone_and_exact_at_every_threshold() {
+        for code in 0..65535 {
+            let threshold = srgb::decode((f64::from(code) + 0.5) / 65535.0) as f32;
+            for value in [threshold.next_down(), threshold, threshold.next_up()] {
+                let expected =
+                    (srgb::encode(f64::from(value)).clamp(0.0, 1.0) * 65535.0).round() as u16;
+                assert_eq!(srgb::quantize16(value), expected, "{code}: {value}");
+            }
+        }
+        assert_eq!(srgb::quantize16(f32::NAN), 0);
+        assert_eq!(srgb::quantize16(f32::NEG_INFINITY), 0);
+        assert_eq!(srgb::quantize16(f32::INFINITY), 65535);
     }
 
     #[test]

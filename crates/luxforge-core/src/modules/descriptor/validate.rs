@@ -5,8 +5,8 @@ use super::types::{
     ActionControl, ActionDescriptor, CanvasInteraction, ChoiceControl, ColorControl, Control,
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
     NumberControl, PRESET_ID, PRESET_NAME, PRESET_SETTINGS, ParameterDescriptor, ParameterKind,
-    PickerControl, PresetsControl, RailDecoration, RangeControl, ResetAction, TaskControl,
-    ToggleControl,
+    PickerControl, PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction,
+    TaskControl, ToggleControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -161,6 +161,15 @@ impl ModuleDescriptor {
         if presets > 1 {
             return Err(Error::validation(format!(
                 "module {} declares {presets} presets controls; a module declares at most one",
+                self.id
+            )));
+        }
+        if Self::count(&self.controls, &|control| {
+            matches!(control, Control::QueryChoice(_))
+        }) > 1
+        {
+            return Err(Error::validation(format!(
+                "module {} declares more than one query-choice control",
                 self.id
             )));
         }
@@ -690,6 +699,50 @@ impl ModuleDescriptor {
                 let declared = self.declared_action(action)?;
                 self.check_presets_action(declared)?;
             }
+            Control::QueryChoice(control) => {
+                if control.label.trim().is_empty() {
+                    return Err(Error::validation(format!(
+                        "module {} has an unlabelled query-choice",
+                        self.id
+                    )));
+                }
+                let query = self.declared_query(&control.query)?;
+                let action = self.declared_action(&control.action)?;
+                if action.patch
+                    || !matches!(
+                        self.declared_parameter(query, &control.text)?.kind,
+                        ParameterKind::String { .. }
+                    )
+                    || !matches!(
+                        self.declared_parameter(query, &control.page)?.kind,
+                        ParameterKind::Integer { .. }
+                    )
+                    || !matches!(
+                        self.declared_parameter(action, &control.key)?.kind,
+                        ParameterKind::String { .. }
+                    )
+                {
+                    return Err(Error::validation(format!(
+                        "module {} query-choice needs string text/key, integer page and a non-patch action",
+                        self.id
+                    )));
+                }
+                let mut shared = HashSet::new();
+                for name in &control.shared {
+                    if !shared.insert(name)
+                        || name == &control.text
+                        || name == &control.page
+                        || name == &control.key
+                        || self.declared_parameter(query, name)?.kind
+                            != self.declared_parameter(action, name)?.kind
+                    {
+                        return Err(Error::validation(format!(
+                            "module {} query-choice shared parameter {name} is duplicated, reserved or has mismatched kinds",
+                            self.id
+                        )));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -746,6 +799,129 @@ impl ModuleDescriptor {
                 control => usize::from(kind(control)),
             })
             .sum()
+    }
+}
+
+impl ModuleDescriptor {
+    /// Verify a module's query-choice answer at the host boundary, before any client sees it: the
+    /// rows, and the optional status vocabulary a client draws without knowing the module
+    /// (`summary`, `visible_shared`, `search`, the `current` and `suggestion` cards, a `notice` and
+    /// a `report` link). A row's or the suggestion's `parameters` may name only the bound action's
+    /// own declared parameters other than its key, each with a value valid for its declaration.
+    pub(crate) fn validate_query_choice_answer(
+        &self,
+        query: &str,
+        answer: &serde_json::Value,
+    ) -> Result<(), Error> {
+        use serde_json::Value;
+        fn bound<'c>(controls: &'c [Control], query: &str) -> Option<&'c QueryChoiceControl> {
+            controls.iter().find_map(|control| match control {
+                Control::QueryChoice(control) if control.query == query => Some(control),
+                Control::Group(group) => bound(&group.controls, query),
+                _ => None,
+            })
+        }
+        let Some(control) = bound(&self.controls, query) else {
+            return Ok(());
+        };
+        let invalid = |what: &str| {
+            Error::internal(format!(
+                "module {} query-choice query {query} returned invalid {what}",
+                self.id
+            ))
+        };
+        let optional_text = |value: Option<&Value>| value.is_none_or(Value::is_string);
+        let required_text = |value: Option<&Value>, limit: usize| {
+            value
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= limit)
+        };
+        let reasons = |value: Option<&Value>| {
+            value.is_none_or(|value| {
+                value
+                    .as_array()
+                    .is_some_and(|values| values.iter().all(Value::is_string))
+            })
+        };
+        let action = self.action(&control.action);
+        let parameters = |value: Option<&Value>| {
+            value.is_none_or(|value| {
+                value.as_object().is_some_and(|named| {
+                    named.iter().all(|(name, value)| {
+                        *name != control.key
+                            && action
+                                .and_then(|action| action.parameter(name))
+                                .is_some_and(|parameter| check_value(parameter, value).is_ok())
+                    })
+                })
+            })
+        };
+        let choice = |value: &Value, eligible_required: bool| {
+            value.is_object()
+                && value.get("key").and_then(Value::as_str).is_some()
+                && value.get("title").and_then(Value::as_str).is_some()
+                && (if eligible_required {
+                    value.get("eligible").is_some_and(Value::is_boolean)
+                } else {
+                    value.get("eligible").is_none_or(Value::is_boolean)
+                })
+                && ["subtitle", "note", "label"]
+                    .into_iter()
+                    .all(|field| optional_text(value.get(field)))
+                && reasons(value.get("reasons"))
+                && parameters(value.get("parameters"))
+        };
+        let rows = answer
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid("rows"))?;
+        if rows.len() > 100 || !rows.iter().all(|row| choice(row, true)) {
+            return Err(invalid("rows"));
+        }
+        let Some(status) = answer.get("status") else {
+            return Ok(());
+        };
+        let status = status.as_object().ok_or_else(|| invalid("status"))?;
+        let shared = status.get("visible_shared").is_none_or(|names| {
+            names.as_array().is_some_and(|names| {
+                names.iter().all(|name| {
+                    name.as_str()
+                        .is_some_and(|name| control.shared.iter().any(|shared| shared == name))
+                })
+            })
+        });
+        let notice = status.get("notice").is_none_or(|notice| {
+            notice
+                .get("level")
+                .and_then(Value::as_str)
+                .is_some_and(|level| matches!(level, "info" | "warning"))
+                && required_text(notice.get("text"), 512)
+        });
+        // A page the client opens in the default browser: https, one token, bounded.
+        let report = status.get("report").is_none_or(|report| {
+            required_text(report.get("label"), 64)
+                && report
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .is_some_and(|url| {
+                        url.starts_with("https://")
+                            && url.len() <= 8192
+                            && url.bytes().all(|byte| byte.is_ascii_graphic())
+                    })
+        });
+        if !optional_text(status.get("summary"))
+            || !shared
+            || !status.get("search").is_none_or(Value::is_boolean)
+            || !status.get("current").is_none_or(|card| choice(card, false))
+            || !status
+                .get("suggestion")
+                .is_none_or(|card| choice(card, true))
+            || !notice
+            || !report
+        {
+            return Err(invalid("status"));
+        }
+        Ok(())
     }
 }
 

@@ -289,7 +289,12 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let tail = Tail::read(&launch.at("rotated-transform")?["step"]["result"])?;
     ensure(
-        tail.forward[1].abs() > 0.01 && tail.forward[3].abs() > 0.01,
+        {
+            let a = tail.mapping.to_output(0.0, 0.0).unwrap();
+            let x = tail.mapping.to_output(1.0, 0.0).unwrap();
+            let y = tail.mapping.to_output(0.0, 1.0).unwrap();
+            (x.1 - a.1).abs() > 0.01 && (y.0 - a.0).abs() > 0.01
+        },
         "Transformed gradient acceptance did not rotate the content map",
     )?;
     for name in [
@@ -314,8 +319,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 struct Tail {
     stage: Stage,
     output: [f64; 2],
-    forward: [f64; 6],
-    inverse: [f64; 6],
+    mapping: luxforge_core::GeometryMap,
 }
 
 impl Tail {
@@ -337,8 +341,8 @@ impl Tail {
                     .as_f64()
                     .ok_or("No output height")?,
             ],
-            forward: serde_json::from_value(answer["forward"].clone())?,
-            inverse: serde_json::from_value(answer["inverse"].clone())?,
+            mapping: serde_json::from_value::<luxforge_core::MappingDescriptor>(answer.clone())?
+                .geometry,
         })
     }
 
@@ -347,12 +351,9 @@ impl Tail {
             (f64::from(x) + 0.5 - photo[0] as f64) / (photo[2] - photo[0]) as f64 * self.output[0];
         let oy =
             (f64::from(y) + 0.5 - photo[1] as f64) / (photo[3] - photo[1]) as f64 * self.output[1];
-        let f = self.inverse;
+        let (cx, cy) = self.mapping.to_content(ox, oy).expect("captured geometry");
         let height = f64::from(self.stage.height);
-        [
-            (f[0] * ox + f[1] * oy + f[2]) / height,
-            (f[3] * ox + f[4] * oy + f[5]) / height,
-        ]
+        [cx / height, cy / height]
     }
 }
 

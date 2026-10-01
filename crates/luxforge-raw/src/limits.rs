@@ -55,6 +55,8 @@ pub enum RenderPass {
     HeavyColour,
     /// An interpolating resample, counted over the output pixels it writes.
     Resample,
+    /// A nonlinear warp chain; threshold provisional until photo-sized measurement.
+    Warp,
     /// A spatial operation's tiles, counted over its stage.
     Spatial,
     /// A proxy source's box downscale, counted over the source pixels it reads.
@@ -77,6 +79,9 @@ pub const PARALLEL_HEAVY_COLOUR_PIXELS: u64 = 25_000;
 /// 0.07 MP and 1.14 at 0.03 MP.
 pub const PARALLEL_RESAMPLE_PIXELS: u64 = 100_000;
 
+/// Provisional: use the resample gate until warp-specific distributions are measured.
+pub const PARALLEL_WARP_PIXELS: u64 = PARALLEL_RESAMPLE_PIXELS;
+
 /// [`RenderPass::Spatial`]: at 0.25 MP each Presence unit's fastest runs are 0.21 to 0.88 and all
 /// three together 0.33 to 0.34 at the p50; at 0.1 MP Texture or Dehaze alone breaks even or loses.
 pub const PARALLEL_SPATIAL_PIXELS: u64 = 250_000;
@@ -93,6 +98,7 @@ pub const fn parallel_pixels(pass: RenderPass) -> u64 {
         RenderPass::Colour => PARALLEL_COLOUR_PIXELS,
         RenderPass::HeavyColour => PARALLEL_HEAVY_COLOUR_PIXELS,
         RenderPass::Resample => PARALLEL_RESAMPLE_PIXELS,
+        RenderPass::Warp => PARALLEL_WARP_PIXELS,
         RenderPass::Spatial => PARALLEL_SPATIAL_PIXELS,
         RenderPass::Proxy => PARALLEL_PROXY_PIXELS,
     }

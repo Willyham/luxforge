@@ -1,12 +1,7 @@
 //! Exact mask feedback on its own bounded, sleeping worker. No photograph is rasterized to change
 //! a selection, an overlay mode or an unbound candidate. Only jobs hold evaluations: keeping one
 //! in desktop view state would pin RAW development planes and their memory gate.
-use super::{
-    Before, Editor,
-    message::Message,
-    outcome::{Outcome, Presented},
-    tasks,
-};
+use super::{Before, Editor, message::Message, tasks};
 use iced::Task;
 use luxforge_core::{
     ErrorKind, MaskCoverage, MaskCoverageTarget, MaskOverlayColour, MaskOverlayMode,
@@ -84,11 +79,12 @@ pub(crate) struct CoverageQueue {
 impl Default for CoverageQueue {
     fn default() -> Self {
         let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
+        let mut input_cache = luxforge_core::InputGridCache::default();
         Self {
             worker: Latest::new(
                 "luxforge-mask-coverage",
                 move |job: Job, running: &Running<'_, _, _>| {
-                    run_coverage(job, running, &mut cached)
+                    run_coverage(job, running, &mut cached, &mut input_cache)
                 },
             ),
         }
@@ -99,8 +95,9 @@ fn run_coverage(
     job: Job,
     running: &Running<'_, Job, Completion>,
     cached: &mut Option<(u64, MaskOverlayOutcome)>,
+    input_cache: &mut luxforge_core::InputGridCache,
 ) -> Option<Completion> {
-    let result = job.evaluation.mask_overlay_coverage(
+    let result = job.evaluation.mask_overlay_coverage_with_cache(
         &job.stamp.spec.target,
         job.stamp.spec.cells,
         job.stamp.spec.region,
@@ -108,6 +105,7 @@ fn run_coverage(
         // Accepted mask revisions are useful feedback even while a newer set waits. Only a
         // semantic cancellation abandons the active snapshot.
         running.abandoned(),
+        input_cache,
     );
     let outcome = match result {
         Ok(MaskCoverage {
@@ -155,12 +153,13 @@ impl CoverageQueue {
     #[cfg(test)]
     pub(crate) fn held(gate: Arc<luxforge_testbase::Gate>) -> Self {
         let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
+        let mut input_cache = luxforge_core::InputGridCache::default();
         Self {
             worker: Latest::new(
                 "luxforge-mask-coverage-held",
                 move |job: Job, running: &Running<'_, _, _>| {
                     gate.pass();
-                    run_coverage(job, running, &mut cached)
+                    run_coverage(job, running, &mut cached, &mut input_cache)
                 },
             ),
         }
@@ -181,8 +180,6 @@ pub(crate) struct CoverageWorker {
     latest: Option<AnalysisIdentity>,
     adopted: Option<Adopted>,
     unavailable: Option<(Stamp, String)>,
-    /// A no-render draft/commit completion, reported once the shared draft driver has drained.
-    pub(crate) reused: Option<AnalysisIdentity>,
 }
 
 impl CoverageWorker {
@@ -249,7 +246,7 @@ impl Editor {
     }
 
     /// A grid for the current spec is still on its way: planned, computing, delivered but not yet
-    /// taken up, held for its photograph, or a reuse still to settle.
+    /// taken up, or held for its photograph.
     ///
     /// The worker's own work counts only while a request is outstanding. A spec change, Off or an
     /// invalidation clears the request and cancels the worker, and a job cancelled while it runs
@@ -257,10 +254,9 @@ impl Editor {
     /// job brings no grid, so a step that waited on it would wait for a frame nothing renders.
     pub(crate) fn mask_coverage_pending(&self) -> bool {
         let worker = &self.coverage_worker;
-        (worker.requested.is_some() && worker.queue.is_busy())
+        (worker.requested.is_some() && (worker.queue.is_busy() || worker.queue.ready()))
             || worker.planning.is_some()
             || worker.waiting.is_some()
-            || worker.reused.is_some()
     }
 
     pub(crate) fn invalidate_mask_coverage(&mut self) {
@@ -273,7 +269,6 @@ impl Editor {
         worker.latest = None;
         worker.adopted = None;
         worker.unavailable = None;
-        worker.reused = None;
         worker.queue.cancel();
         self.presentation.presenter.clear_coverage();
     }
@@ -537,62 +532,11 @@ impl Editor {
             self.mask_overlay_unavailable(generation, &reason);
         }
     }
-
-    fn settle_reused_pixels(&mut self) {
-        let Some(identity) = self.coverage_worker.reused.clone() else {
-            return;
-        };
-        if self
-            .core_gesture()
-            .is_some_and(|gesture| !gesture.draft.drained())
-        {
-            return;
-        }
-        self.coverage_worker.reused = None;
-        self.show_entry(identity.entry_id.clone());
-        self.presentation.presented_entry = Some(identity.entry_id.clone());
-        self.presentation.displayed_draft_id = identity.draft.as_ref().map(|d| d.draft_id.clone());
-        self.presentation.displayed_draft_revision =
-            identity.draft.as_ref().map(|d| d.draft_revision);
-        let generation = self.presentation.presented_generation;
-        if self.presentation.analysis_content == Some(self.presentation.presented_content)
-            && let Some(analysis) = self.presentation.analysis.as_mut()
-        {
-            analysis.identity = identity.clone();
-            let report = analysis.report.clone();
-            self.owner.submit_analysis(identity.clone(), report);
-            self.event(
-                "analysis_reused",
-                || json!({"generation":generation,"identity":identity}),
-            );
-        }
-        self.event(
-            "preview_pixels_reused",
-            || json!({"generation":generation,"identity":identity}),
-        );
-        self.outcome(Outcome::EntryShown(&identity.entry_id));
-        let presented = match self.core_gesture() {
-            Some(gesture) => Presented::Draft {
-                slider: gesture.slider().is_some(),
-                newest: true,
-            },
-            None => Presented::Photo,
-        };
-        self.outcome(Outcome::Presented(presented));
-        if self.activity.pending {
-            self.activity.pending = false;
-            self.activity.displayed = self.activity.requested;
-            self.activity.phase = "ready";
-            self.outcome(Outcome::RequestEnded { failed: false });
-        }
-        self.status.text = self.displayed_status(&identity.entry_id);
-    }
 }
 
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let changed = editor.reconcile_coverage_spec();
     let missing = editor.restamp_mask_coverage();
-    editor.settle_reused_pixels();
     if let Some(done) = editor.coverage_worker.waiting.take() {
         editor.mask_coverage_ready(done);
     }
@@ -764,6 +708,7 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let mut cached = None;
+        let mut input_cache = luxforge_core::InputGridCache::default();
         let queue = CoverageQueue {
             worker: Latest::new("coverage-progress-test", move |job: Job, running| {
                 started_tx
@@ -772,7 +717,7 @@ mod tests {
                 // A deterministic slow computation: several accepted inputs arrive while this job
                 // runs. The same production coverage function then reads its abandonment token.
                 release_rx.recv().ok()?;
-                run_coverage(job, running, &mut cached)
+                run_coverage(job, running, &mut cached, &mut input_cache)
             }),
         };
         let initial = progressive_stamp(&accepted_revision(&base, &draft_id, 1), &mask, 1, 1);
@@ -1144,7 +1089,7 @@ mod tests {
         settle.analyse = true;
         let refinement_generation = editor.request_preview(settle);
         assert!(
-            editor.coverage_worker.reused.is_none(),
+            editor.presentation.reused.is_none(),
             "half detail must not satisfy settlement"
         );
         assert!(editor.presentation.queue.is_busy());
@@ -1174,7 +1119,7 @@ mod tests {
         mask_only.analyse = true;
         editor.request_preview(mask_only);
         assert!(
-            editor.coverage_worker.reused.is_some(),
+            editor.presentation.reused.is_some(),
             "settled mask-only commits still reuse exact pixels/report at 100%"
         );
         assert!(!editor.presentation.queue.is_busy());
@@ -1190,7 +1135,7 @@ mod tests {
         missing_report.analyse = true;
         editor.request_preview(missing_report);
         assert!(
-            editor.coverage_worker.reused.is_none(),
+            editor.presentation.reused.is_none(),
             "exact pixels alone cannot claim a requested report exists"
         );
         assert!(editor.presentation.queue.is_busy());
@@ -1348,7 +1293,7 @@ mod tests {
         assert!(!editor.presentation.queue.is_busy());
         assert!(!editor.presentation.queue.ready());
         assert!(
-            editor.mask_coverage_pending(),
+            editor.presentation.reused.is_some(),
             "logical settlement is still pending"
         );
         editor.settle_reused_pixels();
@@ -1423,7 +1368,7 @@ mod tests {
             None,
         );
         editor.request_preview(PreviewJob::new(changed.clone()).unwrap());
-        assert!(editor.coverage_worker.reused.is_none());
+        assert!(editor.presentation.reused.is_none());
         drain_photo(&mut editor);
         assert!(editor.presentation.presenter.photo_version() > first);
 
@@ -1431,7 +1376,7 @@ mod tests {
         editor.presentation.render_error = Some(luxforge_core::Error::validation("test refusal"));
         editor.request_preview(PreviewJob::new(changed).unwrap());
         assert!(
-            editor.coverage_worker.reused.is_none(),
+            editor.presentation.reused.is_none(),
             "same pixels do not hide an outstanding refusal"
         );
         drain_photo(&mut editor);
@@ -1536,7 +1481,7 @@ mod tests {
         });
         editor.request_preview(PreviewJob::new(evaluation).unwrap());
         assert!(
-            editor.coverage_worker.reused.is_none(),
+            editor.presentation.reused.is_none(),
             "an old completion must not restore old entry metadata after reuse"
         );
         drain_photo(&mut editor);

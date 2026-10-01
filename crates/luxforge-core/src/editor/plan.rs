@@ -183,10 +183,14 @@ impl EditorService {
                 let mask = prepared.mask.as_ref();
                 let resolved = self.plan_action(asset, recipe, module, &prepared.input, mask)?;
                 Ok(PlannedRequest {
-                    planned: resolved.recipe.map(|next| Planned {
-                        recipe: next,
-                        label: masked_label(recipe, mask, prepared.label.clone()),
-                        touched: None,
+                    planned: resolved.recipe.map(|next| {
+                        let label =
+                            module.planned_label(&prepared.input, &next.layers, &prepared.label);
+                        Planned {
+                            recipe: next,
+                            label: masked_label(recipe, mask, label),
+                            touched: None,
+                        }
                     }),
                     skipped: resolved.skipped,
                 })
@@ -318,15 +322,22 @@ impl EditorService {
             source: OnceCell::new(),
             settings: OnceCell::new(),
             sample_prefixes: RefCell::new(HashMap::new()),
+            full_compiled: OnceCell::new(),
         };
-        answer(&StageContext {
+        let result = answer(&StageContext {
             layers: &recipe.layers,
             registry: &self.registry,
             target,
             kind: asset.source.tag(),
             masks: &recipe.masks,
             questions: &questions,
-        })
+        });
+        // A module may catch a sampling error; a recorded read still suspends planning before
+        // the resulting recipe can be admitted or any transaction can write it.
+        if self.pixel_reads.borrow().deferred.is_some() {
+            return Err(Error::internal("pixel read deferred to the point worker"));
+        }
+        result
     }
 
     /// Answer one module query about a saved entry's stack: the read-only counterpart of
@@ -380,9 +391,103 @@ impl EditorService {
             None,
             mask.as_ref(),
             view,
-            |context, _| module.query(query_id, &checked, context),
+            |context, _| {
+                let answer = module.query(query_id, &checked, context)?;
+                module
+                    .descriptor()
+                    .validate_query_choice_answer(query_id, &answer)?;
+                Ok(answer)
+            },
         );
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
+    }
+
+    /// Commit the first-open actions of `asset_id`, a photograph whose head has never moved and
+    /// whose original a preparation has just adopted: each
+    /// available module that applies to its source kind is asked in registry order
+    /// ([`crate::ToolModule::first_open`]) against the current stack, and an action it proposes is
+    /// committed through [`Self::run_action`] by the `system` actor, as one ordinary entry after the
+    /// ones before it. The source is prepared, so a module reads its optics from the verified
+    /// cache; planning reads metadata only. A refusal commits nothing and is reported, and the next
+    /// module is still asked. Only a preparation that adopts the original of a photograph at
+    /// revision 0 calls this, so it never runs once anything has moved the photograph's head.
+    pub(crate) fn first_open(&mut self, asset_id: &AssetId) -> Vec<crate::FirstOpen> {
+        let registry = self.registry.clone();
+        let mut reports = Vec::new();
+        for module in registry.providers() {
+            let descriptor = module.descriptor();
+            let report = |action_id: Option<&str>| crate::FirstOpen {
+                module_id: descriptor.id.clone(),
+                action_id: action_id.map(str::to_owned),
+                entry_id: None,
+                label: None,
+                error: None,
+            };
+            let failed = |action_id: Option<&str>, error: &Error| crate::FirstOpen {
+                error: Some(crate::jobs::JobError::from(error)),
+                ..report(action_id)
+            };
+            let state = match self.state(asset_id) {
+                Ok(state) => state,
+                Err(error) => {
+                    reports.push(failed(None, &error));
+                    continue;
+                }
+            };
+            if descriptor.check_available().is_err()
+                || descriptor
+                    .check_applies_to(state.asset.source.tag())
+                    .is_err()
+            {
+                continue;
+            }
+            let proposed = self.ask(
+                &state.asset,
+                &state.current_entry.snapshot.recipe,
+                module,
+                None,
+                None,
+                TargetView::Own,
+                |context, _| module.first_open(context),
+            );
+            let input = match proposed {
+                Ok(Some(input)) => input,
+                Ok(None) => continue,
+                Err(error) => {
+                    reports.push(failed(None, &error));
+                    continue;
+                }
+            };
+            let mutation = Mutation {
+                expected_revision: state.revision,
+                request_id: format!("first-open:{}:{}", asset_id.as_str(), descriptor.id),
+                actor: "system".into(),
+            };
+            let action_id = input.action_id.clone();
+            match self
+                .run_action(
+                    asset_id,
+                    mutation,
+                    &action_id,
+                    Value::Object(input.parameters),
+                )
+                .and_then(|result| {
+                    let state = self.state(asset_id)?;
+                    Ok((result, state))
+                }) {
+                Ok((result, state)) => {
+                    if let Some(entry_id) = result.mutation.created_entry_id {
+                        reports.push(crate::FirstOpen {
+                            entry_id: Some(entry_id),
+                            label: Some(state.current_entry.label),
+                            ..report(Some(&action_id))
+                        });
+                    }
+                }
+                Err(error) => reports.push(failed(Some(&action_id), &error)),
+            }
+        }
+        reports
     }
 
     /// Refuse a draft of `action_id` on `asset_id`, drafted through `mask` with `fields` set, that
@@ -794,9 +899,32 @@ struct HostStage<'s> {
     /// indices one planning call asks about, at most the stack's layer count, and dropped with this
     /// context when the plan or query returns.
     sample_prefixes: RefCell<HashMap<usize, Compiled>>,
+    full_compiled: OnceCell<Compiled>,
 }
 
 impl HostStage<'_> {
+    fn input_wide(&self, prefix: &Compiled) -> Result<bool, Error> {
+        if !prefix.evaluates_spatial() {
+            return Ok(false);
+        }
+        if self.full_compiled.get().is_none() {
+            let recipe = self.recipe;
+            let full = self.service.registry.compile_layers(
+                self.asset.width,
+                self.asset.height,
+                &recipe.layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?;
+            self.full_compiled.get_or_init(|| full);
+        }
+        Ok(self
+            .full_compiled
+            .get()
+            .unwrap()
+            .prefix_spatial_input_wide(prefix))
+    }
     /// The verified source, from the prepared-source cache: `preparation-required` when it is not
     /// there, since the catalog owner never decodes.
     fn source(&self) -> Result<&PreparedSource, Error> {
@@ -880,6 +1008,10 @@ fn sample_compile_count() -> usize {
 }
 
 impl StageQuestions for HostStage<'_> {
+    fn optics(&self) -> Result<crate::SourceOptics, Error> {
+        Ok(self.source()?.optics())
+    }
+
     /// Compile the prefix before `index`. Compiling folds declared output stages and allocates only
     /// the operation lists, so this copies no part of the stack and rasterizes nothing.
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
@@ -911,12 +1043,75 @@ impl StageQuestions for HostStage<'_> {
                 RenderSource::Linear { image, settings }
             }
         };
+        let preview = match source {
+            RenderSource::Byte(image) => crate::PreviewSource::Jpeg(image.clone()),
+            RenderSource::Linear { image, settings } => crate::PreviewSource::Raw {
+                image: image.clone(),
+                settings,
+            },
+        };
+        if let Some(answer) = self.service.spatial_read(
+            self.asset,
+            self.recipe,
+            preview,
+            &compiled,
+            self.input_wide(&compiled)?,
+            super::pixels::PixelRead { index, x, y },
+        )? {
+            return Ok(answer.rgba);
+        }
         let context = self.service.render_context();
+        if compiled.evaluates_spatial() {
+            let wide = self.input_wide(&compiled)?;
+            return crate::render::prefix_pixels(
+                source,
+                compiled,
+                context,
+                &crate::Cancel::never(),
+                wide,
+                crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+            )?
+            .rgba(x, y);
+        }
         Ok(
             Render::compiled(source, compiled, RenderOptions::default(), context)?
                 .sample(x, y)?
                 .rgba,
         )
+    }
+
+    fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let compiled = self.compiled_prefix(index)?;
+        let preview = match self.source()? {
+            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
+            PreparedSource::Raw(_) => {
+                let (image, settings) = self.linear()?;
+                crate::PreviewSource::Raw {
+                    image: image.clone(),
+                    settings,
+                }
+            }
+        };
+        if let Some(answer) = self.service.spatial_read(
+            self.asset,
+            self.recipe,
+            preview.clone(),
+            &compiled,
+            self.input_wide(&compiled)?,
+            super::pixels::PixelRead { index, x, y },
+        )? {
+            return Ok(answer.linear);
+        }
+        let wide = self.input_wide(&compiled)?;
+        crate::render::prefix_pixels(
+            preview.input(),
+            compiled,
+            self.service.render_context(),
+            &crate::Cancel::never(),
+            wide,
+            crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+        )?
+        .linear(x, y)
     }
 
     /// The RAW mosaic's own patch, which needs the decoded sensor and no development.
@@ -3146,7 +3341,7 @@ mod tests {
     #[test]
     fn every_built_in_action_stores_the_label_of_this_table() {
         let registry = ModuleRegistry::developer();
-        let table: [(&str, Value, &str); 76] = [
+        let table = [
             (
                 "apply-preset",
                 json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
@@ -3212,6 +3407,62 @@ mod tests {
             ),
             ("set-basic", json!({}), "Set Basic"),
             ("reset-basic", json!({}), "Reset Basic"),
+            ("set-detail", json!({"sharpening":150.0}), "Sharpening 150"),
+            ("set-detail", json!({"sharpening":0.0}), "Sharpening 0"),
+            ("set-detail", json!({"radius":1.7}), "Sharpen radius 1.7 px"),
+            (
+                "set-detail",
+                json!({"sharpen-detail":75.0}),
+                "Sharpen detail 75",
+            ),
+            (
+                "set-detail",
+                json!({"sharpen-masking":25.0}),
+                "Sharpen masking 25",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":30.0}),
+                "Luminance noise 30",
+            ),
+            (
+                "set-detail",
+                json!({"luminance-detail":65.0}),
+                "Luminance noise detail 65",
+            ),
+            ("set-detail", json!({"colour":40.0}), "Colour noise 40"),
+            (
+                "set-detail",
+                json!({"colour-detail":60.0}),
+                "Colour noise detail 60",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":40.0,"radius":1.7,"sharpen-detail":75.0,"sharpen-masking":25.0}),
+                "Sharpening",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":0.0,"radius":1.0,"sharpen-detail":25.0,"sharpen-masking":0.0}),
+                "Reset Sharpening",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":30.0,"luminance-detail":65.0,"colour":40.0,"colour-detail":60.0}),
+                "Noise reduction",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":0.0,"luminance-detail":50.0,"colour":0.0,"colour-detail":50.0}),
+                "Reset Noise reduction",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":20.0,"colour":25.0}),
+                "Detail (2 fields)",
+            ),
+            ("set-detail", json!({}), "Set Detail"),
+            ("reset-detail", json!({}), "Reset Detail"),
             ("set-presence", json!({"texture":100.0}), "Texture +100"),
             ("set-presence", json!({"dehaze":-100.0}), "Dehaze -100"),
             (
@@ -3231,6 +3482,36 @@ mod tests {
             ),
             ("set-presence", json!({}), "Set Presence"),
             ("reset-presence", json!({}), "Reset Presence"),
+            (
+                "set-perspective",
+                json!({"horizontal":40}),
+                "Horizontal +40",
+            ),
+            ("set-perspective", json!({"vertical":-25}), "Vertical -25"),
+            (
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+                "Perspective",
+            ),
+            (
+                "set-perspective",
+                json!({"horizontal":0,"vertical":0}),
+                "Reset Perspective",
+            ),
+            ("set-perspective", json!({}), "Set Perspective"),
+            ("reset-perspective", json!({}), "Reset Perspective"),
+            (
+                "set-curve",
+                json!({"luminance":[[0.0,0.0],[0.5,0.6],[1.0,1.0]]}),
+                "Tone curve 3 points",
+            ),
+            (
+                "set-curve",
+                json!({"luminance":[[0,0],[1,1]]}),
+                "Reset Tone curve",
+            ),
+            ("set-curve", json!({}), "Set Tone curve"),
+            ("reset-curve", json!({}), "Reset Tone curve"),
             ("set-mixer", json!({"red-hue":90.0}), "Red hue +90"),
             (
                 "set-mixer",
@@ -3381,14 +3662,153 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{action} {parameters}: {error}"));
             assert_eq!(prepared.label, *label, "{action} {parameters}");
         }
+        // Lens selection names its resolved record after planning. Exercise the actual commit
+        // boundary, including reset and perspective, rather than asserting the fallback title.
+        use crate::modules::lens::index;
+        struct IndexGuard;
+        impl Drop for IndexGuard {
+            fn drop(&mut self) {
+                index::clear_for_test();
+            }
+        }
+        let index = index::LensIndex::parse(
+            &std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/data/lensfun/index.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        index::set_for_test(Ok(Arc::new(index)));
+        let _index = IndexGuard;
+        let catalog = temp("resolved-action-labels.sqlite");
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+        let asset = service.import(&source).unwrap().asset.id;
+        let entry = service.state(&asset).unwrap().current_entry.id;
+        let profiles = service
+            .run_query(
+                &asset,
+                &entry,
+                "lens-profiles",
+                json!({"assume-uncorrected":true}),
+            )
+            .unwrap();
+        let suggestion = &profiles["status"]["suggestion"];
+        assert!(
+            suggestion["match"] == "lens-model" && suggestion["eligible"] == true,
+            "{profiles}"
+        );
+        let key = suggestion["key"].clone();
+        let semantic_table = [
+            (
+                "select-lens-profile",
+                json!({"profile":key,"assume-uncorrected":true}),
+                "Lens profile NIKKOR Z 24-70mm f/4 S at 35 mm",
+            ),
+            ("reset-lens-profile", json!({}), "Reset Lens correction"),
+            (
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+                "Perspective",
+            ),
+            ("reset-perspective", json!({}), "Reset Perspective"),
+            (
+                "select-controls-choice",
+                json!({"key":"two"}),
+                "Select controls choice",
+            ),
+        ];
+        for (action, parameters, label) in &semantic_table {
+            let revision = service.state(&asset).unwrap().revision;
+            service
+                .apply_action(
+                    &asset,
+                    mutation(revision, action),
+                    action,
+                    parameters.clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                service.state(&asset).unwrap().current_entry.label,
+                *label,
+                "{action} {parameters}"
+            );
+        }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
         for descriptor in registry.descriptors() {
             for declared in &descriptor.actions {
                 assert!(
-                    table.iter().any(|(action, _, _)| *action == declared.id),
+                    table
+                        .iter()
+                        .chain(&semantic_table)
+                        .any(|(action, _, _)| *action == declared.id),
                     "{} has no row in the label table",
                     declared.id
                 );
             }
         }
+    }
+
+    #[test]
+    fn sample_curve_remains_scalar_with_restoration_and_geometry() {
+        let catalog = temp("curve-scalar-restoration.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let imported = service.import(&fixture()).unwrap();
+        let asset = imported.asset.id;
+        let original = imported.current_entry.id;
+        let parameters = json!({"luminance":[[0.0,0.1],[0.5,0.7],[1.0,1.0]]});
+        let expected = service
+            .run_query(&asset, &original, "sample-curve", parameters.clone())
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "detail"),
+                "set-detail",
+                json!({"luminance":30.0}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "basic"),
+                "set-basic",
+                json!({"exposure":0.5}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(2, "perspective"),
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+            )
+            .unwrap();
+        let current = service.state(&asset).unwrap();
+        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        crate::render::spatial::observe_tiles(tiles.clone());
+        service.begin_pixel_call(None, super::super::pixels::PixelMemo::default());
+        let actual = service
+            .run_query(
+                &asset,
+                &current.current_entry.id,
+                "sample-curve",
+                parameters,
+            )
+            .unwrap();
+        assert!(
+            service.take_pixel_read().is_none(),
+            "a scalar curve query never parks a pixel read"
+        );
+        service.end_pixel_call();
+        assert_eq!(actual, expected);
+        assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(service.state(&asset).unwrap(), current);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 }

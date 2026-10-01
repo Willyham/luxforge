@@ -19,7 +19,7 @@ use crate::{
 };
 use iced::Task;
 use luxforge_core::{
-    ComponentId, EntryId, MASK_MODE, MaskId, MaskOverlayColour, MaskOverlayMode, StageTransform,
+    ComponentId, EntryId, MASK_MODE, MappingDescriptor, MaskId, MaskOverlayColour, MaskOverlayMode,
     mask::commands::{MaskReport, MaskTarget},
 };
 use serde_json::{Map, Value, json};
@@ -380,9 +380,10 @@ impl Editor {
             armed.id = id;
             armed.entry = entry.clone();
             armed.mask.map = None;
+            armed.mask.map_draft = None;
             armed.mask.shape.interrupt();
         }
-        crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry)
+        crate::app::tasks::transform_task(self.owner.clone(), self.client, id, asset, entry, None)
     }
 
     /// The kind of the component the panel has selected, as the listing reports it.
@@ -1136,13 +1137,18 @@ impl Editor {
             self.sync.mode = Some(MASK_MODE.to_owned());
         }
         let gesture = self.next_gesture();
-        let mask = MaskGesture { shape, map: None };
+        let mask = MaskGesture {
+            shape,
+            map: None,
+            map_draft: None,
+        };
         let transform = crate::app::tasks::transform_task(
             self.owner.clone(),
             self.client,
             gesture,
             asset,
             entry.clone(),
+            None,
         );
         if mask.shape.paints() || mask.shape.unplaced() {
             self.armed = Some(ArmedBrush {
@@ -1169,7 +1175,7 @@ impl Editor {
     pub(crate) fn mask_transform(
         &mut self,
         gesture: GestureId,
-        result: Result<StageTransform, String>,
+        result: Result<MappingDescriptor, String>,
     ) -> Task<Message> {
         let asked = match (self.core_gesture(), &self.armed) {
             (Some(open), _) => open.draft.gesture == gesture && open.mask().is_some(),
@@ -1179,14 +1185,39 @@ impl Editor {
         if !asked {
             return Task::none();
         }
+        if let Some(expected) = self.held_mask().and_then(|mask| mask.map_draft.as_ref()) {
+            let current = self.core_gesture().is_some_and(|open| {
+                open.draft.draft_id == expected.draft_id
+                    && open.draft.base_revision == expected.base_revision
+                    && !open.draft.conflicted
+            }) && self.session.draft.as_ref().is_some_and(|draft| {
+                draft.draft_id == expected.draft_id
+                    && draft.base_revision == expected.base_revision
+                    && !draft.conflicted
+            });
+            let stamped = match &result {
+                Ok(transform) => transform.draft.as_ref().is_some_and(|stamp| {
+                    stamp.draft_id == expected.draft_id
+                        && stamp.draft_revision >= expected.draft_revision
+                }),
+                Err(_) => true,
+            };
+            // Later mask fields change coverage, never geometry, so a newer revision of this
+            // same unconflicted base is valid, including a set accepted before its preview failed
+            // and prevented the desktop adopting its revision. A different base or draft is never
+            // installed.
+            if !current || !stamped {
+                return Task::none();
+            }
+        }
         match result {
             Ok(transform) => {
                 if let Some(mask) = self.held_mask_mut() {
-                    mask.map = ContentMap::new(&transform);
+                    mask.map = ContentMap::from_descriptor(transform);
                     // Mask space is defined in terms of the content stage's aspect, so the gesture
                     // is told it from the same answer its handles are mapped through — once, not
                     // per move.
-                    if let Some(map) = mask.map {
+                    if let Some(map) = &mask.map {
                         mask.shape.set_aspect(map.aspect());
                     }
                 }
@@ -1213,11 +1244,7 @@ impl Editor {
     /// the canvas.
     fn mask_handle(&mut self, handle: crate::app::message::mask::MaskPointer) -> Task<Message> {
         use crate::app::message::mask::MaskPointer;
-        if self
-            .armed
-            .as_ref()
-            .is_some_and(|armed| armed.mask.map.is_none())
-        {
+        if self.held_mask().is_some_and(|mask| mask.map.is_none()) {
             self.status.text = "Waiting for mask coordinates".into();
             return Task::none();
         }

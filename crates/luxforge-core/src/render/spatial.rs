@@ -120,6 +120,11 @@ impl SpatialPlan {
         }
         let tile = tiling.tile(operation, stage);
         let working_set = worst_case_working_set(operation, stage, &halos, summed_halo, tile);
+        if working_set == u64::MAX {
+            return Err(Error::resource_limit(
+                "spatial working-set byte length overflow",
+            ));
+        }
         Ok(Self {
             stage,
             halos,
@@ -129,7 +134,6 @@ impl SpatialPlan {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn working_set(&self) -> u64 {
         self.working_set
     }
@@ -319,6 +323,7 @@ const NON_FINITE_SPATIAL: &str = "spatial processing produced a non-finite value
 ///
 /// The halo's coverage plays no part in either path: the halo is read by the units, and the blend
 /// never writes it, so a tile's output is decided by the coverage at the tile's own pixels alone.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tile(
     plan: &SpatialPlan,
     operation: &SpatialOperation,
@@ -326,8 +331,22 @@ pub(crate) fn run_tile(
     tile: Region,
     parallelism: Parallelism,
     scratch: &mut TileScratch,
+    cancel: &Cancel,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, Vec<f32>), Error> {
+    cancel.check()?;
+    #[cfg(test)]
+    OBSERVED_TILES.with(|counter| {
+        if let Some(counter) = &*counter.borrow() {
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    #[cfg(test)]
+    TILE_CHECKPOINT.with(|checkpoint| {
+        if let Some(checkpoint) = &*checkpoint.borrow() {
+            checkpoint(cancel);
+        }
+    });
     let stage = plan.stage;
     let mask = operation.mask();
     // What is known about the tile's coverage before a pixel is read: everything outside the
@@ -386,12 +405,13 @@ pub(crate) fn run_tile(
         let input = Planes::new(stage, regions[index], &values)?;
         let mut next = vec![0.0_f32; (regions[index + 1].pixels() * 3) as usize];
         let mut output = PlanesMut::new(stage, regions[index + 1], &mut next)?;
-        unit.apply(
+        unit.apply_cancellable(
             &input,
             &mut output,
             globals.get(index).and_then(Option::as_ref),
             scratch,
             parallelism,
+            cancel,
         )?;
         let finite = match parallelism {
             Parallelism::Pool => next.par_iter().all(|value| value.is_finite()),
@@ -608,6 +628,23 @@ fn tile_copy() -> TileCopy {
 #[cfg(test)]
 thread_local! {
     static TILE_COPY: std::cell::Cell<TileCopy> = const { std::cell::Cell::new(TileCopy::Proved) };
+    static OBSERVED_TILES: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
+    static TILE_CHECKPOINT: std::cell::RefCell<Option<TileCheckpoint>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+type TileCheckpoint = Arc<dyn Fn(&Cancel) + Send + Sync>;
+
+/// A deterministic test checkpoint inside tile work, also when an estimate reduction pulls it.
+#[cfg(test)]
+pub(crate) fn observe_tile_checkpoint(checkpoint: TileCheckpoint) {
+    TILE_CHECKPOINT.with(|held| *held.borrow_mut() = Some(checkpoint));
+}
+
+/// Observe evaluations only on the current thread, proving the owner never evaluates a tile.
+#[cfg(test)]
+pub(crate) fn observe_tiles(counter: Arc<AtomicU64>) {
+    OBSERVED_TILES.with(|held| *held.borrow_mut() = Some(counter));
 }
 
 /// Set which masked tiles this thread copies, for a test; returns the previous rule.
@@ -706,8 +743,18 @@ pub(crate) fn run_batches<T: Send>(
         for (tile, result) in batch.iter().zip(results) {
             write(*tile, result)?;
         }
+        if let Some(progress) = cancel.progress() {
+            progress.advance(batch.len() as u64);
+        }
     }
     Ok(())
+}
+
+/// How many tiles [`run_batches`] runs for `operation` over `stage`: what a whole-frame render
+/// plans its progress in, without building the tiles.
+pub(crate) fn tile_count(operation: &SpatialOperation, stage: Stage, tiling: Tiling) -> u64 {
+    let side = u64::from(tiling.tile(operation, stage).max(1));
+    u64::from(stage.width).div_ceil(side) * u64::from(stage.height).div_ceil(side)
 }
 
 /// How a batch's tiles schedule their own passes: on the pool only for a stage at or above the
@@ -864,6 +911,7 @@ impl<'a> PointTiles<'a> {
         stage: Stage,
         x: u32,
         y: u32,
+        cancel: &Cancel,
         globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
         fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
     ) -> Result<[f32; 3], Error> {
@@ -903,6 +951,7 @@ impl<'a> PointTiles<'a> {
                 tile,
                 Parallelism::Serial,
                 &mut TileScratch::default(),
+                cancel,
                 &fill,
             )?
         };
@@ -1688,6 +1737,7 @@ mod tests {
                 title: "Test spatial".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
+                    fit_settle: Default::default(),
                     id: TEST_SPATIAL_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
@@ -1733,7 +1783,13 @@ mod tests {
         fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
             Ok(crate::LayerReport::new(format!("test spatial {payload}")))
         }
-        fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
+        fn compile(
+            &self,
+            _: &str,
+            _: u32,
+            payload: &Value,
+            _: crate::CompileStage,
+        ) -> Result<Processing, Error> {
             let mut units: Vec<Arc<dyn SpatialUnit>> = Vec::new();
             for unit in payload["units"].as_array().map_or(&[][..], Vec::as_slice) {
                 let unit = unit.as_str().expect("a unit description");
@@ -2550,7 +2606,7 @@ mod tests {
         let stack = masked_colour_before_dehaze();
         assert!(
             registry
-                .compile_sampled(40, 30, &stack, MaskSampling::ThinFeature)
+                .compile_sampled(40, 30, 40, 30, &stack, MaskSampling::ThinFeature)
                 .unwrap()
                 .supersampled_masks()
         );
@@ -2695,7 +2751,7 @@ mod tests {
             for y in 0..raster.height {
                 for x in 0..raster.width {
                     assert_eq!(
-                        evaluation.pixel(x, y).unwrap(),
+                        evaluation.terminal(x, y).unwrap(),
                         raster.pixel(x, y),
                         "byte tile {tile}: sample at ({x}, {y})"
                     );
@@ -2994,7 +3050,7 @@ mod tests {
             (width - 1, height - 1),
         ] {
             assert_eq!(
-                bytes.pixel(x, y).unwrap(),
+                bytes.terminal(x, y).unwrap(),
                 byte.pixel(x, y),
                 "byte sample at ({x}, {y})"
             );
@@ -3385,7 +3441,12 @@ mod tests {
         let module = crate::PresenceModule::new();
         let compile = |payload: &Value| -> SpatialOperation {
             match module
-                .compile(crate::PRESENCE_EFFECT, EFFECT_FORMAT, payload, stage)
+                .compile(
+                    crate::PRESENCE_EFFECT,
+                    EFFECT_FORMAT,
+                    payload,
+                    crate::CompileStage::exact(stage),
+                )
                 .unwrap()
             {
                 Processing::Spatial(operation) => operation,
@@ -3680,7 +3741,7 @@ mod tests {
                     .unwrap()
                     .with_tile(POINT_TILE);
                 assert_eq!(
-                    evaluation.pixel(x, y).unwrap(),
+                    evaluation.terminal(x, y).unwrap(),
                     rendered.pixel(x, y),
                     "{case}"
                 );
@@ -3770,7 +3831,7 @@ mod tests {
         let evaluation = evaluation(&context, &registry, &source, &stack)
             .unwrap()
             .with_tile(POINT_TILE);
-        let sampled = evaluation.pixel(x, y).unwrap();
+        let sampled = evaluation.terminal(x, y).unwrap();
         assert_eq!(
             evaluations_per_segment(&evaluation.point_tiles().evaluated(), "byte path"),
             [(1, every_tile), (2, 1)]
@@ -3896,7 +3957,7 @@ mod tests {
             .unwrap()
             .with_tile(POINT_TILE);
         let (x, y) = (64, 64);
-        assert_eq!(evaluation.pixel(x, y).unwrap(), rendered.pixel(x, y));
+        assert_eq!(evaluation.terminal(x, y).unwrap(), rendered.pixel(x, y));
         let evaluated = evaluation.point_tiles().evaluated().len();
         assert!(
             evaluated > POINT_TILES_FLOOR,
@@ -4146,6 +4207,7 @@ mod tests {
                                 tile,
                                 Parallelism::Serial,
                                 &mut TileScratch::default(),
+                                &Cancel::never(),
                                 fill,
                             )
                             .map(|(region, values)| {

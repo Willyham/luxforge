@@ -4,8 +4,70 @@
 use super::{PreviewJob, PreviewResult, worker::run};
 #[cfg(doc)]
 use crate::ErrorKind;
-use crate::{ProxyCache, activity::ActivityBoard, latest::Latest};
-use std::{sync::Arc, time::Instant};
+use crate::{
+    ProxyCache,
+    activity::ActivityBoard,
+    cancel::{ProgressCounts, RenderProgress},
+    latest::Latest,
+};
+use std::{
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
+};
+
+/// How far the exact phase the worker is rendering has got, as [`PreviewQueue::progress`] reads
+/// it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewProgress {
+    /// The generation of the job whose exact phase this is.
+    pub generation: u64,
+    /// How long the exact phase has run.
+    pub elapsed: Duration,
+    /// Its spatial tiles, finished and planned. Nothing planned means the phase runs no spatial
+    /// operation, so it has no truthful extent to report.
+    pub counts: ProgressCounts,
+}
+
+/// The exact phase in progress, shared between the worker, which sets it for the length of the
+/// phase, and the consumer, which reads it.
+#[derive(Default)]
+pub(super) struct ExactProgress(Mutex<Option<(u64, Instant, RenderProgress)>>);
+
+impl ExactProgress {
+    fn lock(&self) -> MutexGuard<'_, Option<(u64, Instant, RenderProgress)>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Publish the exact phase of `generation`, started at `started`, until the guard drops.
+    pub(super) fn begin(
+        &self,
+        generation: u64,
+        started: Instant,
+        meter: &RenderProgress,
+    ) -> ExactPhase<'_> {
+        *self.lock() = Some((generation, started, meter.clone()));
+        ExactPhase(self)
+    }
+
+    fn read(&self) -> Option<PreviewProgress> {
+        self.lock()
+            .as_ref()
+            .map(|(generation, started, meter)| PreviewProgress {
+                generation: *generation,
+                elapsed: started.elapsed(),
+                counts: meter.counts(),
+            })
+    }
+}
+
+/// Ends the published exact phase when the phase ends, however it ends.
+pub(super) struct ExactPhase<'a>(&'a ExactProgress);
+
+impl Drop for ExactPhase<'_> {
+    fn drop(&mut self) {
+        *self.0.lock() = None;
+    }
+}
 
 /// One preview job as the worker receives it: the job, the activity board it is published on, and
 /// the moment it was requested when the caller opted into phase timing.
@@ -71,6 +133,8 @@ pub struct PreviewQueue {
     worker: Latest<PreviewTask, PreviewResult>,
     /// Where each job is published as a `preview.render` activity; `None` publishes nothing.
     activity: Option<Arc<ActivityBoard>>,
+    /// The whole-frame exact phase the worker is rendering, if any.
+    progress: Arc<ExactProgress>,
 }
 
 impl Default for PreviewQueue {
@@ -78,11 +142,15 @@ impl Default for PreviewQueue {
         // One proxy source, keyed by source identity and plan, held by the worker alone. Bounded by
         // construction: a new plan replaces the old entry rather than accumulating beside it.
         let mut cache = ProxyCache::default();
+        let mut restoration = crate::render::RestorationPrefixCache::default();
+        let progress = Arc::new(ExactProgress::default());
+        let published = progress.clone();
         Self {
             worker: Latest::new("luxforge-preview", move |task, running| {
-                run(&mut cache, task, running)
+                run(&mut cache, &mut restoration, &published, task, running)
             }),
             activity: None,
+            progress,
         }
     }
 }
@@ -161,6 +229,13 @@ impl PreviewQueue {
     /// Whether a job is active or pending, or a result waits for [`Self::poll`].
     pub fn is_busy(&self) -> bool {
         self.worker.is_busy()
+    }
+
+    /// How far the whole-frame exact phase the worker is rendering has got, while one runs. The
+    /// worker wakes the consumer as it advances ([`crate::PREVIEW_PROGRESS_QUIET`]), so a consumer
+    /// reads this when woken and never polls it. A viewport job's region phases publish nothing.
+    pub fn progress(&self) -> Option<PreviewProgress> {
+        self.progress.read()
     }
 
     /// Whether a result waits for [`Self::poll`].

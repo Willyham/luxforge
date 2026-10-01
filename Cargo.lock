@@ -1865,6 +1865,7 @@ dependencies = [
  "luxforge-cli",
  "luxforge-core",
  "luxforge-evidence",
+ "luxforge-input",
  "luxforge-net",
  "luxforge-testbase",
  "luxforge-testkit",
@@ -1919,6 +1920,16 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "luxforge-input"
+version = "0.0.0"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "raw-window-handle",
 ]
 
 [[package]]
@@ -2346,6 +2357,7 @@ dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
  "objc2 0.6.4",
+ "objc2-core-foundation",
  "objc2-foundation 0.3.2",
 ]
 
@@ -4840,6 +4852,7 @@ dependencies = [
  "luxforge-testkit",
  "percent-encoding",
  "regex",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

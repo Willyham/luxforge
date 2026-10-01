@@ -57,9 +57,10 @@ use std::{
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
-/// Full RAW edit/history scripts can redevelop a 100 MP source several times.
-/// The Q2 correction journey makes progress beyond the single-open deadline.
-pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
+/// Native functional scripts can evaluate several whole-photo restoration frames or redevelop
+/// a large RAW repeatedly. This bounds the complete journey; latency budgets are measured
+/// separately rather than inferred from a functional script's timeout.
+pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(300);
 
 /// The actor an `agent` step's edits are committed under, so history tells them from the
 /// desktop's own.
@@ -399,6 +400,7 @@ enum GeneratedKind {
 /// the ordinary `render_ready` outcome instead, which is the same correlation an `--open` uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Settle {
+    QueryChoice,
     /// The crop layer's truncated preview must reach the GPU under the open frame, and a Reapply's
     /// rebase must have answered.
     Draft,
@@ -465,6 +467,7 @@ impl Settle {
     /// The name the evidence log records a settled step's wait by.
     fn name(self) -> &'static str {
         match self {
+            Self::QueryChoice => "query_choice",
             Self::Draft => "draft",
             Self::Session => "session",
             Self::Preview => "preview",
@@ -639,13 +642,27 @@ impl Editor {
                     .then_some(self.presentation.presented_content),
             })
         });
-        expected.is_some_and(|expected| photo_drawn(expected, luxforge_ui::surface_diagnostics()))
+        expected.is_some_and(|expected| {
+            photo_drawn(
+                expected,
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+            )
+        }) && self.surfaces().comparison.is_none_or(|(after, _)| {
+            photo_drawn(
+                ExpectedPhotoDraw::Full {
+                    version: after.version(),
+                    content: None,
+                },
+                luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+            )
+        })
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
     /// including after a mask-overlay toggle causes a new photo and a new clipping derivation.
     pub(super) fn capture_clipping_ready(&self) -> bool {
         if self.document.state.is_none()
+            || self.presentation.compare_after.is_some()
             || self.crop().is_some()
             || self.gallery_page().is_some()
             || self.select_shown()
@@ -664,7 +681,8 @@ impl Editor {
             enabled,
             failed,
             current,
-            luxforge_ui::surface_diagnostics().drawn_clipping_version,
+            luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+                .drawn_clipping_version,
             self.overlay_summary()["drawn"] == true,
         )
     }
@@ -716,7 +734,9 @@ impl Editor {
                 let proxy_ready = self.capture_proxy_ready();
                 let photo_ready = self.capture_photo_ready();
                 let clipping_ready = self.capture_clipping_ready();
-                let mask_ready = !self.mask_frame_pending() && !self.mask_coverage_pending();
+                let mask_ready = !self.mask_frame_pending()
+                    && !self.mask_coverage_pending()
+                    && self.presentation.reused.is_none();
                 let Some(evidence) = &mut self.evidence else {
                     return Task::none();
                 };
@@ -962,9 +982,74 @@ impl Editor {
             Step::Pick(pick) => self.pick_step(pick),
             Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
+            Step::Pinch(step) => {
+                let [left, top, right, bottom] = crate::layout::canvas_logical(
+                    self.view_state.window,
+                    self.session.workspace.state_panel,
+                    self.session.workspace.tools_panel,
+                    self.filmstrip_shown(),
+                );
+                let revision = self.session.revision;
+                self.await_step(Settle::Session);
+                let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
+                    delta: step.delta,
+                    x: f64::from(left) + f64::from(right - left) * step.x,
+                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                })));
+                if self.session.revision == revision {
+                    return self.fail_step("pinch changed no view");
+                }
+                task
+            }
             Step::ViewIdle(step) => self.view_idle_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
+            Step::Compare(compare) => {
+                let mut press = Task::none();
+                if compare == luxforge_evidence::CompareStep::Tap {
+                    press = self.key_step("\\".into());
+                }
+                let previews = compare == luxforge_evidence::CompareStep::Tap
+                    || (matches!(
+                        compare,
+                        luxforge_evidence::CompareStep::Release
+                            | luxforge_evidence::CompareStep::FocusLoss
+                    ) && self.document.compare_return.is_some()
+                        && self.presentation.compare_after.is_none());
+                if previews {
+                    self.await_step(Settle::Preview);
+                }
+                let message = match compare {
+                    luxforge_evidence::CompareStep::Position(position) => {
+                        Message::History(HistoryMessage::ComparePosition(position))
+                    }
+                    luxforge_evidence::CompareStep::Tap
+                    | luxforge_evidence::CompareStep::Release => {
+                        let key = iced::keyboard::Key::Character("\\".into());
+                        Message::Key(
+                            iced::Event::Keyboard(iced::keyboard::Event::KeyReleased {
+                                key: key.clone(),
+                                modified_key: key,
+                                physical_key: iced::keyboard::key::Physical::Unidentified(
+                                    iced::keyboard::key::NativeCode::Unidentified,
+                                ),
+                                location: iced::keyboard::Location::Standard,
+                                modifiers: iced::keyboard::Modifiers::empty(),
+                            }),
+                            iced::event::Status::Ignored,
+                        )
+                    }
+                    luxforge_evidence::CompareStep::FocusLoss => Message::Key(
+                        iced::Event::Window(iced::window::Event::Unfocused),
+                        iced::event::Status::Ignored,
+                    ),
+                };
+                let task = self.update(message);
+                if !previews {
+                    self.capture_next_frame();
+                }
+                Task::batch([press, task])
+            }
             Step::Palette(palette) => self.palette_step(palette),
             Step::Hover { x, y } => self.hover_step(x, y),
             Step::CanvasHover { x, y } => self.canvas_hover_step(x, y),
@@ -1077,6 +1162,7 @@ impl Editor {
         self.presentation.preview_generation != asked
             || self.mask_frame_pending()
             || self.mask_coverage_pending()
+            || self.presentation.reused.is_some()
     }
 
     /// One owner request with the desktop's own envelope: the current revision and a fresh request
@@ -1788,6 +1874,27 @@ impl Editor {
                 };
                 (Message::Draft(message), expect)
             }
+            // The notice's ordinary Reapply message keeps the content stroke, but clears the old
+            // pointer map. Its frame must wait for the current entry's transform before the next
+            // scripted pointer sample, just as a person waits for the handles to return.
+            MaskStep::Reapply => {
+                if self.mask_gesture().is_none() {
+                    return self.fail_step("no mask draft is open to reapply");
+                }
+                self.await_step(Settle::MaskMap);
+                let task = self.dispatch(Message::Draft(DraftMessage::Reapply));
+                self.note_step(json!({"masks": self.workspace.masks.summary()}));
+                if self.gesture_conflicted()
+                    || self.held_mask().is_none_or(|mask| mask.map.is_some())
+                {
+                    let reason = format!(
+                        "the mask draft could not be reapplied: {}",
+                        self.status.text
+                    );
+                    return Task::batch([task, self.fail_step(reason)]);
+                }
+                return task;
+            }
             MaskStep::Row(MaskRow {
                 component: at,
                 edit,
@@ -1934,6 +2041,32 @@ impl Editor {
                 return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
+            DraftStep::GuideLine([x, y, end_x, end_y]) => {
+                if !drafting || !self.crop_section.guide {
+                    return self.fail_step("arm Straighten on an open crop draft first");
+                }
+                if ![x, y, end_x, end_y].iter().all(|value| value.is_finite()) {
+                    return self.fail_step("a straighten guide needs finite coordinates");
+                }
+                let mut tasks = Vec::new();
+                for pointer in [
+                    CropPointer::Begin {
+                        handle: Handle::Guide,
+                        x: *x,
+                        y: *y,
+                    },
+                    CropPointer::Drag {
+                        x: *end_x,
+                        y: *end_y,
+                        option: false,
+                    },
+                    CropPointer::End,
+                ] {
+                    tasks.push(self.crop_update(CropMessage::Pointer(pointer)));
+                }
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
             // The angle is the generic stepper of the crop action's declared angle, so its steps
             // send what that widget sends: a drag's fractions and release, a button press, or a
             // press on the box, the typed text and Enter.
@@ -2271,6 +2404,7 @@ impl Editor {
     fn paced_stroke_settled(&self) -> bool {
         !self.mask_frame_pending()
             && !self.mask_coverage_pending()
+            && self.presentation.reused.is_none()
             && self.presentation.presented_generation == self.presentation.preview_generation
     }
 
@@ -2341,6 +2475,100 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         match step {
+            ControlsStep::QueryChoiceSearch { action, text } => {
+                self.query_choice_evidence_input(ControlMessage::QueryChoiceSearch { action, text })
+            }
+            ControlsStep::QueryChoicePage { action, page } => {
+                self.query_choice_evidence_input(ControlMessage::QueryChoicePage { action, page })
+            }
+            ControlsStep::QueryChoiceRetry { action } => {
+                if !self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .is_some_and(|ui| ui.can_retry())
+                {
+                    return self.fail_step("query-choice has no failed query to retry");
+                }
+                self.query_choice_evidence_input(ControlMessage::QueryChoiceRetry { action })
+            }
+            ControlsStep::QueryChoiceShared {
+                action,
+                parameter,
+                text,
+            } => self.query_choice_evidence_input(ControlMessage::QueryChoiceShared {
+                action,
+                parameter,
+                text,
+            }),
+            ControlsStep::QueryChoiceSelectFirst { action } => {
+                let key = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .filter(|ui| !ui.loading)
+                    .and_then(|ui| ui.rows.iter().find(|row| row.eligible))
+                    .map(|row| row.key.clone());
+                let Some(key) = key else {
+                    return self.fail_step("query-choice has no eligible displayed row");
+                };
+                self.begin_request();
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceSelect {
+                    action,
+                    key,
+                }));
+                if !self.busy {
+                    return self
+                        .fail_step(format!("the choice did not submit: {}", self.status.text));
+                }
+                task
+            }
+            ControlsStep::QueryChoiceApply { action } => {
+                let ready = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .filter(|ui| !ui.loading)
+                    .and_then(|ui| ui.suggestion.as_ref())
+                    .is_some_and(|card| card.eligible);
+                if !ready {
+                    return self.fail_step("query-choice has no eligible suggestion");
+                }
+                self.begin_request();
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceApply {
+                    action,
+                }));
+                if !self.busy {
+                    return self.fail_step(format!(
+                        "the suggestion did not submit: {}",
+                        self.status.text
+                    ));
+                }
+                task
+            }
+            ControlsStep::QueryChoiceChange { action, open } => {
+                self.query_choice_evidence_input(ControlMessage::QueryChoiceChange { action, open })
+            }
+            ControlsStep::QueryChoiceReport { action } => {
+                let offered = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .and_then(|ui| ui.report.as_ref());
+                if offered.is_none() {
+                    return self.fail_step("query-choice offers no report page");
+                }
+                // An evidence run records the page and opens no browser.
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceReport {
+                    action,
+                }));
+                self.capture_next_frame();
+                task
+            }
             ControlsStep::Slider {
                 action,
                 parameter,
@@ -2374,6 +2602,29 @@ impl Editor {
                 task
             }
         }
+    }
+
+    fn query_choice_evidence_input(&mut self, message: ControlMessage) -> Task<Message> {
+        let action = match &message {
+            ControlMessage::QueryChoiceSearch { action, .. }
+            | ControlMessage::QueryChoicePage { action, .. }
+            | ControlMessage::QueryChoiceShared { action, .. }
+            | ControlMessage::QueryChoiceChange { action, .. }
+            | ControlMessage::QueryChoiceRetry { action } => action.clone(),
+            _ => unreachable!("only query inputs reach this step"),
+        };
+        let task = self.update(Message::Control(message));
+        let Some(ui) = self.controls.ui.query_choices.get(&action) else {
+            return self.fail_step("query-choice action is unavailable");
+        };
+        if ui.loading {
+            self.await_step(Settle::QueryChoice);
+        } else if let Some(error) = ui.error.clone() {
+            return self.fail_step(error);
+        } else {
+            self.capture_next_frame();
+        }
+        task
     }
 
     fn picker_step(&mut self, step: PickerStep) -> Task<Message> {
@@ -2481,6 +2732,54 @@ impl Editor {
                 }
                 self.capture_next_frame();
                 task
+            }
+            // The disclosure row's press: view state, so nothing is sent and the next frame is
+            // the one captured.
+            CurveStepEvent::Points(open) => {
+                let task = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                    event: CurveEditorEvent::Points(open),
+                }));
+                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
+                    != Some(open)
+                {
+                    return self.fail_step(if open {
+                        "the curve's Points list did not open"
+                    } else {
+                        "the curve's Points list did not close"
+                    });
+                }
+                self.capture_next_frame();
+                task
+            }
+            // A coordinate field exists only in the open list, so a person cannot type into a
+            // closed one and neither can a script. The text is typed as the field publishes it and
+            // Enter commits that one coordinate.
+            CurveStepEvent::Type { index, axis, text } => {
+                if curve_points_open(&self.workspace.tools, &step.action, &step.parameter)
+                    != Some(true)
+                {
+                    return self.fail_step("the curve's Points list is not open");
+                }
+                self.begin_request();
+                let typed = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action.clone(),
+                    parameter: step.parameter.clone(),
+                    event: CurveEditorEvent::Text { index, axis, text },
+                }));
+                let submitted = self.update(Message::Control(ControlMessage::Curve {
+                    action: step.action,
+                    parameter: step.parameter,
+                    event: CurveEditorEvent::Submit { index, axis },
+                }));
+                if !self.busy {
+                    return self.fail_step(format!(
+                        "the curve coordinate was not committed: {}",
+                        self.status.text
+                    ));
+                }
+                Task::batch([typed, submitted])
             }
         }
     }
@@ -2828,7 +3127,7 @@ impl Editor {
         if self.busy {
             return self.fail_step("a request is already in flight");
         }
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if let Some(evidence) = &mut self.evidence {
             evidence.capture_pending = false;
             evidence.awaiting = None;
@@ -2858,7 +3157,7 @@ impl Editor {
         if Instant::now() < observation.until {
             return Task::none();
         }
-        let gpu = luxforge_ui::surface_diagnostics();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         let blank_delta = gpu
             .blank_photo_draws
             .saturating_sub(observation.blank_before);
@@ -3217,6 +3516,16 @@ impl Editor {
                 self.await_develop();
                 task
             }
+            Some(Message::History(HistoryMessage::CompareToggle | HistoryMessage::CompareExit)) => {
+                self.await_step(Settle::Preview);
+                self.dispatch(Message::Key(event, status))
+            }
+            Some(Message::History(HistoryMessage::CompareKeyPressed { uncropped: true }))
+                if self.presentation.compare_after.is_none() =>
+            {
+                self.await_step(Settle::Preview);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(_) => {
                 let task = self.dispatch(Message::Key(event, status));
                 self.capture_next_frame();
@@ -3263,7 +3572,9 @@ impl Editor {
             | PaletteAction::Restore => {
                 self.begin_request();
             }
-            PaletteAction::ReturnCurrent => self.await_step(Settle::Preview),
+            PaletteAction::ReturnCurrent | PaletteAction::Compare => {
+                self.await_step(Settle::Preview)
+            }
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
@@ -3646,6 +3957,19 @@ impl Editor {
             // This pick commits, so its evidence is the render that follows rather than the status
             // it leaves.
             Outcome::PickCommitting => self.await_step(Settle::Preview),
+            Outcome::QueryChoiceAnswered { action, failure } => {
+                let expected = self
+                    .evidence
+                    .as_ref()
+                    .and_then(|evidence| evidence.current.as_ref())
+                    .and_then(|current| current["request"]["controls"]["action"].as_str());
+                if expected == Some(action) {
+                    if let Some(reason) = failure {
+                        self.refuse_step(reason);
+                    }
+                    self.settle_step(Settle::QueryChoice, by);
+                }
+            }
             Outcome::PresetsAnswered { failure } => {
                 if let Some(reason) = failure {
                     self.refuse_step(reason);
@@ -3961,6 +4285,29 @@ fn selected_curve_channel(
     })
 }
 
+/// Whether the curve drawing `action`'s `parameter` shows its Points list, as the tools panel
+/// derives it; `None` when no such curve is drawn.
+fn curve_points_open(
+    tools: &crate::state::tools::ToolsModel,
+    action: &str,
+    parameter: &str,
+) -> Option<bool> {
+    tools.all().find_map(|section| {
+        walk(&section.controls).find_map(|control| match control {
+            crate::state::tools::ControlModel::Curve(curve)
+                if curve.action == action
+                    && curve
+                        .channels
+                        .iter()
+                        .any(|channel| channel.parameter == parameter) =>
+            {
+                Some(curve.points_open)
+            }
+            _ => None,
+        })
+    })
+}
+
 /// How an `api` step sends a method that is not an edit of the open asset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct HostStep {
@@ -4115,6 +4462,152 @@ mod tests {
     use super::*;
     use crate::app::message::sync::SyncMessage;
     use crate::app::testing::{evidence, finish, scripted};
+
+    #[test]
+    fn query_choice_retry_step_uses_the_button_message_and_waits_for_its_answer() {
+        const ACTION: &str = "select-controls-choice";
+        const FAILURE: &str = "validation: the declared query refused its input";
+        const RETRY: &str =
+            r#"[{"controls":{"gesture":"query-choice-retry","action":"select-controls-choice"}}]"#;
+        let (mut editor, catalog, _, _) = scripted(RETRY);
+        let _ = editor.update(Message::Sync(SyncMessage::ModulesLoaded(Ok(
+            crate::app::testing::descriptors(),
+        ))));
+        let before = editor.document.state.as_ref().unwrap().clone();
+        let _ = editor.next_step();
+        assert_eq!(
+            evidence(&editor).current.as_ref().unwrap()["reason"],
+            "query-choice has no failed query to retry"
+        );
+
+        let _ = editor.update(Message::Control(ControlMessage::QueryChoiceSearch {
+            action: ACTION.into(),
+            text: "same input".into(),
+        }));
+        let first = editor.controls.ui.query_choices[ACTION]
+            .request
+            .clone()
+            .unwrap();
+        let _ = editor.update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity: first.clone(),
+            result: Err(FAILURE.into()),
+        }));
+        assert!(editor.controls.ui.query_choices[ACTION].can_retry());
+        crate::app::testing::attach_script(&mut editor, RETRY);
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::QueryChoice));
+        assert!(!evidence(&editor).capture_pending);
+        let retry = editor.controls.ui.query_choices[ACTION]
+            .request
+            .clone()
+            .unwrap();
+        assert_eq!(retry.sequence, first.sequence + 1);
+        let mut same_inputs = retry.clone();
+        same_inputs.sequence = first.sequence;
+        assert_eq!(same_inputs, first);
+        let _ = editor.update(Message::Control(ControlMessage::QueryChoiceAnswered {
+            identity: retry,
+            result: Err(FAILURE.into()),
+        }));
+        assert!(evidence(&editor).awaiting.is_none());
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(
+            evidence(&editor).current.as_ref().unwrap()["reason"],
+            FAILURE
+        );
+        assert!(editor.controls.ui.query_choices[ACTION].can_retry());
+        let after = editor.document.state.as_ref().unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.current_entry.id, before.current_entry.id);
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn mask_reapply_step_waits_for_the_new_pointer_map_and_refuses_without_a_draft() {
+        use crate::app::{
+            draft::CoreDraft,
+            gesture::{CoreGesture, Kind, MaskGesture},
+        };
+        use crate::mask_draft::{ContentMap, NEUTRAL_BRUSH};
+        use luxforge_core::{Draft, DraftStamp, GeometryMap, MappingDescriptor, StageSize};
+        let (mut editor, catalog, asset, _) = scripted(r#"[{"mask":{"reapply":true}}]"#);
+        editor.session.workspace.mode = "mask".into();
+        let _ = editor.next_step();
+        assert!(
+            evidence(&editor).current.as_ref().unwrap()["reason"]
+                .as_str()
+                .unwrap()
+                .contains("no mask draft")
+        );
+        assert!(evidence(&editor).capture_pending);
+
+        crate::app::testing::attach_script(&mut editor, r#"[{"mask":{"reapply":true}}]"#);
+        let state = editor.document.state.as_ref().unwrap();
+        let (revision, entry_id, snapshot_id, source_fingerprint) = (
+            state.revision,
+            state.current_entry.id.clone(),
+            state.current_entry.snapshot.id.clone(),
+            state.asset.fingerprint.clone(),
+        );
+        let geometry = GeometryMap::affine(
+            StageSize {
+                width: 4,
+                height: 4,
+            },
+            StageSize {
+                width: 4,
+                height: 4,
+            },
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        );
+        let mut shape = MaskDraft::creating("brush", NEUTRAL_BRUSH).unwrap();
+        shape.paint_begin((0.375, 0.375));
+        let id = editor.next_gesture();
+        let mut answer = Draft::new("mask.add-stroke", asset.clone(), revision - 1);
+        answer.conflicted = true;
+        let (draft, _) = CoreDraft::open(id, answer, None);
+        editor.gesture = Some(Box::new(CoreGesture {
+            asset,
+            draft,
+            kind: Kind::Mask(MaskGesture {
+                shape,
+                map: ContentMap::new(&geometry),
+                map_draft: None,
+            }),
+        }));
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::MaskMap));
+        assert!(
+            !evidence(&editor).capture_pending,
+            "a retained old map cannot settle Reapply"
+        );
+        assert!(editor.held_mask().unwrap().map.is_none());
+        let fresh_id = editor.core_gesture().unwrap().draft.gesture;
+        assert_ne!(fresh_id, id);
+        assert!(!editor.gesture_conflicted());
+        let descriptor = MappingDescriptor {
+            entry_id,
+            snapshot_id,
+            source_fingerprint,
+            draft: editor.session.draft.as_ref().map(|draft| DraftStamp {
+                draft_id: draft.draft_id.clone(),
+                draft_revision: draft.draft_revision,
+            }),
+            geometry,
+        };
+        let _ = editor.update(Message::Mask(MaskMessage::Transform(
+            fresh_id,
+            Ok(descriptor),
+        )));
+        assert!(editor.held_mask().unwrap().map.is_some());
+        assert!(evidence(&editor).awaiting.is_none());
+        assert!(
+            evidence(&editor).capture_pending,
+            "only the fresh Transform outcome settles the step"
+        );
+        finish(editor, catalog);
+    }
 
     #[test]
     fn clipping_capture_requires_the_current_overlay_in_the_gpu_draw() {

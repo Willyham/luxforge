@@ -17,8 +17,8 @@
 //!
 //! **The grid describes the frame it arrived with.** A mask is compiled against the *content* stage
 //! its layer receives, and the frame is the *output* stage after the geometry tail, so a cell is
-//! answered by mapping its own output pixel's centre back through the tail's one affine
-//! ([`StageTransform`]) and asking [`CompiledMask::coverage`] about the content pixel that lands in.
+//! answered by mapping its own output pixel's centre back through the tail's shared geometry map
+//! ([`GeometryMap`]) and asking [`CompiledMask::coverage`] about the content pixel that lands in.
 //! That is the same coordinate convention and the same rounding `render.locate` walks, so the
 //! overlay and a pick agree about which content pixel an output pixel holds.
 //!
@@ -32,7 +32,7 @@ use super::overlay::{MAX_OVERLAY_CELLS, cell_pixel};
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Cancel, ComponentId, Error, MaskId, Region, StageTransform, mask::CompiledMask, modules::Stage,
+    Cancel, ComponentId, Error, GeometryMap, MaskId, Region, mask::CompiledMask, modules::Stage,
 };
 use rayon::prelude::*;
 
@@ -60,6 +60,11 @@ pub trait MaskInputPixel: Sync {
     fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error>;
 }
 
+/// One bounded precomputed input value per overlay cell.
+pub trait MaskInputGrid: Sync {
+    fn linear_cell(&self, cell: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error>;
+}
+
 /// Where a value-based component's pixel comes from, or the caller's own reason there is none.
 ///
 /// The reason is the caller's because only the caller knows it: the grid has a mask and a frame and
@@ -72,6 +77,7 @@ pub enum MaskPixels<'a> {
     Unavailable(&'a str),
     /// The input of the operation this mask modulates.
     Input(&'a (dyn MaskInputPixel + 'a)),
+    Grid(&'a (dyn MaskInputGrid + 'a)),
 }
 
 /// The cell count above which the grid is filled on the shared Rayon pool. It is the same
@@ -129,13 +135,13 @@ fn content_pixel(coordinate: f64, extent: u32) -> Option<u32> {
 struct Cells<'a> {
     content: Stage,
     region: Region,
-    inverse: [f64; 6],
+    mapping: &'a GeometryMap,
     cells_w: u32,
     cells_h: u32,
     /// The masked operation's input, or `None` when this mask reads no pixel at all. It is `None`
     /// for a position-only mask even when the caller offered one, so a geometric grid costs exactly
     /// what it cost before a value-based component existed.
-    input: Option<&'a (dyn MaskInputPixel + 'a)>,
+    input: Option<MaskPixels<'a>>,
 }
 
 impl Cells<'_> {
@@ -147,8 +153,7 @@ impl Cells<'_> {
         for (cx, cell) in row.iter_mut().enumerate() {
             let px = self.region.x0 + cell_pixel(cx as u32, self.region.width, self.cells_w);
             let ox = f64::from(px) + 0.5;
-            let x = self.inverse[0] * ox + self.inverse[1] * oy + self.inverse[2];
-            let y = self.inverse[3] * ox + self.inverse[4] * oy + self.inverse[5];
+            let (x, y) = self.mapping.to_content(ox, oy).map_err(|e| e.error())?;
             let (Some(x), Some(y)) = (
                 content_pixel(x, self.content.width),
                 content_pixel(y, self.content.height),
@@ -166,7 +171,13 @@ impl Cells<'_> {
                 // one with a gradient costs the gradient's rectangle and no more. An empty rectangle
                 // never reaches here — `coverage_grid` answers such a mask with no grid at all.
                 Some(_) if !bounds.contains(x, y) => MASK_COVERAGE_NONE,
-                Some(input) => match input.linear(x, y)? {
+                Some(input) => match match input {
+                    MaskPixels::Input(input) => input.linear(x, y),
+                    MaskPixels::Grid(input) => {
+                        input.linear_cell(cy as usize * self.cells_w as usize + cx, x, y)
+                    }
+                    MaskPixels::Unavailable(_) => unreachable!(),
+                }? {
                     Some(pixel) => quantize_coverage(mask.coverage(x, y, pixel)),
                     // The masked operation's own stage ran out before the frame did, which is the
                     // same absence of a picture a cell outside the content stage reports.
@@ -204,7 +215,7 @@ impl Cells<'_> {
 /// independent, so the split decides nothing about the result. `cancel` is read once per cell row.
 pub fn coverage_grid(
     mask: &CompiledMask,
-    transform: &StageTransform,
+    transform: &GeometryMap,
     cells_w: u32,
     cells_h: u32,
     pixels: MaskPixels<'_>,
@@ -231,7 +242,7 @@ pub fn coverage_grid(
 /// compiled against the complete stage, so a pan cannot recenter or reinterpret them.
 pub(crate) fn coverage_grid_region(
     mask: &CompiledMask,
-    transform: &StageTransform,
+    transform: &GeometryMap,
     region: Region,
     cells_w: u32,
     cells_h: u32,
@@ -254,7 +265,7 @@ pub(crate) fn coverage_grid_region(
 /// [`PARALLEL_GRID_CELLS`].
 fn grid_with_threshold(
     mask: &CompiledMask,
-    transform: &StageTransform,
+    transform: &GeometryMap,
     region: Region,
     (cells_w, cells_h): (u32, u32),
     pixels: MaskPixels<'_>,
@@ -307,7 +318,7 @@ fn grid_with_threshold(
     // grid, with the caller's own reason named and where the selection *can* be read.
     let input = match (mask.reads_pixels(), pixels) {
         (false, _) => None,
-        (true, MaskPixels::Input(input)) => Some(input),
+        (true, input @ (MaskPixels::Input(_) | MaskPixels::Grid(_))) => Some(input),
         (true, MaskPixels::Unavailable(reason)) => {
             return Err(Error::validation(format!(
                 "this mask has a component whose coverage depends on the pixel it reads, and \
@@ -319,7 +330,7 @@ fn grid_with_threshold(
     let cells = Cells {
         content,
         region,
-        inverse: transform.inverse,
+        mapping: transform,
         cells_w,
         cells_h,
         input,
@@ -355,13 +366,13 @@ mod tests {
 
     /// The identity tail: a frame that is its content stage, which is what a recipe with no
     /// geometry layer produces.
-    fn identity(width: u32, height: u32) -> StageTransform {
-        StageTransform {
-            content: StageSize { width, height },
-            output: StageSize { width, height },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        }
+    fn identity(width: u32, height: u32) -> GeometryMap {
+        GeometryMap::affine(
+            StageSize { width, height },
+            StageSize { width, height },
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        )
     }
 
     fn vertical_gradient() -> Mask {
@@ -731,15 +742,15 @@ mod tests {
         let compiled = compiled(&mask, width, height);
         // A frame twice as tall as the content, sitting over it from the top: the bottom half of
         // every column maps past the content stage's last row.
-        let transform = StageTransform {
-            content: StageSize { width, height },
-            output: StageSize {
+        let transform = GeometryMap::affine(
+            StageSize { width, height },
+            StageSize {
                 width,
                 height: height * 2,
             },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        };
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        );
         let (cells_w, cells_h) = (4, 4);
         let grid = coverage_grid(
             &compiled,

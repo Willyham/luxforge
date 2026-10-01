@@ -35,7 +35,9 @@
 //! - **Geometry.** The photograph's rectangle is computed with [`iced::ContentFit`] and centred
 //!   exactly as `iced_widget::image::drawing_bounds` computes it, then snapped to the physical
 //!   pixel grid in the vertex shader with WGSL's own `round`, which is what the image shader does
-//!   with `snap: true`. The overlays are drawn into that same snapped rectangle, so they can never
+//!   with `snap: true`. It is sized by the exact stage the photograph shows when the caller gives
+//!   one, so a display proxy lands on the exact render's pixels rather than its own rounded
+//!   ratio's. The overlays are drawn into that same snapped rectangle, so they can never
 //!   drift from the picture they describe. The crop stage is placed where the crop canvas puts it,
 //!   unsnapped as the canvas drew it, and turned about its own centre by the draft angle.
 //!
@@ -116,11 +118,31 @@ struct SurfaceFigures {
     upload_bytes: AtomicU64,
     retirement_pending: AtomicU64,
     diagnostics: Mutex<SurfaceDiagnostics>,
+    /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
+    draws: Mutex<HashMap<SurfaceId, SurfaceDiagnostics>>,
 }
 
 impl SurfaceFigures {
     fn diagnostics(&self) -> MutexGuard<'_, SurfaceDiagnostics> {
         self.diagnostics.lock().expect("surface diagnostics lock")
+    }
+
+    fn diagnostics_for(&self, surface: SurfaceId) -> SurfaceDiagnostics {
+        let mut overall = *self.diagnostics();
+        let draws = self.draws.lock().expect("surface draw identities lock");
+        let drawn = draws.get(&surface).copied().unwrap_or_default();
+        overall.drawn_content = drawn.drawn_content;
+        overall.drawn_full_version = drawn.drawn_full_version;
+        overall.drawn_full_version_frame = drawn.drawn_full_version_frame;
+        overall.drawn_region_version = drawn.drawn_region_version;
+        overall.drawn_region_generation = drawn.drawn_region_generation;
+        overall.drawn_region_quality = drawn.drawn_region_quality;
+        overall.drawn_regions = drawn.drawn_regions;
+        overall.drawn_clipping_version = drawn.drawn_clipping_version;
+        overall.drawn_photo_blank = drawn.drawn_photo_blank;
+        overall.drawn_stale_photo = drawn.drawn_stale_photo;
+        overall.drawn_fallback_content = drawn.drawn_fallback_content;
+        overall
     }
 }
 
@@ -203,8 +225,8 @@ pub fn surface_retirement_pending() -> bool {
 /// A snapshot of actual texture work and draw encoding, distinct from desktop frame adoption.
 /// Residency includes textures whose GPU submission has not yet retired. Overlay textures and
 /// backend-owned upload staging are outside these photograph-slot byte counts. Counts and
-/// resident bytes cover every surface; the drawn identity describes the surface drawn last, which
-/// is the Develop canvas's while it is the only one.
+/// resident bytes cover every surface; [`surface_diagnostics`] returns the requested surface's
+/// own drawn identity, so a second comparison image cannot overwrite the first one's evidence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DrawnRegion {
     pub version: u64,
@@ -252,8 +274,9 @@ pub struct SurfaceDiagnostics {
     pub drawn_clipping_version: Option<u64>,
 }
 
-pub fn surface_diagnostics() -> SurfaceDiagnostics {
-    *process_figures().diagnostics()
+/// Aggregate resource counters with the requested surface's own last draw identity.
+pub fn surface_diagnostics(surface: SurfaceId) -> SurfaceDiagnostics {
+    process_figures().diagnostics_for(surface)
 }
 
 /// Check a region before requesting it from the renderer. This accounts for each tile's linear
@@ -555,6 +578,10 @@ pub struct PhotoSurface {
     layers: Vec<(Layer, Frame)>,
     viewport: Option<ViewportFrames>,
     region_overlays: [Option<RegionOverlay>; 2],
+    /// The exact stage a whole-frame photograph stands for, when its texture may be a display
+    /// proxy of it; see [`PhotoSurface::exact_stage`].
+    exact_stage: Option<(u32, u32)>,
+    reveal_from: f32,
     width: Length,
     height: Length,
 }
@@ -581,6 +608,8 @@ pub fn photo_surface(
         layers: vec![(Layer::Photo, frame.clone())],
         viewport: None,
         region_overlays: [None, None],
+        exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
@@ -613,6 +642,8 @@ pub fn viewport_surface(
             full_stage,
         }),
         region_overlays: [None, None],
+        exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
@@ -634,12 +665,20 @@ pub fn stage_surface(
         layers: vec![(Layer::Stage, frame.clone())],
         viewport: None,
         region_overlays: [None, None],
+        exact_stage: None,
+        reveal_from: 0.0,
         width,
         height,
     }
 }
 
 impl PhotoSurface {
+    /// Reveal the right-hand fraction of the photograph without resampling or rewriting a texel.
+    /// Placement continues to use the whole image rectangle, including inside a scrollable.
+    pub fn reveal_from(mut self, position: f32) -> Self {
+        self.reveal_from = position.clamp(0.0, 1.0);
+        self
+    }
     /// Lay the clipping overlay and then a mask's coverage over the picture, each stretched over
     /// exactly the rectangle the picture is drawn into. Either may be absent.
     pub fn overlays(mut self, clipping: Option<&Frame>, coverage: Option<&Frame>) -> Self {
@@ -660,6 +699,53 @@ impl PhotoSurface {
     ) -> Self {
         self.region_overlays = [clipping.cloned(), coverage.cloned()];
         self
+    }
+
+    /// Place the photograph as the exact `stage` it shows, whatever its texture measures. A display
+    /// proxy's whole-pixel size keeps the stage's ratio only to within a pixel, and `Contain` sizes
+    /// the picture by that ratio: at Fit the difference can move a snapped edge by a whole physical
+    /// pixel, so a proxy would land off the rectangle the exact render — and the editor's own
+    /// record of where the photograph is — lands on. With the stage given, a proxy is stretched
+    /// into exactly the stage's box, as `Fill` stretches it at a percentage.
+    pub fn exact_stage(mut self, stage: (u32, u32)) -> Self {
+        self.exact_stage = Some(stage);
+        self
+    }
+
+    /// The size the picture is placed by: a percentage view's full stage, the exact stage a
+    /// whole-frame photograph was given, or else the displayed frame's own size.
+    fn placed_size(&self) -> Option<(u32, u32)> {
+        match &self.viewport {
+            Some(viewport) => Some(viewport.full_stage),
+            None => match self.base {
+                Base::Photo(_) => self
+                    .exact_stage
+                    .or_else(|| self.layers.first().map(|(_, frame)| frame.size())),
+                Base::Stage(_) => self.layers.first().map(|(_, frame)| frame.size()),
+            },
+        }
+    }
+
+    /// The visible part of the widget laid out at `bounds` and drawn in `viewport`, with the picture
+    /// placed as [`PhotoSurface::placed_size`] says: what `draw` hands the renderer.
+    fn visible(&self, bounds: Rectangle, viewport: Rectangle) -> Option<Visible> {
+        let mut visible = visible_placement(self.base, self.placed_size()?, bounds, viewport)?;
+        if self.reveal_from > 0.0 {
+            let destination =
+                Rectangle::new(visible.clip.position() + visible.offset, visible.size);
+            let reveal = Rectangle {
+                x: destination.x + destination.width * self.reveal_from,
+                width: destination.width * (1.0 - self.reveal_from),
+                ..destination
+            };
+            let clip = visible.clip.intersection(&reveal)?;
+            if clip.width <= 0.0 || clip.height <= 0.0 {
+                return None;
+            }
+            visible.offset = destination.position() - clip.position();
+            visible.clip = clip;
+        }
+        Some(visible)
     }
 }
 
@@ -793,17 +879,10 @@ where
         _cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let raster = match &self.viewport {
-            Some(viewport) => viewport.full_stage,
-            None => match self.layers.first() {
-                Some((_, frame)) => frame.size(),
-                None => return,
-            },
-        };
         // Inside a scrollable, `viewport` is already in the content's own coordinates — the
         // scrollable shifts it by the scroll offset before handing it down — so it and the layout
         // bounds are in one frame and their intersection is the part on screen.
-        let Some(visible) = visible_placement(self.base, raster, layout.bounds(), *viewport) else {
+        let Some(visible) = self.visible(layout.bounds(), *viewport) else {
             return;
         };
         let (angle, snap) = match self.base {
@@ -1420,6 +1499,16 @@ impl shader::Primitive for PhotoPrimitive {
         // stale previous photo reports its actual content separately from the requested content.
         let expects_photo =
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
+        // This surface's own last draw, which says whether its photograph is newly drawn: another
+        // surface's draws in between do not.
+        let previous = pipeline
+            .figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .get(&self.surface)
+            .copied()
+            .unwrap_or_default();
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
         // Each surface compares against its own last draw, so two surfaces in different states
@@ -1428,7 +1517,7 @@ impl shader::Primitive for PhotoPrimitive {
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_content = drawn_content;
         let newly_drawn =
-            drawn_full_version.is_some() && diagnostic.drawn_full_version != drawn_full_version;
+            drawn_full_version.is_some() && previous.drawn_full_version != drawn_full_version;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
         diagnostic.drawn_region_generation = drawn_region_generation;
@@ -1446,10 +1535,19 @@ impl shader::Primitive for PhotoPrimitive {
         } else if expects_photo {
             diagnostic.blank_photo_draws += 1;
         }
-        if newly_drawn {
-            diagnostic.drawn_full_version_frame = diagnostic.drawn_frames;
-        }
+        diagnostic.drawn_full_version_frame = if newly_drawn {
+            diagnostic.drawn_frames
+        } else {
+            previous.drawn_full_version_frame
+        };
+        let drawn = *diagnostic;
         drop(diagnostic);
+        pipeline
+            .figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .insert(self.surface, drawn);
         if status_changed {
             // A draw can discover staleness after the app has built its status bar. One buffered
             // wake refreshes that label on the next update, and another clears it after recovery.
@@ -2187,6 +2285,11 @@ impl Drop for PhotoPipeline {
         for (_, surface) in std::mem::take(&mut self.surfaces) {
             self.release(surface);
         }
+        self.figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .clear();
         self.publish_diagnostics();
     }
 }
@@ -2455,6 +2558,11 @@ impl shader::Pipeline for PhotoPipeline {
                 self.release(surface);
             }
         }
+        self.figures
+            .draws
+            .lock()
+            .expect("surface draw identities lock")
+            .retain(|id, _| self.surfaces.contains_key(id));
         self.publish_diagnostics();
     }
 }
@@ -2608,6 +2716,57 @@ mod tests {
     fn raster(width: u32, height: u32, version: u64) -> Frame {
         let pixels = Arc::new(vec![0u8; (width * height * 4) as usize]);
         Frame::new(pixels, width, height, version).expect("a whole raster")
+    }
+
+    #[test]
+    fn comparison_reveal_clips_without_changing_image_placement() {
+        let pixels = Arc::new(vec![200u8; 4]);
+        let frame = Frame::new(pixels.clone(), 1, 1, 17).unwrap();
+        let surface = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Contain,
+            Length::Fill,
+            Length::Fill,
+        )
+        .exact_stage((6000, 4000));
+        let bounds = Rectangle::new(Point::new(20.0, 10.0), Size::new(600.0, 500.0));
+        let whole = surface.visible(bounds, bounds).unwrap();
+        let split = surface.reveal_from(0.25).visible(bounds, bounds).unwrap();
+        assert_eq!(split.clip.x, 170.0);
+        assert_eq!(
+            split.clip.position() + split.offset,
+            whole.clip.position() + whole.offset
+        );
+        assert_eq!(split.size, whole.size);
+        let hidden = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Fill,
+            Length::Fill,
+            Length::Fill,
+        )
+        .reveal_from(1.0);
+        assert!(hidden.visible(bounds, bounds).is_none());
+        let zoomed = photo_surface(
+            SurfaceId::new(9),
+            &frame,
+            Placement::Fill,
+            Length::Fill,
+            Length::Fill,
+        )
+        .reveal_from(0.5);
+        let bounds = Rectangle::new(Point::new(-2400.0, -1000.0), Size::new(6000.0, 4000.0));
+        let viewport = Rectangle::new(Point::ORIGIN, Size::new(900.0, 700.0));
+        let split = zoomed.visible(bounds, viewport).unwrap();
+        assert_eq!(split.clip.x, 600.0);
+        assert_eq!(split.clip.position() + split.offset, bounds.position());
+        assert_eq!(split.size, bounds.size());
+        assert_eq!(frame.version(), 17);
+        assert!(
+            Arc::strong_count(&pixels) > 1,
+            "the raster allocation is shared"
+        );
     }
 
     #[test]
@@ -2922,6 +3081,63 @@ mod tests {
         let proxy = placement_rect(Placement::Contain, (1200, 800), bounds).expect("a rectangle");
         assert_eq!((exact.x, exact.y), (proxy.x, proxy.y));
         assert_eq!((exact.width, exact.height), (proxy.width, proxy.height));
+    }
+
+    /// A Fit photograph given its exact stage lands on the stage's snapped rectangle whichever
+    /// texture it draws. The case is a committed 16:9 crop of a Canon 90D at Fit on the 2x
+    /// 1440 × 900 window: a 6558 × 3688 output whose display proxy is 1715 × 964, in the 858 × 754
+    /// Fit area at (261, 64). The proxy's rounded ratio draws it half a physical row shorter, a
+    /// quarter row at each edge, which moves both snapped edges a row inwards; placed by its own
+    /// size it left a canvas-coloured row inside the recorded [522, 399, 2238, 1365] at the top
+    /// and the bottom.
+    #[test]
+    fn a_fit_proxy_lands_on_its_exact_stage_rectangle() {
+        let bounds = Rectangle::new(Point::new(261.0, 64.0), Size::new(858.0, 754.0));
+        let window = Rectangle::new(Point::ORIGIN, Size::new(1440.0, 900.0));
+        let (stage, proxy) = ((6558, 3688), (1715, 964));
+        let frame = |(width, height): (u32, u32)| {
+            Frame::new(
+                Arc::new(vec![0u8; (width * height * 4) as usize]),
+                width,
+                height,
+                1,
+            )
+            .expect("a frame")
+        };
+        let drawn = |surface: PhotoSurface| {
+            let visible = surface
+                .visible(bounds, window)
+                .expect("a visible photograph");
+            let (_, destination) = physical_rects(visible.clip, visible.offset, visible.size, 2.0);
+            snapped(destination).map(|edge| edge as i64)
+        };
+        let fit = |raster: (u32, u32)| {
+            photo_surface(
+                SurfaceId::new(0),
+                &frame(raster),
+                Placement::Contain,
+                Length::Fill,
+                Length::Fill,
+            )
+        };
+        let recorded = [522, 399, 2238, 1365];
+        assert_eq!(drawn(fit(stage)), recorded, "the exact render");
+        assert_eq!(drawn(fit(proxy).exact_stage(stage)), recorded, "the proxy");
+        // Placed by its own size, the proxy lands a row inside at the top and the bottom.
+        assert_eq!(drawn(fit(proxy)), [522, 400, 2238, 1364]);
+        // A percentage view is placed by its own full stage, whatever exact stage it is given.
+        let percent = viewport_surface(
+            SurfaceId::new(0),
+            None,
+            None,
+            0,
+            stage,
+            Placement::Fill,
+            Length::Fill,
+            Length::Fill,
+        )
+        .exact_stage(proxy);
+        assert_eq!(percent.placed_size(), Some(stage));
     }
 
     /// Fill takes the whole widget, whatever the raster's size: at a percentage the widget is
@@ -3855,7 +4071,7 @@ mod gpu_surface_tests {
         );
         let second = placed(
             b,
-            solid_raster(12, 20, 1, [255, 0, 0, 255]),
+            solid_raster(12, 20, 7, [255, 0, 0, 255]),
             Vector::new(16.0, 16.0),
             Size::new(32.0, 32.0),
         );
@@ -3867,6 +4083,14 @@ mod gpu_surface_tests {
         }
         // Two frames, one upload per surface: each upload is still gated on its own version.
         assert_eq!(writes(&pipeline), 2);
+        assert_eq!(
+            pipeline.figures.diagnostics_for(a).drawn_full_version,
+            Some(1)
+        );
+        assert_eq!(
+            pipeline.figures.diagnostics_for(b).drawn_full_version,
+            Some(7)
+        );
         let a_bytes = pipeline.surfaces[&a].full_bytes();
         let b_bytes = pipeline.surfaces[&b].full_bytes();
         assert!(a_bytes > 0 && b_bytes > 0);
@@ -3881,6 +4105,7 @@ mod gpu_surface_tests {
         pipeline.trim();
         assert_solid_bgra(&drawn[0], [0, 255, 0, 255]);
         assert!(!pipeline.surfaces.contains_key(&b));
+        assert_eq!(pipeline.figures.diagnostics_for(b).drawn_full_version, None);
         settle(&pipeline);
         assert_eq!(pipeline.retiring.bytes(), 0);
         assert_eq!(diagnostics(&pipeline).full_resident_bytes, a_bytes);

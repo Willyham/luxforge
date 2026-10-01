@@ -6,6 +6,7 @@
 //! `cargo test -p luxforge-cli --test json_cli presets::`.
 
 mod develop;
+mod lens;
 mod presets;
 mod process;
 mod raw;

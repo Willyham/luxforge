@@ -83,7 +83,8 @@ fn journey([x, y]: [u32; 2]) -> Plan {
             .label(label)
     };
     Plan::new(vec![
-        Step::opened(OPENED).label("Original"),
+        // The opened entry is the Original, or the import's first-open Lens entry; verify checks which.
+        Step::opened(OPENED),
         call(
             EXPOSURE,
             "edit.set-basic",
@@ -200,6 +201,9 @@ struct Catalogued {
     original: String,
     current: String,
     revision: u64,
+    /// The import's first-open Lens entry and its label: a RAW whose detected profile applies is
+    /// imported with it right after its Original.
+    first_open: Option<(String, String)>,
 }
 
 fn is_sha256(text: &str) -> bool {
@@ -289,10 +293,20 @@ fn catalog(path: &Path, entry: &EditorSource, source: &Path) -> Result<Catalogue
         .iter()
         .find(|entry| entry.sequence == 0)
         .ok_or("RAW Original history entry missing")?;
+    let first_open = history
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.sequence == 1
+                && entry.actor == "system"
+                && entry.action_id == "select-lens-profile"
+        })
+        .map(|entry| (entry.id.as_str().to_owned(), entry.label.clone()));
     Ok(Catalogued {
         original: original.id.as_str().to_owned(),
         current: state.current_entry.id.as_str().to_owned(),
         revision: state.revision,
+        first_open,
     })
 }
 
@@ -478,27 +492,48 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         original,
         current,
         revision,
+        first_open,
     } = catalog(
         &run.out().join(EDIT).join("catalog.sqlite"),
         &entry,
         &source,
     )?;
-    ensure(revision == 9, "RAW history did not retain nine mutations")?;
+    // A RAW whose detected lens profile applies opens on its first-open entry, one revision on.
+    let imported = u64::from(first_open.is_some());
+    ensure(
+        revision == 9 + imported,
+        "RAW history did not retain nine mutations after its import",
+    )?;
 
     let opened = edit.at(OPENED)?;
+    let (opened_entry, opened_label) = first_open
+        .as_ref()
+        .map_or((original.as_str(), "Original"), |(id, label)| {
+            (id.as_str(), label.as_str())
+        });
     ensure(
         opened.state()["source_dimensions"] == json!(entry.source_dimensions)
             && opened.state()["orientation"] == entry.orientation
-            && opened.revision()? == 0
-            && displayed_entry(opened)? == original,
-        "RAW Original dimensions/orientation/identity mismatch",
+            && opened.revision()? == imported
+            && displayed_entry(opened)? == opened_entry
+            && opened.label()? == opened_label
+            && (first_open.is_none() || opened_label.starts_with("Lens profile ")),
+        "RAW opened dimensions/orientation/identity mismatch",
     )?;
+    // The Original holds the opened recipe without the first-open profile.
+    let original_layers: Vec<Value> = opened.state()["stack"]["displayed"]["layers"]
+        .as_array()
+        .ok_or("The opened frame records no layers")?
+        .iter()
+        .filter(|layer| layer["effect"] != "luxforge.lens.distortion")
+        .cloned()
+        .collect();
     let historical = [edit.index(HISTORICAL)?, edit.index(HISTORICAL_AGAIN)?];
     for (index, (name, frame)) in edit.names().iter().zip(&edit.frames).enumerate() {
         let stack = &frame.state()["stack"];
         if historical.contains(&index) {
             ensure(
-                stack["displayed"]["layers"] == opened.state()["stack"]["displayed"]["layers"],
+                stack["displayed"]["layers"] == json!(original_layers),
                 "Historical preview did not display Original RAW recipe",
             )?;
         } else {

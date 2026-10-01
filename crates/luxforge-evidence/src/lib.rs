@@ -123,11 +123,15 @@ pub enum Step {
     /// The decision an open slider draft's Changed elsewhere notice offers.
     SliderDraft(SliderDraftStep),
     View(ViewStep),
+    /// A trackpad increment at a normalized canvas position, through the native input's message.
+    Pinch(PinchStep),
     /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
     /// ticks and frame-capture subscriptions suspended for that interval.
     ViewIdle(ViewIdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
+    /// Move the comparison divider, or release a backslash hold through the keymap.
+    Compare(CompareStep),
     Palette(PaletteStep),
     /// Move the pointer to one pixel of the displayed raster, exactly as the canvas reports a
     /// hover, and wait for the readout `render.sample` answers with.
@@ -301,9 +305,16 @@ impl Step {
                 optional_text(step.group.as_deref(), "reset group")
             }
             Self::View(step) => step.validate(),
+            Self::Pinch(step) => step.validate(),
             Self::ViewIdle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::Compare(CompareStep::Position(position)) => {
+                unit(f64::from(*position), "compare position")
+            }
+            Self::Compare(CompareStep::Tap | CompareStep::Release | CompareStep::FocusLoss) => {
+                Ok(())
+            }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
@@ -322,11 +333,11 @@ impl Step {
                 let mut characters = key.chars();
                 let single = characters.next().is_some_and(char::is_alphanumeric)
                     && characters.next().is_none();
-                if single || key == KEY_ESCAPE {
+                if single || key == KEY_ESCAPE || matches!(key.as_str(), "\\" | "|") {
                     Ok(())
                 } else {
                     Err(format!(
-                        "key takes one letter or digit, or {KEY_ESCAPE}, not {key:?}"
+                        "key takes one letter or digit, a comparison key, or {KEY_ESCAPE}, not {key:?}"
                     ))
                 }
             }
@@ -459,6 +470,8 @@ pub enum DraftStep {
     Lock,
     Option(bool),
     Guide(bool),
+    /// One straighten-guide drag, `[start_x, start_y, end_x, end_y]` in crop-box pixels.
+    GuideLine([f64; 4]),
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Apply,
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
@@ -637,6 +650,29 @@ impl DoubleClickStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "gesture", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ControlsStep {
+    #[serde(rename = "query-choice-search")]
+    QueryChoiceSearch { action: String, text: String },
+    #[serde(rename = "query-choice-page")]
+    QueryChoicePage { action: String, page: u32 },
+    #[serde(rename = "query-choice-shared")]
+    QueryChoiceShared {
+        action: String,
+        parameter: String,
+        text: String,
+    },
+    #[serde(rename = "query-choice-select-first")]
+    QueryChoiceSelectFirst { action: String },
+    #[serde(rename = "query-choice-retry")]
+    QueryChoiceRetry { action: String },
+    /// Press the suggestion card's Apply.
+    #[serde(rename = "query-choice-apply")]
+    QueryChoiceApply { action: String },
+    /// Open or close Change, which reveals the search under a card.
+    #[serde(rename = "query-choice-change")]
+    QueryChoiceChange { action: String, open: bool },
+    /// Press the report link: the run records the page and opens no browser.
+    #[serde(rename = "query-choice-report")]
+    QueryChoiceReport { action: String },
     Slider {
         action: String,
         parameter: String,
@@ -654,6 +690,46 @@ pub enum ControlsStep {
 impl ControlsStep {
     fn validate(&self) -> Result<(), String> {
         match self {
+            Self::QueryChoiceSearch {
+                action,
+                text: search,
+            } => {
+                text(action, "query-choice action")?;
+                // Module validation owns its search limit; this bounded harness must also be
+                // able to exercise a real rejected input and the widget's Retry operation.
+                if search.chars().count() > 256 || search.chars().any(char::is_control) {
+                    return Err(
+                        "query-choice search exceeds 256 characters or holds controls".into(),
+                    );
+                }
+                Ok(())
+            }
+            Self::QueryChoicePage { action, page } => {
+                text(action, "query-choice action")?;
+                if *page > 99 {
+                    return Err("query-choice page exceeds 99".into());
+                }
+                Ok(())
+            }
+            Self::QueryChoiceShared {
+                action,
+                parameter,
+                text: input,
+            } => {
+                text(action, "query-choice action")?;
+                text(parameter, "query-choice parameter")?;
+                if input.chars().count() > 256 || input.chars().any(char::is_control) {
+                    return Err(
+                        "query-choice input exceeds 256 characters or holds controls".into(),
+                    );
+                }
+                Ok(())
+            }
+            Self::QueryChoiceSelectFirst { action }
+            | Self::QueryChoiceRetry { action }
+            | Self::QueryChoiceApply { action }
+            | Self::QueryChoiceChange { action, .. }
+            | Self::QueryChoiceReport { action } => text(action, "query-choice action"),
             Self::Slider {
                 action,
                 parameter,
@@ -725,7 +801,8 @@ impl PickerStep {
     }
 }
 
-/// One curve editor gesture: a point dragged, added or removed, or a channel selected.
+/// One curve editor gesture: a point dragged, added or removed, a channel selected, the Points list
+/// opened or closed, or one coordinate typed into that list and committed with Enter.
 ///
 /// On the wire the event is a field of the step, `"event": "move"`, beside the fields that event
 /// takes; only a move is a drag, so only a move takes `finish`.
@@ -740,10 +817,22 @@ pub struct CurveStep {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CurveStepEvent {
-    Move { index: usize, points: Vec<[f32; 2]> },
+    Move {
+        index: usize,
+        points: Vec<[f32; 2]>,
+    },
     Add([f32; 2]),
     Remove(usize),
     Channel(usize),
+    /// The Points disclosure opened (`true`) or closed: view state, which sends no request.
+    Points(bool),
+    /// `text` typed into point `index`'s field for `axis` (0 is the input, 1 the output) and
+    /// Enter pressed in it, which commits that one coordinate.
+    Type {
+        index: usize,
+        axis: usize,
+        text: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -771,6 +860,18 @@ enum CurveWire {
         action: String,
         parameter: String,
         index: usize,
+    },
+    Points {
+        action: String,
+        parameter: String,
+        open: bool,
+    },
+    Type {
+        action: String,
+        parameter: String,
+        index: usize,
+        axis: usize,
+        text: String,
     },
 }
 
@@ -819,6 +920,28 @@ impl From<CurveWire> for CurveStep {
                 CurveStepEvent::Channel(index),
                 SliderEnd::Open,
             ),
+            CurveWire::Points {
+                action,
+                parameter,
+                open,
+            } => (
+                action,
+                parameter,
+                CurveStepEvent::Points(open),
+                SliderEnd::Open,
+            ),
+            CurveWire::Type {
+                action,
+                parameter,
+                index,
+                axis,
+                text,
+            } => (
+                action,
+                parameter,
+                CurveStepEvent::Type { index, axis, text },
+                SliderEnd::Open,
+            ),
         };
         Self {
             action,
@@ -860,6 +983,18 @@ impl From<CurveStep> for CurveWire {
                 parameter,
                 index,
             },
+            CurveStepEvent::Points(open) => Self::Points {
+                action,
+                parameter,
+                open,
+            },
+            CurveStepEvent::Type { index, axis, text } => Self::Type {
+                action,
+                parameter,
+                index,
+                axis,
+                text,
+            },
         }
     }
 }
@@ -878,7 +1013,13 @@ impl CurveStep {
                     .try_for_each(|value| point(*value, "curve point"))
             }
             CurveStepEvent::Add(value) => point(*value, "curve point"),
-            CurveStepEvent::Remove(_) | CurveStepEvent::Channel(_) => Ok(()),
+            CurveStepEvent::Type { axis, .. } if *axis > 1 => {
+                Err("curve type axis is 0 (input) or 1 (output)".into())
+            }
+            CurveStepEvent::Remove(_)
+            | CurveStepEvent::Channel(_)
+            | CurveStepEvent::Points(_)
+            | CurveStepEvent::Type { .. } => Ok(()),
         }
     }
 }
@@ -949,6 +1090,30 @@ pub enum SliderDraftStep {
 pub enum ViewStep {
     Fit,
     Percent(f32),
+}
+
+/// A synthetic native pinch input. x/y locate the pointer within the canvas, not the image.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinchStep {
+    pub delta: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl PinchStep {
+    fn validate(&self) -> Result<(), String> {
+        if self.delta.is_finite()
+            && self.x.is_finite()
+            && self.y.is_finite()
+            && (0.0..=1.0).contains(&self.x)
+            && (0.0..=1.0).contains(&self.y)
+        {
+            Ok(())
+        } else {
+            Err("pinch needs a finite delta and canvas x/y within 0..=1".into())
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -1074,6 +1239,16 @@ impl WorkspaceStep {
 pub enum PreviewStep {
     Sequence(u64),
     Current,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareStep {
+    /// Press and release backslash in the same update turn, through the keymap.
+    Tap,
+    Position(f32),
+    Release,
+    FocusLoss,
 }
 
 /// Open the command palette with this query, or open it, run the query and run its first match.
@@ -1404,6 +1579,10 @@ pub enum MaskStep {
     /// Discard the open gesture.
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Cancel,
+    /// The Changed elsewhere notice's Reapply, retaining the stroke or shape while obtaining the
+    /// current entry's pointer map before another canvas input.
+    #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
+    Reapply,
     /// One component row's own list edit, on the row it names rather than on whichever component
     /// happens to be selected.
     Row(MaskRow),
@@ -1469,7 +1648,7 @@ impl MaskStep {
                     .try_for_each(|point| content_point(*point, "mask drag point"))
             }
             Self::Row(row) => row.validate(),
-            Self::Release | Self::Apply | Self::Cancel | Self::Pick => Ok(()),
+            Self::Release | Self::Apply | Self::Cancel | Self::Reapply | Self::Pick => Ok(()),
         }
     }
 }

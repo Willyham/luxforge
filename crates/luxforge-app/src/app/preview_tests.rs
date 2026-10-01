@@ -140,6 +140,7 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -170,6 +171,7 @@ fn review_probe_new_draft_region_is_not_fenced_by_an_older_drafts_revision() {
     );
     let (analysis, raster) = drafted(&editor, 9, &draft_b.draft_id, 0, &[[40, 50, 60, 255]], 1, 1);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
         generation: 9,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -235,6 +237,7 @@ fn fit_withholds_an_old_whole_photo_after_new_content_region_arrives() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -314,6 +317,7 @@ fn an_interactive_region_does_not_settle_a_history_preview_step() {
     editor.presentation.preview_generation = 8;
     ticket(&mut editor, 8, 2);
     let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1298,6 +1302,7 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
     let (analysis, raster) = analysed(&editor, 8, &[[17, 42, 93, 255]], 1, 1);
     let before = editor.presentation.presenter.photo_version();
     let (task, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
         generation: 8,
         entry_id: analysis.identity.entry_id.clone(),
         identity: analysis.identity,
@@ -1305,6 +1310,7 @@ fn an_exact_only_refit_replaces_an_undersized_proxy() {
         intent: luxforge_core::PreviewIntent::Settle,
         viewport_declined: None,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
+            display: None,
             result: Ok((*raster).clone()),
             report: None,
             proxy_declined: None,
@@ -1347,5 +1353,115 @@ fn a_settled_step_waits_for_the_refit_its_view_asked_for() {
     let evidence = crate::app::testing::evidence(&editor);
     assert!(!evidence.capture_pending, "the old proxy is not captured");
     assert_eq!(evidence.awaiting, Some(Settle::Preview));
+    finish(editor, catalog);
+}
+
+#[test]
+fn restoration_settled_fit_presents_reduction_and_keeps_exact_pixels_for_zoom() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.view_state.window = (1440.0, 900.0);
+    editor.session.preview.view.zoom = Zoom::Fit;
+    editor.presentation.preview_generation = 8;
+    ticket(&mut editor, 8, 3);
+    editor
+        .presentation
+        .pending_bounds
+        .insert(8, editor.proxy_bounds());
+    let (analysis, exact) = analysed(&editor, 8, &[[17, 42, 93, 255], [41, 65, 112, 255]], 2, 1);
+    let display = luxforge_core::Raster {
+        width: 1,
+        height: 1,
+        rgba: vec![31, 55, 104, 255].into(),
+        source_fingerprint: exact.source_fingerprint.clone(),
+        snapshot_id: exact.snapshot_id.clone(),
+    };
+    let (_, shown) = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
+        generation: 8,
+        entry_id: analysis.identity.entry_id.clone(),
+        identity: analysis.identity,
+        draft_revision: None,
+        intent: luxforge_core::PreviewIntent::Settle,
+        viewport_declined: None,
+        outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
+            display: Some(display),
+            result: Ok((*exact).clone()),
+            report: Some(analysis.report),
+            proxy_declined: None,
+        })),
+        approximate_white_balance: false,
+        render_ms: 1.0,
+        queue_wait_ms: None,
+    });
+    assert!(shown);
+    assert!(editor.presentation.presented_settled);
+    assert!(
+        !editor.activity.render.unwrap().proxy,
+        "exact-derived display does not say approximate render"
+    );
+    assert_eq!(editor.presentation.presenter.full_content(), None);
+    assert_eq!(
+        editor
+            .presentation
+            .settled_frame
+            .as_ref()
+            .unwrap()
+            .raster
+            .width,
+        1
+    );
+    assert!(std::sync::Arc::ptr_eq(
+        &editor.presentation.exact.as_ref().unwrap().raster.rgba,
+        &exact.rgba
+    ));
+    assert!(matches!(
+        editor.presentation.zoom(false),
+        super::preview::Zoomed::Hand(Retained::Exact(_))
+    ));
+    assert!(!editor.presentation.analysis_updating());
+    finish(editor, catalog);
+}
+
+#[test]
+fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
+    editor.view_state.window = (1440.0, 900.0);
+    editor.presentation.preview_generation = 8;
+    ticket(&mut editor, 8, 3);
+    editor.presentation.pending_bounds.insert(
+        8,
+        Some(luxforge_core::ProxyBounds {
+            width: 2,
+            height: 1,
+        }),
+    );
+    let (analysis, exact) = analysed(&editor, 8, &[[17, 42, 93, 255], [41, 65, 112, 255]], 2, 1);
+    let display = luxforge_core::Raster {
+        width: 1,
+        height: 1,
+        rgba: vec![31, 55, 104, 255].into(),
+        source_fingerprint: exact.source_fingerprint.clone(),
+        snapshot_id: exact.snapshot_id.clone(),
+    };
+    let _ = editor.preview_ready(luxforge_core::PreviewResult {
+        restoration_prefix: None,
+        generation: 8,
+        entry_id: analysis.identity.entry_id.clone(),
+        identity: analysis.identity,
+        draft_revision: None,
+        intent: luxforge_core::PreviewIntent::Settle,
+        viewport_declined: None,
+        outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
+            display: Some(display),
+            result: Ok((*exact).clone()),
+            report: None,
+            proxy_declined: None,
+        })),
+        approximate_white_balance: false,
+        render_ms: 1.0,
+        queue_wait_ms: None,
+    });
+    assert!(!editor.presentation.presented_settled);
+    assert!(editor.presentation.settled_frame.is_none());
     finish(editor, catalog);
 }

@@ -20,8 +20,8 @@
 //! channels close unanswered. The worker evaluates one sample at a time from the shared spatial
 //! budget, and the tile's input is pulled serially, as it was on the owner: pulled on the shared
 //! pool it would wait behind any render that holds the pool.
-use super::{ApiResponse, ClientId};
-use crate::{Error, api::transport::MAX_CLIENTS};
+use super::{ApiResponse, ClientId, OwnerMessage};
+use crate::{Cancel, Error, api::transport::MAX_CLIENTS, editor::pixels::PixelAnswer};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
@@ -35,7 +35,7 @@ use std::{
 pub(super) const POINT_QUEUE_CAPACITY: usize = MAX_CLIENTS + 1;
 
 /// The evaluation one caller is waiting for, planned on the owner.
-pub(super) type Evaluation = Box<dyn FnOnce() -> Result<Value, Error> + Send>;
+pub(super) type Evaluation = Box<dyn FnOnce(&Cancel) -> Result<PointAnswer, Error> + Send>;
 
 /// Called on the worker before each evaluation, so a test can hold it there.
 #[cfg(test)]
@@ -46,26 +46,54 @@ pub(super) struct PointCall {
     pub(super) client: ClientId,
     pub(super) evaluate: Evaluation,
     pub(super) reply: Reply,
+    pub(super) cancel: Cancel,
 }
 
-/// Where and how one call is answered.
-pub(super) struct Reply {
-    /// The request's identity, which the answer repeats.
-    pub(super) id: String,
-    /// The event sequence when the owner planned the sample, which the answer carries: the sample
-    /// describes the catalog as it was then, whatever has been committed since.
-    pub(super) sequence: u64,
-    pub(super) response: SyncSender<ApiResponse>,
+pub(super) enum PointAnswer {
+    Value(Value),
+    Pixels(Box<PixelAnswer>),
 }
 
+/// A caller is answered directly; a mutation returns its pixels to the owner for identity checks.
+pub(super) enum Reply {
+    Caller {
+        id: String,
+        sequence: u64,
+        response: SyncSender<ApiResponse>,
+    },
+    Pixels {
+        ticket: u64,
+        owner: SyncSender<OwnerMessage>,
+    },
+}
 impl Reply {
-    pub(super) fn answer(self, result: Result<Value, Error>) {
-        let response = match result {
-            Ok(value) => ApiResponse::success(self.id, self.sequence, value),
-            Err(error) => ApiResponse::failure(self.id, self.sequence, error),
-        };
-        // A caller that has gone has nobody to answer.
-        let _ = self.response.send(response);
+    pub(super) fn answer(self, result: Result<PointAnswer, Error>) {
+        match self {
+            Self::Caller {
+                id,
+                sequence,
+                response,
+            } => {
+                let result = result.and_then(|answer| match answer {
+                    PointAnswer::Value(value) => Ok(value),
+                    _ => Err(Error::internal(
+                        "pixel reads cannot answer a caller directly",
+                    )),
+                });
+                let response_value = match result {
+                    Ok(value) => ApiResponse::success(id, sequence, value),
+                    Err(error) => ApiResponse::failure(id, sequence, error),
+                };
+                let _ = response.send(response_value);
+            }
+            Self::Pixels { ticket, owner } => {
+                let result = result.and_then(|answer| match answer {
+                    PointAnswer::Pixels(pixels) => Ok(*pixels),
+                    _ => Err(Error::internal("the pixel read returned no pixels")),
+                });
+                let _ = owner.send(OwnerMessage::PixelsRead { ticket, result });
+            }
+        }
     }
 }
 
@@ -86,6 +114,7 @@ struct Shared {
 struct State {
     queue: VecDeque<PointCall>,
     stopping: bool,
+    active: Option<(ClientId, Cancel)>,
     #[cfg(test)]
     hold: Option<Hold>,
 }
@@ -113,15 +142,24 @@ impl PointWorker {
     /// Queue one planned call behind the others, starting the thread with the first. A full queue
     /// answers the call with `resource-limit` now, on its own channel.
     pub(super) fn submit(&mut self, call: PointCall) {
+        if let Err(failed) = self.try_submit(call) {
+            let (call, error) = *failed;
+            call.reply.answer(Err(error));
+        }
+    }
+
+    /// Admission failures return synchronously, so a parked read never posts back into the
+    /// owner's bounded completion channel from the owner itself.
+    pub(super) fn try_submit(&mut self, call: PointCall) -> Result<(), Box<(PointCall, Error)>> {
         let mut state = self.shared.lock();
         if state.queue.len() >= self.capacity {
-            drop(state);
-            call.reply.answer(Err(Error::resource_limit(
-                format!(
-                    "{} point samples through a spatial layer are already waiting; retry after one is answered",
+            return Err(Box::new((
+                call,
+                Error::resource_limit(format!(
+                    "{} point samples, queries or pixel reads are already waiting; retry after one is answered",
                     self.capacity
-                ))));
-            return;
+                )),
+            )));
         }
         state.queue.push_back(call);
         drop(state);
@@ -133,19 +171,23 @@ impl PointWorker {
                 .spawn(move || run(&shared))
                 .ok();
             if self.thread.is_none() {
-                // Without its thread nothing would ever answer these calls: refuse them now.
-                let waiting = std::mem::take(&mut self.shared.lock().queue);
-                for call in waiting {
-                    call.reply.answer(Err(Error::internal(
-                        "the point worker could not be started",
-                    )));
-                }
+                let call = self
+                    .shared
+                    .lock()
+                    .queue
+                    .pop_front()
+                    .expect("the first call is queued before starting its worker");
+                return Err(Box::new((
+                    call,
+                    Error::internal("the point worker could not be started"),
+                )));
             }
         }
+        Ok(())
     }
 
     /// Drop a disconnected client's waiting calls. Their reply channels close unanswered; a call
-    /// already being evaluated finishes and its answer goes nowhere.
+    /// already being evaluated is cancelled before its next row or tile.
     pub(super) fn disconnect(&self, client: ClientId) {
         let gone: VecDeque<PointCall> = {
             let mut state = self.shared.lock();
@@ -153,6 +195,11 @@ impl PointWorker {
                 .into_iter()
                 .partition(|call| call.client == client);
             state.queue = kept;
+            if let Some((active, cancel)) = &state.active
+                && *active == client
+            {
+                cancel.cancel();
+            }
             gone
         };
         drop(gone);
@@ -162,6 +209,15 @@ impl PointWorker {
     #[cfg(test)]
     pub(super) fn waiting(&self) -> usize {
         self.shared.lock().queue.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn active_cancel(&self) -> Option<Cancel> {
+        self.shared
+            .lock()
+            .active
+            .as_ref()
+            .map(|(_, cancel)| cancel.clone())
     }
 
     /// Whether the worker thread has started.
@@ -181,6 +237,9 @@ impl PointWorker {
         let waiting = {
             let mut state = self.shared.lock();
             state.stopping = true;
+            if let Some((_, cancel)) = &state.active {
+                cancel.cancel();
+            }
             std::mem::take(&mut state.queue)
         };
         drop(waiting);
@@ -200,7 +259,10 @@ impl Drop for PointWorker {
 fn run(shared: &Shared) {
     loop {
         let PointCall {
-            evaluate, reply, ..
+            evaluate,
+            reply,
+            cancel,
+            ..
         } = {
             let mut state = shared.lock();
             loop {
@@ -208,6 +270,7 @@ fn run(shared: &Shared) {
                     return;
                 }
                 if let Some(call) = state.queue.pop_front() {
+                    state.active = Some((call.client, call.cancel.clone()));
                     break call;
                 }
                 state = shared
@@ -224,8 +287,12 @@ fn run(shared: &Shared) {
             }
         }
         // A sample that panics answers `internal`, and the worker lives on for the next one.
-        let result = catch_unwind(AssertUnwindSafe(evaluate))
-            .unwrap_or_else(|_| Err(Error::internal("the point sample's evaluation panicked")));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            cancel.check()?;
+            evaluate(&cancel)
+        }))
+        .unwrap_or_else(|_| Err(Error::internal("the point sample's evaluation panicked")));
+        shared.lock().active = None;
         reply.answer(result);
     }
 }
@@ -244,8 +311,9 @@ mod tests {
         (
             PointCall {
                 client: ClientId::testing(client),
-                evaluate: Box::new(move || Ok(value)),
-                reply: Reply {
+                evaluate: Box::new(move |_| Ok(PointAnswer::Value(value))),
+                cancel: Cancel::new(),
+                reply: Reply::Caller {
                     id: id.into(),
                     sequence: client * 10,
                     response,
@@ -345,8 +413,9 @@ mod tests {
         let (response, panicked) = sync_channel(1);
         worker.submit(PointCall {
             client: ClientId::testing(1),
-            evaluate: Box::new(|| panic!("a sample panicked")),
-            reply: Reply {
+            evaluate: Box::new(|_| panic!("a sample panicked")),
+            cancel: Cancel::new(),
+            reply: Reply::Caller {
                 id: "panics".into(),
                 sequence: 0,
                 response,
@@ -367,6 +436,33 @@ mod tests {
             answer.recv_timeout(Duration::from_secs(5)).unwrap().result,
             Some(json!("fine"))
         );
+        worker.stop();
+    }
+    #[test]
+    fn disconnect_cancels_the_active_call_before_its_next_pixel_read() {
+        let (mut worker, reaches, release) = held(2);
+        let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran = executed.clone();
+        let (response, answer) = sync_channel(1);
+        worker.submit(PointCall {
+            client: ClientId::testing(1),
+            cancel: Cancel::new(),
+            evaluate: Box::new(move |_| {
+                ran.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(PointAnswer::Value(json!(1)))
+            }),
+            reply: Reply::Caller {
+                id: "gone".into(),
+                sequence: 0,
+                response,
+            },
+        });
+        reaches.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.disconnect(ClientId::testing(1));
+        release.send(()).unwrap();
+        let cancelled = answer.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(cancelled.error.unwrap().code, "cancelled");
+        assert!(!executed.load(std::sync::atomic::Ordering::Relaxed));
         worker.stop();
     }
 }

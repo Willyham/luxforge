@@ -100,12 +100,12 @@ pub trait SecretStore: Send + Sync {
 /// A store that refuses every call with `not-ready: <reason>`: an unsupported platform, or a host
 /// configured without a secure store.
 #[derive(Clone, Debug)]
-pub(crate) struct UnavailableSecretStore {
+pub struct UnavailableSecretStore {
     reason: String,
 }
 
 impl UnavailableSecretStore {
-    pub(crate) fn new(reason: impl Into<String>) -> Self {
+    pub fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
         }
