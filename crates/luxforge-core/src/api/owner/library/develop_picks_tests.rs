@@ -1477,6 +1477,73 @@ fn develop_picks_into_sends_each_event_to_the_folder_it_names() {
     );
 }
 
+/// What a Develop reads is kept for the preparation that follows only when it develops one file,
+/// as opening a file does: its photograph's `source.prepare` takes it, and a Develop of several
+/// files keeps nothing. A later one-file Develop replaces what an earlier one kept, sending its
+/// photograph back drops it, and the prepared photograph stays prepared throughout.
+#[test]
+fn develop_picks_keeps_one_files_read_for_the_preparation_that_follows() {
+    let harness = Harness::new("kept-read");
+    let trip = harness.dir.join("trip");
+    let paths: Vec<PathBuf> = (0..5)
+        .map(|at| {
+            photo(
+                &trip.join(format!("r{at}.jpg")),
+                &Shot::at(&format!("2026:09:12 1{at}:00:00")),
+            )
+        })
+        .collect();
+    let kept = |harness: &Harness| {
+        harness.run(|owner| {
+            owner.service.kept_read().map(|(asset, content)| {
+                let crate::editor::ReadContent::Jpeg(bytes) = content else {
+                    panic!("a JPEG's bytes are kept");
+                };
+                (json!(asset), bytes.len() as u64)
+            })
+        })
+    };
+    let prepared = |harness: &Harness, asset: &Value| {
+        let asset = crate::AssetId::parse(asset.as_str().unwrap().to_owned()).unwrap();
+        harness.run(move |owner| owner.service.cached_state(&asset).unwrap().is_some())
+    };
+
+    let report = harness.develop_paths("kept-one", &[&paths[0]]);
+    let first = asset_of(&report, "r0.jpg");
+    assert_eq!(
+        kept(&harness),
+        Some((first.clone(), fs::metadata(&paths[0]).unwrap().len()))
+    );
+    let started = harness.ok("source.prepare", json!({"asset_id": first}));
+    assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
+    assert_eq!(kept(&harness), None, "taken by the preparation");
+    assert!(prepared(&harness, &first));
+
+    let report = harness.develop_paths("kept-batch", &[&paths[1], &paths[2]]);
+    assert_eq!(report["failed"], json!([]), "{report}");
+    assert_eq!(
+        kept(&harness),
+        None,
+        "a Develop of several files keeps nothing"
+    );
+
+    let report = harness.develop_paths("kept-earlier", &[&paths[3]]);
+    assert_eq!(kept(&harness).unwrap().0, asset_of(&report, "r3.jpg"));
+    let report = harness.develop_paths("kept-later", &[&paths[4]]);
+    let later = asset_of(&report, "r4.jpg");
+    assert_eq!(kept(&harness).unwrap().0, later, "the later Develop's");
+    assert!(
+        prepared(&harness, &first),
+        "no Develop unprepares a photograph"
+    );
+    let answer = harness.ok(
+        "asset.send-back",
+        json!({"targets": {"kind": "assets", "asset_ids": [later]}, "mutation": envelope("kept-send")}),
+    );
+    assert_eq!(answer["outcome"], "applied", "{answer}");
+    assert_eq!(kept(&harness), None, "its photograph's record is gone");
+}
+
 /// On the owner's Mac: copies of the owner's RAW fixtures develop into photographs whose stored
 /// interpretation is the one their first preparation decodes again, so each opens in Develop, and
 /// the copies are unchanged. Set `LUXFORGE_RAW_OWNER_DIR` to the directory holding
@@ -1511,4 +1578,120 @@ fn develop_picks_develops_the_owners_raw_files_that_then_open() {
     }
     let after: Vec<_> = refs.iter().map(|path| untouched(path)).collect();
     assert_eq!(after, before);
+}
+
+/// How long opening one new file takes through the catalog owner, end to end: the Develop of that
+/// one file, its preparation and its adoption, as `opening::open` and the desktop's open take
+/// them. The files are the RAWs the owner's manifest lists (`LUXFORGE_RAW_MANIFEST`, by default
+/// `~/projects/lightwell/private/raw-manifest.json`) and the photo-sized JPEG
+/// `LUXFORGE_OPEN_JPEG` names, each copied into a scratch folder first and only read there. Each
+/// is opened once untimed, then `LUXFORGE_OPEN_SAMPLES` times (7 by default), and sent back
+/// (`asset.send-back`) after every open, outside the clock, so each open brings a new photograph
+/// into a catalog and index already in use. A measurement, not a gate; the one-minute load
+/// average is read before the first open and after the last:
+///
+/// ```text
+/// LUXFORGE_OPEN_JPEG=fixtures/generated/24mp.jpg cargo test --release --locked -p luxforge-core \
+///   --lib develop_picks_open_timing -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "a measurement, not a gate; run alone in release"]
+fn develop_picks_open_timing() {
+    use std::time::Instant;
+    let samples: usize = std::env::var("LUXFORGE_OPEN_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(7);
+    let load = || {
+        std::process::Command::new("/usr/sbin/sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").map_or_else(
+        |_| {
+            PathBuf::from(std::env::var("HOME").expect("HOME"))
+                .join("projects/lightwell/private/raw-manifest.json")
+        },
+        PathBuf::from,
+    );
+    let listed: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    let mut originals: Vec<PathBuf> = listed["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|source| PathBuf::from(source["path"].as_str().unwrap()))
+        .collect();
+    originals.extend(std::env::var("LUXFORGE_OPEN_JPEG").ok().map(PathBuf::from));
+    let harness = Harness::new("open-timing");
+    let copies: Vec<PathBuf> = originals
+        .iter()
+        .map(|original| {
+            let copy = harness.dir.join("open").join(original.file_name().unwrap());
+            fs::create_dir_all(copy.parent().unwrap()).unwrap();
+            fs::copy(original, &copy).unwrap();
+            copy.canonicalize().unwrap()
+        })
+        .collect();
+    let before: Vec<_> = copies.iter().map(|path| untouched(path)).collect();
+    let started_load = load();
+    let mut sent = 0;
+    for copy in &copies {
+        let mut times = Vec::new();
+        for sample in 0..=samples {
+            let start = Instant::now();
+            let (_, asset) = super::opening::develop(&harness.owner, harness.client, copy)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", copy.display()));
+            let developed = start.elapsed();
+            super::opening::adopt(&harness.owner, harness.client, &asset);
+            let opened = start.elapsed();
+            sent += 1;
+            let answer = harness.ok(
+                "asset.send-back",
+                json!({
+                    "targets": {"kind": "assets", "asset_ids": [asset]},
+                    "mutation": envelope(&format!("open-timing-send-back-{sent}")),
+                }),
+            );
+            assert_eq!(answer["outcome"], "applied", "{answer}");
+            if sample > 0 {
+                times.push((
+                    developed.as_secs_f64() * 1e3,
+                    (opened - developed).as_secs_f64() * 1e3,
+                    opened.as_secs_f64() * 1e3,
+                ));
+            }
+        }
+        let spread = |pick: fn(&(f64, f64, f64)) -> f64| {
+            let mut values: Vec<f64> = times.iter().map(pick).collect();
+            values.sort_by(f64::total_cmp);
+            (
+                values[values.len() / 2],
+                values[0],
+                values[values.len() - 1],
+            )
+        };
+        let (develop, prepare, open) = (spread(|t| t.0), spread(|t| t.1), spread(|t| t.2));
+        println!(
+            "{}: {} bytes, {samples} opens; ms median [min, max]: develop {:.1} [{:.1}, {:.1}], \
+             prepare+adopt {:.1} [{:.1}, {:.1}], open {:.1} [{:.1}, {:.1}]; each (develop, \
+             prepare+adopt, open): {times:.1?}",
+            copy.file_name().unwrap().to_string_lossy(),
+            fs::metadata(copy).unwrap().len(),
+            develop.0,
+            develop.1,
+            develop.2,
+            prepare.0,
+            prepare.1,
+            prepare.2,
+            open.0,
+            open.1,
+            open.2,
+        );
+    }
+    println!("load average: before {started_load}, after {}", load());
+    let after: Vec<_> = copies.iter().map(|path| untouched(path)).collect();
+    assert_eq!(after, before, "the copies were only read");
 }
