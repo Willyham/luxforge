@@ -849,10 +849,13 @@ pub(crate) fn developed_photograph(
         .as_array()
         .and_then(|failed| failed.first())
     {
-        return Err(failed["message"]
+        let message = failed["message"]
             .as_str()
-            .unwrap_or("the file was not developed")
-            .to_owned());
+            .unwrap_or("the file was not developed");
+        return Err(match failed["code"].as_str() {
+            Some(code) => format!("{code}: {message}"),
+            None => message.to_owned(),
+        });
     }
     parse(report["developed"][0]["asset_id"].clone())
 }
