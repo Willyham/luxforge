@@ -3202,6 +3202,98 @@ timing components started at one-minute load 12.0 to 12.6, after the tier's own 
 rows are marked unreliable and are not compared with earlier figures. Native Windows and Linux
 builds are not measured.
 
+## Preview error baseline
+
+What the editor already accepts, measured with the [GPU preview error measure](../design/gpu-preview.md#the-preview-error-limit) so the owner can read the proposed limits against it: the Presence proxy against the exact downscale at Fit, the half-scale 100% motion region against the exact region, and a RAW white-balance draft against its release. It is context, not a gate, and it changes no limit. The proposed limits are, per statistic (mean ΔE00, worst 16 × 16 block, p99 ΔE00, signed mean ΔL\*): pointwise 0.5, 1.0, 2.0, ±0.25 and spatial 1.0, 2.5, 5.0, ±0.5.
+
+### Scope
+
+- **Measure.** `cargo xtask preview-error --evidence DIR --candidate-frame N --reference-frame M` (CIEDE2000 in `f64` from 8-bit sRGB through linear light, XYZ and CIELAB under D65, `luxforge_reference::preview_error`) over the photograph rectangle the editor records for each frame, clipped to the canvas, so the canvas beside the photograph never counts. Candidate is the approximate frame, reference the frame that replaces it, and the signed ΔL\* is candidate minus reference. An independent NumPy implementation of the same formulas agreed to six decimals on all four statistics for four of the frame pairs below (`presence-24mp` Dehaze, Z6 100% region, Air 2S Fit white balance, X100VI all three Presence fields); that check is not committed. The report also carries each frame's own recorded state (status label, `render_proxy`, `settled_from_exact`, `drawn_region_quality`), which is how each pair below was confirmed to be the frames it names.
+- **Host and build.** Apple M4 Pro (14 cores), macOS 26.5.2, Metal on the `Apple M4 Pro` adapter, a hidden 1440 × 900 logical window at 2×, so 2880 × 1800 physical captures. Release build of `luxforge-app` at `46a85159` (this branch changes only the reference crate, xtask and documents), application SHA-256 `916b4b2f76560a9c231c37179bee7a848efd65938fb05e6d6c48370a033dfbff`. Every launch was a hidden window in the background-only bundle. The host was shared (one-minute load 13 to 29 during the launches); these are pixel measurements, not timings, and a loaded host does not change them.
+- **Sources.** The generated 24 MP and 60 MP JPEGs (SHA-256 `b54c2a15…` and `b9e0118a…`; four flat colour quadrants, corner labels, an arrow and fine vertical detail, so they hold almost nothing for Presence to act on) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest (`nikon-z6`, `fujifilm-x100vi`, `dji-air2s`; hashes in [`fixtures/preview/corpus.json`](../../fixtures/preview/corpus.json)). Fit photograph rectangles are 1716 × 1144 (X100VI, Air 2S, 24 MP), 1716 × 1030 (60 MP) and 1004 × 1508 (the Z6, which opens portrait); at 100% it is the whole 1796 × 1660 canvas, the photograph's centre with no pan.
+- **One run each.** Each cell is one launch and one drag value, with deterministic pixels but no distribution over photographs, values or pans. Both frames of a pair come from the same launch.
+
+### Presence proxy against the exact downscale at Fit
+
+Candidate: the frame drawn while a Presence slider is dragged to +100 and held, status "Approximate render", the display-bounded proxy. Reference: the frame after the slider is released, status "Exact render" with `settled_from_exact`, the linear-light area reduction of the exact full-resolution render. The editor displays an exact-derived Fit frame only for a stack that holds a non-neutral Detail layer (Detail declares `fit_settle: exact`; Presence alone keeps its proxy as the displayed Fit frame), so every stack below also holds Detail's Colour noise suppression at 1, committed first. The control rows are that Detail layer alone, dragged and released: what settling moves with no Presence at all. It moves nothing on the generated JPEGs and, on the RAWs, the RAW proxy's own difference from the exact reduction (mean 0.41 on the Z6, 0.08 on the X100VI, 0.97 on the Air 2S), which a Presence row includes and cannot be subtracted from. The stack in the last row of each source is Texture and Clarity committed at +100 with Dehaze dragged to +100.
+
+| Fit: Presence proxy against exact reduction | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
+| --- | ---: | ---: | ---: | ---: |
+| Z6 NEF, Detail colour 1 alone (control) | 0.406 | 1.84 | 2.01 | +0.024 |
+| Z6 NEF, Texture +100 | 0.829 | 3.61 | 4.02 | -0.006 |
+| Z6 NEF, Clarity +100 | 0.578 | 2.36 | 2.66 | +0.012 |
+| Z6 NEF, Dehaze +100 | 1.768 | 15.13 | 7.46 | -0.083 |
+| Z6 NEF, Texture, Clarity, Dehaze +100 | 2.300 | 14.20 | 9.00 | +0.609 |
+| X100VI RAF, Detail colour 1 alone (control) | 0.075 | 0.21 | 0.92 | -0.000 |
+| X100VI RAF, Texture +100 | 0.481 | 1.73 | 2.01 | -0.018 |
+| X100VI RAF, Clarity +100 | 0.305 | 2.80 | 1.17 | -0.017 |
+| X100VI RAF, Dehaze +100 | 0.965 | 23.15 | 5.72 | -0.078 |
+| X100VI RAF, Texture, Clarity, Dehaze +100 | 1.634 | 25.85 | 7.76 | -0.318 |
+| Air 2S DNG, Detail colour 1 alone (control) | 0.974 | 4.31 | 4.36 | +0.079 |
+| Air 2S DNG, Texture +100 | 1.847 | 4.92 | 6.03 | -0.090 |
+| Air 2S DNG, Clarity +100 | 1.268 | 5.91 | 6.12 | +0.003 |
+| Air 2S DNG, Dehaze +100 | 3.625 | 18.62 | 14.36 | -3.167 |
+| Air 2S DNG, Texture, Clarity, Dehaze +100 | 4.670 | 15.80 | 14.81 | -2.893 |
+| Generated 24 MP JPEG, Detail colour 1 alone (control) | 0.000 | 0.00 | 0.00 | +0.000 |
+| Generated 24 MP JPEG, Texture +100 | 0.013 | 1.23 | 0.50 | +0.001 |
+| Generated 24 MP JPEG, Clarity +100 | 0.046 | 3.68 | 0.43 | -0.000 |
+| Generated 24 MP JPEG, Dehaze +100 | 1.093 | 3.02 | 3.01 | +0.374 |
+| Generated 24 MP JPEG, Texture, Clarity, Dehaze +100 | 1.117 | 6.95 | 3.09 | +0.368 |
+| Generated 60 MP JPEG, Detail colour 1 alone (control) | 0.000 | 0.00 | 0.00 | +0.000 |
+| Generated 60 MP JPEG, Texture +100 | 0.013 | 0.81 | 0.51 | +0.001 |
+| Generated 60 MP JPEG, Clarity +100 | 0.050 | 2.39 | 0.47 | -0.001 |
+| Generated 60 MP JPEG, Dehaze +100 | 1.285 | 3.74 | 3.57 | +0.317 |
+| Generated 60 MP JPEG, Texture, Clarity, Dehaze +100 | 1.312 | 4.05 | 3.76 | +0.322 |
+
+Against the proposed limits, 5 of the 20 Presence rows are within the spatial limits: Texture on the 24 MP, 60 MP and X100VI, and Clarity on the 60 MP and Z6. Dehaze and the three-field stack miss the spatial mean on every source but the X100VI's Dehaze (mean 0.97, but a worst block of 23.1 and a p99 of 5.7), and Dehaze shifts the whole picture: signed ΔL\* +0.3 to +0.4 on the JPEGs and −3.2 on the Air 2S. In the X100VI's worst block of the three-field stack (capture pixel 1082, 470, a dark smooth area) the proxy shows streaks the exact reduction does not.
+
+### Half-scale 100% motion region against the exact region
+
+Candidate: the frame drawn while a Basic Exposure slider is dragged to +1 EV and held at 100% with no pan, `drawn_region_quality` `interactive` (the half-scale visible region), status "Approximate render". Reference: the frame two seconds later, after the shared quiet policy refined the same open draft to full detail, status "Exact render". Exposure is exact on a RAW photograph, so the pair isolates the half-scale softness. The centre of both generated JPEGs at 100% is a flat red field, so their rows are exactly zero and say nothing about softness; the RAW rows are the figures.
+
+| 100%: half-scale motion region against exact region | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
+| --- | ---: | ---: | ---: | ---: |
+| Z6 NEF | 0.485 | 3.44 | 1.76 | +0.008 |
+| X100VI RAF | 0.759 | 1.44 | 2.44 | +0.005 |
+| Air 2S DNG | 2.761 | 9.31 | 12.63 | +0.325 |
+| Generated 24 MP JPEG | 0.000 | 0.00 | 0.00 | +0.000 |
+| Generated 60 MP JPEG | 0.000 | 0.00 | 0.00 | +0.000 |
+
+The floating toolbar at the canvas's foot and the scroll bars are inside the 100% rectangle and identical in both frames, so they add zeros: about 3% of its pixels, which dilutes the means.
+
+### RAW white-balance draft against its release
+
+The `raw-panel` smoke scenario's frames: a Temperature drag left open at 3500 K at Fit, and again at 2500 K at 100%, each against its release at the same value, which redevelops the mosaic. The draft is the approximation `W = R · diag(g'/g) · R⁻¹` on the planes developed at the committed white balance; the release is the exact development. At Fit the pair is the draft (frame 2) and the release's proxy (frame 3). At 100% the moving frame (frame 5: the half-scale region with the approximate white balance, so softness and white balance together) and the held draft after full-detail refinement (frame 6) are each held against the release's exact region (frame 7).
+
+| RAW white balance, Temperature drag | Mean ΔE00 | Worst 16 × 16 block | p99 ΔE00 | Signed mean ΔL\* |
+| --- | ---: | ---: | ---: | ---: |
+| Z6 NEF, Fit: draft against release | 0.038 | 0.38 | 0.74 | -0.000 |
+| Z6 NEF, 100%: held refined draft against release | 0.062 | 0.44 | 0.48 | -0.000 |
+| Z6 NEF, 100%: moving frame against release | 0.215 | 2.31 | 1.17 | +0.009 |
+| X100VI RAF, Fit: draft against release | 0.059 | 0.24 | 0.66 | +0.000 |
+| X100VI RAF, 100%: held refined draft against release | 0.142 | 0.45 | 0.73 | -0.003 |
+| X100VI RAF, 100%: moving frame against release | 0.416 | 0.96 | 1.35 | +0.003 |
+| Air 2S DNG, Fit: draft against release | 0.313 | 2.68 | 1.84 | -0.030 |
+| Air 2S DNG, 100%: held refined draft against release | 0.408 | 3.11 | 3.08 | -0.068 |
+| Air 2S DNG, 100%: moving frame against release | 1.641 | 8.24 | 10.01 | +0.144 |
+
+Against the proposed pointwise limits, the Z6 and X100VI drafts are within them at Fit and when held at 100% (the Z6's moving frame misses only the worst block, 2.31 against 1.0), and the Air 2S misses the worst block at Fit (2.68) and the worst block and p99 when held at 100%.
+
+`raw-panel` itself failed on all three RAWs at its `crop-started` step ("the luxforge.basic section records false, expected expanded"), after every frame used here had passed its plan checks and before the scenario's own residual checks ran. Nothing here uses those checks, and the owner's relative-residual gates (held 100% residuals of 0.8%, 1.4% and 5.1%, [decisions](../decisions.md#raw-white-balance-drafts)) were not remeasured.
+
+### Reproducing it
+
+The Presence and region journeys are source-independent evidence scripts, [`fixtures/preview/baseline/presence-fit.json`](../../fixtures/preview/baseline/presence-fit.json) and [`region-100.json`](../../fixtures/preview/baseline/region-100.json). Frame 1 is the open and each step is the frame after it.
+
+```sh
+cargo xtask build --release
+cargo xtask develop --background --hidden-window --evidence-dir /tmp/NEW_DIR \
+  --evidence-script fixtures/preview/baseline/presence-fit.json --open SOURCE --window-size 1440 900
+cargo xtask preview-error --evidence /tmp/NEW_DIR --candidate-frame 4 --reference-frame 5
+```
+
+The Presence pairs (candidate, reference) are the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18); the region pair is (3, 4). The white-balance pairs come from `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR`, whose evidence is in `NEW_DIR/app`: Fit (2, 3), 100% moving (5, 7) and held (6, 7).
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
