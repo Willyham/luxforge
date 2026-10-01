@@ -30,20 +30,25 @@ pub fn moderate_detail() -> script::Step {
     )
 }
 
-/// Select the first eligible profile through the same generic messages the list publishes.
-/// The key is returned by the module, so workloads never hard-code a bundled record identity.
-pub fn lens_profile() -> [script::Step; 3] {
-    [
-        script::Step::section("luxforge.lens", true),
-        script::ControlsStep::QueryChoiceShared {
-            action: "select-lens-profile".into(),
-            parameter: "assume-uncorrected".into(),
-            text: "true".into(),
-        }
-        .into(),
-        script::ControlsStep::QueryChoiceSelectFirst {
-            action: "select-lens-profile".into(),
-        }
-        .into(),
-    ]
+/// The Lens precondition through the same generic messages the panel publishes. A JPEG's detected
+/// profile is offered with the acknowledgement its Apply sends, so the script expands the section
+/// and presses Apply. A supported RAW is imported with its detected profile already applied as its
+/// first-open entry, so it only expands the section. The key comes from the module, so workloads
+/// never hard-code a bundled record identity.
+pub fn lens_profile(raw: bool) -> Vec<script::Step> {
+    let mut steps = vec![script::Step::section("luxforge.lens", true)];
+    if !raw {
+        steps.push(
+            script::ControlsStep::QueryChoiceApply {
+                action: "select-lens-profile".into(),
+            }
+            .into(),
+        );
+    }
+    steps
+}
+
+/// A RAW baseline without Lens: the profile its import applied is turned off, keeping the layer.
+pub fn lens_off() -> script::Step {
+    script::Step::call("edit.reset-lens-profile", json!({}))
 }

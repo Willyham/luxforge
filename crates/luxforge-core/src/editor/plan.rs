@@ -402,6 +402,93 @@ impl EditorService {
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
     }
 
+    /// Commit the first-open actions of `asset_id`, an asset an import has just created: each
+    /// available module that applies to its source kind is asked in registry order
+    /// ([`crate::ToolModule::first_open`]) against the current stack, and an action it proposes is
+    /// committed through [`Self::run_action`] by the `system` actor, as one ordinary entry after the
+    /// ones before it. The source is prepared, so a module reads its optics from the verified
+    /// cache; planning reads metadata only. A refusal commits nothing and is reported, and the next
+    /// module is still asked. Only an import that inserted the asset calls this, so it never runs
+    /// for a file imported again, a reopen or an asset that already has history.
+    pub(crate) fn first_open(&mut self, asset_id: &AssetId) -> Vec<crate::FirstOpen> {
+        let registry = self.registry.clone();
+        let mut reports = Vec::new();
+        for module in registry.providers() {
+            let descriptor = module.descriptor();
+            let report = |action_id: Option<&str>| crate::FirstOpen {
+                module_id: descriptor.id.clone(),
+                action_id: action_id.map(str::to_owned),
+                entry_id: None,
+                label: None,
+                error: None,
+            };
+            let failed = |action_id: Option<&str>, error: &Error| crate::FirstOpen {
+                error: Some(crate::jobs::JobError::from(error)),
+                ..report(action_id)
+            };
+            let state = match self.state(asset_id) {
+                Ok(state) => state,
+                Err(error) => {
+                    reports.push(failed(None, &error));
+                    continue;
+                }
+            };
+            if descriptor.check_available().is_err()
+                || descriptor
+                    .check_applies_to(state.asset.source.tag())
+                    .is_err()
+            {
+                continue;
+            }
+            let proposed = self.ask(
+                &state.asset,
+                &state.current_entry.snapshot.recipe,
+                module,
+                None,
+                None,
+                TargetView::Own,
+                |context, _| module.first_open(context),
+            );
+            let input = match proposed {
+                Ok(Some(input)) => input,
+                Ok(None) => continue,
+                Err(error) => {
+                    reports.push(failed(None, &error));
+                    continue;
+                }
+            };
+            let mutation = Mutation {
+                expected_revision: state.revision,
+                request_id: format!("first-open:{}:{}", asset_id.as_str(), descriptor.id),
+                actor: "system".into(),
+            };
+            let action_id = input.action_id.clone();
+            match self
+                .run_action(
+                    asset_id,
+                    mutation,
+                    &action_id,
+                    Value::Object(input.parameters),
+                )
+                .and_then(|result| {
+                    let state = self.state(asset_id)?;
+                    Ok((result, state))
+                }) {
+                Ok((result, state)) => {
+                    if let Some(entry_id) = result.mutation.created_entry_id {
+                        reports.push(crate::FirstOpen {
+                            entry_id: Some(entry_id),
+                            label: Some(state.current_entry.label),
+                            ..report(Some(&action_id))
+                        });
+                    }
+                }
+                Err(error) => reports.push(failed(Some(&action_id), &error)),
+            }
+        }
+        reports
+    }
+
     /// Refuse a draft of `action_id` on `asset_id`, drafted through `mask` with `fields` set, that
     /// its preview and commit would refuse for what the photo is: a module action whose provider is
     /// unavailable or does not apply to the photo's source kind, or a field another module's control
@@ -3608,13 +3695,12 @@ mod tests {
                 json!({"assume-uncorrected":true}),
             )
             .unwrap();
-        let key = profiles["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-            .unwrap()["key"]
-            .clone();
+        let suggestion = &profiles["status"]["suggestion"];
+        assert!(
+            suggestion["match"] == "lens-model" && suggestion["eligible"] == true,
+            "{profiles}"
+        );
+        let key = suggestion["key"].clone();
         let semantic_table = [
             (
                 "select-lens-profile",

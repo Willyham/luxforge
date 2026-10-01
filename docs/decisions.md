@@ -284,6 +284,13 @@ Decided by the owner on 2026-09-30, when the plan was made prescriptive:
 - **Perspective is not presettable**, like crop and transforms; Lightroom's Perspective and Upright settings stay unsupported as a different perspective model.
 - **Strong minification is refused.** A combined lens and perspective map whose local minification exceeds 1.8× is refused with its reason, because the bilinear sampler would alias; the limit is documented.
 
+Decided by the owner on 2026-10-01, after the Lens correction panel listed every database lens, most of them incompatible ([design](design/lens-and-perspective.md#decisions)):
+
+- **No list of lenses, and never an incompatible one.** The section shows the applied profile with an option to change it, or the detected profile, or a warning that no lens was found with a search to find it. Lenses are listed only as search results, and only compatible ones.
+- **Auto-apply on first open, as an entry.** When an import creates an asset that has never had Lens correction and a compatible profile is detected, Luxforge commits it as an ordinary, undoable history entry with the module's normal label, right after the import's Original. Only where in-camera distortion correction is known not to be applied (a RAW or DNG whose optics ledger says distortion is known-unapplied). A reset turns it off for good, because the reset keeps a neutral layer; a re-import or reopen of an existing asset never applies it again. A JPEG whose in-camera correction is unknown is not auto-corrected: the section shows the detected lens with an Apply button, which applies assuming the camera did not correct it and says so. This lives in the core, so API and agent clients get the same behaviour as the desktop.
+- **Drone names are curated product names.** A small curated core table maps DJI camera codes to product names, keyed by normalized EXIF make and model, so a fixed-lens drone reads "DJI Air 2S (FC3411)". It is used for display and the issue report, never for matching, and lists only well-known codes.
+- **Report a missing lens.** When nothing is compatible, the section warns and offers a button that opens a prefilled GitHub issue asking for support for the lens.
+
 ## Tone curve
 
 - The curve editor removes a point on a double-click on that point, beside Delete for the selected point, and keeps its numeric point list closed behind a Points disclosure until the person opens it (owner, 2026-09-30). Both are changes to the shared curve editor, made with the Tone curve module; the other [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) remain open below.

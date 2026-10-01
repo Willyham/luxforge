@@ -649,10 +649,9 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             json!({"assume-uncorrected":true}),
         )?;
         lens_queries.push(milliseconds(started));
-        candidate = answer["rows"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|row| row["eligible"] == true))
-            .and_then(|row| row["key"].as_str())
+        candidate = Some(&answer["status"]["detected"])
+            .filter(|detected| detected["eligible"] == true)
+            .and_then(|detected| detected["key"].as_str())
             .map(str::to_owned);
     }
     let mut lens_selections = Vec::with_capacity(samples);
