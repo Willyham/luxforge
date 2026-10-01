@@ -2775,6 +2775,50 @@ mod tests {
         assert_eq!(scene.modules, modules);
     }
 
+    /// The Tone curve section, directly after Basic, is the headerless single-curve case: its one
+    /// group draws its curve straight under the band, with no label line of its own (the band
+    /// names it), the add-and-remove hint shown, the Points list closed and room for sixteen
+    /// points.
+    #[test]
+    fn the_tone_curve_section_draws_its_curve_without_a_label_line_with_the_hint_and_points_closed()
+    {
+        let scene = Scene::new(descriptors()).opened(Vec::new());
+        let workspace = scene.derive();
+        let order: Vec<&str> = workspace
+            .tools
+            .all()
+            .map(|section| section.module_id.as_str())
+            .collect();
+        let basic = order
+            .iter()
+            .position(|id| *id == "luxforge.basic")
+            .expect("Basic");
+        assert_eq!(
+            order.get(basic + 1),
+            Some(&"luxforge.curve"),
+            "the Tone curve follows Basic: {order:?}"
+        );
+        let drawn = section(&workspace, "luxforge.curve");
+        let [ControlModel::Curve(curve)] = drawn.controls.as_slice() else {
+            panic!(
+                "the Tone curve draws exactly its curve: {:?}",
+                drawn.controls
+            );
+        };
+        assert_eq!(curve.label, "Tone curve");
+        assert!(!curve.label_shown, "the band already names the curve");
+        assert_eq!(curve.hint.as_deref(), Some(tools::CURVE_HINT));
+        assert!(!curve.points_open, "the Points list starts closed");
+        assert_eq!(curve.points_max, 16);
+        assert!(curve.background, "the histogram is drawn behind the plot");
+        assert_eq!(curve.sample_query, "sample-curve");
+        assert_eq!(
+            drawn.reset.as_ref().map(|reset| reset.action.as_str()),
+            Some("reset-curve"),
+            "the band carries the module reset"
+        );
+    }
+
     /// A one-group tabbed module is still tabs: the rule is for stacked sections only.
     #[test]
     fn a_tabbed_module_with_one_group_keeps_it() {

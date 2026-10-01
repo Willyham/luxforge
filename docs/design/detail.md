@@ -208,15 +208,15 @@ One gesture commits one attributed action on release, key-up or Enter; Escape or
 
 ## Cross-plan rules
 
-Detail and Lens and perspective share these host contracts; the planned Tone curve extends the same surfaces:
+Detail, Tone curve, Lens and Perspective share these host contracts:
 
-- **Order.** `linked_modules` and the panel: Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop · Vignette · (Controls). Each plan inserts relative to the others that are registered; whichever lands second adjusts the array length, its doc comment and the order test in `registry/tests.rs`.
-- **Compile context.** Detail owns `CompileStage` and threads it through `ToolModule::compile`, `FieldPatch::compile` and `compile_bound`; whichever plan lands second adapts the other's `compile` signatures mechanically. Lens freezes a dimensionless scale in its payload and does not need it.
-- **Field patches.** `modules/field_patch.rs` is changed by all three plans (Tone curve's curve values, Detail's restoration shape, Lens's geometry shape and non-presettable actions); they land sequentially and extend the framework tests each time.
+- **Order.** `linked_modules` and the panel: Presets · (Pixel) · (RAW) · Basic · Tone curve · Detail · Presence · Colour mixer · Transforms · Lens correction · Perspective · Crop · Vignette · (Controls). The registry array, its doc comment and the order test in `registry/tests.rs` cover this order.
+- **Compile context.** `CompileStage` is threaded through `ToolModule::compile`, `FieldPatch::compile` and `compile_bound`; stage-independent modules ignore its scale. Lens freezes a dimensionless scale in its payload and does not need it.
+- **Field patches.** `modules/field_patch.rs` supports Tone curve's curve values, Detail's restoration shape, Lens's geometry shape and non-presettable actions, with shared framework tests.
 - **Queries.** `Planned::Query` is the one route for pixel-reading queries through a spatial prefix. `query.sample-curve` reads no pixels and stays an owner query. Lens warp point work (bounded mapping and four taps) stays on the owner; only spatial prefixes use the point worker. Point queries cost `O(layers)` unless a spatial layer precedes the sampled stage.
 - **Generated and registry files.** The descriptor snapshot `fixtures/modules/builtin-descriptors.json`, conformance `KNOWN`, smoke `SCENARIOS`, the `xtask/src/fixtures.rs` table and the reference crate's `lib.rs` and `tests/studies/main.rs` are regenerated or re-added after each rebase; the snapshot is never merged by hand.
 - **Render passes.** Detail uses `RenderPass::Spatial` (0.25 MP) until measured.
-- **Preview.** Detail's settled Fit and prefix cache and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; they land sequentially.
+- **Preview.** Detail's settled Fit and prefix cache and Lens's mapping identity on overlays both edit `app/preview.rs` and `ProxyApproximation`; combined tests cover both contracts.
 - **Measurements.** Timing runs only after all feature work, sequentially on a quiet host, never beside another plan's builds.
 - **Masked spatial cap.** `MAX_MASKED_SPATIAL_LAYERS = 4` is shared by masked Detail and masked Presence.
 

@@ -3412,6 +3412,18 @@ mod tests {
             ),
             ("set-perspective", json!({}), "Set Perspective"),
             ("reset-perspective", json!({}), "Reset Perspective"),
+            (
+                "set-curve",
+                json!({"luminance":[[0.0,0.0],[0.5,0.6],[1.0,1.0]]}),
+                "Tone curve 3 points",
+            ),
+            (
+                "set-curve",
+                json!({"luminance":[[0,0],[1,1]]}),
+                "Reset Tone curve",
+            ),
+            ("set-curve", json!({}), "Set Tone curve"),
+            ("reset-curve", json!({}), "Reset Tone curve"),
             ("set-mixer", json!({"red-hue":90.0}), "Red hue +90"),
             (
                 "set-mixer",
@@ -3652,5 +3664,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sample_curve_remains_scalar_with_restoration_and_geometry() {
+        let catalog = temp("curve-scalar-restoration.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let imported = service.import(&fixture()).unwrap();
+        let asset = imported.asset.id;
+        let original = imported.current_entry.id;
+        let parameters = json!({"luminance":[[0.0,0.1],[0.5,0.7],[1.0,1.0]]});
+        let expected = service
+            .run_query(&asset, &original, "sample-curve", parameters.clone())
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "detail"),
+                "set-detail",
+                json!({"luminance":30.0}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "basic"),
+                "set-basic",
+                json!({"exposure":0.5}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(2, "perspective"),
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+            )
+            .unwrap();
+        let current = service.state(&asset).unwrap();
+        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        crate::render::spatial::observe_tiles(tiles.clone());
+        service.begin_pixel_call(None, super::super::pixels::PixelMemo::default());
+        let actual = service
+            .run_query(
+                &asset,
+                &current.current_entry.id,
+                "sample-curve",
+                parameters,
+            )
+            .unwrap();
+        assert!(
+            service.take_pixel_read().is_none(),
+            "a scalar curve query never parks a pixel read"
+        );
+        service.end_pixel_call();
+        assert_eq!(actual, expected);
+        assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(service.state(&asset).unwrap(), current);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 }

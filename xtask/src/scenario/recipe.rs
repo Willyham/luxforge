@@ -14,6 +14,14 @@ pub fn full_presence() -> script::Step {
     )
 }
 
+/// The Tone curve study's moderate S-curve, a real pointwise colour operation.
+/// This is an image-processing precondition, separate from the developer curve control proof.
+pub const MODERATE_CURVE: [[f64; 2]; 4] = [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]];
+
+pub fn moderate_curve() -> script::Step {
+    script::Step::call("edit.set-curve", json!({"luminance":MODERATE_CURVE}))
+}
+
 /// Moderate Detail baseline shared by latency workloads.
 pub fn moderate_detail() -> script::Step {
     script::Step::call(

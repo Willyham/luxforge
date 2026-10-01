@@ -315,3 +315,115 @@ fn an_event_is_built_only_when_a_log_takes_it() {
     );
     finish(editor, catalog);
 }
+
+/// A `type` curve step types one coordinate into the open Points list and presses Enter in it,
+/// exactly as the list's field does: it commits that one coordinate and nothing else, a list that
+/// is closed has no field to type into, and a coordinate that would make the curve decrease is
+/// refused with the kind's own text and sends nothing.
+#[test]
+fn an_evidence_type_step_commits_one_coordinate() {
+    const ACTION: &str = "set-curve";
+    const PARAMETER: &str = "luminance";
+    let catalog = std::env::temp_dir().join(format!(
+        "luxforge-curve-type-{}-{}.sqlite",
+        std::process::id(),
+        tasks::REQUEST_NUMBER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let (mut editor, asset, _) = crate::app::testing::real_photo(&catalog);
+    let four = json!([[0.0, 0.0], [0.25, 0.25], [0.75, 0.75], [1.0, 1.0]]);
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    let refreshed = tasks::command_now(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        "edit.set-curve",
+        json!({"asset_id": asset, PARAMETER: four, "mutation": tasks::mutation(revision)}),
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    assert_eq!(editor.control_field_value(ACTION, PARAMETER), Some(four));
+    crate::app::testing::attach_script(
+        &mut editor,
+        r#"[
+            {"curve":{"action":"set-curve","parameter":"luminance","event":"type","index":1,"axis":1,"text":"0.2"}},
+            {"curve":{"action":"set-curve","parameter":"luminance","event":"points","open":true}},
+            {"curve":{"action":"set-curve","parameter":"luminance","event":"type","index":1,"axis":1,"text":"0.2"}},
+            {"curve":{"action":"set-curve","parameter":"luminance","event":"type","index":2,"axis":1,"text":"0.1"}}
+        ]"#,
+    );
+    let status = |editor: &Editor| {
+        crate::app::testing::evidence(editor)
+            .current
+            .clone()
+            .expect("a step record")["status"]
+            .clone()
+    };
+
+    // The list starts closed, so there is no field to type into.
+    let _ = editor.next_step();
+    assert_eq!(status(&editor), json!("failed"));
+    assert!(!editor.busy, "nothing was sent");
+
+    // Opening it is view state: it sends nothing and is captured at once.
+    let _ = editor.next_step();
+    assert_eq!(status(&editor), json!("sent"));
+    assert!(!editor.busy, "opening the list sends nothing");
+    assert!(crate::app::testing::evidence(&editor).capture_pending);
+
+    // One coordinate typed and entered: the request carries the four points with only point 1's
+    // output changed.
+    let _ = editor.next_step();
+    assert_eq!(status(&editor), json!("sent"));
+    assert!(editor.busy, "Enter commits at once");
+    let request = editor
+        .request_for(ACTION, Some(PARAMETER))
+        .expect("the control's request");
+    assert_eq!(request["method"], json!("edit.set-curve"));
+    let typed = json!([[0.0, 0.0], [0.25, 0.2], [0.75, 0.75], [1.0, 1.0]]);
+    assert_eq!(request["params"][PARAMETER], typed);
+    let refreshed = tasks::command_now(
+        &editor.owner,
+        editor.client,
+        asset.clone(),
+        "edit.set-curve",
+        request["params"].clone(),
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    let state = editor.document.state.as_ref().unwrap();
+    assert_eq!(
+        state.revision,
+        revision + 2,
+        "one entry for the typed coordinate"
+    );
+    assert_eq!(state.current_entry.label, "Tone curve 4 points");
+    assert_eq!(editor.control_field_value(ACTION, PARAMETER), Some(typed));
+    assert!(!editor.busy);
+
+    // An output below its left neighbour's would make the curve decrease: refused with the kind's
+    // text, and nothing is sent.
+    let _ = editor.next_step();
+    let record = crate::app::testing::evidence(&editor)
+        .current
+        .clone()
+        .expect("a step record");
+    assert_eq!(record["status"], json!("failed"));
+    assert!(
+        record["reason"].as_str().is_some_and(|reason| reason
+            .starts_with("the curve coordinate was not committed: ")
+            && reason.contains("luminance")),
+        "{record}"
+    );
+    assert!(!editor.busy, "nothing was sent");
+    assert_eq!(
+        editor.document.state.as_ref().unwrap().revision,
+        revision + 2
+    );
+    finish(editor, catalog);
+}
