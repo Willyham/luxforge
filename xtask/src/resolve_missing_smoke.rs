@@ -1,5 +1,5 @@
 //! The `resolve-missing` smoke scenario: Select's Missing originals over a catalog whose originals
-//! were reorganized, in the real editor at 1440 × 900 (TASK-023).
+//! were reorganized, in the real editor at 1440 × 900.
 //!
 //! The run first makes its photographs: real generated JPEGs (`generate-catalog --images`), copied
 //! onto a disk image labelled "Photos SSD" (on macOS, made with `hdiutil` and attached with

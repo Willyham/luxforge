@@ -1,4 +1,4 @@
-//! The `select` smoke scenario's catalog steps (TASK-022): browsing and organizing developed
+//! The `select` smoke scenario's catalog steps: browsing and organizing developed
 //! photographs in Select, checked against the core's own answers.
 //!
 //! Before the launch the run develops real photographs into its generated catalog, as an agent

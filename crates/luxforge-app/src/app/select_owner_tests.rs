@@ -715,6 +715,26 @@ fn settle(editor: &mut Editor) {
     panic!("Select did not settle");
 }
 
+/// Wait until the owner runs no background work — the preview lane's grid job for a view writes
+/// fingerprints that move the index's revision and leave the view stale — and the view is current,
+/// read again through the wake as the desktop reads it, so the next gesture names the view the
+/// owner holds whatever the host's load.
+fn steady(editor: &mut Editor) {
+    luxforge_testbase::wait_for("the owner's work to end and the view to be current", || {
+        let (board, _) = call(&editor.owner, editor.client, "activity.list", json!({})).unwrap();
+        if !board["active"].as_array().is_some_and(Vec::is_empty) {
+            return None;
+        }
+        let _ = editor.update(Message::Sync(SyncMessage::Changed));
+        settle(editor);
+        let current = !session_now(&editor.owner, editor.client)
+            .unwrap()
+            .browse
+            .stale;
+        current.then_some(())
+    });
+}
+
 /// A key pressed with no text field focused, through the editor's own key table.
 fn key(editor: &mut Editor, letter: &str, modifiers: iced::keyboard::Modifiers) {
     use iced::keyboard::{
@@ -807,6 +827,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         1000.0, 700.0,
     ))));
     settle(&mut editor);
+    steady(&mut editor);
     let name = |editor: &Editor, item: u32| {
         editor
             .select
@@ -1101,9 +1122,10 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
 #[test]
 fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
     let (mut editor, catalog) = selecting();
-    let agent = editor.owner.register();
-    let (volumes, _) = call(&editor.owner, agent, "volume.list", json!({})).unwrap();
-    let (cards, _) = call(&editor.owner, agent, "card.list", json!({})).unwrap();
+    // The rows are checked against the one `card.list` and `volume.list` the desktop read: other
+    // tests attach and detach disk images, so the host's mounts may differ at a second read.
+    let cards = serde_json::to_value(editor.select.state.cards.as_ref().unwrap()).unwrap();
+    let volumes = serde_json::to_value(editor.select.state.volumes.as_ref().unwrap()).unwrap();
     let sources = editor.workspace.select.sources.clone();
     assert_eq!(
         sources.cards.len(),

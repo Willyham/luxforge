@@ -171,56 +171,32 @@ fn pick(scene: &mut Scene, paths: &[PathBuf]) {
     read_rows(&mut scene.editor);
 }
 
-/// Answer the confirmation's `pick.plan` as its task would. A plan refused because the view went
-/// stale meanwhile — the grid's previews landing move the index's revision — reads the view again
-/// and asks again, as the desktop does. Answers the plan.
+/// Answer the confirmation's `pick.plan` as its task would. A view the grid's previews left stale
+/// meanwhile is read again by the owner itself, so the plan is never refused for it. Answers the
+/// plan.
 fn answer_plan(editor: &mut Editor) -> DevelopPlan {
-    loop {
-        assert!(editor.develop.state.planning, "{}", editor.status.text);
-        let serial = editor.develop.plan_serial;
-        let result = plan_now(&editor.owner, editor.client);
-        let plan = result.as_ref().ok().map(|answer| answer.0.clone());
-        send(
-            editor,
-            DevelopMessage::Planned {
-                serial,
-                result,
-                picked: false,
-            },
-        );
-        if let Some(plan) = plan {
-            return plan;
-        }
-        assert!(editor.select.state.loading, "{}", editor.status.text);
-        evaluate(editor);
-        read_rows(editor);
-    }
+    assert!(editor.develop.state.planning, "{}", editor.status.text);
+    let serial = editor.develop.plan_serial;
+    let result = plan_now(&editor.owner, editor.client);
+    let plan = result.as_ref().expect("a plan").0.clone();
+    send(editor, DevelopMessage::Planned { serial, result });
+    plan
 }
 
-/// Run the Develop the confirmation sent, as its tasks would, to its end, sent again once the
-/// view is read again when it was refused for a stale view. Answers the job's record.
+/// Run the Develop the confirmation sent, as its tasks would, to its end. Answers the job's record.
 fn run_develop(editor: &mut Editor) -> Value {
-    loop {
-        let params = editor.develop.last.request.clone().expect("a Develop sent");
-        let started = develop_now(&editor.owner, editor.client, params);
-        send(editor, DevelopMessage::Started(started.clone()));
-        let Ok(job) = started else {
-            assert!(editor.select.state.loading, "{}", editor.status.text);
-            assert!(editor.develop.state.developing.is_some());
-            evaluate(editor);
-            read_rows(editor);
-            continue;
-        };
-        let record = ended_now(&editor.owner, editor.client, &job);
-        send(
-            editor,
-            DevelopMessage::Ended {
-                job,
-                result: record.clone(),
-            },
-        );
-        return record.expect("the job's record");
-    }
+    let params = editor.develop.last.request.clone().expect("a Develop sent");
+    let job = develop_now(&editor.owner, editor.client, params).expect("a Develop started");
+    send(editor, DevelopMessage::Started(Ok(job.clone())));
+    let record = ended_now(&editor.owner, editor.client, &job);
+    send(
+        editor,
+        DevelopMessage::Ended {
+            job,
+            result: record.clone(),
+        },
+    );
+    record.expect("the job's record")
 }
 
 /// Run the open of the move in flight, as its task would.

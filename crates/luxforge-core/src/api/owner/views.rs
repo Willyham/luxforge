@@ -12,6 +12,9 @@
 //! whenever the session is read (`session.state` and every answer that carries the session). A
 //! stale view still answers rows for the items it holds; [`ViewsLane::selected`] refuses it, so a
 //! library change never acts on a selection its client has not seen since a later change.
+//! [`current_items`] instead evaluates a stale view again in place from its stored query, since
+//! what it answers — every item of the view, whose picks a Develop takes — names no positions the
+//! person saw.
 
 use super::{Call, ClientId, Owner};
 use crate::{
@@ -44,16 +47,6 @@ impl ViewsLane {
     /// and with `conflict` when its view is stale.
     pub(super) fn selected(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
         Ok(browse::selected_items(self.fresh(client)?))
-    }
-
-    /// Every item of `client`'s current view, in view order: what `pick.plan` and `pick.develop`
-    /// take by default, the picks among them. Refused as [`Self::selected`] is.
-    #[allow(
-        dead_code,
-        reason = "the seam lane C's pick.plan and pick.develop call"
-    )]
-    pub(super) fn items(&self, client: ClientId) -> Result<Vec<ViewItem>, Error> {
-        Ok(self.fresh(client)?.items.clone())
     }
 
     /// `client`'s view, refused with `validation` when it holds none and with `conflict` when a
@@ -171,6 +164,41 @@ pub(in crate::api) fn event_list(
     )?)
 }
 
+/// Every item of `client`'s current view, in view order: what `pick.plan` and `pick.develop` take
+/// by default, the picks among them. A view the catalog or the index has moved on from is evaluated
+/// again first, in place, from the query it was evaluated with — its revision moves on and its
+/// selection is carried over by item, as any evaluation does — so a Develop takes the picks as they
+/// are. Refused with `validation` when the client holds no view.
+pub(super) fn current_items(owner: &mut Owner, client: ClientId) -> Result<Vec<ViewItem>, Error> {
+    let stale = {
+        let Owner {
+            service,
+            sessions,
+            catalog,
+            ..
+        } = &mut *owner;
+        current_view(service, sessions, &mut catalog.views, client)?
+            .0
+            .stale
+    };
+    if stale {
+        let query = owner
+            .sessions
+            .get(&client)
+            .and_then(|session| session.browse.query.clone())
+            .ok_or_else(no_view)?;
+        evaluate_into(owner, client, query)?;
+    }
+    Ok(owner
+        .catalog
+        .views
+        .views
+        .get(&client)
+        .ok_or_else(no_view)?
+        .items
+        .clone())
+}
+
 /// `browse.view`: evaluate the query into the caller's one view, carrying its selection over by
 /// item, and answer the summary.
 pub(in crate::api) fn browse_view(
@@ -185,6 +213,16 @@ pub(in crate::api) fn browse_view(
         grouping: p.grouping.unwrap_or_default(),
         thresholds: p.thresholds.unwrap_or_default(),
     };
+    value(evaluate_into(owner, call.client, query)?)
+}
+
+/// Evaluate `query` into `client`'s one view, carrying its selection over by item, and answer the
+/// summary.
+fn evaluate_into(
+    owner: &mut Owner,
+    client: ClientId,
+    query: ViewQuery,
+) -> Result<ViewSummary, Error> {
     let evaluation = browse::evaluate(
         Context {
             service: &owner.service,
@@ -194,7 +232,6 @@ pub(in crate::api) fn browse_view(
         },
         &query,
     )?;
-    let client = call.client;
     let selection = owner
         .catalog
         .views
@@ -238,7 +275,7 @@ pub(in crate::api) fn browse_view(
             stale: false,
         },
     );
-    value(summary)
+    Ok(summary)
 }
 
 /// `browse.rows`.
@@ -652,6 +689,44 @@ mod tests {
         join.join().unwrap();
     }
 
+    /// A Develop's default targets are the view as it is: a view an index revision left stale is
+    /// evaluated again in place from its query for `pick.plan` and `pick.develop` — its revision
+    /// moves on and it is fresh — rather than refused, while the selection seam still refuses it.
+    #[test]
+    fn browse_a_stale_view_is_read_again_for_a_develop() {
+        let fx = testing::fixture("owner-develop-stale");
+        let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
+        let client = owner.register();
+        let card = json!({"kind": "card", "volume_id": testing::volume("card")});
+        let summary = ok(&owner, client, "browse.view", json!({ "source": card }));
+        let revision = summary["revision"].as_u64().unwrap();
+        testing::set_index_revision(&index(&fx), 5);
+        assert_eq!(
+            ok(&owner, client, "session.state", json!({}))["browse"]["stale"],
+            true
+        );
+        ok(&owner, client, "pick.plan", json!({}));
+        let session = ok(&owner, client, "session.state", json!({}));
+        assert_eq!(session["browse"]["stale"], false);
+        assert_eq!(session["browse"]["revision"], revision + 1);
+        assert_eq!(session["browse"]["query"]["source"], card);
+        // Stale again: the Develop reads it again too, and starts rather than refusing.
+        testing::set_index_revision(&index(&fx), 6);
+        let started = ok(
+            &owner,
+            client,
+            "pick.develop",
+            json!({"into": [], "mutation": {"request_id": "develop", "actor": "test"}}),
+        );
+        assert!(started["job_id"].is_string(), "{started}");
+        assert_eq!(
+            ok(&owner, client, "session.state", json!({}))["browse"]["revision"],
+            revision + 2
+        );
+        owner.stop();
+        join.join().unwrap();
+    }
+
     /// A change the owner records marks every view it left behind stale, so the selection seam
     /// refuses it before the client reads its session again.
     #[test]
@@ -683,18 +758,14 @@ mod tests {
         join.join().unwrap();
     }
 
-    /// The seams lane C's selection targets and default develop targets call: the selected items
-    /// and every item, in view order, each refused without a view and when the view is stale.
+    /// The seam lane C's selection targets call: the selected items, in view order, refused
+    /// without a view and when the view is stale.
     #[test]
     fn browse_the_selected_items_are_refused_when_stale() {
         let client = ClientId::testing(7);
         let mut lane = ViewsLane::default();
         assert_eq!(
             lane.selected(client).unwrap_err().kind,
-            crate::ErrorKind::Validation
-        );
-        assert_eq!(
-            lane.items(client).unwrap_err().kind,
             crate::ErrorKind::Validation
         );
         let item = |id| ViewItem::File(crate::catalog_types::FileId(id));
@@ -717,17 +788,9 @@ mod tests {
             },
         );
         assert_eq!(lane.selected(client).unwrap(), [item(1), item(4), item(5)]);
-        assert_eq!(
-            lane.items(client).unwrap(),
-            (1..=5).map(item).collect::<Vec<_>>()
-        );
         lane.views.get_mut(&client).unwrap().stale = true;
         assert_eq!(
             lane.selected(client).unwrap_err().kind,
-            crate::ErrorKind::Conflict
-        );
-        assert_eq!(
-            lane.items(client).unwrap_err().kind,
             crate::ErrorKind::Conflict
         );
         lane.disconnect(client);
