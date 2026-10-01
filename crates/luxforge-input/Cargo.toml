@@ -1,0 +1,21 @@
+[package]
+name = "luxforge-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# AppKit's local event monitor fills the native pinch-event gap in Iced 0.14. These packages
+# already occur in the lockfile; only the event, window and view bindings are requested.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSEvent", "NSWindow", "NSView", "NSResponder", "block2", "objc2-core-foundation"] }
+block2 = "=0.6.2"
+raw-window-handle = "=0.6.2"
+
+# Only this native input boundary may dereference AppKit's borrowed handle and callback argument. Its public API
+# passes copied numbers, never native pointers, and owns no editing or catalog state.
+[lints.rust]
+unsafe_code = "allow"
+unsafe_op_in_unsafe_fn = "deny"

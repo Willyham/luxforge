@@ -16,6 +16,7 @@ luxforge-core = { path = "../luxforge-core" }
 luxforge-evidence = { path = "../luxforge-evidence" }
 luxforge-net = { path = "../luxforge-net" }
 luxforge-ui = { path = "../luxforge-ui" }
+luxforge-input = { path = "../luxforge-input" }
 iced.workspace = true
 image.workspace = true
 rfd.workspace = true

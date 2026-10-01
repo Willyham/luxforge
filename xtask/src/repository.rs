@@ -247,6 +247,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-ui/src",
     "crates/luxforge-raw/src",
     "crates/luxforge-process/src",
+    "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
 ];
@@ -260,6 +261,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-ui",
     "crates/luxforge-raw",
     "crates/luxforge-process",
+    "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
 ];

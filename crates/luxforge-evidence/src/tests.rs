@@ -3,6 +3,33 @@
 use super::*;
 
 #[test]
+fn pinch_steps_round_trip_and_reject_invalid_canvas_positions() {
+    let step = Step::Pinch(PinchStep {
+        delta: 1.2_f64.ln(),
+        x: 0.37,
+        y: 0.42,
+    });
+    let written = write(std::slice::from_ref(&step));
+    assert_eq!(parse(&written.to_string()).unwrap(), vec![step]);
+    for input in [
+        r#"[{"pinch":{"delta":0.1,"x":-0.1,"y":0.5}}]"#,
+        r#"[{"pinch":{"delta":0.1,"x":0.5,"y":1.1}}]"#,
+        r#"[{"pinch":{"delta":0.1,"x":0.5,"y":0.5,"extra":true}}]"#,
+    ] {
+        assert!(parse(input).is_err());
+    }
+    assert!(
+        Step::Pinch(PinchStep {
+            delta: f64::INFINITY,
+            x: 0.5,
+            y: 0.5
+        })
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
 fn mask_reapply_round_trips_as_the_notice_button_and_requires_true() {
     let step: Step = MaskStep::Reapply.into();
     let value = write(std::slice::from_ref(&step));

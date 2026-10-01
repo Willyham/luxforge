@@ -116,6 +116,8 @@ pub enum Step {
     /// The decision an open slider draft's Changed elsewhere notice offers.
     SliderDraft(SliderDraftStep),
     View(ViewStep),
+    /// A trackpad increment at a normalized canvas position, through the native input's message.
+    Pinch(PinchStep),
     /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
     /// ticks and frame-capture subscriptions suspended for that interval.
     ViewIdle(ViewIdleStep),
@@ -281,6 +283,7 @@ impl Step {
                 optional_text(step.group.as_deref(), "reset group")
             }
             Self::View(step) => step.validate(),
+            Self::Pinch(step) => step.validate(),
             Self::ViewIdle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
@@ -1046,6 +1049,30 @@ pub enum SliderDraftStep {
 pub enum ViewStep {
     Fit,
     Percent(f32),
+}
+
+/// A synthetic native pinch input. x/y locate the pointer within the canvas, not the image.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinchStep {
+    pub delta: f64,
+    pub x: f64,
+    pub y: f64,
+}
+
+impl PinchStep {
+    fn validate(&self) -> Result<(), String> {
+        if self.delta.is_finite()
+            && self.x.is_finite()
+            && self.y.is_finite()
+            && (0.0..=1.0).contains(&self.x)
+            && (0.0..=1.0).contains(&self.y)
+        {
+            Ok(())
+        } else {
+            Err("pinch needs a finite delta and canvas x/y within 0..=1".into())
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
