@@ -13,7 +13,7 @@ use crate::{
     Config,
     app::{
         Boot,
-        loupe_frames::Decoded,
+        loupe_frames::{Decoded, Slot},
         message::{preview::PreviewMessage, sync::SyncMessage},
         select::{job_now, refresh_now},
         select_owner_tests::{answer_reads, evaluate, read_rows},
@@ -269,7 +269,7 @@ fn decode(editor: &mut Editor, assets: &[AssetId]) {
             );
         }
         for decode in editor.develop.frames.planned().to_vec() {
-            if !assets.iter().any(|asset| item(asset) == decode.item) {
+            if !assets.iter().any(|asset| item(asset) == decode.slot.item) {
                 continue;
             }
             let result = decode_preview(&decode.path, decode.side, &Cancel::never())
@@ -280,7 +280,7 @@ fn decode(editor: &mut Editor, assets: &[AssetId]) {
             editor
                 .develop
                 .frames
-                .photo(&item(asset))
+                .photo(&Slot::frame(item(asset)))
                 .is_some_and(|held| !held.picture.stand_in)
         })
     });

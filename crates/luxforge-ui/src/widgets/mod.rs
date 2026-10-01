@@ -149,8 +149,9 @@ pub use filter_bar::{
 pub use job_row::{WorkRowModel, work_row};
 pub use long_work::{ProgressSheetModel, StatusJobModel, WorkProgress, progress_sheet, status_job};
 pub use loupe::{
-    FocusInsetModel, FrameStripModel, InsetSource, KeyHint, LoupeInfoModel, MomentFrame, focus_box,
-    focus_inset, frame_strip, key_hints, loupe_info_bar, region_box, visible_window,
+    FocusInsetModel, FrameStripModel, InsetRegion, InsetSource, KeyHint, LoupeInfoModel,
+    MomentFrame, focus_box, focus_inset, frame_strip, key_hints, loupe_info_bar, region_box,
+    visible_window,
 };
 pub use segmented::{filter_segment, filter_segment_track, keyed_segment};
 pub use select_strip::{STRIP_SLIDER_WIDTH, SelectStripModel, select_strip};

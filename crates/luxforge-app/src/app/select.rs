@@ -575,6 +575,8 @@ impl Editor {
                     .select
                     .layout
                     .clamp_scroll(offset, self.select.viewport.height);
+                // The update whose redraw draws the grid at this offset, for timing evidence.
+                self.event("select_scrolled", || json!({"scroll": self.select.scroll}));
             }
             SelectMessage::Viewport(size) => {
                 let relayout = (self.select.layout.width() - size.width).abs() >= 0.5;

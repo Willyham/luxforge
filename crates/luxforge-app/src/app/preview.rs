@@ -1055,6 +1055,12 @@ impl Editor {
         Task::none()
     }
 
+    /// The quiet policy is waiting to settle, so its 25 ms timer exists: from a view motion or a
+    /// drafted frame until the settle is asked for, and never while nothing is presented.
+    pub(crate) fn quiet_timer_armed(&self) -> bool {
+        self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested
+    }
+
     pub(super) fn note_view_motion(&mut self) {
         self.view_plan.dirty = true;
         self.view_plan.quiet_since = Some(Instant::now());
@@ -1112,6 +1118,12 @@ impl Editor {
             return Task::none();
         }
         let Some(stage) = self.presentation.dimensions else {
+            // Nothing has been presented, so no view is unsettled and the quiet timer has nothing
+            // to settle: it stays disarmed, or a window with no photograph would tick every 25 ms
+            // for as long as it is open. The view stays dirty for the first frame to reconcile.
+            if self.core_gesture().is_none() {
+                self.view_plan.quiet_since = None;
+            }
             return Task::none();
         };
         let Some(wanted) = self.desired_view_for(stage) else {
@@ -2371,7 +2383,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
     if editor.preview_wake_needed() {
         subscriptions.push(waker::subscription());
     }
-    if editor.view_plan.quiet_since.is_some() && !editor.view_plan.quiet_settle_requested {
+    if editor.quiet_timer_armed() {
         subscriptions.push(
             iced::time::every(Duration::from_millis(25))
                 .map(|_| Message::Preview(PreviewMessage::QuietTick)),
