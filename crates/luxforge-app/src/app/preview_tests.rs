@@ -66,8 +66,7 @@ fn with_nothing_presented_a_view_change_arms_no_quiet_timer() {
             "{message:?} armed the quiet timer with nothing presented"
         );
         assert_eq!(
-            iced::advanced::subscription::into_recipes(super::preview::subscription(&editor))
-                .len(),
+            iced::advanced::subscription::into_recipes(super::preview::subscription(&editor)).len(),
             usize::from(editor.preview_wake_needed()),
             "{message:?} left the preview seam a timer"
         );
