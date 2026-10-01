@@ -1063,7 +1063,9 @@ impl Editor {
         }
     }
 
-    /// The frames from the key until the preview was drawn, once the surface has drawn it.
+    /// The frames from the key until the preview was drawn, once the surface has drawn it: the
+    /// surface records which of its frames first drew each photograph it was handed, so the count
+    /// does not depend on when it is read, as long as the preview is still the photograph drawn.
     fn follow_timing(&mut self) {
         let timing = &mut self.develop.timing;
         let Some(version) = timing.preview_version else {
@@ -1073,8 +1075,11 @@ impl Editor {
             return;
         }
         let gpu = luxforge_ui::surface_diagnostics();
-        if gpu.drawn_full_version.is_some_and(|drawn| drawn >= version) {
-            timing.presented_after = Some(gpu.drawn_frames.saturating_sub(timing.key_frames));
+        if gpu.drawn_full_version == Some(version) {
+            timing.presented_after = Some(
+                gpu.drawn_full_version_frame
+                    .saturating_sub(timing.key_frames),
+            );
         }
     }
 

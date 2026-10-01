@@ -114,8 +114,8 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
 /// format of the source it decoded and no colour space, so none is shown.
 fn identity(inputs: &Inputs<'_>) -> Option<String> {
     // A cached preview drawn while a photograph of the development set prepares is the preview's
-    // size, not the photograph's: nothing is said until its state is read.
-    if inputs.document.state.is_none() && inputs.develop.preview.is_some() {
+    // size, not the photograph's: nothing is said until its render is on screen.
+    if inputs.develop.preview.is_some() {
         return None;
     }
     let (width, height) = inputs.dimensions?;
