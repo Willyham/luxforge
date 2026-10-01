@@ -309,6 +309,9 @@ pub(crate) struct Inputs<'a> {
     /// How long the frame on the photo surface took to render, measured on the preview worker for
     /// that frame's own phase. `None` before any frame is on screen.
     pub(crate) render: Option<status::RenderTime>,
+    /// While the photograph on screen is the GPU stage's output, the interface thread's time to
+    /// prepare that frame, in microseconds; `None` while it is a CPU frame.
+    pub(crate) gpu_frame_us: Option<u64>,
     /// A long render's progress, while it earns the bar over the photograph
     /// ([`canvas::render_bar`]).
     pub(crate) render_bar: Option<canvas::RenderBar>,
@@ -687,6 +690,7 @@ mod tests {
                     proxy: false,
                     approximate: false,
                 }),
+                gpu_frame_us: None,
                 render_error: self.render_error.as_ref(),
                 analysis: self.analysis.as_ref(),
                 analysis_updating: self.analysis_updating,
@@ -2469,6 +2473,22 @@ mod tests {
         });
         workspace.derive(&inputs);
         assert_eq!(workspace.status.render, "Approximate render \u{b7} 9 ms");
+
+        // The GPU stage's output on screen names itself and its own time, whatever CPU frame
+        // stands behind it and whatever render is still running.
+        inputs.gpu_frame_us = Some(1600);
+        inputs.rendering = true;
+        inputs.render_bar = Some(canvas::RenderBar {
+            generation: 4,
+            fraction: 0.427,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "GPU preview \u{b7} 2 ms");
+        assert_eq!(
+            workspace.canvas.render_bar,
+            Some(0.427),
+            "the bar over the photograph is the CPU render's own"
+        );
 
         // Nobody else connected is a count of none, with the dot unlit.
         let mut inputs = scene.inputs();

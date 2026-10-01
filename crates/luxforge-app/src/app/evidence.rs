@@ -615,11 +615,13 @@ impl Editor {
                     luxforge_core::Zoom::Percent { .. }
                 );
                 // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
-                // frame to capture is that draw, over the boundary held from this frame.
+                // frame to capture is that draw, over the boundary held from this frame; with the
+                // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
                 let forced = self
                     .evidence
                     .as_ref()
-                    .is_some_and(|evidence| evidence.gpu_identity.is_some());
+                    .is_some_and(|evidence| evidence.gpu_identity.is_some())
+                    && self.gpu_preview_allowed().is_ok();
                 if forced && !percent && self.presentation.compare_after.is_none() {
                     ExpectedPhotoDraw::Gpu {
                         boundary: photo.version(),
@@ -3548,6 +3550,7 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),

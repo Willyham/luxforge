@@ -120,6 +120,15 @@ impl Editor {
                     json!({"thirds": !self.session.workspace.thirds}),
                 );
             }
+            ViewMessage::ToggleGpuPreview => {
+                // The same `workspace.set` an API client sends; the desktop holds no copy of the
+                // preference outside the session it adopts back.
+                return workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    super::gpu_settle::toggle_params(&self.session.workspace),
+                );
+            }
             ViewMessage::SetMode(mode) => {
                 // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
                 // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
