@@ -710,8 +710,13 @@ mod tests {
         assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
         assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
         assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.00"));
+        // A curve field seeds its declared default points: the Tone curve's identity.
+        assert_eq!(
+            fields.get("set-curve", "luminance"),
+            Some("[[0.0,0.0],[1.0,1.0]]")
+        );
         // Only declared fields exist: an action driven by presets alone has none, and every
-        // declared number, integer and colour parameter of a built-in has exactly one.
+        // declared number, integer, colour and curve parameter of a built-in has exactly one.
         assert_eq!(
             fields
                 .summary()
@@ -763,6 +768,7 @@ mod tests {
                 "set-controls.red",
                 "set-controls.rgb",
                 "set-controls.rgb-fields",
+                "set-curve.luminance",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",

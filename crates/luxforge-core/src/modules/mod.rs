@@ -6,6 +6,7 @@ mod capabilities_proof;
 mod capability;
 mod controls;
 mod crop;
+mod curve;
 mod descriptor;
 mod field_patch;
 pub(crate) mod lens;
@@ -40,6 +41,8 @@ pub use crop::geometry::{
     largest_with_ratio_inside,
 };
 pub use crop::{CROP_EFFECT, CropAspect};
+pub use curve::CURVE_EFFECT;
+pub(crate) use curve::CurveModule;
 pub use descriptor::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
     ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,

@@ -28,10 +28,10 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, Tone curve and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG; `--lens-only` accepts JPEG or RAW and measures profile queries, commits, matched exact renders, point picks, serial export and cancellation | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]`; for Lens, `--lens-only --source JPEG\|RAW` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--lens] [--perspective] [--mask] [--idle]` |
-| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. `--control curve` drags the developer proof curve; with `--action set-curve --parameter luminance` (any curve parameter of a non-developer field-patch action) it seeds the Tone curve with `[[0, 0], [0.5, 0.5], [1, 1]]` and drags that mid-tone point instead, in drag or commit mode. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--lens] [--perspective] [--mask] [--idle]` |
+| Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, the `mask-range` scenario's own colour-chart patches and the `curve` scenario's grey ramp and colour patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Adding a camera: download selected CC0 samples from the raw.pixls.us index, verify their SHA-256 and read each with the RAW adapter, or see why it refuses them | `cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR [--max-source-mib N]` |
 | Adding a camera: a DNG or TIFF's IFDs, geometry and calibration tags and opcode-list layouts, read-only | `cargo xtask inspect-dng --source DNG [--json NEW_FILE]` |
 | Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
@@ -50,6 +50,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered restart: a Basic edit committed in one launch and reopened in the next | `cargo xtask smoke --scenario basic-restart --output NEW_DIR` |
 | Rendered Presence: section expand, a Clarity drag and cancel, Texture and Clarity each committed at Fit and 100%, Dehaze at both signs, all three fields at once through the raw API and the module reset, over a generated gradient/edge/texture/flat fixture | `cargo xtask smoke --scenario presence --output NEW_DIR` |
 | Rendered Colour mixer: section expand, a Red hue drag and commit at Fit and 100%, a Saturation group reset, a stronger hue shift and the Saturation and Luminance tabs, over a generated hue wheel | `cargo xtask smoke --scenario mixer --output NEW_DIR` |
+| Rendered Tone curve over a generated grey ramp and the orientation fixture's four colours: section expand, three on-diagonal points through the API (identity bytes), a point drag held and released, a point added and one removed, the Points list opened, a fourth point added and an S-curve typed one coordinate per Enter, the module reset from the band, and a radial mask with the curve dragged through it (scope chip); against the neutral frame, no new decrease along the ramp rows, channel spread within one code, each unclipped patch's Oklab hue kept within 1°, the S-curve lowering the ramp's lower half and raising its upper half, and an identity curve drawing the neutral pixels exactly | `cargo xtask smoke --scenario curve --output NEW_DIR` |
 | Rendered Vignette: section expand, an Amount drag and commit at Fit and 100%, roundness and feather extremes, a post-crop recentre and the module reset | `cargo xtask smoke --scenario vignette --output NEW_DIR` |
 | Rendered percentage zooms: 50%, 100%, 120%, 800% and 1600%, pans to the centre and the far corner at 1600%, and idle checks at Fit, 100% and 1600%, over the generated 24 MP and 60 MP JPEGs, one launch each | `cargo xtask smoke --scenario zoom --output NEW_DIR` |
 | Rendered 100% viewport with two masks and a rotated crop: draft, pan, refinement, release, settled reuse, history and overlay identity; GPU draw counters must record no blank or stale photo | `cargo xtask smoke --scenario viewport-region --output NEW_DIR` |
@@ -289,7 +290,7 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and all 37 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `lens-perspective`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and all 38 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `curve`, `lens-perspective`, the three viewport scenarios and the six `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
 | `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
@@ -313,7 +314,7 @@ process of the release `xtask` executable with its console output in `<out>/<com
 and its own evidence in `<out>/<component>/run/`. `--binary PATH` is forwarded to every component
 that takes one; without it the executable just built is passed explicitly, so every component
 measures the same file. The rendered and timing tiers run `generate-fixtures` first when any
-generated fixture — 24 MP, 60 MP, hue-wheel, presence or range — is missing. A component that has
+generated fixture — 24 MP, 60 MP, hue-wheel, presence, range or tone-ramp — is missing. A component that has
 stopped making progress is killed after twenty minutes and recorded as `timed_out`. `quick` builds
 nothing up front: its one component, `check --quick`, builds what it tests, runs as a child of the
 `xtask` executable running `verify`, and its summary names no editor binary.
@@ -475,20 +476,21 @@ own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 ### What editor-acceptance proves
 
 `editor-acceptance` keeps only what `cargo test` cannot prove at the same layer: a chapter or step
-exists only if no `cargo test` proves it at that layer. Four things remain, each driven through the
+exists only if no `cargo test` proves it at that layer. Five things remain, each driven through the
 JSON method table with `OwnerHandle::call` as an independent client, against its own catalog inside
-the run's output directory: the [field-patch conformance suite](#the-field-patch-conformance-chapter)
-in release, [Basic's numerics on the photo fixture against the independent
-reference](#the-basic-and-histogram-acceptance-chapter), the [placement of Presence, the mixer and
-the vignette](#the-field-patch-conformance-chapter), and a [masked catalog reopened through a fresh
-owner](#the-masking-acceptance-chapter). Everything the core's own tests prove stays there: history
-order, the read-only preview, undo, redo and restore, the orientation layer, the crop and reopen are
-`editor::history`, `editor::plan`, `modules::transform` and `modules::crop`'s tests, the module and
-method discovery is the [descriptor snapshot](#the-built-in-descriptor-snapshot) and the method
-table's, and the mask commands, their refusals, a disabled maskable module and a missing or changed
-original are the `mask` test binary's, the command family's own tests and the conformance suite.
-A new step here needs a property that only a release build, an independent oracle, a second process
-lifetime or a fresh owner can show.
+the run's output directory: the [field-patch conformance
+suite](#the-field-patch-conformance-chapter) in release, [Basic's numerics on the photo fixture
+against the independent reference](#the-basic-and-histogram-acceptance-chapter), the [placement of
+Presence, the mixer and the vignette](#the-field-patch-conformance-chapter), the [Tone curve's
+placement, masked order and sample query](#the-field-patch-conformance-chapter) (`tone_curve`), and
+a [masked catalog reopened through a fresh owner](#the-masking-acceptance-chapter). Everything the
+core's own tests prove stays there: history order, the read-only preview, undo, redo and restore,
+the orientation layer, the crop and reopen are `editor::history`, `editor::plan`,
+`modules::transform` and `modules::crop`'s tests, the module and method discovery is the [descriptor
+snapshot](#the-built-in-descriptor-snapshot) and the method table's, and the mask commands, their
+refusals, a disabled maskable module and a missing or changed original are the `mask` test binary's,
+the command family's own tests and the conformance suite. A new step here needs a property that only
+a release build, an independent oracle, a second process lifetime or a fresh owner can show.
 
 ### The Basic and histogram acceptance chapter
 
@@ -522,15 +524,15 @@ and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
 
-Basic, Presence, the colour mixer, the vignette and the developer controls proof are one
-declarative field-patch module each, and the host behaviour they share is proved once, for every
-module the built-in registry and the controls proof hold in that shape, by one suite in
-`crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from their
-descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
+Basic, the Tone curve (`luxforge.curve`), Presence, the colour mixer, the vignette and the developer
+controls proof are one declarative field-patch module each, and the host behaviour they share is
+proved once, for every module the built-in registry and the controls proof hold in that shape, by
+one suite in `crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from
+their descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
 number, integer, boolean, enum, colour or curve), and the parameterless action the module reset
 names — and derives every payload it sends from the declared field table, so a new field-patch
 module is checked the day it is registered. It refuses to run when it no longer recognises one of
-the four built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
+the five built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
 proof's layer changes no pixel, so it is held to the in-process checks below and to compiling to
 nothing and sharing the source allocation whatever it holds, not to the pixel consequences and the
 journey through the method table. Every `patch: true` action of every registered module, `set-raw`
@@ -539,8 +541,8 @@ default alone is exactly that field, and a value its declaration refuses is refu
 same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev
 profile, a [slow test](#how-check-runs-the-tests) the quick tier leaves out, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
-Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
-a failure names the module, the step and the property that broke.
+Each module runs against its own new catalog under the run's `field-patch-conformance` directory,
+and a failure names the module, the step and the property that broke.
 
 For each module the suite checks, in process: every neutral spelling of the payload (`{}`, every
 field at its default, each field alone at its default and in another spelling of it, zero number
@@ -590,7 +592,17 @@ mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette cha
 (`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in
 `result.json`), driven the same way: Presence after the colour run and before the geometry tail in
 every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
-last and recentred on the stage each crop update produces.
+last and recentred on the stage each crop update produces. The Tone curve's own behaviour is
+`editor-acceptance`'s Tone curve chapter (`xtask/src/curve_acceptance.rs`, under `tone_curve` in
+`result.json`, with its time as `tone_curve_chapter` under `timings_ms`), driven the same way: the
+curve after Basic and before the mixer in every touch order with an identical rendered raster;
+masked curve layers on two masks after the global one in mask-list order and before the mixer, and
+re-sorted with the masks by `mask.reorder {mask, index}`; `query.sample-curve` for the displayed
+entry's stored points equal to `luxforge_reference::curve::curve` at all 257 samples to `1e-12`;
+and a generated 8-bit grey ramp of every code (whole flat JPEG blocks, so each decodes to exactly
+its code) through an S-curve layer within one code of the quantized reference at every code, with
+the number of off-by-one codes recorded. The frozen fixture through render on both paths is the
+core's `modules` test (`curve`).
 
 ### The built-in descriptor snapshot
 
@@ -628,17 +640,25 @@ pixels are the kind-conformance suite's.
 The first owner builds the catalog: all five component kinds created from JSON (a gradient, a
 radial, the two range selections and a brush through `mask.add-stroke`), one mask composing three
 kinds in the three modes, a second stroke on a brush, an amount, an inversion, a geometry patch, a
-rename, a masked Basic layer, a masked Presence layer and a masked mixer layer, and a duplicate that
-copies the bound layer. It then stops. A fresh owner over the same file returns the same revision
+rename, a masked Basic layer, a masked Presence layer, a masked mixer layer and a masked Tone curve
+layer beside the mixer on the radial mask, and two duplicates that copy the bound layers. On the way
+it proves the masked curve's placement: `mask.list` lists it once, before the mixer; it changes the
+pixels the inverted radial covers and not the core it excludes; the radial mask's duplicate holds
+the same layers in the same order, its curve layer placed after its source's; and `mask.reorder`
+moving the copy first re-sorts the masked curve layers in `asset.state` into the new mask order.
+`render.sample` equals the rendered byte at every probe after the curve and after the reorder. It
+then stops. A fresh owner over the same file returns the same revision
 and current entry, the masks, components, payloads and bound layers by identity, and the same
 `render.sample` values at six positions across the frame. Everything lands in `result.json` under
-`masks`, and any mismatch fails the command.
+`masks`, the masked curve's figures under `masks.masked_curve`, and any mismatch fails the command.
 
-One contract shapes how it reads pixels: it uses `render.sample` and never renders a recipe in
-process. A brush component's payload holds its strokes by content address and the resolved strokes are
-never serialized, so a recipe fetched over JSON has addresses and no points and rendering it outside
-the catalog that holds the store is refused by name. That is the retention contract working. The owner
-has the store, so the owner is asked.
+One contract shapes how it reads pixels: it reads them with `render.sample` and never renders a recipe
+fetched over JSON. A brush component's payload holds its strokes by content address and the resolved
+strokes are never serialized, so such a recipe has addresses and no points and rendering it outside
+the catalog that holds the store is refused by name. That is the retention contract working. The
+oracle `render.sample` is compared with is therefore the owner's own bound stack for the current
+entry — its preview evaluation, with every stroke's points bound in from the store — rendered in
+process on the fixture's decoded source with the owner's registry.
 
 ### Authentic RAW evidence
 
@@ -756,6 +776,14 @@ Each step is an object with exactly one key.
 - `slider_draft` answers an open gesture's Changed elsewhere notice: `"discard"` or `"reapply"`.
 - `field` types into one generated field: `{"action": "set-basic", "parameter": "exposure", "text":
   "1.5"}`, with `"submit": true` for Enter, which commits that one field without a draft.
+- `curve` drives one curve editor gesture, named by `event` beside the control's `action` and
+  `parameter`: `move` drags point `index` through `points` (one pointer move each) and drafts, with
+  `finish` `open`, `release` or `cancel`; `add` (`point`) and `remove` (`index`) commit at once, as
+  the editor's own add and remove do; `channel` (`index`) selects a channel; `points` (`open`)
+  opens or closes the Points list, which sends nothing and captures the next frame; `type`
+  (`index`, `axis` 0 for the input or 1 for the output, `text`) types into that point's field and
+  presses Enter, which commits that one coordinate. A `type` into a closed list, a refused add or
+  remove, and a typed value the kind refuses fail the step with the status bar's text.
 - `reset` runs a declared reset: `{"module": "luxforge.basic"}` is the module's own header reset and
   `{"module": "luxforge.basic", "group": "Tone"}` is that control group's, found by its label.
 - `pick` clicks the photograph at a pixel of the raster on screen: `{"x": 120, "y": 80}`. What the
@@ -823,7 +851,7 @@ frame, so a refused step is visible in the evidence instead of missing from it.
 
 Each scenario's plan and checks are documented in its own module (`xtask/src/*_smoke.rs`, with the table of rows in `xtask/src/smoke.rs`), and `cargo xtask smoke --list` names every scenario with what it proves, the launches and frames it makes, what it opens and its window. Most write the values they measured and their tolerances to a `*-checks.json` file in the run's output. A scenario's script is the steps above, so what a step does is specified here and what a scenario asks of it is in the scenario. The gallery board and the controls scenario's generated panel are different widths; both need visual review alongside their automated checks.
 
-`editor-latency --control curve` measures the controls proof's middle-point drag with the curve editor visible. The proof's colour stage is identity; this measures the control, query, draft, preview and upload path, not a future Tone Curve image algorithm. Slider remains the default workload. Both use the same provisional 100 ms p95 interaction threshold and retain all samples.
+`editor-latency --control curve` drags point 1 of a curve with the curve editor visible, in drag or commit mode only. Without `--action` it is the developer controls proof's middle point, in a developer launch with the proof section expanded and the tools panel scrolled to its end; the proof's colour stage is identity, so this measures the control, query, draft, preview and upload path and no image algorithm. `--control curve --action set-curve --parameter luminance` measures the Tone curve instead: the action must be a registered, non-developer field-patch action and the parameter one of its curve parameters, so a number parameter is refused with `--control curve` and a curve parameter without it, each by name. The ordinary launch commits `[[0, 0], [0.5, 0.5], [1, 1]]` through the action first (naming `Mask 1` with `--mask`), so point 1 is a mid-tone point rather than the white point, collapses every section the panel lists above the module, expands the module's and scrolls the panel to its top, and checks that frame for the seeded, sampled curve before timing; every drafted frame then runs the curve's colour unit. Slider remains the default workload. Every workload reports against the same provisional input-to-presented-frame target (16 ms p95, acceptable below 32 ms) and retains all samples.
 
 `editor-performance --lens-only` accepts JPEG or RAW. It prepares one source before measurement,
 queries the first eligible profile, freezes its terms and compares exact full renders with Lens

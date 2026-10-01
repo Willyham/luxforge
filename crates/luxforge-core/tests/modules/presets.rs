@@ -9,12 +9,13 @@
 //! rules and the module's own parse, plan and label are proved in-crate next to their code.
 
 use luxforge_core::{
-    ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, Draft,
-    EditorService, Error, ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry, Mutation,
-    MutationOutcome, ParameterDescriptor, ParameterKind, Processing, Recipe, Stage, StageContext,
-    ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, CURVE_EFFECT,
+    Draft, EditorService, Error, ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry,
+    Mutation, MutationOutcome, OwnerHandle, ParameterDescriptor, ParameterKind, Processing, Recipe,
+    Stage, StageContext, ToolModule,
 };
 use luxforge_testbase::paths::{self, jpeg};
+use luxforge_testkit::client::{self, call, import, refused};
 use luxforge_testkit::fixtures;
 use serde_json::{Map, Value, json};
 use std::{fs, path::PathBuf, sync::Arc};
@@ -868,4 +869,182 @@ fn a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does()
         drop(service);
         fs::remove_file(path).expect("the catalog is removed");
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// The Tone curve: a field-patch action whose field is a point list.
+// -------------------------------------------------------------------------------------------
+
+/// `set-curve` is presettable like every field-patch action, through the JSON method table: a
+/// settings set carrying it is validated by `preset.create`, captured from the curve layer by
+/// `preset.capture`, applied by `edit.apply-preset` as one `Preset:` entry whose stack equals the
+/// one `edit.set-curve` wrote and which changes only the curve, and exported and re-imported to
+/// the same points. A preset acts on the recipe stack, which is the same for a JPEG and a RAW
+/// photo; the curve's RAW rendering is the module's own test.
+#[test]
+fn a_preset_carrying_set_curve_captures_applies_and_round_trips() {
+    const ACTOR: &str = "presets-curve";
+    let catalog = paths::temp_catalog("presets-curve");
+    let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
+    let editor = owner.register();
+    let asset = import(&owner, editor, &jpeg(), ACTOR).unwrap()["asset"]["id"].clone();
+    let edit = |method: &str, tag: &str, fields: Value| {
+        let revision = client::revision(&owner, editor, &asset).unwrap();
+        let mut params = json!({
+            "asset_id": asset,
+            "mutation": client::mutation(revision, &client::request_id(tag), ACTOR),
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        call(&owner, editor, method, params).unwrap_or_else(|error| panic!("{tag}: {error}"))
+    };
+    let library = |tag: &str| json!({"request_id": client::request_id(tag), "actor": ACTOR});
+    let label = || client::state(&owner, editor, &asset).unwrap()["current_entry"]["label"].clone();
+
+    // A Basic layer, then the curve over it.
+    edit("edit.set-basic", "contrast", json!({"contrast": 20}));
+    let without_curve = client::recipe(&owner, editor, &asset).unwrap();
+    let points = json!([[0.0, 0.05], [0.25, 0.2], [0.75, 0.82], [1.0, 0.97]]);
+    edit("edit.set-curve", "curve", json!({"luminance": points}));
+    let with_curve = client::recipe(&owner, editor, &asset).unwrap();
+    assert_eq!(with_curve.layers.len(), 2);
+
+    // Captured from the curve layer, whole or by its one field.
+    let settings = json!({"set-curve": {"luminance": points}});
+    for fields in [
+        json!({"set-curve": true}),
+        json!({"set-curve": ["luminance"]}),
+    ] {
+        let captured = call(
+            &owner,
+            editor,
+            "preset.capture",
+            json!({"asset_id": asset, "fields": fields}),
+        )
+        .unwrap();
+        assert_eq!(captured["settings"], settings, "{fields}");
+    }
+
+    // Validated: a curve the kind refuses is refused by name, and nothing is stored.
+    let seventeen: Vec<[f64; 2]> = (0..17).map(|index| [f64::from(index) / 16.0; 2]).collect();
+    for (luminance, refusal) in [
+        (
+            json!([[0.0, 0.5], [1.0, 0.2]]),
+            "parameter luminance has an invalid curve point 1",
+        ),
+        (
+            json!(seventeen),
+            "parameter luminance has an invalid curve point count",
+        ),
+    ] {
+        let (code, message) = refused(
+            &owner,
+            editor,
+            "preset.create",
+            json!({
+                "name": "Refused",
+                "settings": {"set-curve": {"luminance": luminance}},
+                "mutation": library("refused"),
+            }),
+        )
+        .unwrap();
+        assert_eq!(code, "validation", "{luminance}");
+        assert!(message.contains(refusal), "{luminance}: {message}");
+    }
+    let created = call(
+        &owner,
+        editor,
+        "preset.create",
+        json!({"name": "Matte", "settings": settings, "mutation": library("create")}),
+    )
+    .unwrap();
+    assert_eq!(created["preset"]["settings"], settings);
+    let listed = call(&owner, editor, "preset.list", json!({})).unwrap();
+    assert_eq!(listed["presets"].as_array().map(Vec::len), Some(1));
+    let preset_id = created["preset"]["id"].clone();
+
+    // Applied where the curve was not: one entry, the stack edit.set-curve wrote, and the Basic
+    // layer exactly as it was.
+    edit("history.undo", "undo", json!({}));
+    assert_eq!(
+        client::recipe(&owner, editor, &asset).unwrap(),
+        without_curve
+    );
+    let before = client::revision(&owner, editor, &asset).unwrap();
+    let applied = edit(
+        "edit.apply-preset",
+        "apply",
+        json!({"settings": settings, "name": "Matte", "preset-id": preset_id}),
+    );
+    assert_eq!(applied["outcome"], json!("applied"));
+    assert_eq!(applied["revision"], json!(before + 1), "one revision");
+    assert_eq!(label(), json!("Preset: Matte"));
+    let preset = client::recipe(&owner, editor, &asset).unwrap();
+    assert_eq!(
+        contents(&preset.layers),
+        contents(&with_curve.layers),
+        "the stack edit.set-curve wrote"
+    );
+    let basic = |layers: &[Layer]| {
+        layers
+            .iter()
+            .find(|layer| layer.effect_id == BASIC_EFFECT)
+            .cloned()
+            .expect("a Basic layer")
+    };
+    assert_eq!(
+        basic(&preset.layers),
+        basic(&without_curve.layers),
+        "only the curve changes"
+    );
+    assert_eq!(
+        preset
+            .layers
+            .iter()
+            .map(|layer| layer.effect_id.as_str())
+            .collect::<Vec<_>>(),
+        [BASIC_EFFECT, CURVE_EFFECT]
+    );
+
+    // Exported and re-imported to the same points, which change nothing when applied again.
+    let document = call(
+        &owner,
+        editor,
+        "preset.export",
+        json!({"preset_id": preset_id}),
+    )
+    .unwrap();
+    assert_eq!(document["file_name"], json!("Matte.lfpreset"));
+    let reimported = call(
+        &owner,
+        editor,
+        "preset.import",
+        json!({
+            "content": document["content"], "name": "Matte copy", "mutation": library("import"),
+        }),
+    )
+    .unwrap();
+    assert_eq!(reimported["preset"]["settings"], settings);
+    assert_eq!(
+        reimported["report"]["mapped"],
+        json!([{
+            "setting": "set-curve.luminance", "value": points.to_string(),
+            "action": "set-curve", "field": "luminance", "applied": points,
+        }])
+    );
+    let again = edit(
+        "edit.apply-preset",
+        "again",
+        json!({
+            "settings": reimported["preset"]["settings"], "name": "Matte copy",
+            "preset-id": reimported["preset"]["id"],
+        }),
+    );
+    assert_eq!(again["outcome"], json!("no-op"));
+    assert_eq!(client::recipe(&owner, editor, &asset).unwrap(), preset);
+    owner.stop();
+    join.join().expect("the owner joined");
+    let _ = fs::remove_file(catalog);
 }

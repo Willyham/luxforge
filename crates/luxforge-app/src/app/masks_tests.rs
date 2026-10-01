@@ -5649,3 +5649,253 @@ fn a_script_opens_a_kind_menu_and_presses_an_eye() {
     assert_eq!(step["status"], json!("failed"));
     assert_eq!(step["reason"], json!("no mask is named Sky"));
 }
+
+/// The Tone curve's module id, whose band the masked-curve tests read.
+const CURVE_MODULE: &str = "luxforge.curve";
+
+/// One edit posted by the independent client, then read back into the editor as its poll would.
+fn agent_edits(masking: &mut Masking, method: &str, params: Value) {
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    let mut params = params;
+    params["asset_id"] = json!(masking.asset);
+    params["mutation"] = json!(tasks::mutation(revision));
+    call(&masking.owner(), masking.agent, method, params)
+        .unwrap_or_else(|error| panic!("{method} was refused: {error}"));
+    masking.refresh();
+}
+
+/// The derived section of one module.
+fn band<'a>(masking: &'a Masking, module: &str) -> &'a crate::state::tools::SectionModel {
+    masking
+        .editor
+        .workspace
+        .tools
+        .all()
+        .find(|section| section.module_id == module)
+        .unwrap_or_else(|| panic!("the {module} band is listed"))
+}
+
+/// **The Tone curve inherits the scope chip by declaring `maskable`.** A mask whose only bound layer
+/// is a curve layer, written by an independent client, opens in Mask mode with the open mask's name
+/// as the Tone curve band's scope chip, and that band — and no other — is active for the mask,
+/// because the one layer the mask holds is the curve's. Leaving Mask mode drops the chip.
+#[test]
+fn a_mask_bound_only_to_a_curve_shows_the_scope_chip_on_the_tone_curve_band() {
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    let mask = masking.listing().masks[0].clone();
+    agent_edits(
+        &mut masking,
+        "edit.set-curve",
+        json!({"mask": mask.id, "luminance": [[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]}),
+    );
+    let bound = masking.listing().masks[0].layers.clone();
+    assert_eq!(bound.len(), 1, "the mask holds one bound layer: {bound:?}");
+    assert_eq!(bound[0].effect, luxforge_core::CURVE_EFFECT);
+    assert_eq!(bound[0].module.as_deref(), Some(CURVE_MODULE));
+    assert_eq!(
+        masking.editor.mask_panel.selected_mask.as_ref(),
+        Some(&mask.id),
+        "the mask stays open"
+    );
+
+    let curve = band(&masking, CURVE_MODULE);
+    assert_eq!(curve.title, "Tone curve");
+    assert_eq!(
+        curve.scope.as_deref(),
+        Some(mask.name.as_str()),
+        "the Tone curve band carries the open mask's scope chip"
+    );
+    assert!(curve.active, "the band's layer for this mask is the curve");
+    for section in masking.editor.workspace.tools.all() {
+        if section.module_id != CURVE_MODULE {
+            assert!(
+                !section.active,
+                "{} holds no layer bound to this mask",
+                section.module_id
+            );
+        }
+    }
+    assert_eq!(
+        masking.editor.workspace.scopes()[CURVE_MODULE],
+        json!(mask.name),
+        "the correlated evidence state names the chip"
+    );
+
+    masking.set_mode(POINTER_MODE);
+    assert!(!masking.editor.mask_mode_active());
+    assert_eq!(
+        band(&masking, CURVE_MODULE).scope,
+        None,
+        "outside Mask mode the Tone curve band edits the global layer"
+    );
+    assert_eq!(masking.editor.workspace.scopes(), json!({}));
+}
+
+/// **The coverage overlay of a curve-only mask reads the curve layer's input.** A luminance band is
+/// value-based, so its grid is read on the pixel the mask's first bound layer receives
+/// (`mask::commands::input_layer_index`). With no layer bound the overlay is refused by name; once a
+/// curve is the only bound layer the overlay draws, and the grid it is filled from follows the
+/// stack **ahead of** the masked curve — the global Basic layer and the global curve layer the
+/// masked one is placed after — and not the masked curve's own points, which change its output and
+/// not its input.
+#[test]
+fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
+    use luxforge_core::{Cancel, PreviewRequest};
+
+    let mut masking = Masking::opened();
+    masking.enter_mask_mode();
+    masking.run(MaskMessage::New("luminance-range".to_owned()));
+    let listed = masking.listing().masks[0].clone();
+    let (mask, component) = (listed.id.clone(), listed.components[0].id.clone());
+    // A mid-tone band, so moving the tones ahead of the curve moves the selection.
+    agent_edits(
+        &mut masking,
+        "mask.set-luminance-range",
+        json!({"mask": mask, "component": component, "low": 35.0, "low_feather": 10.0,
+            "high": 65.0, "high_feather": 10.0}),
+    );
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "workspace.set",
+        json!({"mask_overlay": "tint"}),
+    )
+    .expect("the overlay setting persists at the owner");
+    masking.refresh();
+    let settle = |masking: &mut Masking| {
+        luxforge_testbase::wait_until("the photo and the mask coverage settle", || {
+            let _ = masking
+                .editor
+                .update(Message::Preview(PreviewMessage::Poll));
+            !masking.editor.presentation.queue.is_busy() && !masking.editor.mask_coverage_pending()
+        });
+    };
+    settle(&mut masking);
+    assert_eq!(
+        masking.editor.mask_coverage_target(),
+        Some(MaskCoverageTarget::Existing {
+            mask: mask.clone(),
+            component: None
+        })
+    );
+    let refused = masking.editor.mask_overlay_summary();
+    assert!(
+        refused["coverage"]["unavailable"]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("no layer is bound to mask")),
+        "an unbound value-based mask has no input to read: {refused}"
+    );
+    assert!(masking.editor.presentation.coverage().is_none());
+
+    // The grid the coverage worker fills for this mask, from the owner's current evaluation.
+    let target = MaskCoverageTarget::Existing {
+        mask: mask.clone(),
+        component: None,
+    };
+    let grid = |masking: &mut Masking| -> Vec<u8> {
+        settle(masking);
+        let summary = masking.editor.mask_overlay_summary();
+        assert_eq!(
+            summary["coverage"]["adopted"]["mask"],
+            json!(mask),
+            "the overlay draws the curve-only mask: {summary}"
+        );
+        assert!(
+            summary["coverage"]["unavailable"].is_null(),
+            "the overlay is not refused: {summary}"
+        );
+        assert!(masking.editor.presentation.coverage().is_some());
+        let job = masking
+            .owner()
+            .preview_job(PreviewRequest::new(
+                masking.editor.client,
+                masking.asset.clone(),
+            ))
+            .expect("a preview job");
+        let answered = job
+            .evaluation
+            .mask_overlay_coverage(&target, (48, 32), None, None, &Cancel::never())
+            .expect("the grid is answered")
+            .outcome
+            .expect("a grid rather than a cached key");
+        assert_eq!(answered.absent, None);
+        answered
+            .grid
+            .expect("a curve-only mask has a grid")
+            .coverage
+    };
+
+    agent_edits(&mut masking, "edit.set-basic", json!({"exposure": 1.0}));
+    agent_edits(
+        &mut masking,
+        "edit.set-curve",
+        json!({"mask": mask, "luminance": [[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]}),
+    );
+    let bound = masking.listing().masks[0].layers.clone();
+    assert_eq!(bound.len(), 1);
+    assert_eq!(bound[0].effect, luxforge_core::CURVE_EFFECT);
+    let lifted = grid(&mut masking);
+    assert!(
+        lifted.iter().any(|&cell| cell > 0) && lifted.iter().any(|&cell| cell < 255),
+        "the band selects part of the photograph"
+    );
+
+    agent_edits(
+        &mut masking,
+        "edit.set-curve",
+        json!({"mask": mask, "luminance": [[0.0, 0.0], [0.5, 0.3], [1.0, 1.0]]}),
+    );
+    assert_eq!(
+        grid(&mut masking),
+        lifted,
+        "the masked curve's own points change its output, not the input its mask reads"
+    );
+
+    agent_edits(&mut masking, "edit.set-basic", json!({"exposure": -1.0}));
+    let darkened = grid(&mut masking);
+    assert_ne!(
+        darkened, lifted,
+        "the global Basic layer ahead of the masked curve moves the input the mask reads"
+    );
+
+    agent_edits(
+        &mut masking,
+        "edit.set-curve",
+        json!({"luminance": [[0.0, 0.0], [0.5, 0.8], [1.0, 1.0]]}),
+    );
+    let layers: Vec<(String, Option<String>)> = masking
+        .editor
+        .document
+        .current_recipe
+        .as_ref()
+        .expect("the current recipe")
+        .layers
+        .iter()
+        .map(|row| {
+            (
+                row.effect.clone(),
+                row.mask.as_ref().map(|bound| bound.as_str().to_owned()),
+            )
+        })
+        .filter(|(effect, _)| effect == luxforge_core::CURVE_EFFECT)
+        .collect();
+    assert_eq!(
+        layers,
+        [
+            (luxforge_core::CURVE_EFFECT.to_owned(), None),
+            (
+                luxforge_core::CURVE_EFFECT.to_owned(),
+                Some(mask.as_str().to_owned())
+            ),
+        ],
+        "the masked curve is placed after the global one"
+    );
+    assert_ne!(
+        grid(&mut masking),
+        darkened,
+        "the global curve ahead of the masked one moves the input the mask reads, so the input is \
+         the masked curve layer's and not the Basic layer's"
+    );
+}

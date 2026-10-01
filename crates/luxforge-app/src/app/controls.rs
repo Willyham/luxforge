@@ -646,10 +646,15 @@ impl Editor {
                     }
                 }
                 points[index] = [x, y];
-                self.curve_changed(action, parameter, points, true, channel)
+                self.curve_changed(action, parameter, points, true, channel, None)
             }
             CurveEditorEvent::Add(position) => {
-                if fixed_x.is_some() || points.len() >= max {
+                if fixed_x.is_some() {
+                    return Task::none();
+                }
+                if points.len() >= max {
+                    let label = curve_label(&self.modules, &action, &parameter);
+                    self.status.text = format!("{label} holds at most {max} points");
                     return Task::none();
                 }
                 let x = f64::from(position[0].clamp(0.0, 1.0));
@@ -668,14 +673,37 @@ impl Editor {
                 }
                 points.push(p);
                 points.sort_by(|a, b| a[0].total_cmp(&b[0]));
-                self.curve_changed(action, parameter, points, false, channel)
+                // The new point is selected, so the next nudge or Delete acts on it.
+                let added = points.iter().position(|current| *current == p);
+                self.curve_changed(action, parameter, points, false, channel, Some(added))
             }
+            // Every desktop removal arrives here: a double-click on a point, Delete or Backspace
+            // on the selected point, and a point row's remove button. The API is not limited to
+            // interior points; the desktop keeps the end points, which move but are not removed.
             CurveEditorEvent::Remove(index) => {
-                if fixed_x.is_some() || points.len() <= min || index >= points.len() {
+                if fixed_x.is_some() || index >= points.len() {
+                    return Task::none();
+                }
+                if points.len() <= min {
+                    let label = curve_label(&self.modules, &action, &parameter);
+                    self.status.text = format!("{label} needs at least {min} points");
+                    return Task::none();
+                }
+                if index == 0 || index + 1 == points.len() {
+                    self.status.text = "The end points move but are not removed".into();
                     return Task::none();
                 }
                 points.remove(index);
-                self.curve_changed(action, parameter, points, false, channel)
+                self.curve_changed(action, parameter, points, false, channel, Some(None))
+            }
+            CurveEditorEvent::Points(open) => {
+                let local = self.controls.ui.curve_mut(curve_key);
+                local.points_open = open;
+                if !open {
+                    // Closing the list drops what was typed in it and never committed.
+                    local.edits.clear();
+                }
+                Task::none()
             }
             CurveEditorEvent::Select(index) => {
                 if index >= points.len() {
@@ -772,11 +800,13 @@ impl Editor {
                     index,
                     axis,
                 ));
-                self.curve_changed(action, parameter, points, false, channel)
+                self.curve_changed(action, parameter, points, false, channel, None)
             }
         }
     }
 
+    /// Send a curve's new points. `select`, when given, is the point selected once the change is
+    /// accepted (`Some(None)` clears the selection); a refused change keeps the selection it had.
     fn curve_changed(
         &mut self,
         action: String,
@@ -784,6 +814,7 @@ impl Editor {
         points: Vec<[f64; 2]>,
         continuous: bool,
         channel: usize,
+        select: Option<Option<usize>>,
     ) -> Task<Message> {
         let value = json!(points);
         if let Some(reason) = self.control_refusal(&action, &parameter, continuous) {
@@ -799,9 +830,11 @@ impl Editor {
             self.status.text = error.to_string();
             return Task::none();
         }
-        self.controls
-            .ui
-            .forget_curve_samples(&curve_key(&self.modules, &action, &parameter), &parameter);
+        let key = curve_key(&self.modules, &action, &parameter);
+        if let Some(point) = select {
+            self.controls.ui.curve_mut(key.clone()).point = point;
+        }
+        self.controls.ui.forget_curve_samples(&key, &parameter);
         let query = self.request_curve_samples(&action, &parameter, channel, value.clone());
         Task::batch([
             self.control_value(action, parameter, value, continuous),
@@ -1026,6 +1059,27 @@ fn curve_key(
         action.to_owned(),
         first.unwrap_or_else(|| parameter.to_owned()),
     )
+}
+/// The label of the curve control that draws `parameter` of `action`, which its refusals name.
+fn curve_label(
+    modules: &[luxforge_core::ModuleDescriptor],
+    action: &str,
+    parameter: &str,
+) -> String {
+    modules
+        .iter()
+        .find_map(|module| {
+            walk(&module.controls).find_map(|control| match control {
+                Control::Curve(curve)
+                    if curve.action == action
+                        && curve.channels.iter().any(|c| c.parameter == parameter) =>
+                {
+                    Some(curve.label.clone())
+                }
+                _ => None,
+            })
+        })
+        .unwrap_or_else(|| parameter.to_owned())
 }
 fn curve_channel_parameters(
     modules: &[luxforge_core::ModuleDescriptor],

@@ -6,7 +6,10 @@
 //! input is on screen. This module answers it by driving the shipped binary in a background
 //! evidence launch, with one `slider` script step per input, and reading the timestamps out of the
 //! run's own `events.jsonl`. The default measures Basic's exposure slider; `--control curve`
-//! measures the developer proof curve while its canvas is visible in the tools panel.
+//! measures the developer proof curve while its canvas is visible in the tools panel, and
+//! `--control curve --action <id> --parameter <name>` a registered module's curve instead
+//! ([`FieldTarget::lookup_curve`]): the Tone curve's `set-curve` `luminance`, seeded with a
+//! mid-tone point ([`MID_TONE_SEED`]) that the gesture drags.
 //!
 //! What "presented" means here: the update in which the rendered raster became the photo surface's
 //! source, recorded as `preview_displayed`. The photograph is drawn by a primitive that owns its
@@ -32,7 +35,7 @@ use crate::{
     },
     *,
 };
-use luxforge_core::{ModuleRegistry, ParameterKind};
+use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
     Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
@@ -50,6 +53,16 @@ const SET_CONTROLS: &str = "set-controls";
 const MASTER: &str = "master";
 const CONTROLS_MODULE: &str = "luxforge.controls";
 
+/// The curve a module-curve run commits through its action before the first sample. A fresh
+/// curve is `[[0, 0], [1, 1]]`, whose point 1 is the white point; with this seed point 1 is a
+/// mid-tone point, at the same `x` as the proof curve's middle point, so the gesture drags a
+/// mid-tone and every drafted frame runs the curve's colour unit.
+const MID_TONE_SEED: [[f64; 2]; 3] = [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]];
+
+/// The point a curve gesture drags: point 1, at `x` 0.5, of the proof curve or the seeded curve.
+const DRAGGED_POINT: usize = 1;
+const DRAGGED_X: f32 = 0.5;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
     Slider,
@@ -65,10 +78,23 @@ impl Control {
     }
 }
 
-/// The field-patch action and parameter a slider gesture measures, with the range and step
+/// Which curve a `--control curve` gesture drags, and so how the run is launched and set up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CurveOwner {
+    /// The developer controls proof's master curve: a developer launch, nothing seeded, the proof
+    /// section expanded at the bottom of the tools panel.
+    Proof,
+    /// A registered, non-developer module's curve, named by the module's identity: an ordinary
+    /// launch, [`MID_TONE_SEED`] committed through the action first, every section above the
+    /// module's collapsed and the module's expanded.
+    Module(String),
+}
+
+/// The action and parameter a gesture measures. A slider's carries the range and step
 /// [`FieldTarget::lookup`] reads from the module registry so every generated gesture value is one
-/// the action would actually accept. `--control curve` never uses this: the proof curve is its own
-/// fraction-based gesture, unrelated to any field's declared range.
+/// the action would actually accept. A curve's ([`FieldTarget::proof_curve`],
+/// [`FieldTarget::lookup_curve`]) carries the curve's own `0..=1` coordinates and no step: its
+/// gesture is the binary fractions [`gesture_values`] makes, unrelated to any field's step.
 struct FieldTarget {
     action: String,
     parameter: String,
@@ -78,6 +104,8 @@ struct FieldTarget {
     /// Where the gesture's values start from: zero when the range holds it, as every field-patch
     /// slider's does, otherwise the declared default (a RAW photo's Temperature, 2000..12000 K).
     origin: f64,
+    /// `Some` for a curve target: whose curve it is.
+    curve: Option<CurveOwner>,
 }
 
 impl FieldTarget {
@@ -92,7 +120,92 @@ impl FieldTarget {
             max: 5.0,
             step: 0.01,
             origin: 0.0,
+            curve: None,
         }
+    }
+
+    /// `--control curve` without `--action`: the developer proof's master curve, unchanged from
+    /// before a module's curve could be named.
+    fn proof_curve() -> Self {
+        Self {
+            action: SET_CONTROLS.into(),
+            parameter: MASTER.into(),
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            origin: 0.0,
+            curve: Some(CurveOwner::Proof),
+        }
+    }
+
+    /// Resolve `--control curve --action <id> --parameter <name>` against the built-in module
+    /// registry, which holds no developer module: the action must be a registered, non-developer
+    /// field-patch action, and the parameter one of its curve parameters that can hold
+    /// [`MID_TONE_SEED`]. A number parameter is refused by name: it is measured without
+    /// `--control curve`.
+    fn lookup_curve(action: &str, parameter: &str) -> Result<Self> {
+        let registry = ModuleRegistry::builtin();
+        let (_, declared) = registry.action(action).ok_or_else(|| {
+            format!(
+                "No product module declares the action {action}; --control curve --action drives a registered, non-developer module's curve"
+            )
+        })?;
+        let module = registry
+            .descriptors()
+            .into_iter()
+            .find(|module| {
+                module
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate.id == action)
+            })
+            .ok_or_else(|| format!("No module descriptor lists the action {action}"))?;
+        ensure(
+            !module.developer,
+            format!(
+                "Action {action} belongs to the developer module {}; --control curve without --action measures the proof curve",
+                module.id
+            ),
+        )?;
+        ensure(
+            declared.patch,
+            format!(
+                "Action {action} is not a field-patch action; --control curve drives a field-patch action's curve"
+            ),
+        )?;
+        let parameter_descriptor = declared
+            .parameter(parameter)
+            .ok_or_else(|| format!("Action {action} declares no parameter {parameter}"))?;
+        match &parameter_descriptor.kind {
+            ParameterKind::Curve {
+                points_min,
+                points_max,
+                fixed_x: None,
+                ..
+            } if (*points_min..=*points_max).contains(&MID_TONE_SEED.len()) => {}
+            ParameterKind::Curve { .. } => {
+                return Err(format!(
+                    "Curve parameter {parameter} of {action} cannot hold the mid-tone seed {MID_TONE_SEED:?}"
+                )
+                .into());
+            }
+            other => {
+                return Err(format!(
+                    "Parameter {parameter} of {action} is a {} parameter, not a curve; measure it without --control curve",
+                    other.name()
+                )
+                .into());
+            }
+        }
+        Ok(Self {
+            action: action.to_owned(),
+            parameter: parameter.to_owned(),
+            min: 0.0,
+            max: 1.0,
+            step: 0.0,
+            origin: 0.0,
+            curve: Some(CurveOwner::Module(module.id.clone())),
+        })
     }
 
     /// Resolve `--action <id> --parameter <name>` against the built-in module registry: the
@@ -119,6 +232,12 @@ impl FieldTarget {
         let (min, max) = match &parameter_descriptor.kind {
             ParameterKind::Integer { min, max } => (*min as f64, *max as f64),
             ParameterKind::Number { min, max } => (*min, *max),
+            ParameterKind::Curve { .. } => {
+                return Err(format!(
+                    "Parameter {parameter} of {action} is a curve; measure it with --control curve"
+                )
+                .into());
+            }
             other => {
                 return Err(format!(
                     "Parameter {parameter} of {action} is {other:?}, not an integer or a number"
@@ -148,6 +267,7 @@ impl FieldTarget {
             max,
             step,
             origin,
+            curve: None,
         })
     }
 
@@ -187,25 +307,39 @@ impl FieldTarget {
     }
 }
 
-/// What `--action`/`--parameter` resolve to: absent, the default Basic exposure slider, unchanged
-/// from before this option existed; present, both are required together and name a field-patch
-/// slider, which only the (default) slider control measures.
+/// What `--control` and `--action`/`--parameter` resolve to. Absent, the default Basic exposure
+/// slider, or with `--control curve` the developer proof curve, both unchanged from before these
+/// options existed; present, both are required together and name a field-patch slider
+/// ([`FieldTarget::lookup`]) or, with `--control curve`, a module's curve
+/// ([`FieldTarget::lookup_curve`]).
 fn resolve_field(
     control: Control,
     action: Option<&str>,
     parameter: Option<&str>,
 ) -> Result<FieldTarget> {
-    match (action, parameter) {
-        (None, None) => Ok(FieldTarget::basic_exposure()),
-        (Some(action), Some(parameter)) => {
-            ensure(
-                control == Control::Slider,
-                "--action/--parameter measure a field-patch slider; pass no --control or --control slider",
-            )?;
-            FieldTarget::lookup(action, parameter)
+    match (control, action, parameter) {
+        (Control::Slider, None, None) => Ok(FieldTarget::basic_exposure()),
+        (Control::Curve, None, None) => Ok(FieldTarget::proof_curve()),
+        (Control::Slider, Some(action), Some(parameter)) => FieldTarget::lookup(action, parameter),
+        (Control::Curve, Some(action), Some(parameter)) => {
+            FieldTarget::lookup_curve(action, parameter)
         }
         _ => Err("--action and --parameter must be given together".into()),
     }
+}
+
+/// The kind of photograph `source` is, read from its first bytes: a JPEG starts with its
+/// start-of-image marker, and anything else the latency harness opens is a RAW file. The tools
+/// panel lists a section only for a module that applies to the photo's kind ([`lists_section`]).
+fn source_tag(source: &Path) -> Result<SourceTag> {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    fs::File::open(source)?.read_exact(&mut magic)?;
+    Ok(if magic == [0xFF, 0xD8] {
+        SourceTag::Jpeg
+    } else {
+        SourceTag::Raw
+    })
 }
 
 /// Every Basic field non-neutral, for the "holds a full Basic layer" resource workload. Each value
@@ -436,11 +570,7 @@ fn event_value(value: &Value, control: Control) -> Option<f64> {
 }
 
 fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec<Input>> {
-    let key = if control == Control::Curve {
-        MASTER
-    } else {
-        field.parameter.as_str()
-    };
+    let key = field.parameter.as_str();
     let mut inputs = Vec::new();
     let mut pending: Option<(f64, f64)> = None;
     for event in events {
@@ -496,10 +626,14 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
     }
     for event in events.iter().filter(|e| e["event"] == "preview_displayed") {
         let generation = event["detail"]["generation"].as_u64();
-        if let Some(input) = inputs
-            .iter_mut()
-            .find(|input| input.generation.is_some() && input.generation == generation)
-        {
+        let displayed_ms = elapsed(event)?;
+        if let Some(input) = inputs.iter_mut().rev().find(|input| {
+            input.generation.is_some()
+                && input.generation == generation
+                // An unchanged draft may reuse the already displayed generation. Its earlier
+                // committed frame is not a response to this input.
+                && displayed_ms >= input.queued_ms
+        }) {
             ensure(
                 event["detail"]["draft_revision"].as_u64() == input.draft_revision,
                 "A displayed frame names another draft revision than the job it answers",
@@ -507,7 +641,7 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
             // One generation can now display an interactive region, exact refinement and a full
             // frame. Input-to-first-visible-response stops at its first adoption.
             if !input.displayed_ms.is_finite() {
-                input.displayed_ms = elapsed(event)?;
+                input.displayed_ms = displayed_ms;
             }
         }
     }
@@ -527,15 +661,16 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
 /// displayed, which is the queue cancellation this gesture actually performs. Its latency is
 /// therefore excluded from the per-input distribution and measured through to the settled exact
 /// histogram instead.
-/// The middle point of the proof curve dragged through `points`, each a height the widget
-/// publishes in single precision.
-fn curve_step(points: Vec<f64>, finish: SliderEnd) -> script::Step {
+/// Point 1 of the target's curve — the proof curve's middle point, or the seeded mid-tone point of
+/// a module's curve — dragged through `points`, each a height the widget publishes in single
+/// precision, through the target's own action and parameter.
+fn curve_step(field: &FieldTarget, points: Vec<f64>, finish: SliderEnd) -> script::Step {
     script::Step::Curve(CurveStep {
-        action: SET_CONTROLS.into(),
-        parameter: MASTER.into(),
+        action: field.action.clone(),
+        parameter: field.parameter.clone(),
         event: CurveStepEvent::Move {
-            index: 1,
-            points: points.into_iter().map(|y| [0.5, y as f32]).collect(),
+            index: DRAGGED_POINT,
+            points: points.into_iter().map(|y| [DRAGGED_X, y as f32]).collect(),
         },
         finish,
     })
@@ -550,6 +685,7 @@ fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<s
             let release = index == last;
             if control == Control::Curve {
                 return curve_step(
+                    field,
                     vec![*value],
                     if release {
                         SliderEnd::Release
@@ -576,6 +712,7 @@ fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> script::
         // Reverse the middle point's vertical journey while remaining in the declared [0,1]
         // range. The burst measures one replaceable pending draft value, not visible frames.
         return curve_step(
+            field,
             values
                 .iter()
                 .map(|value| f64::from((1.0 - value) as f32))
@@ -601,7 +738,7 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
     values
         .iter()
         .map(|value| match control {
-            Control::Curve => curve_step(vec![*value], SliderEnd::Release),
+            Control::Curve => curve_step(field, vec![*value], SliderEnd::Release),
             _ => script::Step::Slider(
                 SliderStep::new(&field.action, &field.parameter, [*value]).release(),
             ),
@@ -609,22 +746,79 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
         .collect()
 }
 
-/// Keep the proof curve, including its canvas, in the real tools-panel viewport during the
+/// Keep the measured curve, including its canvas, in the real tools-panel viewport during the
 /// measurement. A hidden curve would measure only controller/render work and miss tessellation.
-fn curve_view_steps() -> Vec<script::Step> {
-    // The latency source is JPEG; the RAW section is absent from its tools model entirely.
-    let mut steps: Vec<script::Step> = [
-        "luxforge.basic",
-        "luxforge.pixel",
-        "luxforge.transform",
-        "luxforge.crop",
-    ]
-    .into_iter()
-    .map(|module| script::Step::section(module, false))
-    .collect();
-    steps.push(script::Step::section(CONTROLS_MODULE, true));
-    steps.push(script::Step::tools_scroll(1.0));
-    steps
+///
+/// The proof curve's section is the developer section at the bottom of the panel: the sections
+/// open by default above it are collapsed, it is expanded and the panel is scrolled to its end, as
+/// before a module's curve could be named. A module's curve: every section the panel lists above
+/// the module's is collapsed ([`lists_section`]), the module's own is expanded, and the panel is
+/// scrolled to its top. A slider target has no view steps.
+fn curve_view_steps(field: &FieldTarget, source: SourceTag, masking: bool) -> Vec<script::Step> {
+    match &field.curve {
+        None => Vec::new(),
+        Some(CurveOwner::Proof) => {
+            // The latency source is JPEG; the RAW section is absent from its tools model entirely.
+            let mut steps: Vec<script::Step> = [
+                "luxforge.basic",
+                "luxforge.pixel",
+                "luxforge.transform",
+                "luxforge.crop",
+            ]
+            .into_iter()
+            .map(|module| script::Step::section(module, false))
+            .collect();
+            steps.push(script::Step::section(CONTROLS_MODULE, true));
+            steps.push(script::Step::tools_scroll(1.0));
+            steps
+        }
+        Some(CurveOwner::Module(module)) => {
+            let registry = ModuleRegistry::builtin();
+            let mut steps: Vec<script::Step> = registry
+                .descriptors()
+                .into_iter()
+                .take_while(|descriptor| descriptor.id != *module)
+                .filter(|descriptor| lists_section(descriptor, source, masking))
+                .map(|descriptor| script::Step::section(&descriptor.id, false))
+                .collect();
+            steps.push(script::Step::section(module, true));
+            steps.push(script::Step::tools_scroll(0.0));
+            steps
+        }
+    }
+}
+
+/// Whether an ordinary (non-developer) editor's tools panel lists a section for `module` over a
+/// photograph of kind `source`, by the desktop's own rule (`state::tools::derive`): the module
+/// applies to the photo, draws a section (it declares controls, a capability surface or the crop
+/// frame) and, in the mask workspace, has a maskable effect. A section step naming a module the
+/// panel does not list is refused, so the view steps name exactly these.
+fn lists_section(
+    module: &luxforge_core::ModuleDescriptor,
+    source: SourceTag,
+    masking: bool,
+) -> bool {
+    let draws = !module.controls.is_empty()
+        || module.settings.is_some()
+        || !module.resources.is_empty()
+        || !module.tasks.is_empty()
+        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }));
+    !module.developer
+        && module.applies_to(source)
+        && draws
+        && (!masking || module.effects.iter().any(|effect| effect.maskable))
+}
+
+/// The commit a module-curve run makes before its view steps: [`MID_TONE_SEED`] through the
+/// target's own action, so the gesture's point 1 is a mid-tone point. A masked run seeds the
+/// masked layer its drag drafts, naming the mask [`mask_precondition`] made.
+fn seed_step(field: &FieldTarget, masked: bool) -> script::Step {
+    let mut params = serde_json::Map::new();
+    params.insert(field.parameter.clone(), json!(MID_TONE_SEED));
+    if masked {
+        params.insert("mask".into(), json!(Reference::name("Mask 1")));
+    }
+    script::Step::call(format!("edit.{}", field.action), Value::Object(params))
 }
 
 /// Which distribution a run gathers. Drag and commit drive the same messages and differ in where
@@ -790,9 +984,9 @@ pub struct Options<'a> {
     pub samples: usize,
     pub mode: Mode,
     pub control: Control,
-    /// `--action`/`--parameter`, resolved by [`resolve_field`]: the default Basic exposure slider
-    /// when absent, or the named field-patch slider `--control slider` (the default) measures.
-    /// Unused when `control` is `Curve`.
+    /// `--action`/`--parameter`, resolved with `control` by [`resolve_field`]: when absent, the
+    /// default Basic exposure slider or, with `--control curve`, the proof curve; when present, the
+    /// named field-patch slider or, with `--control curve`, the named module curve.
     pub action: Option<&'a str>,
     pub parameter: Option<&'a str>,
     /// Commit a straightening crop before the gesture, so the measured stack carries the crop
@@ -1000,13 +1194,10 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
     steps
 }
 
-/// A drag or commit run's script: its preconditions, then the gesture's steps.
-fn gesture_script(
-    options: &Options,
-    field: &FieldTarget,
-    values: &[f64],
-    drag: bool,
-) -> Vec<script::Step> {
+/// A drag or commit run's preconditions before any zoom: the crop, mask, Basic and Presence
+/// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
+/// frame captured after the last of them is the one the curve's readiness is checked on.
+fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
     let mut steps = geometry_preconditions(options);
     if options.mask {
         steps.extend(mask_precondition());
@@ -1017,9 +1208,22 @@ fn gesture_script(
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
     }
-    if options.control == Control::Curve {
-        steps.extend(curve_view_steps());
+    if matches!(field.curve, Some(CurveOwner::Module(_))) {
+        steps.push(seed_step(field, options.mask));
     }
+    steps.extend(curve_view_steps(field, source, options.mask));
+    steps
+}
+
+/// A drag or commit run's script: its preconditions, then the gesture's steps.
+fn gesture_script(
+    options: &Options,
+    field: &FieldTarget,
+    source: SourceTag,
+    values: &[f64],
+    drag: bool,
+) -> Vec<script::Step> {
+    let mut steps = setup_steps(options, field, source);
     steps.extend(zoom_step(options));
     if drag {
         steps.extend(gesture_steps(values, options.control, field));
@@ -2506,6 +2710,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         !options.moving_pan || (options.mode == Mode::Burst && options.zoom.is_some()),
         "--moving-pan requires --mode burst and --zoom PERCENT",
     )?;
+    ensure(
+        options.control == Control::Slider || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
+    )?;
     if options.mode == Mode::Viewport {
         return run_viewport(root, out, bin, &options);
     }
@@ -2565,7 +2773,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         )?;
     }
 
-    let steps = gesture_script(options, field, &values, drag);
+    let kind = source_tag(&source)?;
+    let steps = gesture_script(options, field, kind, &values, drag);
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
@@ -2576,7 +2785,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "gesture-script.json",
         &steps,
         &source,
-        options.control == Control::Curve,
+        field.curve == Some(CurveOwner::Proof),
     )
     .watch(sampled(root, "gesture"));
     let Launched {
@@ -2601,33 +2810,51 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
 
-    if options.control == Control::Curve {
-        let setup_index = steps
-            .iter()
-            .position(|step| Some(step) == curve_view_steps().last())
-            .map(|index| index + 1)
-            .ok_or("The curve setup step is absent")?;
+    if let Some(owner) = &field.curve {
+        // Frame 0 is the open; frame `n` follows step `n`.
         let setup = frames
-            .get(setup_index)
+            .get(setup_steps(options, field, kind).len())
             .ok_or("No captured frame follows the curve viewport setup")?;
-        let ready = setup["state"]["control_ui"]["curves"]
+        let curve = setup["state"]["control_ui"]["curves"]
             .as_array()
             .and_then(|curves| {
-                curves
-                    .iter()
-                    .find(|curve| curve["action"] == SET_CONTROLS && curve["parameter"] == MASTER)
-            })
-            .is_some_and(|curve| {
-                curve["sample_count"] == 257
-                    && curve["sample_source_entry"] == curve["display_entry"]
+                curves.iter().find(|curve| {
+                    curve["action"] == field.action.as_str()
+                        && curve["parameter"] == field.parameter.as_str()
+                })
             });
-        ensure(
-            ready
-                && setup["state"]["developer"] == true
-                && setup["state"]["expanded"][CONTROLS_MODULE] == true
-                && setup["state"]["tools_scroll"] == 1.0,
-            "The proof curve was not expanded, scrolled into view and sampled to 257 points before timing",
-        )?;
+        let sampled = curve.is_some_and(|curve| {
+            curve["sample_count"] == 257 && curve["sample_source_entry"] == curve["display_entry"]
+        });
+        match owner {
+            CurveOwner::Proof => ensure(
+                sampled
+                    && setup["state"]["developer"] == true
+                    && setup["state"]["expanded"][CONTROLS_MODULE] == true
+                    && setup["state"]["tools_scroll"] == 1.0,
+                "The proof curve was not expanded, scrolled into view and sampled to 257 points before timing",
+            )?,
+            CurveOwner::Module(module) => {
+                let seeded = curve
+                    .and_then(|curve| curve["points"].as_array())
+                    .is_some_and(|points| {
+                        points.len() == MID_TONE_SEED.len()
+                            && points.iter().zip(MID_TONE_SEED).all(|(point, [x, y])| {
+                                point[0].as_f64() == Some(x) && point[1].as_f64() == Some(y)
+                            })
+                    });
+                ensure(
+                    sampled
+                        && seeded
+                        && setup["state"]["developer"] == false
+                        && setup["state"]["expanded"][module.as_str()] == true
+                        && setup["state"]["tools_scroll"] == 0.0,
+                    format!(
+                        "The {module} curve was not seeded with {MID_TONE_SEED:?}, expanded, scrolled into view and sampled to 257 points before timing"
+                    ),
+                )?;
+            }
+        }
     }
 
     let measured = inputs(&events, options.control, field)?;
@@ -2813,21 +3040,30 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "lens_layer":options.lens,
         "mode":options.mode.name(),
         "control":options.control.name(),
-        "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
-        "control_parameter":if options.control == Control::Curve { MASTER } else { field.parameter.as_str() },
+        "control_action":field.action,
+        "control_parameter":field.parameter,
         "field_range":if options.control == Control::Curve { Value::Null } else { json!({"min":field.min,"max":field.max,"step":field.step}) },
         "effect_scope":match (options.control, field.action.as_str(), field.parameter.as_str()) {
-            (Control::Curve, ..) => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
+            (Control::Curve, action, parameter) => match &field.curve {
+                Some(CurveOwner::Module(module)) => format!("{module} {action} {parameter}: point {DRAGGED_POINT} of the curve seeded with {MID_TONE_SEED:?}, a mid-tone point, is dragged through draft.begin/set/commit while the curve canvas is visible; every drafted frame runs the curve's colour unit."),
+                _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
+            },
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
             (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
-        "view_setup":if options.control == Control::Curve {
-            json!({"developer":true,"proof_section":CONTROLS_MODULE,
+        "view_setup":match &field.curve {
+            Some(CurveOwner::Proof) => json!({"developer":true,"proof_section":CONTROLS_MODULE,
                 "collapsed":["luxforge.basic","luxforge.pixel","luxforge.transform","luxforge.crop"],
                 "raw_section":"absent for the JPEG latency source",
-                "tools_scroll":1.0})
-        } else { Value::Null },
+                "tools_scroll":1.0}),
+            Some(CurveOwner::Module(module)) => json!({"developer":false,"section":module,
+                "seed":{"action":field.action,"parameter":field.parameter,"points":MID_TONE_SEED},
+                "dragged_point":DRAGGED_POINT,
+                "steps":script::write(&curve_view_steps(field, kind, options.mask)),
+                "tools_scroll":0.0}),
+            None => Value::Null,
+        },
         "samples":options.samples,
         "gesture_values":values,
         "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
@@ -3474,6 +3710,7 @@ mod tests {
             max: 100.0,
             step: 1.0,
             origin: 0.0,
+            curve: None,
         };
         for crop in [None, Some(8.0)] {
             for mask in [false, true] {
@@ -3504,7 +3741,8 @@ mod tests {
                         for (control, name, field) in [
                             (Control::Slider, "slider", FieldTarget::basic_exposure()),
                             (Control::Slider, "mixer", mixer()),
-                            (Control::Curve, "curve", FieldTarget::basic_exposure()),
+                            (Control::Curve, "curve", FieldTarget::proof_curve()),
+                            (Control::Curve, "tone-curve", tone_curve()),
                         ] {
                             for drag in [true, false] {
                                 let values = gesture_values(5 + usize::from(drag), control, &field);
@@ -3516,6 +3754,7 @@ mod tests {
                                     script::write(&gesture_script(
                                         &options(control, zoom, false),
                                         &field,
+                                        SourceTag::Jpeg,
                                         &values,
                                         drag,
                                     )),
@@ -3604,8 +3843,7 @@ mod tests {
         );
     }
 
-    /// The default Basic exposure target: the field the synthetic burst events carry, and a
-    /// placeholder for the curve control, which ignores its `field` argument entirely.
+    /// The default Basic exposure target: the field the synthetic burst events carry.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
     }
@@ -3633,7 +3871,7 @@ mod tests {
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
-        let steps = gesture_script(&options, &field, &values, true);
+        let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
         assert_eq!(&steps[..3], &crate::scenario::recipe::lens_profile());
         assert!(
             matches!(&steps[2],script::Step::Controls(script::ControlsStep::QueryChoiceSelectFirst {action}) if action=="select-lens-profile")
@@ -3643,6 +3881,301 @@ mod tests {
             steps
         );
         assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+    }
+
+    /// `--control curve --action set-curve --parameter luminance`: the Tone curve's own field.
+    fn tone_curve() -> FieldTarget {
+        resolve_field(Control::Curve, Some("set-curve"), Some("luminance")).unwrap()
+    }
+
+    /// A drag or commit run's options over a JPEG with the given control and preconditions.
+    fn curve_options(source: &Path, mask: bool, crop: Option<f64>) -> Options<'_> {
+        Options {
+            source,
+            samples: 5,
+            mode: Mode::Drag,
+            control: Control::Curve,
+            action: Some("set-curve"),
+            parameter: Some("luminance"),
+            lens: false,
+            perspective: false,
+            crop,
+            idle: false,
+            basic: false,
+            presence: false,
+            mask,
+            zoom: None,
+            moving_pan: false,
+            mask_overlay: false,
+        }
+    }
+
+    /// The curve steps of a script, as `(action, parameter, index, points)`.
+    fn curve_moves(steps: &[script::Step]) -> Vec<(String, String, usize, Vec<[f32; 2]>)> {
+        steps
+            .iter()
+            .filter_map(|step| match step {
+                script::Step::Curve(CurveStep {
+                    action,
+                    parameter,
+                    event: CurveStepEvent::Move { index, points },
+                    ..
+                }) => Some((action.clone(), parameter.clone(), *index, points.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// `--control curve --action set-curve --parameter luminance` resolves the Tone curve's
+    /// registered field: its own action and parameter, owned by `luxforge.curve`, over the curve's
+    /// `0..=1` coordinates, and the launch is an ordinary one.
+    #[test]
+    fn a_curve_action_and_parameter_resolve_a_module_curve() {
+        let field = tone_curve();
+        assert_eq!(field.action, "set-curve");
+        assert_eq!(field.parameter, "luminance");
+        assert_eq!(
+            field.curve,
+            Some(CurveOwner::Module("luxforge.curve".into()))
+        );
+        assert_eq!((field.min, field.max), (0.0, 1.0));
+        // The seed is admissible for the declared parameter: the registry's own check accepts it.
+        let registry = ModuleRegistry::builtin();
+        let (_, action) = registry.action("set-curve").unwrap();
+        let declared = action.parameter("luminance").unwrap();
+        assert!(luxforge_core::check_value(declared, &json!(MID_TONE_SEED)).is_ok());
+
+        // Its drafts pair by the module's own parameter, exactly as the proof curve's do by master.
+        let points = json!([[0.0, 0.0], [0.5, 0.625], [1.0, 1.0]]);
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"luminance":points}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":20.0,
+                "detail":{"value":points,"generation":4,"draft_revision":1}}),
+            json!({"event":"preview_displayed","elapsed_ms":31.0,
+                "detail":{"generation":4,"draft_revision":1}}),
+        ];
+        let paired = inputs(&events, Control::Curve, &field).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert_eq!(paired[0].value, 0.625);
+        assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 21.0);
+
+        // Neither half of the pair alone resolves anything.
+        assert!(resolve_field(Control::Curve, Some("set-curve"), None).is_err());
+        assert!(resolve_field(Control::Curve, None, Some("luminance")).is_err());
+    }
+
+    /// A number parameter with `--control curve`, and a curve parameter without it, are refused
+    /// with messages naming the parameter; so are an unknown action, a missing parameter and the
+    /// developer proof's action, which the curve control reaches only without `--action`.
+    #[test]
+    fn a_number_parameter_is_refused_with_control_curve() {
+        let message = |control, action, parameter| {
+            resolve_field(control, Some(action), Some(parameter))
+                .err()
+                .unwrap_or_else(|| panic!("{action} {parameter} resolved"))
+                .to_string()
+        };
+        let number = message(Control::Curve, "set-mixer", "red-hue");
+        assert!(number.contains("red-hue"), "{number}");
+        assert!(number.contains("not a curve"), "{number}");
+        let exposure = message(Control::Curve, "set-basic", "exposure");
+        assert!(exposure.contains("exposure"), "{exposure}");
+        let curve = message(Control::Slider, "set-curve", "luminance");
+        assert!(curve.contains("luminance"), "{curve}");
+        assert!(curve.contains("--control curve"), "{curve}");
+        let missing = message(Control::Curve, "set-curve", "red");
+        assert!(missing.contains("red"), "{missing}");
+        assert!(message(Control::Curve, "edit.nothing", "luminance").contains("edit.nothing"));
+        // The proof's action is not a product module's: without --action is how it is measured.
+        assert!(message(Control::Curve, SET_CONTROLS, MASTER).contains(SET_CONTROLS));
+        assert!(message(Control::Curve, "reset-curve", "luminance").contains("reset-curve"));
+    }
+
+    /// Without `--action`, `--control curve` keeps the developer proof curve: the same target, the
+    /// same view steps and the same gesture through `set-controls` `master`, with nothing seeded.
+    #[test]
+    fn without_an_action_the_curve_control_keeps_the_proof_curve() {
+        let field = resolve_field(Control::Curve, None, None).unwrap();
+        assert_eq!(field.action, SET_CONTROLS);
+        assert_eq!(field.parameter, MASTER);
+        assert_eq!(field.curve, Some(CurveOwner::Proof));
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            action: None,
+            parameter: None,
+            ..curve_options(&source, false, Some(8.0))
+        };
+        let values = gesture_values(6, Control::Curve, &field);
+        let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
+        let mut expected = vec![script::Step::call(
+            "edit.crop-fit",
+            json!({"aspect":"16:9","angle":8.0}),
+        )];
+        expected.extend(
+            [
+                "luxforge.basic",
+                "luxforge.pixel",
+                "luxforge.transform",
+                "luxforge.crop",
+            ]
+            .map(|module| script::Step::section(module, false)),
+        );
+        expected.push(script::Step::section(CONTROLS_MODULE, true));
+        expected.push(script::Step::tools_scroll(1.0));
+        assert_eq!(steps[..expected.len()], expected[..]);
+        assert_eq!(setup_steps(&options, &field, SourceTag::Jpeg), expected);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, script::Step::Api { method, .. } if method.starts_with("edit.set-"))),
+            "the proof curve is seeded"
+        );
+        let moves = curve_moves(&steps);
+        assert_eq!(moves.len(), values.len() + 1);
+        for (action, parameter, index, points) in moves {
+            assert_eq!(
+                (action.as_str(), parameter.as_str(), index),
+                (SET_CONTROLS, MASTER, 1)
+            );
+            assert!(points.iter().all(|point| point[0] == 0.5));
+        }
+    }
+
+    /// A module's curve commits [`MID_TONE_SEED`] through its own action after every other
+    /// precondition and before the first sample, so point 1, the one the gesture drags, is a
+    /// mid-tone point rather than the white point; a masked run seeds the masked layer it drafts.
+    #[test]
+    fn a_module_curve_seeds_a_mid_tone_point_before_the_drag() {
+        let field = tone_curve();
+        let source = PathBuf::from("unused.jpg");
+        for mask in [false, true] {
+            let options = curve_options(&source, mask, None);
+            for drag in [true, false] {
+                let values = gesture_values(6, Control::Curve, &field);
+                let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, drag);
+                let seeds: Vec<usize> = steps
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, step)| {
+                        matches!(step, script::Step::Api { method, .. } if method == "edit.set-curve")
+                    })
+                    .map(|(index, _)| index)
+                    .collect();
+                assert_eq!(seeds.len(), 1, "one seed commit");
+                let seed = seeds[0];
+                let mut params = json!({"luminance": [[0.0, 0.0], [0.5, 0.5], [1.0, 1.0]]});
+                if mask {
+                    params["mask"] = json!({"name": "Mask 1"});
+                    // The mask exists, and is selected, before the seed names it.
+                    assert_eq!(steps[..3], mask_precondition()[..]);
+                    assert!(seed >= 3);
+                }
+                assert_eq!(steps[seed], script::Step::call("edit.set-curve", params));
+                let first_move = steps
+                    .iter()
+                    .position(|step| matches!(step, script::Step::Curve(_)))
+                    .unwrap();
+                assert!(seed < first_move, "the seed precedes the first sample");
+                assert_eq!(
+                    first_move,
+                    setup_steps(&options, &field, SourceTag::Jpeg).len(),
+                    "the readiness frame follows the seed and the view steps"
+                );
+                // Point 1 sits at x 0.5 in the seed, and every move drags that point there.
+                assert_eq!(MID_TONE_SEED[DRAGGED_POINT], [0.5, 0.5]);
+                let moves = curve_moves(&steps);
+                assert_eq!(moves.len(), values.len() + usize::from(drag));
+                for (action, parameter, index, points) in moves {
+                    assert_eq!(
+                        (action.as_str(), parameter.as_str(), index),
+                        ("set-curve", "luminance", DRAGGED_POINT)
+                    );
+                    assert!(
+                        points
+                            .iter()
+                            .all(|point| point[0] == DRAGGED_X && (0.0..=1.0).contains(&point[1]))
+                    );
+                }
+                assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+            }
+        }
+        // The largest run the harness takes still fits the evidence script.
+        let options = Options {
+            samples: 32,
+            basic: true,
+            presence: true,
+            ..curve_options(&source, true, Some(8.0))
+        };
+        let values = gesture_values(33, Control::Curve, &field);
+        let steps = gesture_script(&options, &field, SourceTag::Raw, &values, true);
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS, "{}", steps.len());
+    }
+
+    /// The view steps collapse every section the panel lists above the module's, as it lists them
+    /// for the photo's kind and workspace, expand the module's and scroll the panel to its top.
+    #[test]
+    fn the_view_steps_collapse_the_sections_above_the_module_and_expand_it() {
+        let field = tone_curve();
+        let collapsed = |modules: &[&str]| {
+            let mut steps: Vec<script::Step> = modules
+                .iter()
+                .map(|module| script::Step::section(*module, false))
+                .collect();
+            steps.push(script::Step::section("luxforge.curve", true));
+            steps.push(script::Step::tools_scroll(0.0));
+            steps
+        };
+        // The presets and Basic sections sit above the Tone curve. The RAW module, between them in
+        // the registry, declares no controls and so draws no section for either kind of photo.
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Jpeg, false),
+            collapsed(&["luxforge.presets", "luxforge.basic"])
+        );
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Raw, false),
+            collapsed(&["luxforge.presets", "luxforge.basic"])
+        );
+        // The mask workspace lists only modules with a maskable effect.
+        assert_eq!(
+            curve_view_steps(&field, SourceTag::Jpeg, true),
+            collapsed(&["luxforge.basic"])
+        );
+        // Every collapsed section is one the registry orders before the module, and the panel
+        // lists it: no developer section, and nothing below the module is touched.
+        let registry = ModuleRegistry::builtin();
+        let order: Vec<&str> = registry
+            .descriptors()
+            .into_iter()
+            .map(|module| module.id.as_str())
+            .collect();
+        let curve = order.iter().position(|id| *id == "luxforge.curve").unwrap();
+        for step in curve_view_steps(&field, SourceTag::Raw, false) {
+            if let script::Step::Section(section) = step {
+                let position = order.iter().position(|id| *id == section.module).unwrap();
+                assert_eq!(section.expanded, position == curve, "{}", section.module);
+                assert!(position <= curve, "{} is below the curve", section.module);
+            }
+        }
+        // A slider has no view steps.
+        assert!(
+            curve_view_steps(&FieldTarget::basic_exposure(), SourceTag::Jpeg, false).is_empty()
+        );
+    }
+
+    /// A JPEG is told from a RAW file by its start-of-image marker.
+    #[test]
+    fn the_source_kind_is_read_from_the_first_bytes() {
+        let dir =
+            std::env::temp_dir().join(format!("luxforge-latency-kind-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let jpeg = dir.join("a.raw-named-jpeg");
+        fs::write(&jpeg, [0xFF, 0xD8, 0xFF, 0xE0]).unwrap();
+        let raw = dir.join("a.jpg");
+        fs::write(&raw, b"II*\0").unwrap();
+        assert_eq!(source_tag(&jpeg).unwrap(), SourceTag::Jpeg);
+        assert_eq!(source_tag(&raw).unwrap(), SourceTag::Raw);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A crop-start script at its largest sample count fits the evidence script, and the step
@@ -4087,7 +4620,7 @@ mod tests {
 
     #[test]
     fn curve_script_keeps_every_point_in_range_and_below_the_evidence_bound() {
-        let field = unused_field();
+        let field = FieldTarget::proof_curve();
         let values = gesture_values(31, Control::Curve, &field);
         let gesture = gesture_steps(&values, Control::Curve, &field);
         assert_eq!(gesture.len(), 31);
@@ -4104,7 +4637,7 @@ mod tests {
             assert_eq!(fraction, *expected);
             assert_eq!(f64::from(fraction as f32), *expected);
         }
-        let setup = curve_view_steps();
+        let setup = curve_view_steps(&field, SourceTag::Jpeg, false);
         assert_eq!(setup.len(), 6);
         assert_eq!(setup.last().unwrap(), &script::Step::tools_scroll(1.0));
         let burst = burst_step(&values, Control::Curve, &field).to_value();
@@ -4113,6 +4646,40 @@ mod tests {
             assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
         }
         assert!(setup.len() + gesture.len() + 2 <= script::MAX_SCRIPT_STEPS); // optional crop, then burst
+    }
+
+    #[test]
+    fn a_reused_generation_pairs_only_frames_after_the_input_was_queued() {
+        let field = FieldTarget::basic_exposure();
+        let mut events = vec![
+            json!({"event":"preview_displayed","elapsed_ms":5.0,
+                "detail":{"generation":4,"draft_revision":null}}),
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"exposure":0.0}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":20.0,
+                "detail":{"value":0.0,"generation":4,"draft_revision":1}}),
+        ];
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired.len(), 1);
+        assert!(paired[0].displayed_ms.is_nan());
+        events.push(json!({"event":"preview_displayed","elapsed_ms":30.0,
+            "detail":{"generation":4,"draft_revision":1}}));
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired[0].displayed_ms, 30.0);
+        events[3]["detail"]["draft_revision"] = json!(2);
+        assert!(inputs(&events, Control::Slider, &field).is_err());
+        events[3]["detail"]["draft_revision"] = json!(1);
+        events.extend([
+            json!({"event":"slider_draft_set","elapsed_ms":40.0,
+                "detail":{"fields":{"exposure":0.0}}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":50.0,
+                "detail":{"value":0.0,"generation":4,"draft_revision":2}}),
+            json!({"event":"preview_displayed","elapsed_ms":60.0,
+                "detail":{"generation":4,"draft_revision":2}}),
+        ]);
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired[0].displayed_ms, 30.0);
+        assert_eq!(paired[1].displayed_ms, 60.0);
     }
 
     #[test]
@@ -4126,13 +4693,14 @@ mod tests {
             json!({"event":"preview_displayed","elapsed_ms":35.0,
                 "detail":{"generation":7,"draft_revision":2}}),
         ];
-        let paired = inputs(&events, Control::Curve, &unused_field()).unwrap();
+        let proof = FieldTarget::proof_curve();
+        let paired = inputs(&events, Control::Curve, &proof).unwrap();
         assert_eq!(paired.len(), 1);
         assert_eq!(paired[0].value, 0.375);
         assert_eq!(paired[0].displayed_ms - paired[0].sent_ms, 25.0);
         let mut wrong = events;
         wrong[2]["detail"]["draft_revision"] = json!(3);
-        assert!(inputs(&wrong, Control::Curve, &unused_field()).is_err());
+        assert!(inputs(&wrong, Control::Curve, &proof).is_err());
     }
 
     #[test]
@@ -4231,6 +4799,7 @@ mod tests {
             max: 100.0,
             step: 1.0,
             origin: 0.0,
+            curve: None,
         };
         let values = field.gesture_values(31);
         assert_eq!(values.len(), 31);
