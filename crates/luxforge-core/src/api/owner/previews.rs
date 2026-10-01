@@ -203,6 +203,9 @@ struct View {
     /// brightness fingerprint: a view grouped before then may hold a metadata-less bracket it
     /// called a burst, so the view's end advances the index's revision ([`fingerprints_written`]).
     fingerprinted: bool,
+    /// The digest of the items it was made for: a view evaluated again into the same items keeps
+    /// this job rather than reading and queuing the same previews again.
+    items: u64,
 }
 
 impl View {
@@ -717,12 +720,21 @@ pub(super) fn want_view(
 /// the files' tiers, and then nothing is queued; photographs' camera previews take the room left,
 /// in the view's order, since a visible read of any other asks for its own. Lane D's `browse.view`
 /// calls it when it evaluates a view.
+///
+/// A view evaluated again into exactly the items of the client's running view job keeps that job,
+/// reading nothing. Photographs are read in batches of [`PHOTO_BATCH`], in the view's order, and
+/// once the queue has no room left only those whose task is already queued are read, so wanting a
+/// view of 100,000 photographs reads as many as can be queued, not all of them.
 pub(super) fn want_view_items(
     owner: &mut Owner,
     client: ClientId,
     items: &[ViewItem],
 ) -> Result<Option<JobId>, Error> {
+    let digest = items_digest(items);
     if let Some(view) = owner.catalog.previews.views.get(&client) {
+        if view.items == digest {
+            return Ok(Some(view.job_id.clone()));
+        }
         let job_id = view.job_id.clone();
         owner.jobs.cancel(&job_id, REPLACED);
         owner.catalog.previews.end_view(client, &mut owner.jobs);
@@ -740,35 +752,6 @@ pub(super) fn want_view_items(
         let index = owner.service.index()?;
         previews::grids_wanted(index.connection(), &files)?
     };
-    let mut cameras: Vec<(TaskKey, CameraSource)> = Vec::new();
-    if !rows.is_empty() {
-        owner.catalog.previews.renders.used();
-        let photos: Vec<CameraSource> = renders::photos_at(&owner.service, &rows)?
-            .into_iter()
-            .flatten()
-            .collect();
-        let current: Vec<_> = photos
-            .iter()
-            .map(|photo| (photo.asset_id.clone(), photo.entry_id.clone()))
-            .collect();
-        let grids = {
-            let index = owner.service.index()?;
-            previews::photo_grid_rows(index.connection(), &current)?
-        };
-        let lane = &owner.catalog.previews;
-        let mut seen = HashSet::new();
-        for (photo, grid) in photos.into_iter().zip(grids) {
-            let key = (ViewItem::Photo(photo.row), PreviewTier::Grid);
-            let signature = previews::recorded_signature(&photo);
-            if !grid.any
-                && seen.insert(key)
-                && lane.failures.get(&key, &signature).is_none()
-                && lane.deferred.get(&key, &signature).is_none()
-            {
-                cameras.push((key, photo));
-            }
-        }
-    }
     let lane = &owner.catalog.previews;
     let keys: Vec<TaskKey> = wanted
         .into_iter()
@@ -788,15 +771,13 @@ pub(super) fn want_view_items(
             "the preview queue cannot take the {new} grid previews this view lacks"
         )));
     }
-    let mut room = lane.queue.room() - new;
-    cameras.retain(|(key, _)| {
-        if lane.tasks.contains_key(key) {
-            return true;
-        }
-        let fits = room > 0;
-        room = room.saturating_sub(1);
-        fits
-    });
+    let room = lane.queue.room() - new;
+    let cameras = if rows.is_empty() {
+        Vec::new()
+    } else {
+        owner.catalog.previews.renders.used();
+        wanted_photos(owner, &rows, room)?
+    };
     if keys.is_empty() && cameras.is_empty() {
         return Ok(None);
     }
@@ -843,11 +824,83 @@ pub(super) fn want_view_items(
         deferred: 0,
         pending,
         fingerprinted: false,
+        items: digest,
     };
     view.progress();
     lane.views.insert(client, view);
     dispatch(owner);
     Ok(Some(job_id))
+}
+
+/// How many photographs a view's want reads at once: one query of the catalog and one of the
+/// index each.
+const PHOTO_BATCH: usize = 1024;
+
+/// A digest of a view's items, in order.
+fn items_digest(items: &[ViewItem]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    items.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The photographs at `rows`, in the view's order, whose camera preview a view wants: those with
+/// no grid row at all, less those the lane cannot read or deferred, each already queued or within
+/// the `room` the queue has left. Read in batches of [`PHOTO_BATCH`]; once the room is spent only
+/// the photographs whose task is already queued are read.
+fn wanted_photos(
+    owner: &Owner,
+    rows: &[AssetRowId],
+    mut room: usize,
+) -> Result<Vec<(TaskKey, CameraSource)>, Error> {
+    let lane = &owner.catalog.previews;
+    let key = |row: AssetRowId| (ViewItem::Photo(row), PreviewTier::Grid);
+    let mut cameras = Vec::new();
+    let mut seen = HashSet::new();
+    for batch in rows.chunks(PHOTO_BATCH) {
+        let read: Vec<AssetRowId> = if room > 0 {
+            batch.to_vec()
+        } else {
+            batch
+                .iter()
+                .copied()
+                .filter(|row| lane.tasks.contains_key(&key(*row)))
+                .collect()
+        };
+        if read.is_empty() {
+            continue;
+        }
+        let photos: Vec<CameraSource> = renders::photos_at(&owner.service, &read)?
+            .into_iter()
+            .flatten()
+            .collect();
+        let current: Vec<_> = photos
+            .iter()
+            .map(|photo| (photo.asset_id.clone(), photo.entry_id.clone()))
+            .collect();
+        let grids = {
+            let index = owner.service.index()?;
+            previews::photo_grid_rows(index.connection(), &current)?
+        };
+        for (photo, grid) in photos.into_iter().zip(grids) {
+            let key = key(photo.row);
+            let signature = previews::recorded_signature(&photo);
+            if grid.any
+                || !seen.insert(key)
+                || lane.failures.get(&key, &signature).is_some()
+                || lane.deferred.get(&key, &signature).is_some()
+            {
+                continue;
+            }
+            if lane.tasks.contains_key(&key) {
+                cameras.push((key, photo));
+            } else if room > 0 {
+                room -= 1;
+                cameras.push((key, photo));
+            }
+        }
+    }
+    Ok(cameras)
 }
 
 /// Start the workers with their own connections to the index, on the first task.
