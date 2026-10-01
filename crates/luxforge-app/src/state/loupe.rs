@@ -794,8 +794,13 @@ pub(crate) fn derive(state: &SelectState, browse: &BrowseSession) -> LoupeModel 
         .and_then(|index| summary.groups.moments.get(index as usize));
     model.hints = hints(moment.map(|_| unit.len));
     let Some(row) = row_at(state, subject.revision, subject.position) else {
-        model.info.moment = "Reading\u{2026}".into();
-        model.info.source = "Reading the frame\u{2026}".into();
+        if state.rows.revision() == subject.revision && state.rows.refused(subject.position) {
+            model.info.moment = "Frame unavailable".into();
+            model.info.source = "This frame's row could not be read".into();
+        } else {
+            model.info.moment = "Reading\u{2026}".into();
+            model.info.source = "Reading the frame\u{2026}".into();
+        }
         return model;
     };
     let index = subject.position - unit.start;
