@@ -49,15 +49,46 @@ fn planned(answer: GpuAnswer) -> GpuPlan {
 }
 
 /// The CPU's input of the plan's boundary layer, in linear light: the stack before it, rendered
-/// and decoded as the next segment decodes it.
+/// and decoded as the next segment decodes it. A boundary inside a colour run holds the run's
+/// unclamped value: when the run's segment has no exact step and no mask before the boundary, that
+/// is the segment's input with the run's earlier units applied in `f32`, as the CPU applies them;
+/// otherwise it is the quantized prefix, which the tolerance allows a code for.
 fn boundary_texels(
     registry: &ModuleRegistry,
     source: &SourceImage,
     recipe: &Recipe,
     plan: &GpuPlan,
 ) -> Vec<[f32; 3]> {
+    let compiled = registry
+        .compile(source.width, source.height, recipe)
+        .unwrap();
+    let (segment, start) = compiled.layers[plan.boundary.layer];
+    let operations = &compiled.segments[segment].operations;
+    let run: Option<Vec<&ColorOperation>> = plan
+        .boundary
+        .continues_run
+        .then(|| {
+            let uncut = operations
+                .iter()
+                .all(|operation| !matches!(operation, Processing::ExactGeometry(_)));
+            operations[..start]
+                .iter()
+                .map(|operation| match operation {
+                    Processing::Color(colour) if uncut && colour.mask().is_none() => Some(colour),
+                    _ => None,
+                })
+                .collect()
+        })
+        .flatten();
+    // The run starts from its segment's input: the stack before the segment's first layer.
+    let first = match &run {
+        Some(_) => compiled
+            .layers
+            .partition_point(|&position| position < (segment, 0)),
+        None => plan.boundary.layer,
+    };
     let prefix = Recipe {
-        layers: recipe.layers[..plan.boundary.layer].to_vec(),
+        layers: recipe.layers[..first].to_vec(),
         ..recipe.clone()
     };
     let input = render(registry, source, SnapshotId::new(), &prefix).unwrap();
@@ -67,7 +98,7 @@ fn boundary_texels(
         "the boundary is the stage its layer receives"
     );
     let table = decode_table();
-    input
+    let mut texels: Vec<[f32; 3]> = input
         .rgba
         .chunks_exact(4)
         .map(|pixel| {
@@ -77,7 +108,15 @@ fn boundary_texels(
                 table[usize::from(pixel[2])],
             ]
         })
-        .collect()
+        .collect();
+    for colour in run.into_iter().flatten() {
+        for (y, row) in texels.chunks_mut(input.width as usize).enumerate() {
+            for unit in colour.units() {
+                unit.apply_row(y as u32, 0, row);
+            }
+        }
+    }
+    texels
 }
 
 /// The largest difference, in output codes, between two RGBA8 frames of one size.
@@ -93,12 +132,14 @@ fn largest_difference(left: &[u8], right: &[u8]) -> u8 {
 /// How far the reference executor's frame may lie from the CPU's: nothing through a run of colour
 /// units over an exact tail, whose arithmetic is the same `f32` in the same order; one code where
 /// the CPU quantizes a frame the plan carries in float (a resample's input and output, a boundary
-/// inside a colour run) or folds a mask in `f64`; two through a warp's grid.
-fn tolerance(plan: &GpuPlan) -> u8 {
+/// inside a colour run), holds a stage boundary's frame at 16 bits that these tests read back at 8
+/// (`staged`), or folds a mask in `f64`; two through a warp's grid.
+fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
     if plan.geometry.affine().is_none() {
         2
     } else if plan.geometry.clamps
         || plan.boundary.continues_run
+        || staged
         || plan.operations().any(|operation| operation.mask.is_some())
     {
         1
@@ -123,10 +164,14 @@ fn assert_draws_the_cpu_frame(
         "{what}: the tail ends at the output stage"
     );
     let texels = boundary_texels(registry, source, recipe, plan);
-    let gpu = interpret::execute(plan, &texels).unwrap();
+    let compiled = registry
+        .compile(source.width, source.height, recipe)
+        .unwrap();
+    let staged = compiled.layers[plan.boundary.layer].0 > 0;
+    let gpu = interpret::execute(plan, &texels, &compiled.colour_operations()).unwrap();
     let difference = largest_difference(&cpu.rgba, &gpu);
     assert!(
-        difference <= tolerance(plan),
+        difference <= tolerance(plan, staged),
         "{what}: the plan draws up to {difference} codes from the CPU frame"
     );
 }
@@ -196,11 +241,11 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             false,
             "pixel-stage",
         ),
-        // The Basic exposure unit's program ships disabled; once it is planned anyway, the tone
-        // unit after it has none.
+        // Every colour unit of Basic, the mixer and the vignette has a program; a disabled one is
+        // planned only when qualifying.
         ("Basic and the colour mixer", 0, false, "disabled-program"),
-        ("Basic and the colour mixer", 0, true, "no-program"),
-        ("Basic and the colour mixer", 1, true, "no-program"),
+        ("Basic and the colour mixer", 0, true, "plan"),
+        ("Basic and the colour mixer", 1, true, "plan"),
         (
             "colour after a straightened crop's resample",
             1,
@@ -211,7 +256,13 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             "colour after a straightened crop's resample",
             2,
             false,
-            "no-program",
+            "disabled-program",
+        ),
+        (
+            "colour after a straightened crop's resample",
+            0,
+            true,
+            "plan",
         ),
         (
             "colour after a spatial operation's frame",
@@ -223,7 +274,7 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             "colour after a spatial operation's frame",
             2,
             true,
-            "no-program",
+            "plan",
         ),
         (
             "a spatial operation then a straightened crop",
@@ -444,12 +495,13 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
     );
 }
 
-/// The one shipped program is planned only when qualifying, and then draws the CPU frame.
+/// A disabled program is named, and planned only when qualifying, when it then draws the CPU
+/// frame.
 #[test]
 fn a_disabled_program_is_named_and_planned_only_when_qualifying() {
     let registry = colour_registry();
     let recipe = colour_recipe(vec![
-        Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.7})),
+        colour_layer(json!({"disabled": [0.7]})),
         crop(41, 29, 5.0),
     ]);
     let request = GpuPlanRequest::exact(0, stage(41, 29));
@@ -457,17 +509,17 @@ fn a_disabled_program_is_named_and_planned_only_when_qualifying() {
         answer(&registry, &recipe, request),
         GpuAnswer::Fallback(GpuFallback::DisabledProgram {
             layer: 0,
-            program: "lf_basic_exposure"
+            program: "lf_test_disabled"
         })
     );
     let plan = planned(answer(&registry, &recipe, request.qualifying()));
-    assert_eq!(plan.content[0].units[0].program.entry, "lf_basic_exposure");
+    assert_eq!(plan.content[0].units[0].program.entry, "lf_test_disabled");
     assert_draws_the_cpu_frame(
         &registry,
         &gradient(41, 29),
         &recipe,
         &plan,
-        "Basic exposure, qualifying",
+        "a disabled program, qualifying",
     );
 }
 
@@ -634,6 +686,7 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
             assert!(blend.invert, "{what}");
             assert_eq!(blend.scale, 0.8_f32, "{what}");
             assert_eq!(blend.supersample, supersample, "{what}");
+            let units = compiled.colour_operations();
             let context = RenderContext::new();
             let cpu = Render::compiled(
                 RenderSource::Byte(&source),
@@ -656,7 +709,7 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
                     ]
                 })
                 .collect();
-            let gpu = interpret::execute(&plan, &texels).unwrap();
+            let gpu = interpret::execute(&plan, &texels, &units).unwrap();
             let difference = largest_difference(&cpu.rgba, &gpu);
             assert!(
                 difference <= 1,

@@ -34,9 +34,11 @@ use crate::Error;
 use crate::{EFFECT_FORMAT, ErrorKind};
 use colour::ColourAdjust;
 use exposure::Exposure;
-/// The exposure unit's GPU program, for the core's WGSL validation.
-#[cfg(test)]
+/// The Basic units' GPU programs, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use colour::PROGRAM as COLOUR_ADJUST_PROGRAM;
 pub(crate) use exposure::PROGRAM as EXPOSURE_PROGRAM;
+pub(crate) use tone::PROGRAM as TONE_PROGRAM;
+pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use tone::Tone;

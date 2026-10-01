@@ -24,10 +24,22 @@ mod transform;
 mod vignette;
 
 pub use crate::render::map::{Mapping, RadialModel, WarpStep};
+
+/// Every GPU program a built-in module ships (`docs/design/gpu-preview.md`): each a `.wgsl` file
+/// beside the CPU unit it mirrors, in the order the units run in a stack. The core's tests validate
+/// each under the photo surface's calling convention and fail for a `.wgsl` file this list omits;
+/// the desktop's tests check each against the surface's own prelude and qualify each on a device.
+pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
+    &basic::WHITE_BALANCE_PROGRAM,
+    &basic::EXPOSURE_PROGRAM,
+    &basic::TONE_PROGRAM,
+    &basic::COLOUR_ADJUST_PROGRAM,
+    &curve::TONE_CURVE_PROGRAM,
+    &mixer::MIXER_PROGRAM,
+    &vignette::VIGNETTE_PROGRAM,
+];
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
-#[cfg(test)]
-pub(crate) use basic::EXPOSURE_PROGRAM;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{
