@@ -1,6 +1,6 @@
 //! The Select workspace ([catalog design](../../../../docs/design/catalog.md#workspaces)): the
 //! workspace switch, the sources, the grouped virtualized grid over the owner's view, keyboard
-//! navigation and selection, and the Info panel. **Lane D (views and desktop)** owns this seam.
+//! navigation and selection, and the Info panel.
 //!
 //! The desktop holds no catalog logic: every gesture sends the request its API equivalent sends,
 //! the owner holds the view and the selection, and this seam keeps only what it last read, what is

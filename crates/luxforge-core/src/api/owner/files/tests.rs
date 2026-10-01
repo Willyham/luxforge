@@ -54,7 +54,7 @@ fn envelope(request_id: &str) -> Value {
     json!({"request_id": request_id, "actor": "agent"})
 }
 
-/// Hand the files lane a test's message through the owner's own channel.
+/// Hand a test's message to the index lane through the owner's own channel.
 fn tell(owner: &OwnerHandle, message: FilesMessage) {
     owner
         .sender
@@ -1120,8 +1120,8 @@ fn mounted_labels(owner: &OwnerHandle, client: ClientId) -> Vec<Value> {
 }
 
 /// A question held on the query thread, as a hung network volume holds one, holds only the call
-/// that asked it: the owner answers every other call meanwhile — lane A's lists from what the
-/// survey learned, an index job, other lanes' reads — and the held call is answered once its
+/// that asked it: the owner answers every other call meanwhile — the index lane's lists from what
+/// the survey learned, an index job, other catalog reads — and the held call is answered once its
 /// question returns. Reading the lists opens no index on the owner.
 #[test]
 fn a_question_stuck_on_the_disk_never_holds_the_owner() {
@@ -1150,7 +1150,7 @@ fn a_question_stuck_on_the_disk_never_holds_the_owner() {
     }
     assert!(
         !fixture.index_dir().join(crate::INDEX_FILE).exists(),
-        "lane A's reads opened no index"
+        "the index lane's reads opened no index"
     );
     ok(owner, client, "catalog.info", json!({}));
     for source in [

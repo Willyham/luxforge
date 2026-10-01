@@ -2,7 +2,7 @@
 //! the filter segments over the groups, each group's header with Find in a folder… and its rows
 //! with what a search found, the floating bar with Stop search and Relink N, and the Info panel for
 //! the selected row. Drawn from `state/select_missing.rs`'s model with the `luxforge-ui` resolve
-//! pieces. **Lane D (views and desktop)** owns it.
+//! pieces.
 //!
 //! Like every view it reads only its model: each press sends the message its gesture is, and the
 //! app sends the request.

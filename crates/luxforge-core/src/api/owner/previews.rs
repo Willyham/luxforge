@@ -1,10 +1,10 @@
-//! **Lane B (previews)** on the owner: the preview lane's queue and workers (`crate::previews`),
-//! who wants each task, the jobs clients read, each client's view job and its progress, the
-//! failures and deferrals the lane remembers, waking clients whose previews were written, the
-//! handler of `preview.read` (`crate::catalog_types::api`), in `previews/regions.rs` the region
-//! jobs of `preview.region` on their own worker, and in `previews/renders.rs` developed
-//! photographs' previews: their render jobs on the render worker, the camera preview each shows
-//! until its first render, and following every commit.
+//! The preview lane on the owner: its queue and workers (`crate::previews`), who wants each task,
+//! the jobs clients read, each client's view job and its progress, the failures and deferrals the
+//! lane remembers, waking clients whose previews were written, the handler of `preview.read`
+//! (`crate::catalog_types::api`), in `previews/regions.rs` the region jobs of `preview.region` on
+//! their own worker, and in `previews/renders.rs` developed photographs' previews: their render
+//! jobs on the render worker, the camera preview each shows until its first render, and following
+//! every commit.
 //!
 //! Everything here is SQL and bookkeeping on the owner thread: a request reads the file's index
 //! row and its preview rows in one query, stats the one cached file it answers with, and queues a
@@ -47,7 +47,7 @@
 //!   released when a client's view is replaced, when the last client that asked for a region or
 //!   was served a developed tier disconnects, and when the lane stops; every cancel of running
 //!   work wakes the callers waiting for the development, so a cancelled one returns at once.
-//! - **Leaving the catalog.** [`forget_photographs`], for lane C's `asset.send-back` and
+//! - **Leaving the catalog.** [`forget_photographs`], for `asset.send-back` and
 //!   `catalog.empty-removed` once they commit: the photographs' waiting and running renders and
 //!   camera previews are cancelled, what the lane remembers of them forgotten, their rows deleted
 //!   on the owner and their files removed on a short-lived thread.
@@ -101,7 +101,7 @@ mod renders;
 pub(in crate::api) use regions::preview_region;
 pub(in crate::api::owner) use renders::follow_changes;
 
-/// Lane B's state on the owner.
+/// The preview lane's state on the owner.
 pub(super) struct PreviewsLane {
     poster: Poster,
     board: Arc<ActivityBoard>,
@@ -229,7 +229,7 @@ impl View {
     }
 }
 
-/// What lane B's workers post back, and what the lane's own handle sends it.
+/// What the preview lane's workers post back, and what the lane's own handle sends it.
 pub(super) enum PreviewsMessage {
     /// Wake this client when a preview it waits on is written ([`OwnerHandle::watch_previews`]).
     Watch {
@@ -271,7 +271,7 @@ pub(super) enum PreviewsMessage {
     /// Answer the tasks handed out so far, in order.
     #[cfg(test)]
     Dispatched(std::sync::mpsc::SyncSender<Vec<TaskKey>>),
-    /// Call [`want_view_items`] for this client, as lane D's `browse.view` will.
+    /// Call [`want_view_items`] for this client, as `browse.view` does.
     #[cfg(test)]
     WantView {
         client: ClientId,
@@ -290,7 +290,7 @@ pub(super) enum PreviewsMessage {
         items: Vec<ViewItem>,
         reply: std::sync::mpsc::SyncSender<Result<Vec<PreviewState>, Error>>,
     },
-    /// Call [`forget_photographs`] for these photographs, as lane C's handlers do after they
+    /// Call [`forget_photographs`] for these photographs, as the library's handlers do after they
     /// commit.
     #[cfg(test)]
     Forget {
@@ -429,9 +429,7 @@ impl PreviewsLane {
     }
 
     /// Each file's grid state, in the order given, in one query, reporting `unavailable` for a
-    /// file the lane found no usable preview in and holds no thumbnail stage of. For lane D's
-    /// `browse.rows`.
-    #[allow(dead_code, reason = "lane D's browse.rows calls it as it lands")]
+    /// file the lane found no usable preview in and holds no thumbnail stage of.
     pub(super) fn grid_states(
         &self,
         connection: &Connection,
@@ -455,12 +453,11 @@ impl PreviewsLane {
             .collect())
     }
 
-    /// Each item's grid state, in the order given, for lane D's `browse.rows`: a file's as
+    /// Each item's grid state, in the order given, for `browse.rows`: a file's as
     /// [`Self::grid_states`] answers it, and a developed photograph's against its current entry —
     /// `ready` for its rendered grid tier at this generation, `thumbnail` for a camera preview only
     /// or a render of another entry or generation, `pending` for nothing. Three queries at most:
     /// the files', the photographs' current entries in the catalog, and their grid rows.
-    #[allow(dead_code, reason = "lane D's browse.rows calls it as it lands")]
     pub(super) fn view_grid_states(
         &self,
         service: &EditorService,
@@ -695,7 +692,10 @@ pub(in crate::api) fn preview_read(
 }
 
 /// [`want_view_items`] for a view over files.
-#[allow(dead_code, reason = "lane D's browse.view calls it as it lands")]
+#[allow(
+    dead_code,
+    reason = "called by the tests; `browse.view` calls `want_view_items`"
+)]
 pub(super) fn want_view(
     owner: &mut Owner,
     client: ClientId,
@@ -718,8 +718,8 @@ pub(super) fn want_view(
 ///
 /// Answers the job, or none when nothing is lacking. `resource-limit` when the queue cannot take
 /// the files' tiers, and then nothing is queued; photographs' camera previews take the room left,
-/// in the view's order, since a visible read of any other asks for its own. Lane D's `browse.view`
-/// calls it when it evaluates a view.
+/// in the view's order, since a visible read of any other asks for its own. `browse.view` calls it
+/// when it evaluates a view.
 ///
 /// A view evaluated again into exactly the items of the client's running view job keeps that job,
 /// reading nothing. Photographs are read in batches of [`PHOTO_BATCH`], in the view's order, and
@@ -1221,8 +1221,8 @@ fn photo_of(tasks: &HashMap<TaskKey, Wanted>, key: &TaskKey) -> Option<crate::As
         .map(|camera| camera.asset_id.clone())
 }
 
-/// Forget `assets`, photographs that have left the catalog, in the preview lane: lane C calls it
-/// from `asset.send-back` and `catalog.empty-removed` once their change has committed, with the
+/// Forget `assets`, photographs that have left the catalog, in the preview lane: called from
+/// `asset.send-back` and `catalog.empty-removed` once their change has committed, with the
 /// photographs of that one library change (at most
 /// [`MAX_LIBRARY_BATCH`](crate::catalog_types::MAX_LIBRARY_BATCH), 50,000).
 ///
@@ -1247,10 +1247,6 @@ fn photo_of(tasks: &HashMap<TaskKey, Wanted>, key: &TaskKey) -> Option<crate::As
 /// could not be deleted (the index cannot be opened, or a worker held its write lock past the
 /// wait) are never served, since their photographs are gone, and cost only their bytes. A second
 /// call for the same photographs does nothing.
-#[allow(
-    dead_code,
-    reason = "lane C's asset.send-back and catalog.empty-removed call it after they commit"
-)]
 pub(super) fn forget_photographs(owner: &mut Owner, assets: &[crate::AssetId]) {
     if assets.is_empty() {
         return;
@@ -1425,7 +1421,7 @@ impl OwnerHandle {
         self.previews(PreviewsMessage::RenderCapacity(capacity));
     }
 
-    /// [`want_view`] for `client`, as lane D's `browse.view` will call it.
+    /// [`want_view`] for `client`.
     pub(crate) fn want_view(
         &self,
         client: ClientId,
@@ -1434,7 +1430,7 @@ impl OwnerHandle {
         self.want_view_items(client, files.into_iter().map(ViewItem::File).collect())
     }
 
-    /// [`want_view_items`] for `client`, as lane D's `browse.view` will call it.
+    /// [`want_view_items`] for `client`, as `browse.view` calls it.
     pub(crate) fn want_view_items(
         &self,
         client: ClientId,
@@ -1459,7 +1455,7 @@ impl OwnerHandle {
             .expect("the grid states")
     }
 
-    /// [`forget_photographs`] on the owner, as lane C's `asset.send-back` and
+    /// [`forget_photographs`] on the owner, as `asset.send-back` and
     /// `catalog.empty-removed` call it after they commit; answers once it has returned.
     pub(crate) fn forget_photographs(&self, assets: Vec<crate::AssetId>) {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);

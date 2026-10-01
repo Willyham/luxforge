@@ -1,4 +1,4 @@
-//! **Lane B (previews)** on the owner: the 100% region jobs of `preview.region`.
+//! The preview lane on the owner: the 100% region jobs of `preview.region`.
 //!
 //! A request is planned here from SQL alone — a file's index row, or the catalog's record of a
 //! developed photograph's original — and becomes one `preview-region` catalog job, whose result is

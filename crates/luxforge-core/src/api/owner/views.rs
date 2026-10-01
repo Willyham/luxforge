@@ -1,10 +1,10 @@
-//! **Lane D (views)** on the owner: each client's one view — its evaluated item list
+//! Browse views on the owner: each client's one view — its evaluated item list
 //! ([`ViewItem`]s, 16 bytes each) with its layout and selection, kept here and never in the
 //! session, whose `browse` part ([`BrowseSession`]) `session.state` reports — dropped when the
 //! client disconnects; the event cache; and the handlers of `event.list`, `browse.view`,
 //! `browse.rows`, `browse.facets` and `browse.select` (`crate::catalog_types::api`). Views are
 //! evaluated on the owner by `crate::browse`, which reads compact columns and does bookkeeping
-//! only, so this lane posts no messages.
+//! only, so nothing here posts messages.
 //!
 //! **Staleness.** A view is stamped with the catalog's latest library change and the index's
 //! revision. It is marked stale — here and in its session — after every change the owner records
@@ -31,7 +31,7 @@ use crate::{
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Lane D's state on the owner: every client's view and the events of the index.
+/// Browse views' state on the owner: every client's view and the events of the index.
 #[derive(Default)]
 pub(super) struct ViewsLane {
     views: HashMap<ClientId, View>,
@@ -105,7 +105,7 @@ pub(super) fn changed(owner: &mut Owner) {
     }
 }
 
-/// Lane C: photographs left the catalog outside the journal (`catalog.empty-removed`), which moves
+/// Photographs left the catalog outside the journal (`catalog.empty-removed`), which moves
 /// neither the library sequence nor the index revision a view is stamped with, so every view is
 /// marked stale here: none acts on or shows a deleted photograph until it is evaluated again.
 pub(super) fn photographs_deleted(owner: &mut Owner) {
@@ -842,7 +842,7 @@ mod tests {
         join.join().unwrap();
     }
 
-    /// The seam lane C's selection targets call: the selected items, in view order, refused
+    /// The seam the library's selection targets call: the selected items, in view order, refused
     /// without a view and when the view is stale.
     #[test]
     fn browse_the_selected_items_are_refused_when_stale() {

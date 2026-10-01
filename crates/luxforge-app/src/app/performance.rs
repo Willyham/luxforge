@@ -114,7 +114,7 @@ impl Editor {
         sampling(
             self.performance.expanded,
             // The section is pinned under the state panel in Develop and the sources panel in
-            // Select (catalog lane D).
+            // Select.
             self.left_panel_shown() && self.gallery_page().is_none(),
         )
     }

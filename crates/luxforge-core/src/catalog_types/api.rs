@@ -1,13 +1,12 @@
-//! Every catalog method, declared once: its parameters (the `host_params!` struct its handler will
-//! parse, so its schema is generated from the same declaration), its answer, its mutation envelope,
-//! the job it starts, the error codes it answers with and the lane that implements it
-//! (`CATALOG_METHODS`, the table the tests hold every registered method to).
+//! Every catalog method, declared once: its parameters (the `host_params!` struct its handler
+//! parses, so its schema is generated from the same declaration), its answer, its mutation
+//! envelope, the job it starts and the error codes it answers with (`CATALOG_METHODS`, the table
+//! the tests hold every registered method to).
 //!
-//! **None is registered here.** Each lane adds its method to the one method table
-//! (`api/methods.rs`, in its marked section) when it works, with the struct declared below, so
-//! `schema.list` never lists a method that does nothing; a test holds every registered catalog
-//! method to its declaration here. A mutation carries the `{request_id, actor}` envelope
-//! (`MutationRequest`) and its retries are answered by the owner's request table (`retries: Owner`).
+//! The one method table (`api/methods.rs`) registers each method with the struct declared below,
+//! and a test holds every registered catalog method to its declaration here. A mutation carries
+//! the `{request_id, actor}` envelope (`MutationRequest`) and its retries are answered by the
+//! owner's request table (`retries: Owner`).
 //! Every method may also answer `protocol` and `internal`, which are not listed.
 
 use super::{
@@ -22,7 +21,7 @@ use std::path::PathBuf;
 /// What a target list is, as every `targets` parameter's notes say.
 const TARGETS: &str = "{kind: paths, paths: [...]}, {kind: files, file_ids: [...]}, {kind: assets, asset_ids: [...]} or {kind: selection}, the caller's selection in its current view; at most 50,000 items";
 
-// ── Lane A: files ──────────────────────────────────────────────────────────────────────────────
+// Files: the index, cards, volumes and folders on disk.
 
 host_params! {
     /// `index.add-folder`.
@@ -54,7 +53,7 @@ host_params! {
     }
 }
 
-// ── Lane B: previews ───────────────────────────────────────────────────────────────────────────
+// Previews.
 
 host_params! {
     /// `preview.read`.
@@ -74,7 +73,7 @@ host_params! {
     }
 }
 
-// ── Lane C: catalog ────────────────────────────────────────────────────────────────────────────
+// The library: picks, catalog folders, collections, developing, originals and batches.
 
 host_params! {
     /// `pick.set`.
@@ -318,7 +317,7 @@ host_params! {
     }
 }
 
-// ── Lane D: views ──────────────────────────────────────────────────────────────────────────────
+// Views: events, browsing and the selection.
 
 host_params! {
     /// `event.list`.
@@ -370,27 +369,24 @@ host_params! {
 }
 
 /// The contract table every registered catalog method is held to by the tests below: each
-/// method's parameters, answer, job, errors and lane, declared once.
+/// method's parameters, answer, job and errors, declared once.
 #[cfg(test)]
 mod contract_table {
-    use super::super::CatalogLane;
     use super::super::jobs::{self, CatalogJob};
     use super::*;
     use crate::{
         ErrorKind,
         api::params::{HostParams, NoParams, ParamSchema},
     };
-    use CatalogLane::{Catalog, Files, Previews, Views};
     use ErrorKind::{
         Cancelled, Catalog as CatalogError, Conflict, Decode, FileAccess, Forbidden, Incompatible,
         NotReady, ResourceLimit, SourceUnavailable, UnsupportedColor, UnsupportedInput,
         UnsupportedProfile, Validation,
     };
 
-    /// One catalog method as the lanes implement it.
+    /// One catalog method's contract.
     pub(crate) struct MethodContract {
         pub name: &'static str,
-        pub lane: CatalogLane,
         /// Its parameters, generated with the struct its handler parses.
         pub params: &'static ParamSchema,
         /// What it answers: a type of `catalog_types`, or `session` for a method that answers with the
@@ -407,17 +403,15 @@ mod contract_table {
         pub notes: &'static str,
     }
 
-    /// `name` with parameters `P`, answering `answer`, by lane `lane`.
+    /// `name` with parameters `P`, answering `answer`.
     const fn method<P: HostParams>(
         name: &'static str,
-        lane: CatalogLane,
         answer: &'static str,
         errors: &'static [ErrorKind],
         notes: &'static str,
     ) -> MethodContract {
         MethodContract {
             name,
-            lane,
             params: &P::SCHEMA,
             answer,
             job: None,
@@ -447,35 +441,30 @@ mod contract_table {
     pub(crate) const CATALOG_METHODS: &[MethodContract] = &[
         method::<IndexAddFolder>(
             "index.add-folder",
-            Files,
             "IndexFolderAnswer",
             &[Validation, FileAccess, ResourceLimit, Conflict, CatalogError],
             "adds a folder on disk, with its subfolders, to the set organized into events, as one library change, and starts listing it; refused for a file, a package, Luxforge's own directories and a folder inside or around an indexed one",
         ),
         method::<IndexRemoveFolder>(
             "index.remove-folder",
-            Files,
             "LibraryAnswer",
             &[Validation, ResourceLimit, Conflict, CatalogError],
             "forgets an indexed folder as one library change; its files leave events and nothing on disk changes",
         ),
         method::<NoParams>(
             "index.folders",
-            Files,
             "IndexFolders",
             &[ResourceLimit, CatalogError],
             "the indexed folders, whether each is offline, watched or stale, and what its last listing found",
         ),
         method::<NoParams>(
             "card.list",
-            Files,
             "Cards",
             &[ResourceLimit, CatalogError],
             "mounted volumes with a DCIM folder",
         ),
         method::<IndexRefresh>(
             "index.refresh",
-            Files,
             "IndexReport",
             &[Validation, SourceUnavailable, FileAccess, ResourceLimit, Cancelled],
             "lists a source again and reads the headers of new and changed files, reconciling by signature; a job with progress; resource-limit past the file limit",
@@ -483,77 +472,66 @@ mod contract_table {
         .starts(&jobs::INDEX_REFRESH),
         method::<NoParams>(
             "volume.list",
-            Files,
             "Volumes",
             &[ResourceLimit, CatalogError],
             "the mounted volumes, the startup disk first, each with whether it is removable and a card, then the volumes the catalog knows that are not mounted, offline",
         ),
         method::<DiskFoldersParams>(
             "disk.folders",
-            Files,
             "DiskFolders",
             &[Validation, FileAccess, ResourceLimit],
             "a folder's immediate subfolders in name order without what indexing skips (hidden and system folders, packages, other applications' caches, Luxforge's own directories), bounded",
         ),
         method::<EventListParams>(
             "event.list",
-            Views,
             "EventList",
             &[Validation, CatalogError],
             "events over the indexed folders and mounted cards with their names, dates, place, cameras, counts, picks and offline files, newest first, and the months that hold them; query matches places, dates and cameras",
         ),
         method::<BrowseView>(
             "browse.view",
-            Views,
             "ViewSummary",
             &[Validation, ResourceLimit, CatalogError],
             "evaluates a query into the caller's one view, held by the owner, and answers its count, revision and group layout without a row",
         ),
         method::<BrowseRows>(
             "browse.rows",
-            Views,
             "ViewRows",
             &[Validation, Conflict],
             "a window of the caller's view by position",
         ),
         method::<BrowseFacets>(
             "browse.facets",
-            Views,
             "Facets",
             &[Validation, ResourceLimit, CatalogError],
             "counts per date, place, camera, lens, kind and pick; each count is the size of the view that value would give",
         ),
         method::<BrowseSelect>(
             "browse.select",
-            Views,
             "session",
             &[Validation, Conflict],
             "the caller's selection and active item in its view, replaced, added to, removed from or toggled by items, a range or all; session.state reports them as browse.selection",
         ),
         method::<PickSet>(
             "pick.set",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, Conflict, CatalogError],
             "picks or clears files as one library change; a pick keeps the file's path and signature until it is developed or cleared",
         ),
         method::<PickList>(
             "pick.list",
-            Catalog,
             "PickPage",
             &[Validation, CatalogError],
             "the picks in path order, paged",
         ),
         method::<PickPlan>(
             "pick.plan",
-            Catalog,
             "DevelopPlan",
             &[Validation, CatalogError],
             "what developing these picks would do: the picks by event, each event's proposed catalog folder (the one an earlier Develop from its span made, or a new one named after it) and the picks on removable media with or without a copy of the same name and size",
         ),
         method::<PickDevelop>(
             "pick.develop",
-            Catalog,
             "DevelopReport",
             &[Validation, SourceUnavailable, ResourceLimit, Conflict, CatalogError, Cancelled],
             "brings the picks into the catalog folders into names, in batches, each a library change: an identical file links, a missing original relinks on a fingerprint match, a card's pick uses its verified copy when use_copies is set and needs confirm_removable otherwise; committed picks are cleared, and a cancelled or failed job keeps what it committed and nothing partial",
@@ -561,168 +539,144 @@ mod contract_table {
         .starts(&jobs::DEVELOP_PICKS),
         method::<NoParams>(
             "folder.list",
-            Catalog,
             "CatalogFolders",
             &[CatalogError],
             "every catalog folder, parents first, with its count and year",
         ),
         method::<FolderCreate>(
             "folder.create",
-            Catalog,
             "FolderAnswer",
             &[Validation, Conflict, CatalogError],
             "makes an empty catalog folder",
         ),
         method::<FolderRename>(
             "folder.rename",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, CatalogError],
             "renames a catalog folder; nothing on disk changes",
         ),
         method::<FolderMove>(
             "folder.move",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, CatalogError],
             "nests a catalog folder in another, or at the top level",
         ),
         method::<FolderMerge>(
             "folder.merge",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, ResourceLimit, CatalogError],
             "moves a folder's photographs and subfolders into another and deletes it, as one library change",
         ),
         method::<FolderDelete>(
             "folder.delete",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, CatalogError],
             "deletes an empty catalog folder; conflict when it holds photographs or folders",
         ),
         method::<AssetMove>(
             "asset.move",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, CatalogError],
             "moves photographs into a catalog folder as one library change",
         ),
         method::<AssetTargets>(
             "asset.send-back",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, ResourceLimit, CatalogError],
             "deletes unedited photographs' catalog records and picks their files again; conflict for a photograph with history beyond its Original",
         ),
         method::<NoParams>(
             "collection.list",
-            Catalog,
             "Collections",
             &[CatalogError],
             "every collection, smart collection and group, parents first",
         ),
         method::<CollectionCreate>(
             "collection.create",
-            Catalog,
             "CollectionAnswer",
             &[Validation, Conflict, CatalogError],
             "makes a collection or a group",
         ),
         method::<CollectionCreateSmart>(
             "collection.create-smart",
-            Catalog,
             "CollectionAnswer",
             &[Validation, Conflict, CatalogError],
             "saves a query over photographs as a smart collection; a query naming a smart collection is refused",
         ),
         method::<CollectionUpdateSmart>(
             "collection.update-smart",
-            Catalog,
             "LibraryAnswer",
             &[Validation, CatalogError],
             "replaces a smart collection's query",
         ),
         method::<CollectionRename>(
             "collection.rename",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, CatalogError],
             "renames a collection, smart collection or group",
         ),
         method::<CollectionMove>(
             "collection.move",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, CatalogError],
             "moves a collection into a group, or to the top level",
         ),
         method::<CollectionDelete>(
             "collection.delete",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, ResourceLimit, CatalogError],
             "deletes a collection with its memberships, or an empty group",
         ),
         method::<CollectionMembers>(
             "collection.add",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, CatalogError],
             "adds photographs to a collection as one library change",
         ),
         method::<CollectionMembers>(
             "collection.remove",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, CatalogError],
             "removes photographs from a collection as one library change",
         ),
         method::<LibraryJournalParams>(
             "library.journal",
-            Catalog,
             "LibraryJournal",
             &[Validation, CatalogError],
             "library changes after a cursor, oldest first, without their rows",
         ),
         method::<LibraryInspect>(
             "library.inspect",
-            Catalog,
             "LibraryChangeDetail",
             &[Validation, CatalogError],
             "one library change with each item's value before and after",
         ),
         method::<LibraryRequest>(
             "library.undo",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, ResourceLimit, CatalogError],
             "reverts the calling client's latest change not yet undone by appending its inverse; conflict, naming the items, when a later change touched them",
         ),
         method::<LibraryRequest>(
             "library.redo",
-            Catalog,
             "LibraryAnswer",
             &[Validation, Conflict, ResourceLimit, CatalogError],
             "reverts the calling client's latest undo under the same rule",
         ),
         method::<AssetTargets>(
             "asset.remove",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, CatalogError],
             "moves photographs to Removed with their edits, history and collections kept; their files are untouched",
         ),
         method::<AssetTargets>(
             "asset.restore",
-            Catalog,
             "LibraryAnswer",
             &[Validation, ResourceLimit, CatalogError],
             "puts removed photographs back",
         ),
         method::<LibraryRequest>(
             "catalog.empty-removed",
-            Catalog,
             "EmptyRemovedAnswer",
             &[Forbidden, CatalogError],
             "permanently deletes the removed photographs' catalog records, the only destructive catalog operation; forbidden to an edit-authority client",
@@ -730,7 +684,6 @@ mod contract_table {
         .authority(),
         method::<SourceCheck>(
             "source.check",
-            Catalog,
             "AvailabilityReport",
             &[Validation, ResourceLimit, Cancelled],
             "checks and records where photographs' originals are: available, offline, missing or changed",
@@ -738,14 +691,12 @@ mod contract_table {
         .starts(&jobs::SOURCE_CHECK),
         method::<SourceMissing>(
             "source.missing",
-            Catalog,
             "MissingOriginals",
             &[Validation, CatalogError],
             "photographs whose original is not where it was, grouped by the folder on disk each was developed from, with reasons and the catalog folders they are in",
         ),
         method::<SourceFind>(
             "source.find",
-            Catalog,
             "FindReport",
             &[Validation, FileAccess, SourceUnavailable, ResourceLimit, Cancelled],
             "looks for each photograph's file under search_root by name and size, then fingerprint, and reports a result per photograph; changes nothing",
@@ -753,7 +704,6 @@ mod contract_table {
         .starts(&jobs::SOURCE_FIND),
         method::<SourceLocate>(
             "source.locate",
-            Catalog,
             "LibraryAnswer",
             &[Validation, FileAccess, SourceUnavailable, Conflict, ResourceLimit, Cancelled, CatalogError],
             "verifies one chosen file against a photograph's fingerprint and relinks it as one library change; a mismatch or a file another photograph names changes nothing",
@@ -761,14 +711,12 @@ mod contract_table {
         .starts(&jobs::SOURCE_LOCATE),
         method::<SourceRelink>(
             "source.relink",
-            Catalog,
             "LibraryAnswer",
             &[Validation, SourceUnavailable, Conflict, ResourceLimit, CatalogError],
             "commits verified pairs in one transaction as one library change, updating each photograph's source folder; a file changed since it was verified is refused",
         ),
         method::<BatchApplyPreset>(
             "batch.apply-preset",
-            Catalog,
             "BatchReport",
             &[Validation, ResourceLimit, Cancelled],
             "applies a preset to each photograph as its own history entry, reporting every one skipped with its reason",
@@ -776,7 +724,6 @@ mod contract_table {
         .starts(&jobs::BATCH_PRESET),
         method::<BatchExport>(
             "batch.export",
-            Catalog,
             "BatchReport",
             &[Validation, FileAccess, ResourceLimit, Cancelled],
             "exports each photograph's current entry as the single export does, into one folder, reporting every one skipped with its reason",
@@ -784,7 +731,6 @@ mod contract_table {
         .starts(&jobs::BATCH_EXPORT),
         method::<PreviewRead>(
             "preview.read",
-            Previews,
             "PreviewAnswer",
             &[
                 Validation,
@@ -804,7 +750,6 @@ mod contract_table {
         .starts(&jobs::PREVIEW_EXTRACT),
         method::<PreviewRegion>(
             "preview.region",
-            Previews,
             "RegionAnswer",
             &[
                 Validation,
@@ -822,7 +767,6 @@ mod contract_table {
         .starts(&jobs::PREVIEW_REGION),
         method::<NoParams>(
             "catalog.info",
-            Catalog,
             "CatalogInfo",
             &[CatalogError],
             "the catalog's path, identity and formats, its counts, and its index and previews' sizes",
@@ -848,16 +792,13 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::HashSet;
 
-    /// Every method says what it answers and does, and every lane implements some of them.
+    /// Every method says what it answers and does.
     #[test]
-    fn catalog_contracts_name_an_answer_notes_and_a_lane_for_every_method() {
-        let mut lanes = HashSet::new();
+    fn catalog_contracts_name_an_answer_and_notes_for_every_method() {
         for method in CATALOG_METHODS {
             assert!(!method.answer.is_empty(), "{} names no answer", method.name);
             assert!(!method.notes.is_empty(), "{} has no notes", method.name);
-            lanes.insert(method.lane);
         }
-        assert_eq!(lanes.len(), 4, "every lane implements catalog methods");
     }
 
     /// Every method is declared once, and every mutation carries the request envelope.
@@ -879,7 +820,7 @@ mod tests {
             if method.job.is_some() {
                 assert!(
                     method.errors.contains(&ResourceLimit) || method.errors.contains(&Cancelled),
-                    "{}: a job's lane is bounded or cancellable",
+                    "{}: a job is bounded or cancellable",
                     method.name
                 );
             }
@@ -908,7 +849,7 @@ mod tests {
         }
     }
 
-    /// A catalog method a lane has registered lists exactly the parameters and envelope declared
+    /// A registered catalog method lists exactly the parameters and envelope declared
     /// here, so the method table and the contracts cannot drift apart.
     #[test]
     fn a_registered_catalog_method_matches_its_contract() {

@@ -13,18 +13,19 @@
 //!   request joins the job for the same identity, including a finished report, and cancels release
 //!   interest as for source work. A newer request supersedes the pending one.
 //! - **Capability** jobs run on this table's `transfer` and `module` lanes and **export** on its
-//!   `export` lane. Each lane is one thread, spawned on its first job, that blocks on its channel
+//!   `export` lane. A lane is one thread, spawned on its first job, that blocks on its channel
 //!   while idle, runs one job at a time and posts the result into the catalog owner's own channel;
-//!   nothing polls. The table keeps each lane's waiting jobs, at most `LANE_QUEUE` of them, so a
+//!   nothing polls. The table keeps every lane's waiting jobs, at most `LANE_QUEUE` of them, so a
 //!   queued job can be cancelled without touching the thread. A lane job belongs to no client: any
 //!   client may read or cancel it, a cancel stops it for everyone, and a client's disconnect never
 //!   touches it.
-//! - **Catalog** jobs run on their catalog lane's own workers, and the lane tells the table when
-//!   one starts and ends. Most belong to no client, as a lane job does. A lane may instead share a
-//!   job by interest ([`Jobs::open_catalog_shared`]), one job per task that every request for the
-//!   task joins by its id ([`Jobs::join_catalog`]): a preview read's or render's. Such a job
-//!   belongs to the clients interested in it, as source work does: a cancel or disconnect
-//!   releases the caller's interest, and only the last release stops it, through its lane.
+//! - **Catalog** jobs run on the own workers of the lane that schedules them (the index, preview or
+//!   library lane), and the lane tells the table when one starts and ends. Most belong to no
+//!   client, as a lane job does. A lane may instead share a job by interest
+//!   ([`Jobs::open_catalog_shared`]), one job per task that every request for the task joins by its
+//!   id ([`Jobs::join_catalog`]): a preview read's or render's. Such a job belongs to the clients
+//!   interested in it, as source work does: a cancel or disconnect releases the caller's interest,
+//!   and only the last release stops it, through its lane.
 //!
 //! Progress travels from a worker to the owner through a [`JobControl`] the worker writes and the
 //! owner reads when a client asks.
@@ -114,21 +115,16 @@ pub enum JobKind {
     Task,
     /// A JPEG export.
     Export,
-    // The catalog's long-running work (`crate::catalog_types::jobs`), each scheduled by its own
-    // catalog lane, one marked section per lane.
-    // ── catalog lane A: files ──
+    // The catalog's long-running work (`crate::catalog_types::jobs`), each scheduled by the index,
+    // preview or library lane that runs it.
     /// Listing a card or folder and reading its headers.
     IndexRefresh,
-    // ── end lane A ──
-    // ── catalog lane B: previews ──
     /// Extracting a file's embedded previews into the grid and loupe tiers.
     PreviewExtract,
     /// A 100% region.
     PreviewRegion,
     /// Rendering a developed photograph's grid and large previews.
     PreviewRender,
-    // ── end lane B ──
-    // ── catalog lane C: catalog ──
     /// Bringing picks into the catalog.
     DevelopPicks,
     /// Checking originals' availability.
@@ -141,7 +137,6 @@ pub enum JobKind {
     BatchPreset,
     /// Exporting many photographs.
     BatchExport,
-    // ── end lane C ──
 }
 
 /// How a kind is scheduled and cancelled.
@@ -155,10 +150,10 @@ pub(crate) enum Family {
     Capability,
     /// The export lane; a cancel stops the job for everyone.
     Export,
-    /// A catalog lane, which schedules the job itself; a cancel stops it for everyone, as an
-    /// export's does, and the lane hears of it (`CatalogLanes::cancelled`). A job the lane shares
-    /// by interest ([`Jobs::open_catalog_shared`]) is released as a source job is instead, and the
-    /// lane hears when its last client leaves it.
+    /// The index, preview or library lane, which schedules the job itself; a cancel stops it for
+    /// everyone, as an export's does, and the lane hears of it (`CatalogLanes::cancelled`). A job
+    /// the lane shares by interest ([`Jobs::open_catalog_shared`]) is released as a source job is
+    /// instead, and the lane hears when its last client leaves it.
     Catalog,
 }
 
@@ -203,7 +198,7 @@ impl JobKind {
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect | Self::Analysis => {
                 None
             }
-            // A catalog lane runs its own workers.
+            // The index, preview and library lanes run their own workers.
             Self::IndexRefresh
             | Self::PreviewExtract
             | Self::PreviewRegion
@@ -504,7 +499,8 @@ pub(crate) struct Opened {
     pub control: Arc<JobControl>,
 }
 
-/// A job a catalog lane is about to run on its own workers ([`Family::Catalog`]). Its identity is
+/// A job the index, preview or library lane is about to run on its own workers
+/// ([`Family::Catalog`]). Its identity is
 /// chosen by the lane, so the work it queues can carry it before it is recorded.
 pub(crate) struct CatalogOpened {
     pub job_id: JobId,
@@ -841,7 +837,7 @@ impl Jobs {
         self.keys.get(key)
     }
 
-    // Shared jobs: source preparation, analysis and the catalog lanes' jobs.
+    // Shared jobs: source preparation, analysis and the catalog's jobs.
 
     /// Join the job for this key: `client` becomes one of its requesters, and one of the clients
     /// that want it while it is live. A finished job needs no worker, so joining it never revives
@@ -866,7 +862,8 @@ impl Jobs {
         self.finish(&job_id, Ok(output));
     }
 
-    /// Record a job a catalog lane runs on its own workers ([`Family::Catalog`]): `queued` until
+    /// Record a job the index, preview or library lane runs on its own workers
+    /// ([`Family::Catalog`]): `queued` until
     /// the lane starts it ([`Self::start`]), then finished through [`Self::finish`]. Like a lane
     /// job it belongs to no client: any client reads it, a cancel stops it for everyone
     /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
@@ -1158,7 +1155,7 @@ impl Jobs {
                 self.forget_oldest(|entry| entry.family() == Family::Analysis && report(entry));
             }
         }
-        // A catalog lane's kinds each keep their own share ([`Family::retained`]).
+        // The catalog's kinds each keep their own share ([`Family::retained`]).
         let share = move |entry: &Entry| match family {
             Family::Catalog => entry.record.kind == kind,
             _ => entry.family() == family,
@@ -1952,7 +1949,7 @@ mod tests {
         jobs.shutdown();
     }
 
-    /// A catalog lane's job belongs to no client: any client reads it, a disconnect leaves it, and
+    /// A catalog job belongs to no client: any client reads it, a disconnect leaves it, and
     /// a cancel stops it for everyone, at once while it waits and at its next checkpoint while its
     /// lane runs it. Its outcome is recorded like any other job's.
     #[test]

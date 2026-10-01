@@ -1,9 +1,8 @@
-//! **Lane A (files)** on the owner: the index lane's schedule and what it posts back, and the
-//! handlers of `index.add-folder`, `index.remove-folder`, `index.folders`, `index.refresh`,
-//! `card.list`, `volume.list` and `disk.folders` (`crate::catalog_types::api`). The index lane
-//! itself is `crate::index::lane`: its threads walk, reconcile, read headers and write the index;
-//! the owner only keeps its queue, opens and finishes its jobs, and records one event per batch it
-//! committed.
+//! The index lane on the owner: its schedule and what it posts back, and the handlers of
+//! `index.add-folder`, `index.remove-folder`, `index.folders`, `index.refresh`, `card.list`,
+//! `volume.list` and `disk.folders` (`crate::catalog_types::api`). The index lane itself is
+//! `crate::index::lane`: its threads walk, reconcile, read headers and write the index; the owner
+//! only keeps its queue, opens and finishes its jobs, and records one event per batch it committed.
 //!
 //! - **One job at a time.** `index.refresh` jobs (and forgetting a removed folder's rows) wait here,
 //!   at most [`MAX_WAITING`], and the lane runs one at a time. A refresh of a source already
@@ -84,7 +83,7 @@ fn unrequested() -> Origin {
     Origin::new(UNREQUESTED, "")
 }
 
-/// Lane A's state on the owner.
+/// The index lane's state on the owner.
 pub(super) struct FilesLane {
     poster: Poster,
     board: Arc<ActivityBoard>,
@@ -142,7 +141,8 @@ struct Running {
     origin: Origin,
 }
 
-/// What lane A's workers post back, and what a test hands the lane through the owner's channel.
+/// What the index lane's workers post back, and what a test hands the lane through the owner's
+/// channel.
 pub(super) enum FilesMessage {
     Lane(LaneEvent),
     /// The query thread answered the running call's question.

@@ -1,4 +1,4 @@
-//! Evidence steps on the Select workspace (**lane D**): each gesture sent through the message its
+//! Evidence steps on the Select workspace: each gesture sent through the message its
 //! control or the key table sends, and captured once nothing Select asked the owner for is in
 //! flight. An agent's pick is sent through the run's second client and captured once the desktop
 //! has evaluated its view again, which it learns of only through its own event sync. Each settled

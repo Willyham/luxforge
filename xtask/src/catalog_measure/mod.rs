@@ -24,10 +24,12 @@
 //!    where the file system refuses them), `drag-during-indexing` and
 //!    `drag-during-preview-backlog`: a Basic drag through `editor-latency`, alone and under the
 //!    catalog's background work.
-//! 6. `desktop` and `develop-switch`: the desktop's frame-time probes ([`desktop`], lane B's),
-//!    `not_measured` until they are built, and the Develop switch ([`develop_switch`], lane D's):
-//!    the frames from `→` until the next photograph's cached preview is drawn, over a development
-//!    set of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`] samples in its one launch.
+//! 6. `desktop` and `develop-switch`: the desktop's frame-time probes ([`desktop`], over
+//!    `catalog_probes`: the grid's scrolling, the loupe's keys and the focus check, each figure
+//!    `not_measured` or `skipped` only with its reason, such as no RAW corpus), and the Develop
+//!    switch ([`develop_switch`]): the frames from `→` until the next photograph's cached preview
+//!    is drawn, over a development set of generated JPEGs, at most [`develop_switch::MAX_SAMPLES`]
+//!    samples in its one launch.
 //!
 //! Every step is one release editor or one in-process core; editor launches are background-only
 //! through the scenario library. The run holds the host-wide timing lock, as every timing tool

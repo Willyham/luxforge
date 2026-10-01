@@ -1,7 +1,7 @@
 //! The format-12 row writers and readers every path that touches these tables shares: volumes,
 //! catalog folders, an asset's catalog columns and its capture row, collections and their members,
-//! picks and indexed folders. The import, the seeder (`crate::seed`) and the lanes write through
-//! these, so each table's SQL has one home; a lane adds the writer it needs here beside the others.
+//! picks and indexed folders. The import, the seeder (`crate::seed`), the index lane and the
+//! library write through these, so each table's SQL has one home.
 //!
 //! Each takes the caller's transaction ([`super::catalog::write`]) and validates nothing the schema
 //! does not: the caller has already decided the change is allowed.
@@ -326,8 +326,6 @@ pub(crate) fn insert_indexed_folder(
     Ok(())
 }
 
-// Each lane's row writers and readers, one marked section per lane.
-// ── catalog lane A: files ──
 /// The indexed folders and the volumes the catalog knows, as the index lane's owner glue reads
 /// them (`api/owner/files.rs`). One indexed folder is read by
 /// [`library_rows::indexed_folder`](library_rows::indexed_folder), which the journal shares.
@@ -390,10 +388,7 @@ pub(crate) mod folder_rows {
         .collect()
     }
 }
-// ── end lane A ──
-// ── catalog lane B: previews ──
-// ── end lane B ──
-// ── catalog lane C: catalog ──
+
 /// The rows the library journal reads and writes one item at a time (`crate::library::items`).
 /// Readers answer what is stored; writers answer SQLite's own result, with how many rows they
 /// changed, so the journal can tell a refused value (a constraint) from a failure, and refuse an
@@ -912,6 +907,3 @@ pub(crate) mod library_rows {
             .query_row([id.as_str()], |row| row.get(0))?)
     }
 }
-// ── end lane C ──
-// ── catalog lane D: views ──
-// ── end lane D ──

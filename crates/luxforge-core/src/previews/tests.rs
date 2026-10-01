@@ -1,7 +1,7 @@
 //! The preview cache and lane without the owner: keys and staleness by signature, the grid's two
 //! stages, upright tiers, camera JPEGs with bytes after EOI, the loupe budget and its eviction,
 //! a changed or missing file, the queue's order and bound, the failures remembered, and the reads
-//! other lanes use. Ignored tests run the generated image folders and the owner's authentic RAW
+//! others use. Ignored tests run the generated image folders and the owner's authentic RAW
 //! files.
 use super::{
     FILE_GRID_SIDE,
@@ -1077,7 +1077,7 @@ fn preview_cache_forgetting_photographs_deletes_every_row_and_file() {
     );
 }
 
-/// The grid states lane D reads and the sizes lane C reads, one query each.
+/// The grid states and the cache's sizes, one query each.
 #[test]
 fn preview_cache_grid_states_and_cache_bytes() {
     let mut fixture = Fixture::new("preview-cache-states");

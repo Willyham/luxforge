@@ -800,12 +800,10 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "removes the rows of artifacts no entry references and no task of this process published, then queues a source job that removes their files, object files without a row and staged files older than an hour; nothing an entry references is touched; returns {job_id, status, deduplicated} and the job result counts {rows, objects, temporary}",
         retries: Owner,
     ),
-    // The catalog's methods, one marked section per lane. Each is declared once in
-    // `catalog_types::api` (its parameter struct, answer, errors and notes) and registered here by
-    // its lane when it works; name the parameter struct and the handler by path
-    // (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`) so no lane edits the
-    // imports above. A mutation declares `retries: Owner`.
-    // ── catalog lane A: files ──
+    // The catalog's methods. Each is declared once in `catalog_types::api` (its parameter struct,
+    // answer, errors and notes) and registered here, naming the parameter struct and the handler by
+    // path (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`). A mutation declares
+    // `retries: Owner`.
     // The index lane: volumes, folders on disk, indexed folders and listings.
     owner!(
         "volume.list",
@@ -851,8 +849,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "removes an indexed folder as one library change, answering {outcome, change?, items, deduplicated}: its listing stops and its rows are forgotten unless another root lists them; nothing on disk changes; a folder that is not indexed changes nothing; library.undo adds it back and lists it again",
         retries: Owner,
     ),
-    // ── end lane A ──
-    // ── catalog lane B: previews ──
+    // The preview lane: previews and 100% regions.
     owner!(
         "preview.read",
         crate::catalog_types::api::PreviewRead,
@@ -865,8 +862,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::previews::preview_region,
         "starts a preview-region job and answers {job_id, status, deduplicated}; its result is {item, rect, frame, path, width, height, origin}: the 100% region of a file ({kind: file, file_id}) or of a developed photograph's original ({kind: photo, asset_id, entry_id?}), from the embedded full-size preview decoded for that rectangle alone (origin embedded; a JPEG original is its own) or from a neutral development of the frame, one RAW at a time, kept for the next region of the same frame (origin developed); rect is in the source's upright full-resolution pixels, or in frame when named, whose centre is mapped into the source's frame at 1:1; the answer's rect is clamped and in the answer's frame; path is a quality-95 JPEG valid until this client's next region; a client's next region cancels its previous one; regions run one at a time on their own worker, at most 9 waiting (resource-limit past it); a rectangle of no pixels, one starting outside its frame or past 32 MiB of pixels is refused; a changed or missing file is source-unavailable; job.cancel stops it"
     ),
-    // ── end lane B ──
-    // ── catalog lane C: catalog ──
     // Picks and the library journal.
     owner!(
         "pick.set",
@@ -1116,8 +1111,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written, skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-preset's; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
-    // ── end lane C ──
-    // ── catalog lane D: views ──
+    // Views: events, browsing and the selection.
     owner!(
         "event.list",
         crate::catalog_types::api::EventListParams,
@@ -1148,7 +1142,6 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::views::browse_select,
         "changes the caller's selection in its view and answers the session, whose browse.selection holds disjoint ascending position ranges, their count and the active position: the union of items, range and all is replaced, added, removed or toggled by mode (replace by default); without items, range or all only active moves, and {all: false} selects none; conflict when revision names another view; writes nothing"
     ),
-    // ── end lane D ──
 ];
 
 /// A resolved method: a host method from the static table, or one generated from an action, query

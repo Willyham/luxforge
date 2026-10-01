@@ -1,4 +1,4 @@
-//! The `grid_scroll` evidence step (**catalog lane D**; the grid is `app/select.rs`): the Select grid
+//! The `grid_scroll` evidence step (the grid is `app/select.rs`): the Select grid
 //! scrolled continuously for its timing, one offset per display frame.
 //!
 //! On each frame of the window's own frame clock, which exists only while the step scrolls, the

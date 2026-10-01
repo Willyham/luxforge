@@ -8,17 +8,15 @@ use crate::app::message::{
     mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, sync::SyncMessage,
     view::ViewMessage,
 };
-use crate::state::palette::Panel;
-// ── catalog lane D: views and desktop ──
 use crate::app::message::{
     develop::DevelopMessage,
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
     select_catalog::CatalogMessage,
 };
+use crate::state::palette::Panel;
 use crate::state::select::{SelectPanel, Shown};
 use crate::state::select_catalog::CatalogAction;
-// ── end lane D ──
 use iced::{
     Event, Subscription,
     event::Status,
@@ -67,7 +65,6 @@ pub(crate) struct KeyContext {
     /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
-    // ── catalog lane D: views and desktop ──
     /// The Select workspace is shown: its own keys act, and none of Develop's.
     pub(crate) select: bool,
     /// One of Select's chip or sort menus is open, so Escape closes it.
@@ -78,7 +75,6 @@ pub(crate) struct KeyContext {
     pub(crate) develop_confirm: bool,
     /// Develop has a development set, so `←` and `→` move through it.
     pub(crate) development_set: bool,
-    // ── end lane D ──
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -118,13 +114,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     {
         return Some(Message::History(HistoryMessage::CompareEnd));
     }
-    // ── catalog lane D: views and desktop ──
     // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
     // reaches it, so nothing acts on a photograph it does not show.
     if context.select {
         return select_keys(keyboard, status, context);
     }
-    // ── end lane D ──
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
     // The modifier the canvas reads lives in the app, so it follows every change while drafting.
@@ -188,12 +182,10 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             if character(key, "]") {
                 return Some(Message::View(ViewMessage::TogglePanel(Panel::Tools)));
             }
-            // ── catalog lane D: views and desktop ──
             // The filmstrip collapses and expands with the side panels' modifiers.
             if context.development_set && character(key, "f") {
                 return Some(Message::Develop(DevelopMessage::Collapse));
             }
-            // ── end lane D ──
         }
         return None;
     }
@@ -242,13 +234,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if status != Status::Ignored {
         return None;
     }
-    // ── catalog lane D: views and desktop ──
     // `G` shows the Select workspace. The switch answers the one start refusal, so an open draft
     // refuses it with its reason.
     if !*repeat && character(key, "g") && plain(modifiers) {
         return Some(Message::Select(SelectMessage::Switch(Shown::Select)));
     }
-    // ── end lane D ──
     // While a kind menu is open its letters start its kinds. The menu is what the person is looking
     // at, so its letters win over a canvas-mode letter that happens to be the same.
     if let Some((menu, letters)) = &context.kind_menu
@@ -312,7 +302,6 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             }
         }
     }
-    // ── catalog lane D: views and desktop ──
     // `←` and `→` move through the development set when no text field, draft or gesture holds
     // them, and repeat while held. A slider on the pointer's rail captures them itself.
     if context.development_set
@@ -334,7 +323,6 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => {}
         }
     }
-    // ── end lane D ──
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
     // nothing. A mode that owns a draft answered Escape above by cancelling that draft, which is
     // what returns it to the pointer.
@@ -399,7 +387,6 @@ fn character(key: &Key, letter: &str) -> bool {
     matches!(key, Key::Character(value) if value.eq_ignore_ascii_case(letter))
 }
 
-// ── catalog lane D: views and desktop ──
 /// No modifier held.
 fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
     !modifiers.shift() && !modifiers.alt() && !modifiers.control() && !modifiers.logo()
@@ -541,7 +528,6 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     }
     None
 }
-// ── end lane D ──
 
 /// The events the keyboard table can act on. Everything else never wakes the update function, so a
 /// pointer move costs nothing here.
@@ -643,13 +629,11 @@ mod tests {
             mask_menu_open: false,
             kind_menu: None,
             mask_keys: false,
-            // ── catalog lane D: views and desktop ──
             select: false,
             select_menu_open: false,
             loupe_open: false,
             develop_confirm: false,
             development_set: false,
-            // ── end lane D ──
         }
     }
 

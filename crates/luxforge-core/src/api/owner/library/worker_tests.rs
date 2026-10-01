@@ -1,5 +1,5 @@
-//! Lane C's worker: a job that commits its result in parts keeps every part it committed, in
-//! order, and a cancel between parts commits nothing more.
+//! The library lane's worker: a job that commits its result in parts keeps every part it committed,
+//! in order, and a cancel between parts commits nothing more.
 use super::{super::catalog::CatalogMessage, *};
 use crate::{
     ModuleRegistry,

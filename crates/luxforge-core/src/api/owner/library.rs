@@ -1,9 +1,9 @@
-//! **Lane C (catalog)** on the owner: the lane's worker ([`LibraryLane`], its thread started on
-//! the lane's first job), the jobs it runs and what they post back, and the handlers of `pick.*`,
-//! `folder.*`, `asset.move`, `asset.send-back`, `asset.remove`, `asset.restore`, `collection.*`,
-//! `library.*`, `catalog.empty-removed`, `source.check`, `source.missing`, `source.find`,
-//! `source.locate`, `source.relink`, `batch.*` and `catalog.info` (`crate::catalog_types::api`).
-//! The library itself is `crate::library`.
+//! The library lane on the owner: its worker ([`LibraryLane`], its thread started on the lane's
+//! first job), the jobs it runs and what they post back, and the handlers of `pick.*`, `folder.*`,
+//! `asset.move`, `asset.send-back`, `asset.remove`, `asset.restore`, `collection.*`, `library.*`,
+//! `catalog.empty-removed`, `source.check`, `source.missing`, `source.find`, `source.locate`,
+//! `source.relink`, `batch.*` and `catalog.info` (`crate::catalog_types::api`). The library itself
+//! is `crate::library`.
 //!
 //! One file per family of methods beside this one: `picks.rs` (`pick.*`), `journal.rs`
 //! (`library.*`), `organize.rs` (`folder.*`, `asset.move`, `collection.*`), `sources.rs`
@@ -162,9 +162,9 @@ struct Dispatch {
     hold: Option<Hold>,
 }
 
-/// Lane C's state on the owner: one worker thread, started on the lane's first job, that runs one
-/// job at a time while at most [`LANE_QUEUE`] wait, and blocks on its channel while idle. What it
-/// finds comes back as [`LibraryMessage::Done`], which the owner commits.
+/// The library lane's state on the owner: one worker thread, started on the lane's first job, that
+/// runs one job at a time while at most [`LANE_QUEUE`] wait, and blocks on its channel while idle.
+/// What it finds comes back as [`LibraryMessage::Done`], which the owner commits.
 pub(super) struct LibraryLane {
     poster: Poster,
     board: Arc<ActivityBoard>,
@@ -178,7 +178,7 @@ pub(super) struct LibraryLane {
     verified: crate::library::missing::Verifications,
 }
 
-/// What lane C's worker posts back.
+/// What the library lane's worker posts back.
 pub(super) enum LibraryMessage {
     /// The worker finished a job's work: the owner runs its commit and records the result.
     Done { job_id: JobId, commit: Commit },
@@ -481,7 +481,7 @@ fn name_the_job(owner: &mut Owner, first: usize, job_id: &JobId) {
 /// change to one photograph does, so a client showing it reads it again. A retry the journal
 /// answered announces nothing and hands over nothing, as its first attempt did.
 ///
-/// Every lane's library change goes through here, lane A's indexed folders included: its
+/// Every library change goes through here, the index lane's indexed folders included:
 /// `index.add-folder` passes `|tx| { upsert_volume(tx, &volume)?; journal::apply(tx, request,
 /// vec![(LibraryItem::IndexedFolder { path }, Desired::Value(Some(folder)))], label) }`, and
 /// `index.remove-folder` the same with `Desired::Value(None)`; undo and redo rewrite the
