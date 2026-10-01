@@ -965,6 +965,12 @@ impl RowCache {
             .any(|block| !self.blocks.contains_key(&block) && !self.failed.contains(&block))
     }
 
+    /// Whether the owner refused the block of rows `position` is in: it is not asked for again
+    /// until the view is evaluated again.
+    pub(crate) fn refused(&self, position: u32) -> bool {
+        self.failed.contains(&(position / ROW_BLOCK))
+    }
+
     /// The row read at `position` in this revision, never one carried from the last: what a pick
     /// or clear decides by, since a carried row's pick may be the one before the change.
     pub(crate) fn read(&self, position: u32) -> Option<&ViewRow> {

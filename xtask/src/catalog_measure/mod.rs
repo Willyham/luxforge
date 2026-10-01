@@ -35,7 +35,7 @@
 //! browse, which reads the whole trip and its previews into a new catalog each time, takes
 //! `min(samples, 5)`. `--scale tiny` proves the harness in a few minutes and claims nothing.
 mod client;
-mod data;
+pub(crate) mod data;
 pub mod desktop;
 pub mod develop_switch;
 mod measures;

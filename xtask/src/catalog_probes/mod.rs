@@ -21,8 +21,10 @@
 //! an eye sees.
 //!
 //! Each figure carries what was timed over what (`scope`), what was warm (`cache`), the design's
-//! target it answers and the counts it rests on (`detail`), and never a verdict. A probe that
-//! cannot run fails with an error naming its run directory, whose `result.json` lists every launch.
+//! target it answers and the counts it rests on (`detail`), and never a verdict. Each probe run —
+//! `grid`, `loupe`, `loupe-raw`, `focus`, `focus-raw` — runs and answers on its own: one that cannot
+//! run answers one failed figure of its own (`desktop.probe.<run>`, [`Outcome::Failed`]) naming its
+//! run directory, whose `result.json` lists every launch, and why; the other runs' figures stand.
 mod focus;
 mod grid;
 mod loupe;
@@ -36,7 +38,7 @@ use crate::{
 };
 use luxforge_core::{ApiRequest, ClientId, OwnerHandle};
 use luxforge_evidence::{self as script, SelectStep};
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 /// What the probes run with: exactly the measuring command's `DesktopContext`.
 pub(crate) struct ProbeContext {
@@ -81,6 +83,8 @@ pub(crate) enum Outcome {
     NotMeasured(String),
     /// Its data is absent from this host, and why.
     Skipped(String),
+    /// Its probe run returned an error, which says why.
+    Failed(String),
 }
 
 /// One figure for the measuring command's report: its metric and unit, its samples or why it has
@@ -124,6 +128,22 @@ impl Figure {
 
     fn skipped(metric: impl Into<String>, unit: &'static str, reason: impl Into<String>) -> Self {
         Self::new(metric, unit, Outcome::Skipped(reason.into()))
+    }
+
+    /// The probe run `run`, which writes into its directory under the probes' scratch, failed:
+    /// one figure of its own in place of the figures it would have taken.
+    fn failed(context: &ProbeContext, run: &str, error: impl fmt::Display) -> Self {
+        let dir = context.scratch.join(run);
+        Self::new(
+            format!("desktop.probe.{run}"),
+            "",
+            Outcome::Failed(format!("The {run} probe ({}): {error}", dir.display())),
+        )
+        .scope(format!(
+            "the {run} probe's run: every launch, its evidence and its result.json in {}",
+            dir.display()
+        ))
+        .detail(json!({"run": run, "dir": dir}))
     }
 
     fn scope(mut self, scope: impl Into<String>) -> Self {
@@ -224,7 +244,8 @@ impl Memory {
 
 /// Every desktop figure: grid scroll first, whose frame clock gives the display frame interval the
 /// loupe's stepping is counted in, then the loupe, the focus check, and the decoded previews held
-/// meanwhile.
+/// meanwhile. Each probe run answers on its own: a run that fails is one failed figure among the
+/// others' ([`Figure::failed`]). Only a context no probe can run with is an error.
 pub(crate) fn desktop_probes(context: &ProbeContext) -> Result<Vec<Figure>> {
     ensure(
         (1..=10_000).contains(&context.samples),
@@ -232,8 +253,20 @@ pub(crate) fn desktop_probes(context: &ProbeContext) -> Result<Vec<Figure>> {
     )?;
     let root = root()?;
     fs::create_dir_all(&context.scratch)?;
+    let mut memory = Memory::default();
+    let mut figures = Vec::new();
+    let frame_ms = match grid::probe(&root, context, &mut memory) {
+        Ok((grid, frame_ms)) => {
+            figures.extend(grid);
+            frame_ms
+        }
+        Err(error) => {
+            figures.push(Figure::failed(context, "grid", error));
+            None
+        }
+    };
     let generated = context.scratch.join("generated");
-    generate_catalog::run(
+    let images = generate_catalog::run(
         &generated,
         &generate_catalog::Options {
             seed: SEED,
@@ -241,34 +274,34 @@ pub(crate) fn desktop_probes(context: &ProbeContext) -> Result<Vec<Figure>> {
             assets: None,
             images: Some(IMAGES),
         },
-    )?;
-    let images = Source {
+    )
+    .map(|()| Source {
         label: format!(
             "{IMAGES} generated JPEGs (generate-catalog --images {IMAGES} --seed {SEED})"
         ),
         folder: generated.join("images"),
-    };
+    })
+    .map_err(|error| figures.push(Figure::failed(context, "generated", error)))
+    .ok();
     let raw = context.raw_trip.as_ref().map(|folder| Source {
         label: "the RAW trip".into(),
         folder: folder.clone(),
     });
-    let mut memory = Memory::default();
-    let (mut figures, frame_ms) = grid::probe(&root, context, &mut memory)?;
     figures.extend(loupe::probe(
         &root,
         context,
-        &images,
+        images.as_ref(),
         raw.as_ref(),
         frame_ms,
         &mut memory,
-    )?);
+    ));
     figures.extend(focus::probe(
         &root,
         context,
-        &images,
+        images.as_ref(),
         raw.as_ref(),
         &mut memory,
-    )?);
+    ));
     figures.extend(memory.figures());
     Ok(figures)
 }
