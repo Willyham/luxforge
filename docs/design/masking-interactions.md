@@ -53,9 +53,10 @@ worker: one active request, one replaceable pending request and one bounded cach
 carry source/entry, accepted draft ID/revision, pixel content, view/region, mask/component and a
 selection epoch. A newly created target is resolved inside the same effective evaluation that
 fills its grid. No temporary identity from another planning call or old selection is substituted.
-Old coverage is cleared at a target/visibility boundary; stale replies cannot restore it. Refusal
-reports an explicit outcome and reason. Neither the desktop nor the idle coverage cache retains
-an evaluation, RAW source or full-resolution coverage plane.
+Old coverage is cleared at a target/visibility boundary; stale replies cannot restore it. A
+request cancelled there while it computes delivers nothing, so it is not pending coverage and no
+evidence step waits on it. Refusal reports an explicit outcome and reason. Neither the desktop nor
+the idle coverage cache retains an evaluation, RAW source or full-resolution coverage plane.
 
 Continuous drawing lets an accepted snapshot finish while a newer snapshot waits. Progressive
 feedback stays within one draft and one unchanged source, base entry, layer stack, other masks,

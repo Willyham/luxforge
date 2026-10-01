@@ -10,10 +10,12 @@ use crate::index::lane::{VolumeEvent, WatchEvent};
 use luxforge_watch::RescanReason;
 use std::sync::mpsc::sync_channel;
 
-/// How many header reads the lane has taken in.
-fn reads(owner: &OwnerHandle) -> usize {
+/// How many header reads of files under `root` the lane has taken in. Only the test's own: the lane
+/// also lists any card the host mounts meanwhile, such as another test's disk image with a `DCIM`
+/// folder.
+fn reads(owner: &OwnerHandle, root: &Path) -> usize {
     let (reply, answer) = sync_channel(1);
-    tell(owner, FilesMessage::HeaderReads(reply));
+    tell(owner, FilesMessage::HeaderReads(root.to_path_buf(), reply));
     answer.recv().unwrap()
 }
 
@@ -100,7 +102,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), 5);
     let start = sequence(owner, client);
-    let before = reads(owner);
+    let before = reads(owner, &photos);
 
     arrive(&staging, &photos.join("new.jpg"), &camera);
     arrive(
@@ -146,7 +148,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     .unwrap();
     assert_eq!(edited.signature.len, camera.len() as u64 + 6);
     assert_eq!(
-        reads(owner) - before,
+        reads(owner, &photos) - before,
         3,
         "new.jpg, a.jpg and e.jpg are read; renamed.jpg is carried unread"
     );
@@ -188,7 +190,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     add_watched(owner, client, &photos, "add");
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), LINKS);
-    let before = reads(owner);
+    let before = reads(owner, &photos);
 
     let renamed = photos.join("renamed.jpg");
     std::fs::rename(link(5), &renamed).unwrap();
@@ -228,7 +230,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     assert_eq!(added.len(), LINKS, "each new link its own row");
     assert!(ids.values().all(|id| !added.contains(id)), "none moved");
     assert_eq!(
-        reads(owner) - before,
+        reads(owner, &photos) - before,
         LINKS,
         "each new link is read; the renamed one is carried unread"
     );
@@ -443,7 +445,9 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         );
         ok(owner, client, "job.cancel", json!({"job_id": job_id}));
         let job = finished(owner, client, &job_id);
-        gate.open();
+        // The gate stays shut while the folder is looked at: FSEvents may still deliver a change
+        // of the setup's, again or late, and a change to a stale folder lists it, which would make
+        // it current under the test. Held at the gate, that listing completes only once it opens.
         assert_eq!(job["status"], "cancelled", "{job}");
         assert_eq!(folder(owner, client, &photos)["stale"], true);
         let connection = database::connect_at(&fixture.index_dir()).unwrap();
@@ -462,6 +466,7 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
 
         // Its next change is applied after a listing of the whole folder, which makes it current.
         let before = listed_ms(&fixture, &photos);
+        gate.open();
         arrive(&staging, &photos.join("new.jpg"), &camera_jpeg());
         wait_for("the stale folder to be listed on its next change", || {
             let current = folder(owner, client, &photos).get("stale").is_none();
@@ -483,11 +488,13 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
             finished(owner, client, &entry["job_id"])["status"],
             "cancelled"
         );
-        gate.open();
+        // Shut until the catalog has closed: a listing a late change starts is held, and the
+        // close cancels it, so the folder is still stale.
         assert_eq!(folder(owner, client, &photos)["stale"], true);
     }
     let before = listed_ms(&fixture, &photos);
     fixture.stop();
+    gate.open();
     fixture.start();
     let owner = fixture.owner();
     let client = owner.register();
@@ -536,14 +543,13 @@ fn a_card_mounted_as_the_catalog_opens_is_listed() {
         listing(&fixture, files);
         let owner = fixture.owner();
         let client = owner.register();
-        let events = events_after(owner, client, 0);
-        let ended = events
-            .iter()
-            .rev()
-            .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
-            .unwrap_or_else(|| {
-                panic!("{request}: the listing is work no request made: {events:?}")
-            });
+        // The listing's rows commit before the owner records its end.
+        let ended = wait_for("the listing's end, as work no request made", || {
+            events_after(owner, client, 0)
+                .into_iter()
+                .rev()
+                .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
+        });
         assert_eq!(ended["request_id"], "", "{ended}");
         let job = finished(owner, client, &ended["job_id"]);
         assert_eq!(
@@ -650,7 +656,7 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
             .cloned()
             .collect::<Vec<_>>()
             == paths(&photos, &["a.jpg", "b.jpg", "new.jpg"])
-            && reads(owner) == 2;
+            && reads(owner, &photos) == 2;
         caught_up.then_some(())
     });
     assert_eq!(root(&fixture).0.listed_ms, listed, "replayed, not listed");

@@ -153,7 +153,9 @@ impl Fixture {
         crate::index::index_dir(&self.catalog)
     }
 
-    /// Every row of the index: its path, id and header state, in path order.
+    /// Every row of the index under the fixture's directory: its path, id and header state, in
+    /// path order. A card the host mounts meanwhile (another test's disk image with a `DCIM`
+    /// folder, in another process) is listed by the lane too, and is not the test's.
     fn rows(&self) -> Vec<(PathBuf, i64, String)> {
         let connection = database::connect_at(&self.index_dir()).unwrap();
         let mut statement = connection
@@ -169,6 +171,7 @@ impl Fixture {
             })
             .unwrap()
             .map(Result::unwrap)
+            .filter(|(path, ..)| path.starts_with(&self.dir))
             .collect()
     }
 

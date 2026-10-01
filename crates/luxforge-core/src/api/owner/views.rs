@@ -111,6 +111,21 @@ pub(super) fn changed(owner: &mut Owner) {
     }
 }
 
+/// Lane C: photographs left the catalog outside the journal (`catalog.empty-removed`), which moves
+/// neither the library sequence nor the index revision a view is stamped with, so every view is
+/// marked stale here: none acts on or shows a deleted photograph until it is evaluated again.
+pub(super) fn photographs_deleted(owner: &mut Owner) {
+    let Owner {
+        sessions, catalog, ..
+    } = owner;
+    for (client, view) in &mut catalog.views.views {
+        view.stale = true;
+        if let Some(session) = sessions.get_mut(client) {
+            session.browse.stale = true;
+        }
+    }
+}
+
 /// `client`'s view and session, the view marked stale first when the catalog or the index has
 /// moved on.
 fn current_view<'a>(
