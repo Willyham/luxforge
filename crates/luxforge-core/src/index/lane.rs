@@ -92,6 +92,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
 /// How the lane posts to the owner.
 pub(crate) type Post = Arc<dyn Fn(LaneEvent) + Send + Sync>;
 
+/// A test's gate and the folder whose work it holds.
+#[cfg(test)]
+pub(crate) type Hold = (Arc<luxforge_testbase::Gate>, PathBuf);
+
 /// What the lane needs to run.
 pub(crate) struct LaneConfig {
     /// The index directory. The lane opens the database in it on its first work (creating it, or
@@ -109,7 +113,11 @@ pub(crate) struct LaneConfig {
     pub board: Arc<ActivityBoard>,
     /// Held at each folder of a walk, for a test that acts while a listing runs.
     #[cfg(test)]
-    pub hold: Option<Arc<luxforge_testbase::Gate>>,
+    pub hold: Option<Hold>,
+    /// Held by a header worker before each read, until its work is cancelled, for a test that
+    /// acts while a read is unwritten.
+    #[cfg(test)]
+    pub hold_reads: Option<Hold>,
     /// The path of every header read the lane takes in, for a test that counts them.
     #[cfg(test)]
     pub reads: Arc<Mutex<Vec<PathBuf>>>,
@@ -338,6 +346,8 @@ struct Task {
     run: u64,
     control: Arc<JobControl>,
     file: FileTask,
+    #[cfg(test)]
+    hold: Option<Arc<luxforge_testbase::Gate>>,
 }
 
 /// A worker's answer: the outcome, or none when the job was cancelled before the read, tagged
@@ -353,6 +363,10 @@ fn header_worker(queued: &Mutex<Receiver<Task>>, answers: &SyncSender<Answer>) {
     loop {
         let task = queued.lock().expect("the index task queue").recv();
         let Ok(task) = task else { return };
+        #[cfg(test)]
+        if let Some(hold) = &task.hold {
+            hold.pass_unless(|| task.control.is_cancelled());
+        }
         let outcome = (!task.control.is_cancelled()).then(|| {
             catch_unwind(AssertUnwindSafe(|| read_file(&task.file))).unwrap_or_else(|_| {
                 HeaderOutcome::Read(Box::new(FileRecord {
@@ -548,6 +562,14 @@ impl Coordinator {
             last_stamp,
             ..
         } = self;
+        if connection.is_none() && !config.index_dir.join(database::INDEX_FILE).exists() {
+            // No index yet, so no root to keep or take offline: a volume event is only the
+            // owner's to hear, and creates no index of a catalog that has listed nothing.
+            if let Some(WatchEvent::Volume(event)) = first {
+                (config.post)(LaneEvent::Volume(event));
+            }
+            return;
+        }
         let Ok(connection) = open(config, connection) else {
             // Without the index nothing can be applied; the next listing of each root catches up.
             return;
@@ -1129,7 +1151,9 @@ impl Run<'_> {
         )?;
         let (control, stop) = (self.control.clone(), self.stop.clone());
         #[cfg(test)]
-        let hold = self.config.hold.clone();
+        let hold = (self.config.hold.as_ref())
+            .filter(|(_, under)| path.starts_with(under))
+            .map(|(gate, _)| gate.clone());
         let checkpoint = move || {
             #[cfg(test)]
             if let Some(hold) = &hold {
@@ -1225,11 +1249,17 @@ impl Run<'_> {
                 .map_err(|_| Error::internal("the index lane's header workers stopped"))?;
             self.answered(answer)?;
         }
+        #[cfg(test)]
+        let hold = (self.config.hold_reads.as_ref())
+            .filter(|(_, under)| file.path.starts_with(under))
+            .map(|(gate, _)| gate.clone());
         self.tasks
             .send(Task {
                 run: self.id,
                 control: self.control.clone(),
                 file,
+                #[cfg(test)]
+                hold,
             })
             .map_err(|_| Error::internal("the index lane's header workers stopped"))?;
         self.in_flight += 1;
