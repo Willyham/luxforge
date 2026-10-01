@@ -15,6 +15,16 @@
 use crate::{
     colour::oklab::{Oklab, chroma, from_oklab, hue_degrees, to_oklab},
     modules::PointwiseColor,
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
+};
+
+/// The colour unit's GPU program (`colour.wgsl`): Vibrance's gain and Saturation's.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_basic_colour_adjust",
+    source: include_str!("colour.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 2,
+    enabled: true,
 };
 
 /// Reference Oklab chroma of the most saturated point on the sRGB gamut surface (`(255, 0, 255)`,
@@ -183,6 +193,15 @@ impl PointwiseColor for ColourAdjust {
             "colour-adjust(vibrance:{:+}, saturation:{:+})",
             self.vibrance, self.saturation
         )
+    }
+
+    /// Vibrance's `f32` gain and Saturation's, as `apply_row` reads them: pure functions of the
+    /// two stored values.
+    fn gpu(&self) -> Option<GpuDescription> {
+        Some(GpuDescription::new(
+            &PROGRAM,
+            vec![self.vibrance_gain.to_bits(), self.saturation_k.to_bits()],
+        ))
     }
 }
 
@@ -622,5 +641,63 @@ mod tests {
             ColourAdjust::new(0.0, 31.0).describe(),
             "two different stored saturation values never describe themselves the same way"
         );
+    }
+
+    /// The GPU program's two words are the gains the CPU unit applies, two separately built units
+    /// that describe themselves identically carry identical uniforms, and the program's constants
+    /// and Oklab matrices are the `f32` values the CPU multiplies by, bit for bit.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let values: Vec<(f64, f64)> = [-100.0, -50.0, -0.0, 0.0, 1.0 / 3.0, 30.0, 100.0]
+            .iter()
+            .flat_map(|v| [-100.0, -0.0, 0.0, 15.0, 100.0].map(move |s| (*v, s)))
+            .collect();
+        let build = || -> Vec<ColourAdjust> {
+            values
+                .iter()
+                .map(|(vibrance, saturation)| ColourAdjust::new(*vibrance, *saturation))
+                .collect()
+        };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for unit in &first {
+            let description = unit.gpu().expect("the colour unit has a program");
+            assert_eq!(
+                description.words,
+                vec![unit.vibrance_gain.to_bits(), unit.saturation_k.to_bits()]
+            );
+        }
+        let constant = |name: &str| {
+            crate::render::gpu::testing::wgsl_constant(
+                &PROGRAM,
+                &format!("lf_basic_colour_adjust_{name}"),
+            )
+        };
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        for (name, matrix) in crate::colour::oklab::MATRICES {
+            for (row, values) in matrix.iter().enumerate() {
+                assert_eq!(
+                    bits(&constant(&format!("{name}_{row}"))),
+                    bits(values),
+                    "{name} row {row}"
+                );
+            }
+        }
+        for (name, value) in [
+            ("chroma_reference", CHROMA_REFERENCE),
+            ("chroma_low", CHROMA_LOW),
+            ("chroma_high", CHROMA_HIGH),
+            ("skin_centre", SKIN_HUE_CENTER_DEG),
+            ("skin_half_width", SKIN_HUE_HALF_WIDTH_DEG),
+            ("skin_protection", SKIN_PROTECTION),
+            ("chroma_epsilon", CHROMA_EPSILON),
+        ] {
+            assert_eq!(bits(&constant(name)), bits(&[value]), "{name}");
+        }
     }
 }

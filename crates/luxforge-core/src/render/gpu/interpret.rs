@@ -1,20 +1,56 @@
 //! A reference executor of a GPU plan, for the plan's tests: the passes the photo surface runs,
-//! on the CPU, with a Rust twin of each program evaluated in `f32` as a GPU evaluates it. A plan
-//! whose order, coordinate maps, mask data or geometry tail is wrong draws a different picture from
-//! the CPU frame it previews, so the tests compare the two.
+//! on the CPU. A test program runs as a Rust twin evaluated in `f32` as a GPU evaluates it; a
+//! shipped module's program runs as the CPU unit it was described from, handed the one pixel at
+//! the `pos` the plan gives it, since the desktop's readback tests qualify the program's own
+//! arithmetic against that unit on a device. A plan whose order, coordinate maps, mask data or
+//! geometry tail is wrong draws a different picture from the CPU frame it previews, so the tests
+//! compare the two.
 //!
-//! It is not a second renderer: it knows only the programs the tests use, and it reads nothing a
-//! plan does not carry.
+//! It is not a second renderer: it reads nothing a plan does not carry but the CPU units of its
+//! operations' layers.
 use super::{GpuComponent, GpuDescription, GpuMask, GpuOperation, GpuPlan};
-use crate::{ComponentMode, Error, colour::srgb, modules::Region};
+use crate::{
+    ComponentMode, Error,
+    colour::srgb,
+    modules::{ColorOperation, Region},
+};
+use std::collections::BTreeMap;
 
-/// A colour program's twin: `rgb` at `pos`.
-fn colour(unit: &GpuDescription, rgb: [f32; 3], pos: [f32; 2]) -> [f32; 3] {
+/// The colour operations of the compilation a plan was made from, by layer: the CPU units a
+/// shipped program's twin runs.
+pub(super) type Units = BTreeMap<usize, ColorOperation>;
+
+/// Unit `index` of `layer`'s operation over `rgb` at `pos`: a test program's Rust twin, or a
+/// shipped program's CPU unit.
+fn colour(
+    units: &Units,
+    layer: usize,
+    index: usize,
+    unit: &GpuDescription,
+    rgb: [f32; 3],
+    pos: [f32; 2],
+) -> [f32; 3] {
     let word = |index: usize| f32::from_bits(unit.words[index]);
     match unit.program.entry {
-        "lf_basic_exposure" | "lf_test_exposure" => rgb.map(|channel| channel * word(0)),
+        "lf_test_exposure" | "lf_test_disabled" => rgb.map(|channel| channel * word(0)),
         "lf_test_positional" => [rgb[0] + pos[0] / word(0), rgb[1] + pos[1] / word(1), rgb[2]],
-        other => panic!("the reference executor has no twin of {other}"),
+        other if other.starts_with("lf_test_") => {
+            panic!("the reference executor has no twin of {other}")
+        }
+        other => {
+            let cpu = &units
+                .get(&layer)
+                .unwrap_or_else(|| panic!("layer {layer} compiled no colour operation"))
+                .units()[index];
+            assert_eq!(
+                cpu.gpu().map(|description| description.program.entry),
+                Some(other),
+                "unit {index} of layer {layer} is not the one the plan describes"
+            );
+            let mut pixel = [rgb];
+            cpu.apply_row(pos[1] as u32, pos[0] as u32, &mut pixel);
+            pixel[0]
+        }
     }
 }
 
@@ -66,13 +102,16 @@ fn mask_coverage(mask: &GpuMask, x: i64, y: i64, rgb: [f32; 3]) -> f32 {
 }
 
 /// One operation over one pixel of its pass.
-fn operation(operation: &GpuOperation, rgb: [f32; 3], x: i64, y: i64) -> [f32; 3] {
+fn operation(units: &Units, operation: &GpuOperation, rgb: [f32; 3], x: i64, y: i64) -> [f32; 3] {
     let (px, py) = operation.position.at(x, y);
     let pos = [px as f32, py as f32];
     let output = operation
         .units
         .iter()
-        .fold(rgb, |value, unit| colour(unit, value, pos));
+        .enumerate()
+        .fold(rgb, |value, (index, unit)| {
+            colour(units, operation.layer, index, unit, value, pos)
+        });
     let Some(mask) = &operation.mask else {
         return output;
     };
@@ -113,7 +152,12 @@ fn bilinear(texels: &[[f32; 3]], width: u32, reads: Region, u: f32, v: f32) -> [
 
 /// The output frame, RGBA8, that `plan` draws from `boundary`'s texels: the content operations,
 /// the clamp, the tail through its matrix or grid, the output operations and the output codes.
-pub(super) fn execute(plan: &GpuPlan, boundary: &[[f32; 3]]) -> Result<Vec<u8>, Error> {
+/// `units` are the colour operations of the compilation the plan was made from.
+pub(super) fn execute(
+    plan: &GpuPlan,
+    boundary: &[[f32; 3]],
+    units: &Units,
+) -> Result<Vec<u8>, Error> {
     let stage = plan.boundary.stage;
     assert_eq!(
         boundary.len(),
@@ -129,7 +173,7 @@ pub(super) fn execute(plan: &GpuPlan, boundary: &[[f32; 3]]) -> Result<Vec<u8>, 
         *texel = plan
             .content
             .iter()
-            .fold(*texel, |value, step| operation(step, value, x, y));
+            .fold(*texel, |value, step| operation(units, step, value, x, y));
         if plan.geometry.clamps {
             *texel = texel.map(|channel| channel.clamp(0.0, 1.0));
         }
@@ -155,7 +199,7 @@ pub(super) fn execute(plan: &GpuPlan, boundary: &[[f32; 3]]) -> Result<Vec<u8>, 
             };
             let rgb = bilinear(&texels, stage.width, plan.geometry.reads, u, v);
             let rgb = plan.output.iter().fold(rgb, |value, step| {
-                operation(step, value, i64::from(x), i64::from(y))
+                operation(units, step, value, i64::from(x), i64::from(y))
             });
             let [r, g, b] = quantizer.pixel(rgb);
             rgba.extend([r, g, b, 255]);

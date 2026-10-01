@@ -3352,6 +3352,69 @@ cargo xtask preview-error --evidence /tmp/NEW_DIR --candidate-frame 4 --referenc
 
 The Presence pairs (candidate, reference) are the Detail control (2, 3), Texture (4, 5), Clarity (8, 9), Dehaze (12, 13) and all three (17, 18); the region pair is (3, 4). The white-balance pairs come from `cargo xtask smoke --scenario raw-panel --source RAW --output NEW_DIR`, whose evidence is in `NEW_DIR/app`: Fit (2, 3), 100% moving (5, 7) and held (6, 7).
 
+## GPU colour programs at Fit
+
+The seven pointwise colour programs ([GPU previews](../design/gpu-preview.md#qualifying-a-program)) against the CPU frame each previews, at Fit, on every colour recipe of the [corpus](../../fixtures/preview/corpus.json) (`basic`, `tone-curve`, `mixer`, `vignette` and the four together, `colour-stack`) over every source this host has. These are the figures the programs were enabled on. Pixel measurements, not timings.
+
+### Scope
+
+- **Measure.** `cargo xtask preview-error --candidate GPU.png --reference CPU.png --photo-rect 0,0,W,H --class pointwise` over each pair; all 35 measured pairs exit 0. Candidate is the GPU frame, reference the CPU frame; the photograph is the whole frame.
+- **The frames.** The CPU frame is the desktop's own Fit job (`ready_preview_job` with the Fit bounds) rendered by the preview worker's proxy phase, or, for a photograph that fits the bounds at its own size, its exact phase. The GPU frame is the same stack planned with `gpu_plan` over the same proxy source held as `rgba16float`, converted by `app::gpu_plan` and drawn by the photo surface's own assembled shader into its own sRGB-typed output format, read back headlessly. Both are compared at the stage's own size, before the surface's placement draws them on screen; [TASK-002's readback](../design/gpu-preview.md#where-the-code-lives) showed the two draw identically for identical codes.
+- **Bounds.** 1716 × 1508 physical pixels: an evidence run's 1440 × 900 logical window at 2× with both panels open, as `proxy_bounds_for` computes them.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app` at `138e02aa`, `gpu_colour_corpus_at_fit`. One run; the pixels are deterministic.
+- **Sources.** The generated 24 MP and 60 MP JPEGs and the Presence fixture (SHA-256 `b54c2a15…`, `b9e0118a…`, `2491b2d0…`, matching the corpus) and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest. The zone plate has no file and stays a gap. The Presence fixture (1440 × 960) fits the bounds, so its Fit frame is the exact render.
+- **RAW lens profiles.** The Z6 and Air 2S commit their lens profile at first open, a warp after the colour layers, so every one of their cells as the corpus states it plans a geometry tail the photo surface does not draw yet (`surface-geometry`, and for the vignette alone a warp before it): those cells are gaps until the geometry step exists. Each RAW cell is measured again with the profile reset (`edit.reset-lens-profile` before the recipe), named `lens reset` below. The X100VI commits no profile, so its two rows are the same stack.
+
+### Results
+
+Mean ΔE00, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame. The last column is the mean of the GPU's `f32` output through the reference quantizer instead of the hardware encoder.
+
+| Recipe, source | Stage | Mean | Worst block | p99 | Signed ΔL\* | Max | Mean, program output |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Basic, 24 MP JPEG | 1716 × 1144 | 0.009 | 0.04 | 0.04 | +0.001 | 0.21 | 0.000 |
+| Basic, 60 MP JPEG | 1716 × 1030 | 0.009 | 0.04 | 0.04 | +0.001 | 0.12 | 0.000 |
+| Basic, Presence fixture | 1440 × 960, exact | 0.009 | 0.22 | 0.50 | +0.000 | 0.84 | 0.010 |
+| Basic (RAW), Z6, lens reset | 1003 × 1508 | 0.051 | 0.19 | 0.93 | −0.001 | 1.97 | 0.020 |
+| Basic (RAW), X100VI | 1716 × 1144 | 0.037 | 0.28 | 0.72 | −0.000 | 2.20 | 0.013 |
+| Basic (RAW), Air 2S, lens reset | 1716 × 1143 | 0.045 | 0.13 | 0.79 | −0.002 | 1.97 | 0.015 |
+| Tone curve, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.01 | 0.00 | −0.000 | 0.29 | 0.000 |
+| Tone curve, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.02 | 0.00 | +0.000 | 0.29 | 0.000 |
+| Tone curve, Presence fixture | 1440 × 960, exact | 0.003 | 0.08 | 0.22 | +0.000 | 0.39 | 0.001 |
+| Tone curve, Z6, lens reset | 1003 × 1508 | 0.100 | 0.33 | 1.12 | −0.001 | 2.43 | 0.015 |
+| Tone curve, X100VI | 1716 × 1144 | 0.074 | 0.36 | 0.97 | −0.003 | 2.31 | 0.012 |
+| Tone curve, Air 2S, lens reset | 1716 × 1143 | 0.109 | 0.28 | 1.08 | −0.002 | 2.40 | 0.012 |
+| Mixer, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.02 | 0.00 | +0.000 | 0.15 | 0.000 |
+| Mixer, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.01 | 0.00 | −0.000 | 0.16 | 0.000 |
+| Mixer, Presence fixture | 1440 × 960, exact | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 0.000 |
+| Mixer, Z6, lens reset | 1003 × 1508 | 0.093 | 0.30 | 1.08 | −0.003 | 2.33 | 0.034 |
+| Mixer, X100VI | 1716 × 1144 | 0.080 | 0.32 | 0.97 | −0.003 | 2.32 | 0.018 |
+| Mixer, Air 2S, lens reset | 1716 × 1143 | 0.086 | 0.27 | 1.03 | −0.004 | 2.38 | 0.015 |
+| Vignette, 24 MP JPEG | 1716 × 1144 | 0.022 | 0.17 | 0.31 | +0.001 | 0.77 | 0.004 |
+| Vignette, 60 MP JPEG | 1716 × 1030 | 0.022 | 0.17 | 0.31 | +0.001 | 0.63 | 0.004 |
+| Vignette, Presence fixture | 1440 × 960, exact | 0.009 | 0.14 | 0.34 | −0.002 | 0.40 | 0.002 |
+| Vignette, Z6, lens reset | 1003 × 1508 | 0.115 | 0.34 | 1.15 | −0.002 | 2.43 | 0.013 |
+| Vignette, X100VI | 1716 × 1144 | 0.089 | 0.34 | 1.04 | −0.003 | 2.32 | 0.010 |
+| Vignette, Air 2S, lens reset | 1716 × 1143 | 0.122 | 0.33 | 1.12 | −0.001 | 2.43 | 0.010 |
+| Colour stack, 24 MP JPEG | 1716 × 1144 | 0.009 | 0.10 | 0.22 | +0.003 | 0.62 | 0.004 |
+| Colour stack, 60 MP JPEG | 1716 × 1030 | 0.009 | 0.09 | 0.22 | +0.003 | 0.62 | 0.004 |
+| Colour stack, Presence fixture | 1440 × 960, exact | 0.043 | 0.42 | 0.92 | −0.001 | 1.73 | 0.013 |
+| Colour stack (RAW), Z6, lens reset | 1003 × 1508 | 0.111 | 0.31 | 1.10 | −0.003 | 2.37 | 0.042 |
+| Colour stack (RAW), X100VI | 1716 × 1144 | 0.076 | 0.32 | 0.99 | −0.001 | 2.26 | 0.015 |
+| Colour stack (RAW), Air 2S, lens reset | 1716 × 1143 | 0.093 | 0.27 | 1.04 | −0.003 | 2.29 | 0.017 |
+
+Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.122, a worst block of 0.42, a p99 of 1.15 and a ΔL\* of −0.004. The RAW cells move more than the JPEGs, mostly through the hardware encoder: their program-output means are 0.010 to 0.042, which is the half-float boundary (the CPU reads the developed planes in `f32`) and the programs' own rounding. On the JPEGs, whose boundary is each 8-bit code's linear value held as a half float, the program output is within 0.004 of the CPU's.
+
+### Reproducing it
+
+```sh
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_colour_corpus -- --ignored --nocapture
+```
+
+The run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png` for each measured cell, `cells.json` with both figures and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class pointwise` line per pair.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.

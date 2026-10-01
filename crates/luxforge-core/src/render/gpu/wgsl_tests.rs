@@ -15,13 +15,14 @@ use naga::{
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Every GPU program a built-in module ships. Each is a `.wgsl` file beside its unit, and
-/// [`every_wgsl_file_in_the_core_is_a_shipped_program`] fails for a file missing here.
-static SHIPPED: &[&GpuProgram] = &[&crate::modules::EXPOSURE_PROGRAM];
+/// Every GPU program a built-in module ships ([`crate::GPU_PROGRAMS`]). Each is a `.wgsl` file
+/// beside its unit, and [`every_wgsl_file_in_the_core_is_a_shipped_program`] fails for a file
+/// missing there.
+static SHIPPED: &[&GpuProgram] = crate::GPU_PROGRAMS;
 
 /// A copy of the convention's prelude: the concatenated uniform words and storage blocks, and the
 /// four helpers a program reads them through.
-const PRELUDE: &str = "\
+pub(super) const PRELUDE: &str = "\
 @group(0) @binding(0) var<storage, read> lf_words: array<u32>;
 @group(0) @binding(1) var<storage, read> lf_blocks: array<u32>;
 fn lf_word(i: u32) -> u32 { return lf_words[i]; }

@@ -3,15 +3,14 @@
 use crate::modules::PointwiseColor;
 use crate::render::gpu::{GpuDescription, GpuProgram, GpuProgramKind};
 
-/// The exposure unit's GPU program. It ships disabled: it has not yet been qualified against the
-/// pointwise error limits (`docs/design/gpu-preview.md`), so a stack holding it takes the CPU path
-/// and names it.
+/// The exposure unit's GPU program, qualified against the pointwise error limits
+/// (`docs/design/gpu-preview.md`).
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_basic_exposure",
     source: include_str!("exposure.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 1,
-    enabled: false,
+    enabled: true,
 };
 
 /// Multiply every linear-light channel by `2^EV`.
@@ -165,8 +164,8 @@ mod tests {
             assert_eq!(description.program.entry, "lf_basic_exposure");
         }
         assert!(
-            !PROGRAM.enabled,
-            "the exposure program ships disabled until it is qualified"
+            PROGRAM.enabled,
+            "the exposure program met the pointwise limits and ships enabled"
         );
     }
 }

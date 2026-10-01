@@ -42,11 +42,12 @@ const REQUIRED_SOURCES: [&str; 7] = [
 
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
 /// the vignette and geometry under a colour edit, spatial for Presence and Detail.
-const FAMILIES: [(&str, Class); 14] = [
+const FAMILIES: [(&str, Class); 15] = [
     ("basic", Class::Pointwise),
     ("tone-curve", Class::Pointwise),
     ("mixer", Class::Pointwise),
     ("vignette", Class::Pointwise),
+    ("colour-stack", Class::Pointwise),
     ("mask-linear", Class::Pointwise),
     ("mask-radial", Class::Pointwise),
     ("mask-brush", Class::Pointwise),
@@ -60,7 +61,8 @@ const FAMILIES: [(&str, Class); 14] = [
 ];
 
 /// The families the design lists, which the corpus must hold at least one recipe of. The component
-/// algebra's `mask-composed` is a recipe the corpus adds beyond them.
+/// algebra's `mask-composed` and the four colour recipes together, `colour-stack`, are recipes the
+/// corpus adds beyond them.
 const REQUIRED_FAMILIES: [&str; 13] = [
     "basic",
     "tone-curve",

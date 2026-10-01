@@ -20,6 +20,18 @@ use crate::{
         srgb::{self, decode_f32, encode_f32},
     },
     modules::PointwiseColor,
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
+};
+use std::sync::Arc;
+
+/// The Tone curve unit's GPU program (`unit.wgsl`): the knot count, the curve's ends and black
+/// level as words, and the interpolant's knots, inverse widths and coefficients as a storage block.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_curve_tone_curve",
+    source: include_str!("unit.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 4,
+    enabled: true,
 };
 
 /// The curve's interpolant over its checked points, built once in `f64`: the knots, the segment
@@ -245,6 +257,32 @@ impl PointwiseColor for ToneCurve {
             .map(|[x, y]| format!("[{x}, {y}]"))
             .collect();
         format!("{}({})", super::CURVE_EFFECT, points.join(", "))
+    }
+
+    /// The knot count, the curve's ends and its black level as words, and the knots, inverse
+    /// widths and per-segment coefficients as the block: the `f32` values `apply_row` reads, all
+    /// pure functions of the points the description writes. The block is built here, `O(points)`,
+    /// so a compile that never plans for the GPU builds nothing.
+    fn gpu(&self) -> Option<GpuDescription> {
+        let block: Vec<u32> = self
+            .x32
+            .iter()
+            .chain(&self.inv_h)
+            .chain(self.coefficients.iter().flatten())
+            .map(|value| value.to_bits())
+            .collect();
+        Some(
+            GpuDescription::new(
+                &PROGRAM,
+                vec![
+                    self.x32.len() as u32,
+                    self.first.to_bits(),
+                    self.last.to_bits(),
+                    self.floor.to_bits(),
+                ],
+            )
+            .with_block(Arc::from(block)),
+        )
     }
 }
 
@@ -604,6 +642,47 @@ mod tests {
         for k in 0..=256 {
             let x = f64::from(k) / 256.0;
             assert_eq!(identity.value(x), x);
+        }
+    }
+
+    /// The GPU program's words are the knot count, the curve's ends and its black level, its
+    /// block the knots, inverse widths and coefficients the CPU unit evaluates, and two separately
+    /// built units that describe themselves identically carry identical uniforms and blocks.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let sets: Vec<Vec<[f64; 2]>> = vec![
+            vec![[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]],
+            vec![[0.0, 0.1], [1.0, 0.9]],
+            vec![[0.1, 0.0], [0.5, 0.5], [0.500_000_01, 0.6], [0.9, 1.0]],
+            (0..16)
+                .map(|k| {
+                    let x = f64::from(k) / 15.0;
+                    [x, x * x]
+                })
+                .collect(),
+        ];
+        let build = || -> Vec<ToneCurve> { sets.iter().map(|points| unit(points)).collect() };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for curve in &first {
+            let description = curve.gpu().expect("the curve has a program");
+            let n = curve.x32.len();
+            assert_eq!(description.words[0] as usize, n);
+            assert_eq!(f32::from_bits(description.words[3]), curve.floor);
+            let block = description.block.expect("the knots are a block");
+            assert_eq!(block.len(), n + (n - 1) + 4 * (n - 1));
+            assert_eq!(f32::from_bits(block[n - 1]), curve.x32[n - 1]);
+            assert_eq!(f32::from_bits(block[n]), curve.inv_h[0]);
+            assert_eq!(f32::from_bits(block[2 * n - 1]), curve.coefficients[0][0]);
+            assert_eq!(
+                f32::from_bits(block[block.len() - 1]),
+                curve.coefficients[n - 2][3]
+            );
         }
     }
 }
