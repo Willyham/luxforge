@@ -14,10 +14,16 @@ path = "src/lib.rs"
 iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true
+# Half floats for the GPU stage's rgba16float boundary. Already in the build through naga, pinned to
+# that version, so it adds no package; no feature is asked for.
+half = { version = "=2.7.1", default-features = false }
 
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
+# The one sRGB reference, for the GPU stage's identity readback. It depends on no workspace crate,
+# so it brings no core into the widget crate's tests.
+luxforge-reference = { path = "../luxforge-reference" }
 
 [lints]
 workspace = true
