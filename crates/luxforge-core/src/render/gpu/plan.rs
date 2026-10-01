@@ -656,6 +656,21 @@ impl Compiled {
         }))
     }
 
+    /// Every colour operation of this compilation by the layer it was compiled from, for the
+    /// reference executor, which runs a shipped program through its CPU unit.
+    #[cfg(test)]
+    pub(super) fn colour_operations(&self) -> std::collections::BTreeMap<usize, ColorOperation> {
+        let mut operations = std::collections::BTreeMap::new();
+        for (index, segment) in self.segments.iter().enumerate() {
+            for (position, operation) in segment.operations.iter().enumerate() {
+                if let Processing::Color(colour) = operation {
+                    operations.insert(self.layer_at(index, position), colour.clone());
+                }
+            }
+        }
+        operations
+    }
+
     /// The layer whose compiled operation is operation `operation` of segment `segment`: the last
     /// layer that began at or before it, since a layer compiles to at most one operation and a
     /// neutral one begins where the next does.

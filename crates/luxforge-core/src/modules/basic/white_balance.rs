@@ -19,9 +19,19 @@ use crate::{
         srgb::decode_u8,
     },
     modules::PointwiseColor,
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 
 type Mat3 = [[f64; 3]; 3];
+
+/// The white-balance unit's GPU program (`white_balance.wgsl`): the composite matrix as nine words.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_basic_white_balance",
+    source: include_str!("white_balance.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 9,
+    enabled: false,
+};
 
 // ---------------------------------------------------------------------------------------------
 // Constants, verbatim from the design document.
@@ -219,6 +229,15 @@ impl PointwiseColor for WhiteBalance {
     /// function of the two values.
     fn describe(&self) -> String {
         format!("white-balance({:+}, {:+})", self.temperature, self.tint)
+    }
+
+    /// The composite matrix, row by row: the `f32` values `apply_row` multiplies by, a pure
+    /// function of the two stored values.
+    fn gpu(&self) -> Option<GpuDescription> {
+        Some(GpuDescription::new(
+            &PROGRAM,
+            self.matrix.iter().flatten().map(|value| value.to_bits()).collect(),
+        ))
     }
 }
 
@@ -720,5 +739,36 @@ mod tests {
             WhiteBalance::new(0.0, -5.0).describe(),
             WhiteBalance::new(0.0, -6.0).describe()
         );
+    }
+
+    /// The GPU program's nine words are the matrix the CPU unit multiplies by, row by row, and two
+    /// separately built units that describe themselves identically carry identical uniforms, over
+    /// both axes' whole range and the exact identity at (0, 0).
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let values: Vec<(f64, f64)> = (-4..=4)
+            .flat_map(|t| (-4..=4).map(move |n| (f64::from(t) * 25.0, f64::from(n) * 25.0)))
+            .chain([(-0.0, 0.0), (0.0, -0.0), (1.0 / 3.0, -7.25)])
+            .collect();
+        let build = || -> Vec<WhiteBalance> {
+            values
+                .iter()
+                .map(|(temperature, tint)| WhiteBalance::new(*temperature, *tint))
+                .collect()
+        };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for unit in &first {
+            let description = unit.gpu().expect("white balance has a program");
+            let matrix: Vec<u32> = unit.matrix.iter().flatten().map(|v| v.to_bits()).collect();
+            assert_eq!(description.words, matrix);
+            assert!(description.block.is_none());
+            assert_eq!(description.program.entry, "lf_basic_white_balance");
+        }
     }
 }

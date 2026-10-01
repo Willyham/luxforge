@@ -21,8 +21,20 @@
 use crate::{
     colour::srgb::{decode_f32, encode_f32},
     modules::{PointwiseColor, Stage},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 use std::sync::OnceLock;
+
+/// The vignette unit's GPU program (`unit.wgsl`): the shape, the stage's half sides, the falloff
+/// and the amount, eleven words. A finish-stage unit, so the plan places it in output space after
+/// the geometry tail, or in the content pass at the CPU's coordinates when the tail is exact.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_vignette_vignette",
+    source: include_str!("unit.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 11,
+    enabled: false,
+};
 
 /// The shape family the roundness selects, with everything that does not vary per pixel already
 /// folded into the per-axis coefficients the column and row tables are built from. Both variants
@@ -260,6 +272,34 @@ impl PointwiseColor for Vignette {
             "vignette(amount={:+}, midpoint={}, roundness={:+}, feather={}, stage={}x{})",
             self.amount, self.midpoint, self.roundness, self.feather, self.width, self.height
         )
+    }
+
+    /// The shape and its coefficients, the stage's half sides, the falloff and the amount, each
+    /// computed in `f64` as this unit computes it and narrowed to `f32`, the branches decided in
+    /// `f64` as `apply_pixel` decides them: pure functions of the six values the description
+    /// writes. Neither table is built.
+    fn gpu(&self) -> Option<GpuDescription> {
+        let (shape, first, second) = match self.shape {
+            Shape::Ellipse { a, b } => (0, a, b),
+            Shape::Superellipse { p } => (1, p, 0.0),
+        };
+        let narrow = |value: f64| (value as f32).to_bits();
+        Some(GpuDescription::new(
+            &PROGRAM,
+            vec![
+                shape,
+                narrow(first),
+                narrow(second),
+                narrow(f64::from(self.width) / 2.0),
+                narrow(f64::from(self.height) / 2.0),
+                narrow(self.r0),
+                narrow(self.span),
+                u32::from(self.hard_step),
+                u32::from(self.a >= 0.0),
+                narrow(self.a),
+                narrow(self.a_abs),
+            ],
+        ))
     }
 }
 
@@ -593,6 +633,50 @@ mod tests {
                 elapsed.as_secs_f64() * 1000.0,
                 elapsed.as_secs_f64() * 1e9 / (f64::from(width) * f64::from(height))
             );
+        }
+    }
+
+    /// The GPU program's words are the shape, its coefficients, the stage's half sides, the
+    /// falloff and the amount as the CPU unit computes them, the branches decided as it decides
+    /// them, and two separately built units that describe themselves identically carry identical
+    /// uniforms. Describing them builds neither table.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let stage = Stage {
+            width: 640,
+            height: 427,
+        };
+        let mut sets = Vec::new();
+        for amount in [-100.0, -40.0, 1e-9, 60.0, 100.0] {
+            for roundness in [-100.0, -0.0, 0.0, 35.0, 100.0] {
+                for (midpoint, feather) in [(0.0, 0.0), (50.0, 0.0), (30.0, 60.0), (100.0, 100.0)]
+                {
+                    sets.push((amount, midpoint, roundness, feather));
+                }
+            }
+        }
+        let build = || -> Vec<Vignette> {
+            sets.iter()
+                .map(|(a, m, r, f)| Vignette::new(*a, *m, *r, *f, stage))
+                .collect()
+        };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for unit in &first {
+            let words = unit.gpu().expect("the vignette has a program").words;
+            let ellipse = matches!(unit.shape, Shape::Ellipse { .. });
+            assert_eq!(words[0], u32::from(!ellipse));
+            assert_eq!(f32::from_bits(words[3]), 320.0);
+            assert_eq!(f32::from_bits(words[4]), 213.5);
+            assert_eq!(f32::from_bits(words[5]), unit.r0 as f32);
+            assert_eq!(words[7], u32::from(unit.hard_step));
+            assert_eq!(words[8], u32::from(unit.a >= 0.0));
+            assert!(unit.columns.get().is_none() && unit.rows.get().is_none());
         }
     }
 }

@@ -68,7 +68,7 @@ pub use modules::{
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
     CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GroupControl,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GPU_PROGRAMS, GroupControl,
     IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE,
     MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
     NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,

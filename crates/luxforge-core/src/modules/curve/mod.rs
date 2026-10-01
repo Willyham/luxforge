@@ -10,6 +10,9 @@
 //! compilation into that unit and the curve control's sample query.
 mod unit;
 
+/// The Tone curve unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use unit::PROGRAM as TONE_CURVE_PROGRAM;
+
 use super::{
     ActionDescriptor, ColorOperation, CompileStage, Control, CurveBackground, CurveChannel,
     EffectStage, ParameterDescriptor, PointwiseColor, Processing, StageContext,

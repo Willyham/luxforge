@@ -19,6 +19,9 @@
 //! layer in place before this one, so the vignette recentres on the new stage exactly.
 mod unit;
 
+/// The vignette unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use unit::PROGRAM as VIGNETTE_PROGRAM;
+
 use super::{
     ColorOperation, EffectStage, PointwiseColor, Processing,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
