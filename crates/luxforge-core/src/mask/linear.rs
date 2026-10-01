@@ -20,12 +20,24 @@ use super::{
 use crate::{
     Component, Error, ParameterDescriptor,
     modules::{Region, Stage},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
 
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "linear";
+
+/// The linear gradient's GPU coverage program (`linear.wgsl`), for a preview during a gesture. It
+/// ships disabled until it is qualified against this field
+/// (`docs/design/gpu-preview.md#qualifying-a-program`).
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mask_linear",
+    source: include_str!("linear.wgsl"),
+    kind: GpuProgramKind::Coverage,
+    words: 6,
+    enabled: false,
+};
 
 /// The legal range of a stored normalized position: the frame is `[0, 1]` and one stage extent of
 /// overshoot is legal on each side, because a gradient dragged from off the canvas is an ordinary
@@ -213,6 +225,23 @@ impl ComponentField for Compiled {
         let du = self.stored.x1 * aspect - self.stored.x0 * aspect;
         let dv = self.stored.y1 - self.stored.y0;
         (du * du + dv * dv).sqrt() * f64::from(stage.height)
+    }
+
+    /// The stage's height and the five compiled terms, each narrowed to `f32` once: the program
+    /// evaluates the same expression in the same order.
+    fn gpu(&self, stage: Stage) -> Option<GpuDescription> {
+        let words = [
+            f64::from(stage.height),
+            self.u0,
+            self.v0,
+            self.du,
+            self.dv,
+            self.l2,
+        ];
+        Some(GpuDescription::new(
+            &PROGRAM,
+            words.iter().map(|word| (*word as f32).to_bits()).collect(),
+        ))
     }
 }
 
