@@ -24,11 +24,13 @@
 //! - `lf_word(i)`, `lf_f32(i)`: word `i` of `lf_words`, raw or bit-cast to `f32`.
 //! - `lf_block_word(i)`, `lf_block_f32(i)`: the same over `lf_blocks`.
 //!
-//! A program's WGSL declares only functions and constants: no bindings and no entry points. Every
-//! name it declares starts with its entry function's name, so two programs never collide, and no
-//! name starts with `lf_`, which the surface keeps for itself. A program is called with `words` and
-//! `block`, its base indices into `lf_words` and `lf_blocks`, so its first uniform word is
-//! `lf_f32(words)`. Its entry function's signature depends on the step that holds it:
+//! A program's WGSL declares only functions and constants: no bindings, global variables,
+//! overrides, named types or entry points. Every name it declares starts with its entry function's
+//! name, so two programs never collide, and the entry is none of the surface's own names (the
+//! prelude's, `lf_boundary`, `lf_vertex` and `lf_fragment`); the core names its entries
+//! `lf_<module>_<unit>`. A program is called with `words` and `block`, its base indices into
+//! `lf_words` and `lf_blocks`, so its first uniform word is `lf_f32(words)`. Its entry function's
+//! signature depends on the step that holds it:
 //!
 //! - **Pointwise colour, in content space** ([`GpuStep::Colour`]):
 //!   `fn <entry>(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>`. `rgb` is
@@ -651,8 +653,25 @@ impl GpuStage {
     }
 }
 
-/// Whether `name` may name an entry function: a WGSL identifier the surface does not keep for
-/// itself.
+/// The prelude's helpers, which every assembled module declares beside a program's functions.
+const PRELUDE_FUNCTIONS: &[&str] = &["lf_word", "lf_f32", "lf_block_word", "lf_block_f32"];
+
+/// Every name the surface declares in an assembled shader: the prelude's, the boundary and the
+/// generated entry points. A program's names start with its entry's, so an entry that is none of
+/// these cannot collide with them; the core names its entries `lf_<module>_<unit>`.
+const SURFACE_NAMES: &[&str] = &[
+    "lf_words",
+    "lf_blocks",
+    "lf_word",
+    "lf_f32",
+    "lf_block_word",
+    "lf_block_f32",
+    "lf_boundary",
+    "lf_vertex",
+    "lf_fragment",
+];
+
+/// Whether `name` may name an entry function: a WGSL identifier that is none of the surface's own.
 fn entry_name(name: &str) -> Result<(), String> {
     let mut chars = name.chars();
     let first = chars.next().ok_or("an entry function needs a name")?;
@@ -663,8 +682,8 @@ fn entry_name(name: &str) -> Result<(), String> {
     {
         return Err(format!("{name:?} is not a WGSL identifier"));
     }
-    if name.starts_with("lf_") {
-        return Err(format!("{name:?} starts with lf_, which the surface keeps"));
+    if SURFACE_NAMES.contains(&name) {
+        return Err(format!("{name:?} is one of the surface's own names"));
     }
     Ok(())
 }
@@ -734,26 +753,53 @@ fn validate(source: &str) -> Result<naga::Module, String> {
 }
 
 /// Check one step's program against the calling convention on its own, as the stage checks every
-/// program before it compiles a sequence: its entry name is one the surface allows, [`PRELUDE`]
-/// and its source validate with naga's full validation and no optional capability, it declares no
-/// binding, global variable or entry point of its own, and its entry function has the signature
+/// program before it compiles a sequence: its entry name is none of the surface's own, [`PRELUDE`]
+/// and its source validate with naga's full validation and no optional capability, it declares
+/// only functions and constants — no binding, global variable, override, named type or entry
+/// point — each named starting with its entry's name, and its entry function has the signature
 /// its step needs. A caller's tests can check every program it hands the surface with this.
 pub fn validate_step(step: &GpuStep) -> Result<(), String> {
     let program = step.program();
     let entry = &program.entry;
     entry_name(entry)?;
     let module = validate(&format!("{PRELUDE}\n{}", program.source))?;
+    let only = "a program has only functions and constants";
     let prelude_globals = 2;
-    if module.global_variables.len() != prelude_globals {
+    if module.global_variables.len() != prelude_globals || !module.overrides.is_empty() {
         return Err(format!(
-            "{entry:?} declares a binding or global variable; a program has only functions and \
-             constants"
+            "{entry:?} declares a binding, global variable or override; {only}"
+        ));
+    }
+    if let Some((_, named)) = module.types.iter().find(|(_, ty)| ty.name.is_some()) {
+        return Err(format!(
+            "{entry:?} declares the type {:?}; {only}",
+            named.name
         ));
     }
     if !module.entry_points.is_empty() {
         return Err(format!(
             "{entry:?} declares an entry point; the surface generates them"
         ));
+    }
+    let names = module
+        .functions
+        .iter()
+        .map(|(_, function)| &function.name)
+        .filter(|name| {
+            !name
+                .as_deref()
+                .is_some_and(|name| PRELUDE_FUNCTIONS.contains(&name))
+        })
+        .chain(module.constants.iter().map(|(_, constant)| &constant.name));
+    for name in names {
+        if !name
+            .as_deref()
+            .is_some_and(|name| name.starts_with(entry.as_ref()))
+        {
+            return Err(format!(
+                "{entry:?} declares {name:?}, which does not start with its entry's name"
+            ));
+        }
     }
     let function = module
         .functions
