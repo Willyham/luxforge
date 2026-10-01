@@ -809,7 +809,10 @@ mod tests {
             ),
         ];
         for (segments, expected) in cases {
-            let compiled = Compiled { segments };
+            let compiled = Compiled {
+                segments,
+                layers: Box::new([]),
+            };
             let actual: Vec<_> = byte_frame_widths(&compiled)
                 .into_iter()
                 .map(|w| (w.input, w.output))
@@ -823,9 +826,12 @@ mod tests {
             output_height: 10,
         }));
         assert!(
-            byte_frame_widths(&Compiled { segments })
-                .iter()
-                .all(|w| !w.input && !w.output)
+            byte_frame_widths(&Compiled {
+                segments,
+                layers: Box::new([])
+            })
+            .iter()
+            .all(|w| !w.input && !w.output)
         );
     }
     #[test]
