@@ -4,6 +4,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Engineering
 
+**GPU previews** (planned, [design](design/gpu-preview.md), [plan](../tasks/gpu-preview.json)). Draw what a gesture changes on the GPU in the same frame as the input, then dissolve to the CPU's result on settle; the CPU stays the reference for everything measured or exported.
+- Owner review of the proposed error limits, dissolve, label, preference and GPU-preview budget
+- A perceptual preview-difference measure and corpus, with today's accepted approximations as a baseline
+- The GPU stage in the photo surface; colour and mask programs owned by their modules
+- Fit drags over a held input boundary, then full-scale 100% drags
+- Presence and Detail as GPU preview programs
+- Mipmapped minification for full-resolution textures drawn below their size
+
 **GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 
 ## Output

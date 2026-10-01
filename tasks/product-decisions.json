@@ -357,6 +357,13 @@
           "target": "crates/luxforge-app/src/app/overlay.rs",
           "locator": "overlay_source",
           "relevance": "Current approximate-to-exact overlay behavior the recommendation extends."
+        },
+        {
+          "kind": "file",
+          "label": "Proposed GPU preview limits",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "The preview error limit",
+          "relevance": "The owner chose speed first for GPU previews on 2026-10-01; the CIEDE2000 limits there are proposals awaiting acceptance."
         }
       ],
       "acceptance_criteria": [
