@@ -28,7 +28,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
-| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
+| Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, Tone curve and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
 | Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, the `mask-range` scenario's own colour-chart patches and the `curve` scenario's grey ramp and colour patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
@@ -473,20 +473,21 @@ own wording, with `(proxy)` exactly when the frame on screen is the proxy.
 ### What editor-acceptance proves
 
 `editor-acceptance` keeps only what `cargo test` cannot prove at the same layer: a chapter or step
-exists only if no `cargo test` proves it at that layer. Four things remain, each driven through the
+exists only if no `cargo test` proves it at that layer. Five things remain, each driven through the
 JSON method table with `OwnerHandle::call` as an independent client, against its own catalog inside
-the run's output directory: the [field-patch conformance suite](#the-field-patch-conformance-chapter)
-in release, [Basic's numerics on the photo fixture against the independent
-reference](#the-basic-and-histogram-acceptance-chapter), the [placement of Presence, the mixer and
-the vignette](#the-field-patch-conformance-chapter), and a [masked catalog reopened through a fresh
-owner](#the-masking-acceptance-chapter). Everything the core's own tests prove stays there: history
-order, the read-only preview, undo, redo and restore, the orientation layer, the crop and reopen are
-`editor::history`, `editor::plan`, `modules::transform` and `modules::crop`'s tests, the module and
-method discovery is the [descriptor snapshot](#the-built-in-descriptor-snapshot) and the method
-table's, and the mask commands, their refusals, a disabled maskable module and a missing or changed
-original are the `mask` test binary's, the command family's own tests and the conformance suite.
-A new step here needs a property that only a release build, an independent oracle, a second process
-lifetime or a fresh owner can show.
+the run's output directory: the [field-patch conformance
+suite](#the-field-patch-conformance-chapter) in release, [Basic's numerics on the photo fixture
+against the independent reference](#the-basic-and-histogram-acceptance-chapter), the [placement of
+Presence, the mixer and the vignette](#the-field-patch-conformance-chapter), the [Tone curve's
+placement, masked order and sample query](#the-field-patch-conformance-chapter) (`tone_curve`), and
+a [masked catalog reopened through a fresh owner](#the-masking-acceptance-chapter). Everything the
+core's own tests prove stays there: history order, the read-only preview, undo, redo and restore,
+the orientation layer, the crop and reopen are `editor::history`, `editor::plan`,
+`modules::transform` and `modules::crop`'s tests, the module and method discovery is the [descriptor
+snapshot](#the-built-in-descriptor-snapshot) and the method table's, and the mask commands, their
+refusals, a disabled maskable module and a missing or changed original are the `mask` test binary's,
+the command family's own tests and the conformance suite. A new step here needs a property that only
+a release build, an independent oracle, a second process lifetime or a fresh owner can show.
 
 ### The Basic and histogram acceptance chapter
 
@@ -520,15 +521,15 @@ and are referenced rather than duplicated.
 
 ### The field-patch conformance chapter
 
-Basic, Presence, the colour mixer, the vignette and the developer controls proof are one
-declarative field-patch module each, and the host behaviour they share is proved once, for every
-module the built-in registry and the controls proof hold in that shape, by one suite in
-`crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from their
-descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
+Basic, the Tone curve (`luxforge.curve`), Presence, the colour mixer, the vignette and the developer
+controls proof are one declarative field-patch module each, and the host behaviour they share is
+proved once, for every module the built-in registry and the controls proof hold in that shape, by
+one suite in `crates/luxforge-core/tests/modules/conformance/`. The suite finds the modules from
+their descriptors — one effect, one `patch` action whose parameters are all fields with defaults (a
 number, integer, boolean, enum, colour or curve), and the parameterless action the module reset
 names — and derives every payload it sends from the declared field table, so a new field-patch
 module is checked the day it is registered. It refuses to run when it no longer recognises one of
-the four built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
+the five built-in ones or the controls proof, whose fields are the non-numeric kinds. The controls
 proof's layer changes no pixel, so it is held to the in-process checks below and to compiling to
 nothing and sharing the source allocation whatever it holds, not to the pixel consequences and the
 journey through the method table. Every `patch: true` action of every registered module, `set-raw`
@@ -537,8 +538,8 @@ default alone is exactly that field, and a value its declaration refuses is refu
 same function runs twice: as the core's `modules` integration test (`field_patch`) in the dev
 profile, a [slow test](#how-check-runs-the-tests) the quick tier leaves out, and in release inside
 `editor-acceptance`, which records what it returns under `field_patch_conformance` in `result.json`.
-Each module runs against its own new catalog under the run's `field-patch-conformance` directory, and
-a failure names the module, the step and the property that broke.
+Each module runs against its own new catalog under the run's `field-patch-conformance` directory,
+and a failure names the module, the step and the property that broke.
 
 For each module the suite checks, in process: every neutral spelling of the payload (`{}`, every
 field at its default, each field alone at its default and in another spelling of it, zero number
@@ -588,7 +589,17 @@ mixer and the vignette is `editor-acceptance`'s Presence, mixer and vignette cha
 (`xtask/src/presence_mixer_vignette_acceptance.rs`, under `presence_mixer_vignette` in
 `result.json`), driven the same way: Presence after the colour run and before the geometry tail in
 every touch order, the mixer after Basic in both touch orders with the same bytes, and the vignette
-last and recentred on the stage each crop update produces.
+last and recentred on the stage each crop update produces. The Tone curve's own behaviour is
+`editor-acceptance`'s Tone curve chapter (`xtask/src/curve_acceptance.rs`, under `tone_curve` in
+`result.json`, with its time as `tone_curve_chapter` under `timings_ms`), driven the same way: the
+curve after Basic and before the mixer in every touch order with an identical rendered raster;
+masked curve layers on two masks after the global one in mask-list order and before the mixer, and
+re-sorted with the masks by `mask.reorder {mask, index}`; `query.sample-curve` for the displayed
+entry's stored points equal to `luxforge_reference::curve::curve` at all 257 samples to `1e-12`;
+and a generated 8-bit grey ramp of every code (whole flat JPEG blocks, so each decodes to exactly
+its code) through an S-curve layer within one code of the quantized reference at every code, with
+the number of off-by-one codes recorded. The frozen fixture through render on both paths is the
+core's `modules` test (`curve`).
 
 ### The built-in descriptor snapshot
 
