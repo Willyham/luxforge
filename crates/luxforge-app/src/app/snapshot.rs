@@ -523,6 +523,9 @@ fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
             height,
             limit,
         } => json!({"reason":fallback.as_str(),"width":width,"height":height,"limit":limit}),
+        GpuFallback::BufferLimit { bytes, limit } => {
+            json!({"reason":fallback.as_str(),"bytes":bytes,"limit_bytes":limit})
+        }
         GpuFallback::NoAdapter | GpuFallback::DeviceLost | GpuFallback::PipelineFailed => {
             json!({"reason":fallback.as_str()})
         }

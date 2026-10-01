@@ -386,14 +386,26 @@ fn paint(
     pipeline: &mut PhotoPipeline,
     primitive: &PhotoPrimitive,
 ) -> Vec<u8> {
-    let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(SIDE as f32, SIDE as f32));
-    let viewport = Viewport::with_physical_size(Size::new(SIDE, SIDE), 1.0);
+    paint_into(device, queue, pipeline, primitive, (SIDE, SIDE))
+}
+
+/// [`paint`] into a target of `(width, height)`, `width` a multiple of 64 so its rows copy out
+/// unpadded.
+fn paint_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &mut PhotoPipeline,
+    primitive: &PhotoPrimitive,
+    (width, height): (u32, u32),
+) -> Vec<u8> {
+    let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(width as f32, height as f32));
+    let viewport = Viewport::with_physical_size(Size::new(width, height), 1.0);
     primitive.prepare(pipeline, device, queue, &bounds, &viewport);
     let target = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("gpu preview readback target"),
         size: wgpu::Extent3d {
-            width: SIDE,
-            height: SIDE,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -406,7 +418,7 @@ fn paint(
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("gpu preview readback"),
-        size: u64::from(SIDE * SIDE * 4),
+        size: u64::from(width * height * 4),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -435,13 +447,13 @@ fn paint(
             buffer: &readback,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(SIDE * 4),
-                rows_per_image: Some(SIDE),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
         },
         wgpu::Extent3d {
-            width: SIDE,
-            height: SIDE,
+            width,
+            height,
             depth_or_array_layers: 1,
         },
     );
@@ -560,6 +572,74 @@ fn an_identity_program_reads_back_the_boundarys_own_encoding() {
     assert_eq!(seen.gpu_preview_peak_bytes, SLOT_BYTES);
     assert_eq!(seen.gpu_preview_budget_bytes, GPU_PREVIEW_BUDGET);
     eprintln!("{test}: {} texels equal", codes.len());
+}
+
+/// Drawn magnified, as a Fit frame smaller than the canvas is, the GPU stage's output is sampled
+/// exactly as the CPU frame of its codes: it is held in the same size bucket with the same edge
+/// texels past the frame, so the filter weighs the same texels the same way. Otherwise the jump at
+/// settlement would carry a sampling difference no program made. The geometry is the
+/// `gpu-identity` scenario's: a 320 × 480 frame drawn 1006 × 1508 pixels large, where an output
+/// held at exactly its own size drew a few hundred pixels a code or two off the CPU frame.
+#[test]
+fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
+    let test = "a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (width, height) = (320u32, 480u32);
+    let target = (1024, 1536);
+    let drawn = Size::new(1006.0, 1508.0);
+    let code = |index: u32, a: u32, b: u32| ((index * a + b) % 256) as u8;
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| {
+            [
+                held(code(index, 7, 0)),
+                held(code(index, 13, 5)),
+                held(code(index, 29, 11)),
+            ]
+        })
+        .collect();
+    let boundary = GpuBoundary::from_linear(
+        width,
+        height,
+        1,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .expect("a boundary");
+    let codes: Vec<u8> = values
+        .iter()
+        .flat_map(|rgb| {
+            let [r, g, b] = rgb.map(|value| srgb::code(f64::from(value)));
+            [r, g, b, 255]
+        })
+        .collect();
+    let frame = Frame::new(Arc::new(codes), width, height, 1).expect("the codes as a frame");
+    let placed = |surface, plan| {
+        let mut primitive = primitive(surface, plan);
+        primitive.layers = vec![(Layer::Photo, frame.clone())];
+        primitive.offset = Vector::new(9.0, 14.0);
+        primitive.size = drawn;
+        primitive.clip_size = Size::new(target.0 as f32, target.1 as f32);
+        primitive
+    };
+    let cpu = placed(SurfaceId::new(1), None);
+    let gpu = placed(SurfaceId::new(2), Some(plan(&boundary, vec![identity()])));
+    let cpu_drawn = paint_into(&device, &queue, &mut pipeline, &cpu, target);
+    let gpu_drawn = paint_into(&device, &queue, &mut pipeline, &gpu, target);
+    assert_eq!(
+        diagnostics(&pipeline, SurfaceId::new(2)).drawn_path,
+        Some(DrawingPath::Gpu)
+    );
+    let differing = cpu_drawn
+        .chunks_exact(4)
+        .zip(gpu_drawn.chunks_exact(4))
+        .filter(|(cpu, gpu)| cpu != gpu)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "pixels the GPU frame draws unlike the CPU frame"
+    );
 }
 
 /// The calling convention end to end: two layers of one unit sharing its function with their own
@@ -913,6 +993,48 @@ fn a_plan_past_the_budget_makes_the_frame_the_cpus_and_names_the_budget() {
     assert_eq!(
         diagnostics(&pipeline, other).gpu_preview_in_use_bytes,
         SLOT_BYTES
+    );
+}
+
+/// A storage block larger than the device allows a storage binding is refused before anything is
+/// created, rather than handed to wgpu as an error the default handler would panic on.
+#[test]
+fn a_block_past_the_storage_binding_limit_makes_the_frame_the_cpus() {
+    let test = "a_block_past_the_storage_binding_limit_makes_the_frame_the_cpus";
+    let limits = wgpu::Limits {
+        max_storage_buffer_binding_size: 2048,
+        ..wgpu::Limits::default()
+    };
+    let Some((device, queue)) = headless_with(test, limits) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(1);
+    let mut large = identity();
+    large.block = Arc::from(vec![0u32; 750]);
+    assert_cpu_frame(&paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(plan(&boundary, vec![large]))),
+    ));
+    assert_eq!(
+        diagnostics(&pipeline, ID).gpu_fallback,
+        Some(GpuFallback::BufferLimit {
+            bytes: 3000,
+            limit: 2048,
+        })
+    );
+    assert_eq!(pipeline.figures.preview.in_use(), 0);
+    // Within the limit, the same device draws on the GPU.
+    assert_codes(
+        &paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(plan(&boundary, vec![identity()]))),
+        ),
+        &codes,
     );
 }
 
