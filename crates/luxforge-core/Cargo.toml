@@ -39,6 +39,9 @@ image = { workspace = true, features = ["jpeg"] }
 kamadak-exif.workspace = true
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
+# Parses and validates the WGSL of every GPU program the core ships, with the surface's calling
+# convention prepended. A dev-dependency only: the core's normal dependencies hold no GPU crate.
+naga = { workspace = true, features = ["wgsl-in"] }
 # The core's own tests with the disk flush skipped (the feature above).
 luxforge-core = { path = ".", features = ["test-skip-disk-flush"] }
 

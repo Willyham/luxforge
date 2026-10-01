@@ -997,6 +997,21 @@ impl GeometryMap {
             }
         }
     }
+    /// [`Self::to_content`] without its domain check, by the same steps: the content coordinate
+    /// any output coordinate maps to, which may be non-finite far outside the output stage. What a
+    /// GPU coordinate grid's nodes read, the last of which may lie a cell past the output's edge so
+    /// that every pixel centre falls inside a cell.
+    pub(crate) fn content_at(&self, mut x: f64, mut y: f64) -> (f64, f64) {
+        match &self.mapping {
+            MappingShape::Affine { inverse, .. } => Affine(*inverse).at(x, y),
+            MappingShape::Warp { steps, .. } => {
+                for step in steps.iter().rev() {
+                    (x, y) = step.input_at(x, y);
+                }
+                (x, y)
+            }
+        }
+    }
     pub fn to_output(&self, mut x: f64, mut y: f64) -> Result<(f64, f64), MapError> {
         match &self.mapping {
             MappingShape::Affine { forward, .. } => Ok(Affine(*forward).at(x, y)),

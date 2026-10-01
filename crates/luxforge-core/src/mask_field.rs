@@ -33,6 +33,7 @@ use crate::{
     Error, Mask,
     mask::CompiledMask,
     modules::{Region, Stage},
+    render::gpu::{GpuMask, GpuPosition},
 };
 
 /// The narrowest feature, in stage pixels, a mask may draw before the pixel grid it is sampled on
@@ -236,6 +237,60 @@ impl MaskField {
     /// of approximate.
     pub(crate) fn supersampled(&self) -> bool {
         self.fine.is_some()
+    }
+
+    /// This field as a GPU plan's mask data: every component's program, from the doubled
+    /// compilation when the thin-feature rule fired, the composition's inversion and final multiply,
+    /// and the rectangle outside which coverage is exactly zero. Its position map takes this field's
+    /// coordinates, the ones [`Self::evaluate`] is handed, to the compiled stage's pixel, so a
+    /// windowed field adds its window's origin; the plan composes it after the operation's
+    /// placement. The kind of the first component without a program, otherwise.
+    /// `O(components)`; reads no pixel.
+    pub(crate) fn gpu(&self) -> Result<GpuMask, &'static str> {
+        let field = self.fine.as_deref().unwrap_or(&self.mask);
+        let (x, y) = self.window.map_or((0, 0), |window| (window.x0, window.y0));
+        let bounds = if self.bounds.is_empty() {
+            Region::EMPTY
+        } else {
+            Region {
+                x0: self.bounds.x0 + x,
+                y0: self.bounds.y0 + y,
+                ..self.bounds
+            }
+        };
+        Ok(GpuMask {
+            position: GpuPosition::translation(i64::from(x), i64::from(y)),
+            bounds,
+            supersample: self.fine.is_some(),
+            components: field.gpu_components()?,
+            invert: self.mask.invert(),
+            scale: self.mask.scale() as f32,
+        })
+    }
+
+    /// A point-sampled field over a mask a test bound itself ([`CompiledMask::from_fields`]).
+    #[cfg(test)]
+    pub(crate) fn point(mask: CompiledMask) -> Self {
+        let bounds = mask.bounds();
+        Self {
+            mask: Arc::new(mask),
+            fine: None,
+            bounds,
+            window: None,
+        }
+    }
+
+    /// A supersampled field over masks a test bound itself: `fine` is the same mask bound to a
+    /// stage twice `mask`'s, as [`Self::compile`] binds it when the thin-feature rule fires.
+    #[cfg(test)]
+    pub(crate) fn with_fine(mask: CompiledMask, fine: CompiledMask) -> Self {
+        let bounds = halved(fine.bounds(), mask.stage());
+        Self {
+            mask: Arc::new(mask),
+            fine: Some(Arc::new(fine)),
+            bounds,
+            window: None,
+        }
     }
 
     /// Two fields are the same when they were compiled from the same allocation and sampled the

@@ -1901,6 +1901,7 @@ dependencies = [
  "luxforge-reference",
  "luxforge-testbase",
  "moxcms",
+ "naga",
  "rayon",
  "roxmltree",
  "rusqlite",

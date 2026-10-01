@@ -3,6 +3,7 @@
 //! - [`entry`]: the one way in, [`render`], and the [`Render`] it returns.
 //! - [`compiled`]: the compiled IR, segments separated by stage boundaries, and [`Entry`], the
 //!   one dispatch over the boundary kinds.
+//! - [`gpu`]: the GPU programs modules own and the plan a gesture's preview is drawn from.
 //! - [`geometry`]: exact geometry, a resample's mapping and read rectangle, and the byte
 //!   domain's bilinear pass.
 //! - [`colour_runs`]: colour runs and their masked blend.
@@ -19,6 +20,7 @@ mod compiled;
 mod context;
 mod entry;
 mod geometry;
+pub(crate) mod gpu;
 mod input_grid;
 pub(crate) mod linear;
 mod locate;

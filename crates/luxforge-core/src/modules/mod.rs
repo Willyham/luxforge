@@ -26,6 +26,8 @@ mod vignette;
 pub use crate::render::map::{Mapping, RadialModel, WarpStep};
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
+#[cfg(test)]
+pub(crate) use basic::EXPOSURE_PROGRAM;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{

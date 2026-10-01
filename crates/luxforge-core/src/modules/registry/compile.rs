@@ -359,7 +359,14 @@ impl ModuleRegistry {
         // Masked spatial layers seen so far, against the declared cap. Each one is a stage boundary
         // and therefore a sequential full frame, which is the whole reason there is a cap.
         let mut masked_spatial = 0_usize;
+        let mut starts = Vec::with_capacity(layers.len());
         for (index, layer) in layers.iter().enumerate() {
+            starts.push((
+                segments.len() - 1,
+                segments
+                    .last()
+                    .map_or(0, |segment| segment.operations.len()),
+            ));
             match self.effect_stage(&layer.effect_id) {
                 Some(EffectStage::Source) if index != 0 => {
                     return Err(Error::validation(
@@ -549,7 +556,10 @@ impl ModuleRegistry {
                 }
             }
         }
-        Ok(Compiled { segments })
+        Ok(Compiled {
+            segments,
+            layers: starts.into_boxed_slice(),
+        })
     }
 
     /// The stage each layer of `recipe` receives, in stack order, followed by the stack's output:
