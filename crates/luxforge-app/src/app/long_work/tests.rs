@@ -9,10 +9,14 @@ use crate::state::{
     select::{SelectPanel, Shown},
 };
 use luxforge_core::activity::Outcome as Ended;
-use std::path::{Path, PathBuf};
+use luxforge_testbase::Gate;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// A folder of `count` one-byte `.jpg` files beside the catalog, in folders of 250: work the index
-/// lane lists and reads a header from for each, long enough to cancel while it runs.
+/// lane lists and reads a header from for each.
 fn files(catalog: &Path, name: &str, count: usize) -> PathBuf {
     let stem = catalog.file_stem().unwrap().to_string_lossy();
     let folder = catalog.with_file_name(format!("{stem}-{name}"));
@@ -24,6 +28,18 @@ fn files(catalog: &Path, name: &str, count: usize) -> PathBuf {
         std::fs::write(dir.join(format!("IMG_{index:05}.jpg")), b"x").unwrap();
     }
     folder
+}
+
+/// A shut gate the owner holds every listing under `folder` at, from its index lane's first start:
+/// a listing there runs, on the board, until the test opens the gate or cancels the listing, so
+/// what the test sees while it runs never depends on how fast this host lists.
+fn hold_listings(editor: &Editor, folder: &Path) -> Arc<Gate> {
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    // The lane walks canonical paths: on macOS the temporary directory is under `/private`.
+    let walked = folder.canonicalize().unwrap();
+    editor.owner.hold_listings(gate.clone(), walked);
+    gate
 }
 
 /// The job's record once it has ended.
@@ -68,7 +84,8 @@ fn nothing_wakes_while_nothing_runs() {
 /// The status bar's job and the Performance section's rows are one read of the board: after each
 /// read a wake asks for, with no sample of the section's between, the section's rows are that
 /// board's, the running job the status bar shows is the section's row with Cancel, and once it has
-/// ended neither shows it running. The section's own tick reads the board through the same watch.
+/// ended neither shows it running. The listing is held at its first folder until the status bar
+/// shows it. The section's own tick reads the board through the same watch.
 /// Idle, nothing new wakes: no long-work timer or read, and none at all once the section is closed.
 #[test]
 fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
@@ -114,28 +131,33 @@ fn the_section_and_the_status_bar_never_disagree_after_a_wake() {
         editor.long_work.read_at = Some(Instant::now() - MIN_INTERVAL);
         let _ = editor.update(Message::LongWork(LongWorkMessage::Woken));
     };
-    let folder = files(&catalog, "agree", 3_000);
+    let folder = files(&catalog, "agree", 20);
+    let gate = hold_listings(&editor, &folder);
     let job = refresh_now(
         &editor.owner,
         editor.client,
         &ReadSource::Folder(folder.clone()),
     )
     .unwrap();
-    let mut shown = false;
-    let record = luxforge_testbase::wait_for("the listing to end", || {
+    gate.wait_reached(1, "the listing's first folder");
+    luxforge_testbase::wait_until("the held listing to be shown", || {
         wake(&mut editor);
         agree(&editor);
-        shown |= editor
+        editor
             .workspace
             .long_work
             .busiest
             .as_ref()
-            .is_some_and(|busiest| busiest.job_id == job);
+            .is_some_and(|busiest| busiest.job_id == job)
+    });
+    gate.open();
+    let record = luxforge_testbase::wait_for("the listing to end", || {
+        wake(&mut editor);
+        agree(&editor);
         let record = job_now(&editor.owner, editor.client, &job).unwrap();
         (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
     });
     assert_eq!(record["status"], "ready");
-    assert!(shown, "the listing ran long enough to be shown");
     // The read that finds it ended.
     wake(&mut editor);
     agree(&editor);
@@ -209,17 +231,20 @@ fn a_wake_inside_the_throttle_is_read_when_its_interval_passes() {
 }
 
 /// A running catalog job keeps the refresh timer while it runs; its Cancel is `job.cancel` with its
-/// id, and the board then lists it cancelled and nothing keeps a timer.
+/// id, and the board then lists it cancelled and nothing keeps a timer. The listing is held at its
+/// first folder until the cancel ends it.
 #[test]
 fn cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
     let (mut editor, catalog) = boot();
-    let folder = files(&catalog, "cancel", 3_000);
+    let folder = files(&catalog, "cancel", 20);
+    let gate = hold_listings(&editor, &folder);
     let job = refresh_now(
         &editor.owner,
         editor.client,
         &ReadSource::Folder(folder.clone()),
     )
     .unwrap();
+    gate.wait_reached(1, "the listing's first folder");
     // Long enough to be kept as recent work once it ends (the board keeps work of 250 ms or more).
     luxforge_testbase::wait_for("the listing to run on the board", || {
         tick(&mut editor);
@@ -249,6 +274,7 @@ fn cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
     assert_eq!(recent.outcome, Ended::Cancelled);
     assert_eq!(editor.long_work.timers(), Timers::default());
     assert_eq!(editor.workspace.long_work.busiest, None);
+    gate.open();
     // A refused cancel says so.
     let _ = editor.update(Message::LongWork(LongWorkMessage::Cancelled {
         job_id: job,

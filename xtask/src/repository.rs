@@ -1239,6 +1239,19 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-skip-disk-flush, \
                  so no build of a binary skips the flush of a durable write",
     },
+    // Holding the core's work at a test's gate from outside it is for tests too, the same way.
+    DependencyRule {
+        name: "test-holds-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-core",
+            feature: "test-holds",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-core's test-holds, so no \
+                 build of a binary holds its work at a test's gate or links luxforge-testbase",
+    },
 ];
 
 /// A rule that every variant of one message enum has a sender in product code: a production line,
