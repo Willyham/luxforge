@@ -1,8 +1,9 @@
 //! The preview lane through the catalog owner: `preview.read` and `job.read` over
 //! [`OwnerHandle::call`], the grid's two stages, the lane's order with the workers held at a gate,
-//! view jobs and their progress, `job.cancel` of queued and running work, the queue's bound, the
-//! refusals, a corrupt file, the development fallback for a RAW with no usable preview, and the
-//! waker.
+//! view jobs and their progress, `job.cancel` of queued and running work, a tier's job shared by
+//! the clients that want it until the last leaves it by a cancel or a disconnect, the queue's
+//! bound, the refusals, a corrupt file, the development fallback for a RAW with no usable preview,
+//! and the waker.
 use super::super::{ClientId, OwnerHandle};
 use crate::{
     ApiRequest, ApiResponse, EditorService, SourceTag,
@@ -82,10 +83,14 @@ impl Setup {
             .expect("the owner answered")
     }
 
-    fn ok(&self, method: &str, params: Value) -> Value {
-        let response = self.call(self.client, method, params);
+    fn ok_for(&self, client: ClientId, method: &str, params: Value) -> Value {
+        let response = self.call(client, method, params);
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
         response.result.expect("a result")
+    }
+
+    fn ok(&self, method: &str, params: Value) -> Value {
+        self.ok_for(self.client, method, params)
     }
 
     fn failure(&self, method: &str, params: Value) -> String {
@@ -95,19 +100,53 @@ impl Setup {
             .code
     }
 
-    fn read(&self, file: FileId, tier: &str, priority: &str) -> Value {
-        self.ok(
+    fn read_for(&self, client: ClientId, file: FileId, tier: &str, priority: &str) -> Value {
+        self.ok_for(
+            client,
             "preview.read",
             json!({"item": {"kind": "file", "file_id": file}, "tier": tier, "priority": priority}),
         )
     }
 
-    /// The job once it is no longer queued or running.
-    fn settled(&self, job: &Value) -> Value {
+    fn read(&self, file: FileId, tier: &str, priority: &str) -> Value {
+        self.read_for(self.client, file, tier, priority)
+    }
+
+    /// `job.read` of `job` by `client`: its status.
+    fn status_for(&self, client: ClientId, job: &Value) -> Value {
+        self.ok_for(client, "job.read", json!({"job_id": job}))["status"].clone()
+    }
+
+    /// `job.cancel` of `job` by `client`: the job's status afterwards.
+    fn cancel_for(&self, client: ClientId, job: &Value) -> Value {
+        self.ok_for(client, "job.cancel", json!({"job_id": job}))["status"].clone()
+    }
+
+    /// The job, as `client` reads it, once it is no longer queued or running.
+    fn settled_for(&self, client: ClientId, job: &Value) -> Value {
         wait_for("the job to end", || {
-            let record = self.ok("job.read", json!({"job_id": job}));
+            let record = self.ok_for(client, "job.read", json!({"job_id": job}));
             (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
         })
+    }
+
+    /// The job once it is no longer queued or running.
+    fn settled(&self, job: &Value) -> Value {
+        self.settled_for(self.client, job)
+    }
+
+    /// A new client whose wakes are counted.
+    fn watching(&self) -> (ClientId, Arc<AtomicUsize>) {
+        let client = self.owner.register();
+        let woken = Arc::new(AtomicUsize::new(0));
+        let counter = woken.clone();
+        self.owner.watch_previews(
+            client,
+            Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        (client, woken)
     }
 }
 
@@ -168,7 +207,7 @@ fn preview_cache_owner_answers_preview_read_and_job_read_and_wakes_the_client() 
     let queued = response.result.unwrap();
     assert_eq!(queued["state"], "queued");
     assert_eq!(queued["fallback"], preview);
-    let loupe = setup.settled(&queued["job_id"]);
+    let loupe = setup.settled_for(other, &queued["job_id"]);
     assert_eq!(loupe["result"]["tier"], "loupe");
     assert_eq!(loupe["result"]["width"], 640, "never enlarged");
     assert_eq!(loupe["result"]["approximate"], false);
@@ -507,6 +546,181 @@ fn preview_cache_owner_cancels_waiting_and_running_tasks() {
     assert_eq!(again["state"], "queued");
     assert_ne!(again["job_id"], running, "a new task");
     assert_eq!(setup.settled(&again["job_id"])["status"], "ready");
+}
+
+/// Two clients wait on one tier's job, which belongs to the clients that want it: one's
+/// `job.cancel` releases its own interest only. The other's wait is intact — the same job, still
+/// running, then `ready`, and it is woken for both of the grid tier's stages — while the client
+/// that left reads the same outcome and is woken for nothing more. A client that never asked
+/// neither reads nor cancels the job.
+#[test]
+fn preview_cache_owner_a_cancel_leaves_only_the_callers_interest() {
+    let mut setup = Setup::new("preview-owner-interest");
+    let file = setup.jpeg("A.JPG");
+    let (leaving, left_woken) = setup.watching();
+    let (staying, stayed_woken) = setup.watching();
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_previews(Some(gate.clone()));
+    let job = setup.read_for(leaving, file, "grid", "visible")["job_id"].clone();
+    gate.wait_reached(1, "the worker");
+    let joined = setup.read_for(staying, file, "grid", "visible");
+    assert_eq!(joined["state"], "queued");
+    assert_eq!(joined["job_id"], job, "one job for the task");
+
+    assert_eq!(
+        setup.cancel_for(leaving, &job),
+        "running",
+        "the other client still wants it"
+    );
+    assert_eq!(setup.status_for(staying, &job), "running");
+    assert_eq!(
+        setup.status_for(leaving, &job),
+        "running",
+        "the client that left still reads it"
+    );
+    let stranger = setup.owner.register();
+    for method in ["job.read", "job.cancel"] {
+        let refused = setup.call(stranger, method, json!({"job_id": job}));
+        assert_eq!(refused.error.expect(method).code, "validation", "{method}");
+    }
+
+    gate.open();
+    let record = setup.settled_for(staying, &job);
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(record["result"]["origin"], "embedded");
+    assert_eq!(
+        setup.settled_for(leaving, &job),
+        record,
+        "both read the one outcome"
+    );
+    assert_eq!(
+        stayed_woken.load(Ordering::SeqCst),
+        2,
+        "once for the thumbnail stage and once for the embedded preview"
+    );
+    assert_eq!(
+        left_woken.load(Ordering::SeqCst),
+        0,
+        "the client that left is woken for nothing"
+    );
+    assert_eq!(
+        setup.owner.previews_dispatched(),
+        [(file, PreviewTier::Grid)]
+    );
+}
+
+/// A task stops only when nothing wants it. Once both clients waiting on a running tier and on a
+/// queued one have cancelled, each job ends `cancelled` for both, the queued task never runs and
+/// the running one writes nothing; a task a view still wants runs on for the view after its last
+/// reader leaves, its job ending `cancelled`.
+#[test]
+fn preview_cache_owner_the_last_cancel_stops_the_task_unless_a_view_wants_it() {
+    let mut setup = Setup::new("preview-owner-last-cancel");
+    let [running, viewed, waiting] = ["A.JPG", "B.JPG", "C.JPG"].map(|name| setup.jpeg(name));
+    let one = setup.client;
+    let two = setup.owner.register();
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_previews(Some(gate.clone()));
+    let first = setup.read_for(one, running, "grid", "visible")["job_id"].clone();
+    let view = setup.owner.want_view(two, vec![viewed]).unwrap().unwrap();
+    gate.wait_reached(2, "both workers");
+    assert_eq!(
+        setup.read_for(two, running, "grid", "visible")["job_id"],
+        first
+    );
+    let queued = setup.read_for(one, waiting, "grid", "visible")["job_id"].clone();
+    assert_eq!(
+        setup.read_for(two, waiting, "grid", "visible")["job_id"],
+        queued
+    );
+    let read_of_viewed = setup.read_for(one, viewed, "grid", "visible")["job_id"].clone();
+
+    assert_eq!(setup.cancel_for(one, &queued), "queued");
+    assert_eq!(setup.cancel_for(two, &queued), "cancelled");
+    assert_eq!(setup.cancel_for(two, &first), "running");
+    assert_eq!(setup.cancel_for(one, &first), "cancelled");
+    for client in [one, two] {
+        assert_eq!(setup.status_for(client, &queued), "cancelled");
+        assert_eq!(setup.status_for(client, &first), "cancelled");
+    }
+    assert_eq!(
+        setup.cancel_for(one, &read_of_viewed),
+        "cancelled",
+        "its last reader left"
+    );
+
+    gate.open();
+    let record = setup.settled(&json!(view));
+    assert_eq!(
+        record["status"], "ready",
+        "the view's task ran on: {record}"
+    );
+    assert_eq!(
+        record["result"],
+        json!({"items": 1, "read": 1, "deferred": 0, "failed": 0})
+    );
+    let again = setup.read(waiting, "grid", "visible");
+    assert_eq!(again["state"], "queued", "the cancelled task never ran");
+    assert_ne!(again["job_id"], queued, "a new task");
+    assert_eq!(setup.settled(&again["job_id"])["status"], "ready");
+    let grid = |file| (file, PreviewTier::Grid);
+    assert_eq!(
+        setup.owner.previews_dispatched(),
+        [grid(running), grid(viewed), grid(waiting)]
+    );
+    assert_eq!(
+        setup.owner.preview_grid_states(vec![running, viewed]),
+        [PreviewState::Pending, PreviewState::Ready],
+        "the stopped task wrote nothing"
+    );
+}
+
+/// A disconnect releases the client's interest in every read it waited on, as a cancel does: a
+/// task another client still waits on runs on for it, while the running and queued tasks only the
+/// gone client wanted stop, the one writing nothing and the other never running.
+#[test]
+fn preview_cache_owner_a_disconnect_releases_the_clients_reads() {
+    let mut setup = Setup::new("preview-owner-disconnect-reads");
+    let [shared, alone, waiting] = ["A.JPG", "B.JPG", "C.JPG"].map(|name| setup.jpeg(name));
+    let leaving = setup.owner.register();
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_previews(Some(gate.clone()));
+    let job = setup.read(shared, "grid", "visible")["job_id"].clone();
+    setup.read_for(leaving, alone, "grid", "visible");
+    gate.wait_reached(2, "both workers");
+    assert_eq!(
+        setup.read_for(leaving, shared, "grid", "visible")["job_id"],
+        job
+    );
+    setup.read_for(leaving, waiting, "grid", "visible");
+    setup.owner.disconnect(leaving);
+    assert_eq!(
+        setup.status_for(setup.client, &job),
+        "running",
+        "the other client's wait is intact"
+    );
+
+    gate.open();
+    assert_eq!(setup.settled(&job)["status"], "ready");
+    let again = setup.read(waiting, "grid", "visible");
+    assert_eq!(
+        again["state"], "queued",
+        "the gone client's queued task never ran"
+    );
+    assert_eq!(setup.settled(&again["job_id"])["status"], "ready");
+    let grid = |file| (file, PreviewTier::Grid);
+    assert_eq!(
+        setup.owner.previews_dispatched(),
+        [grid(shared), grid(alone), grid(waiting)]
+    );
+    assert_eq!(
+        setup.owner.preview_grid_states(vec![alone]),
+        [PreviewState::Pending],
+        "the gone client's running task wrote nothing"
+    );
 }
 
 /// List `count` files the disk does not hold, as rows only.

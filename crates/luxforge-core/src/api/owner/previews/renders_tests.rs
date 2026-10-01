@@ -5,8 +5,9 @@
 //! earlier entry's key, a deleted index directory rendering again, the large tier sharing the loupe
 //! tiers' budget, the discard of other renderer generations, the camera preview until the first
 //! render, views over photographs making camera previews only, `job.cancel` of a waiting and a
-//! running render, the render queue's bound, a backlog of renders never delaying an open
-//! photograph's Develop preview and, with the supplied RAW files, an edited Nikon Z 6 photograph.
+//! running render, a tier's job shared by two clients until the last leaves it, the render queue's
+//! bound, a backlog of renders never delaying an open photograph's Develop preview and, with the
+//! supplied RAW files, an edited Nikon Z 6 photograph.
 use crate::{
     ApiRequest, ApiResponse, AssetId, EditorService, EntryId, PreviewQueue, ProxyBounds, SourceTag,
     api::owner::{ClientId, OwnerHandle, PreviewRequest},
@@ -204,12 +205,27 @@ impl Setup {
         self.read_for(self.client, photo, tier, priority)
     }
 
-    /// The job once it is no longer queued or running.
-    fn settled(&self, job: &Value) -> Value {
+    /// The job, as `client` reads it, once it is no longer queued or running.
+    fn settled_for(&self, client: ClientId, job: &Value) -> Value {
         wait_for("the job to end", || {
-            let record = self.ok("job.read", json!({"job_id": job}));
+            let record = self.ok_for(client, "job.read", json!({"job_id": job}));
             (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
         })
+    }
+
+    /// The job once it is no longer queued or running.
+    fn settled(&self, job: &Value) -> Value {
+        self.settled_for(self.client, job)
+    }
+
+    /// `job.read` of `job` by `client`: its status.
+    fn status_for(&self, client: ClientId, job: &Value) -> Value {
+        self.ok_for(client, "job.read", json!({"job_id": job}))["status"].clone()
+    }
+
+    /// `job.cancel` of `job` by `client`: the job's status afterwards.
+    fn cancel_for(&self, client: ClientId, job: &Value) -> Value {
+        self.ok_for(client, "job.cancel", json!({"job_id": job}))["status"].clone()
     }
 
     /// Read `tier` of `photo` until it is ready, settling the job a queued answer names; answers
@@ -1021,6 +1037,142 @@ fn job_cancel_removes_a_waiting_render_and_stops_a_running_one() {
     let again = setup.read(running, GRID, "visible");
     assert_ne!(again["job_id"], first["job_id"], "a new render");
     assert_eq!(setup.settled(&again["job_id"])["status"], "ready");
+}
+
+/// Two clients wait on one tier's render job, which belongs to the clients that want it: one's
+/// `job.cancel` releases its own interest only. The other's wait is intact — the same job, still
+/// running, then `ready`, and it is woken for the camera preview and for the render — while the
+/// client that left reads the same outcome and is woken for neither.
+#[test]
+fn a_tiers_job_is_shared_and_a_cancel_releases_only_the_callers_interest() {
+    let (setup, photos) = Setup::new("rendered-owner-interest", &["orientation-6.jpg"], false);
+    let photo = &photos[0];
+    let watching = || {
+        let client = setup.owner.register();
+        let woken = Arc::new(AtomicU64::new(0));
+        let counter = woken.clone();
+        setup.owner.watch_previews(
+            client,
+            Arc::new(move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        (client, woken)
+    };
+    let (leaving, left_woken) = watching();
+    let (staying, stayed_woken) = watching();
+    let renders = Arc::new(Gate::new());
+    renders.shut();
+    setup.owner.hold_renders(Some(renders.clone()));
+    let cameras = Arc::new(Gate::new());
+    cameras.shut();
+    setup.owner.hold_previews(Some(cameras.clone()));
+    let job = setup.read_for(leaving, photo, GRID, "visible")["job_id"].clone();
+    renders.wait_reached(1, "the render worker");
+    cameras.wait_reached(1, "the camera preview");
+    assert_eq!(
+        setup.read_for(staying, photo, GRID, "visible")["job_id"],
+        job,
+        "one job for the tier"
+    );
+
+    assert_eq!(
+        setup.cancel_for(leaving, &job),
+        "running",
+        "the other client still wants it"
+    );
+    assert_eq!(setup.status_for(staying, &job), "running");
+    assert_eq!(setup.status_for(leaving, &job), "running");
+    cameras.open();
+    wait_until("the camera preview is written", || {
+        setup.has_row(photo, &photo.entry, GRID, "embedded")
+    });
+    renders.open();
+    let record = setup.settled_for(staying, &job);
+    assert_eq!(record["status"], "ready", "{record}");
+    assert_eq!(record["result"]["origin"], "rendered");
+    assert_eq!(
+        setup.settled_for(leaving, &job),
+        record,
+        "both read the one outcome"
+    );
+    wait_until(
+        "the client still waiting is woken for the camera preview and the render",
+        || stayed_woken.load(Ordering::SeqCst) == 2,
+    );
+    assert_eq!(
+        left_woken.load(Ordering::SeqCst),
+        0,
+        "the client that left is woken for neither"
+    );
+    assert_eq!(
+        setup.owner.renders_dispatched(),
+        [(photo.asset.clone(), photo.entry.clone(), vec![GRID])]
+    );
+}
+
+/// A render stops only when no client wants a tier of it. Once both clients waiting on a running
+/// render and on a waiting one have left — by `job.cancel`, or the last by disconnecting — each
+/// tier's job ends `cancelled`, the waiting render never runs and the running one writes nothing.
+#[test]
+fn only_the_last_client_to_leave_a_tiers_job_stops_its_render() {
+    let (setup, photos) = Setup::new(
+        "rendered-owner-last-cancel",
+        &[
+            "orientation-1.jpg",
+            "orientation-3.jpg",
+            "orientation-6.jpg",
+        ],
+        true,
+    );
+    let [running, waiting, next] = &photos[..] else {
+        unreachable!()
+    };
+    let other = setup.owner.register();
+    let leaving = setup.owner.register();
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    setup.owner.hold_renders(Some(gate.clone()));
+    let first = setup.read_for(leaving, running, GRID, "visible")["job_id"].clone();
+    gate.wait_reached(1, "the render worker");
+    assert_eq!(
+        setup.read_for(other, running, GRID, "visible")["job_id"],
+        first
+    );
+    let second = setup.read(waiting, GRID, "visible")["job_id"].clone();
+    assert_eq!(
+        setup.read_for(other, waiting, GRID, "visible")["job_id"],
+        second
+    );
+
+    assert_eq!(setup.cancel_for(setup.client, &second), "queued");
+    assert_eq!(setup.cancel_for(other, &second), "cancelled");
+    assert_eq!(setup.cancel_for(other, &first), "running");
+    setup.owner.disconnect(leaving);
+    assert_eq!(
+        setup.status_for(other, &first),
+        "cancelled",
+        "its last client gone, the render stopped"
+    );
+    for client in [setup.client, other] {
+        assert_eq!(setup.status_for(client, &second), "cancelled");
+    }
+
+    gate.open();
+    // Renders run one at a time, so the next one starts once the stopped one has ended.
+    let after = setup.read(next, GRID, "visible");
+    assert_eq!(setup.settled(&after["job_id"])["status"], "ready");
+    assert_eq!(
+        setup.owner.renders_dispatched(),
+        [
+            (running.asset.clone(), running.entry.clone(), vec![GRID]),
+            (next.asset.clone(), next.entry.clone(), vec![GRID]),
+        ]
+    );
+    assert!(
+        !setup.has_row(running, &running.entry, GRID, "rendered"),
+        "the stopped render wrote nothing"
+    );
 }
 
 /// The render queue is bounded: past it a new render is `resource-limit`, while a request that

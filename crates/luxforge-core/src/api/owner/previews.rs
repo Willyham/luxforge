@@ -13,10 +13,13 @@
 //! - **Tasks and jobs.** A task is one file's tier, or the camera preview of a developed
 //!   photograph's tier (`crate::previews::CameraSource`). A client's `preview.read` that finds no
 //!   valid tier of a file queues the task, or joins it, and answers its job: one catalog job per
-//!   task, shared by every client that asks, whose result is the
-//!   [`PreviewInfo`](crate::catalog_types::PreviewInfo). `job.cancel` of it removes the task from
-//!   the queue, or stops it while it runs, unless a view still wants it. These jobs are too short
-//!   for rows of their own on the activity board.
+//!   task, whose result is the [`PreviewInfo`](crate::catalog_types::PreviewInfo), shared by
+//!   interest (`Jobs::open_catalog_shared`) as a source job is — every client that asks joins it,
+//!   keeps the same job id and reads it. A client's `job.cancel` of it, or its disconnect, releases
+//!   that client's interest: it is woken for the task no more ([`PreviewsLane::released`]), and
+//!   only when the last interested client leaves does the job end `cancelled` and the task leave
+//!   the queue, or stop while it runs, unless a view still wants it. These jobs are too short for
+//!   rows of their own on the activity board.
 //! - **View jobs.** [`want_view_items`] queues, in the background, the grid tiers a client's view
 //!   lacks, as one catalog job per client ("Reading previews", `n of N`), which replaces the
 //!   client's previous one and whose cancel drops the tasks it alone wanted. For a developed
@@ -129,11 +132,12 @@ struct Wanted {
     control: Arc<JobControl>,
     /// The highest priority it was asked for.
     priority: PreviewPriority,
-    /// The job clients' requests share, when a client asked for this tier itself.
+    /// The job clients' requests share, while a client that asked for this tier itself still
+    /// wants it: the job table holds who.
     job: Option<JobId>,
     /// The clients whose view jobs want it.
     views: BTreeSet<ClientId>,
-    /// The clients that asked for it, woken when it writes a preview or ends.
+    /// The clients that asked for it and have not left it, woken when it writes a preview or ends.
     waiters: BTreeSet<ClientId>,
     /// A photograph's render waits on it: its camera preview is the fallback until the render.
     for_render: bool,
@@ -327,10 +331,11 @@ impl PreviewsLane {
         }
     }
 
-    /// A client has gone: its waker goes, its view job ends, dropping the tasks only it wanted,
-    /// its region job is cancelled and its region answer removed, and the kept development is
-    /// released when it was the last client that used it. The jobs its preview requests made
-    /// belong to no client and stay.
+    /// A client has gone: its waker goes, it is woken for no task, its view job ends, dropping the
+    /// tasks only it wanted, its region job is cancelled and its region answer removed, and the
+    /// kept development is released when it was the last client that used it. Its interest in the
+    /// jobs its preview requests share has left them already (`Jobs::disconnect`), and a job it was
+    /// the last to want has ended through [`Self::cancelled`].
     pub(super) fn disconnect(&mut self, client: ClientId, jobs: &mut Jobs) {
         self.wakers.remove(&client);
         for wanted in self.tasks.values_mut() {
@@ -348,9 +353,10 @@ impl PreviewsLane {
         }
     }
 
-    /// `job.cancel` cancelled one of this lane's jobs in the job table: a view job drops the tasks
-    /// only it wanted; a request's job leaves its task, which is removed from the queue, or
-    /// stopped while it runs, when nothing else wants it.
+    /// The job table stopped one of this lane's jobs — `job.cancel` of a view job or a region, or
+    /// the last interested client leaving a request's job by a cancel or a disconnect: a view job
+    /// drops the tasks only it wanted; a request's job ends `cancelled` and leaves its task, which
+    /// is removed from the queue, or stopped while it runs, when no view still wants it.
     pub(super) fn cancelled(&mut self, job_id: &JobId, jobs: &mut Jobs) {
         if self.regions.cancelled(job_id, jobs) || self.renders.cancelled(job_id, jobs) {
             return;
@@ -373,6 +379,24 @@ impl PreviewsLane {
             wanted.waiters.clear();
         }
         self.drop_unwanted(key);
+    }
+
+    /// `client` left `job_id`, one of this lane's jobs shared by interest (`job.cancel`): it is
+    /// woken for its task no more, and for a render's tier no more once it wants no tier of that
+    /// render, nor for the camera preview asked for in the tier's place once it wants no render of
+    /// that tier of the photograph. The work runs on for the clients still interested; the owner
+    /// stops it through [`Self::cancelled`] when this was the last.
+    pub(super) fn released(&mut self, job_id: &JobId, client: ClientId, jobs: &Jobs) {
+        let key = match self.jobs.get(job_id) {
+            Some(key) => Some(*key),
+            None => self
+                .renders
+                .released(job_id, client, jobs)
+                .map(|(row, tier)| (ViewItem::Photo(row), tier)),
+        };
+        if let Some(wanted) = key.and_then(|key| self.tasks.get_mut(&key)) {
+            wanted.waiters.remove(&client);
+        }
     }
 
     /// Stop every task and region as the owner stops: each running one at its next checkpoint,
@@ -634,17 +658,23 @@ pub(in crate::api) fn preview_read(
         }
     };
     if opened {
-        owner.jobs.open_catalog(CatalogOpened {
-            job_id: job_id.clone(),
-            kind: JobKind::PreviewExtract,
-            asset_id: None,
-            origin: Some(call.origin.clone()),
-            control: JobControl::new(),
-        });
+        owner.jobs.open_catalog_shared(
+            CatalogOpened {
+                job_id: job_id.clone(),
+                kind: JobKind::PreviewExtract,
+                asset_id: None,
+                origin: Some(call.origin.clone()),
+                control: JobControl::new(),
+            },
+            Some(call.client),
+        );
         if running {
             owner.jobs.start(&job_id);
         }
         lane.jobs.insert(job_id.clone(), key);
+    } else {
+        let joined = owner.jobs.join_catalog(&job_id, call.client);
+        debug_assert!(joined, "a task's job is live and shared");
     }
     dispatch(owner);
     answer(&PreviewAnswer::Queued { job_id, fallback })
