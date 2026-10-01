@@ -92,9 +92,6 @@ pub(crate) struct SelectCatalog {
     /// record its end was read from, for evidence.
     pub(crate) batch_request: Option<Value>,
     pub(crate) batch_record: Option<Value>,
-    /// The job and the sentence the status bar says of the batch that just ended, until anything
-    /// else is said: long-running work's own sentence for the job does not replace it.
-    pub(crate) said: Option<(String, String)>,
     /// Each `catalog.empty-removed` call of the last Empty Removed… and its answer, for evidence.
     pub(crate) empty_calls: Vec<Value>,
 }
@@ -599,7 +596,6 @@ impl Editor {
                 state.batch = Some(batch);
                 state.report = false;
                 self.select.catalog.batch_seen = None;
-                self.select.catalog.said = None;
                 self.follow_batch()
             }
             Err(error) => {
@@ -696,7 +692,6 @@ impl Editor {
         let home = self.select.state.home.clone();
         let sentence = batch.sentence(home.as_deref()).unwrap_or_default();
         self.select.catalog.batch_record = result.ok();
-        self.select.catalog.said = Some((job.to_owned(), sentence.clone()));
         self.status.text = sentence;
         if !preset {
             return Task::none();
@@ -1023,31 +1018,6 @@ impl Editor {
             && self.search_wanted().is_none()
     }
 
-    /// Long-running work's sentence for the batch that just ended replaced the batch's own: say
-    /// the batch's again. Anything else said since ends the batch's claim on the status bar.
-    fn keep_batch_sentence(&mut self) {
-        let Some((job, said)) = &self.select.catalog.said else {
-            return;
-        };
-        if self.status.text == *said {
-            return;
-        }
-        let home = self.select.state.home.as_deref();
-        let generic = self
-            .long_work
-            .state
-            .board
-            .iter()
-            .flat_map(|board| board.recent.iter())
-            .filter(|recent| recent.entry.job_id.as_deref() == Some(job.as_str()))
-            .filter_map(|recent| crate::state::long_work::finished_sentence(recent, None, home))
-            .any(|sentence| self.status.text.starts_with(&sentence));
-        if generic {
-            self.status.text = said.clone();
-        }
-        self.select.catalog.said = None;
-    }
-
     /// The source to count with no filter, and the library change to count it at: over the
     /// catalog, with a filter set, when the total held is for another source or change.
     fn total_wanted(&self) -> Option<(ViewSource, u64)> {
@@ -1229,7 +1199,6 @@ impl Editor {
 /// rows when the bar and the Info panel want them.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     // A batch runs on whichever workspace is shown, and its end is said wherever the person is.
-    editor.keep_batch_sentence();
     let followed = editor.follow_batch();
     if !editor.select_shown() {
         return followed;

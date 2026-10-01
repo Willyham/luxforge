@@ -64,10 +64,27 @@ pub(super) struct Names {
     place_index: HashMap<String, u32>,
     pub places: Vec<String>,
     key: String,
+    /// The last folder, body, lens and place asked for and what they were: rows read in order
+    /// mostly repeat their neighbour's, which is then found without hashing.
+    last_folder: Option<(String, FolderIndex)>,
+    last_body: Option<(String, BodyIndex)>,
+    last_lens: Option<(String, u32)>,
+    last_place: Option<(String, u32)>,
 }
 
 impl Names {
     fn folder(&mut self, folder: &str) -> FolderIndex {
+        if let Some((last, index)) = &self.last_folder
+            && last == folder
+        {
+            return *index;
+        }
+        let index = self.find_folder(folder);
+        remember(&mut self.last_folder, folder, index);
+        index
+    }
+
+    fn find_folder(&mut self, folder: &str) -> FolderIndex {
         if let Some(index) = self.folder_index.get(folder) {
             return *index;
         }
@@ -89,8 +106,17 @@ impl Names {
             self.key.push('\0');
             self.key.push_str(serial.unwrap_or(""));
         }
-        if let Some(index) = self.body_index.get(self.key.as_str()) {
+        if let Some((last, index)) = &self.last_body
+            && *last == self.key
+        {
             return *index;
+        }
+        if let Some(index) = self.body_index.get(self.key.as_str()) {
+            let index = *index;
+            let key = std::mem::take(&mut self.key);
+            remember(&mut self.last_body, &key, index);
+            self.key = key;
+            return index;
         }
         let camera = make.zip(model).map(|(make, model)| CameraBody {
             make: make.to_owned(),
@@ -100,29 +126,66 @@ impl Names {
         let index = self.tables.body(camera.as_ref());
         self.bodies = self.bodies.max(index.0 as usize + 1);
         self.body_index.insert(self.key.clone(), index);
+        let key = std::mem::take(&mut self.key);
+        remember(&mut self.last_body, &key, index);
+        self.key = key;
         index
     }
 
     fn lens(&mut self, lens: Option<&str>) -> Option<u32> {
         let lens = lens?;
-        if let Some(index) = self.lens_index.get(lens) {
+        if let Some((last, index)) = &self.last_lens
+            && last == lens
+        {
             return Some(*index);
+        }
+        let index = self.find_lens(lens);
+        remember(&mut self.last_lens, lens, index);
+        Some(index)
+    }
+
+    fn find_lens(&mut self, lens: &str) -> u32 {
+        if let Some(index) = self.lens_index.get(lens) {
+            return *index;
         }
         let index = self.lenses.len() as u32;
         self.lenses.push(lens.to_owned());
         self.lens_index.insert(lens.to_owned(), index);
-        Some(index)
+        index
     }
 
     fn place(&mut self, place: Option<&str>) -> Option<u32> {
         let place = place?;
-        if let Some(index) = self.place_index.get(place) {
+        if let Some((last, index)) = &self.last_place
+            && last == place
+        {
             return Some(*index);
+        }
+        let index = self.find_place(place);
+        remember(&mut self.last_place, place, index);
+        Some(index)
+    }
+
+    fn find_place(&mut self, place: &str) -> u32 {
+        if let Some(index) = self.place_index.get(place) {
+            return *index;
         }
         let index = self.places.len() as u32;
         self.places.push(place.to_owned());
         self.place_index.insert(place.to_owned(), index);
-        Some(index)
+        index
+    }
+}
+
+/// Remember `value` as the last asked for, with what it was, reusing the slot's string.
+fn remember<T: Copy>(slot: &mut Option<(String, T)>, value: &str, index: T) {
+    match slot {
+        Some((last, at)) => {
+            last.clear();
+            last.push_str(value);
+            *at = index;
+        }
+        None => *slot = Some((value.to_owned(), index)),
     }
 }
 
