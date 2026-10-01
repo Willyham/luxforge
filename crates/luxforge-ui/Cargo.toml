@@ -21,8 +21,9 @@ half = { version = "=2.7.1", default-features = false }
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
-# The one sRGB reference, for the GPU stage's identity readback. It depends on no workspace crate,
-# so it brings no core into the widget crate's tests.
+# The one independent sRGB transfer function, which tests compute linear-light expectations and the
+# GPU stage's identity readback through. It depends on no workspace crate, so the widget crate stays
+# core-free.
 luxforge-reference = { path = "../luxforge-reference" }
 
 [lints]

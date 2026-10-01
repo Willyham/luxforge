@@ -29,6 +29,7 @@ mod actions_tests;
 pub(crate) mod capabilities;
 #[cfg(test)]
 mod capabilities_tests;
+pub(crate) mod compare_after;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -724,7 +725,10 @@ impl Editor {
                     !self.document.compare_hold
                         && self.presentation.presented_entry == self.document.original_entry
                 })
-                .map(|(frame, comparison)| (frame, comparison.position)),
+                .map(|(after, comparison)| {
+                    let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+                    (after.drawn(fit), comparison.position)
+                }),
             mask_draft: self.mask_shape(),
             mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),

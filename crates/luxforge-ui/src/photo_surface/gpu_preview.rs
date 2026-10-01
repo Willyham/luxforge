@@ -1161,6 +1161,11 @@ impl PhotoPipeline {
             content_id: None,
             region_key: None,
             allocated_bytes: texels * 4,
+            // Evaluated at the boundary's own size, the display's at Fit: never minified far
+            // enough to need a chain.
+            mip_levels: 1,
+            mip_bytes: 0,
+            mips_current: false,
         };
         let words = Charged {
             buffer: storage_buffer(device, "luxforge.gpu_preview.words", words),
