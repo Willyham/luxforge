@@ -22,7 +22,9 @@ use crate::{
         AssetSourceValue, AvailabilityRow, DevelopOutcome, DevelopedPick, FileAvailability,
         ItemFailure, LibraryItem,
     },
-    editor::{NewAsset, NewPhotograph, insert_photograph, source_signature, upsert_volume},
+    editor::{
+        NewAsset, NewPhotograph, ReadOriginal, insert_photograph, source_signature, upsert_volume,
+    },
     library::{
         availability, items,
         journal::{self, Desired, Outcome, Request},
@@ -55,19 +57,42 @@ pub(crate) struct Decided {
 }
 
 impl Decided {
+    /// The photograph the file became, or was linked or relinked to.
+    fn asset_id(&self) -> &AssetId {
+        match &self.becomes {
+            Becomes::Created(photograph) => &photograph.asset.id,
+            Becomes::Linked(asset) | Becomes::Relinked { asset, .. } => asset,
+        }
+    }
+
     /// The file as a Develop's report lists it.
     pub(crate) fn reported(&self) -> DevelopedPick {
-        let (asset_id, outcome) = match &self.becomes {
-            Becomes::Created(photograph) => (photograph.asset.id.clone(), DevelopOutcome::Created),
-            Becomes::Linked(asset) => (asset.clone(), DevelopOutcome::Linked),
-            Becomes::Relinked { asset, .. } => (asset.clone(), DevelopOutcome::Relinked),
+        let outcome = match &self.becomes {
+            Becomes::Created(_) => DevelopOutcome::Created,
+            Becomes::Linked(_) => DevelopOutcome::Linked,
+            Becomes::Relinked { .. } => DevelopOutcome::Relinked,
         };
         DevelopedPick {
             path: self.developed.pick.clone(),
             used: self.developed.used.clone(),
-            asset_id,
+            asset_id: self.asset_id().clone(),
             outcome,
         }
+    }
+
+    /// What its Develop kept of its file ([`ReadFile::kept`](super::ReadFile::kept)), taken as
+    /// what was read of its photograph's file, for the service to keep for the preparation that
+    /// follows once the batch is committed ([`EditorService::keep_read`]).
+    pub(crate) fn take_read(&mut self) -> Option<ReadOriginal> {
+        let content = self.developed.file.kept.take()?;
+        let file = &self.developed.file;
+        Some(ReadOriginal {
+            asset_id: self.asset_id().clone(),
+            path: file.path.clone(),
+            signature: file.signature.clone(),
+            fingerprint: file.fingerprint.clone(),
+            content,
+        })
     }
 }
 

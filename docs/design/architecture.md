@@ -131,7 +131,7 @@ Only `luxforge-raw`, `luxforge-process`, `luxforge-watch` and `luxforge-jpeg` ov
 
 ### Sources
 
-Import references a supported original and creates a stable asset plus Original after a bounded source worker has prepared and verified it. A JPEG Original has an empty recipe; a RAW Original has one required source-development layer. The asset records its JPEG/RAW kind and immutable RAW interpretation metadata.
+A Develop (`pick.develop`) brings a supported original in: one bounded read on lane C's worker fingerprints it and reads its interpretation, and the owner creates a stable asset plus Original from them. Its preparation, on the bounded source worker, is a later job; opening a file is a Develop of that one file, whose read the preparation that follows takes instead of reading and decoding the file again. A JPEG Original has an empty recipe; a RAW Original has one required source-development layer. The asset records its JPEG/RAW kind and immutable RAW interpretation metadata.
 
 Path and root are mutable locators; a full content fingerprint verifies the bytes. Same-filesystem aliases resolve to one asset, and identical copies at different paths are not merged. Missing or changed sources keep their edits and report an explicit rendering limitation.
 
@@ -312,6 +312,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Verified files `source.relink` may commit, remembered by the owner | 100,000, oldest forgotten first | `MAX_REMEMBERED_FILES` (twice `MAX_LIBRARY_BATCH`), `crates/luxforge-core/src/library/missing.rs` |
 | A Develop's batches | The first of one file, then at most 100 files or 5 s, never across an event | `BATCH_FILES` and `BATCH_TIME`, `crates/luxforge-core/src/library/develop.rs` |
 | One file read by the develop lane | 128 MiB for a JPEG, 512 MiB for a RAW, in 1 MiB chunks, one file at a time | the source limits, `crates/luxforge-core/src/library/develop/read.rs` |
+| What a one-file Develop keeps of its file for the preparation that follows | One: a JPEG's bytes or a RAW's unpacked sensor, within the read and sensor limits, until the next preparation takes it or the next one-file Develop replaces it; a queued preparation holding a sensor counts toward the one mosaic pending developments may pin, and past it leaves the sensor and reads the file | `read_original`, `crates/luxforge-core/src/editor.rs`; `MAX_QUEUED_MOSAICS`, `crates/luxforge-core/src/api/owner.rs` |
 | Photographs one `catalog.empty-removed` deletes | 50,000, earliest removed first; `remaining` says how many are left | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/library/remove.rs` |
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
 | Activity board watchers | 8 per board | `MAX_WATCHERS`, `crates/luxforge-core/src/activity.rs` |
