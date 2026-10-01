@@ -19,6 +19,12 @@
 //!   queued job can be cancelled without touching the thread. A lane job belongs to no client: any
 //!   client may read or cancel it, a cancel stops it for everyone, and a client's disconnect never
 //!   touches it.
+//! - **Catalog** jobs run on their catalog lane's own workers, and the lane tells the table when
+//!   one starts and ends. Most belong to no client, as a lane job does. A lane may instead share a
+//!   job by interest ([`Jobs::open_catalog_shared`]), one job per task that every request for the
+//!   task joins by its id ([`Jobs::join_catalog`]): a preview read's or render's. Such a job
+//!   belongs to the clients interested in it, as source work does: a cancel or disconnect
+//!   releases the caller's interest, and only the last release stops it, through its lane.
 //!
 //! Progress travels from a worker to the owner through a [`JobControl`] the worker writes and the
 //! owner reads when a client asks.
@@ -150,7 +156,9 @@ pub(crate) enum Family {
     /// The export lane; a cancel stops the job for everyone.
     Export,
     /// A catalog lane, which schedules the job itself; a cancel stops it for everyone, as an
-    /// export's does, and the lane hears of it (`CatalogLanes::cancelled`).
+    /// export's does, and the lane hears of it (`CatalogLanes::cancelled`). A job the lane shares
+    /// by interest ([`Jobs::open_catalog_shared`]) is released as a source job is instead, and the
+    /// lane hears when its last client leaves it.
     Catalog,
 }
 
@@ -598,6 +606,18 @@ impl Entry {
             .as_ref()
             .is_none_or(|interest| interest.requesters.contains(&client))
     }
+
+    /// `client` asks for this shared job: it becomes one of its requesters, and one of the clients
+    /// that want it while it is live. A finished job needs no worker, so joining it never revives
+    /// interest in work.
+    fn join(&mut self, client: ClientId) {
+        let live = self.is_live();
+        let interest = self.interest.get_or_insert_with(Interest::default);
+        interest.requesters.insert(client);
+        if live {
+            interest.interested.insert(client);
+        }
+    }
 }
 
 struct Dispatch {
@@ -815,20 +835,14 @@ impl Jobs {
         self.keys.get(key)
     }
 
-    // Shared jobs: source preparation and analysis.
+    // Shared jobs: source preparation, analysis and the catalog lanes' jobs.
 
     /// Join the job for this key: `client` becomes one of its requesters, and one of the clients
     /// that want it while it is live. A finished job needs no worker, so joining it never revives
     /// interest in work.
     pub(crate) fn join(&mut self, key: &JoinKey, client: ClientId) -> Option<JobId> {
         let job_id = self.keys.get(key)?.clone();
-        let entry = self.entries.get_mut(&job_id)?;
-        let live = entry.is_live();
-        let interest = entry.interest.get_or_insert_with(Interest::default);
-        interest.requesters.insert(client);
-        if live {
-            interest.interested.insert(client);
-        }
+        self.entries.get_mut(&job_id)?.join(client);
         Some(job_id)
     }
 
@@ -851,6 +865,47 @@ impl Jobs {
     /// job it belongs to no client: any client reads it, a cancel stops it for everyone
     /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
     pub(crate) fn open_catalog(&mut self, opened: CatalogOpened) {
+        self.insert_catalog(opened, None);
+    }
+
+    /// Record a catalog job shared by interest, one per task of its lane: `client`, the request
+    /// that opened it, is its first requester and wants it; a later request for the same task
+    /// joins it by its id ([`Self::join_catalog`]). It belongs to the clients that want it, as a
+    /// source job does: its requesters read it, a cancel or disconnect releases the caller's
+    /// interest ([`Self::release`], [`Self::disconnect`]), and only the last release stops it,
+    /// after which the owner tells the lane. `None` for work nobody requested, such as a commit's
+    /// background re-render, which no client reads until one joins it.
+    pub(crate) fn open_catalog_shared(&mut self, opened: CatalogOpened, client: Option<ClientId>) {
+        let interest = Interest {
+            requesters: client.into_iter().collect(),
+            interested: client.into_iter().collect(),
+        };
+        self.insert_catalog(opened, Some(interest));
+    }
+
+    /// `client` joins `job_id`, a catalog job shared by interest ([`Self::open_catalog_shared`]):
+    /// a later request for its task. It becomes one of its requesters, and one of the clients that
+    /// want it while it is live. `false`, changing nothing, when the table holds no shared catalog
+    /// job of that id.
+    pub(crate) fn join_catalog(&mut self, job_id: &JobId, client: ClientId) -> bool {
+        match self.entries.get_mut(job_id) {
+            Some(entry) if entry.family() == Family::Catalog && entry.interest.is_some() => {
+                entry.join(client);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `job_id` belongs to the clients interested in it — a source job, an analysis or a
+    /// catalog job shared by interest — rather than to no client.
+    pub(crate) fn shared(&self, job_id: &JobId) -> bool {
+        self.entries
+            .get(job_id)
+            .is_some_and(|entry| entry.interest.is_some())
+    }
+
+    fn insert_catalog(&mut self, opened: CatalogOpened, interest: Option<Interest>) {
         let CatalogOpened {
             job_id,
             kind,
@@ -880,6 +935,7 @@ impl Jobs {
             control,
         );
         entry.origin = origin;
+        entry.interest = interest;
         self.entries.insert(job_id, entry);
     }
 
@@ -956,7 +1012,8 @@ impl Jobs {
 
     /// A client is gone: it leaves every shared job it wanted, exactly as a cancel does, and owns
     /// nothing any more. Returns the live jobs that lost their last interested client, whose work
-    /// the owner then stops. Lane jobs are untouched: a disconnect never cancels them.
+    /// the owner then stops (a shared catalog job's through its lane). Lane jobs, and catalog jobs
+    /// not shared by interest, are untouched: a disconnect never cancels them.
     pub(crate) fn disconnect(&mut self, client: ClientId) -> Vec<(JobId, JobKind)> {
         let mut orphaned = Vec::new();
         for (job_id, entry) in &mut self.entries {
@@ -1950,6 +2007,112 @@ mod tests {
             jobs.read_for(&ready, two).unwrap().result,
             Some(json!({"done": true}))
         );
+        jobs.shutdown();
+    }
+
+    /// A catalog job shared by interest belongs to the clients that asked for it, as a source job
+    /// does: a later request joins it by its id, only its requesters read it, a release leaves the
+    /// caller's interest alone and the last one stops it — its control is cancelled, and whatever
+    /// its lane reports afterwards it ends `cancelled` — while every requester still reads the
+    /// outcome. A disconnect releases as a cancel does. A catalog job not shared this way is never
+    /// joined, and one opened for nobody is read by nobody until a request joins it.
+    #[test]
+    fn a_shared_catalog_job_is_joined_by_id_and_only_its_last_release_stops_it() {
+        let (mut jobs, _) = jobs();
+        let one = ClientId::testing(1);
+        let two = ClientId::testing(2);
+        let three = ClientId::testing(3);
+        let open = |jobs: &mut Jobs, client: Option<ClientId>| {
+            let job_id = JobId::new();
+            let control = JobControl::new();
+            jobs.open_catalog_shared(
+                CatalogOpened {
+                    job_id: job_id.clone(),
+                    kind: JobKind::PreviewExtract,
+                    asset_id: None,
+                    origin: Some(Origin::new("preview.read", "request")),
+                    control: control.clone(),
+                },
+                client,
+            );
+            (job_id, control)
+        };
+        let status = |jobs: &Jobs, job: &JobId, client: ClientId| {
+            jobs.read_for(job, client).map(|record| record.status)
+        };
+
+        let (job, control) = open(&mut jobs, Some(one));
+        assert!(jobs.shared(&job));
+        assert!(jobs.join_catalog(&job, two), "a later request joins by id");
+        jobs.start(&job);
+        assert_eq!(status(&jobs, &job, two).unwrap(), JobStatus::Running);
+        assert_eq!(
+            status(&jobs, &job, three).unwrap_err().kind,
+            ErrorKind::Validation,
+            "only its requesters read it"
+        );
+        assert_eq!(jobs.release(&job, one).unwrap(), Release::Kept);
+        assert!(!control.is_cancelled(), "the other client still wants it");
+        assert!(jobs.wanted_by(&job, two) && !jobs.wanted_by(&job, one));
+        assert_eq!(
+            status(&jobs, &job, one).unwrap(),
+            JobStatus::Running,
+            "the released client still reads it"
+        );
+        assert_eq!(
+            jobs.release(&job, one).unwrap(),
+            Release::Kept,
+            "a repeat changes nothing"
+        );
+        assert_eq!(jobs.release(&job, two).unwrap(), Release::Stopped);
+        assert!(control.is_cancelled(), "the last release stops it");
+        let finished = jobs
+            .finish(&job, Ok(Output::Value(json!({"done": true}))))
+            .unwrap();
+        assert_eq!(finished.record.status, JobStatus::Cancelled);
+        assert!(finished.record.result.is_none(), "its result is discarded");
+        assert_eq!(finished.record.error.unwrap().message, CANCELLED);
+        for client in [one, two] {
+            assert_eq!(status(&jobs, &job, client).unwrap(), JobStatus::Cancelled);
+        }
+        assert!(jobs.join_catalog(&job, three), "a finished job answers");
+        assert!(!jobs.wanted(&job), "and no one wants its work");
+
+        // A disconnect leaves the client's interest; a job it alone wanted stops.
+        let (kept, kept_control) = open(&mut jobs, Some(one));
+        assert!(jobs.join_catalog(&kept, two));
+        let (alone, alone_control) = open(&mut jobs, Some(one));
+        assert_eq!(
+            jobs.disconnect(one),
+            vec![(alone.clone(), JobKind::PreviewExtract)]
+        );
+        assert!(alone_control.is_cancelled() && !kept_control.is_cancelled());
+        assert!(jobs.wanted_by(&kept, two));
+        assert_eq!(
+            status(&jobs, &kept, one).unwrap_err().kind,
+            ErrorKind::Validation,
+            "a gone client owns nothing"
+        );
+
+        // Work nobody requested is read by nobody until a request joins it.
+        let (unrequested, _) = open(&mut jobs, None);
+        assert!(status(&jobs, &unrequested, two).is_err());
+        assert!(jobs.join_catalog(&unrequested, two));
+        assert_eq!(status(&jobs, &unrequested, two).unwrap(), JobStatus::Queued);
+
+        // A catalog job that belongs to no client is not shared and never joined.
+        let lane = JobId::new();
+        jobs.open_catalog(CatalogOpened {
+            job_id: lane.clone(),
+            kind: JobKind::PreviewExtract,
+            asset_id: None,
+            origin: None,
+            control: JobControl::new(),
+        });
+        assert!(!jobs.shared(&lane));
+        assert!(!jobs.join_catalog(&lane, one));
+        assert!(!jobs.join_catalog(&JobId::new(), one), "nor an unknown one");
+        assert_eq!(status(&jobs, &lane, three).unwrap(), JobStatus::Queued);
         jobs.shutdown();
     }
 
