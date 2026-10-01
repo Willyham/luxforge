@@ -758,6 +758,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
     assert_eq!(
         ids(&developer),
         [
+            "luxforge.crop",
             "luxforge.presets",
             "luxforge.pixel",
             "luxforge.raw",
@@ -769,7 +770,6 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.transform",
             "luxforge.lens",
             "luxforge.perspective",
-            "luxforge.crop",
             "luxforge.vignette",
             "luxforge.controls",
         ]

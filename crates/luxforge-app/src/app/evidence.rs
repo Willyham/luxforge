@@ -1992,6 +1992,32 @@ impl Editor {
                 return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
+            DraftStep::GuideLine([x, y, end_x, end_y]) => {
+                if !drafting || !self.crop_section.guide {
+                    return self.fail_step("arm Straighten on an open crop draft first");
+                }
+                if ![x, y, end_x, end_y].iter().all(|value| value.is_finite()) {
+                    return self.fail_step("a straighten guide needs finite coordinates");
+                }
+                let mut tasks = Vec::new();
+                for pointer in [
+                    CropPointer::Begin {
+                        handle: Handle::Guide,
+                        x: *x,
+                        y: *y,
+                    },
+                    CropPointer::Drag {
+                        x: *end_x,
+                        y: *end_y,
+                        option: false,
+                    },
+                    CropPointer::End,
+                ] {
+                    tasks.push(self.crop_update(CropMessage::Pointer(pointer)));
+                }
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
             // The angle is the generic stepper of the crop action's declared angle, so its steps
             // send what that widget sends: a drag's fractions and release, a button press, or a
             // press on the box, the typed text and Enter.

@@ -245,6 +245,13 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
     let (action, parameter) = editor
         .modules
         .iter()
+        // Crop's fields belong to its canvas draft, not the generic multi-field gesture.
+        .filter(|module| {
+            !matches!(
+                module.canvas,
+                Some(luxforge_core::CanvasInteraction::CropFrame { .. })
+            )
+        })
         .flat_map(|module| module.actions.iter())
         .find(|action| {
             !action.patch

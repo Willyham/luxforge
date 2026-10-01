@@ -4079,8 +4079,8 @@ mod tests {
                 // The host modes first — the pointer, the mask mode and one per canvas pick the host
                 // declares for a sampling component kind — then the registry's canvas declarations,
                 // so the RAW and Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.pixel, \
-                 luxforge.raw, luxforge.basic, luxforge.crop",
+                "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.crop, \
+                 luxforge.pixel, luxforge.raw, luxforge.basic",
             ),
             (
                 "a module that declares no canvas",

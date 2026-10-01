@@ -704,8 +704,8 @@ pub(crate) struct PresetChip {
 /// The crop draft's own controls, rendered by the host for a declared crop-frame interaction.
 ///
 /// Idle, the same Ratio and Angle controls read the displayed entry's committed crop exactly as a
-/// draft opened on it would seed them, so opening the draft moves nothing; a change to one of
-/// them opens that draft and applies the change to it.
+/// draft opened on it would seed them; a change opens that draft and applies the change to it.
+/// While drafting the preset chips appear in the floating bar rather than in the section.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct CropSectionModel {
     pub(crate) title: String,
@@ -1849,7 +1849,7 @@ fn angle_control(
 }
 
 /// One chip per declared ratio preset, with `chosen` the option that reads selected.
-fn preset_chips(presets: &[AspectPreset], chosen: &str) -> Vec<PresetChip> {
+pub(crate) fn preset_chips(presets: &[AspectPreset], chosen: &str) -> Vec<PresetChip> {
     presets
         .iter()
         .enumerate()

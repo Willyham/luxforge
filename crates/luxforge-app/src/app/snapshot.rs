@@ -374,7 +374,8 @@ impl Editor {
         match &self.workspace.canvas.draft_bar {
             Some(bar) => json!({"title":bar.title,"subject":bar.subject,"kind":bar.kind,
                 "readout":bar.readout,"can_apply":bar.can_apply,"done":bar.done,
-                "conflicted":bar.conflicted}),
+                "conflicted":bar.conflicted,
+                "crop_ratios":bar.crop_ratios.iter().map(|ratio| json!({"label":ratio.label,"selected":ratio.chosen})).collect::<Vec<_>>() }),
             None => Value::Null,
         }
     }

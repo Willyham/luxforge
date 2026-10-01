@@ -63,7 +63,9 @@ pub use curve_editor::{CurveEditorEvent, CurveEditorModel, CurvePointRow, curve_
 pub use disclosure_heading::disclosure_heading;
 pub use dropdown::{DropdownButtonModel, MenuEntry, MenuItem, dropdown_button, menu_list};
 pub use field_grid::{GridField, field_grid};
-pub use floating_bar::{DraftBarModel, DraftFinish, DraftSubject, draft_bar};
+pub use floating_bar::{
+    DraftBarModel, DraftFinish, DraftSubject, draft_bar, draft_bar_with_controls,
+};
 pub use focus_control::{ControlKey, ControlKeyEvent, focus_control};
 pub use histogram::{
     BINS, ClipTriangleModel, HistogramChannel, HistogramModel, histogram_inspector,

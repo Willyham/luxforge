@@ -10,7 +10,7 @@ use crate::app::message::{history::HistoryMessage, pointer::PointerMessage, view
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{Message, capability::CapabilityMessage, draft::DraftMessage},
+        message::{Message, capability::CapabilityMessage, crop::CropMessage, draft::DraftMessage},
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{
@@ -31,8 +31,9 @@ use iced::{
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
-    DraftBarModel, DraftFinish, DraftSubject, Icon, ModeEntry, NoticeCardModel, ToggleEntry, Tone,
-    draft_bar, mode_strip, notice_card, theme,
+    ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
+    ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
+    mode_strip, notice_card, theme,
 };
 
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
@@ -179,7 +180,36 @@ fn top_chrome<'a>(model: &'a CanvasModel) -> Option<Element<'a, Message>> {
 
 fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
     // The bar belongs to whichever gesture is open; only one ever is, and all share one lifecycle.
-    draft_bar(
+    let controls = model
+        .crop_ratios
+        .iter()
+        .map(|preset| {
+            let index = preset.index;
+            let control = chip(
+                &ChipModel {
+                    label: preset.label.clone(),
+                    trailing: None,
+                    selected: preset.chosen,
+                    enabled: model.crop_enabled,
+                },
+                model
+                    .crop_enabled
+                    .then_some(Message::Crop(CropMessage::Preset(index))),
+                None,
+            );
+            focus_control(control, model.crop_enabled, move |event| {
+                (matches!(
+                    event,
+                    ControlKeyEvent::Pressed {
+                        key: ControlKey::Enter | ControlKey::Space,
+                        ..
+                    }
+                ))
+                .then_some(Message::Crop(CropMessage::Preset(index)))
+            })
+        })
+        .collect();
+    draft_bar_with_controls(
         &DraftBarModel {
             title: model.title.clone(),
             subject: model.subject.as_ref().map(|label| DraftSubject {
@@ -199,6 +229,7 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
         model
             .can_apply
             .then_some(Message::Draft(DraftMessage::Commit)),
+        controls,
     )
 }
 
