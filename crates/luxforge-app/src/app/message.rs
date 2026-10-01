@@ -10,6 +10,7 @@ pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
 pub(crate) mod crop;
+pub(crate) mod develop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
 pub(crate) mod export;
@@ -64,6 +65,9 @@ pub(crate) enum Message {
     Select(select::SelectMessage),
     /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
     LongWork(long_work::LongWorkMessage),
+    /// Developing picks and the development set: Develop N's confirmation, the filmstrip and moving
+    /// through it.
+    Develop(develop::DevelopMessage),
     // ── end lane D ──
     Close,
 }

@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
+pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
@@ -330,6 +331,9 @@ pub(crate) struct Inputs<'a> {
     pub(crate) select: &'a select::SelectState,
     /// Long-running work: the board as last read, each job's rate and the view waiting on a job.
     pub(crate) long_work: &'a long_work::LongWorkState,
+    /// Developing picks and the development set: Develop N's confirmation, a Develop running, the
+    /// set, and the cached preview drawn while a photograph of it prepares.
+    pub(crate) develop: &'a develop::DevelopState,
     // ── end lane D ──
 }
 
@@ -360,6 +364,8 @@ pub(crate) struct Workspace {
     pub(crate) select: select::SelectModel,
     /// Long-running work: the status bar's busiest job and Select's progress sheet.
     pub(crate) long_work: long_work::LongWorkModel,
+    /// Develop N's confirmation and progress, the filmstrip and the cached preview's words.
+    pub(crate) develop: develop::DevelopModel,
     // ── end lane D ──
 }
 
@@ -381,6 +387,15 @@ impl Workspace {
         // ── catalog lane D: views and desktop ──
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
+        let progress = inputs
+            .develop
+            .developing
+            .as_ref()
+            .and_then(|developing| developing.job.as_deref())
+            .and_then(|job| inputs.long_work.job(job))
+            .and_then(|job| job.entry.progress.as_ref())
+            .and_then(|progress| progress.fraction);
+        self.develop = develop::derive(inputs.develop, progress);
         // ── end lane D ──
     }
 
@@ -559,6 +574,7 @@ mod tests {
         // ── catalog lane D: views and desktop ──
         select: select::SelectState,
         long_work: long_work::LongWorkState,
+        develop: develop::DevelopState,
         // ── end lane D ──
     }
 
@@ -603,6 +619,7 @@ mod tests {
                 // ── catalog lane D: views and desktop ──
                 select: select::SelectState::default(),
                 long_work: long_work::LongWorkState::default(),
+                develop: develop::DevelopState::default(),
                 // ── end lane D ──
             }
         }
@@ -715,6 +732,7 @@ mod tests {
                 // ── catalog lane D: views and desktop ──
                 select: &self.select,
                 long_work: &self.long_work,
+                develop: &self.develop,
                 // ── end lane D ──
             }
         }

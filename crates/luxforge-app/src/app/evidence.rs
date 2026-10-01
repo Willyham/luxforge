@@ -4,6 +4,7 @@
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
+mod develop;
 mod long_work;
 mod select;
 mod select_catalog;
@@ -446,6 +447,11 @@ pub(crate) enum Settle {
     /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
     /// sent to the background, or a cancelled job ended.
     LongWork,
+    /// Nothing developing picks or the development set asked for is in flight, and the photograph
+    /// open in Develop has its exact frame on screen.
+    Develop,
+    /// The large previews Develop decodes ahead of a move are decoded.
+    DevelopAhead,
     // ── end lane D ──
 }
 
@@ -473,6 +479,8 @@ impl Settle {
             Self::Select => "select",
             Self::MissingStop => "missing_stop",
             Self::LongWork => "long_work",
+            Self::Develop => "develop",
+            Self::DevelopAhead => "develop_ahead",
         }
     }
 
@@ -581,7 +589,9 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        if self.document.state.is_none()
+        // A cached preview drawn while a photograph of the development set prepares is the
+        // photograph on screen, though no document is open.
+        if (self.document.state.is_none() && self.develop.state.preview.is_none())
             || self.crop().is_some()
             || self.gallery_page().is_some()
             || self.select_shown()
@@ -825,6 +835,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
+                    self.filmstrip_shown(),
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
@@ -970,6 +981,7 @@ impl Editor {
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
             Step::Catalog(step) => self.catalog_step(step),
+            Step::Develop(step) => self.develop_step(step),
             // ── end lane D ──
         }
     }
@@ -3091,6 +3103,7 @@ impl Editor {
             self.view_state.window,
             title.state_panel_open,
             title.tools_panel_open,
+            self.filmstrip_shown(),
         );
         let canvas = iced::Rectangle::new(
             iced::Point::new(left, top),
@@ -3191,6 +3204,12 @@ impl Editor {
                 } else {
                     self.capture_next_frame();
                 }
+                task
+            }
+            // `D` and the development set's keys wait for what developing picks asked for.
+            Some(Message::Develop(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.await_develop();
                 task
             }
             // ── end lane D ──
