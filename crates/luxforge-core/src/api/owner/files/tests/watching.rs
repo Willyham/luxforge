@@ -455,7 +455,11 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
             database::root_stale(&connection, &photos).unwrap(),
             "on its row"
         );
-        let events = events_after(owner, client, start);
+        // The job's own events: a card the host mounts meanwhile is listed by a job of its own.
+        let events: Vec<Value> = events_after(owner, client, start)
+            .into_iter()
+            .filter(|event| event["job_id"] == job_id)
+            .collect();
         let last = events.last().expect("the job's end");
         assert_eq!(
             (&last["method"], &last["request_id"], &last["job_id"]),
@@ -841,6 +845,12 @@ fn every_listing_records_one_event_as_it_ends() {
     let fixture = Fixture::new("watch-ended");
     let owner = fixture.owner();
     let client = owner.register();
+    // A mount table of nothing, so a card the host mounts meanwhile (another process's disk image)
+    // is not listed among the events counted here.
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::default())),
+    );
     tell(
         owner,
         FilesMessage::Limits(WalkLimits {
