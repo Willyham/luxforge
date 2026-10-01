@@ -19,9 +19,11 @@
 //!    is skipped without one.
 //! 4. `idle-watchers`: idle CPU with the index lane watching two indexed folders, in the core and
 //!    in the editor, and the editor's own idle over a catalog with none beside them.
-//! 5. `drag-baseline`, `first-index` (a first index of the tree with owner round trips sampled
-//!    throughout), `drag-during-indexing` and `drag-during-preview-backlog`: a Basic drag through
-//!    `editor-latency`, alone and under the catalog's background work.
+//! 5. `drag-baseline`, `first-index` (a first index of the tree of copies with owner round trips
+//!    sampled throughout), `first-index-hard-links` (the same over the tree of hard links, skipped
+//!    where the file system refuses them), `drag-during-indexing` and
+//!    `drag-during-preview-backlog`: a Basic drag through `editor-latency`, alone and under the
+//!    catalog's background work.
 //! 6. `desktop` and `develop-switch`: the desktop's frame-time probes ([`desktop`], lane B's) and
 //!    the Develop switch ([`develop_switch`], lane D's), `not_measured` until they are built.
 //!
@@ -305,6 +307,9 @@ pub fn run(root: &Path, out: &Path, options: &Options) -> Result {
     report.step(root, "idle-watchers", || measures::idle_watchers(&cx));
     report.step(root, "drag-baseline", || measures::drag_baseline(&cx));
     report.step(root, "first-index", || measures::first_index(&cx));
+    report.step(root, "first-index-hard-links", || {
+        measures::first_index_hard_links(&cx)
+    });
     report.step(root, "drag-during-indexing", || {
         measures::drag_during_indexing(&cx)
     });
