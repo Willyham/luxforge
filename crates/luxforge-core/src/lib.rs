@@ -86,17 +86,19 @@ pub use presets::{
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
 };
 pub use preview::{
-    AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
+    AssetSelection, BoundaryOutcome, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
-    CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer, GpuBoundary, GpuClipping,
-    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPlan,
-    GpuPlanRequest, GpuPosition, GpuProgram, GpuProgramKind, gpu_plan,
+    BoundaryKey, BoundaryRequest, CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer,
+    GpuBoundary, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuMask,
+    GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
+    gpu_plan,
 };
+pub use render::{BOUNDARY_MAX_BYTES, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,

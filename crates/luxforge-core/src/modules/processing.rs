@@ -30,6 +30,12 @@ pub struct CompileStage {
     pub stage: Stage,
     pub full: Stage,
     pub scale: SamplingScale,
+    /// Compile the layer in its GPU shape: every unit it can hold, a neutral one as its own
+    /// identity, so its program sequence does not change as a value leaves or returns to neutral
+    /// during a gesture. Only a GPU plan's drafted layer is compiled so
+    /// (`crate::GpuPlanRequest::drafted`); every CPU compile leaves it unset, so no CPU frame,
+    /// sample or answer ever sees a unit the CPU shape omits.
+    pub(crate) gpu_shape: bool,
 }
 
 impl CompileStage {
@@ -38,7 +44,14 @@ impl CompileStage {
             stage,
             full: stage,
             scale: SamplingScale { x: 1.0, y: 1.0 },
+            gpu_shape: false,
         }
+    }
+
+    /// The same stage in the GPU shape ([`Self::gpu_shape`]) when `shaped`.
+    pub(crate) fn shaped(mut self, shaped: bool) -> Self {
+        self.gpu_shape = shaped;
+        self
     }
 
     pub(crate) fn sampled(stage: Stage, full: Stage) -> Self {
@@ -52,6 +65,7 @@ impl CompileStage {
                 x: f64::from(stage.width) / f64::from(full.width),
                 y: f64::from(stage.height) / f64::from(full.height),
             },
+            gpu_shape: false,
         }
     }
 }

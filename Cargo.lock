@@ -1892,6 +1892,7 @@ dependencies = [
 name = "luxforge-core"
 version = "0.0.0"
 dependencies = [
+ "half",
  "idna_adapter",
  "image",
  "kamadak-exif",

@@ -124,6 +124,14 @@ pub struct PreviewJob {
     /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
     /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
     pub viewport_declined: Option<String>,
+    /// An open draft's GPU preview, planned with this job when its request asked
+    /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
+    /// path, and the boundary it starts from. Preview state, never an API result.
+    pub gpu: Option<Box<crate::GpuPreview>>,
+    /// Render this GPU preview boundary after the job's Fit frame, as one more result of the job
+    /// ([`super::BoundaryOutcome`]). The desktop asks for it once per draft, on a job of that
+    /// draft; nothing else does.
+    pub boundary: Option<crate::BoundaryRequest>,
 }
 
 impl PreviewJob {
@@ -141,6 +149,8 @@ impl PreviewJob {
             viewport: None,
             intent: PreviewIntent::Immediate,
             viewport_declined: None,
+            gpu: None,
+            boundary: None,
         })
     }
 }
