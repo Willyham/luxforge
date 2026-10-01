@@ -390,7 +390,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// A device of this host's default adapter, or `None` after printing the skip.
-fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
+pub(super) fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
     headless_with(test, wgpu::Limits::default())
 }
 
@@ -415,7 +415,7 @@ fn headless_with(test: &str, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu
 }
 
 /// A pipeline counting into figures of its own, drawing to an sRGB target as the desktop's does.
-fn own_pipeline(device: &wgpu::Device, queue: &wgpu::Queue) -> PhotoPipeline {
+pub(super) fn own_pipeline(device: &wgpu::Device, queue: &wgpu::Queue) -> PhotoPipeline {
     PhotoPipeline::with_figures(
         device,
         queue,
@@ -424,7 +424,7 @@ fn own_pipeline(device: &wgpu::Device, queue: &wgpu::Queue) -> PhotoPipeline {
     )
 }
 
-fn diagnostics(pipeline: &PhotoPipeline, surface: SurfaceId) -> SurfaceDiagnostics {
+pub(super) fn diagnostics(pipeline: &PhotoPipeline, surface: SurfaceId) -> SurfaceDiagnostics {
     pipeline.figures.diagnostics_for(surface)
 }
 
@@ -443,13 +443,14 @@ fn cpu_frame() -> Frame {
 }
 
 /// Surface `surface`'s photograph, drawn over the whole 64 × 64 target, with `plan` when given.
-fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimitive {
+pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimitive {
     PhotoPrimitive {
         surface,
         layers: vec![(Layer::Photo, cpu_frame())],
         viewport: None,
         region_overlays: [None, None],
         gpu: plan,
+        gpu_options: Default::default(),
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),
@@ -482,6 +483,31 @@ fn paint(
 /// [`paint`] into a target of `(width, height)`, `width` a multiple of 64 so its rows copy out
 /// unpadded.
 fn paint_into(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &mut PhotoPipeline,
+    primitive: &PhotoPrimitive,
+    (width, height): (u32, u32),
+) -> Vec<u8> {
+    // These tests are about drawing, so the plan's sequence is compiled first, as a frame after
+    // its compile finds it; `compile_tests` is about compiling.
+    if let Some(plan) = &primitive.gpu {
+        pipeline.compile_now(device, &plan.steps);
+    }
+    draw_into(device, queue, pipeline, primitive, (width, height))
+}
+
+/// [`paint`] as the frame finds the stage, whatever its pipelines' state.
+pub(super) fn paint_prepared(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &mut PhotoPipeline,
+    primitive: &PhotoPrimitive,
+) -> Vec<u8> {
+    draw_into(device, queue, pipeline, primitive, (SIDE, SIDE))
+}
+
+fn draw_into(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &mut PhotoPipeline,
@@ -565,7 +591,7 @@ fn paint_into(
 }
 
 /// The CPU frame, as the BGRA target holds it.
-fn assert_cpu_frame(bytes: &[u8]) {
+pub(super) fn assert_cpu_frame(bytes: &[u8]) {
     let [r, g, b, a] = CPU_RGBA;
     for (index, pixel) in bytes.chunks_exact(4).enumerate() {
         assert_eq!(pixel, [b, g, r, a], "CPU-path pixel {index}");
@@ -587,7 +613,7 @@ fn held(code: u8) -> f32 {
 /// A 64 × 64 boundary of three different permutations of every code's linear value, its last row
 /// out of range — negative, past white, the largest half float, a subnormal — and the codes the
 /// independent reference encodes each texel to.
-fn boundary_with_codes(version: u64) -> (GpuBoundary, Vec<[u8; 3]>) {
+pub(super) fn boundary_with_codes(version: u64) -> (GpuBoundary, Vec<[u8; 3]>) {
     let mut values = Vec::with_capacity((SIDE * SIDE) as usize);
     for index in 0..SIDE * SIDE {
         let (x, y) = (index % SIDE, index / SIDE);
@@ -619,7 +645,7 @@ fn boundary_with_codes(version: u64) -> (GpuBoundary, Vec<[u8; 3]>) {
 }
 
 /// Every texel's expected codes, as the BGRA target holds them.
-fn assert_codes(bytes: &[u8], codes: &[[u8; 3]]) {
+pub(super) fn assert_codes(bytes: &[u8], codes: &[[u8; 3]]) {
     for (index, (pixel, [r, g, b])) in bytes.chunks_exact(4).zip(codes).enumerate() {
         assert_eq!(
             pixel,

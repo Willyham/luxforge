@@ -321,6 +321,14 @@ impl Editor {
                 "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
                 "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
                 "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
+                // The draft revision of the plan whose output was drawn, and the boundary a plan
+                // last evaluated, drawn or held behind the CPU frame.
+                "drawn_gpu_revision":gpu.drawn_gpu_tag,
+                "gpu_ready_boundary":gpu.gpu_ready_boundary,
+                "gpu_preview_compiles":gpu.gpu_preview_compiles,
+                "gpu_preview_compiled":gpu.gpu_preview_compiled,
+                "gpu_preview_compile_max_us":gpu.gpu_preview_compile_max_us,
+                "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
                 "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
@@ -526,8 +534,9 @@ fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
         GpuFallback::BufferLimit { bytes, limit } => {
             json!({"reason":fallback.as_str(),"bytes":bytes,"limit_bytes":limit})
         }
-        GpuFallback::NoAdapter | GpuFallback::DeviceLost | GpuFallback::PipelineFailed => {
-            json!({"reason":fallback.as_str()})
-        }
+        GpuFallback::NoAdapter
+        | GpuFallback::DeviceLost
+        | GpuFallback::PipelineFailed
+        | GpuFallback::Compiling => json!({"reason":fallback.as_str()}),
     }
 }
