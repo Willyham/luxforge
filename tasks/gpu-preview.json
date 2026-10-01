@@ -179,7 +179,7 @@
     {
       "id": "TASK-004",
       "description": "Write the GPU programs for the seven pointwise colour units and qualify each against its CPU unit.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
