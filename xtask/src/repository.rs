@@ -1173,14 +1173,15 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "luxforge-core may not name a crate that depends on it (luxforge-testkit, \
                  luxforge-net, luxforge-cli, luxforge-app or xtask), so its tests build it once",
     },
-    // The headless binary builds without the GUI stack: no window, renderer or dialog crate, and
-    // not the widget crate or the desktop that bring them.
+    // The headless binary builds without the GUI stack: no window, renderer, shader compiler or
+    // dialog crate, and not the widget crate or the desktop that bring them.
     DependencyRule {
         name: "headless-cli",
         refuses: Depends::Any(&[
             "iced",
             "iced_wgpu",
             "wgpu",
+            "naga",
             "rfd",
             "luxforge-ui",
             "luxforge-app",
@@ -1189,7 +1190,30 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: &[Table::Normal],
         allowed: &[],
         reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
-                 GUI stack (iced, wgpu, rfd, luxforge-ui or luxforge-app)",
+                 GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
+    },
+    // The core evaluates nothing on a GPU and draws nothing: a module's GPU program is WGSL text
+    // that the photo surface in luxforge-ui executes, so the core builds no GPU or GUI crate. Its
+    // tests validate that text through naga, a dev-dependency, which no build of a binary has.
+    DependencyRule {
+        name: "gpu-free-core",
+        refuses: Depends::Any(&[
+            "iced",
+            "iced_wgpu",
+            "wgpu",
+            "wgpu-core",
+            "wgpu-hal",
+            "wgpu-types",
+            "naga",
+            "rfd",
+            "luxforge-ui",
+        ]),
+        manifests: &["crates/luxforge-core"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-core may not depend on a GPU or GUI crate (iced, wgpu, naga, rfd or \
+                 luxforge-ui): its GPU programs are WGSL text the photo surface executes, and only \
+                 its tests may validate them, with naga as a dev-dependency",
     },
     // Skipping the disk flush is for tests: only a `[dev-dependencies]` table turns the feature on,
     // so no `cargo build` of a binary, whose dependencies are never dev-dependencies, has it.
@@ -4224,6 +4248,7 @@ mod tests {
             ("Iced", "iced.workspace = true\n"),
             ("Iced's renderer", "iced_wgpu.workspace = true\n"),
             ("wgpu", "wgpu = { version = \"27\" }\n"),
+            ("the shader compiler", "naga = \"27\"\n"),
             ("the dialog crate", "rfd.workspace = true\n"),
             (
                 "the widget crate",
@@ -4243,6 +4268,67 @@ mod tests {
             assert!(
                 error.contains("luxforge-cli/Cargo.toml:")
                     && error.contains("GUI stack")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_core_builds_no_gpu_or_gui_crate_and_takes_naga_only_for_its_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-core\"\n\n[dependencies]\n\
+                     luxforge-raw = { path = \"../luxforge-raw\" }\n\
+                     serde_json.workspace = true\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["gpu-free-core"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        // Its tests validate the WGSL its modules own, and the widget crate executes it; neither
+        // is the core's build.
+        fs::write(
+            &manifest,
+            format!("{clean}\n[dev-dependencies]\nnaga = {{ version = \"27\", features = [\"wgsl-in\"] }}\n"),
+        )
+        .unwrap();
+        let ui = tmp.path().join("crates/luxforge-ui/Cargo.toml");
+        fs::create_dir_all(ui.parent().unwrap()).unwrap();
+        fs::write(
+            &ui,
+            "[dependencies]\nwgpu.workspace = true\niced.workspace = true\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            ("wgpu", "wgpu.workspace = true\n"),
+            ("wgpu's types", "wgpu-types = \"27\"\n"),
+            ("the shader compiler", "naga = \"27\"\n"),
+            (
+                "the shader compiler for a build script",
+                "\n[build-dependencies]\nnaga = \"27\"\n",
+            ),
+            (
+                "the shader compiler under a target",
+                "\n[target.'cfg(target_os = \"macos\")'.dependencies]\nnaga = \"27\"\n",
+            ),
+            ("Iced", "iced.workspace = true\n"),
+            ("Iced's renderer", "iced_wgpu.workspace = true\n"),
+            ("the dialog crate", "rfd.workspace = true\n"),
+            (
+                "the widget crate",
+                "luxforge-ui = { path = \"../luxforge-ui\" }\n",
+            ),
+            (
+                "wgpu under another name",
+                "gpu = { package = \"wgpu\", version = \"27\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-core/Cargo.toml:")
+                    && error.contains("GPU or GUI crate")
                     && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );
