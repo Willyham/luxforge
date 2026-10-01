@@ -616,11 +616,11 @@ mod tests {
         );
         for (group, fields) in [
             (
-                3,
+                4,
                 ["sharpening", "radius", "sharpen-detail", "sharpen-masking"],
             ),
             (
-                4,
+                5,
                 ["luminance", "luminance-detail", "colour", "colour-detail"],
             ),
         ] {
