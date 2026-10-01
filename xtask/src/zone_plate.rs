@@ -20,30 +20,16 @@
 //! [performance]: ../../docs/specs/performance.md
 use crate::scenario::pixels::luminance;
 use image::RgbImage;
+use luxforge_reference::srgb;
 
-/// An sRGB code's linear light, in `0.0..=1.0`.
-fn linear(code: u8) -> f64 {
-    let encoded = f64::from(code) / 255.0;
-    if encoded <= 0.04045 {
-        encoded / 12.92
-    } else {
-        ((encoded + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Linear light's sRGB code, unrounded, in `0.0..=255.0`.
+/// Linear light's sRGB code, unrounded, in `0.0..=255.0`, by the one shared test reference.
 fn encode(linear: f64) -> f64 {
-    let encoded = if linear <= 0.003_130_8 {
-        linear * 12.92
-    } else {
-        1.055 * linear.powf(1.0 / 2.4) - 0.055
-    };
-    encoded * 255.0
+    srgb::encode_clamped(linear) * 255.0
 }
 
 /// The Rec. 709 luminance of `source` in linear light, row by row.
 fn linear_luminance(source: &RgbImage) -> Vec<f64> {
-    let table: Vec<f64> = (0..=255u8).map(linear).collect();
+    let table: Vec<f64> = (0..=255u8).map(srgb::decode).collect();
     source
         .pixels()
         .map(|pixel| {

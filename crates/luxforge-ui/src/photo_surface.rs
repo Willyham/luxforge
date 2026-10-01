@@ -1891,8 +1891,9 @@ pub struct PhotoPipeline {
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     texture_format: wgpu::TextureFormat,
-    /// The pass that writes mip levels, built the first time a photograph needs them.
-    mips: Option<mips::MipPipeline>,
+    /// The pass that writes mip levels, built with the pipeline so the first photograph to need
+    /// them compiles nothing on the UI thread.
+    mips: mips::MipPipeline,
     surfaces: HashMap<SurfaceId, SurfaceSlots>,
     /// Every surface's retiring allocations, which the shared budget counts.
     retiring: Arc<Retiring>,
@@ -2191,7 +2192,7 @@ impl PhotoPipeline {
     /// current pixels and it is drawn under half its size, which is the only draw that samples them.
     /// The passes are encoded and submitted here and never waited on.
     fn generate_mips(
-        &mut self,
+        &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         surface: &mut SurfaceSlots,
@@ -2204,11 +2205,9 @@ impl PhotoPipeline {
         else {
             return;
         };
-        let mips = self
-            .mips
-            .get_or_insert_with(|| mips::MipPipeline::new(device));
         for tile in &picture.tiles {
-            mips.generate(device, queue, &tile.texture, picture.mip_levels);
+            self.mips
+                .generate(device, queue, &tile.texture, picture.mip_levels);
         }
         picture.mips_current = true;
         self.figures.mip_generations.fetch_add(1, Ordering::Relaxed);
@@ -2812,7 +2811,7 @@ impl PhotoPipeline {
             linear,
             nearest,
             texture_format,
-            mips: None,
+            mips: mips::MipPipeline::new(device),
             surfaces: HashMap::new(),
             retiring,
             retirement_sender,
@@ -4630,25 +4629,6 @@ mod gpu_surface_tests {
             .collect()
     }
 
-    /// An sRGB code's linear light, and a linear value's code: the transfer function, independently.
-    fn to_linear(code: u8) -> f64 {
-        let encoded = f64::from(code) / 255.0;
-        if encoded <= 0.04045 {
-            encoded / 12.92
-        } else {
-            ((encoded + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
-    fn to_code(linear: f64) -> u8 {
-        let encoded = if linear <= 0.003_130_8 {
-            linear * 12.92
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        };
-        (encoded * 255.0).round() as u8
-    }
-
     /// Each level is the mean, in linear light, of the 2 × 2 texels of the level above it, for an
     /// sRGB-typed texture and for the plain one a non-sRGB target gets, whose levels are still
     /// written through an sRGB view. A side of one texel repeats its edge, and an odd side drops
@@ -4711,11 +4691,11 @@ mod gpu_surface_tests {
                             next.push(if channel == 3 {
                                 at(0, 0)
                             } else {
-                                to_code(
-                                    (to_linear(at(0, 0))
-                                        + to_linear(at(1, 0))
-                                        + to_linear(at(0, 1))
-                                        + to_linear(at(1, 1)))
+                                luxforge_reference::srgb::code(
+                                    (luxforge_reference::srgb::decode(at(0, 0))
+                                        + luxforge_reference::srgb::decode(at(1, 0))
+                                        + luxforge_reference::srgb::decode(at(0, 1))
+                                        + luxforge_reference::srgb::decode(at(1, 1)))
                                         / 4.0,
                                 )
                             });
