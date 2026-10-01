@@ -370,8 +370,12 @@ pub(crate) mod oklab {
     /// The four `f32` matrices by the names a GPU program that restates the conversion gives their
     /// rows (`<entry>_m1_0` and so on), for the tests that hold those programs to them.
     #[cfg(test)]
-    pub(crate) const MATRICES: [(&str, [[f32; 3]; 3]); 4] =
-        [("m1", M1), ("m2", M2), ("m2_inv", M2_INV), ("m1_inv", M1_INV)];
+    pub(crate) const MATRICES: [(&str, [[f32; 3]; 3]); 4] = [
+        ("m1", M1),
+        ("m2", M2),
+        ("m2_inv", M2_INV),
+        ("m1_inv", M1_INV),
+    ];
 
     /// Linear sRGB to Oklab `[L, a, b]` at one working precision: `M2 · cbrt(M1 · rgb)`, with the
     /// signed cube root that stays finite for the negative LMS component a linear value preserved

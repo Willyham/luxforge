@@ -51,7 +51,10 @@ fn gpu_colour_every_shipped_program_passes_the_surfaces_own_convention() {
         assert!(entries.insert(shipped.entry), "{} twice", shipped.entry);
         let step = GpuStep::colour(GpuProgram::new(shipped.entry, shipped.source));
         if let Err(error) = validate_step(&step) {
-            panic!("{} does not pass the surface's convention:\n{error}", shipped.entry);
+            panic!(
+                "{} does not pass the surface's convention:\n{error}",
+                shipped.entry
+            );
         }
     }
 }
@@ -101,7 +104,11 @@ fn stage(width: u32, height: u32) -> Stage {
     Stage { width, height }
 }
 
-fn planned(registry: &ModuleRegistry, recipe: &Recipe, request: GpuPlanRequest) -> luxforge_core::GpuPlan {
+fn planned(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    request: GpuPlanRequest,
+) -> luxforge_core::GpuPlan {
     match gpu_plan(registry, recipe, request).expect("the stack compiles") {
         GpuAnswer::Plan(plan) => *plan,
         GpuAnswer::Fallback(reason) => panic!("expected a plan, got {reason}"),
@@ -109,7 +116,13 @@ fn planned(registry: &ModuleRegistry, recipe: &Recipe, request: GpuPlanRequest) 
 }
 
 fn flat_boundary(width: u32, height: u32) -> GpuBoundary {
-    boundary(width, height, 1, &vec![[0.25; 3]; (width * height) as usize]).unwrap()
+    boundary(
+        width,
+        height,
+        1,
+        &vec![[0.25; 3]; (width * height) as usize],
+    )
+    .unwrap()
 }
 
 /// A colour plan becomes one colour step per unit, in recipe order, each with its operation's
@@ -149,7 +162,10 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         .iter()
         .zip(plan.content.iter().flat_map(|operation| &operation.units))
     {
-        let GpuStep::Colour { program: converted, position } = step;
+        let GpuStep::Colour {
+            program: converted,
+            position,
+        } = step;
         assert_eq!(*position, PositionMap::IDENTITY);
         assert_eq!(converted, &program(unit));
         assert_eq!(
@@ -250,8 +266,14 @@ fn grid(width: u32, height: u32, seed: u64) -> Vec<[f32; 3]> {
 }
 
 /// The CPU units `layer` compiles to over `stage`, as the host compiles them.
-fn cpu_units(registry: &ModuleRegistry, layer: &Layer, stage: Stage) -> Vec<Arc<dyn PointwiseColor>> {
-    let (module, _) = registry.effect(&layer.effect_id).expect("a built-in effect");
+fn cpu_units(
+    registry: &ModuleRegistry,
+    layer: &Layer,
+    stage: Stage,
+) -> Vec<Arc<dyn PointwiseColor>> {
+    let (module, _) = registry
+        .effect(&layer.effect_id)
+        .expect("a built-in effect");
     match module
         .compile(
             &layer.effect_id,
@@ -321,7 +343,9 @@ fn measure(
     );
     let held_boundary = boundary(width, height, seed, &inputs).expect("a boundary");
     let converted = surface_plan(&plan, held_boundary).expect("a runnable plan");
-    let gpu = qualifier.evaluate(&converted).expect("a qualification readback");
+    let gpu = qualifier
+        .evaluate(&converted)
+        .expect("a qualification readback");
     let drawn = qualifier
         .evaluate_codes(&converted)
         .expect("a qualification readback");
@@ -374,9 +398,7 @@ fn figures(s: &Statistics) -> String {
 
 /// The worst of each statistic over several cases, the signed ΔL* by its magnitude.
 fn worst(statistics: &[Statistics]) -> Statistics {
-    let largest = |of: fn(&Statistics) -> f64| {
-        statistics.iter().map(of).fold(0.0, f64::max)
-    };
+    let largest = |of: fn(&Statistics) -> f64| statistics.iter().map(of).fold(0.0, f64::max);
     let delta_l = statistics
         .iter()
         .map(|s| s.mean_delta_l)
@@ -407,7 +429,13 @@ fn qualify(test: &str, entry: &str, cases: Vec<(String, Layer)>, size: (u32, u32
     let (mut programs, mut drawn, mut missed) = (Vec::new(), Vec::new(), Vec::new());
     let (mut linear, mut non_finite) = (0.0_f64, 0);
     for (index, (name, layer)) in cases.iter().enumerate() {
-        let measured = measure(&qualifier, &registry, layer, size, 0x6c66_0000 + index as u64);
+        let measured = measure(
+            &qualifier,
+            &registry,
+            layer,
+            size,
+            0x6c66_0000 + index as u64,
+        );
         eprintln!(
             "{entry} {name}: program {} | drawn {} | non-finite {} (CPU non-finite {}) | linear \
              rel {:.2e}{}",
@@ -437,7 +465,10 @@ fn qualify(test: &str, entry: &str, cases: Vec<(String, Layer)>, size: (u32, u32
         shipped.enabled
     );
     if shipped.enabled {
-        assert!(missed.is_empty(), "{entry} is enabled and misses on {missed:?}");
+        assert!(
+            missed.is_empty(),
+            "{entry} is enabled and misses on {missed:?}"
+        );
     } else if !missed.is_empty() {
         eprintln!("{entry} ships disabled and misses on {missed:?}");
     }
@@ -560,16 +591,28 @@ fn gpu_colour_tone_curve_meets_the_pointwise_limits() {
         })
         .collect();
     let cases = [
-        ("the corpus's S-curve", json!([[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]])),
-        ("a steep wall", json!([[0.0, 0.0], [0.5, 0.0], [0.505, 1.0], [1.0, 1.0]])),
-        ("a lifted black and lowered white", json!([[0.0, 0.3], [1.0, 0.7]])),
+        (
+            "the corpus's S-curve",
+            json!([[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]),
+        ),
+        (
+            "a steep wall",
+            json!([[0.0, 0.0], [0.5, 0.0], [0.505, 1.0], [1.0, 1.0]]),
+        ),
+        (
+            "a lifted black and lowered white",
+            json!([[0.0, 0.3], [1.0, 0.7]]),
+        ),
         // Flat at encoded 0.5, which is exactly the threshold between codes 127 and 128, so every
         // pixel lands on it: what separates the program from the hardware encoder.
         ("flat on a code threshold", json!([[0.0, 0.5], [1.0, 0.5]])),
         ("flat", json!([[0.0, 0.45], [1.0, 0.45]])),
         ("crushed ends", json!([[0.2, 0.0], [0.8, 1.0]])),
         ("sixteen knots", json!(zigzag)),
-        ("collapsed knots", json!([[0.0, 0.0], [0.4, 0.3], [0.400_000_01, 0.7], [1.0, 1.0]])),
+        (
+            "collapsed knots",
+            json!([[0.0, 0.0], [0.4, 0.3], [0.400_000_01, 0.7], [1.0, 1.0]]),
+        ),
     ]
     .map(|(name, points)| {
         (
@@ -987,8 +1030,17 @@ fn apply_steps(
         };
         let mut params = api["params"].clone();
         params["asset_id"] = id.clone();
-        params["mutation"] = mutation(revision(owner, client, &id)?, &request_id("corpus"), "agent");
-        call(owner, client, api["method"].as_str().expect("a method"), params)?;
+        params["mutation"] = mutation(
+            revision(owner, client, &id)?,
+            &request_id("corpus"),
+            "agent",
+        );
+        call(
+            owner,
+            client,
+            api["method"].as_str().expect("a method"),
+            params,
+        )?;
     }
     Ok(())
 }
@@ -1016,8 +1068,7 @@ fn corpus_cell(
     let asset = crate::app::testing::import_and_adopt(&owner, client, &source.path);
     let result = (|| -> Result<Cell, String> {
         apply_steps(&owner, client, &asset, steps)?;
-        let recipe =
-            luxforge_testkit::client::recipe(&owner, client, &json!(asset.as_str()))?;
+        let recipe = luxforge_testkit::client::recipe(&owner, client, &json!(asset.as_str()))?;
         let bounds = fit_bounds();
         // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase.
         let mut job = crate::app::tasks::ready_preview_job(
@@ -1092,7 +1143,9 @@ fn corpus_cell(
             })
             .ok_or("no colour layer")?;
         for layer in &recipe.layers[..boundary_layer] {
-            let (module, _) = registry.effect(&layer.effect_id).ok_or("an unknown effect")?;
+            let (module, _) = registry
+                .effect(&layer.effect_id)
+                .ok_or("an unknown effect")?;
             let compiled = module
                 .compile(
                     &layer.effect_id,
@@ -1217,7 +1270,11 @@ fn gpu_colour_corpus_at_fit() {
     let output = std::path::PathBuf::from(
         std::env::var("LUXFORGE_GPU_CORPUS_OUTPUT").expect("LUXFORGE_GPU_CORPUS_OUTPUT"),
     );
-    assert!(!output.exists(), "{} exists: use a new directory", output.display());
+    assert!(
+        !output.exists(),
+        "{} exists: use a new directory",
+        output.display()
+    );
     let Some(qualifier) = Qualifier::headless(test) else {
         return;
     };
@@ -1326,5 +1383,8 @@ fn gpu_colour_corpus_at_fit() {
     .unwrap();
     std::fs::write(output.join("commands.sh"), commands.join("\n") + "\n").unwrap();
     eprintln!("{test}: {} cells in {}", cells.len(), output.display());
-    assert!(missed.is_empty(), "cells missing the pointwise limits: {missed:?}");
+    assert!(
+        missed.is_empty(),
+        "cells missing the pointwise limits: {missed:?}"
+    );
 }

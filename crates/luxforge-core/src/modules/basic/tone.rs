@@ -453,10 +453,12 @@ mod tests {
         crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
         for unit in &first {
             let description = unit.gpu().expect("Tone has a program");
-            let branch = match unit.contrast {
-                c if c == 0.0 => 0,
-                c if c > 0.0 => 1,
-                _ => 2,
+            let branch = if unit.contrast == 0.0 {
+                0
+            } else if unit.contrast > 0.0 {
+                1
+            } else {
+                2
             };
             assert_eq!(description.words[0], branch);
             assert_eq!(f32::from_bits(description.words[1]), unit.alpha);

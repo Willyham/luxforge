@@ -33,15 +33,15 @@ use crate::Error;
 #[cfg(test)]
 use crate::{EFFECT_FORMAT, ErrorKind};
 use colour::ColourAdjust;
-use exposure::Exposure;
 /// The Basic units' GPU programs, which [`super::GPU_PROGRAMS`] lists.
 pub(crate) use colour::PROGRAM as COLOUR_ADJUST_PROGRAM;
+use exposure::Exposure;
 pub(crate) use exposure::PROGRAM as EXPOSURE_PROGRAM;
-pub(crate) use tone::PROGRAM as TONE_PROGRAM;
-pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
 use serde_json::{Map, Value};
 use std::sync::Arc;
+pub(crate) use tone::PROGRAM as TONE_PROGRAM;
 use tone::Tone;
+pub(crate) use white_balance::PROGRAM as WHITE_BALANCE_PROGRAM;
 use white_balance::{PARAMETER_RANGE, WhiteBalance};
 
 /// The one colour-stage effect of the Basic module: every implemented Basic parameter of a stack

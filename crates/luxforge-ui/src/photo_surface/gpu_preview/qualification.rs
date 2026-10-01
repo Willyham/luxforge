@@ -40,7 +40,9 @@ impl Qualifier {
         let Some(Ok((device, queue))) =
             answered(adapter.request_device(&wgpu::DeviceDescriptor::default()))
         else {
-            eprintln!("skipped: no device for the adapter; {test} ran nothing and is not GPU evidence");
+            eprintln!(
+                "skipped: no device for the adapter; {test} ran nothing and is not GPU evidence"
+            );
             return None;
         };
         let support = Support::new(&device);
@@ -161,8 +163,8 @@ impl Qualifier {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
         let row = width * texel_bytes;
-        let padded = row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.qualification.readback"),
             size: u64::from(padded) * u64::from(height),
@@ -240,12 +242,7 @@ impl Qualifier {
 /// A boundary of `width` × `height` texels from `f32` values in row order, each held as the nearest
 /// half float, alpha one: what a qualification test hands [`Qualifier::evaluate`], and the values a
 /// CPU reference must then read, which [`held`] gives.
-pub fn boundary(
-    width: u32,
-    height: u32,
-    version: u64,
-    pixels: &[[f32; 3]],
-) -> Option<GpuBoundary> {
+pub fn boundary(width: u32, height: u32, version: u64, pixels: &[[f32; 3]]) -> Option<GpuBoundary> {
     GpuBoundary::from_linear(
         width,
         height,

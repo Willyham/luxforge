@@ -27,10 +27,7 @@ pub(crate) enum Unrunnable {
     /// A masked operation: the surface has no coverage step yet.
     Mask { layer: usize },
     /// The boundary held is not the stage the plan's boundary layer receives.
-    Boundary {
-        held: (u32, u32),
-        stage: (u32, u32),
-    },
+    Boundary { held: (u32, u32), stage: (u32, u32) },
     /// A position map with a coefficient the surface's `f32` words cannot hold exactly.
     Position { layer: usize },
 }
@@ -114,14 +111,7 @@ pub(crate) fn program(description: &GpuDescription) -> GpuProgram {
 
 /// The core's exact map as the surface's, when every coefficient is an integer an `f32` holds.
 fn position_map(position: GpuPosition) -> Option<PositionMap> {
-    let GpuPosition {
-        a,
-        b,
-        tx,
-        c,
-        d,
-        ty,
-    } = position;
+    let GpuPosition { a, b, tx, c, d, ty } = position;
     let narrow = |value: i64| {
         (value.abs() <= EXACT_F32)
             .then(|| i32::try_from(value).ok())
