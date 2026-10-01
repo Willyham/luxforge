@@ -13,15 +13,13 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Library
 
-**Browse, pick, develop** (proposal, [design](design/catalog.md), [plan](../tasks/catalog.json)). Browse cards and folders fast, pick a few, develop only those into the catalog. Delivered as one contracts step and four parallel lanes (files, previews, catalog, views and desktop), as the [delivery plan](design/catalog.md#delivery-plan) sets out.
-- Owner decisions on the design's proposals
-- Catalog format 12 with picks, collections and the library journal; a disposable index; capture metadata from headers
-- Browsing cards and folders; events by time and place; days, cameras and moments (bursts by speed, brackets by exposure from metadata or previews); the previews cache
-- Owner-held browse views and selection; picks with undo; catalog folders made from events at develop time; collections and smart collections
-- Developing picks into the catalog in place of import
-- The Select workspace, the loupe with a 100% focus check and compare, catalog browsing, and Develop's development-set filmstrip
-- Availability by volume, manual Locate through the UI and API, and resolving missing originals per photograph, grouped by their source folder on disk
-- Removal, batch preset and batch export
+**Browse, pick, develop** ([design](design/catalog.md)). The Select workspace, events and moments, picks, developing picks into the catalog, catalog folders and collections, Locate and resolving missing originals, removal and batch preset and export are implemented on the design's recorded defaults ([feature status](features.md)). What remains ([outstanding](design/catalog.md#outstanding)):
+- Owner decisions on the design's proposals, P13's choice of how to meet the photographs view's time among them
+- Recording the `catalog-measure` figures, the first browse from a card reader included, and meeting the `browse.view` target over 100,000 photographs
+- A labelled corpus of real trips, bursts and brackets from several makes, to check events and moments against
+- Native Linux and Windows runs of the folder and volume watchers
+- In the desktop: Add a folder…, the card-connected notice, Send back, dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, and Locate original… in export's refusal
+- Background availability checks, and a browse filter for a missing value
 - Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
@@ -85,7 +83,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Inspection
 
 **Performance panel follow-ups** ([design](design/performance-panel.md)). The Performance section, the activity board and the resource counters are delivered.
-- Cancel listed work from the section, through the cancel each job already has
+- Cancel the editor's own listed work (source preparations, RAW developments, the desktop's renders and histograms) from the section, as the catalog's jobs already are, through the cancel each job has
 - GPU time and allocations on Linux (DRM `fdinfo`) and Windows (D3DKMT), and native checks of the CPU and memory counters there
 - Attribute memory to the prepared source, the proxy and the GPU textures in `resources.read`
 - Remember whether the section is collapsed, in the host's user-level settings

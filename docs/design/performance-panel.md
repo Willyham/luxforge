@@ -45,7 +45,7 @@ Publishers today:
 | `module.resource.remove` | Removing resource | The capability worker's transfer lane | `<module ID>/<resource ID>` | none |
 | `module.task` | Running task | The capability worker's module lane | Module ID | none |
 
-Every entry but `source.prepare` names its `asset_id`; a new import has no asset yet. Capability jobs name no `asset_id`: a task's photo is in its own request, not the board's schema. An entry's `job_id` is the job `job.read` answers, whatever its kind. Each entry ends before its result reaches a reader, so a client that sees the job finished never still finds it running. A cancelled source job, a superseded or abandoned exact phase and `ErrorKind::Cancelled` end `cancelled`; any other error ends `failed`.
+Every entry but `source.prepare` names its `asset_id`; that entry names the file it reads. Capability jobs name no `asset_id`: a task's photo is in its own request, not the board's schema. An entry's `job_id` is the job `job.read` answers, whatever its kind. Each entry ends before its result reaches a reader, so a client that sees the job finished never still finds it running. A cancelled source job, a superseded or abandoned exact phase and `ErrorKind::Cancelled` end `cancelled`; any other error ends `failed`.
 
 The clipping overlay and preset import are left out: the first is a desktop-local reduction measured in milliseconds, the second runs synchronously on the owner.
 
