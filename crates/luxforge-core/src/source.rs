@@ -219,8 +219,14 @@ pub(crate) fn open_source_file(file: &mut File) -> Result<SourceImage, Error> {
 /// written once: no intermediate RGBA buffer that this then copies into another frame.
 pub(crate) fn open_source_bytes(bytes: Vec<u8>) -> Result<SourceImage, Error> {
     let fingerprint = format!("{:x}", Sha256::digest(&bytes));
-    let capture = Arc::new(CaptureMetadata::from_jpeg(&bytes));
-    let upright = decode_upright(&bytes)?;
+    decode_source(&bytes, fingerprint)
+}
+
+/// [`open_source_bytes`] of bytes already hashed, whose SHA-256 is `fingerprint`: what a
+/// preparation decodes when a Develop has just read and hashed the file.
+pub(crate) fn decode_source(bytes: &[u8], fingerprint: String) -> Result<SourceImage, Error> {
+    let capture = Arc::new(CaptureMetadata::from_jpeg(bytes));
+    let upright = decode_upright(bytes)?;
     Ok(SourceImage {
         width: upright.width,
         height: upright.height,
@@ -402,6 +408,20 @@ impl RawPrepared {
         let capture = Arc::new(CaptureMetadata::from_raw(&bytes));
         // The file's bytes go to the decoder as read: no copy into another buffer.
         let sensor = Arc::new(RawSource::decode(bytes, cancel).map_err(raw_error)?);
+        Self::develop_for(sensor, capture, fingerprint, target, cancel)
+    }
+
+    /// Develop a decoded `sensor` for `target`: its interpretation checked against the
+    /// photograph's and developed at the entry's gains, or at the camera's as-shot gains when no
+    /// target names any. What [`Self::decode`] does after decoding, and what a preparation does
+    /// with the sensor a Develop has just decoded.
+    pub(crate) fn develop_for(
+        sensor: Arc<RawSource>,
+        capture: Arc<CaptureMetadata>,
+        fingerprint: String,
+        target: Option<&RawPreparation>,
+        cancel: &AtomicBool,
+    ) -> Result<Self, Error> {
         let gains = match target {
             Some(target) => {
                 target.validate(sensor.metadata())?;

@@ -247,6 +247,9 @@ impl DevelopJob {
     /// and ends the job cancelled, keeping every batch committed so far.
     fn develop(self, job: &JobContext<'_>) -> Result<DevelopReport, Error> {
         let total = self.files.len();
+        // A Develop of one file is what opening a file is: what it reads is kept for the
+        // preparation that follows. A larger one keeps nothing, holding one file at a time.
+        let keep = total == 1;
         let mut report = DevelopReport::default();
         let mut batch: Vec<Developed> = Vec::new();
         let mut gathering = Instant::now();
@@ -260,6 +263,7 @@ impl DevelopJob {
                 file,
                 self.use_copies,
                 self.confirm_removable,
+                keep,
                 job.control,
                 &|phase| job.pause(phase),
             ) {
@@ -323,7 +327,11 @@ impl DevelopJob {
 
 /// Commit one batch on the owner, as one library change of the Develop's request: decide what each
 /// file becomes, then write them. A change the catalog refuses reports every file of the batch
-/// with its refusal and changes nothing. Answers the batch's report.
+/// with its refusal and changes nothing. What a one-file Develop kept of its committed file is
+/// kept by the service for the preparation that follows ([`EditorService::keep_read`]). Answers
+/// the batch's report.
+///
+/// [`EditorService::keep_read`]: crate::EditorService::keep_read
 fn commit(
     owner: &mut Owner,
     origin: &Origin,
@@ -332,7 +340,7 @@ fn commit(
     files: Vec<Developed>,
 ) -> Result<Value, Error> {
     let now = now_ms();
-    let (decided, refused) = develop::decide(&owner.service, files, now)?;
+    let (mut decided, refused) = develop::decide(&owner.service, files, now)?;
     let mut report = DevelopReport {
         failed: refused.iter().map(develop::Refused::failure).collect(),
         ..DevelopReport::default()
@@ -347,6 +355,9 @@ fn commit(
         Ok(answer) => {
             report.developed = decided.iter().map(Decided::reported).collect();
             report.changes.extend(answer.change);
+            if let Some(read) = decided.iter_mut().find_map(Decided::take_read) {
+                owner.service.keep_read(read);
+            }
         }
         Err(error) => report.failed.extend(
             decided

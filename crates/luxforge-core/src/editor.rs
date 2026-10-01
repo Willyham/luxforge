@@ -62,8 +62,8 @@ pub(crate) use masks::mask_target_parameter;
 pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::{
-    FilePreparation, NewPhotograph, Prepared, Preparing, SourceWork, insert_photograph,
-    original_signature, source_signature, source_signature_for_handle,
+    FilePreparation, NewPhotograph, Prepared, Preparing, ReadContent, ReadOriginal, SourceWork,
+    insert_photograph, original_signature, source_signature, source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -568,6 +568,9 @@ pub struct EditorService {
     /// that moves a head updates it where it commits.
     entries: RefCell<entries::EntryCache>,
     source_cache: RefCell<Option<CachedSource>>,
+    /// What the last one-file Develop read of its file, kept for the preparation that follows it
+    /// (the open): the next preparation takes it ([`source::ReadOriginal`]).
+    read_original: RefCell<Option<source::ReadOriginal>>,
     registry: Arc<ModuleRegistry>,
     /// The budgets and the estimate store every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -650,6 +653,7 @@ impl EditorService {
             // Opening starts empty: nothing read before a reopen is trusted after it.
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
+            read_original: RefCell::new(None),
             registry,
             render: RenderContext::new(),
             catalog_id,
