@@ -45,7 +45,7 @@ use crate::{
     Component, ComponentId, ComponentMode, Control, Error, Mask, ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
-    render::gpu::{GpuComponent, GpuDescription},
+    render::gpu::{GpuComponent, GpuDescription, GpuProgram},
 };
 use std::sync::Arc;
 
@@ -60,6 +60,19 @@ mod range;
 /// why first.
 pub mod rules;
 mod stroke;
+
+/// Every mask component kind's GPU coverage program (`docs/design/gpu-preview.md`), in the kind
+/// table's order: each a `.wgsl` file beside the CPU field it mirrors, with the coverage signature
+/// `fn(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`. The core's tests validate
+/// each under the photo surface's calling convention; the desktop's tests run each in the surface's
+/// masked step and qualify it against its CPU field on a device.
+pub static MASK_GPU_PROGRAMS: &[&GpuProgram] = &[
+    &linear::PROGRAM,
+    &radial::PROGRAM,
+    &brush::PROGRAM,
+    &range::LUMINANCE_PROGRAM,
+    &range::COLOUR_PROGRAM,
+];
 
 pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
@@ -513,13 +526,14 @@ pub(crate) trait ComponentField: std::fmt::Debug + Send + Sync {
         0
     }
 
-    /// This component's GPU coverage program and the words it reads, compiled against the same
-    /// stage, for a preview during a gesture (`docs/design/gpu-preview.md`). Its entry is a
+    /// This component's GPU coverage program and the words it reads, compiled against `stage`, the
+    /// stage this field was compiled against, for a preview during a gesture
+    /// (`docs/design/gpu-preview.md`). Its entry is a
     /// [`GpuProgramKind::Coverage`](crate::render::gpu::GpuProgramKind::Coverage) function: the
     /// falloff before this component's inversion and the composition, which the plan carries as
-    /// data. `None`, the default, sends every stack drawing this mask down the CPU path. CPU
-    /// coverage never reads a GPU value, so a program changes no CPU byte.
-    fn gpu(&self) -> Option<GpuDescription> {
+    /// data, at the stage pixel `pos`. `None`, the default, sends every stack drawing this mask
+    /// down the CPU path. CPU coverage never reads a GPU value, so a program changes no CPU byte.
+    fn gpu(&self, _stage: Stage) -> Option<GpuDescription> {
         None
     }
 }
@@ -755,7 +769,7 @@ impl CompiledMask {
         self.components
             .iter()
             .map(|component| {
-                let program = component.geometry.gpu().ok_or(component.kind)?;
+                let program = component.geometry.gpu(self.stage).ok_or(component.kind)?;
                 Ok(GpuComponent {
                     kind: component.kind,
                     mode: component.mode,
@@ -764,6 +778,15 @@ impl CompiledMask {
                 })
             })
             .collect()
+    }
+
+    /// Component `index`'s own falloff at the centre of stage pixel `(x, y)`, before its inversion
+    /// and the composition, in `f64`: what the plan's reference executor runs for its GPU program.
+    #[cfg(test)]
+    pub(crate) fn component_falloff(&self, index: usize, x: u32, y: u32, rgb: [f64; 3]) -> f64 {
+        let u = (f64::from(x) + 0.5) / self.height;
+        let v = (f64::from(y) + 0.5) / self.height;
+        self.components[index].geometry.coverage(u, v, rgb)
     }
 
     /// Whether the composed coverage is inverted, `1 - m`, before the final multiply.
@@ -1024,6 +1047,9 @@ fn half_plane_bounds(stage: Stage, inside: impl Fn(f64, f64) -> f64) -> Region {
     }
     region_from_bounds(stage, min_x, max_x, min_y, max_y)
 }
+
+#[cfg(test)]
+mod gpu_tests;
 
 #[cfg(test)]
 mod tests {

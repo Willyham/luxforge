@@ -189,6 +189,24 @@ pub(crate) mod testing {
         values
     }
 
+    /// The value of the `u32` constant `name` that `program` declares, as `naga` reads its WGSL
+    /// under the convention's prelude.
+    pub(crate) fn wgsl_u32(program: &GpuProgram, name: &str) -> u32 {
+        use naga::{Expression, Literal};
+        let source = format!("{}\n{}", super::super::wgsl_tests::PRELUDE, program.source);
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{} declares no constant {name}", program.entry));
+        match &module.global_expressions[constant.init] {
+            Expression::Literal(Literal::U32(value)) => *value,
+            other => panic!("{name} is not a u32 literal: {other:?}"),
+        }
+    }
+
     /// Two units that describe themselves identically produce identical descriptions, and every
     /// description carries the words its program declares. A unit with no description is allowed
     /// here; the plan answers it as the CPU path.
