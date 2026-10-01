@@ -10,20 +10,24 @@
 //! `collection.list` as the owner answered them; every chip, column value and sort is a whole
 //! [`ViewQuery`] for the owner to evaluate ([`changed`]), and each count is `browse.facets`'s; every
 //! organizing gesture is the request an API client writes ([`folder_create_params`] and the rest),
-//! one library change each.
+//! one library change each. Apply preset… and Export… start the batch jobs an API client starts
+//! ([`batch_preset_params`], [`batch_export_params`]), whose report ([`BatchReport`]) is shown as
+//! the owner answered it; Remove from catalog… and Put back are library changes, and Empty
+//! Removed… is `catalog.empty-removed`, each behind its confirmation ([`Confirm`]).
 use super::select::{
-    SelectState, SelectionModel, dates, item_info, month_label, photographs, thousands,
+    SelectState, SelectionModel, dates, item_info, month_label, photographs, shown_path, thousands,
 };
 use luxforge_core::{
-    MutationRequest, SourceTag,
+    AssetId, MutationRequest, PresetId, SourceTag,
     catalog_types::{
-        BodyKey, CatalogFolder, CatalogFolderId, CatalogFolders, Collection, CollectionId,
-        CollectionKind, Collections, DateRange, Facet, FacetValue, FileAvailability, LocalDay,
-        MAX_FILTER_TEXT, Month, ViewFilter, ViewQuery, ViewRow, ViewSource,
+        BatchReport, BodyKey, CatalogFolder, CatalogFolderId, CatalogFolders, Collection,
+        CollectionId, CollectionKind, Collections, DateRange, Facet, FacetValue, FileAvailability,
+        LocalDay, MAX_FILTER_TEXT, Month, RowItem, ViewFilter, ViewQuery, ViewRow, ViewSource,
     },
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -36,11 +40,13 @@ pub(crate) const MAX_SELECTION_ROWS: u32 = 1000;
 /// The most selected photographs whose previews head the batch form.
 pub(crate) const BATCH_PREVIEWS: usize = 5;
 
-/// What is not built yet, as the controls waiting for it say.
-pub(crate) const NOT_YET_PRESETS: &str =
-    "Applying a preset to several photographs comes with batch presets (not yet available)";
-pub(crate) const NOT_YET_EXPORT: &str =
-    "Exporting several photographs comes with batch export (not yet available)";
+/// The most rows a report's section lists; the rest are counted ("and 12 more").
+pub(crate) const REPORT_ROWS: usize = 200;
+
+/// What the Develop band says under Apply preset… and Export…, as the catalog board does: a batch
+/// is not a library change, so `Cmd+Z` in Select does not undo it.
+pub(crate) const BATCH_NOTE: &str = "Each photograph gets its own history entry; one that cannot \
+    take the change is listed, not skipped silently.";
 
 // -- What the catalog seam holds -------------------------------------------------------------------
 
@@ -86,6 +92,136 @@ pub(crate) enum CatalogMenu {
     AddTo,
     /// A collection chip in the Info panel: remove the selection from it, or add the rest.
     Member(CollectionId),
+    /// The Develop band's Apply preset…: the library's presets.
+    Presets,
+}
+
+/// A confirmation over the centre, before a gesture that removes photographs from view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Confirm {
+    /// Remove from catalog… of the `count` selected photographs.
+    Remove { count: u32 },
+    /// Empty Removed… of the `count` photographs in Removed.
+    Empty { count: u32 },
+}
+
+/// A library preset the Apply preset… menu offers: `preset.list`'s row as the menu names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PresetChoice {
+    pub(crate) id: PresetId,
+    pub(crate) name: String,
+    pub(crate) group: String,
+    /// Why this build cannot apply it: an action it holds is unavailable, as Develop's Presets
+    /// section says.
+    pub(crate) unavailable: Option<String>,
+}
+
+/// What a batch of this desktop's does to the photographs it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BatchKind {
+    /// `batch.apply-preset` of the library preset named so.
+    Preset { name: String },
+    /// `batch.export` into the folder.
+    Export { folder: PathBuf },
+}
+
+/// How a batch ended, as its `job.read` record says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum BatchEnd {
+    Done(BatchReport),
+    /// A cancelled batch keeps no report: what it finished is in the histories and the folder.
+    Cancelled,
+    Failed(String),
+}
+
+/// A batch job this desktop started for the selection, from its start to its end: one at a time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BatchRun {
+    pub(crate) kind: BatchKind,
+    /// How many photographs it names.
+    pub(crate) count: u32,
+    pub(crate) job: String,
+    /// The file names of the photographs the desktop held rows for when it started, which the
+    /// report names them by; any other is named by its identity.
+    pub(crate) names: BTreeMap<AssetId, String>,
+    /// How far it has got, from the activity board ("3 of 18").
+    pub(crate) progress: Option<String>,
+    pub(crate) end: Option<BatchEnd>,
+}
+
+impl BatchRun {
+    /// The photograph's file name, or its identity when the desktop held no row for it.
+    pub(crate) fn name(&self, asset: &AssetId) -> String {
+        self.names
+            .get(asset)
+            .cloned()
+            .unwrap_or_else(|| asset.as_str().to_owned())
+    }
+
+    /// What the status bar says once it has ended: what it did and how many it left out.
+    pub(crate) fn sentence(&self, home: Option<&Path>) -> Option<String> {
+        Some(match (self.end.as_ref()?, &self.kind) {
+            (BatchEnd::Done(report), kind) => {
+                let done = u32::try_from(report.done.len()).unwrap_or(u32::MAX);
+                let mut text = match kind {
+                    BatchKind::Preset { name } if done > 0 => {
+                        format!("Applied {name} to {}", photographs(done))
+                    }
+                    BatchKind::Preset { name } => format!("Applied {name} to no photographs"),
+                    BatchKind::Export { folder } if done > 0 => format!(
+                        "Exported {} to {}",
+                        photographs(done),
+                        super::long_work::place(&folder.to_string_lossy(), home)
+                    ),
+                    BatchKind::Export { .. } => "Exported no photographs".to_owned(),
+                };
+                if !report.skipped.is_empty() {
+                    text.push_str(&format!(
+                        " \u{b7} {} left out",
+                        thousands(report.skipped.len() as u32)
+                    ));
+                }
+                if !report.settings_skipped.is_empty() {
+                    text.push_str(&format!(
+                        " \u{b7} {} without some settings",
+                        thousands(report.settings_skipped.len() as u32)
+                    ));
+                }
+                text
+            }
+            (BatchEnd::Cancelled, BatchKind::Preset { name }) => {
+                format!("Cancelled applying {name}: the photographs it reached keep their entries")
+            }
+            (BatchEnd::Cancelled, BatchKind::Export { folder }) => format!(
+                "Cancelled exporting: the files it wrote stay in {}",
+                super::long_work::place(&folder.to_string_lossy(), home)
+            ),
+            (BatchEnd::Failed(reason), BatchKind::Preset { name }) => {
+                format!("Applying {name} failed: {reason}")
+            }
+            (BatchEnd::Failed(reason), BatchKind::Export { .. }) => {
+                format!("Exporting failed: {reason}")
+            }
+        })
+    }
+
+    /// What the Develop band says while it runs: what it does and how far it has got.
+    pub(crate) fn running(&self) -> String {
+        let doing = match &self.kind {
+            BatchKind::Preset { name } => format!("Applying {name}"),
+            BatchKind::Export { .. } => "Exporting".to_owned(),
+        };
+        match &self.progress {
+            Some(progress) => format!("{doing} \u{b7} {progress}"),
+            None => format!("{doing} to {}\u{2026}", photographs(self.count)),
+        }
+    }
+}
+
+/// `catalog.empty-removed`, called again while photographs remain: how many it has deleted so far.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Emptying {
+    pub(crate) deleted: u32,
 }
 
 /// What a name being typed makes or renames.
@@ -159,18 +295,35 @@ pub(crate) struct CatalogState {
     pub(crate) total: Option<SourceTotal>,
     /// The selection's rows, read for the Info panel when they are not all near the screen.
     pub(crate) selection_rows: Option<SelectionRows>,
+    /// `preset.list` as read for the Apply preset… menu when it opened, or why it could not be.
+    pub(crate) presets: Option<Result<Vec<PresetChoice>, String>>,
+    /// The batch this desktop started last: running, or ended with its report.
+    pub(crate) batch: Option<BatchRun>,
+    /// The confirmation shown over the centre.
+    pub(crate) confirm: Option<Confirm>,
+    /// The last batch's report is open over the centre.
+    pub(crate) report: bool,
+    /// Empty Removed… is deleting.
+    pub(crate) emptying: Option<Emptying>,
 }
 
 impl CatalogState {
-    /// A menu or a name being typed is open, so Escape closes it.
+    /// A menu, a name being typed, a confirmation or a report is open, so Escape closes it.
     pub(crate) fn open(&self) -> bool {
-        self.menu.is_some() || self.naming.is_some()
+        self.menu.is_some() || self.naming.is_some() || self.confirm.is_some() || self.report
     }
 
-    /// Close the open menu and drop a name being typed.
+    /// Close the open menu, a confirmation and the report, and drop a name being typed.
     pub(crate) fn close(&mut self) {
         self.menu = None;
         self.naming = None;
+        self.confirm = None;
+        self.report = false;
+    }
+
+    /// The batch running now, if one is.
+    pub(crate) fn running(&self) -> Option<&BatchRun> {
+        self.batch.as_ref().filter(|batch| batch.end.is_none())
     }
 }
 
@@ -234,6 +387,26 @@ pub(crate) enum CatalogAction {
     Metadata,
     /// `Cmd+F`: the search field takes the focus.
     FocusSearch,
+    /// Apply preset…'s choice: `batch.apply-preset` of the selection with the library preset.
+    ApplyPreset {
+        id: PresetId,
+        name: String,
+    },
+    /// Export…: the native folder dialog, then [`Self::ExportInto`].
+    Export,
+    /// The folder Export… writes into, or none when the dialog was dismissed: `batch.export` of
+    /// the selection.
+    ExportInto(Option<PathBuf>),
+    /// Remove from catalog… (or `Delete` over a catalog view): its confirmation.
+    Remove,
+    /// Put back: `asset.restore` of the selection, over Removed.
+    Restore,
+    /// Empty Removed…: its confirmation.
+    Empty,
+    /// The confirmation's own button: the removal or the emptying it names.
+    Confirmed,
+    /// Open the last batch's report, or close it.
+    Report(bool),
 }
 
 /// A library change the catalog's gestures make, which says how its answer is told in the status
@@ -253,6 +426,10 @@ pub(crate) enum CatalogGesture {
     DeleteCollection,
     AddPhotos,
     RemovePhotos,
+    /// Remove from catalog…: the selection moved to Removed.
+    Remove,
+    /// Put back: the selection returned from Removed.
+    Restore,
 }
 
 impl CatalogGesture {
@@ -271,6 +448,8 @@ impl CatalogGesture {
             Self::DeleteCollection => "collection.delete",
             Self::AddPhotos => "collection.add",
             Self::RemovePhotos => "collection.remove",
+            Self::Remove => "asset.remove",
+            Self::Restore => "asset.restore",
         }
     }
 
@@ -287,7 +466,7 @@ impl CatalogGesture {
     pub(crate) fn of_selection(self) -> bool {
         matches!(
             self,
-            Self::MovePhotos | Self::AddPhotos | Self::RemovePhotos
+            Self::MovePhotos | Self::AddPhotos | Self::RemovePhotos | Self::Remove | Self::Restore
         )
     }
 
@@ -297,6 +476,8 @@ impl CatalogGesture {
             Self::MovePhotos => "Already in that folder",
             Self::AddPhotos => "Already in that collection",
             Self::RemovePhotos => "Not in that collection",
+            Self::Remove => "Already in Removed",
+            Self::Restore => "Not in Removed",
             Self::RenameFolder | Self::RenameCollection => "The name is unchanged",
             Self::MoveFolder => "Already there",
             _ => "Nothing changed",
@@ -319,6 +500,8 @@ impl CatalogGesture {
             Self::DeleteCollection => "Deleted the collection \u{b7} Undo \u{2318}Z",
             Self::AddPhotos => "Added to the collection \u{b7} Undo \u{2318}Z",
             Self::RemovePhotos => "Removed from the collection \u{b7} Undo \u{2318}Z",
+            Self::Remove => "Removed from the catalog \u{b7} Undo \u{2318}Z",
+            Self::Restore => "Put back \u{b7} Undo \u{2318}Z",
         }
     }
 
@@ -337,6 +520,8 @@ impl CatalogGesture {
             Self::DeleteCollection => "Could not delete the collection",
             Self::AddPhotos => "Could not add to the collection",
             Self::RemovePhotos => "Could not remove from the collection",
+            Self::Remove => "Could not remove from the catalog",
+            Self::Restore => "Could not put back",
         }
     }
 }
@@ -447,6 +632,64 @@ pub(crate) fn collection_delete_params(
 /// `collection.add`'s and `collection.remove`'s parameters: the selection, in `collection`.
 pub(crate) fn members_params(collection: &CollectionId, mutation: &MutationRequest) -> Value {
     json!({"collection_id": collection, "targets": selection(), "mutation": mutation})
+}
+
+/// `asset.remove`'s and `asset.restore`'s parameters: the selection.
+pub(crate) fn removal_params(mutation: &MutationRequest) -> Value {
+    json!({"targets": selection(), "mutation": mutation})
+}
+
+/// `batch.apply-preset`'s parameters: the library preset `preset`, applied to the selection.
+pub(crate) fn batch_preset_params(preset: &PresetId, mutation: &MutationRequest) -> Value {
+    json!({"targets": selection(), "preset_id": preset, "mutation": mutation})
+}
+
+/// `batch.export`'s parameters: the selection, exported into the existing folder `destination`
+/// with the export's own settings.
+pub(crate) fn batch_export_params(destination: &Path, mutation: &MutationRequest) -> Value {
+    json!({"targets": selection(), "destination": destination, "mutation": mutation})
+}
+
+/// `catalog.empty-removed`'s parameters. Each call is a request of its own: a call that finds
+/// photographs `remaining` is followed by another, never a retry of the first.
+pub(crate) fn empty_params(mutation: &MutationRequest) -> Value {
+    json!({"mutation": mutation})
+}
+
+/// The Apply preset… menu's presets, from `preset.list`'s rows in its order (by group, then
+/// name). A preset holding an action this build cannot apply is offered with why, never applied.
+pub(crate) fn preset_choices(presets: &[luxforge_core::PresetSummary]) -> Vec<PresetChoice> {
+    presets
+        .iter()
+        .map(|preset| PresetChoice {
+            id: preset.id.clone(),
+            name: preset.name.clone(),
+            group: preset.group.clone(),
+            unavailable: match preset.unavailable.as_slice() {
+                [] => None,
+                [one] => Some(format!("Cannot apply: {one} is unavailable")),
+                many => Some(format!("Cannot apply: {} are unavailable", many.join(", "))),
+            },
+        })
+        .collect()
+}
+
+/// The file names of the selected photographs whose rows the desktop holds, by identity: what a
+/// batch's report names them by.
+pub(crate) fn selected_names(
+    state: &SelectState,
+    selection: &SelectionModel,
+) -> BTreeMap<AssetId, String> {
+    if selection.count > MAX_SELECTION_ROWS {
+        return BTreeMap::new();
+    }
+    positions(selection)
+        .filter_map(|position| row_at(state, position))
+        .filter_map(|row| match &row.item {
+            RowItem::Photo { asset_id } => Some((asset_id.clone(), row.file_name.clone())),
+            RowItem::File { .. } => None,
+        })
+        .collect()
 }
 
 /// `browse.facets`' parameters over the catalog: the query's source and filter, and the four
@@ -717,6 +960,8 @@ pub(crate) struct CatalogFilterBar {
     pub(crate) save_refused: Option<String>,
     /// The smart collection's name being typed, while its field is open.
     pub(crate) naming: Option<String>,
+    /// Over Removed, Empty Removed… in Save as smart collection…'s place.
+    pub(crate) empty: Option<EmptyButton>,
     /// "9 of 55", or the view's size with no filter.
     pub(crate) count: String,
 }
@@ -780,8 +1025,72 @@ pub(crate) struct PhotoInfo {
     pub(crate) edited: Option<String>,
     /// The Develop band's rows: whether they are edited.
     pub(crate) develop: Vec<(String, String)>,
-    /// Export's label ("Export 5…"), disabled until batch export is built.
+    /// The Develop band's Apply preset… and Export…, and what the last batch says.
+    pub(crate) batch: BatchBand,
+    /// Remove from catalog…, or Put back over Removed.
+    pub(crate) removal: Option<RemovalButton>,
+}
+
+/// The Develop band's batch actions, as the catalog board draws them: Apply preset… with its menu
+/// of the library's presets, Export N…, the running batch's progress or the last one's sentence
+/// with its report, and the note that each photograph gets its own history entry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct BatchBand {
+    /// Why Apply preset… and Export… cannot start now; none while they can.
+    pub(crate) refused: Option<String>,
+    /// Apply preset…'s menu, while open.
+    pub(crate) presets: Option<Vec<ActionChoice>>,
+    /// Export's label: "Export 5…", or "Export…" for one.
     pub(crate) export: String,
+    /// The running batch's progress, or the last batch's sentence.
+    pub(crate) line: Option<String>,
+    /// The last batch left a report to open.
+    pub(crate) report: bool,
+    pub(crate) note: &'static str,
+}
+
+/// The Info panel's Remove from catalog…, or Put back over Removed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RemovalButton {
+    pub(crate) label: String,
+    pub(crate) action: CatalogAction,
+}
+
+/// What a sheet over the centre is: a confirmation or a batch's report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SheetKind {
+    Remove,
+    Empty,
+    Preset,
+    Export,
+}
+
+/// One section of a report: a heading with its count, a row per photograph (its name and what
+/// happened to it), and how many more there are past [`REPORT_ROWS`].
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SheetSection {
+    pub(crate) heading: String,
+    pub(crate) rows: Vec<(String, String)>,
+    pub(crate) more: Option<String>,
+}
+
+/// A sheet over the centre: Remove from catalog…'s or Empty Removed…'s confirmation, or the last
+/// batch's report.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CatalogSheet {
+    pub(crate) kind: SheetKind,
+    pub(crate) title: String,
+    pub(crate) note: String,
+    pub(crate) sections: Vec<SheetSection>,
+    /// The confirming button's label; none for a report, which only closes.
+    pub(crate) confirm: Option<String>,
+}
+
+/// The filter bar's Empty Removed… over Removed.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EmptyButton {
+    /// Why it cannot empty now; none while it can.
+    pub(crate) refused: Option<String>,
 }
 
 /// What the catalog shows in Select, derived after every message.
@@ -795,18 +1104,207 @@ pub(crate) struct CatalogModel {
     /// The four columns, while the Metadata browser is open.
     pub(crate) metadata: Option<Vec<FacetColumnModel>>,
     pub(crate) info: Option<PhotoInfo>,
+    /// A confirmation or a report over the centre.
+    pub(crate) sheet: Option<CatalogSheet>,
+    /// The status bar says the last batch's sentence, so it offers its report beside it.
+    pub(crate) status_report: bool,
 }
 
-/// The catalog's model while Select is shown.
-pub(crate) fn derive(state: &SelectState, selection: &SelectionModel) -> CatalogModel {
+/// The catalog's model while Select is shown; `status` is what the status bar says.
+pub(crate) fn derive(
+    state: &SelectState,
+    selection: &SelectionModel,
+    status: &str,
+) -> CatalogModel {
     let over = state.over_catalog();
     let catalog = &state.catalog;
+    let home = state.home.as_deref();
+    let said = catalog
+        .batch
+        .as_ref()
+        .and_then(|batch| batch.sentence(home))
+        .is_some_and(|sentence| sentence == status);
     CatalogModel {
         shown: over,
         sources: sources(state),
         filter: over.then(|| filter_bar(state)),
         metadata: (over && catalog.metadata).then(|| metadata(state)),
         info: over.then(|| info(state, selection)).flatten(),
+        sheet: over.then(|| sheet(state, selection)).flatten(),
+        status_report: said && report_of(catalog).is_some(),
+    }
+}
+
+/// Whether the view shows Removed.
+pub(crate) fn over_removed(state: &SelectState) -> bool {
+    matches!(viewed(state), Some(ViewSource::Removed))
+}
+
+/// The last batch's report, once it ended with one.
+fn report_of(catalog: &CatalogState) -> Option<(&BatchRun, &BatchReport)> {
+    let batch = catalog.batch.as_ref()?;
+    match &batch.end {
+        Some(BatchEnd::Done(report)) => Some((batch, report)),
+        _ => None,
+    }
+}
+
+/// The sheet over the centre: the confirmation asked for, or the report opened.
+fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet> {
+    let catalog = &state.catalog;
+    match catalog.confirm {
+        Some(Confirm::Remove { count }) => {
+            let title = match (count, selection.focus().and_then(|at| row_at(state, at))) {
+                (1, Some(row)) => format!("Remove {} from the catalog?", row.file_name),
+                _ => format!("Remove {} from the catalog?", photographs(count)),
+            };
+            return Some(CatalogSheet {
+                kind: SheetKind::Remove,
+                title,
+                note: if count == 1 {
+                    "It moves to Removed with its edits, history and collections. The file stays \
+                     on disk, and the edits are kept until Removed is emptied. Undo with \u{2318}Z."
+                        .to_owned()
+                } else {
+                    "They move to Removed with their edits, history and collections. The files \
+                     stay on disk, and the edits are kept until Removed is emptied. Undo with \
+                     \u{2318}Z."
+                        .to_owned()
+                },
+                sections: Vec::new(),
+                confirm: Some(if count == 1 {
+                    "Remove".to_owned()
+                } else {
+                    format!("Remove {}", thousands(count))
+                }),
+            });
+        }
+        Some(Confirm::Empty { count }) => {
+            return Some(CatalogSheet {
+                kind: SheetKind::Empty,
+                title: "Empty Removed?".to_owned(),
+                note: format!(
+                    "{} in Removed {} deleted from the catalog with {} edits, history and \
+                     versions. The files stay on disk. This cannot be undone.",
+                    if count == 1 {
+                        "The 1 photograph".to_owned()
+                    } else {
+                        format!("The {}", photographs(count))
+                    },
+                    if count == 1 { "is" } else { "are" },
+                    if count == 1 { "its" } else { "their" },
+                ),
+                sections: Vec::new(),
+                confirm: Some(format!("Delete {}", photographs(count))),
+            });
+        }
+        None => {}
+    }
+    if !catalog.report {
+        return None;
+    }
+    let (batch, report) = report_of(catalog)?;
+    let home = state.home.as_deref();
+    let section = |heading: &str, rows: Vec<(String, String)>| {
+        let total = rows.len();
+        let more = (total > REPORT_ROWS)
+            .then(|| format!("and {} more", thousands((total - REPORT_ROWS) as u32)));
+        SheetSection {
+            heading: format!("{heading} \u{b7} {}", thousands(total as u32)),
+            rows: rows.into_iter().take(REPORT_ROWS).collect(),
+            more,
+        }
+    };
+    let mut sections = Vec::new();
+    if !report.skipped.is_empty() {
+        sections.push(section(
+            "Left out",
+            report
+                .skipped
+                .iter()
+                .map(|skip| {
+                    (
+                        batch.name(&skip.asset_id),
+                        skip_text(&skip.code, &skip.reason),
+                    )
+                })
+                .collect(),
+        ));
+    }
+    if !report.settings_skipped.is_empty() {
+        sections.push(section(
+            "Without some settings",
+            report
+                .settings_skipped
+                .iter()
+                .map(|photo| {
+                    let reasons: Vec<&str> = photo
+                        .settings
+                        .iter()
+                        .map(|setting| setting.reason.as_str())
+                        .collect();
+                    (batch.name(&photo.asset_id), reasons.join("; "))
+                })
+                .collect(),
+        ));
+    }
+    let (kind, title, note) = match &batch.kind {
+        BatchKind::Preset { name } => (
+            SheetKind::Preset,
+            format!(
+                "Applied {name} to {} of {}",
+                thousands(report.done.len() as u32),
+                photographs(batch.count)
+            ),
+            "Each photograph got its own history entry, which its history in Develop undoes. \
+             Every one left out is listed with why."
+                .to_owned(),
+        ),
+        BatchKind::Export { folder } => {
+            let written: Vec<(String, String)> = report
+                .written
+                .iter()
+                .map(|path| {
+                    let name = path.file_name().map_or_else(
+                        || path.display().to_string(),
+                        |name| name.to_string_lossy().into_owned(),
+                    );
+                    (name, String::new())
+                })
+                .collect();
+            if !written.is_empty() {
+                sections.insert(0, section("Written", written));
+            }
+            (
+                SheetKind::Export,
+                format!(
+                    "Exported {} of {}",
+                    thousands(report.done.len() as u32),
+                    photographs(batch.count)
+                ),
+                format!(
+                    "Into {}, each named by the export's rule; no file was replaced. Every one \
+                     left out is listed with why.",
+                    shown_path(folder, home)
+                ),
+            )
+        }
+    };
+    Some(CatalogSheet {
+        kind,
+        title,
+        note,
+        sections,
+        confirm: None,
+    })
+}
+
+/// Why a photograph was left out: the owner's words, with its code when they do not say it.
+fn skip_text(code: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        code.to_owned()
+    } else {
+        format!("{reason} ({code})")
     }
 }
 
@@ -1498,8 +1996,33 @@ pub(crate) fn filter_bar(state: &SelectState) -> CatalogFilterBar {
         naming: catalog.naming.as_ref().and_then(|naming| {
             (naming.target == NamingTarget::SmartCollection).then(|| naming.text.clone())
         }),
+        empty: over_removed(state).then(|| EmptyButton {
+            refused: empty_refused(state),
+        }),
         count,
     }
+}
+
+/// Why Empty Removed… cannot empty now: it is emptying, the counts are not read, or Removed holds
+/// nothing.
+fn empty_refused(state: &SelectState) -> Option<String> {
+    if state.catalog.emptying.is_some() {
+        return Some("Emptying Removed\u{2026}".to_owned());
+    }
+    match state.counts.as_ref().map(|counts| counts.removed) {
+        None => Some("Reading the catalog's counts\u{2026}".to_owned()),
+        Some(0) => Some("Removed is empty".to_owned()),
+        Some(_) => None,
+    }
+}
+
+/// How many photographs Empty Removed… would delete: `catalog.info`'s count of Removed.
+pub(crate) fn removed_count(state: &SelectState) -> Option<u32> {
+    state
+        .counts
+        .as_ref()
+        .map(|counts| u32::try_from(counts.removed).unwrap_or(u32::MAX))
+        .filter(|count| *count > 0)
 }
 
 /// The Metadata browser's four columns — Date folded into years and months, Place, Camera and Lens
@@ -1809,12 +2332,10 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
             .filter(|(label, _)| label != "Edited")
             .collect();
         info.edited = Some(if row.edited { "Yes" } else { "No" }.to_owned());
-        info.export = "Export\u{2026}".to_owned();
     } else {
         info.title = format!("{} selected", thousands(count));
         info.active = active.map(|row| row.file_name.clone());
         info.previews = positions(selection).take(BATCH_PREVIEWS).collect();
-        info.export = format!("Export {}\u{2026}", thousands(count));
         if let Some(rows) = &rows {
             info.metadata = batch_metadata(rows);
             let edited = rows.iter().filter(|row| row.edited).count();
@@ -1839,6 +2360,8 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         info.add_menu = (catalog.menu == Some(CatalogMenu::AddTo))
             .then(|| add_choices(catalog, &BTreeMap::new(), count));
         info.develop = develop_rows(&info);
+        info.batch = batch_band(state, count);
+        info.removal = Some(removal_button(state));
         return Some(info);
     };
     // Folders: how many of the selection each holds, most first.
@@ -1912,6 +2435,8 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
     info.add_menu = (catalog.menu == Some(CatalogMenu::AddTo))
         .then(|| add_choices(catalog, &in_collections, count));
     info.develop = develop_rows(&info);
+    info.batch = batch_band(state, count);
+    info.removal = Some(removal_button(state));
     Some(info)
 }
 
@@ -1921,6 +2446,86 @@ fn develop_rows(info: &PhotoInfo) -> Vec<(String, String)> {
         .iter()
         .map(|edited| ("Edited".to_owned(), edited.clone()))
         .collect()
+}
+
+/// The Develop band's Apply preset… and Export… for `count` selected photographs: refused while a
+/// batch of this desktop's runs and over Removed, whose photographs a batch leaves out; the menu of
+/// the library's presets while open; and the running batch's progress or the last one's sentence.
+fn batch_band(state: &SelectState, count: u32) -> BatchBand {
+    let catalog = &state.catalog;
+    let refused = if let Some(batch) = catalog.running() {
+        Some(format!("Waiting for the batch: {}", batch.running()))
+    } else if over_removed(state) {
+        Some("Put them back first: a batch leaves photographs in Removed out".to_owned())
+    } else {
+        None
+    };
+    let presets = (catalog.menu == Some(CatalogMenu::Presets)).then(|| match &catalog.presets {
+        None => vec![ActionChoice::refused(
+            "Reading presets\u{2026}",
+            "The library's presets are being read",
+        )],
+        Some(Err(error)) => vec![ActionChoice::refused("Presets unavailable", error.clone())],
+        Some(Ok(presets)) if presets.is_empty() => vec![ActionChoice::refused(
+            "No presets",
+            "Create one in Develop's Presets section",
+        )],
+        Some(Ok(presets)) => {
+            let mut choices: Vec<ActionChoice> = Vec::with_capacity(presets.len());
+            let mut group: Option<&str> = None;
+            for preset in presets {
+                let apply = CatalogAction::ApplyPreset {
+                    id: preset.id.clone(),
+                    name: preset.name.clone(),
+                };
+                let mut choice = match &preset.unavailable {
+                    Some(reason) => ActionChoice::refused(preset.name.clone(), reason.clone()),
+                    None => ActionChoice::new(preset.name.clone(), apply),
+                };
+                // Each run of one group's presets names its group on its first item, under a rule
+                // after the first run.
+                if group != Some(preset.group.as_str()) {
+                    choice.trailing = Some(preset.group.clone());
+                    choice.separated = group.is_some();
+                    group = Some(&preset.group);
+                }
+                choices.push(choice);
+            }
+            choices
+        }
+    });
+    let home = state.home.as_deref();
+    let line = catalog.batch.as_ref().and_then(|batch| match batch.end {
+        None => Some(batch.running()),
+        Some(_) => batch.sentence(home),
+    });
+    BatchBand {
+        refused,
+        presets,
+        export: if count == 1 {
+            "Export\u{2026}".to_owned()
+        } else {
+            format!("Export {}\u{2026}", thousands(count))
+        },
+        line,
+        report: report_of(catalog).is_some(),
+        note: BATCH_NOTE,
+    }
+}
+
+/// Remove from catalog…, or Put back over Removed.
+fn removal_button(state: &SelectState) -> RemovalButton {
+    if over_removed(state) {
+        RemovalButton {
+            label: "Put back".to_owned(),
+            action: CatalogAction::Restore,
+        }
+    } else {
+        RemovalButton {
+            label: "Remove from catalog\u{2026}".to_owned(),
+            action: CatalogAction::Remove,
+        }
+    }
 }
 
 /// Move to…: every catalog folder, as a path; the one that holds the whole selection checked and

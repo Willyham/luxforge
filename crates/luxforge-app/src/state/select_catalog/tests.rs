@@ -852,7 +852,7 @@ fn catalog_browse_the_batch_form_counts_the_selection() {
         ]
     );
     assert_eq!(info.edited.as_deref(), Some("4 of 5"));
-    assert_eq!(info.export, "Export 5\u{2026}");
+    assert_eq!(info.batch.export, "Export 5\u{2026}");
     let metadata: Vec<&str> = info
         .metadata
         .iter()
@@ -984,4 +984,392 @@ fn catalog_browse_the_batch_form_reads_what_it_does_not_hold() {
         subfolders: true,
     }));
     assert!(missing_rows(&state, &selection).is_empty());
+}
+
+/// Remove from catalog…, Put back and Empty Removed… send what an agent writes, and the batch
+/// requests what an agent's `batch.apply-preset` and `batch.export` are.
+#[test]
+fn catalog_browse_removal_and_batch_requests_are_what_an_agent_writes() {
+    let m = mutation();
+    let envelope = json!({"request_id": "request-test", "actor": "desktop"});
+    assert_eq!(
+        removal_params(&m),
+        json!({"targets": {"kind": "selection"}, "mutation": envelope})
+    );
+    assert_eq!(empty_params(&m), json!({"mutation": envelope}));
+    let preset = PresetId::parse(format!("preset-{:0>32}", "a")).unwrap();
+    assert_eq!(
+        batch_preset_params(&preset, &m),
+        json!({"targets": {"kind": "selection"}, "preset_id": preset, "mutation": envelope})
+    );
+    assert_eq!(
+        batch_export_params(Path::new("/Users/me/Exports"), &m),
+        json!({"targets": {"kind": "selection"}, "destination": "/Users/me/Exports", "mutation": envelope})
+    );
+    assert_eq!(CatalogGesture::Remove.method(), "asset.remove");
+    assert_eq!(CatalogGesture::Restore.method(), "asset.restore");
+    assert!(CatalogGesture::Remove.of_selection() && CatalogGesture::Restore.of_selection());
+}
+
+fn report(done: &[u32], skipped: &[(u32, &str, &str)], settings: &[u32]) -> BatchReport {
+    BatchReport {
+        done: done.iter().map(|n| asset(*n)).collect(),
+        written: Vec::new(),
+        skipped: skipped
+            .iter()
+            .map(
+                |(n, code, reason)| luxforge_core::catalog_types::BatchSkip {
+                    asset_id: asset(*n),
+                    code: (*code).into(),
+                    reason: (*reason).into(),
+                },
+            )
+            .collect(),
+        settings_skipped: settings
+            .iter()
+            .map(|n| luxforge_core::catalog_types::BatchSettingsSkipped {
+                asset_id: asset(*n),
+                settings: vec![luxforge_core::SkippedSetting {
+                    action: "set-raw".into(),
+                    parameter: None,
+                    reason: "RAW development does not apply to a JPEG photo".into(),
+                }],
+            })
+            .collect(),
+    }
+}
+
+/// A batch of `count` photographs; the desktop held the rows of all but the fourth.
+fn batch(kind: BatchKind, count: u32, end: Option<BatchEnd>) -> BatchRun {
+    BatchRun {
+        kind,
+        count,
+        job: "job-1".into(),
+        names: (0..count)
+            .filter(|n| *n != 3)
+            .map(|n| (asset(n), format!("L10{n:05}.DNG")))
+            .collect(),
+        progress: None,
+        end,
+    }
+}
+
+/// The Develop band: Apply preset… lists the library's presets by group, an unavailable one with
+/// why; a running batch refuses another and says how far it has got; one that ended says what it
+/// did, how many it left out and how many took only some settings, and offers its report, which
+/// lists each one left out by name with the owner's reason and code, and each that took only some
+/// settings with why. Over Removed the band refuses and the panel puts back.
+#[test]
+fn catalog_browse_the_develop_band_applies_presets_exports_and_reports() {
+    let mut state = catalog_state(ViewSource::AllPhotographs);
+    with_rows(
+        &mut state,
+        (0..6)
+            .map(|position| photo_row(position, "konstanz01", &[], false))
+            .collect(),
+    );
+    let selection = selected(0, 5, 1);
+    let band = info(&state, &selection).unwrap().batch;
+    assert_eq!(band.refused, None);
+    assert_eq!(band.export, "Export 5\u{2026}");
+    assert_eq!(band.note, BATCH_NOTE);
+    assert_eq!(
+        info(&state, &selected(2, 1, 2)).unwrap().batch.export,
+        "Export\u{2026}"
+    );
+    // The menu while the presets are read, then the library by group.
+    state.catalog.menu = Some(CatalogMenu::Presets);
+    let menu = info(&state, &selection).unwrap().batch.presets.unwrap();
+    assert_eq!(menu[0].label, "Reading presets\u{2026}");
+    assert!(menu[0].action.is_none());
+    let preset = |id: &str, name: &str, group: &str, unavailable: Option<&str>| PresetChoice {
+        id: PresetId::parse(format!("preset-{id:0>32}")).unwrap(),
+        name: name.into(),
+        group: group.into(),
+        unavailable: unavailable.map(str::to_owned),
+    };
+    state.catalog.presets = Some(Ok(vec![
+        preset("a", "Soft", "Film", None),
+        preset("b", "Warm", "Film", None),
+        preset(
+            "c",
+            "Old",
+            "User presets",
+            Some("Cannot apply: set-old is unavailable"),
+        ),
+    ]));
+    let menu = info(&state, &selection).unwrap().batch.presets.unwrap();
+    let listed: Vec<(&str, Option<&str>, bool, bool)> = menu
+        .iter()
+        .map(|choice| {
+            (
+                choice.label.as_str(),
+                choice.trailing.as_deref(),
+                choice.separated,
+                choice.action.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Soft", Some("Film"), false, true),
+            ("Warm", None, false, true),
+            ("Old", Some("User presets"), true, false),
+        ]
+    );
+    assert_eq!(
+        menu[1].action,
+        Some(CatalogAction::ApplyPreset {
+            id: PresetId::parse(format!("preset-{:0>32}", "b")).unwrap(),
+            name: "Warm".into()
+        })
+    );
+    assert_eq!(
+        menu[2].reason.as_deref(),
+        Some("Cannot apply: set-old is unavailable")
+    );
+    state.catalog.presets = Some(Ok(Vec::new()));
+    assert_eq!(
+        info(&state, &selection).unwrap().batch.presets.unwrap()[0].label,
+        "No presets"
+    );
+    state.catalog.menu = None;
+
+    // A running batch: the band says how far it has got and refuses another.
+    let warm = BatchKind::Preset {
+        name: "Warm".into(),
+    };
+    state.catalog.batch = Some(batch(warm.clone(), 5, None));
+    let band = info(&state, &selection).unwrap().batch;
+    assert_eq!(
+        band.line.as_deref(),
+        Some("Applying Warm to 5 photographs\u{2026}")
+    );
+    assert!(band.refused.unwrap().starts_with("Waiting for the batch"));
+    state.catalog.batch.as_mut().unwrap().progress = Some("3 of 5".into());
+    assert_eq!(
+        info(&state, &selection).unwrap().batch.line.as_deref(),
+        Some("Applying Warm \u{b7} 3 of 5")
+    );
+
+    // Ended: what it did, what it left out, and the report.
+    let ended = report(
+        &[0, 1, 2, 4],
+        &[(
+            3,
+            "draft-open",
+            "an unapplied set-basic draft is open on it",
+        )],
+        &[4],
+    );
+    state.catalog.batch = Some(batch(warm, 5, Some(BatchEnd::Done(ended))));
+    let sentence = "Applied Warm to 4 photographs \u{b7} 1 left out \u{b7} 1 without some settings";
+    let band = info(&state, &selection).unwrap().batch;
+    assert_eq!(band.refused, None);
+    assert_eq!(band.line.as_deref(), Some(sentence));
+    assert!(band.report);
+    // The status bar offers the report while it says the batch's sentence.
+    assert!(derive(&state, &selection, sentence).status_report);
+    assert!(!derive(&state, &selection, "Something else").status_report);
+    assert!(derive(&state, &selection, sentence).sheet.is_none());
+    state.catalog.report = true;
+    let sheet = derive(&state, &selection, sentence).sheet.unwrap();
+    assert_eq!(sheet.kind, SheetKind::Preset);
+    assert_eq!(sheet.title, "Applied Warm to 4 of 5 photographs");
+    assert_eq!(sheet.confirm, None);
+    assert_eq!(
+        sheet.sections,
+        vec![
+            SheetSection {
+                heading: "Left out \u{b7} 1".into(),
+                // The desktop held no row for the fourth photograph: it is named by its identity.
+                rows: vec![(
+                    asset(3).as_str().to_owned(),
+                    "an unapplied set-basic draft is open on it (draft-open)".into()
+                )],
+                more: None,
+            },
+            SheetSection {
+                heading: "Without some settings \u{b7} 1".into(),
+                rows: vec![(
+                    "L1000004.DNG".into(),
+                    "RAW development does not apply to a JPEG photo".into()
+                )],
+                more: None,
+            },
+        ]
+    );
+    assert!(state.catalog.open(), "Escape closes the report");
+
+    // An export lists the files it wrote, and none done says so.
+    let mut exported = report(
+        &[0, 1],
+        &[(
+            2,
+            "source-unavailable",
+            "the original L1000002.DNG is missing",
+        )],
+        &[],
+    );
+    exported.written = vec![
+        "/x/L1000000-edited.jpg".into(),
+        "/x/L1000001-edited.jpg".into(),
+    ];
+    state.catalog.batch = Some(batch(
+        BatchKind::Export {
+            folder: "/x".into(),
+        },
+        3,
+        Some(BatchEnd::Done(exported)),
+    ));
+    let sheet = derive(&state, &selection, "").sheet.unwrap();
+    assert_eq!(sheet.title, "Exported 2 of 3 photographs");
+    assert_eq!(sheet.sections[0].heading, "Written \u{b7} 2");
+    assert_eq!(sheet.sections[0].rows[1].0, "L1000001-edited.jpg");
+    assert_eq!(sheet.sections[1].rows[0].0, "L1000002.DNG");
+    assert_eq!(
+        state
+            .catalog
+            .batch
+            .as_ref()
+            .unwrap()
+            .sentence(None)
+            .as_deref(),
+        Some("Exported 2 photographs to /x \u{b7} 1 left out")
+    );
+    let none = batch(
+        BatchKind::Export {
+            folder: "/x".into(),
+        },
+        1,
+        Some(BatchEnd::Done(report(
+            &[],
+            &[(0, "removed", "it is in Removed")],
+            &[],
+        ))),
+    );
+    assert_eq!(
+        none.sentence(None).as_deref(),
+        Some("Exported no photographs \u{b7} 1 left out")
+    );
+    // Cancelled and failed batches keep no report.
+    let cancelled = batch(
+        BatchKind::Preset {
+            name: "Warm".into(),
+        },
+        5,
+        Some(BatchEnd::Cancelled),
+    );
+    assert_eq!(
+        cancelled.sentence(None).as_deref(),
+        Some("Cancelled applying Warm: the photographs it reached keep their entries")
+    );
+    state.catalog.batch = Some(cancelled);
+    assert!(!info(&state, &selection).unwrap().batch.report);
+    assert!(derive(&state, &selection, "").sheet.is_none());
+
+    // A long report lists its first rows and counts the rest.
+    let many: Vec<(u32, &str, &str)> = (0..(REPORT_ROWS as u32 + 12))
+        .map(|n| (n, "removed", "it is in Removed"))
+        .collect();
+    state.catalog.batch = Some(batch(
+        BatchKind::Preset {
+            name: "Warm".into(),
+        },
+        many.len() as u32,
+        Some(BatchEnd::Done(report(&[], &many, &[]))),
+    ));
+    let sheet = derive(&state, &selection, "").sheet.unwrap();
+    assert_eq!(sheet.sections[0].rows.len(), REPORT_ROWS);
+    assert_eq!(sheet.sections[0].more.as_deref(), Some("and 12 more"));
+
+    // Over Removed the band refuses a batch and the panel puts back.
+    state.query = Some(super::super::select::source_query(ViewSource::Removed));
+    state.catalog.batch = None;
+    state.catalog.report = false;
+    let removed = info(&state, &selection).unwrap();
+    assert!(
+        removed
+            .batch
+            .refused
+            .unwrap()
+            .starts_with("Put them back first")
+    );
+    assert_eq!(
+        removed.removal,
+        Some(RemovalButton {
+            label: "Put back".into(),
+            action: CatalogAction::Restore
+        })
+    );
+}
+
+/// Remove from catalog…'s confirmation names the count, or the one photograph, and says the files
+/// stay on disk and the edits are kept until Removed is emptied; Empty Removed…'s names the count
+/// and says it cannot be undone, and its button is refused while Removed is empty or emptying.
+#[test]
+fn catalog_browse_removal_and_emptying_are_confirmed() {
+    let mut state = catalog_state(ViewSource::AllPhotographs);
+    with_rows(
+        &mut state,
+        (0..6)
+            .map(|position| photo_row(position, "konstanz01", &[], false))
+            .collect(),
+    );
+    let selection = selected(0, 5, 1);
+    assert_eq!(
+        info(&state, &selection).unwrap().removal,
+        Some(RemovalButton {
+            label: "Remove from catalog\u{2026}".into(),
+            action: CatalogAction::Remove
+        })
+    );
+    state.catalog.confirm = Some(Confirm::Remove { count: 5 });
+    let sheet = derive(&state, &selection, "").sheet.unwrap();
+    assert_eq!(sheet.kind, SheetKind::Remove);
+    assert_eq!(sheet.title, "Remove 5 photographs from the catalog?");
+    assert!(sheet.note.contains("The files stay on disk"));
+    assert!(sheet.note.contains("kept until Removed is emptied"));
+    assert_eq!(sheet.confirm.as_deref(), Some("Remove 5"));
+    assert!(state.catalog.open(), "Escape cancels it");
+    state.catalog.confirm = Some(Confirm::Remove { count: 1 });
+    let one = derive(&state, &selected(2, 1, 2), "").sheet.unwrap();
+    assert_eq!(one.title, "Remove L1000002.DNG from the catalog?");
+    assert_eq!(one.confirm.as_deref(), Some("Remove"));
+    state.catalog.close();
+    assert_eq!(state.catalog.confirm, None);
+
+    // Over Removed: Empty Removed… in the filter bar, refused until the counts say what it holds.
+    state.query = Some(super::super::select::source_query(ViewSource::Removed));
+    assert!(filter_bar(&state).empty.unwrap().refused.is_some());
+    state.counts = Some(luxforge_core::catalog_types::CatalogCounts {
+        removed: 0,
+        ..Default::default()
+    });
+    assert_eq!(
+        filter_bar(&state).empty.unwrap().refused.as_deref(),
+        Some("Removed is empty")
+    );
+    assert_eq!(removed_count(&state), None);
+    state.counts.as_mut().unwrap().removed = 4;
+    assert_eq!(filter_bar(&state).empty.unwrap().refused, None);
+    assert_eq!(removed_count(&state), Some(4));
+    state.catalog.confirm = Some(Confirm::Empty { count: 4 });
+    let sheet = derive(&state, &selection, "").sheet.unwrap();
+    assert_eq!(sheet.title, "Empty Removed?");
+    assert!(
+        sheet
+            .note
+            .starts_with("The 4 photographs in Removed are deleted")
+    );
+    assert!(sheet.note.contains("cannot be undone"));
+    assert_eq!(sheet.confirm.as_deref(), Some("Delete 4 photographs"));
+    state.catalog.emptying = Some(Emptying::default());
+    assert!(filter_bar(&state).empty.unwrap().refused.is_some());
+    // Elsewhere there is no Empty Removed….
+    state.query = Some(super::super::select::source_query(
+        ViewSource::AllPhotographs,
+    ));
+    assert_eq!(filter_bar(&state).empty, None);
 }

@@ -789,7 +789,7 @@ impl Editor {
 
     /// Ask `catalog.info` again for the Catalog sources' counts, and the catalog's folders and
     /// collections with them ([`crate::app::select_catalog`]).
-    fn read_counts(&mut self) -> Task<Message> {
+    pub(crate) fn read_counts(&mut self) -> Task<Message> {
         self.select.counts.offer(());
         self.select.catalog.lists.offer(());
         self.start_counts()
