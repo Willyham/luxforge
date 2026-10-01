@@ -52,7 +52,9 @@
 //! One render pipeline is kept per program sequence (each step's kind, entry and source), at most
 //! [`PIPELINE_CACHE`] of them, the least recently used evicted first; a sequence that failed is kept
 //! as failed, so it is not compiled again every frame. The words and the boundary's contents are not
-//! part of the key, so a tick never compiles.
+//! part of the key, so a tick never compiles. Pipelines compile on a thread of their own, never the
+//! UI thread ([`compile`](mod@compile)): a frame whose sequence is first seen or still compiling draws
+//! the CPU frame and names why, and the desktop warms the sequences a gesture is likely to need.
 //!
 //! Every GPU-preview texture and buffer is charged to one budget, [`GPU_PREVIEW_BUDGET`] by
 //! default, shared by every surface of the pipeline and reported beside the photo-texture figures:
@@ -73,7 +75,7 @@
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
 //! scopes whose answers wgpu's native backends give immediately; they are polled once and never
-//! awaited. A first sequence's pipeline is still compiled on the UI thread inside `prepare`.
+//! awaited. All of it runs on the compile thread.
 
 use super::{
     PhotoPipeline, Picture, SurfaceFigures, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE,
@@ -92,9 +94,6 @@ use wgpu::naga;
 /// retiring, of every surface together. A Fit boundary of 8 MP is 64 MiB at 8 bytes a texel and its
 /// output 32 MiB, so one replacement may overlap the slot it replaces.
 pub const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
-
-/// How many compiled program sequences, failed ones included, a pipeline keeps.
-pub const PIPELINE_CACHE: usize = 8;
 
 /// The words before any step's: the texel map's origin and step.
 const MAP_WORDS: usize = 4;
@@ -359,6 +358,9 @@ pub enum GpuFallback {
     /// The assembled shader or its pipeline failed: a program's WGSL did not validate, an entry
     /// name was refused, or wgpu refused the pipeline.
     PipelineFailed,
+    /// The plan's program sequence is first seen, or still compiling on the compile thread: the
+    /// UI thread never compiles one.
+    Compiling,
     /// Allocating what the plan needs would pass the GPU-preview budget.
     BudgetExceeded {
         requested: u64,
@@ -377,6 +379,7 @@ impl GpuFallback {
             Self::NoAdapter => "no-adapter",
             Self::DeviceLost => "device-lost",
             Self::PipelineFailed => "pipeline-failed",
+            Self::Compiling => "compiling",
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
@@ -391,7 +394,12 @@ pub(super) struct Figures {
     in_use: AtomicU64,
     peak: AtomicU64,
     passes: AtomicU64,
+    /// Sequences handed to the compile thread.
     compiles: AtomicU64,
+    /// Compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+    compiled: AtomicU64,
+    compile_max_us: AtomicU64,
+    compile_last_us: AtomicU64,
 }
 
 impl Figures {
@@ -409,6 +417,26 @@ impl Figures {
 
     pub(super) fn passes(&self) -> u64 {
         self.passes.load(Ordering::Acquire)
+    }
+
+    pub(super) fn compiles(&self) -> u64 {
+        self.compiles.load(Ordering::Acquire)
+    }
+
+    pub(super) fn compile_us(&self) -> (u64, u64, u64) {
+        (
+            self.compiled.load(Ordering::Acquire),
+            self.compile_max_us.load(Ordering::Acquire),
+            self.compile_last_us.load(Ordering::Acquire),
+        )
+    }
+
+    /// One compile finished after `elapsed`.
+    fn compiled(&self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.compiled.fetch_add(1, Ordering::AcqRel);
+        self.compile_max_us.fetch_max(micros, Ordering::AcqRel);
+        self.compile_last_us.store(micros, Ordering::Release);
     }
 
     /// Charge `bytes` if they fit the budget beside everything charged already.
@@ -506,29 +534,6 @@ impl GpuSlot {
     }
 }
 
-/// One compiled — or failed — program sequence.
-struct Cached {
-    signature: Vec<(StepKind, Cow<'static, str>, Cow<'static, str>)>,
-    pipeline: Result<wgpu::RenderPipeline, Arc<str>>,
-    id: u64,
-    used: u64,
-}
-
-impl Cached {
-    fn matches(&self, steps: &[GpuStep]) -> bool {
-        self.signature.len() == steps.len()
-            && self
-                .signature
-                .iter()
-                .zip(steps)
-                .all(|((kind, entry, source), step)| {
-                    *kind == step.kind()
-                        && *entry == step.program().entry
-                        && *source == step.program().source
-                })
-    }
-}
-
 /// What the device must offer for the stage to run, made once with the pipeline.
 struct Support {
     layout: wgpu::BindGroupLayout,
@@ -583,8 +588,10 @@ impl Support {
 pub(super) struct GpuStage {
     support: Option<Support>,
     lost: Arc<AtomicBool>,
-    cache: Vec<Cached>,
-    clock: u64,
+    /// The compiled sequences and the thread that compiles them ([`compile`]).
+    pipelines: compile::Pipelines,
+    /// The version of the warm list last handed to the compile thread.
+    warmed: Option<u64>,
     words: Vec<u32>,
     blocks: Vec<u32>,
 }
@@ -619,68 +626,38 @@ impl GpuStage {
         Self {
             support,
             lost,
-            cache: Vec::new(),
-            clock: 0,
+            pipelines: compile::Pipelines::default(),
+            warmed: None,
             words: Vec::new(),
             blocks: Vec::new(),
         }
     }
 
-    /// The cached pipeline for `steps`, compiled on first use. A failed sequence stays failed.
+    /// The ready pipeline for `steps`, or why the frame draws the CPU's: never compiled here, on
+    /// the UI thread. A first-seen sequence goes to the compile thread and answers
+    /// [`GpuFallback::Compiling`] until it is ready; a failed one stays failed.
     fn pipeline(
         &mut self,
         device: &wgpu::Device,
         steps: &[GpuStep],
         figures: &Figures,
     ) -> Result<(wgpu::RenderPipeline, u64), GpuFallback> {
-        self.clock += 1;
-        let clock = self.clock;
-        if let Some(cached) = self.cache.iter_mut().find(|cached| cached.matches(steps)) {
-            cached.used = clock;
-            return match &cached.pipeline {
-                Ok(pipeline) => Ok((pipeline.clone(), cached.id)),
-                Err(_) => Err(GpuFallback::PipelineFailed),
-            };
-        }
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
-        figures.compiles.fetch_add(1, Ordering::Relaxed);
-        let pipeline = compile(device, &support.pipeline_layout, steps, OUTPUT_FORMAT)
-            .map_err(Arc::<str>::from);
-        if self.cache.len() >= PIPELINE_CACHE
-            && let Some(oldest) = self
-                .cache
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, cached)| cached.used)
-                .map(|(index, _)| index)
-        {
-            self.cache.swap_remove(oldest);
+        self.pipelines
+            .get(device, &support.pipeline_layout, steps, figures)
+    }
+
+    /// Hand `sequences` the stage does not hold yet to the compile thread.
+    fn warm(&mut self, device: &wgpu::Device, sequences: &[Vec<GpuStep>], figures: &Figures) {
+        if let Some(support) = &self.support {
+            self.pipelines
+                .warm(device, &support.pipeline_layout, sequences, figures);
         }
-        let answer = match &pipeline {
-            Ok(pipeline) => Ok((pipeline.clone(), clock)),
-            Err(_) => Err(GpuFallback::PipelineFailed),
-        };
-        self.cache.push(Cached {
-            signature: steps
-                .iter()
-                .map(|step| {
-                    let program = step.program();
-                    (step.kind(), program.entry.clone(), program.source.clone())
-                })
-                .collect(),
-            pipeline,
-            id: clock,
-            used: clock,
-        });
-        answer
     }
 
     #[cfg(test)]
     fn failure(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
-        self.cache
-            .iter()
-            .find(|cached| cached.matches(steps))
-            .and_then(|cached| cached.pipeline.as_ref().err().cloned())
+        self.pipelines.failure(steps)
     }
 }
 
@@ -1009,6 +986,17 @@ impl PhotoPipeline {
             self.release_gpu(surface);
         }
         surface.gpu_outcome = Some(outcome);
+    }
+
+    /// Hand `warm`'s sequences to the compile thread, once per version.
+    pub(super) fn warm_gpu(&mut self, device: &wgpu::Device, warm: Option<&GpuWarm>) {
+        if let Some(warm) = warm
+            && self.gpu.warmed != Some(warm.version())
+        {
+            self.gpu.warmed = Some(warm.version());
+            self.gpu
+                .warm(device, warm.sequences(), &self.figures.preview);
+        }
     }
 
     /// Retire `surface`'s GPU-preview slot, if it holds one.
@@ -1360,6 +1348,18 @@ impl PhotoPipeline {
         }
     }
 
+    /// Compile `steps` on the compile thread and wait until it has finished, as a frame after the
+    /// compile would find it: what a test that is not about compiling does before it draws.
+    #[cfg(test)]
+    pub(super) fn compile_now(&mut self, device: &wgpu::Device, steps: &[GpuStep]) {
+        let figures = Arc::clone(&self.figures);
+        let _ = self.gpu.pipeline(device, steps, &figures.preview);
+        luxforge_testbase::wait_until("the sequence's compile", || {
+            self.gpu.pipelines.settle(&figures.preview);
+            !self.gpu.pipelines.compiling(steps)
+        });
+    }
+
     /// Simulate the device's loss through the handler its lost callback runs.
     #[cfg(test)]
     pub(super) fn simulate_device_loss(&self) {
@@ -1412,11 +1412,16 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
     }
 }
 
+mod compile;
+pub(super) use compile::GpuOptions;
+pub use compile::{GpuWarm, PIPELINE_CACHE};
 mod position;
 pub use position::PositionMap;
 
 #[cfg(feature = "qualification")]
 pub mod qualification;
 
+#[cfg(test)]
+mod compile_tests;
 #[cfg(test)]
 mod tests;
