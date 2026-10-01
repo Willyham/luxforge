@@ -18,12 +18,10 @@ pub(crate) enum DevelopMessage {
     /// A double-click on a photograph of a catalog view, by its position: Develop on it, with the
     /// view's photographs as the set.
     OpenAt(u32),
-    /// `pick.plan` and `folder.list` answered for the confirmation numbered `serial`; `picked` says
-    /// `D` picked the active frame for it.
+    /// `pick.plan` and `folder.list` answered for the confirmation numbered `serial`.
     Planned {
         serial: u64,
         result: Result<Box<(DevelopPlan, CatalogFolders)>, String>,
-        picked: bool,
     },
     /// The name typed into an event's new-folder field.
     Name { event: usize, text: String },

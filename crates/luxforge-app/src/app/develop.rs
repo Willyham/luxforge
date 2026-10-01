@@ -76,23 +76,6 @@ pub(crate) const MAX_SET: u32 = 100_000;
 /// The rows one `browse.rows` of a set's read asks for: the method's most.
 const SET_WINDOW: u32 = 1000;
 
-/// What `pick.plan` and `pick.develop` answer when the caller's view went stale since it was
-/// evaluated — a library change, or the index's revision moving as grid previews land: the view is
-/// read again and the request sent once more.
-const STALE: &str = "the view is stale";
-
-/// A request refused because the view went stale, sent again once the view has been read again.
-#[derive(Clone, Debug)]
-enum Retry {
-    Plan { picked: bool },
-    Develop { params: Value },
-}
-
-/// Whether an owner's refusal is a stale view's.
-fn stale(error: &str) -> bool {
-    error.starts_with("conflict: ") && error.contains(STALE)
-}
-
 /// The last Develop this desktop sent, for evidence: its request, what `pick.develop` answered
 /// and the job's record when it ended.
 #[derive(Clone, Debug, Default)]
@@ -139,10 +122,6 @@ pub(crate) struct Develop {
     pub(crate) strip: SelectPreviews,
     /// Both caches were emptied when Select was shown, so they are not emptied again.
     released: bool,
-    /// A plan or Develop refused for a stale view, waiting for the view to be read again.
-    retry: Option<Retry>,
-    /// The press in flight has been sent again once already.
-    retried: bool,
     /// The large previews' read batches, which a test runs against its owner in place of the tasks.
     #[cfg(test)]
     pub(crate) reads: Vec<loupe_frames::ReadBatch>,
@@ -160,8 +139,6 @@ impl Default for Develop {
             frames: LoupeFrames::waking(FRAMES_BUDGET_BYTES, post),
             strip: SelectPreviews::waking(STRIP_BUDGET_BYTES, post),
             released: true,
-            retry: None,
-            retried: false,
             #[cfg(test)]
             reads: Vec::new(),
         }
@@ -312,11 +289,7 @@ impl Editor {
             DevelopMessage::Open => return self.develop_open(false),
             DevelopMessage::Key => return self.develop_key(),
             DevelopMessage::OpenAt(position) => return self.open_view_set(position),
-            DevelopMessage::Planned {
-                serial,
-                result,
-                picked,
-            } => return self.planned(serial, result, picked),
+            DevelopMessage::Planned { serial, result } => return self.planned(serial, result),
             DevelopMessage::Name { event, text } => {
                 if let Some(choice) = self
                     .develop
@@ -349,7 +322,6 @@ impl Editor {
             }
             DevelopMessage::Confirm => return self.develop_confirm(),
             DevelopMessage::Cancel => {
-                self.develop.retry = None;
                 if self.develop.state.confirm.take().is_some() || self.develop.state.planning {
                     self.develop.state.planning = false;
                     self.develop.plan_serial += 1;
@@ -430,40 +402,20 @@ impl Editor {
             return Task::none();
         }
         self.select.state.menu = None;
-        self.develop.retried = false;
-        self.develop.retry = None;
         self.develop.state.confirm = None;
-        self.plan_task(picked)
+        self.plan_task()
     }
 
     /// Ask for the plan of the picks in view.
-    fn plan_task(&mut self, picked: bool) -> Task<Message> {
+    fn plan_task(&mut self) -> Task<Message> {
         self.develop.plan_serial += 1;
         self.develop.state.planning = true;
         let serial = self.develop.plan_serial;
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
             move || plan_now(&owner, client),
-            move |result| {
-                Message::Develop(DevelopMessage::Planned {
-                    serial,
-                    result,
-                    picked,
-                })
-            },
+            move |result| Message::Develop(DevelopMessage::Planned { serial, result }),
         )
-    }
-
-    /// The owner refused a request because the view went stale: read it again, and send the request
-    /// once more when it has been, once per press. `None` when it was not that refusal, or the
-    /// press was sent again already.
-    fn retry_when_read(&mut self, error: &str, retry: Retry) -> Option<Task<Message>> {
-        if !stale(error) || std::mem::replace(&mut self.develop.retried, true) {
-            return None;
-        }
-        let query = self.select.state.summary.as_ref()?.query.clone();
-        self.develop.retry = Some(retry);
-        Some(self.evaluate(query))
     }
 
     /// `D` in Select: over the catalog, Develop on the active photograph with the view's set; over
@@ -504,7 +456,6 @@ impl Editor {
         &mut self,
         serial: u64,
         result: Result<Box<(DevelopPlan, CatalogFolders)>, String>,
-        picked: bool,
     ) -> Task<Message> {
         if serial != self.develop.plan_serial || !self.develop.state.planning {
             return Task::none();
@@ -512,9 +463,6 @@ impl Editor {
         let (plan, folders) = match result {
             Ok(answer) => *answer,
             Err(error) => {
-                if let Some(task) = self.retry_when_read(&error, Retry::Plan { picked }) {
-                    return task;
-                }
                 self.develop.state.planning = false;
                 self.status.text = format!("Could not plan the Develop: {error}");
                 return Task::none();
@@ -561,8 +509,6 @@ impl Editor {
         };
         self.develop.state.confirm = None;
         self.develop.state.developing = Some(Developing { job: None, total });
-        self.develop.retried = false;
-        self.develop.retry = None;
         self.status.text = format!("Developing {}\u{2026}", state::select::thousands(total));
         self.develop_task(params)
     }
@@ -585,10 +531,6 @@ impl Editor {
         let job = match result {
             Ok(job) => job,
             Err(error) => {
-                let params = self.develop.last.request.clone().unwrap_or_default();
-                if let Some(task) = self.retry_when_read(&error, Retry::Develop { params }) {
-                    return task;
-                }
                 self.develop.state.developing = None;
                 self.status.text = format!("Could not develop: {error}");
                 return Task::none();
@@ -983,26 +925,6 @@ impl Editor {
             .map(|answers| strip_message(SelectPreviewMessage::Read(answers)))
     }
 
-    /// A request refused for a stale view is sent again once the view has been read again.
-    fn retry_after_read(&mut self) -> Task<Message> {
-        if self.develop.retry.is_none()
-            || self.select.state.loading
-            || self.select.state.summary.is_none()
-        {
-            return Task::none();
-        }
-        match self.develop.retry.take() {
-            Some(Retry::Plan { picked }) if self.develop.state.planning => self.plan_task(picked),
-            Some(Retry::Develop { mut params }) if self.develop.state.developing.is_some() => {
-                // The refused request recorded nothing: this is a new one, under its own identity.
-                params["mutation"] = json!(request());
-                self.develop.last.request = Some(params.clone());
-                self.develop_task(params)
-            }
-            _ => Task::none(),
-        }
-    }
-
     /// A file is opened as today, alone: the set, a move in flight and its preview are forgotten.
     pub(crate) fn develop_opened_alone(&mut self) {
         self.develop.state.set = None;
@@ -1261,7 +1183,6 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         // A preview decoded while its photograph prepares is drawn as soon as it lands.
         editor.present_cached();
     }
-    tasks.push(editor.retry_after_read());
     editor.follow_switch();
     editor.follow_timing();
     if editor.evidence.is_some() {
