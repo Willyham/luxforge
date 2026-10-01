@@ -530,7 +530,7 @@
     {
       "id": "TASK-008",
       "description": "Prepare the measurement harnesses without timing: editor-latency drives a named module's curve from a seeded mid-tone point, and editor-performance gains a Tone curve row.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -584,7 +584,7 @@
     {
       "id": "TASK-009",
       "description": "Measure the module on photo-sized inputs after all feature work, record the figures, update the documentation and hand off with the rendered tier.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004",
         "TASK-005",
