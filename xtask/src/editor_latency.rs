@@ -1180,9 +1180,14 @@ fn crop_precondition(options: &Options) -> Option<script::Step> {
 /// Geometry is seeded through the same module actions in every measured mode. Lens remains an
 /// independent option; Perspective is explicit so comparisons can keep that stack unchanged.
 fn geometry_preconditions(options: &Options) -> Vec<script::Step> {
+    let raw = source_tag(options.source).is_ok_and(|kind| kind == SourceTag::Raw);
     let mut steps = Vec::new();
     if options.lens {
-        steps.extend(crate::scenario::recipe::lens_profile());
+        steps.extend(crate::scenario::recipe::lens_profile(raw));
+    } else if raw {
+        // A supported RAW is imported with its detected profile applied; a baseline without Lens
+        // turns it off so the two runs differ only by the profile.
+        steps.push(crate::scenario::recipe::lens_off());
     }
     if options.perspective {
         steps.push(script::Step::call(
@@ -3835,16 +3840,21 @@ mod tests {
             mask_overlay: false,
         };
         let geometry = geometry_preconditions(&options);
-        assert_eq!(geometry.len(), 5);
+        // A JPEG's Lens precondition is the section and its Apply.
+        assert_eq!(geometry.len(), 4);
         assert_eq!(
-            geometry[3],
+            geometry[..2],
+            crate::scenario::recipe::lens_profile(false)[..]
+        );
+        assert_eq!(
+            geometry[2],
             script::Step::call(
                 "edit.set-perspective",
                 json!({"horizontal":20,"vertical":-10})
             )
         );
         assert_eq!(
-            geometry[4],
+            geometry[3],
             script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":2.5}))
         );
         let (crop, starts) = crop_start_script(&options);
@@ -4240,7 +4250,7 @@ mod tests {
     }
 
     #[test]
-    fn lens_latency_precondition_selects_the_first_eligible_row_before_the_gesture() {
+    fn lens_latency_precondition_applies_the_detected_profile_before_the_gesture() {
         let source = PathBuf::from("lens-24mp.jpg");
         let options = Options {
             source: &source,
@@ -4265,15 +4275,41 @@ mod tests {
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
         let steps = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
-        assert_eq!(&steps[..3], &crate::scenario::recipe::lens_profile());
+        assert_eq!(
+            &steps[..2],
+            &crate::scenario::recipe::lens_profile(false)[..]
+        );
         assert!(
-            matches!(&steps[2],script::Step::Controls(script::ControlsStep::QueryChoiceSelectFirst {action}) if action=="select-lens-profile")
+            matches!(&steps[1],script::Step::Controls(script::ControlsStep::QueryChoiceApply {action}) if action=="select-lens-profile")
         );
         assert_eq!(
             script::parse(&script::write(&steps).to_string()).unwrap(),
             steps
         );
         assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+        // A RAW is imported with its detected profile applied: with Lens the script only opens
+        // the section, and its baseline turns the profile off.
+        let raw = luxforge_testbase::paths::temp_path("lens-latency.nef");
+        fs::write(&raw, [0x49, 0x49, 0x2a, 0x00]).unwrap();
+        let with = Options {
+            source: &raw,
+            ..options
+        };
+        let steps = geometry_preconditions(&with);
+        assert_eq!(steps[..1], crate::scenario::recipe::lens_profile(true)[..]);
+        assert!(!steps.iter().any(|step| matches!(
+            step,
+            script::Step::Controls(script::ControlsStep::QueryChoiceApply { .. })
+        )));
+        let without = Options {
+            lens: false,
+            ..with
+        };
+        assert_eq!(
+            geometry_preconditions(&without)[0],
+            crate::scenario::recipe::lens_off()
+        );
+        fs::remove_file(raw).unwrap();
     }
 
     /// `--control curve --action set-curve --parameter luminance`: the Tone curve's own field.
@@ -4602,15 +4638,15 @@ mod tests {
             steps.push(script::Step::tools_scroll(0.0));
             steps
         };
-        // The presets and Basic sections sit above the Tone curve. The RAW module, between them in
+        // The Crop, Presets and Basic sections sit above the Tone curve. The RAW module, between them in
         // the registry, declares no controls and so draws no section for either kind of photo.
         assert_eq!(
             curve_view_steps(&field, SourceTag::Jpeg, false),
-            collapsed(&["luxforge.presets", "luxforge.basic"])
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
         );
         assert_eq!(
             curve_view_steps(&field, SourceTag::Raw, false),
-            collapsed(&["luxforge.presets", "luxforge.basic"])
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
         );
         // The mask workspace lists only modules with a maskable effect.
         assert_eq!(

@@ -9,8 +9,9 @@ use crate::{
     RailDecoration, SectionHeaderModel, SegmentedModel, SliderModel, SubGroupHeaderModel,
     ToggleEntry, Tone, ValueEdit, caption, chip, clip_triangle, compact_chip, double_click,
     draft_bar, error_caption, floating_bar, header_icon_button, histogram_inspector, icon_button,
-    inline_menu, label, list_row, mode_strip, notice_card, section_header, section_label, segment,
-    segment_track, segmented, slider, sub_group_header, theme, title, value_text,
+    inline_menu, inline_notice, label, list_row, mode_strip, notice_card, section_header,
+    section_label, segment, segment_track, segmented, slider, sub_group_header, theme, title,
+    value_text,
 };
 use iced::widget::container;
 use iced::{Element, Length};
@@ -466,6 +467,16 @@ pub fn gallery() -> Vec<Element<'static, ()>> {
         },
         Vec::new(),
     ));
+
+    // -- Inline notices inside a panel: warning with its triangle, and information alone.
+    states.push(narrow(inline_notice(
+        Tone::Warning,
+        "FUJIFILM X100VI is not in the lens database.",
+    )));
+    states.push(narrow(inline_notice(
+        Tone::Neutral,
+        "The camera may already have corrected distortion in this JPEG; applying assumes it did not.",
+    )));
 
     // -- A floating bar holding an arbitrary child, and the draft bar built on it.
     states.push(floating_bar(vec![label::<()>("Crop")]));

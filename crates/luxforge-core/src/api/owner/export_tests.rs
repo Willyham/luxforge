@@ -1127,12 +1127,11 @@ fn lens_asset(h: &Harness) -> (Value, PathBuf) {
                 response.result
             }
         });
-    let row = profiles["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|r| r["match"] == "lens-model" && r["eligible"] == true)
-        .unwrap();
+    let row = &profiles["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{profiles}"
+    );
     h.ok("edit.select-lens-profile",json!({"asset_id":asset,"profile":row["key"],"assume-uncorrected":true,"mutation":{"expected_revision":0,"request_id":"lens-selection","actor":"test"}}));
     let revision = h.ok("asset.state", json!({"asset_id":asset}))["revision"].clone();
     h.ok("edit.set-perspective",json!({"asset_id":asset,"horizontal":40,"vertical":-25,"mutation":{"expected_revision":revision,"request_id":"perspective-selection","actor":"test"}}));

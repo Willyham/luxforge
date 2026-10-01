@@ -392,12 +392,12 @@ fn mask_overlay_under_warp_matches_content_coverage() {
             None => response.result,
         }
     });
-    let row = rows["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-        .unwrap();
+    // The detected profile, which the answer offers in its status rather than as a row.
+    let row = &rows["status"]["suggestion"];
+    assert!(
+        row["match"] == "lens-model" && row["eligible"] == true,
+        "{rows}"
+    );
     f.edit(
         "select-lens-profile",
         json!({"profile":row["key"],"focal":24.0,"assume-uncorrected":true}),

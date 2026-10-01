@@ -183,12 +183,20 @@ fn source(
     let state = &adopted["asset"];
     let asset = state["asset"]["id"].clone();
     ensure(!asset.is_null(), "Import answer has no asset")?;
-    let before: MappingDescriptor =
-        serde_json::from_value(api.call("render.transform", json!({"asset_id":asset}))?)?;
+    // A supported RAW is imported with its detected profile applied as its first-open entry, so
+    // the uncorrected geometry is its Original's, the entry that one undoes to.
+    let entry = &state["current_entry"];
+    let uncorrected = if entry["action_id"] == "select-lens-profile" && entry["actor"] == "system" {
+        entry["undo_parent"].clone()
+    } else {
+        entry["id"].clone()
+    };
+    let before: MappingDescriptor = serde_json::from_value(api.call(
+        "render.transform",
+        json!({"asset_id":asset,"entry_id":uncorrected}),
+    )?)?;
     let query = api.call("query.lens-profiles", json!({"asset_id":asset}))?;
-    let candidate = query["rows"]
-        .as_array()
-        .and_then(|rows| rows.iter().find(|r| r["eligible"] == true));
+    let candidate = Some(&query["status"]["detected"]).filter(|r| r["eligible"] == true);
     let Some(candidate) = candidate else {
         ensure(hash(path)? == source.sha256, "Source changed")?;
         return Ok(

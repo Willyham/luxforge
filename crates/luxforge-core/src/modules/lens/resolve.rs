@@ -36,9 +36,27 @@ pub(crate) enum Reason {
     UnsupportedStage,
     EmbeddedDistortionApplied,
     AssumeUncorrectedRequired,
+    /// Status only: the camera is in the database but no profile matches its lens identity.
+    LensNotInDatabase,
 }
 impl Reason {
-    fn label(self) -> &'static str {
+    /// A condition of the photo rather than of one profile: it holds for every profile alike, so
+    /// it is reported in status and gates selection but never hides a compatible profile from a
+    /// search. Every other reason means the profile does not fit this camera, sensor, frame or
+    /// focal length, and such a profile is never listed.
+    pub(crate) fn photo_level(self) -> bool {
+        matches!(
+            self,
+            Self::CameraNotInDatabase
+                | Self::FocalMissing
+                | Self::CropModeMismatch
+                | Self::UnsupportedStage
+                | Self::EmbeddedDistortionApplied
+                | Self::AssumeUncorrectedRequired
+                | Self::LensNotInDatabase
+        )
+    }
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::CameraNotInDatabase => "camera-not-in-database",
             Self::CalibrationSensorSmaller => "calibration-sensor-smaller",
@@ -50,6 +68,7 @@ impl Reason {
             Self::FocalOutOfRange => "focal-out-of-range",
             Self::IncompatibleMount => "incompatible-mount",
             Self::UnsupportedStage => "unsupported-stage",
+            Self::LensNotInDatabase => "lens-not-in-database",
         }
     }
 }
@@ -65,6 +84,10 @@ pub(crate) struct Candidate {
     pub matched: Match,
     pub eligible: bool,
     pub reasons: Vec<Reason>,
+    /// Values a selection of this row sends beside its key: the query-choice vocabulary's
+    /// per-choice parameters.
+    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    pub parameters: serde_json::Map<String, serde_json::Value>,
 }
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct Page {
@@ -103,12 +126,6 @@ fn cameras<'a>(index: &'a LensIndex, input: &ResolveInput) -> Vec<&'a IndexCamer
         .iter()
         .filter(|c| normalize(&c.maker) == maker && normalize(&c.model) == model)
         .collect()
-}
-pub(crate) fn camera_match<'a>(
-    index: &'a LensIndex,
-    input: &ResolveInput,
-) -> Option<&'a IndexCamera> {
-    cameras(index, input).into_iter().next()
 }
 fn fixed(index: &LensIndex, camera: &IndexCamera) -> bool {
     index
@@ -163,38 +180,44 @@ fn calibration_focal(calibrations: &[Calibration], focal: f64) -> Result<f64, Re
     }
     Ok(focal.clamp(first, last))
 }
+/// The photo's own conditions against one camera record, the same for every profile.
+fn photo_reasons(camera: &IndexCamera, input: &ResolveInput) -> Vec<Reason> {
+    let mut reasons = Vec::new();
+    if let (Some(f), Some(f35)) = (input.focal_mm, input.focal_35mm)
+        && (!f.is_finite() || f <= 0.0 || (f35 as f64 / f / camera.crop_factor - 1.0).abs() > 0.05)
+    {
+        reasons.push(Reason::CropModeMismatch);
+    }
+    if input.stage.width.min(input.stage.height) < 2 {
+        reasons.push(Reason::UnsupportedStage);
+    }
+    if focal(input).is_none() {
+        reasons.push(Reason::FocalMissing);
+    }
+    reasons
+}
 fn reasons(
     index: &LensIndex,
     camera: &IndexCamera,
     lens: &IndexLens,
     input: &ResolveInput,
 ) -> Vec<Reason> {
-    let mut reasons = Vec::new();
+    let mut reasons = photo_reasons(camera, input);
     if !compatible(index, camera, lens) {
         reasons.push(Reason::IncompatibleMount);
     }
     if camera.crop_factor < 0.96 * lens.crop_factor {
         reasons.push(Reason::CalibrationSensorSmaller);
     }
-    if let (Some(f), Some(f35)) = (input.focal_mm, input.focal_35mm)
-        && (!f.is_finite() || f <= 0.0 || (f35 as f64 / f / camera.crop_factor - 1.0).abs() > 0.05)
-    {
-        reasons.push(Reason::CropModeMismatch);
-    }
     let long = input.stage.width.max(input.stage.height);
     let short = input.stage.width.min(input.stage.height);
-    if short < 2 {
-        reasons.push(Reason::UnsupportedStage);
-    } else if ((long as f64 / short as f64) / lens.aspect_ratio - 1.0).abs() > 0.03 {
+    if short >= 2 && ((long as f64 / short as f64) / lens.aspect_ratio - 1.0).abs() > 0.03 {
         reasons.push(Reason::AspectMismatch);
     }
-    match focal(input) {
-        None => reasons.push(Reason::FocalMissing),
-        Some((f, _)) => {
-            if calibration_focal(&lens.calibrations, f).is_err() {
-                reasons.push(Reason::FocalOutOfRange);
-            }
-        }
+    if let Some((f, _)) = focal(input)
+        && calibration_focal(&lens.calibrations, f).is_err()
+    {
+        reasons.push(Reason::FocalOutOfRange);
     }
     reasons
 }
@@ -205,24 +228,21 @@ fn candidate(
     matched: Match,
     cameras: &[&IndexCamera],
 ) -> Candidate {
-    let mut refusals = Vec::new();
-    let eligible = cameras.iter().any(|camera| {
-        let current = reasons(index, camera, lens, input);
-        if current.is_empty() {
-            true
-        } else {
-            refusals.extend(current);
-            false
-        }
-    });
-    if cameras.is_empty() {
-        refusals.push(Reason::CameraNotInDatabase);
-    }
-    if eligible {
-        refusals.clear();
-    }
+    // The matching camera record the profile fits best: none of its reasons when one fits, else
+    // the fewest profile-level ones, so a compatible profile reports only the photo's conditions.
+    let mut refusals = cameras
+        .iter()
+        .map(|camera| reasons(index, camera, lens, input))
+        .min_by_key(|current| {
+            (
+                current.iter().filter(|r| !r.photo_level()).count(),
+                current.len(),
+            )
+        })
+        .unwrap_or_else(|| vec![Reason::CameraNotInDatabase]);
     refusals.sort();
     refusals.dedup();
+    let eligible = refusals.is_empty();
     Candidate {
         key: lens.key.clone(),
         title: lens.models[0].clone(),
@@ -239,6 +259,7 @@ fn candidate(
         matched,
         eligible,
         reasons: refusals,
+        parameters: serde_json::Map::new(),
     }
 }
 fn identity_lenses<'a>(
@@ -276,52 +297,135 @@ pub(crate) fn candidates(index: &LensIndex, input: &ResolveInput) -> Vec<Candida
         .map(|(lens, matched)| candidate(index, lens, input, matched, &cameras))
         .collect()
 }
+/// Whether `lens` fits at least one matching camera record apart from the photo's own conditions.
+fn fits(
+    index: &LensIndex,
+    lens: &IndexLens,
+    input: &ResolveInput,
+    cameras: &[&IndexCamera],
+) -> bool {
+    cameras.iter().any(|camera| {
+        reasons(index, camera, lens, input)
+            .iter()
+            .all(|reason| reason.photo_level())
+    })
+}
+/// Rows per page of a search.
+pub(crate) const PAGE_ROWS: usize = 50;
+/// The profiles whose maker or model contains `text`, restricted to those that fit this photo's
+/// camera, whose every remaining reason is the photo's own ([`Reason::photo_level`]): identity
+/// matches first, then by model and key. Empty text
+/// lists nothing, and neither does a camera the database does not hold, since no profile could fit
+/// it. A profile that does not fit is never listed; `edit.select-lens-profile` still refuses its
+/// key with its reasons.
 pub(crate) fn search(index: &LensIndex, input: &ResolveInput, text: &str, page: usize) -> Page {
-    let cameras = cameras(index, input);
-    let mut rows = identity_lenses(index, input, &cameras);
-    let existing: std::collections::HashSet<_> =
-        rows.iter().map(|(lens, _)| lens.key.as_str()).collect();
     let needle = normalize(text);
-    let mut matches: Vec<_> = index
+    let cameras = cameras(index, input);
+    if needle.is_empty() || cameras.is_empty() {
+        return Page {
+            rows: Vec::new(),
+            page,
+            pages: 1,
+            total: 0,
+        };
+    }
+    let identity: std::collections::HashMap<_, _> = identity_lenses(index, input, &cameras)
+        .into_iter()
+        .map(|(lens, matched)| (lens.key.as_str(), matched))
+        .collect();
+    let mut rows: Vec<_> = index
         .lenses
         .iter()
         .filter(|lens| {
-            !existing.contains(lens.key.as_str())
-                && (needle.is_empty()
-                    || normalize(&lens.maker).contains(&needle)
-                    || lens.models.iter().any(|m| normalize(m).contains(&needle)))
+            normalize(&lens.maker).contains(&needle)
+                || lens.models.iter().any(|m| normalize(m).contains(&needle))
         })
-        .map(|lens| (lens, Match::Search))
+        .filter(|lens| fits(index, lens, input, &cameras))
+        .map(|lens| {
+            let matched = identity
+                .get(lens.key.as_str())
+                .copied()
+                .unwrap_or(Match::Search);
+            (lens, matched)
+        })
         .collect();
-    matches.sort_by(|(a, _), (b, _)| a.models[0].cmp(&b.models[0]).then(a.key.cmp(&b.key)));
-    rows.extend(matches);
+    rows.sort_by(|(a, am), (b, bm)| {
+        (*am == Match::Search)
+            .cmp(&(*bm == Match::Search))
+            .then(a.models[0].cmp(&b.models[0]))
+            .then(a.key.cmp(&b.key))
+    });
     let total = rows.len();
-    let pages = total.div_ceil(50);
-    // Only visible rows allocate response strings and run eligibility arithmetic. The query
-    // computes camera identity once, rather than repeating its scan for every database lens.
+    // Only visible rows allocate response strings. Every text match runs the fit arithmetic,
+    // a few comparisons per matching camera record, with no allocation beyond its reason list.
     Page {
         rows: rows
             .into_iter()
-            .skip(page.saturating_mul(50))
-            .take(50)
+            .skip(page.saturating_mul(PAGE_ROWS))
+            .take(PAGE_ROWS)
             .map(|(lens, matched)| candidate(index, lens, input, matched, &cameras))
             .collect(),
         page,
-        pages,
+        pages: total.div_ceil(PAGE_ROWS).max(1),
         total,
     }
 }
-pub(crate) fn status_reasons(index: &LensIndex, input: &ResolveInput) -> Vec<Reason> {
-    if cameras(index, input).is_empty() {
+
+/// What this photo's own identity says about the database, without a search.
+#[derive(Clone, Debug)]
+pub(crate) struct Detection<'a> {
+    /// The first matching camera record, which names the camera and its crop factor.
+    pub camera: Option<&'a IndexCamera>,
+    /// Whether the matched camera has a fixed lens, whose profiles its mount names.
+    pub fixed: bool,
+    /// The profiles the photo's identity names, in the documented order.
+    pub candidates: Vec<Candidate>,
+    /// The detected profile: the first eligible candidate, else the first held back only by the
+    /// photo's own conditions or its focal length, which a person can supply.
+    pub detected: Option<Candidate>,
+    /// Why nothing could be applied as it stands: the detected profile's reasons, else every
+    /// candidate's, else that the camera or its lens is not in the database.
+    pub reasons: Vec<Reason>,
+    /// The photo's own conditions against the camera record it fits best, which hold for any
+    /// profile a search could find.
+    pub photo: Vec<Reason>,
+}
+pub(crate) fn detect<'a>(index: &'a LensIndex, input: &ResolveInput) -> Detection<'a> {
+    let matched = cameras(index, input);
+    let photo = matched
+        .iter()
+        .map(|camera| photo_reasons(camera, input))
+        .min_by_key(Vec::len)
+        .unwrap_or_default();
+    let candidates = candidates(index, input);
+    let detected = candidates.iter().find(|c| c.eligible).cloned().or_else(|| {
+        candidates
+            .iter()
+            .find(|c| {
+                c.reasons
+                    .iter()
+                    .all(|r| r.photo_level() || *r == Reason::FocalOutOfRange)
+            })
+            .cloned()
+    });
+    let mut reasons = if matched.is_empty() {
         vec![Reason::CameraNotInDatabase]
+    } else if let Some(detected) = &detected {
+        detected.reasons.clone()
+    } else if candidates.is_empty() {
+        vec![Reason::LensNotInDatabase]
     } else {
-        let mut reasons: Vec<_> = candidates(index, input)
-            .into_iter()
-            .flat_map(|c| c.reasons)
-            .collect();
-        reasons.sort();
-        reasons.dedup();
-        reasons
+        candidates.iter().flat_map(|c| c.reasons.clone()).collect()
+    };
+    reasons.sort();
+    reasons.dedup();
+    Detection {
+        camera: matched.first().copied(),
+        fixed: matched.first().is_some_and(|camera| fixed(index, camera)),
+        candidates,
+        detected,
+        reasons,
+        photo,
     }
 }
 

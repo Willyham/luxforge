@@ -241,7 +241,7 @@ A qualifying rule applies only when the preset holds the amount it depends on. A
 
 ## Desktop
 
-The Presets section is generated from the `presets` control and is the first section of the tools panel, collapsed until opened:
+The Presets section is generated from the `presets` control and follows Crop in the tools panel, collapsed until opened:
 
 - **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
 - **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset-id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.

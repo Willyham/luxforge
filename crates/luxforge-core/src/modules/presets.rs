@@ -247,9 +247,9 @@ mod tests {
 
     /// A module with no effects registers like any other and claims no effect identity.
     #[test]
-    fn a_module_without_effects_registers_first() {
+    fn a_module_without_effects_registers_after_crop() {
         let registry = ModuleRegistry::builtin();
-        assert_eq!(registry.descriptors()[0].id, "luxforge.presets");
+        assert_eq!(registry.descriptors()[1].id, "luxforge.presets");
         let (module, action) = registry.action(APPLY_PRESET).expect("the preset action");
         assert_eq!(module.descriptor().id, "luxforge.presets");
         assert!(!action.patch);

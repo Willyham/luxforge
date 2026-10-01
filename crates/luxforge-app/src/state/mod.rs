@@ -141,7 +141,9 @@ pub(crate) fn edit_refusal(
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CropSection {
     pub(crate) custom: (String, String),
-    /// The Straighten guide: a drag on the image draws a levelling line instead.
+    /// The module disclosures to restore when the crop draft ends, including implicit defaults.
+    pub(crate) previous_expanded: Option<BTreeMap<String, bool>>,
+    /// The one-shot Straighten tool: a drag draws a levelling line, then returns to crop handles.
     pub(crate) guide: bool,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     pub(crate) option: bool,
@@ -153,6 +155,7 @@ impl Default for CropSection {
     fn default() -> Self {
         Self {
             custom: ("5".into(), "4".into()),
+            previous_expanded: None,
             guide: false,
             option: false,
             space: false,
@@ -306,6 +309,9 @@ pub(crate) struct Inputs<'a> {
     /// How long the frame on the photo surface took to render, measured on the preview worker for
     /// that frame's own phase. `None` before any frame is on screen.
     pub(crate) render: Option<status::RenderTime>,
+    /// A long render's progress, while it earns the bar over the photograph
+    /// ([`canvas::render_bar`]).
+    pub(crate) render_bar: Option<canvas::RenderBar>,
     /// The last preview failure, cleared by the next successful upload.
     pub(crate) render_error: Option<&'a luxforge_core::Error>,
     /// The report the desktop's own preview worker reduced for the displayed frame, with the
@@ -675,6 +681,7 @@ mod tests {
                 photo: true,
                 clients: Some(1),
                 rendering: false,
+                render_bar: None,
                 render: Some(status::RenderTime {
                     ms: 41.0,
                     proxy: false,
@@ -2431,6 +2438,17 @@ mod tests {
         workspace.derive(&inputs);
         assert_eq!(workspace.status.clients, "3 agents connected");
         assert_eq!(workspace.status.render, "Rendering…");
+        assert_eq!(workspace.canvas.render_bar, None, "no long render");
+
+        // A long render shows its finished share in the status bar, floored to whole percent, and
+        // as the bar over the plain photograph.
+        inputs.render_bar = Some(canvas::RenderBar {
+            generation: 4,
+            fraction: 0.427,
+        });
+        workspace.derive(&inputs);
+        assert_eq!(workspace.status.render, "Rendering… 42%");
+        assert_eq!(workspace.canvas.render_bar, Some(0.427));
 
         // A display-size proxy on screen says it is approximate beside its own time.
         let mut inputs = scene.inputs();

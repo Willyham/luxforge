@@ -162,6 +162,21 @@ impl Editor {
             ViewMessage::FocusNext => return operation::focus_next(),
             ViewMessage::FocusPrevious => return operation::focus_previous(),
             ViewMessage::Zoom(value) => self.view_state.zoom = value,
+            ViewMessage::Pinch(input) => return self.pinch(input),
+            #[cfg(target_os = "macos")]
+            ViewMessage::PinchPending => {
+                if let Some(input) = super::waker::take_pinch() {
+                    return self.pinch(input);
+                }
+            }
+            #[cfg(target_os = "macos")]
+            ViewMessage::PinchInstalled(result) => match result {
+                Ok(()) => self.event("trackpad_input_ready", || json!({"platform": "macos"})),
+                Err(reason) => {
+                    self.event("trackpad_input_failed", || json!({"reason": reason}));
+                    self.status.text = reason;
+                }
+            },
             ViewMessage::Panned(x, y) => return self.pan(x, y),
             ViewMessage::Fit => {
                 self.view_state.zoom = "Fit".into();
@@ -279,6 +294,32 @@ impl Editor {
     pub(super) fn gallery_page(&self) -> Option<usize> {
         self.developer.then_some(self.view_state.gallery).flatten()
     }
+}
+
+/// AppKit monitor registration must run on the window runtime's main thread.
+pub(super) fn install_trackpad() -> Task<Message> {
+    #[cfg(target_os = "macos")]
+    {
+        iced::window::oldest()
+            .and_then(|id| {
+                iced::window::run(id, |window| {
+                    luxforge_input::install_pinch_handler(
+                        window,
+                        std::sync::Arc::new(super::waker::post_pinch),
+                    )
+                })
+            })
+            .map(|result| Message::View(ViewMessage::PinchInstalled(result)))
+    }
+    #[cfg(not(target_os = "macos"))]
+    Task::none()
+}
+
+pub(super) fn subscription(_editor: &Editor) -> iced::Subscription<Message> {
+    #[cfg(target_os = "macos")]
+    return super::waker::pinch_subscription();
+    #[cfg(not(target_os = "macos"))]
+    iced::Subscription::none()
 }
 
 /// After every message: whatever route moved the zoom, the window, the display scale, a side panel

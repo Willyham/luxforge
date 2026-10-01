@@ -406,9 +406,20 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
     let (canonical, signature) = EditorService::request_signature(&path).unwrap();
     let catalog = crate::editor::test_support::temp("dji-neutral-recipe.sqlite");
     let mut service = EditorService::open(&catalog).unwrap();
+    let index = index::LensIndex::parse(
+        &std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/lensfun/index.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    // The index is ready before completion, as the source worker's wait guarantees.
+    index::set_for_test(Ok(Arc::new(index)));
+    let _index = IndexGuard;
     // The real worker's decoded sensor is adopted through its normal completion boundary. No
     // development is needed: locate compiles geometry and a neutral pick reads only 169 sites.
-    let (initial, _) = service
+    let completion = service
         .complete_preparation(Prepared::File(
             PreparedFile {
                 canonical,
@@ -419,18 +430,30 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
             Vec::new(),
         ))
         .unwrap();
+    // The Air 2S DNG's distortion is known uncorrected, so its detected FC3411 profile is applied
+    // once, as the system entry after the Original.
+    let initial = completion.state;
+    assert!(completion.created);
+    assert_eq!(initial.revision, 1);
+    assert_eq!(
+        (
+            initial.current_entry.action_id.as_str(),
+            initial.current_entry.actor.as_str(),
+            initial.current_entry.label.as_str()
+        ),
+        (
+            "select-lens-profile",
+            "system",
+            "Lens profile FC3411 & compatibles"
+        )
+    );
+    assert_eq!(completion.first_open.len(), 1);
+    assert_eq!(
+        completion.first_open[0].entry_id.as_ref(),
+        Some(&initial.current_entry.id)
+    );
     let asset = initial.asset.id;
-    let index = index::LensIndex::parse(
-        &std::fs::read(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/data/lensfun/index.json"
-        ))
-        .unwrap(),
-    )
-    .unwrap();
-    index::set_for_test(Ok(Arc::new(index)));
-    let _index = IndexGuard;
-    let rows = service
+    let answer = service
         .run_query(
             &asset,
             &initial.current_entry.id,
@@ -438,21 +461,21 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
             json!({}),
         )
         .unwrap();
-    let key = rows["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["eligible"] == true)
-        .expect("an Air 2S profile")["key"]
-        .clone();
-    service
+    assert_eq!(answer["status"]["state"], "applied");
+    assert_eq!(
+        answer["status"]["current"]["title"],
+        "DJI Air 2S (FC3411) · built-in lens"
+    );
+    let key = answer["status"]["current"]["key"].clone();
+    let same = service
         .apply_action(
             &asset,
-            crate::editor::mutation(0, "lens"),
+            crate::editor::mutation(1, "lens"),
             "select-lens-profile",
             json!({"profile":key}),
         )
         .unwrap();
+    assert_eq!(same.outcome, MutationOutcome::NoOp);
     service
         .apply_action(
             &asset,

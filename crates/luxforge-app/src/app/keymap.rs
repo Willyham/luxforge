@@ -313,6 +313,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if context.crop && matches!(key, Key::Named(Named::Space)) {
         return Some(Message::Crop(CropMessage::Space(true)));
     }
+    if context.crop && character(key, "x") && !repeat && modifiers.is_empty() {
+        return Some(Message::Crop(CropMessage::Swap));
+    }
     // The crop draft and a mask shape gesture answer the same two keys, because they are the same
     // kind of draft.
     if context.drafting {
@@ -669,6 +672,30 @@ mod tests {
             kind_menu: None,
             mask_keys: false,
         }
+    }
+
+    #[test]
+    fn x_swaps_only_the_crop_ratio_and_respects_focus_modifiers_and_repeat() {
+        let crop = KeyContext {
+            crop: true,
+            drafting: true,
+            ..context()
+        };
+        let x = pressed(letter("x"), Modifiers::empty());
+        assert!(matches!(
+            keymap(&x, Status::Ignored, &crop),
+            Some(Message::Crop(CropMessage::Swap))
+        ));
+        assert!(keymap(&x, Status::Captured, &crop).is_none());
+        assert!(keymap(&x, Status::Ignored, &context()).is_none());
+        for modifiers in [Modifiers::ALT, Modifiers::SHIFT, Modifiers::COMMAND] {
+            assert!(keymap(&pressed(letter("x"), modifiers), Status::Ignored, &crop).is_none());
+        }
+        let mut repeated = x;
+        if let Event::Keyboard(Keys::KeyPressed { repeat, .. }) = &mut repeated {
+            *repeat = true;
+        }
+        assert!(keymap(&repeated, Status::Ignored, &crop).is_none());
     }
 
     #[test]

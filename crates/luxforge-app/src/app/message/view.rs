@@ -20,6 +20,14 @@ pub(crate) enum ViewMessage {
     /// The title bar's percentage segment was pressed: it opens as the zoom field, holding the
     /// effective percentage, with the focus in it.
     EditZoom,
+    /// A native magnification increment at a window-local position in logical pixels.
+    Pinch(luxforge_input::Pinch),
+    /// Drain coalesced native input; its wake carries no growing event queue.
+    #[cfg(target_os = "macos")]
+    PinchPending,
+    /// The native input monitor was installed on the window's main thread.
+    #[cfg(target_os = "macos")]
+    PinchInstalled(Result<(), String>),
     /// The title bar's empty area was pressed where the app's bar is the window's title bar: the
     /// window follows the pointer while the button is held.
     DragWindow,

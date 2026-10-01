@@ -88,6 +88,8 @@ pub const GALLERY_PAGES: [(&str, &[&str]); 14] = [
             "Original not found · error notice",
             "Changed elsewhere · warning notice",
             "Preview is stale · neutral notice",
+            "Not in the lens database · warning inline notice",
+            "JPEG assumption · neutral inline notice",
             "Crop · floating bar",
             "Crop · draft bar",
             "Double-click · reset wrapper",
@@ -261,7 +263,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 102);
+        assert_eq!(next - 1, 104);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

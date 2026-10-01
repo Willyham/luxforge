@@ -301,9 +301,10 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
                 if let Some(phase) = job["phase"].as_str() {
                     parts.push(format!("{phase} phase"));
                 }
-                let progress = match (job["progress"]["done"].as_u64(), job["progress"]["total"].as_u64()) {
-                    (Some(done), Some(total)) if total > 0 => json!(done as f64 / total as f64),
-                    _ => Value::Null,
+                // The board's fraction as the section holds it: clamped and in `f32`.
+                let progress = match job["progress"]["fraction"].as_f64() {
+                    Some(fraction) => json!(f64::from(fraction.clamp(0.0, 1.0) as f32)),
+                    None => Value::Null,
                 };
                 json!({
                     "label": job["label"],
@@ -1036,6 +1037,23 @@ mod tests {
 
     fn finished_row(label: &str) -> Value {
         json!([{"label":label,"trailing":"0.8 s","detail":"Finished 2 s ago","running":false,"progress":null}])
+    }
+
+    /// A running job's bar is the board's own fraction as the section holds it, and a job that
+    /// reports no fraction has none.
+    #[test]
+    fn a_running_jobs_progress_is_the_boards_fraction() {
+        let running = |progress: Value| json!({"active":[{"id":5,"kind":"preview.render","label":"Rendering preview","phase":"exact","elapsed_ms":2558,"progress":progress}],"recent":[]});
+        let (rows, more, caption) = expected_jobs(&running(json!({"fraction":0.9}))).unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                json!({"label":"Rendering preview","trailing":"2.6 s","detail":"exact phase","running":true,"progress":f64::from(0.9_f32)})
+            ]
+        );
+        assert_eq!((more, caption), (Value::Null, json!("1 job")));
+        let (rows, _, _) = expected_jobs(&running(json!({"message":"Preparing"}))).unwrap();
+        assert_eq!(rows[0]["progress"], Value::Null);
     }
 
     /// The finished row must be the heavy edit's own render. A RAW whose heavy edit ran short once

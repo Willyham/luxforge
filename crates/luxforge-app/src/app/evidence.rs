@@ -940,6 +940,24 @@ impl Editor {
             Step::Pick(pick) => self.pick_step(pick),
             Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
+            Step::Pinch(step) => {
+                let [left, top, right, bottom] = crate::layout::canvas_logical(
+                    self.view_state.window,
+                    self.session.workspace.state_panel,
+                    self.session.workspace.tools_panel,
+                );
+                let revision = self.session.revision;
+                self.await_step(Settle::Session);
+                let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
+                    delta: step.delta,
+                    x: f64::from(left) + f64::from(right - left) * step.x,
+                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                })));
+                if self.session.revision == revision {
+                    return self.fail_step("pinch changed no view");
+                }
+                task
+            }
             Step::ViewIdle(step) => self.view_idle_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
@@ -1974,6 +1992,32 @@ impl Editor {
                 return self.draft_message(DraftMessage::Commit);
             }
             DraftStep::Rect(rect) => return self.rect_step(*rect),
+            DraftStep::GuideLine([x, y, end_x, end_y]) => {
+                if !drafting || !self.crop_section.guide {
+                    return self.fail_step("arm Straighten on an open crop draft first");
+                }
+                if ![x, y, end_x, end_y].iter().all(|value| value.is_finite()) {
+                    return self.fail_step("a straighten guide needs finite coordinates");
+                }
+                let mut tasks = Vec::new();
+                for pointer in [
+                    CropPointer::Begin {
+                        handle: Handle::Guide,
+                        x: *x,
+                        y: *y,
+                    },
+                    CropPointer::Drag {
+                        x: *end_x,
+                        y: *end_y,
+                        option: false,
+                    },
+                    CropPointer::End,
+                ] {
+                    tasks.push(self.crop_update(CropMessage::Pointer(pointer)));
+                }
+                self.capture_next_frame();
+                return Task::batch(tasks);
+            }
             // The angle is the generic stepper of the crop action's declared angle, so its steps
             // send what that widget sends: a drag's fractions and release, a button press, or a
             // press on the box, the typed text and Enter.
@@ -2432,6 +2476,50 @@ impl Editor {
                 }
                 task
             }
+            ControlsStep::QueryChoiceApply { action } => {
+                let ready = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .filter(|ui| !ui.loading)
+                    .and_then(|ui| ui.suggestion.as_ref())
+                    .is_some_and(|card| card.eligible);
+                if !ready {
+                    return self.fail_step("query-choice has no eligible suggestion");
+                }
+                self.begin_request();
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceApply {
+                    action,
+                }));
+                if !self.busy {
+                    return self.fail_step(format!(
+                        "the suggestion did not submit: {}",
+                        self.status.text
+                    ));
+                }
+                task
+            }
+            ControlsStep::QueryChoiceChange { action, open } => {
+                self.query_choice_evidence_input(ControlMessage::QueryChoiceChange { action, open })
+            }
+            ControlsStep::QueryChoiceReport { action } => {
+                let offered = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .get(&action)
+                    .and_then(|ui| ui.report.as_ref());
+                if offered.is_none() {
+                    return self.fail_step("query-choice offers no report page");
+                }
+                // An evidence run records the page and opens no browser.
+                let task = self.update(Message::Control(ControlMessage::QueryChoiceReport {
+                    action,
+                }));
+                self.capture_next_frame();
+                task
+            }
             ControlsStep::Slider {
                 action,
                 parameter,
@@ -2472,6 +2560,7 @@ impl Editor {
             ControlMessage::QueryChoiceSearch { action, .. }
             | ControlMessage::QueryChoicePage { action, .. }
             | ControlMessage::QueryChoiceShared { action, .. }
+            | ControlMessage::QueryChoiceChange { action, .. }
             | ControlMessage::QueryChoiceRetry { action } => action.clone(),
             _ => unreachable!("only query inputs reach this step"),
         };

@@ -1,8 +1,70 @@
 //! Local searchable-list state. Requests carry the displayed entry, text, page and shared inputs;
-//! an answer may update the list only while all of them still match.
+//! an answer may update the list only while all of them still match. The answer's optional status
+//! vocabulary (cards, notice, report link, whether a search is offered) is parsed here and drawn
+//! as it is: the desktop decides nothing about what a choice means.
 use luxforge_core::{AssetId, EntryId, ParameterDescriptor, ParameterKind, QueryChoiceControl};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+/// One choice the answer names outside its rows: what is current, or what the module suggests.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) struct QueryChoiceCard {
+    pub(crate) key: String,
+    pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) subtitle: Option<String>,
+    #[serde(default)]
+    pub(crate) note: Option<String>,
+    /// The suggestion's button label; Apply when absent.
+    #[serde(default)]
+    pub(crate) label: Option<String>,
+    #[serde(default = "eligible")]
+    pub(crate) eligible: bool,
+    #[serde(default)]
+    pub(crate) reasons: Vec<String>,
+    /// Values its selection sends beside its key.
+    #[serde(default)]
+    pub(crate) parameters: Map<String, Value>,
+}
+
+fn eligible() -> bool {
+    true
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum NoticeLevel {
+    Info,
+    Warning,
+}
+
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) struct QueryChoiceNotice {
+    pub(crate) level: NoticeLevel,
+    pub(crate) text: String,
+}
+
+/// A page the person may open in their browser, such as a prefilled issue report.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub(crate) struct QueryChoiceReport {
+    pub(crate) label: String,
+    pub(crate) url: String,
+}
+
+/// The status vocabulary a client draws generically; every field is optional.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+struct StatusVocabulary {
+    #[serde(default)]
+    current: Option<QueryChoiceCard>,
+    #[serde(default)]
+    suggestion: Option<QueryChoiceCard>,
+    #[serde(default)]
+    notice: Option<QueryChoiceNotice>,
+    #[serde(default)]
+    report: Option<QueryChoiceReport>,
+    #[serde(default)]
+    search: Option<bool>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub(crate) struct QueryChoiceIdentity {
@@ -24,6 +86,8 @@ pub(crate) struct QueryChoiceRow {
     pub(crate) subtitle: Option<String>,
     #[serde(default)]
     pub(crate) reasons: Vec<String>,
+    #[serde(default)]
+    pub(crate) parameters: Map<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -37,6 +101,20 @@ pub(crate) struct QueryChoiceUi {
     pub(crate) request: Option<QueryChoiceIdentity>,
     /// The module's optional status data, kept for its status line without affecting selection.
     pub(crate) status: Option<Value>,
+    /// The choice the answer says is current.
+    pub(crate) current: Option<QueryChoiceCard>,
+    /// The choice the answer suggests, with its own Apply.
+    pub(crate) suggestion: Option<QueryChoiceCard>,
+    pub(crate) notice: Option<QueryChoiceNotice>,
+    pub(crate) report: Option<QueryChoiceReport>,
+    /// Whether the answer offers a search at all.
+    pub(crate) search: bool,
+    /// View state: the Change disclosure that reveals the search under a card. It sends nothing
+    /// and closes with its text.
+    pub(crate) changing: bool,
+    /// The report page this control last asked the platform to open, recorded as evidence. Tests
+    /// and evidence runs record it without opening a browser.
+    pub(crate) opened: Option<String>,
 }
 
 impl Default for QueryChoiceUi {
@@ -50,6 +128,13 @@ impl Default for QueryChoiceUi {
             error: None,
             request: None,
             status: None,
+            current: None,
+            suggestion: None,
+            notice: None,
+            report: None,
+            search: true,
+            changing: false,
+            opened: None,
         }
     }
 }
@@ -57,6 +142,31 @@ impl Default for QueryChoiceUi {
 impl QueryChoiceUi {
     pub(crate) fn can_retry(&self) -> bool {
         self.error.is_some() && !self.loading
+    }
+
+    /// The search field and its rows are drawn when the answer offers a search: at once when no
+    /// card is shown, and under a card only while Change is open.
+    pub(crate) fn shows_search(&self) -> bool {
+        self.search && (self.changing || (self.current.is_none() && self.suggestion.is_none()))
+    }
+
+    /// Shared inputs belong to a selection, so they are drawn only while one can be made: with the
+    /// search, or beside a suggestion.
+    pub(crate) fn shows_inputs(&self) -> bool {
+        self.shows_search() || (self.current.is_none() && self.suggestion.is_some())
+    }
+
+    /// Open or close Change. Closing drops the typed search and its rows; it answers whether the
+    /// cleared text needs a fresh answer.
+    pub(crate) fn set_changing(&mut self, open: bool) -> bool {
+        self.changing = open;
+        if open || (self.text.is_empty() && self.page == 0) {
+            return false;
+        }
+        self.text.clear();
+        self.page = 0;
+        self.rows.clear();
+        true
     }
 
     /// A query may narrow its declared shared inputs for this source. Absent hints display all.
@@ -111,8 +221,12 @@ impl QueryChoiceUi {
                 let rows = answer.get("rows").and_then(|value| {
                     serde_json::from_value::<Vec<QueryChoiceRow>>(value.clone()).ok()
                 });
-                match rows.filter(|rows| rows.len() <= 100) {
-                    Some(rows) => {
+                let vocabulary = answer.get("status").map_or_else(
+                    || Some(StatusVocabulary::default()),
+                    |status| serde_json::from_value::<StatusVocabulary>(status.clone()).ok(),
+                );
+                match (rows.filter(|rows| rows.len() <= 100), vocabulary) {
+                    (Some(rows), Some(vocabulary)) => {
                         self.rows = rows;
                         self.pages = answer
                             .get("pages")
@@ -120,9 +234,14 @@ impl QueryChoiceUi {
                             .unwrap_or(1)
                             .clamp(1, 100) as u32;
                         self.status = answer.get("status").cloned();
+                        self.current = vocabulary.current;
+                        self.suggestion = vocabulary.suggestion;
+                        self.notice = vocabulary.notice;
+                        self.report = vocabulary.report;
+                        self.search = vocabulary.search.unwrap_or(true);
                         self.error = None;
                     }
-                    None => self.error = Some("Query returned invalid choices".into()),
+                    _ => self.error = Some("Query returned invalid choices".into()),
                 }
             }
             Err(error) => self.error = Some(error),
@@ -155,10 +274,41 @@ impl QueryChoiceUi {
         if self.loading {
             return Err("Choices are updating".into());
         }
-        let mut parameters = shared;
-        parameters.insert(control.key.clone(), Value::String(row.key.clone()));
-        Ok(parameters)
+        Ok(chosen(control, &row.key, &row.parameters, shared))
     }
+
+    /// The suggestion's Apply: its key and parameters over the shared inputs, refused while it is
+    /// not eligible or the answer is updating.
+    pub(crate) fn suggested(
+        &self,
+        control: &QueryChoiceControl,
+        shared: Map<String, Value>,
+    ) -> Result<Map<String, Value>, String> {
+        let card = self
+            .suggestion
+            .as_ref()
+            .ok_or_else(|| "Nothing is suggested".to_owned())?;
+        if !card.eligible {
+            return Err(card.reasons.join(" · "));
+        }
+        if self.loading {
+            return Err("Choices are updating".into());
+        }
+        Ok(chosen(control, &card.key, &card.parameters, shared))
+    }
+}
+
+/// A choice's request: the shared inputs, the choice's own parameters over them, and its key.
+fn chosen(
+    control: &QueryChoiceControl,
+    key: &str,
+    parameters: &Map<String, Value>,
+    shared: Map<String, Value>,
+) -> Map<String, Value> {
+    let mut request = shared;
+    request.extend(parameters.clone());
+    request.insert(control.key.clone(), Value::String(key.to_owned()));
+    request
 }
 
 pub(crate) fn query_parameters(
@@ -312,6 +462,98 @@ mod tests {
                 ("focal".to_owned(), json!(35.0)),
                 ("key".to_owned(), json!("n"))
             ])
+        );
+    }
+
+    fn answered(answer: Value) -> QueryChoiceUi {
+        let mut ui = QueryChoiceUi::default();
+        let identity = ui.begin(AssetId::new(), EntryId::new(), control().action, Map::new());
+        assert!(ui.accept(&identity, Ok(answer)));
+        ui
+    }
+
+    #[test]
+    fn query_choice_status_vocabulary_decides_cards_search_and_inputs() {
+        // No card: the search is drawn at once, with its inputs.
+        let plain = answered(json!({"rows": []}));
+        assert!(plain.shows_search() && plain.shows_inputs());
+        // A suggestion: drawn with its inputs, the search behind Change.
+        let mut suggested = answered(json!({"rows": [], "status": {
+            "suggestion": {"key":"n","title":"Nikon","eligible":true,
+                           "parameters":{"assume":true},"note":"Assumed"},
+            "notice": {"level":"info","text":"Detected"},
+            "report": {"label":"Report","url":"https://example.com/new"}}}));
+        assert!(!suggested.shows_search() && suggested.shows_inputs());
+        assert_eq!(
+            suggested.suggestion.as_ref().unwrap().note.as_deref(),
+            Some("Assumed")
+        );
+        assert_eq!(suggested.notice.as_ref().unwrap().level, NoticeLevel::Info);
+        assert_eq!(
+            suggested.report.as_ref().unwrap().url,
+            "https://example.com/new"
+        );
+        assert!(!suggested.set_changing(true), "opening Change asks nothing");
+        assert!(suggested.shows_search());
+        // The current card: no inputs until Change opens the search.
+        let mut current = answered(json!({"rows": [], "status": {
+            "current": {"key":"n","title":"Nikon"}}}));
+        assert!(!current.shows_search() && !current.shows_inputs());
+        current.set_changing(true);
+        assert!(current.shows_search() && current.shows_inputs());
+        current.text = "Nik".into();
+        current.rows = vec![QueryChoiceRow {
+            key: "n".into(),
+            title: "Nikon".into(),
+            eligible: true,
+            subtitle: None,
+            reasons: Vec::new(),
+            parameters: Map::new(),
+        }];
+        assert!(current.set_changing(false), "closing clears typed text");
+        assert!(current.text.is_empty() && current.rows.is_empty() && !current.changing);
+        // A status that offers no search hides it whatever the cards.
+        let refused = answered(json!({"rows": [], "status": {"search": false,
+            "notice": {"level":"warning","text":"Not in the database"}}}));
+        assert!(!refused.shows_search() && !refused.shows_inputs());
+        // A malformed vocabulary is an invalid answer, not a partly drawn one.
+        let mut ui = QueryChoiceUi::default();
+        let identity = ui.begin(AssetId::new(), EntryId::new(), control().action, Map::new());
+        ui.accept(
+            &identity,
+            Ok(json!({"rows": [], "status": {"notice": {"level":"loud","text":"x"}}})),
+        );
+        assert_eq!(ui.error.as_deref(), Some("Query returned invalid choices"));
+    }
+
+    #[test]
+    fn query_choice_apply_and_rows_send_their_own_parameters_over_shared_inputs() {
+        let shared = Map::from_iter([("focal".to_owned(), json!(35.0))]);
+        let ui = answered(json!({"rows": [
+            {"key":"r","title":"Row","eligible":true,"parameters":{"assume":true,"focal":24.0}}
+        ], "status": {"suggestion": {"key":"s","title":"Suggested","eligible":true,
+                                     "parameters":{"assume":true}}}}));
+        assert_eq!(
+            ui.suggested(&control(), shared.clone()).unwrap(),
+            Map::from_iter([
+                ("focal".to_owned(), json!(35.0)),
+                ("assume".to_owned(), json!(true)),
+                ("key".to_owned(), json!("s"))
+            ])
+        );
+        assert_eq!(
+            ui.selection(&control(), "r", shared.clone()).unwrap(),
+            Map::from_iter([
+                ("focal".to_owned(), json!(24.0)),
+                ("assume".to_owned(), json!(true)),
+                ("key".to_owned(), json!("r"))
+            ])
+        );
+        let blocked = answered(json!({"rows": [], "status": {"suggestion": {
+            "key":"s","title":"Suggested","eligible":false,"reasons":["focal-missing"]}}}));
+        assert_eq!(
+            blocked.suggested(&control(), shared).unwrap_err(),
+            "focal-missing"
         );
     }
 

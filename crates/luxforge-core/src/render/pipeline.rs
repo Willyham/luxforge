@@ -275,6 +275,13 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         if mode == SpatialMode::Point {
             return Ok(evaluation);
         }
+        // A spatial entry here reads the segment before it, so segment 0 never has one.
+        evaluation.compiled.plan_progress(
+            cancel,
+            None,
+            0..evaluation.compiled.segments.len(),
+            tiling,
+        );
         // In order, because a later spatial operation pulls its input through the earlier one, and
         // each frame replaces the one before it once it exists.
         for index in 0..evaluation.compiled.segments.len() {
