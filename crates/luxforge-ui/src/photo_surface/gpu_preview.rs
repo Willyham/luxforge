@@ -18,7 +18,8 @@
 //!
 //! - `lf_words: array<u32>` at binding 0: the surface's header, then every program's uniform words,
 //!   concatenated in program order. The header is the boundary-texel-to-stage mapping (four `f32`
-//!   words: origin x and y, step x and y) followed by each program's two base indices.
+//!   words: origin x and y, step x and y) followed, for each step, by its program's two base
+//!   indices and its position map's six coefficients as `f32` words (`a, b, tx, c, d, ty`).
 //! - `lf_blocks: array<u32>` at binding 1: every program's storage block, concatenated in program
 //!   order; at least one word even when every block is empty.
 //! - `lf_word(i)`, `lf_f32(i)`: word `i` of `lf_words`, raw or bit-cast to `f32`.
@@ -32,11 +33,13 @@
 //! `lf_words` and `lf_blocks`, so its first uniform word is `lf_f32(words)`. Its entry function's
 //! signature depends on the step that holds it:
 //!
-//! - **Pointwise colour, in content space** ([`GpuStep::Colour`]):
+//! - **Pointwise colour** ([`GpuStep::Colour`]):
 //!   `fn <entry>(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>`. `rgb` is
 //!   scene-linear sRGB, unclamped. `pos` is the pixel's integer coordinate, as `f32`, in the stage
 //!   the CPU unit's `apply_row(y, x0, ..)` addresses: the plan's [`TexelMap`] takes a boundary texel
-//!   there.
+//!   to the pixel of the stage the boundary holds, and the step's own [`PositionMap`] takes that
+//!   pixel to `pos`. Every colour step runs in that one pass today; a step after a geometry step,
+//!   when there is one, will run in output space, its map taking the output pixel to `pos`.
 //!
 //! The surface generates the entry points: a vertex stage that covers the output with one triangle,
 //! and a fragment stage that loads the boundary texel, chains each program's entry in step order,
@@ -93,8 +96,11 @@ pub const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
 /// How many compiled program sequences, failed ones included, a pipeline keeps.
 pub const PIPELINE_CACHE: usize = 8;
 
-/// The words before any program's: the texel map's origin and step.
+/// The words before any step's: the texel map's origin and step.
 const MAP_WORDS: usize = 4;
+
+/// Each step's header words: its program's two base indices and its position map.
+const STEP_WORDS: usize = 8;
 
 /// A words or blocks buffer is never smaller than this, so a plan's first few ticks do not each
 /// outgrow the last one's buffer.
@@ -172,25 +178,74 @@ impl GpuProgram {
     }
 }
 
+/// An exact integer map from the pixel `(x, y)` of the pass a step runs in to the `pos` its program
+/// receives: `(a·x + b·y + tx, c·x + d·y + ty)`. The linear part is a signed permutation, so every
+/// coefficient and every coordinate of an admissible stage is an integer an `f32` holds exactly and
+/// `pos` is the integer the CPU unit is handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PositionMap {
+    pub a: i32,
+    pub b: i32,
+    pub tx: i32,
+    pub c: i32,
+    pub d: i32,
+    pub ty: i32,
+}
+
+impl PositionMap {
+    /// `pos` is the pass's own pixel.
+    pub const IDENTITY: Self = Self {
+        a: 1,
+        b: 0,
+        tx: 0,
+        c: 0,
+        d: 1,
+        ty: 0,
+    };
+
+    /// The six coefficients as the `f32` words a step's header holds.
+    fn words(self) -> [u32; 6] {
+        [self.a, self.b, self.tx, self.c, self.d, self.ty].map(|value| (value as f32).to_bits())
+    }
+}
+
 /// One step of a plan, in the order the surface runs them. Each kind of step is one variant, with
 /// what that kind needs; a kind the surface does not run yet has no variant.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GpuStep {
-    /// A pointwise colour program in content space:
-    /// `fn <entry>(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>`.
-    Colour(GpuProgram),
+    /// A pointwise colour program,
+    /// `fn <entry>(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>`, handed
+    /// the `pos` its position map gives the pixel of the pass it runs in.
+    Colour {
+        program: GpuProgram,
+        position: PositionMap,
+    },
 }
 
 impl GpuStep {
-    fn kind(&self) -> StepKind {
-        match self {
-            Self::Colour(_) => StepKind::Colour,
+    /// A colour step whose `pos` is the stage pixel the plan's texel map gives a boundary texel.
+    pub fn colour(program: GpuProgram) -> Self {
+        Self::Colour {
+            program,
+            position: PositionMap::IDENTITY,
         }
     }
 
-    fn program(&self) -> &GpuProgram {
+    fn kind(&self) -> StepKind {
         match self {
-            Self::Colour(program) => program,
+            Self::Colour { .. } => StepKind::Colour,
+        }
+    }
+
+    pub(super) fn program(&self) -> &GpuProgram {
+        match self {
+            Self::Colour { program, .. } => program,
+        }
+    }
+
+    fn position(&self) -> PositionMap {
+        match self {
+            Self::Colour { position, .. } => *position,
         }
     }
 }
@@ -511,6 +566,49 @@ struct Support {
     pipeline_layout: wgpu::PipelineLayout,
 }
 
+impl Support {
+    /// The programs' bind group layout — the words, the blocks and the boundary — and the pipeline
+    /// layout over it.
+    fn new(device: &wgpu::Device) -> Self {
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("luxforge.gpu_preview.layout"),
+            entries: &[
+                storage(0),
+                storage(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("luxforge.gpu_preview.pipeline_layout"),
+            bind_group_layouts: &[&layout],
+            push_constant_ranges: &[],
+        });
+        Self {
+            layout,
+            pipeline_layout,
+        }
+    }
+}
+
 /// The stage's state for one pipeline: whether the device can run it, its lost flag, its compiled
 /// sequences and the tick's scratch words.
 pub(super) struct GpuStage {
@@ -548,44 +646,7 @@ impl GpuStage {
         let lost = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&lost);
         device.set_device_lost_callback(move |_reason, _message| device_lost(&signal));
-        let support = supported(&device.limits(), format).then(|| {
-            let storage = |binding| wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            };
-            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("luxforge.gpu_preview.layout"),
-                entries: &[
-                    storage(0),
-                    storage(1),
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                ],
-            });
-            let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("luxforge.gpu_preview.pipeline_layout"),
-                bind_group_layouts: &[&layout],
-                push_constant_ranges: &[],
-            });
-            Support {
-                layout,
-                pipeline_layout,
-            }
-        });
+        let support = supported(&device.limits(), format).then(|| Support::new(device));
         Self {
             support,
             lost,
@@ -614,7 +675,8 @@ impl GpuStage {
         }
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
         figures.compiles.fetch_add(1, Ordering::Relaxed);
-        let pipeline = compile(device, support, steps).map_err(Arc::<str>::from);
+        let pipeline =
+            compile(device, &support.pipeline_layout, steps, OUTPUT_FORMAT).map_err(Arc::<str>::from);
         if self.cache.len() >= PIPELINE_CACHE
             && let Some(oldest) = self
                 .cache
@@ -721,15 +783,27 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     // The border column and row past the boundary repeat its edge texels.
     let texel = min(vec2<u32>(position.xy), textureDimensions(lf_boundary) - vec2<u32>(1u));
     var rgb = textureLoad(lf_boundary, texel, 0).rgb;
-    let pos = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
+    let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
 ",
     );
     for (index, step) in steps.iter().enumerate() {
-        let base = MAP_WORDS + 2 * index;
+        let base = MAP_WORDS + STEP_WORDS * index;
+        // The step's `pos`: its position map over the stage pixel, every term an integer.
+        let map = |row: usize| {
+            let word = |k: usize| format!("lf_f32({}u)", base + 2 + 3 * row + k);
+            format!(
+                "{} * stage.x + {} * stage.y + {}",
+                word(0),
+                word(1),
+                word(2)
+            )
+        };
         match step {
-            GpuStep::Colour(program) => source.push_str(&format!(
-                "    rgb = {}(rgb, pos, lf_words[{base}u], lf_words[{}u]);\n",
+            GpuStep::Colour { program, .. } => source.push_str(&format!(
+                "    rgb = {}(rgb, vec2<f32>({}, {}), lf_words[{base}u], lf_words[{}u]);\n",
                 program.entry,
+                map(0),
+                map(1),
                 base + 1
             )),
         }
@@ -813,7 +887,7 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
     };
     let unsigned = naga::TypeInner::Scalar(naga::Scalar::U32);
     let (arguments, result, signature) = match step {
-        GpuStep::Colour(_) => (
+        GpuStep::Colour { .. } => (
             [
                 vector(naga::VectorSize::Tri),
                 vector(naga::VectorSize::Bi),
@@ -857,11 +931,13 @@ fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
     }
 }
 
-/// Assemble, validate and compile `steps`, naming why it failed.
+/// Assemble, validate and compile `steps` into a pipeline that writes `format`, naming why it
+/// failed. The stage writes [`OUTPUT_FORMAT`]; only qualification asks for another.
 fn compile(
     device: &wgpu::Device,
-    support: &Support,
+    layout: &wgpu::PipelineLayout,
     steps: &[GpuStep],
+    format: wgpu::TextureFormat,
 ) -> Result<wgpu::RenderPipeline, String> {
     for step in steps {
         validate_step(step)?;
@@ -876,7 +952,7 @@ fn compile(
     });
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("luxforge.gpu_preview.pipeline"),
-        layout: Some(&support.pipeline_layout),
+        layout: Some(layout),
         vertex: wgpu::VertexState {
             module: &module,
             entry_point: Some("lf_vertex"),
@@ -887,7 +963,7 @@ fn compile(
             module: &module,
             entry_point: Some("lf_fragment"),
             targets: &[Some(wgpu::ColorTargetState {
-                format: OUTPUT_FORMAT,
+                format,
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -908,18 +984,19 @@ fn compile(
     }
 }
 
-/// The tick's words — the texel map, each program's base indices, then every program's words — and
-/// its blocks, concatenated, at least one word.
-fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
+/// The tick's words — the texel map, each step's base indices and position map, then every
+/// program's words — and its blocks, concatenated, at least one word.
+pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
     words.clear();
     blocks.clear();
     let map = plan.texels;
     words.extend([map.origin[0], map.origin[1], map.step[0], map.step[1]].map(f32::to_bits));
-    let header = MAP_WORDS + 2 * plan.steps.len();
+    let header = MAP_WORDS + STEP_WORDS * plan.steps.len();
     let (mut word, mut block) = (header, 0);
     for step in &plan.steps {
         let program = step.program();
         words.extend([word as u32, block as u32]);
+        words.extend(step.position().words());
         word += program.words.len();
         block += program.block.len();
     }
@@ -1376,6 +1453,9 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
         row += rows;
     }
 }
+
+#[cfg(feature = "qualification")]
+pub mod qualification;
 
 #[cfg(test)]
 mod tests;
