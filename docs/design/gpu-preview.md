@@ -198,9 +198,14 @@ A global estimate (Dehaze's atmospheric light) comes from the estimate store whe
 
 ### Mipmapped minification
 
-Before/After prefers the retained exact raster at Fit (`crates/luxforge-app/src/app/history.rs`). That would draw a full-resolution texture through the bilinear sampler with no mip levels, which the zone-plate measurement showed aliasing ([instant previews](instant-preview.md#a-crop-drafts-input-stage)).
+Before/After keeps the exact raster it displays as its After side, even at Fit ([before and after](before-after.md#after-at-fit)). A full-resolution texture drawn at that size through the bilinear sampler with no mip levels aliased: on the zone plate it showed full-contrast replica rings and read 15 codes too dark beyond the display's Nyquist limit, the same failure the crop draft's input stage showed ([instant previews](instant-preview.md#a-crop-drafts-input-stage); [performance](../specs/performance.md#a-minified-after-side-at-fit)).
 
-The task first confirms this with a zone-plate capture of compare at Fit. It then gives a resident full-resolution texture drawn below its size linear-light mip levels, within the per-allocation cap, and otherwise draws the existing exact-derived display reduction. No arithmetic in the recipe changes, so no error limit applies.
+The photo surface now gives a full-resolution photograph drawn under half its size on both axes a chain of mip levels, and otherwise leaves its texture as it was. No arithmetic in the recipe changes, so no error limit applies.
+
+- **Linear light.** Each level is the mean of the 2 × 2 texels above it, written by a render pass that reads the level above through an sRGB-typed view of the texture and writes the next level through the same, so the mean is taken in linear light whether the pipeline's textures are sRGB-typed or not. The sampler's trilinear filter reads between the two levels that bracket the drawn scale.
+- **GPU only, never waited on.** The passes are encoded and submitted from `prepare` on the UI thread, once for each new frame written while it is drawn that small, with no readback and no wait.
+- **Accounting.** The levels belong to the photo slot that holds them: a chain is a third more than its base, counted in the slot's bytes, the shared photo-slot budget and the retirement of the slot, and reported as `mip_resident_bytes` and `mip_generations`. A texture that has a chain keeps it until it is rebuilt; a texture drawn at its size has none. A chain's texture is cut to the frame's exact size, which for a 24 MP frame is smaller than the bucket a plain texture reserves.
+- **When the chain does not fit.** The chain needs the photograph in one texture and its whole size within one full-allocation cap. A photograph the device holds in tiles (wider or taller than 8192 pixels) has none, because each tile's filtering apron would put a seam into every level. Before/After then draws the exact-derived display reduction it holds of that photograph at Fit instead, so a 60 MP After has no full-size texture while compared at Fit.
 
 ## What is preserved
 

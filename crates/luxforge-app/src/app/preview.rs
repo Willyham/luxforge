@@ -217,8 +217,9 @@ pub(crate) struct Presentation {
     /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
     /// overlays over the photograph.
     pub(crate) presenter: Presenter,
-    /// The slider's immutable After frame, sharing the existing render allocation.
-    pub(crate) compare_after: Option<luxforge_ui::Frame>,
+    /// The slider's immutable After frame, sharing the existing render allocation, and the display
+    /// reduction that stands in for it at Fit when it cannot be drawn below its size cleanly.
+    pub(crate) compare_after: Option<super::compare_after::CompareAfter>,
     /// One active and one replaceable pending preview job, off the UI thread.
     pub(crate) queue: PreviewQueue,
     /// The generation of the newest preview requested for the photograph.

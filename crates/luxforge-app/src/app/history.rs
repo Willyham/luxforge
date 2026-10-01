@@ -373,6 +373,14 @@ impl Editor {
             self.status.text = "Wait for the photograph before comparing".into();
             return Task::none();
         };
+        // A frame the surface cannot give mip levels (one held in tiles) would alias at Fit, so
+        // the display reduction of the same exact photograph, when it is the one on screen, is
+        // kept to draw there instead.
+        let after = super::compare_after::CompareAfter::new(
+            after,
+            super::compare_after::display_reduction(&self.presentation).cloned(),
+            super::compare_after::DEVICE_TEXTURE_LIMIT,
+        );
         let previous = self.shown_selection();
         if !self.compare_call(json!({"enabled":true,"position":0.5})) {
             return Task::none();
