@@ -206,6 +206,7 @@ impl FieldPatch for Basic {
                 title: "Neutral sample".into(),
                 notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
                 patch: false,
+                preset: true,
                 // The neutral picker's coordinates, in the content stage the Basic layer's input
                 // addresses; a point outside that stage is refused when it is asked.
                 parameters: ["x", "y"]

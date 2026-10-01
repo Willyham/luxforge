@@ -10,6 +10,65 @@ use serde_json::json;
 use std::{fs, sync::Arc};
 
 #[test]
+fn controls_query_choice_is_described_and_selects_through_the_json_service() {
+    let mut registry = ModuleRegistry::builtin();
+    registry.register(Arc::new(ControlsModule::new())).unwrap();
+    let catalog = paths::temp_catalog("controls-query-choice");
+    let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+    let client = owner.register();
+    let modules = call(&owner, client, "module.list", json!({})).unwrap();
+    let proof = modules["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["id"] == "luxforge.controls")
+        .unwrap();
+    assert!(
+        proof["controls"][0]["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|control| control["kind"] == "query-choice"
+                && control["query"] == "controls-choices")
+    );
+    let schema = call(&owner, client, "schema.list", json!({})).unwrap();
+    assert_eq!(
+        schema["methods"]["query.controls-choices"]["mutates"],
+        false
+    );
+    assert_eq!(
+        schema["methods"]["edit.select-controls-choice"]["patch"],
+        false
+    );
+    let asset = import(&owner, client, &paths::jpeg(), "test").unwrap()["asset"]["id"].clone();
+    let choices = call(
+        &owner,
+        client,
+        "query.controls-choices",
+        json!({"asset_id": asset, "page":1}),
+    )
+    .unwrap();
+    assert_eq!(choices["rows"][0]["eligible"], false);
+    assert_eq!(
+        choices["rows"][0]["reasons"][0],
+        "Developer refusal example"
+    );
+    let selected = call(&owner, client, "edit.select-controls-choice", json!({"asset_id": asset, "key":"two", "mutation":{"expected_revision":0,"request_id":"query-choice","actor":"test"}})).unwrap();
+    assert_eq!(selected["outcome"], "applied");
+    let recipe = call(&owner, client, "recipe.describe", json!({"asset_id":asset})).unwrap();
+    let layer = recipe["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|layer| layer["effect"] == CONTROLS_EFFECT)
+        .unwrap();
+    assert_eq!(layer["values"]["count"], 2);
+    owner.stop();
+    join.join().unwrap();
+    fs::remove_file(catalog).unwrap();
+}
+
+#[test]
 fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     assert!(
         ModuleRegistry::builtin()

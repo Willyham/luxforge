@@ -13,3 +13,21 @@ pub fn full_presence() -> script::Step {
         json!({"texture":100.0,"clarity":100.0,"dehaze":100.0}),
     )
 }
+
+/// Select the first eligible profile through the same generic messages the list publishes.
+/// The key is returned by the module, so workloads never hard-code a bundled record identity.
+pub fn lens_profile() -> [script::Step; 3] {
+    [
+        script::Step::section("luxforge.lens", true),
+        script::ControlsStep::QueryChoiceShared {
+            action: "select-lens-profile".into(),
+            parameter: "assume-uncorrected".into(),
+            text: "true".into(),
+        }
+        .into(),
+        script::ControlsStep::QueryChoiceSelectFirst {
+            action: "select-lens-profile".into(),
+        }
+        .into(),
+    ]
+}

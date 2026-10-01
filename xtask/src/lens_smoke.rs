@@ -1,0 +1,735 @@
+//! The offline profile list, selection, fused geometry and mask outline through real messages.
+use crate::{
+    scenario::{Checked, Checks, Plan, Run, Step, plan::only},
+    *,
+};
+use luxforge_evidence::{
+    self as script, ControlsStep, MaskStep, PaintStep, Reference, SliderStep, ViewStep,
+    WorkspaceStep,
+};
+
+pub const FIXTURE: &str = "fixtures/geometry/z6-24-70-35mm-grid.jpg";
+const LENS: &str = "luxforge.lens";
+const PERSPECTIVE: &str = "luxforge.perspective";
+const SELECT: &str = "select-lens-profile";
+const LENS_EFFECT: &str = "luxforge.lens.distortion";
+const PERSPECTIVE_EFFECT: &str = "luxforge.perspective";
+const HELD_STROKE: [[f64; 2]; 2] = [[0.375, 0.375], [0.5, 0.375]];
+const FRESH_STROKE: [[f64; 2]; 2] = [[0.5, 0.625], [0.625, 0.625]];
+const QUERY_ERROR: &str = "validation: parameter text must be at most 64 characters";
+
+fn quiet(name: &str, step: impl Into<script::Step>) -> Step {
+    Step::new(name, step).commits(0)
+}
+
+pub fn plan(_: &[PathBuf]) -> Plan {
+    Plan::new(vec![
+        Step::opened("opened")
+            .collapsed(LENS)
+            .collapsed(PERSPECTIVE)
+            .no_layer(LENS_EFFECT),
+        quiet(
+            "basic-collapsed",
+            script::Step::section("luxforge.basic", false),
+        ),
+        quiet("lens-expanded", script::Step::section(LENS, true)).expanded(LENS),
+        quiet(
+            "candidates",
+            ControlsStep::QueryChoiceSearch {
+                action: SELECT.into(),
+                text: "NIKKOR Z 24-70mm".into(),
+            },
+        ),
+        quiet(
+            "unknown-refused",
+            ControlsStep::QueryChoiceSelectFirst {
+                action: SELECT.into(),
+            },
+        )
+        .refused("query-choice has no eligible displayed row")
+        .no_layer(LENS_EFFECT),
+        quiet(
+            "acknowledged",
+            ControlsStep::QueryChoiceShared {
+                action: SELECT.into(),
+                parameter: "assume-uncorrected".into(),
+                text: "true".into(),
+            },
+        ),
+        Step::new(
+            "selected-fit",
+            ControlsStep::QueryChoiceSelectFirst {
+                action: SELECT.into(),
+            },
+        )
+        .commits(1)
+        .fit(),
+        quiet("selected-100", ViewStep::Percent(100.0))
+            .percent(100.0)
+            .same_layer(LENS_EFFECT, "selected-fit"),
+        quiet("fit", ViewStep::Fit).fit(),
+        quiet("lens-collapsed", script::Step::section(LENS, false)).collapsed(LENS),
+        quiet(
+            "perspective-expanded",
+            script::Step::section(PERSPECTIVE, true),
+        )
+        .expanded(PERSPECTIVE),
+        quiet(
+            "horizontal-draft",
+            SliderStep::new("set-perspective", "horizontal", [10.0, 25.0, 40.0]),
+        )
+        .draft("set-perspective", json!({"horizontal":40})),
+        Step::new(
+            "horizontal",
+            SliderStep::new("set-perspective", "horizontal", [40.0]).release(),
+        )
+        .commits(1)
+        .no_draft()
+        .field("set-perspective", "horizontal", "40")
+        .field("set-perspective", "vertical", "0"),
+        Step::new(
+            "vertical",
+            SliderStep::new("set-perspective", "vertical", [-10.0, -25.0]).release(),
+        )
+        .commits(1)
+        .no_draft()
+        .field("set-perspective", "horizontal", "40")
+        .field("set-perspective", "vertical", "-25")
+        .same_layer(PERSPECTIVE_EFFECT, "horizontal"),
+        quiet("mask-mode", WorkspaceStep::default().mode("mask")),
+        quiet("radial-new", MaskStep::New("radial".into())),
+        quiet(
+            "radial-outline",
+            MaskStep::Sweep {
+                from: [0.5, 0.5],
+                to: [0.7, 0.7],
+            },
+        ),
+        Step::new("radial-committed", MaskStep::Apply)
+            .commits(1)
+            .masks(1),
+        quiet("pointer", WorkspaceStep::default().mode("pointer")),
+        Step::new(
+            "straightened",
+            script::Step::call("edit.crop-fit", json!({"aspect":"original","angle":2.5})),
+        )
+        .commits(1)
+        .same_layer(LENS_EFFECT, "selected-fit"),
+        quiet("brush-mask-mode", WorkspaceStep::default().mode("mask")),
+        quiet("brush-armed", MaskStep::Paint(PaintStep::NewBrush)),
+        quiet("brush-held", MaskStep::stroke(HELD_STROKE, false)),
+        Step::new(
+            "brush-conflict",
+            script::Step::agent(
+                "edit.set-perspective",
+                json!({"horizontal":-30,"vertical":15}),
+            ),
+        )
+        .commits(1)
+        .notice("Changed elsewhere")
+        .field("set-perspective", "horizontal", "-30")
+        .field("set-perspective", "vertical", "15")
+        .same_layer(PERSPECTIVE_EFFECT, "vertical"),
+        quiet("brush-apply-refused", MaskStep::Apply)
+            .refused("Changed elsewhere: discard the mask gesture or reapply it")
+            .notice("Changed elsewhere"),
+        quiet("brush-reapplied", MaskStep::Reapply).no_notices(),
+        Step::new("held-stroke-committed", MaskStep::Apply)
+            .commits(1)
+            .masks(1)
+            .components(&["add radial", "add brush"]),
+        // Re-arm through the panel's ordinary target message, so the current map has answered
+        // before the next pointer begins another stroke.
+        quiet(
+            "brush-rearmed",
+            MaskStep::Paint(PaintStep::Component(Reference::name("Brush 1"))),
+        ),
+        quiet("fresh-stroke-held", MaskStep::stroke(FRESH_STROKE, false)),
+        Step::new("fresh-stroke-committed", MaskStep::Apply)
+            .commits(1)
+            .no_draft()
+            .masks(1)
+            .components(&["add radial", "add brush"])
+            .same_layer(LENS_EFFECT, "selected-fit"),
+        quiet("query-pointer", WorkspaceStep::default().mode("pointer"))
+            .field("set-perspective", "horizontal", "-30")
+            .field("set-perspective", "vertical", "15"),
+        quiet("query-lens-expanded", script::Step::section(LENS, true)).expanded(LENS),
+        quiet(
+            "query-error",
+            ControlsStep::QueryChoiceSearch {
+                action: SELECT.into(),
+                text: "x".repeat(65),
+            },
+        )
+        .refused(QUERY_ERROR),
+        quiet(
+            "query-retried",
+            ControlsStep::QueryChoiceRetry {
+                action: SELECT.into(),
+            },
+        )
+        .refused(QUERY_ERROR),
+        quiet(
+            "query-recovered",
+            ControlsStep::QueryChoiceSearch {
+                action: SELECT.into(),
+                text: String::new(),
+            },
+        )
+        .same_layer(LENS_EFFECT, "selected-fit"),
+    ])
+}
+
+/// A retry is an explicit new request for the same failed input. Error and recovery frames must
+/// stay on the same immutable entry, so neither list interaction can masquerade as an edit.
+fn query_retry_states(states: [&Value; 4]) -> Result<Value> {
+    let [before, failed, retried, recovered] = states;
+    let choice = |state: &Value| state["control_ui"]["query_choices"][SELECT].clone();
+    let before_ui = choice(before);
+    let failed_ui = choice(failed);
+    let retried_ui = choice(retried);
+    let recovered_ui = choice(recovered);
+    for state in [failed, retried, recovered] {
+        ensure(
+            state["stack"]["entry"] == before["stack"]["entry"]
+                && state["stack"]["revision"] == before["stack"]["revision"],
+            "Lens query Retry or recovery changed history",
+        )?;
+    }
+    for ui in [&failed_ui, &retried_ui] {
+        ensure(
+            ui["text"] == "x".repeat(65)
+                && ui["error"] == QUERY_ERROR
+                && ui["loading"] == false
+                && ui["rows"].as_array().is_some_and(Vec::is_empty)
+                && ui["request"]["action"] == SELECT
+                && ui["request"]["text"] == ui["text"]
+                && ui["request"]["page"].is_u64()
+                && ui["request"]["shared"].is_object()
+                && ui["request"]["asset"].is_string()
+                && ui["request"]["entry"] == before["stack"]["entry"],
+            "Lens validation error was not captured with an available Retry button",
+        )?;
+    }
+    let sequence = |ui: &Value| {
+        ui["request"]["sequence"]
+            .as_u64()
+            .ok_or("Lens query has no request sequence")
+    };
+    ensure(
+        sequence(&failed_ui)? > sequence(&before_ui)?
+            && sequence(&retried_ui)? == sequence(&failed_ui)? + 1
+            && sequence(&recovered_ui)? == sequence(&retried_ui)? + 1,
+        "Retry or clearing the search did not create a fresh query request",
+    )?;
+    let without_sequence = |ui: &Value| {
+        let mut identity = ui["request"].clone();
+        if let Some(identity) = identity.as_object_mut() {
+            identity.remove("sequence");
+        }
+        identity
+    };
+    ensure(
+        without_sequence(&failed_ui) == without_sequence(&retried_ui),
+        "Retry changed the failed query's input or asset/entry identity",
+    )?;
+    ensure(
+        recovered_ui["text"] == ""
+            && recovered_ui["request"]["text"] == ""
+            && recovered_ui["request"]["asset"] == retried_ui["request"]["asset"]
+            && recovered_ui["request"]["entry"] == retried_ui["request"]["entry"]
+            && recovered_ui["error"].is_null()
+            && recovered_ui["loading"] == false
+            && recovered_ui["rows"]
+                .as_array()
+                .is_some_and(|rows| !rows.is_empty()),
+        "Clearing the Lens search did not recover real query rows",
+    )?;
+    Ok(
+        json!({"failed_request":failed_ui["request"],"retry_request":retried_ui["request"],
+        "recovered_request":recovered_ui["request"],"error":QUERY_ERROR,
+        "recovered_rows":recovered_ui["rows"].as_array().map(Vec::len),"entry":before["stack"]["entry"]}),
+    )
+}
+
+/// The mask gesture's pointer map changes with the externally committed geometry, while the
+/// interrupted stroke remains in its original content coordinates. These are captured states,
+/// independent of the rendering checks, so a stale map cannot pass merely by producing a PNG.
+fn reapply_states(states: [&Value; 7]) -> Result<Value> {
+    let [
+        held,
+        conflict,
+        refused,
+        rebased,
+        published,
+        fresh,
+        committed,
+    ] = states;
+    let old_map = &held["mask_draft"]["mapping"];
+    let current_hash = &conflict["geometry"]["mapping_sha256"];
+    ensure(
+        old_map["mapping_sha256"].is_string()
+            && current_hash.is_string()
+            && old_map["mapping_sha256"] != *current_hash,
+        "The external Perspective commit did not replace the brush's geometry",
+    )?;
+    let fields = &held["draft"]["fields"];
+    ensure(
+        fields["points"].is_array() && held["mask_draft"]["stroke"]["painting"] == true,
+        "The first stroke was not held open with captured content points",
+    )?;
+    for (name, state) in [
+        ("conflicted", conflict),
+        ("refused", refused),
+        ("reapplied", rebased),
+    ] {
+        ensure(
+            state["draft"]["fields"] == *fields,
+            format!("The {name} stroke changed its captured content fields"),
+        )?;
+        ensure(
+            state["draft"]["draft_id"] == held["draft"]["draft_id"],
+            format!("The {name} stroke replaced its core draft"),
+        )?;
+    }
+    for state in [conflict, refused] {
+        // A brush's canvas bar offers Done and keeps that action enabled even while its
+        // retained draft is conflicted. The plan checks the attempted Apply's actual refusal;
+        // this state proof checks that the conflict interrupted painting and retained its map.
+        ensure(
+            state["mask_draft"]["conflicted"] == true
+                && state["draft"]["conflicted"] == true
+                && state["draft_bar"]["conflicted"] == true
+                && state["mask_draft"]["stroke"]["painting"] == false
+                && state["mask_draft"]["mapping"] == *old_map,
+            "A conflict did not interrupt painting and preserve the original map",
+        )?;
+    }
+    ensure(
+        conflict["stack"]["revision"] == refused["stack"]["revision"]
+            && conflict["stack"]["entry"] == refused["stack"]["entry"],
+        "The refused Apply published an entry",
+    )?;
+    let new_map = &rebased["mask_draft"]["mapping"];
+    let stamp = &new_map["identity"]["draft"];
+    ensure(
+        rebased["mask_draft"]["conflicted"] == false
+            && rebased["draft"]["base_revision"] == rebased["stack"]["revision"]
+            && rebased["mask_draft"]["stroke"]["painting"] == false
+            && new_map["mapping_sha256"] == *current_hash
+            && new_map["identity"]["entry_id"] == conflict["stack"]["entry"]
+            && stamp["draft_id"] == rebased["draft"]["draft_id"]
+            && stamp["draft_revision"].as_u64().is_some_and(|revision| {
+                rebased["draft"]["draft_revision"]
+                    .as_u64()
+                    .is_some_and(|current| revision <= current)
+            })
+            && new_map["identity"]["source_fingerprint"].is_string()
+            && new_map["identity"]["source_fingerprint"]
+                == old_map["identity"]["source_fingerprint"],
+        "Reapply did not interrupt the kept stroke and acquire the current entry's map",
+    )?;
+    let fresh_map = &fresh["mask_draft"]["mapping"];
+    ensure(
+        published["draft"].is_null()
+            && fresh["mask_draft"]["stroke"]["painting"] == true
+            && fresh_map["mapping_sha256"] == *current_hash
+            && fresh_map["identity"]["entry_id"] == published["stack"]["entry"]
+            && fresh_map["identity"]["source_fingerprint"]
+                == new_map["identity"]["source_fingerprint"]
+            && fresh["draft"]["fields"]["points"] != fields["points"],
+        "The new stroke did not start under the refreshed committed geometry",
+    )?;
+    ensure(
+        committed["draft"].is_null()
+            && committed["mask_draft"].is_null()
+            && committed["geometry"]["mapping_sha256"] == *current_hash,
+        "The final stroke did not publish on the current geometry",
+    )?;
+    Ok(
+        json!({"old_map":old_map,"reapplied_map":new_map,"fresh_stroke_map":fresh_map,
+        "kept_fields":fields,"fresh_fields":fresh["draft"]["fields"],"final_entry":committed["stack"]["entry"]}),
+    )
+}
+
+fn expected_stroke(fields: &Value, path: &[[f64; 2]]) -> Result<luxforge_core::mask::Stroke> {
+    let number = |name: &str| {
+        fields[name]
+            .as_f64()
+            .ok_or_else(|| format!("The stroke has no {name}"))
+    };
+    ensure(
+        fields["limit_to_colour"] == false,
+        "The regression stroke unexpectedly samples a colour limit",
+    )?;
+    let stroke = luxforge_core::mask::Stroke::capture(
+        path,
+        number("size")?,
+        number("feather")?,
+        number("flow")?,
+        fields["erase"]
+            .as_bool()
+            .ok_or("The stroke has no erase setting")?,
+    )?;
+    ensure(
+        fields["points"] == serde_json::to_value(stroke.points().collect::<Vec<_>>())?,
+        "Captured stroke points differ from the scripted content coordinates",
+    )?;
+    Ok(stroke)
+}
+
+/// Resolve the catalog's actual content-addressed objects after the editor exits. UI rows expose
+/// their references, but only the stored stroke proves which coordinates were durably retained.
+fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -> Result<Value> {
+    let final_frame = launch.at("fresh-stroke-committed")?;
+    let service = luxforge_core::EditorService::open(&launch.evidence.join("catalog.sqlite"))?;
+    let assets = service.assets(None, 1)?;
+    ensure(
+        assets.assets.len() == 1 && assets.next.is_none(),
+        "The regression catalog does not contain exactly one source",
+    )?;
+    let state = service.state(&assets.assets[0].id)?;
+    ensure(
+        state.current_entry.id.as_str() == final_frame.entry()?
+            && state.revision == final_frame.revision()?,
+        "The reopened catalog does not match the final captured entry",
+    )?;
+    let recipe = &state.current_entry.snapshot.recipe;
+    let mask = recipe.masks.first().ok_or("The final recipe has no mask")?;
+    let brush = mask
+        .components
+        .get(1)
+        .ok_or("The final recipe has no appended brush")?;
+    let references = luxforge_core::path::references(&brush.payload, &brush.name)?;
+    ensure(
+        references.len() == 2 && references[0] != references[1],
+        "The final brush did not retain two distinct strokes",
+    )?;
+    let expected = [
+        expected_stroke(kept_fields, &HELD_STROKE)?,
+        expected_stroke(fresh_fields, &FRESH_STROKE)?,
+    ];
+    let mut stored = Vec::new();
+    for (index, (id, expected)) in references.iter().zip(expected).enumerate() {
+        let stroke = recipe
+            .strokes
+            .get::<luxforge_core::mask::Stroke>(id)
+            .ok_or("A durable stroke reference is unresolved")?;
+        ensure(
+            *stroke == expected,
+            format!(
+                "Durable stroke {index} differs from the captured content coordinates or brush settings"
+            ),
+        )?;
+        ensure(
+            final_frame.component(1)?["strokes"][index]["stroke"] == id.as_str(),
+            "The panel's stroke reference differs from the durable recipe",
+        )?;
+        stored.push(json!({"id":id,"points":stroke.points().collect::<Vec<_>>(),"size":stroke.size(),"feather":stroke.feather(),"flow":stroke.flow()}));
+    }
+    Ok(json!({"entry":state.current_entry.id,"mask":mask.id,"component":brush.id,"strokes":stored}))
+}
+
+pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let candidates = launch.at("candidates")?;
+    let choices = &candidates["state"]["control_ui"]["query_choices"][SELECT];
+    let rows = choices["rows"]
+        .as_array()
+        .ok_or("The lens list has no rows")?;
+    ensure(
+        !rows.is_empty(),
+        "The metadata grid produces no lens candidates",
+    )?;
+    ensure(
+        rows.iter().all(|row| row["eligible"] == false),
+        "Unknown distortion was selectable without acknowledgement",
+    )?;
+    ensure(
+        rows.iter().any(|row| {
+            row["reasons"]
+                .as_array()
+                .is_some_and(|reasons| reasons.iter().any(|r| r == "assume-uncorrected-required"))
+        }),
+        "The lens list does not show why acknowledgement is required",
+    )?;
+    let selected = launch.at("selected-fit")?;
+    let profile = selected
+        .payload(LENS_EFFECT)
+        .ok_or("Selection produced no lens layer")?;
+    ensure(
+        profile["profile"]["optics"]["acknowledged"] == "assume-uncorrected",
+        "Selection did not freeze its acknowledgement",
+    )?;
+    let mut checks = Checks::new();
+    for name in [
+        "selected-fit",
+        "selected-100",
+        "horizontal",
+        "vertical",
+        "radial-outline",
+        "straightened",
+        "brush-held",
+        "brush-reapplied",
+        "fresh-stroke-held",
+        "fresh-stroke-committed",
+        "query-error",
+        "query-retried",
+        "query-recovered",
+    ] {
+        let frame = launch.at(name)?;
+        let surface = &frame["state"]["surface"];
+        ensure(
+            frame["state"]["requested_generation"] == frame["state"]["displayed_generation"],
+            format!("{name} shows a stale preview generation"),
+        )?;
+        ensure(
+            frame["state"]["geometry"]["mapping_sha256"]
+                .as_str()
+                .is_some(),
+            format!("{name} has no mapping hash"),
+        )?;
+        ensure(
+            frame.image()?.width() > 0,
+            format!("{name} has no native renderer capture"),
+        )?;
+        checks.note(frame,name,json!({"entry":frame.entry()?,"surface":surface,"lens":frame.payload(LENS_EFFECT),"perspective":frame.payload(PERSPECTIVE_EFFECT)}));
+    }
+    ensure(
+        launch.at("horizontal")?.payload(PERSPECTIVE_EFFECT) == Some(&json!({"horizontal":40})),
+        "Horizontal drag did not commit its final value",
+    )?;
+    ensure(
+        launch.at("vertical")?.payload(PERSPECTIVE_EFFECT)
+            == Some(&json!({"horizontal":40,"vertical":-25})),
+        "Perspective axes did not merge",
+    )?;
+    ensure(
+        launch.at("brush-conflict")?.payload(PERSPECTIVE_EFFECT)
+            == Some(&json!({"horizontal":-30,"vertical":15})),
+        "The Agent did not publish the replacement Perspective geometry",
+    )?;
+    let names = [
+        "brush-held",
+        "brush-conflict",
+        "brush-apply-refused",
+        "brush-reapplied",
+        "held-stroke-committed",
+        "fresh-stroke-held",
+        "fresh-stroke-committed",
+    ];
+    let states = names.map(|name| launch.at(name).map(|frame| frame.state()));
+    let [
+        held,
+        conflict,
+        refused,
+        rebased,
+        published,
+        fresh,
+        committed,
+    ] = states;
+    let reapply = reapply_states([
+        held?, conflict?, refused?, rebased?, published?, fresh?, committed?,
+    ])?;
+    let reapply_step = launch.index("brush-reapplied")?;
+    ensure(
+        launch.events.iter().any(|event| {
+            event["event"] == "script_step_settled"
+                && event["detail"]["step"] == reapply_step
+                && event["detail"]["waited_for"] == "mask_map"
+                && event["detail"]["by"] == "mask_map"
+        }),
+        "Reapply was captured before its refreshed pointer map answered",
+    )?;
+    let stored = stored_strokes(launch, &reapply["kept_fields"], &reapply["fresh_fields"])?;
+    checks.note(
+        launch.at("fresh-stroke-committed")?,
+        "mask conflict and refreshed pointer map",
+        json!({"captured":reapply,"durable":stored}),
+    );
+    let retry = query_retry_states([
+        launch.at("query-lens-expanded")?.state(),
+        launch.at("query-error")?.state(),
+        launch.at("query-retried")?.state(),
+        launch.at("query-recovered")?.state(),
+    ])?;
+    for name in ["query-error", "query-retried", "query-recovered"] {
+        let step = launch.index(name)?;
+        ensure(
+            launch.events.iter().any(|event| {
+                event["event"] == "script_step_settled"
+                    && event["detail"]["step"] == step
+                    && event["detail"]["waited_for"] == "query_choice"
+                    && event["detail"]["by"] == "query_choice_answered"
+            }),
+            format!("{name} was captured before its real query answer"),
+        )?;
+    }
+    checks.note(
+        launch.at("query-retried")?,
+        "Lens query error and Retry",
+        retry,
+    );
+    checks.write(&launch.evidence,"lens-perspective",json!({"scope":"Generated grid and descriptor-backed desktop gestures with correlated native captures; mask Reapply preserves stored content coordinates and refreshes the pointer map after another client's Perspective commit; explicit Lens query Retry issues a fresh request with the same rejected input and clearing the search recovers rows without changing history; photographic lens qualification is separate"}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn lens_perspective_script_uses_real_query_choice_messages_and_one_commit_per_release() {
+        let plan = plan(&[]);
+        plan.validate().unwrap();
+        let script = script::parse(&plan.script().to_string()).unwrap();
+        assert_eq!(script.len(), plan.len() - 1);
+        assert_eq!(plan.len(), 35);
+        assert!(script.iter().any(|step| matches!(
+            step,
+            script::Step::Controls(ControlsStep::QueryChoiceSelectFirst { .. })
+        )));
+        assert_eq!(
+            script[19],
+            script::Step::Workspace(WorkspaceStep::default().mode("mask"))
+        );
+        assert!(
+            matches!(&script[22],script::Step::Agent {method,..} if method == "edit.set-perspective")
+        );
+        assert_eq!(script[24], script::Step::Mask(MaskStep::Reapply));
+        assert!(matches!(
+            &script[27],
+            script::Step::Mask(MaskStep::Stroke { release: false, .. })
+        ));
+        assert!(matches!(
+            &script[31],
+            script::Step::Controls(ControlsStep::QueryChoiceSearch { action, text })
+                if action == SELECT && text.chars().count() == 65
+        ));
+        assert_eq!(
+            script[32],
+            script::Step::Controls(ControlsStep::QueryChoiceRetry {
+                action: SELECT.into()
+            })
+        );
+        for (name, horizontal, vertical) in [
+            ("horizontal", "40", "0"),
+            ("vertical", "40", "-25"),
+            ("brush-conflict", "-30", "15"),
+            ("query-pointer", "-30", "15"),
+        ] {
+            assert_eq!(
+                plan.steps()[plan.index(name).unwrap()].expect().fields,
+                [
+                    (
+                        "set-perspective".into(),
+                        "horizontal".into(),
+                        horizontal.into()
+                    ),
+                    ("set-perspective".into(), "vertical".into(), vertical.into()),
+                ],
+                "{name} checks the fields shown beside the stored Perspective layer"
+            );
+        }
+    }
+
+    #[test]
+    fn reapply_verifier_rejects_stale_maps_changed_content_and_old_entry_identity() {
+        let fields = json!({"points":HELD_STROKE});
+        let old = json!({"mapping_sha256":"old","identity":{"entry_id":"original","source_fingerprint":"source"}});
+        let new = json!({"mapping_sha256":"new","identity":{"entry_id":"geometry","source_fingerprint":"source","draft":{"draft_id":"first","draft_revision":3}}});
+        let held = json!({"mask_draft":{"mapping":old,"stroke":{"painting":true}},
+            "draft":{"draft_id":"first","fields":fields},"geometry":{"mapping_sha256":"old"},
+            "stack":{"entry":"original","revision":5}});
+        let mut conflict = held.clone();
+        conflict["stack"] = json!({"entry":"geometry","revision":6});
+        conflict["geometry"]["mapping_sha256"] = json!("new");
+        conflict["mask_draft"]["conflicted"] = json!(true);
+        conflict["mask_draft"]["stroke"]["painting"] = json!(false);
+        conflict["draft"]["conflicted"] = json!(true);
+        conflict["draft_bar"] = json!({"can_apply":true,"done":true,"conflicted":true});
+        let refused = conflict.clone();
+        let mut rebased = conflict.clone();
+        rebased["mask_draft"]["mapping"] = new.clone();
+        rebased["mask_draft"]["conflicted"] = json!(false);
+        rebased["mask_draft"]["stroke"]["painting"] = json!(false);
+        rebased["draft"]["base_revision"] = json!(6);
+        rebased["draft"]["draft_revision"] = json!(4);
+        let mut published = rebased.clone();
+        published["draft"] = Value::Null;
+        published["mask_draft"] = Value::Null;
+        published["stack"] = json!({"entry":"kept-stroke","revision":7});
+        let mut fresh = rebased.clone();
+        fresh["draft"]["fields"]["points"] = json!(FRESH_STROKE);
+        fresh["draft"]["draft_id"] = json!("second");
+        fresh["mask_draft"]["stroke"]["painting"] = json!(true);
+        fresh["mask_draft"]["mapping"]["identity"]["entry_id"] = json!("kept-stroke");
+        let mut committed = published.clone();
+        committed["stack"] = json!({"entry":"fresh-stroke","revision":8});
+        let mut states = [
+            held, conflict, refused, rebased, published, fresh, committed,
+        ];
+        assert!(reapply_states(states.each_ref()).is_ok());
+        states[1]["draft_bar"]["conflicted"] = json!(false);
+        assert!(reapply_states(states.each_ref()).is_err());
+        states[1]["draft_bar"]["conflicted"] = json!(true);
+        states[2]["mask_draft"]["stroke"]["painting"] = json!(true);
+        assert!(reapply_states(states.each_ref()).is_err());
+        states[2]["mask_draft"]["stroke"]["painting"] = json!(false);
+        states[3]["mask_draft"]["mapping"]["mapping_sha256"] = json!("old");
+        assert!(reapply_states(states.each_ref()).is_err());
+        states[3]["mask_draft"]["mapping"]["mapping_sha256"] = json!("new");
+        states[3]["mask_draft"]["mapping"]["identity"]["draft"]["draft_id"] = json!("other");
+        assert!(reapply_states(states.each_ref()).is_err());
+        states[3]["mask_draft"]["mapping"]["identity"]["draft"]["draft_id"] = json!("first");
+        states[2]["draft"]["fields"]["points"] = json!(FRESH_STROKE);
+        assert!(reapply_states(states.each_ref()).is_err());
+        states[2]["draft"]["fields"]["points"] = json!(HELD_STROKE);
+        states[5]["mask_draft"]["mapping"]["identity"]["entry_id"] = json!("original");
+        assert!(reapply_states(states.each_ref()).is_err());
+    }
+
+    #[test]
+    fn retry_verifier_requires_fresh_same_input_requests_and_history_preserving_recovery() {
+        let before = json!({"stack":{"entry":"same-entry","revision":8},
+            "control_ui":{"query_choices":{SELECT:{"request":{"sequence":4}}}}});
+        let identity = json!({"sequence":5,"action":SELECT,"text":"x".repeat(65),"page":0,
+            "shared":{"assume-uncorrected":true},"asset":"same-source","entry":"same-entry"});
+        let mut failed = before.clone();
+        failed["control_ui"]["query_choices"][SELECT] = json!({"request":identity,
+            "text":"x".repeat(65),"loading":false,"error":QUERY_ERROR,"rows":[]});
+        let mut retried = failed.clone();
+        retried["control_ui"]["query_choices"][SELECT]["request"]["sequence"] = json!(6);
+        let mut recovered = retried.clone();
+        let ui = &mut recovered["control_ui"]["query_choices"][SELECT];
+        ui["text"] = json!("");
+        ui["request"]["text"] = json!("");
+        ui["request"]["sequence"] = json!(7);
+        ui["error"] = Value::Null;
+        ui["rows"] = json!([{"key":"real-row","title":"Real row","eligible":true}]);
+        let mut states = [before, failed, retried, recovered];
+        assert!(query_retry_states(states.each_ref()).is_ok());
+        states[2]["control_ui"]["query_choices"][SELECT]["request"]["sequence"] = json!(5);
+        assert!(query_retry_states(states.each_ref()).is_err());
+        states[2]["control_ui"]["query_choices"][SELECT]["request"]["sequence"] = json!(6);
+        states[2]["control_ui"]["query_choices"][SELECT]["request"]["shared"] = json!({});
+        assert!(query_retry_states(states.each_ref()).is_err());
+        states[2]["control_ui"]["query_choices"][SELECT]["request"]["shared"] =
+            json!({"assume-uncorrected":true});
+        states[3]["stack"]["revision"] = json!(9);
+        assert!(query_retry_states(states.each_ref()).is_err());
+        states[3]["stack"]["revision"] = json!(8);
+        states[3]["control_ui"]["query_choices"][SELECT]["rows"] = json!([]);
+        assert!(query_retry_states(states.each_ref()).is_err());
+    }
+
+    #[test]
+    fn durable_stroke_expectation_keeps_content_coordinates_and_quantized_settings() {
+        let stroke =
+            luxforge_core::mask::Stroke::capture(&HELD_STROKE, 0.1, 50.0, 100.0, false).unwrap();
+        let mut fields = json!({"points":stroke.points().collect::<Vec<_>>(),"size":0.1,
+            "feather":50,"flow":100,"erase":false,"limit_to_colour":false});
+        assert_eq!(expected_stroke(&fields, &HELD_STROKE).unwrap(), stroke);
+        fields["points"] = json!(FRESH_STROKE);
+        assert!(expected_stroke(&fields, &HELD_STROKE).is_err());
+    }
+}

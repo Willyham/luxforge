@@ -4812,6 +4812,7 @@ dependencies = [
  "luxforge-testkit",
  "percent-encoding",
  "regex",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

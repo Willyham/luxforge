@@ -183,10 +183,14 @@ impl EditorService {
                 let mask = prepared.mask.as_ref();
                 let resolved = self.plan_action(asset, recipe, module, &prepared.input, mask)?;
                 Ok(PlannedRequest {
-                    planned: resolved.recipe.map(|next| Planned {
-                        recipe: next,
-                        label: masked_label(recipe, mask, prepared.label.clone()),
-                        touched: None,
+                    planned: resolved.recipe.map(|next| {
+                        let label =
+                            module.planned_label(&prepared.input, &next.layers, &prepared.label);
+                        Planned {
+                            recipe: next,
+                            label: masked_label(recipe, mask, label),
+                            touched: None,
+                        }
                     }),
                     skipped: resolved.skipped,
                 })
@@ -380,7 +384,13 @@ impl EditorService {
             None,
             mask.as_ref(),
             view,
-            |context, _| module.query(query_id, &checked, context),
+            |context, _| {
+                let answer = module.query(query_id, &checked, context)?;
+                module
+                    .descriptor()
+                    .validate_query_choice_answer(query_id, &answer)?;
+                Ok(answer)
+            },
         );
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
     }
@@ -880,6 +890,10 @@ fn sample_compile_count() -> usize {
 }
 
 impl StageQuestions for HostStage<'_> {
+    fn optics(&self) -> Result<crate::SourceOptics, Error> {
+        Ok(self.source()?.optics())
+    }
+
     /// Compile the prefix before `index`. Compiling folds declared output stages and allocates only
     /// the operation lists, so this copies no part of the stack and rasterizes nothing.
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
@@ -3146,7 +3160,7 @@ mod tests {
     #[test]
     fn every_built_in_action_stores_the_label_of_this_table() {
         let registry = ModuleRegistry::developer();
-        let table: [(&str, Value, &str); 76] = [
+        let table: [(&str, Value, &str); 82] = [
             (
                 "apply-preset",
                 json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
@@ -3231,6 +3245,24 @@ mod tests {
             ),
             ("set-presence", json!({}), "Set Presence"),
             ("reset-presence", json!({}), "Reset Presence"),
+            (
+                "set-perspective",
+                json!({"horizontal":40}),
+                "Horizontal +40",
+            ),
+            ("set-perspective", json!({"vertical":-25}), "Vertical -25"),
+            (
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+                "Perspective",
+            ),
+            (
+                "set-perspective",
+                json!({"horizontal":0,"vertical":0}),
+                "Reset Perspective",
+            ),
+            ("set-perspective", json!({}), "Set Perspective"),
+            ("reset-perspective", json!({}), "Reset Perspective"),
             ("set-mixer", json!({"red-hue":90.0}), "Red hue +90"),
             (
                 "set-mixer",
@@ -3381,10 +3413,91 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{action} {parameters}: {error}"));
             assert_eq!(prepared.label, *label, "{action} {parameters}");
         }
+        // Lens selection names its resolved record after planning. Exercise the actual commit
+        // boundary, including reset and perspective, rather than asserting the fallback title.
+        use crate::modules::lens::index;
+        struct IndexGuard;
+        impl Drop for IndexGuard {
+            fn drop(&mut self) {
+                index::clear_for_test();
+            }
+        }
+        let index = index::LensIndex::parse(
+            &std::fs::read(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/data/lensfun/index.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        index::set_for_test(Ok(Arc::new(index)));
+        let _index = IndexGuard;
+        let catalog = temp("resolved-action-labels.sqlite");
+        let mut service =
+            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+        let asset = service.import(&source).unwrap().asset.id;
+        let entry = service.state(&asset).unwrap().current_entry.id;
+        let profiles = service
+            .run_query(
+                &asset,
+                &entry,
+                "lens-profiles",
+                json!({"assume-uncorrected":true}),
+            )
+            .unwrap();
+        let key = profiles["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
+            .unwrap()["key"]
+            .clone();
+        let semantic_table = [
+            (
+                "select-lens-profile",
+                json!({"profile":key,"assume-uncorrected":true}),
+                "Lens profile NIKKOR Z 24-70mm f/4 S at 35 mm",
+            ),
+            ("reset-lens-profile", json!({}), "Reset Lens correction"),
+            (
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+                "Perspective",
+            ),
+            ("reset-perspective", json!({}), "Reset Perspective"),
+            (
+                "select-controls-choice",
+                json!({"key":"two"}),
+                "Select controls choice",
+            ),
+        ];
+        for (action, parameters, label) in &semantic_table {
+            let revision = service.state(&asset).unwrap().revision;
+            service
+                .apply_action(
+                    &asset,
+                    mutation(revision, action),
+                    action,
+                    parameters.clone(),
+                )
+                .unwrap();
+            assert_eq!(
+                service.state(&asset).unwrap().current_entry.label,
+                *label,
+                "{action} {parameters}"
+            );
+        }
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
         for descriptor in registry.descriptors() {
             for declared in &descriptor.actions {
                 assert!(
-                    table.iter().any(|(action, _, _)| *action == declared.id),
+                    table
+                        .iter()
+                        .chain(&semantic_table)
+                        .any(|(action, _, _)| *action == declared.id),
                     "{} has no row in the label table",
                     declared.id
                 );

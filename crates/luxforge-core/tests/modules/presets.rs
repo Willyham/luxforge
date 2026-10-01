@@ -525,6 +525,7 @@ impl Composer {
                     title: "Compose steps".into(),
                     notes: "composes count Basic exposure steps".into(),
                     patch: false,
+                    preset: true,
                     parameters: vec![parameter(
                         "count",
                         ParameterKind::Integer { min: 0, max: 64 },
@@ -535,6 +536,7 @@ impl Composer {
                     title: "Set nested".into(),
                     notes: "a field patch whose plan is a composite".into(),
                     patch: true,
+                    preset: true,
                     parameters: vec![parameter(
                         "exposure",
                         ParameterKind::Number {

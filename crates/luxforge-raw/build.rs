@@ -248,8 +248,18 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
                     opcodes.len(),
                     opcodes.join(", ")
                 ));
+                let role = |value: Option<profiles::DngOpticalRole>| {
+                    value.map_or_else(
+                        || "None".to_string(),
+                        |role| format!("Some(DngOpticalRole::{role:?})"),
+                    )
+                };
+                let optics = dng.optics.map_or_else(|| "None".to_string(), |optics| {
+                    format!("Some(DngOptics {{ gain_map: {}, warp_rectilinear: {}, fix_vignette_radial: {} }})",
+                        role(optics.gain_map), role(optics.warp_rectilinear), role(optics.fix_vignette_radial))
+                });
                 format!(
-                    "Some(Dng {{ container: DngContainer::{:?}, calibration: DngCalibration::{:?}, illuminants: {:?}, selected_matrix: {}, calibration_identity: {}, corrections: DngCorrections::{:?}, interpretation: {}, required_opcodes: Cow::Borrowed(&OPCODES_{index}), decoder_active_bottom_trim: {} }})",
+                    "Some(Dng {{ container: DngContainer::{:?}, calibration: DngCalibration::{:?}, illuminants: {:?}, selected_matrix: {}, calibration_identity: {}, corrections: DngCorrections::{:?}, interpretation: {}, optics: {optics}, required_opcodes: Cow::Borrowed(&OPCODES_{index}), decoder_active_bottom_trim: {} }})",
                     dng.container,
                     dng.calibration,
                     dng.illuminants,

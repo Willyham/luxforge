@@ -17,6 +17,7 @@
 
 pub mod colour;
 pub mod dng;
+pub mod geometry;
 pub mod mask;
 pub mod mixer;
 pub mod presence;

@@ -4,7 +4,7 @@
 use super::{
     Byte, Evaluation, PixelDomain, RenderContext, SpatialEntry,
     linear::{LinearRows, LinearScratch, TAP_BLOCK_PIXELS},
-    locate::Affine,
+    map::WarpStep,
     nearest_index, resample_frame,
     spatial::Tiling,
     window::RegionFallback,
@@ -90,6 +90,24 @@ impl Entry {
             origin: (0, 0),
             window: None,
         })
+    }
+
+    /// Compose another output-to-input step into the one sampling boundary.
+    pub(crate) fn fuse(&mut self, step: WarpStep, output: Stage) -> Result<bool, Error> {
+        let Self::Resample(entry) = self else {
+            return Ok(false);
+        };
+        let crate::modules::Mapping::Warp(chain) = &mut entry.resample.map else {
+            return Ok(false);
+        };
+        Arc::make_mut(chain).prepend(step)?;
+        entry.resample.output_width = output.width;
+        entry.resample.output_height = output.height;
+        Ok(true)
+    }
+
+    pub(crate) fn has_warp(&self) -> bool {
+        matches!(self, Self::Resample(entry) if entry.resample.map.has_warp())
     }
 
     /// A spatial boundary. `prefix_hash` is the SHA-256 of the canonical JSON of the layers before
@@ -203,30 +221,30 @@ impl Entry {
     /// this boundary's own forward map to its frame. A resample declares the map from its output
     /// back to its input, the direction a sampler reads, so its forward map is that inverted; a
     /// spatial operation moves no coordinate and contributes nothing.
-    pub(super) fn forward(&self, forward: Affine) -> Result<Affine, Error> {
-        match self {
-            Self::Resample(entry) => {
-                // A windowed proxy's frame before the resample is a window of the stage the
-                // resample was compiled against, placed at `origin` in it.
-                let (x, y) = entry.origin;
-                let mut forward = forward
-                    .then(Affine([1.0, 0.0, f64::from(x), 0.0, 1.0, f64::from(y)]))
-                    .then(Affine(entry.resample.inverse).invert()?);
-                // The boundary now holds only this rectangle of the full resample output. Its
-                // segment geometry reads local entry coordinates, not full-stage coordinates.
-                if let Some(window) = entry.window {
-                    forward = forward.then(Affine([
-                        1.0,
-                        0.0,
-                        -f64::from(window.x0),
-                        0.0,
-                        1.0,
-                        -f64::from(window.y0),
-                    ]));
-                }
-                Ok(forward)
+    pub(super) fn mapping_steps(&self, steps: &mut Vec<WarpStep>) {
+        if let Self::Resample(entry) = self {
+            let (x, y) = entry.origin;
+            if (x, y) != (0, 0) {
+                steps.push(WarpStep::Affine([
+                    1.0,
+                    0.0,
+                    -f64::from(x),
+                    0.0,
+                    1.0,
+                    -f64::from(y),
+                ]));
             }
-            Self::Spatial(_) => Ok(forward),
+            steps.extend(entry.resample.map.steps_forward());
+            if let Some(window) = entry.window {
+                steps.push(WarpStep::Affine([
+                    1.0,
+                    0.0,
+                    f64::from(window.x0),
+                    0.0,
+                    1.0,
+                    f64::from(window.y0),
+                ]));
+            }
         }
     }
 
@@ -292,7 +310,7 @@ impl Entry {
                     input,
                     received.width,
                     received.height,
-                    entry.resample,
+                    &entry.resample,
                     entry.origin,
                     entry.window(),
                     cancel,
@@ -507,7 +525,10 @@ impl Segment {
                 // Colour is applied to the resolved value, not to the coordinate walk, and a
                 // resample or spatial operation is the next segment's entry, never one of its
                 // operations.
-                Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
+                Processing::Color(_)
+                | Processing::Spatial(_)
+                | Processing::Resample(_)
+                | Processing::Warp(_) => {}
             }
         }
         Some(Resolved {
@@ -537,7 +558,10 @@ pub(super) fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u
                     mapped.push((index, x, y, *rgb));
                 }
             }
-            Processing::Color(_) | Processing::Spatial(_) | Processing::Resample(_) => {}
+            Processing::Color(_)
+            | Processing::Spatial(_)
+            | Processing::Resample(_)
+            | Processing::Warp(_) => {}
         }
     }
     mapped.reverse();

@@ -61,14 +61,14 @@ fn a_resample_reads_every_tap_of_its_window_inside_one_rectangle() {
         let (sin, cos): (f64, f64) = f64::to_radians(angle).sin_cos();
         // Output centre (20, 15) onto input centre (48.5, 30.5), rotated and scaled.
         let resample = Resample {
-            inverse: [
+            map: crate::modules::Mapping::Affine([
                 scale * cos,
                 -scale * sin,
                 48.5 - scale * (cos * 20.0 - sin * 15.0),
                 scale * sin,
                 scale * cos,
                 30.5 - scale * (sin * 20.0 + cos * 15.0),
-            ],
+            ]),
             output_width,
             output_height,
         };
@@ -101,7 +101,7 @@ fn a_resample_reads_every_tap_of_its_window_inside_one_rectangle() {
         }
     }
     let unbounded = Resample {
-        inverse: [f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0],
+        map: crate::modules::Mapping::Affine([f64::NAN, 0.0, 0.0, 0.0, 1.0, 0.0]),
         output_width,
         output_height,
     };
@@ -111,7 +111,7 @@ fn a_resample_reads_every_tap_of_its_window_inside_one_rectangle() {
         ..windows[0]
     };
     let identity = Resample {
-        inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        map: crate::modules::Mapping::Affine([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
         output_width,
         output_height,
     };

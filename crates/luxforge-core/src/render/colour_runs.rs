@@ -100,7 +100,8 @@ impl<'a> Iterator for ColorRuns<'a> {
                     Processing::PointReplace { .. } => break,
                     Processing::ExactGeometry(_)
                     | Processing::Spatial(_)
-                    | Processing::Resample(_) => {}
+                    | Processing::Resample(_)
+                    | Processing::Warp(_) => {}
                 }
             }
             self.position = last + 1;

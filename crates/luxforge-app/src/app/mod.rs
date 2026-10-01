@@ -78,6 +78,7 @@ mod preview_failure_tests;
 mod preview_tests;
 #[cfg(test)]
 mod proof_controls_tests;
+mod query_choice;
 pub(crate) mod slider;
 #[cfg(test)]
 mod slider_tests;
@@ -710,7 +711,7 @@ impl Editor {
                 })
                 .map(|(frame, comparison)| (frame, comparison.position)),
             mask_draft: self.mask_shape(),
-            mask_map: self.held_mask().and_then(|mask| mask.map),
+            mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
         };
