@@ -1186,6 +1186,64 @@ with the 60 MP image open, a miss of the 1% target in the same range as the 1.29
 before this work, with the histogram and the surface primitive both drawn on each redraw and the
 500 ms sync still in place; no timer was added and none remains for previews or gestures.
 
+#### A minified After side at Fit
+
+Before/After keeps the exact raster it displays as its After side, even at Fit, so the photo surface
+drew a full-resolution texture through its bilinear sampler with no mip levels at well under half
+its size, the case the crop draft's zone-plate measurement showed aliasing. It was confirmed before
+any change and then removed by giving such a texture linear-light mip levels
+([gpu previews](../design/gpu-preview.md#mipmapped-minification),
+[before and after](../design/before-after.md#after-at-fit)).
+
+The generator and script of the crop-stage measurement were not kept in the repository, so the
+judgement was rebuilt from its description and is now the `compare-zone-plate` smoke scenario, whose
+statistics (`xtask/src/zone_plate.rs`) are the ones named above: the capture's mean and standard
+deviation of luma over the pixels of the drawn photograph whose source frequency lies beyond the
+display's Nyquist limit, beside those of an independent area-weighted box average of the decoded
+source's linear light, re-encoded. The fixture is a generated 6000 × 4000 zone plate (`zone-plate.jpg`
+from `cargo xtask generate-fixtures`): `round(127.5 + 127.5 cos(pi k r^2))` with `k` such that the
+frequency reaches 0.5 cycles per pixel at the corners, JPEG quality 95 without chroma subsampling.
+Its region beyond Nyquist is 86.1% of the photograph at Fit (1,689,852 of 1716 × 1144 pixels), not the
+77% the earlier plate had, so the reference's own standard deviation there is 18.1 codes where that
+plate's was 10.9, and the figures below are comparable with each other but not number for number with
+those.
+
+Scope: native Apple M4 Pro, macOS 26.5.2, Metal; release builds launched hidden in the background
+bundle at 1440 × 900 logical, 2× (2880 × 1800 physical); the fixture opened at Fit, left 4 s for its
+exact render to land, then compared with `\` and After alone revealed (`Position(0.0)`), judged on the
+captured frame. The host was shared (one-minute load average 12 to 19). Before is the base
+(`46a85159`) with only the evidence state's `compare_after` field added; after is this change. Both
+ran through the same `xtask`.
+
+| 24 MP zone plate at Fit, 1716 × 1144 | Before | After |
+| --- | --- | --- |
+| Display proxy before the comparison (control): standard deviation, mean | 18.06, 159.98 | 18.06, 159.98 |
+| Reference box reduction: standard deviation, mean | 18.05, 159.99 | 18.05, 159.99 |
+| After alone: standard deviation, mean | 64.03, 144.67 | 12.38, 160.55 |
+| After alone: standard deviation against the reference's, mean against its | 3.55 times, 15.32 below | 0.69 times, 0.57 above |
+| Resident photo-slot bytes with the comparison open | 167,772,160 | 144,776,244 |
+| Mip levels resident, mip chains generated | not reported | 31,999,028 bytes, 1 |
+
+The aliased reading reproduces the earlier one (63.6 and 145.1): full-contrast replica rings across
+the frame and a mean 15 codes below the true average. With mip levels the frame shows only faint
+residual rings; its standard deviation is below the reference's because the box-filtered levels,
+read trilinearly, are softer than the single box reduction. The After texture is now 6000 × 4000 with
+its 13 levels, 96,000,000 bytes of base and 31,999,028 of levels, which the resident bytes include;
+the plain texture it replaces reserved a 6144 × 6144 bucket of 150,994,944 bytes. The display-size
+photograph holds no levels, before the comparison and after it ends.
+
+The generated 60 MP JPEG (10000 × 6000) is held in two tiles by the device's 8192 pixel textures and
+cannot have levels, so there After draws the display reduction at Fit (`compare-tiled`): After alone
+equals the display-size photograph drawn before the comparison to the code (largest channel
+difference 0, against 129 before), and the resident photo-slot bytes with the comparison open fall
+from 256,825,216 to 33,554,432, since the 240 MB tiled texture is no longer drawn at Fit.
+
+The `workspace` scenario, which holds the Before/After checks for crop and orientation alignment,
+endpoints, holds, zoom alignment and unchanged divider uploads, passes with 62 pixel claims held and
+none failed. Not measured: the GPU time of a chain's passes and their encoding time on the UI
+thread, a Fit drag or window resize while comparing, and any native run off this host; the
+headless tests run on the same adapter.
+
 #### The proxy build's memory and time
 
 The proxy's box downscale runs in bands of output rows, each worker holding one intermediate of
