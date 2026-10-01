@@ -35,7 +35,11 @@ pub(in crate::api) fn pick_plan(
     call: &Call<'_>,
     params: PickPlan,
 ) -> Result<Value, Error> {
-    let files = files(owner, call.client, params.targets.as_ref())?;
+    let in_view = match params.targets {
+        Some(_) => Vec::new(),
+        None => super::super::views::current_items(owner, call.client)?,
+    };
+    let files = files(owner, call.client, params.targets.as_ref(), in_view)?;
     let mut volumes = HashMap::new();
     let plan = planned(owner, files, &mut volumes)?;
     value(plan.answer(&volumes))
@@ -62,7 +66,11 @@ pub(in crate::api) fn pick_develop(
             encode(&develop::recorded_report(&parts))?,
         ));
     }
-    let files = files(owner, call.client, params.targets.as_ref())?;
+    let in_view = match params.targets {
+        Some(_) => Vec::new(),
+        None => super::super::views::current_items(owner, call.client)?,
+    };
+    let files = files(owner, call.client, params.targets.as_ref(), in_view)?;
     if files.is_empty() {
         return Err(Error::validation("there are no picks to develop"));
     }
@@ -128,14 +136,12 @@ fn files(
     owner: &Owner,
     client: ClientId,
     targets: Option<&Targets>,
+    in_view: Vec<ViewItem>,
 ) -> Result<Vec<NamedFile>, Error> {
     if let Some(targets) = targets {
         return targets::files(&owner.service, targets, || selected(owner, client));
     }
-    let file_ids: Vec<FileId> = owner
-        .catalog
-        .views
-        .items(client)?
+    let file_ids: Vec<FileId> = in_view
         .into_iter()
         .filter_map(|item| match item {
             ViewItem::File(id) => Some(id),

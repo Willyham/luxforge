@@ -1,4 +1,4 @@
-//! The loupe (TASK-020), carried inside the Select workspace's message as
+//! The loupe, carried inside the Select workspace's message as
 //! [`SelectMessage::Loupe`](super::select::SelectMessage::Loupe).
 use crate::app::{loupe_frames::LoupeFramesMessage, loupe_region::RegionMessage};
 use crate::state::loupe::Travel;

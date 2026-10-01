@@ -5,13 +5,13 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
-    histogram_smoke as histogram, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
-    mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
-    mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel,
-    resolve_missing_smoke as resolve_missing,
+    crop_smoke as crop, develop_picks_smoke as develop_picks, export_smoke as export,
+    filmstrip_smoke as filmstrip, gallery_smoke as gallery, histogram_smoke as histogram,
+    loupe_smoke as loupe, mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
+    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
+    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
+    raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     select_smoke as select, viewport_smoke as viewport, vignette_smoke as vignette,
     workspace_smoke as workspace, zoom_smoke as zoom, *,
@@ -687,6 +687,26 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(resolve_missing::NOTE),
         own: Some(resolve_missing::run),
+    },
+    Scenario {
+        name: develop_picks::SCENARIO,
+        about: "Picks on a camera card developed through Develop N's confirmation: an existing folder chosen, a name typed, Escape changing nothing, two picks' copies in an indexed folder used, Develop opened on what it developed and the next photograph's cached preview drawn in the frame after the key",
+        launches: &[],
+        verify: develop_picks::verify,
+        source: Source::Fixtures(&[]),
+        window: Some(PANELLED),
+        note: Some(develop_picks::NOTE),
+        own: Some(develop_picks::run),
+    },
+    Scenario {
+        name: filmstrip::SCENARIO,
+        about: "Develop's filmstrip over a catalog view of JPEG photographs and, with --source, a RAW one: each move draws the photograph's own cached preview in the frame after the key, then its render",
+        launches: &[],
+        verify: filmstrip::verify,
+        source: Source::Default(&[]),
+        window: Some(PANELLED),
+        note: Some(filmstrip::NOTE),
+        own: Some(filmstrip::run),
     },
     Scenario {
         name: loupe::SCENARIO,
@@ -1423,7 +1443,12 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
-        assert_eq!(sourced(), ["performance", "raw-panel", "raw-editor"]);
+        // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
+        assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
+        assert_eq!(
+            sourced(),
+            ["performance", "filmstrip", "raw-panel", "raw-editor"]
+        );
         assert_eq!(listed(), ["raw-editor"]);
         assert!(find("nothing").is_err());
     }

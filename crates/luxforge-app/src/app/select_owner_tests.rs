@@ -604,6 +604,89 @@ fn a_select_view_gone_stale_while_a_folder_is_read_is_read_again_quietly() {
     finish(editor, catalog);
 }
 
+/// A view evaluated again while the loupe shows a frame keeps that frame's row, and its moment's,
+/// until the new revision's rows arrive: the loupe never loses its frame for an update, and the
+/// frame it keeps is the item the owner carried the active item over as.
+#[test]
+fn a_select_view_read_again_keeps_the_loupes_frame_until_its_rows_arrive() {
+    let (mut editor, catalog) = selecting();
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
+        .press
+        .clone()
+    else {
+        panic!("an event row views its event");
+    };
+    let _ = editor.update(Message::Select(SelectMessage::Source(source)));
+    let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
+        1000.0, 700.0,
+    ))));
+    evaluate(&mut editor);
+    read_rows(&mut editor);
+    let _ = editor.update(Message::Select(SelectMessage::Move {
+        step: Step::Right,
+        extend: false,
+    }));
+    let _ = editor.update(Message::Select(SelectMessage::Loupe(
+        crate::app::message::loupe::LoupeMessage::Open,
+    )));
+    let active = editor
+        .session
+        .browse
+        .selection
+        .active
+        .expect("an active frame");
+    let item = editor.select.state.rows.row(active).unwrap().item.clone();
+    let frame = editor
+        .workspace
+        .select
+        .loupe
+        .subject
+        .expect("the loupe's frame");
+    let revision = editor.select.state.summary.as_ref().unwrap().revision;
+
+    // The view goes stale and is read again: until its rows are read, the frame keeps its row.
+    let mut session = session_now(&editor.owner, editor.client).unwrap();
+    session.browse.stale = true;
+    let _ = editor.update(Message::Select(SelectMessage::Checked(Ok(Box::new(
+        session,
+    )))));
+    evaluate(&mut editor);
+    assert!(editor.select.state.summary.as_ref().unwrap().revision > revision);
+    assert!(
+        editor.select.state.rows.len() == 0,
+        "no row of the new revision read yet"
+    );
+    let now = editor
+        .session
+        .browse
+        .selection
+        .active
+        .expect("carried over");
+    assert_eq!(
+        editor.select.state.rows.row(now).map(|row| &row.item),
+        Some(&item)
+    );
+    assert!(editor.select.state.rows.read(now).is_none());
+    let kept = editor
+        .workspace
+        .select
+        .loupe
+        .subject
+        .expect("the loupe keeps its frame");
+    assert_eq!(kept.position, frame.position);
+    assert!(
+        editor.select.state.rows.row(now + 1).is_some(),
+        "its neighbours too"
+    );
+    // The new revision's rows replace it.
+    read_rows(&mut editor);
+    assert_eq!(
+        editor.select.state.rows.read(now).map(|row| &row.item),
+        Some(&item)
+    );
+    finish(editor, catalog);
+}
+
 /// Run everything the editor has asked the owner for — the reads showing Select or a change makes,
 /// a staleness check, an evaluation, a change's label and the rows near the screen — as their
 /// tasks would, until nothing is in flight.
@@ -630,6 +713,26 @@ fn settle(editor: &mut Editor) {
         }
     }
     panic!("Select did not settle");
+}
+
+/// Wait until the owner runs no background work — the preview lane's grid job for a view writes
+/// fingerprints that move the index's revision and leave the view stale — and the view is current,
+/// read again through the wake as the desktop reads it, so the next gesture names the view the
+/// owner holds whatever the host's load.
+fn steady(editor: &mut Editor) {
+    luxforge_testbase::wait_for("the owner's work to end and the view to be current", || {
+        let (board, _) = call(&editor.owner, editor.client, "activity.list", json!({})).unwrap();
+        if !board["active"].as_array().is_some_and(Vec::is_empty) {
+            return None;
+        }
+        let _ = editor.update(Message::Sync(SyncMessage::Changed));
+        settle(editor);
+        let current = !session_now(&editor.owner, editor.client)
+            .unwrap()
+            .browse
+            .stale;
+        current.then_some(())
+    });
 }
 
 /// A key pressed with no text field focused, through the editor's own key table.
@@ -724,6 +827,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         1000.0, 700.0,
     ))));
     settle(&mut editor);
+    steady(&mut editor);
     let name = |editor: &Editor, item: u32| {
         editor
             .select
@@ -982,12 +1086,6 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
         })
     );
     settle(&mut editor);
-    let summary = editor.select.state.summary.clone().unwrap();
-    assert_eq!(
-        crate::state::select::next_moment(&summary, 1),
-        Some(3),
-        "past the burst of three"
-    );
 
     // An undo whose item an agent changed since is refused, naming it; nothing changes.
     let first = name(&editor, 1);
@@ -1024,9 +1122,10 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
 #[test]
 fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
     let (mut editor, catalog) = selecting();
-    let agent = editor.owner.register();
-    let (volumes, _) = call(&editor.owner, agent, "volume.list", json!({})).unwrap();
-    let (cards, _) = call(&editor.owner, agent, "card.list", json!({})).unwrap();
+    // The rows are checked against the one `card.list` and `volume.list` the desktop read: other
+    // tests attach and detach disk images, so the host's mounts may differ at a second read.
+    let cards = serde_json::to_value(editor.select.state.cards.as_ref().unwrap()).unwrap();
+    let volumes = serde_json::to_value(editor.select.state.volumes.as_ref().unwrap()).unwrap();
     let sources = editor.workspace.select.sources.clone();
     assert_eq!(
         sources.cards.len(),

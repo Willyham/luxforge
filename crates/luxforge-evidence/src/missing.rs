@@ -1,4 +1,4 @@
-//! Evidence steps on Select's Missing originals (TASK-023): each gesture sent through the message
+//! Evidence steps on Select's Missing originals: each gesture sent through the message
 //! its control sends, the native dialogs bypassed with the path the step names, and captured once
 //! nothing Missing originals asked the owner for is in flight.
 use super::{is_false, text};

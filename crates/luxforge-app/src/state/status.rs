@@ -249,7 +249,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
-        render: if inputs.rendering {
+        // A cached preview drawn while its photograph's original prepares says so first, even
+        // while that photograph's render is on its way.
+        render: if let Some(preview) = &inputs.develop.preview {
+            preview.render_text()
+        } else if inputs.rendering {
             "Rendering…".into()
         } else {
             match inputs.render {

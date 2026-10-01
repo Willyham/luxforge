@@ -69,6 +69,22 @@ impl Presenter {
         self.photo.is_some()
     }
 
+    /// Make a decoded cached preview the photograph on screen, sharing its bytes: the photograph
+    /// Develop is switching to, drawn while its original prepares. `false` when the buffer does not
+    /// hold its own size, and then nothing is on screen.
+    pub(crate) fn show_preview<P: AsRef<[u8]> + Send + Sync + 'static>(
+        &mut self,
+        pixels: Arc<P>,
+        (width, height): (u32, u32),
+        content: u64,
+    ) -> bool {
+        self.photo_content = None;
+        self.full_content = None;
+        self.photo = frame(pixels, width, height, &mut self.photo_versions);
+        self.photo_content = self.photo.is_some().then_some(content);
+        self.photo.is_some()
+    }
+
     pub(crate) fn show_proxy(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
         let shown = self.show_photo(raster);
         self.photo_content = shown.then_some(content);

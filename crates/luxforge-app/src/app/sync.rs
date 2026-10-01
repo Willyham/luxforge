@@ -287,6 +287,10 @@ impl Editor {
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
         }
+        // ── catalog lane D: views and desktop ──
+        // A file opened is opened alone: Develop has no development set for it.
+        self.develop_opened_alone();
+        // ── end lane D ──
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
