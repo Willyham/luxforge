@@ -1751,9 +1751,9 @@ impl Owner {
         }
     }
 
-    /// Forget a client's session. A gone client leaves every source and analysis job it wanted
-    /// exactly as a cancel does, and the work nobody else wants is stopped; its capability and
-    /// export jobs run on, since they belong to no client.
+    /// Forget a client's session. A gone client leaves every source, analysis and shared catalog
+    /// job it wanted exactly as a cancel does, and the work nobody else wants is stopped; its
+    /// capability and export jobs run on, since they belong to no client.
     fn disconnect(&mut self, client: ClientId) {
         self.sessions.remove(&client);
         for (job_id, kind) in self.jobs.disconnect(client) {
@@ -1813,6 +1813,7 @@ impl Owner {
     /// A source task sees its cancelled control between steps, and on the memory gate should it
     /// wait there. An analysis still in the pending slot is dropped and recorded `cancelled` now;
     /// a running one is abandoned, stops within a chunk and is recorded when its outcome arrives.
+    /// A catalog lane's shared job is ended by its lane, as a cancelled lane job is.
     fn stop(&mut self, job_id: &JobId, kind: JobKind) {
         match kind.family() {
             Family::Source => self.sources.gate.wake(),
@@ -1823,7 +1824,8 @@ impl Owner {
                     self.jobs.finish(job_id, Err(Error::cancelled(CANCELLED)));
                 }
             }
-            Family::Capability | Family::Export | Family::Catalog => {}
+            Family::Catalog => self.catalog_cancelled(job_id, kind),
+            Family::Capability | Family::Export => {}
         }
     }
 
@@ -1870,8 +1872,8 @@ impl Owner {
     }
 }
 
-/// `job.read`: any job of any kind, in the one shape. A source or analysis job is read by the
-/// clients that requested it; a capability or export job by any client.
+/// `job.read`: any job of any kind, in the one shape. A source or analysis job, and a catalog job
+/// shared by interest, is read by the clients that requested it; any other job by any client.
 pub(super) fn job_read(
     owner: &mut Owner,
     call: &Call<'_>,
@@ -1880,10 +1882,11 @@ pub(super) fn job_read(
     owner.read_job(&params.job_id, call.client)
 }
 
-/// `job.cancel`, by the job's kind. A source or analysis job belongs to the clients that want it:
-/// the caller leaves it, and the work stops only when no other client wants it. A capability or
-/// export job belongs to no client: its cancel stops it for everyone. Answers the job as `job.read`
-/// does afterwards.
+/// `job.cancel`, by the job's kind. A source or analysis job, and a catalog job shared by interest
+/// (a preview read's or render's), belongs to the clients that want it: the caller leaves it, and
+/// the work stops only when no other client wants it. A capability, export or other catalog job
+/// belongs to no client: its cancel stops it for everyone. Answers the job as `job.read` does
+/// afterwards.
 ///
 /// Every cancel converges, so it carries no mutation envelope and a retry needs no stored answer:
 /// a left job stays left, a cancelled one stays cancelled and a finished one is answered as it is.
@@ -1914,6 +1917,13 @@ pub(super) fn job_cancel(
             .cancel(&mut owner.jobs, job_id, &mut owner.announced)?,
         Family::Export => {
             owner.jobs.cancel(job_id, export::CANCELLED);
+        }
+        Family::Catalog if owner.jobs.shared(job_id) => {
+            let release = owner.jobs.release(job_id, client)?;
+            owner.catalog.previews.released(job_id, client, &owner.jobs);
+            if release == Release::Stopped {
+                owner.stop(job_id, kind);
+            }
         }
         Family::Catalog => {
             owner.jobs.cancel(job_id, CANCELLED);

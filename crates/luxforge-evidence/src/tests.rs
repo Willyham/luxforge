@@ -973,3 +973,78 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         "unknown variant",
     );
 }
+
+#[test]
+fn loupe_steps_round_trip_and_bound_their_presses() {
+    let steps = round_trip(json!([
+        {"loupe": {"arrows": {"direction": "right", "count": 1}}},
+        {"loupe": {"arrows": {"direction": "left", "count": 30, "interval_ms": 30}}},
+        {"loupe": {"pointer": [0.25, 0.75]}},
+    ]));
+    assert_eq!(
+        steps[0],
+        Step::Loupe(LoupeStep::Arrows(LoupeArrows {
+            direction: ArrowKey::Right,
+            count: 1,
+            interval_ms: None,
+        }))
+    );
+    assert_eq!(
+        steps[1],
+        Step::Loupe(LoupeStep::Arrows(LoupeArrows {
+            direction: ArrowKey::Left,
+            count: 30,
+            interval_ms: Some(30),
+        }))
+    );
+    assert_eq!(steps[2], Step::Loupe(LoupeStep::Pointer([0.25, 0.75])));
+    for (arrows, expected) in [
+        (json!({"direction": "right", "count": 0}), "from 1 to 240"),
+        (
+            json!({"direction": "right", "count": 241, "interval_ms": 30}),
+            "from 1 to 240",
+        ),
+        (
+            json!({"direction": "right", "count": 1, "interval_ms": 30}),
+            "one loupe arrow press takes no interval_ms",
+        ),
+        (
+            json!({"direction": "right", "count": 2}),
+            "need interval_ms from 1 to 1000",
+        ),
+        (
+            json!({"direction": "right", "count": 2, "interval_ms": 0}),
+            "need interval_ms from 1 to 1000",
+        ),
+    ] {
+        refused(json!([{"loupe": {"arrows": arrows}}]), expected);
+    }
+    refused(
+        json!([{"loupe": {"pointer": [1.5, 0.5]}}]),
+        "loupe pointer x needs a finite fraction",
+    );
+}
+
+#[test]
+fn a_grid_scroll_round_trips_and_bounds_its_speed_and_frames() {
+    let steps = round_trip(json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 240}}]));
+    assert_eq!(
+        steps[0],
+        Step::GridScroll(GridScrollStep {
+            px_per_frame: 60.0,
+            frames: 240,
+        })
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 0.5, "frames": 240}}]),
+        "px_per_frame takes a number from 1 to 2000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 1001}}]),
+        "frames takes an integer from 1 to 1000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0}}]),
+        "missing field `frames`",
+    );
+}

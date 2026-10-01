@@ -3,7 +3,7 @@
 use super::{
     Scale,
     data::{self, BURST},
-    desktop::{DesktopContext, desktop_probes},
+    desktop::DesktopContext,
     develop_switch::develop_switch,
     measures,
     report::{self, Report, Row},
@@ -128,8 +128,10 @@ fn catalog_measure_skipped_figures_keep_their_metric_names() {
         && row["scope"].is_string()));
 }
 
+/// The desktop probes launch the editor (`desktop.rs`'s own test turns their figures into rows);
+/// the Develop switch names its lane until it is built.
 #[test]
-fn catalog_measure_desktop_probes_and_develop_switch_name_their_lane() {
+fn catalog_measure_develop_switch_names_its_lane() {
     let dir = tempdir();
     let context = DesktopContext {
         binary: dir.path().join("luxforge"),
@@ -138,19 +140,6 @@ fn catalog_measure_desktop_probes_and_develop_switch_name_their_lane() {
         folder_10k: dir.path().join("folder"),
         raw_trip: None,
     };
-    let desktop: Vec<Value> = desktop_probes(&context)
-        .unwrap()
-        .into_iter()
-        .map(Row::value)
-        .collect();
-    assert_eq!(desktop.len(), super::desktop::PROBES.len());
-    assert!(
-        desktop
-            .iter()
-            .all(|row| row["status"] == report::NOT_MEASURED
-                && row["reason"].as_str().unwrap().contains("lane B")
-                && row["target"].is_string())
-    );
     let switch: Vec<Value> = develop_switch(&context)
         .unwrap()
         .into_iter()
