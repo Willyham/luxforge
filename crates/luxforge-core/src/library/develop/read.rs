@@ -11,8 +11,15 @@
 //!   damaged entropy stream, which the first preparation of the photograph reports as it would for
 //!   a file damaged after it was developed.
 //! - **A RAW**'s interpretation is the RAW decoder's metadata, which `RawSource::decode` answers
-//!   only after unpacking the sensor mosaic; the mosaic is dropped at once and nothing is
-//!   demosaiced or developed.
+//!   only after unpacking the sensor mosaic: the black levels are refined from the mosaic's masked
+//!   pixels as it is unpacked (Canon's CR2 and CR3), a DNG's bad-pixel repair is planned from
+//!   its samples, and a damaged mosaic is refused only there, so no read of the metadata alone
+//!   answers what a preparation later checks against. Nothing is demosaiced or developed.
+//!
+//! A one-file Develop, which opening a file is, keeps what it read ([`ReadFile::kept`]) — a JPEG's
+//! bytes, a RAW's unpacked sensor — for the preparation that follows, which then reads, hashes and
+//! decodes nothing again ([`crate::editor::ReadOriginal`]); any other Develop drops it with the
+//! file, so a batch holds one file's bytes at a time.
 //!
 //! A card's pick may then be developed from a copy in an indexed folder ([`from_copy`]), once the
 //! copy's own streamed fingerprint is the card file's.
@@ -20,8 +27,14 @@ use crate::{
     EditorService, Error, ErrorKind, SourceKind,
     atomic_file::file_error,
     catalog_types::{Dimensions, ExifOrientation, HeaderMetadata, PlaceNames, Volume},
-    editor::{RawInterpretation, SourceSignature, source_signature, source_signature_for_handle},
-    export::metadata::{header::read_header, jpeg_orientation},
+    editor::{
+        RawInterpretation, ReadContent, SourceSignature, source_signature,
+        source_signature_for_handle,
+    },
+    export::{
+        CaptureMetadata,
+        metadata::{header::read_header, jpeg_orientation},
+    },
     index::volume_of,
     jobs::JobControl,
     library::locate::{self, CHUNK, Phase},
@@ -33,6 +46,7 @@ use std::{
     fs::File,
     io::{Cursor, ErrorKind as IoErrorKind, Read},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// One file read and interpreted for a Develop: what its photograph is made of.
@@ -55,14 +69,19 @@ pub(crate) struct ReadFile {
     pub place: Option<String>,
     /// The volume it is on, seen as it was read.
     pub volume: Volume,
+    /// What was read of it, when the read was asked to keep it for the preparation that follows
+    /// a one-file Develop: the same bytes, whose SHA-256 is `fingerprint`.
+    pub kept: Option<ReadContent>,
 }
 
 /// Read, fingerprint and interpret the file at `path`, bounded by its kind's limit (JPEG
 /// [`MAX_JPEG_BYTES`], anything else RAW's `MAX_SOURCE_BYTES`), in [`CHUNK`]s, cancellable
-/// between them. A file that is missing is `source-unavailable`; one that changes while it is read,
-/// `conflict`; one Luxforge cannot open, its decoder's refusal; a cancel, `cancelled`.
+/// between them, keeping what it read when `keep` is set ([`ReadFile::kept`]). A file that is
+/// missing is `source-unavailable`; one that changes while it is read, `conflict`; one Luxforge
+/// cannot open, its decoder's refusal; a cancel, `cancelled`.
 pub(crate) fn read(
     path: &Path,
+    keep: bool,
     control: &JobControl,
     pause: &dyn Fn(Phase),
 ) -> Result<ReadFile, Error> {
@@ -77,20 +96,29 @@ pub(crate) fn read(
     let header = read_header(&mut Cursor::new(&bytes[..]), bytes.len() as u64)
         .map(|read| read.header.metadata())
         .unwrap_or_default();
-    let (source, stored, orientation) = if bytes.starts_with(&[0xff, 0xd8]) {
-        jpeg(&bytes)?
+    let (source, stored, orientation, kept) = if bytes.starts_with(&[0xff, 0xd8]) {
+        let (source, stored, orientation) = jpeg(&bytes)?;
+        let kept = keep.then(|| ReadContent::Jpeg(Arc::new(bytes)));
+        (source, stored, orientation, kept)
     } else {
-        // The bytes go to the decoder as read, and are dropped with the mosaic it unpacks.
+        // The capture metadata a preparation reads from the bytes, taken before the decoder takes
+        // them: they go to it as read, and are dropped once it has unpacked the mosaic.
+        let capture = keep.then(|| Arc::new(CaptureMetadata::from_raw(&bytes)));
         let sensor = luxforge_raw::RawSource::decode(bytes, control.flag())
             .map_err(|error| cancelled(raw_error(error)))?;
         let metadata = RawInterpretation::new(sensor.metadata().clone())?;
-        drop(sensor);
+        // Kept, the sensor goes to the preparation that follows; otherwise it is dropped here.
+        let kept = capture.map(|capture| ReadContent::Raw {
+            sensor: Arc::new(sensor),
+            capture,
+        });
         let crop = metadata.default_crop;
         let orientation = metadata.exif_orientation;
         (
             SourceKind::Raw { metadata },
             (crop.width, crop.height),
             orientation,
+            kept,
         )
     };
     control.checkpoint()?;
@@ -118,6 +146,7 @@ pub(crate) fn read(
         header,
         place,
         volume,
+        kept,
     })
 }
 
