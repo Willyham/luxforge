@@ -5,13 +5,17 @@
 //! --assets 1`, seed 1) into `generated/`, and asks the core for its own answers over a pristine
 //! copy before the editor touches it: the folder read by the index lane and viewed as the desktop
 //! first views it, and its rows. From them and the images' manifest it chooses a burst of at least
-//! three frames and a bracket from metadata. The editor then opens the catalog with nothing open.
+//! three frames and a bracket from metadata. It then reads the folder into the catalog's own index
+//! and develops two of its other images into the catalog (`pick.develop`, into the folders its
+//! plan proposes), whose originals are real, so a catalog view has photographs to show. The editor then opens the catalog with nothing open.
 //! Its frames, in [`plan`] order: `G` showing Select; the folder browsed; the burst's first frame
 //! clicked; `E` opening the loupe on it; `→` twice; `1` back to the moment's first frame; `↓` to
 //! the next moment and `↑` back; `Esc` to the grid; the bracket's first frame clicked and `E`;
 //! `→`; `Z`, the 100% focus check at the middle of the frame; `C`, the bracket side by side; `P`,
-//! picking the bracket's frame where it stands; `Esc` back to the grid; and the burst's second
-//! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7).
+//! picking the bracket's frame where it stands; `Esc` back to the grid; the burst's second
+//! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7);
+//! and `Esc`, All photographs, the first imported photograph clicked (where the core's view of
+//! them puts it, beside the generated catalog's own) and `E`, the loupe over it.
 //!
 //! Each loupe frame's `select.loupe` block is checked against the core's answers: the active frame
 //! is the row at the position the step moved to, and the picture drawn is that frame's own (draw
@@ -21,7 +25,9 @@
 //! decoded independently, and on the bracket, nearer its own exposure than its siblings'; the
 //! focus check's inset against the same rectangle of the file at 100%. Each `P` is Select's own
 //! pick: one `pick.set` recorded as this desktop, the view's pick count one higher, its label in
-//! the status bar. Everything compared is written to
+//! the status bar. Over All photographs the loupe shows an imported photograph's rendered large
+//! tier, its middle against its file's, and the strip draws each photograph's own rendered grid
+//! tier, which the loupe reads and decodes itself. Everything compared is written to
 //! `app/loupe-checks.json`; the core's answers from before the run are kept in
 //! `loupe-expected.json`, so a replay checks the same frames against them.
 use crate::{
@@ -38,7 +44,8 @@ pub const SCENARIO: &str = "loupe";
 pub const NOTE: &str = "The run first generates a folder of images and a catalog into \
     `generated/` with `cargo xtask generate-catalog --images 120 --assets 1 --seed 1`, asks the \
     core for the answers the frames are checked against over a pristine copy \
-    (`loupe-expected.json`), and launches the editor over that catalog with `--catalog`.";
+    (`loupe-expected.json`), develops two of the folder's other images into the catalog with \
+    `pick.develop`, and launches the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and images.
 pub const GENERATED: &str = "generated";
 /// The core's answers from before the run.
@@ -47,6 +54,10 @@ const SEED: u64 = 1;
 const IMAGES: u32 = 120;
 /// What the loupe says a generated JPEG's picture is: the file itself, its own full-size preview.
 const SOURCE: &str = "Camera preview \u{b7} 640 \u{d7} 427";
+/// What it says a developed photograph's picture is: its rendered large tier, the original's size.
+const RENDERED: &str = "Preview \u{b7} 640 \u{d7} 427";
+/// The folder's images imported into the catalog as developed photographs.
+const PHOTOGRAPHS: usize = 2;
 /// How far a patch of the drawn picture may be from the same patch of its file, in 8-bit codes
 /// of luminance: the decoders differ in rounding and the picture is resampled to the screen.
 const DRAWN_TOLERANCE: f64 = 10.0;
@@ -75,6 +86,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
     let images = expected["folder"]["count"]
         .as_u64()
         .ok_or("The expected answers hold no folder view")?;
+    let photo = photo_position(expected)?;
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
     let arrow = |name: &str, direction| {
         select(
@@ -119,7 +131,31 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         click("burst-again", burst + 1),
         key("burst-loupe", "e"),
         key("burst-pick", "p").status(picked(burst + 1)?),
+        key("photos-grid", script::KEY_ESCAPE),
+        select("photographs", SelectStep::Source("All photographs".into())),
+        click("photo", photo),
+        key("photo-loupe", "e"),
     ]))
+}
+
+/// The position in All photographs, as the core answered it, of the first photograph the run
+/// imported: the view also holds the generated catalog's own, whose originals are not on disk.
+fn photo_position(expected: &Value) -> Result<u32> {
+    let imported = &expected["photographs"]["imported"];
+    expected["photographs"]["view"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| {
+            imported
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|photo| photo["file_name"] == row["file_name"])
+        })
+        .and_then(|row| row["position"].as_u64())
+        .map(|position| position as u32)
+        .ok_or_else(|| "The expected answers show no imported photograph".into())
 }
 
 /// One request through the runner's own client.
@@ -270,6 +306,116 @@ fn expect(generated: &Path) -> Result<Value> {
     answers
 }
 
+/// A job read until it has ended, within two minutes.
+fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Result<Value> {
+    let job = json!({"job_id": job});
+    let started = std::time::Instant::now();
+    loop {
+        let read = ask(owner, client, "job.read", job.clone())?;
+        if !matches!(read["status"].as_str(), Some("queued" | "running")) {
+            return Ok(read);
+        }
+        ensure(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            format!("the setup's job did not end: {read}"),
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Develop [`PHOTOGRAPHS`] of the folder's frames into the generated catalog through the core's
+/// own `pick.develop` (into the folders its plan proposes): the last of the view outside the
+/// burst, the frame after it and the bracket, so the steps over files see nothing change. The
+/// folder is read into the catalog's own index first, since a file is developed from its row.
+/// Answers their rows (`imported`), and the rows of All photographs as the desktop first views it
+/// (`view`): the catalog's photographs newest first, ungrouped, the generated catalog's own among
+/// them.
+fn develop(generated: &Path, expected: &Value) -> Result<Value> {
+    let span = |key: &str| {
+        let start = expected[key]["start"].as_u64().unwrap_or(0);
+        start..start + expected[key]["len"].as_u64().unwrap_or(0)
+    };
+    let (burst, bracket) = (span("burst"), span("bracket"));
+    let used = |position: u64| {
+        (burst.start..=burst.end).contains(&position) || bracket.contains(&position)
+    };
+    let chosen: Vec<Value> = expected["rows"]
+        .as_array()
+        .ok_or("The expected answers hold no rows")?
+        .iter()
+        .rev()
+        .filter(|row| row["position"].as_u64().is_some_and(|at| !used(at)))
+        .take(PHOTOGRAPHS)
+        .cloned()
+        .collect();
+    ensure(
+        chosen.len() == PHOTOGRAPHS,
+        "The folder has too few frames to develop",
+    )?;
+    let (owner, join) = OwnerHandle::start(&generated.join(generate_catalog::CATALOG))
+        .map_err(|error| format!("the core cannot open the generated catalog: {error}"))?;
+    let client = owner.register();
+    let view = (|| -> Result<Vec<Value>> {
+        // A file is developed from its row of the catalog's own index, so the folder is read into
+        // it first, as the desktop's folder step would.
+        let started = ask(
+            &owner,
+            client,
+            "index.refresh",
+            json!({"source": {"kind": "folder", "path": generated.join("images")}}),
+        )?;
+        let read = settle(&owner, client, &started["job_id"])?;
+        ensure(
+            read["status"] == "ready",
+            format!("the core could not read the images: {read}"),
+        )?;
+        let paths: Vec<Value> = chosen.iter().map(|row| row["path"].clone()).collect();
+        let started = ask(
+            &owner,
+            client,
+            "pick.develop",
+            json!({
+                "targets": {"kind": "paths", "paths": paths},
+                "into": [],
+                "mutation": {"request_id": "loupe-smoke-develop", "actor": "loupe-smoke"},
+            }),
+        )?;
+        let developed = settle(&owner, client, &started["job_id"])?;
+        ensure(
+            developed["status"] == "ready",
+            format!("the core could not develop the photographs: {developed}"),
+        )?;
+        let view = ask(
+            &owner,
+            client,
+            "browse.view",
+            json!({
+                "source": {"kind": "all-photographs"},
+                "sort": {"key": "capture-time", "descending": true},
+                "grouping": "none",
+            }),
+        )?;
+        let count = view["count"]
+            .as_u64()
+            .ok_or("All photographs has no count")?;
+        let rows = ask(
+            &owner,
+            client,
+            "browse.rows",
+            json!({"from": 0, "count": count}),
+        )?;
+        Ok(rows["rows"]
+            .as_array()
+            .ok_or("All photographs answered no rows")?
+            .iter()
+            .map(|row| json!({"position": row["position"], "file_name": row["file_name"]}))
+            .collect())
+    })();
+    owner.stop();
+    let _ = join.join();
+    Ok(json!({"imported": chosen, "view": view?}))
+}
+
 /// Generate the images and the core's answers (a replay reads the recorded ones), plan the launch
 /// from them, launch the editor over the catalog and check it.
 pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
@@ -289,7 +435,9 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
                     images: Some(IMAGES),
                 },
             )?;
-            write_json(&expected_file, &expect(&generated)?)?;
+            let mut expected = expect(&generated)?;
+            expected["photographs"] = develop(&generated, &expected)?;
+            write_json(&expected_file, &expected)?;
         }
         let expected = read_json(&expected_file)?;
         let plan = plan(&expected)?;
@@ -687,12 +835,94 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "burst-pick",
         burst + burst_len,
     )?;
+    photo_loupe(&mut checks, &expected, launch.at("photo-loupe")?)?;
     checks.write(
         &launch.evidence,
         "loupe",
         json!({"expected": {"burst": expected["burst"], "bracket": expected["bracket"],
-            "folder": expected["folder"]}, "tolerance": DRAWN_TOLERANCE}),
+            "folder": expected["folder"], "photographs": expected["photographs"]},
+            "tolerance": DRAWN_TOLERANCE}),
     )
+}
+
+/// `E` over All photographs on the imported photograph clicked: the loupe on it, its picture its
+/// own rendered large tier, settled, its middle what its original shows; and the strip, each of
+/// whose frames is a photograph drawn from its own rendered grid tier, which the loupe read and
+/// decoded itself.
+fn photo_loupe(checks: &mut Checks, expected: &Value, frame: &Frame) -> Result {
+    let block = loupe(frame);
+    let active = &block["active"];
+    let position = photo_position(expected)?;
+    let original = expected["photographs"]["imported"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["file_name"] == active["name"])
+        .ok_or_else(|| {
+            format!(
+                "photo-loupe: the loupe shows {}, not an imported photograph",
+                active["name"]
+            )
+        })?;
+    ensure(
+        block["open"] == true
+            && active["item"]["kind"] == "photo"
+            && active["position"] == position
+            && select(frame)["selection"]["active"] == position,
+        format!("photo-loupe: the loupe is not on the photograph at {position}: {active}"),
+    )?;
+    let picture = &block["picture"];
+    ensure(
+        block["identity"] == true
+            && picture["item"] == active["item"]
+            && picture["origin"] == "rendered"
+            && picture["stand_in"] == false
+            && block["info"]["source"] == RENDERED,
+        format!(
+            "photo-loupe: the picture is not the photograph's own rendered tier: {picture}, {}",
+            block["info"]["source"]
+        ),
+    )?;
+    let frames = &block["frames"];
+    ensure(
+        block["settled"] == true
+            && frames["settled"] == true
+            && frames["bytes"].as_u64() <= frames["budget"].as_u64(),
+        format!("photo-loupe: captured unsettled or past the budget: {frames}"),
+    )?;
+    let thumbnails = block["strip"]["thumbnails"]
+        .as_array()
+        .filter(|thumbnails| !thumbnails.is_empty())
+        .ok_or("photo-loupe: the strip recorded no frames")?;
+    for thumbnail in thumbnails {
+        ensure(
+            thumbnail["item"]["kind"] == "photo"
+                && thumbnail["drawn"] == true
+                && thumbnail["picture"]["item"] == thumbnail["item"]
+                && thumbnail["picture"]["origin"] == "rendered"
+                && thumbnail["picture"]["stand_in"] == false,
+            format!("photo-loupe: a strip frame is not its photograph's grid tier: {thumbnail}"),
+        )?;
+    }
+    ensure(
+        frames["thumbnails"].as_u64() == Some(thumbnails.len() as u64)
+            && frames["thumbnails_held"] == frames["thumbnails"],
+        format!("photo-loupe: the strip's thumbnails are not all held: {frames}"),
+    )?;
+    checks.compare(
+        frame,
+        "photo-loupe: the drawn photograph's middle against its original's",
+        drawn_luminance(frame, &active["rect"])?,
+        file_luminance(original["path"].as_str().unwrap_or_default(), None)?,
+        Tolerance::Within(DRAWN_TOLERANCE),
+    )?;
+    checks.note(
+        frame,
+        "photo-loupe: a developed photograph in the loupe, the strip its own grid tiers",
+        json!({"active": active, "picture": picture, "info": block["info"],
+            "strip": block["strip"], "frames": frames}),
+    );
+    Ok(())
 }
 
 /// A `P` in the loupe: the last library request is one `pick.set` of the file at `position`, as
@@ -753,10 +983,18 @@ mod tests {
             "rows": (0..120)
                 .map(|at| json!({"position": at, "file_name": format!("IMG_{at:04}.JPG")}))
                 .collect::<Vec<_>>(),
+            "photographs": {
+                "imported": [{"position": 119, "file_name": "IMG_0119.JPG"}],
+                "view": [
+                    {"position": 0, "file_name": "L1003201.DNG"},
+                    {"position": 1, "file_name": "IMG_0119.JPG"},
+                ],
+            },
         });
+        assert_eq!(photo_position(&expected).unwrap(), 1, "the imported one");
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 21);
+        assert_eq!(plan.len(), 25);
         assert!(plan.scripted());
     }
 }

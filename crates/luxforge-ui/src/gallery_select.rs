@@ -6,8 +6,8 @@
 use crate::gallery_thumbnails::{bracket, thumbnail};
 use crate::{
     ButtonSize, ButtonTone, ChipEnd, DevelopButtonModel, FilmstripModel, FilterChipModel,
-    FilterOption, FilterSegmentsModel, FocusInsetModel, FrameStripModel, Icon, InsetSource,
-    KeyHint, LabelledButtonModel, LoupeInfoModel, MenuEntry, MenuItem, MomentFrame,
+    FilterOption, FilterSegmentsModel, FocusInsetModel, FrameStripModel, Icon, InsetRegion,
+    InsetSource, KeyHint, LabelledButtonModel, LoupeInfoModel, MenuEntry, MenuItem, MomentFrame,
     ProgressSheetModel, SearchFieldModel, SourceCount, SourceHeadingModel, SourceRowModel,
     StatusJobModel, Volume, WorkProgress, WorkRowModel, WorkspaceTab, caption, develop_button,
     filmstrip, filmstrip_capacity, filter_action, filter_bar, filter_chip, filter_segments,
@@ -550,11 +550,17 @@ fn frames(total: usize, active: usize, picked: usize, capacity: usize) -> Elemen
 fn insets() -> Element<'static, ()> {
     row![
         focus_inset(&FocusInsetModel {
-            region: Some(thumbnail(0)),
+            region: Some(InsetRegion {
+                handle: thumbnail(0),
+                size: Size::new(theme::FOCUS_INSET_WIDTH, theme::FOCUS_REGION_HEIGHT),
+            }),
             source: InsetSource::CameraPreview,
         }),
         focus_inset(&FocusInsetModel {
-            region: Some(bracket(1)),
+            region: Some(InsetRegion {
+                handle: bracket(1),
+                size: Size::new(theme::FOCUS_INSET_WIDTH, theme::FOCUS_REGION_HEIGHT),
+            }),
             source: InsetSource::Development,
         }),
     ]

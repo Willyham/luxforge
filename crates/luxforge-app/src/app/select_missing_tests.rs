@@ -75,12 +75,18 @@ impl Client {
     fn import(&self, path: &Path) -> AssetId {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let started = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": {"request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)), "actor": "setup"}}),
+            "pick.develop",
+            json!({
+                "targets": {"kind": "paths", "paths": [path]},
+                "into": [],
+                "confirm_removable": true,
+                "mutation": {"request_id": format!("import-{}", NEXT.fetch_add(1, Ordering::Relaxed)), "actor": "setup"},
+            }),
         );
         let settled = self.settle(&started["job_id"]);
         assert_eq!(settled["status"], "ready", "{settled}");
-        serde_json::from_value(settled["result"]["asset"]["id"].clone()).unwrap()
+        assert_eq!(settled["result"]["failed"], json!([]), "{settled}");
+        serde_json::from_value(settled["result"]["developed"][0]["asset_id"].clone()).unwrap()
     }
 
     fn locator(&self, asset: &AssetId) -> PathBuf {

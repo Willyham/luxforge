@@ -4,7 +4,9 @@
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
 // ── catalog lane D: views and desktop ──
+mod grid;
 mod long_work;
+mod loupe;
 mod select;
 mod select_catalog;
 mod select_missing;
@@ -121,6 +123,12 @@ pub(crate) struct Evidence {
     pub(crate) agent_wait: Option<AgentWait>,
     /// What a running long-running-work step still waits for (catalog lane D).
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// A running loupe `arrows` step's presses still to send (catalog lane D). Its timer exists only
+    /// while presses remain after the first.
+    pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
+    /// A running `grid_scroll` step's frames still to scroll (catalog lane D). The window's frame
+    /// clock it rides is subscribed to only while it runs.
+    pub(crate) grid_scroll: Option<grid::GridScrolling>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -190,6 +198,8 @@ impl Evidence {
             agent: None,
             agent_wait: None,
             long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         }
@@ -895,6 +905,8 @@ impl Editor {
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
             // ── catalog lane D: views and desktop ──
             EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
+            EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
+            EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
             // ── end lane D ──
         }
         Task::none()
@@ -969,6 +981,8 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
+            Step::Loupe(step) => self.loupe_step(step),
+            Step::GridScroll(step) => self.grid_scroll_step(step),
             Step::Catalog(step) => self.catalog_step(step),
             // ── end lane D ──
         }
@@ -4072,16 +4086,21 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A loupe `arrows` step's presses after its first, gated the same way (catalog lane D).
+        subscriptions.extend(loupe::subscription(evidence));
+        // A `grid_scroll` step's frame clock, gated the same way (catalog lane D).
+        subscriptions.extend(grid::subscription(evidence));
     }
     Subscription::batch(subscriptions)
 }
 
 /// After every message: a step waiting for quiet settles once this client has nothing in flight,
-/// and a capability step once its module's round trips and jobs have.
+/// a capability step once its module's round trips and jobs have, and a loupe `arrows` step
+/// presses its first arrow once the look-ahead is warm.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
-    Task::none()
+    editor.loupe_arrows_when_warm()
 }
 
 #[cfg(test)]
@@ -4408,6 +4427,8 @@ mod tests {
             agent: None,
             agent_wait: None,
             long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
         });
