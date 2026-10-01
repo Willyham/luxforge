@@ -296,7 +296,8 @@ pub(crate) fn set_now(
     Ok((photos, active))
 }
 
-/// The photograph at `index` of a set as the frames cache names it: its current entry.
+/// A photograph as the large previews cache names it: its current entry, which `preview.read`
+/// answers with the entry its preview is of.
 fn item(asset: &AssetId) -> PreviewItem {
     PreviewItem::Photo {
         asset_id: asset.clone(),
@@ -992,7 +993,10 @@ impl Editor {
         }
         match self.develop.retry.take() {
             Some(Retry::Plan { picked }) if self.develop.state.planning => self.plan_task(picked),
-            Some(Retry::Develop { params }) if self.develop.state.developing.is_some() => {
+            Some(Retry::Develop { mut params }) if self.develop.state.developing.is_some() => {
+                // The refused request recorded nothing: this is a new one, under its own identity.
+                params["mutation"] = json!(request());
+                self.develop.last.request = Some(params.clone());
                 self.develop_task(params)
             }
             _ => Task::none(),
