@@ -1,10 +1,10 @@
 //! Forgetting photographs that left the catalog through the owner (`forget_photographs`, which
-//! lane C's `asset.send-back` and `catalog.empty-removed` call once they commit): every row of
+//! `asset.send-back` and `catalog.empty-removed` call once they commit): every row of
 //! theirs and its file go, whatever the entry, tier or origin; their waiting and running renders
 //! and camera previews are cancelled, each render tier's job naming why, and nothing of theirs is
 //! written after; a view job counts them no more; other photographs keep their rows, files and
 //! work; a second call does nothing; and a send-back through the API followed by the call, as
-//! lane C makes it.
+//! the library makes it.
 use super::*;
 
 /// A row of `photo`'s and its file, written as the lane writes them — a rendered tier at this
@@ -242,7 +242,7 @@ fn a_request_that_joins_a_forgotten_camera_preview_runs_it_again() {
     assert!(setup.has_row(photo, &photo.entry, GRID, "rendered"));
 }
 
-/// As lane C calls it: `asset.send-back` commits, then the photographs it sent back are
+/// As the library calls it: `asset.send-back` commits, then the photographs it sent back are
 /// forgotten. The photograph's rendered tiers and camera previews go, rows and files; another
 /// photograph's stay, and a read of the one sent back is refused, as for any unknown photograph.
 #[test]

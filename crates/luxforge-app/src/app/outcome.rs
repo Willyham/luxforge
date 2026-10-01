@@ -81,14 +81,12 @@ pub(crate) enum Outcome<'a> {
         record: Option<&'a Value>,
         failure: Option<&'a str>,
     },
-    // ── catalog lane D: views and desktop ──
     /// Nothing the Select workspace asked the owner for is in flight: the events, the view, its
     /// facets, the rows near the screen and a staleness check have all answered.
     SelectSettled,
     /// Long-running work's model was derived again: what the status bar, the sheet and the
     /// Performance rows show may have changed.
     LongWorkShown,
-    // ── end lane D ──
 }
 
 /// What reached the photo surface.

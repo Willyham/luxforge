@@ -1,4 +1,4 @@
-//! **Lane B (previews)** on the owner: developed photographs' previews — `preview.read` of a
+//! The preview lane on the owner: developed photographs' previews — `preview.read` of a
 //! photograph, the render jobs of its grid and large tiers on their own worker, the camera preview
 //! it shows until its first render, and following every commit.
 //!

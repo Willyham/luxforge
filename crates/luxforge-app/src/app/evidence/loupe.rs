@@ -1,5 +1,5 @@
-//! Evidence steps on the loupe that its timing needs (**catalog lane D**; the loupe is
-//! `app/loupe.rs`): a warm press or a held arrow, and the pointer over the picture.
+//! Evidence steps on the loupe that its timing needs (the loupe is `app/loupe.rs`): a warm press or
+//! a held arrow, and the pointer over the picture.
 //!
 //! An `arrows` step waits until the look-ahead is warm — judged after every message from the frames
 //! the loupe holds, never by waiting a while — records `loupe_warm`, and then presses its arrow

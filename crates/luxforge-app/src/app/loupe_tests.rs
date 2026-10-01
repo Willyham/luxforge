@@ -199,7 +199,7 @@ fn loupe_steps_frames_and_moments_through_the_session() {
 
 /// Compare shows up to four frames of a moment and nothing for a single, which the status bar
 /// says; the focus check asks for the rectangle under the pointer in the frame's upright header
-/// size, and the two are exclusive. `P` picks nothing until lane D's picks land, and says so;
+/// size, and the two are exclusive. `P` picks the active frame through Select's own pick;
 /// P7 moves on from a picked burst frame to the next moment, and not from a bracket's.
 #[test]
 fn loupe_compares_checks_focus_and_moves_on_after_a_burst_pick() {

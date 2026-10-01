@@ -1,4 +1,4 @@
-//! Evidence steps on developing picks and Develop's development set (**lane D**): each gesture sent
+//! Evidence steps on developing picks and Develop's development set: each gesture sent
 //! through the message its control or key sends. A move through the set is captured in the frame
 //! after its key when that frame draws the photograph's cached preview, and once the move has
 //! settled otherwise; the other steps once nothing developing picks asked the owner for is in

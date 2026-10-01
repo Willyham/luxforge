@@ -357,10 +357,10 @@ pub(crate) fn grid_rows(connection: &Connection, files: &[FileId]) -> Result<Vec
     Ok(states)
 }
 
-/// Each file's grid state, in the order given, in one query (see [`grid_rows`]). For lane D's
-/// `browse.rows`; the owner's `PreviewsLane::grid_states` also reports `unavailable` for files the
+/// Each file's grid state, in the order given, in one query (see [`grid_rows`]). The owner's
+/// `PreviewsLane::grid_states` also reports `unavailable` for files the
 /// lane found no usable preview in.
-#[allow(dead_code, reason = "lane D's browse.rows calls it as it lands")]
+#[allow(dead_code, reason = "read by the tests")]
 pub(crate) fn grid_states(
     connection: &Connection,
     files: &[FileId],
@@ -373,7 +373,6 @@ pub(crate) fn grid_states(
 
 /// The preview cache's size by tier, for `catalog.info`: every recorded file, stale or not, since
 /// each is on disk until the lane removes it.
-#[allow(dead_code, reason = "lane C's catalog.info reads it as it lands")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CacheBytes {
     /// Files' and developed photographs' grid tiers.
@@ -386,7 +385,6 @@ pub(crate) struct CacheBytes {
     pub files: u64,
 }
 
-#[allow(dead_code, reason = "lane C's catalog.info reads it as it lands")]
 impl CacheBytes {
     pub(crate) fn total(&self) -> u64 {
         self.grid + self.loupe + self.large
@@ -394,7 +392,6 @@ impl CacheBytes {
 }
 
 /// The preview cache's size by tier, in one query.
-#[allow(dead_code, reason = "lane C's catalog.info calls it as it lands")]
 pub(crate) fn cache_bytes(connection: &Connection) -> Result<CacheBytes, Error> {
     let (grid, loupe, large, files): (i64, i64, i64, i64) = connection.query_row(
         "SELECT

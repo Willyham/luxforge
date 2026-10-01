@@ -1,7 +1,7 @@
 //! What organizing reads of files, from the index: the [`FrameFacts`] of every file the index lists
 //! in some folders, and of files it does not list, as `crate::organize`'s events and moments take
 //! them. A Develop plans with it; it is written for any caller that organizes files it names by
-//! folder (the views lane's events and grouping read the same columns), and reads nothing but the
+//! folder (browse views' events and grouping read the same columns), and reads nothing but the
 //! index's rows.
 use crate::{
     Error,

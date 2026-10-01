@@ -1,10 +1,10 @@
 //! Organization: the thresholds a view groups with, the per-frame record the organize functions
 //! read, and what they answer — events, and the day, camera and moment boundaries of a view.
 //!
-//! The functions themselves are lane A's, in `crate::organize`: pure functions of these records,
+//! The functions themselves are in `crate::organize`: pure functions of these records,
 //! the gazetteer ([`PlaceNames`]) and the thresholds, with the preview-brightness bracket check
-//! plugged in through [`BracketProbe`] (lane B). Nothing here is stored; changing a threshold
-//! regroups at once.
+//! plugged in through [`BracketProbe`] (the preview lane's). Nothing here is stored; changing a
+//! threshold regroups at once.
 use super::{
     BodyKey, CameraBody, EventId, Exposure, GeoPosition, LocalDay, Month, VolumeId,
     identity::ViewItem,
@@ -363,7 +363,7 @@ pub struct EventList {
 }
 
 /// The gazetteer the event names come from: the nearest populated place to a position, from data
-/// bundled with Luxforge and never an online lookup (P4). Lane A implements it.
+/// bundled with Luxforge and never an online lookup (P4).
 pub trait PlaceNames {
     fn nearest(&self, position: &GeoPosition) -> Option<String>;
 }
@@ -377,13 +377,14 @@ impl PlaceNames for NoPlaces {
     }
 }
 
-/// The preview-brightness bracket check (lane B) as organizing asks it, for a run the metadata
+/// The preview-brightness bracket check as organizing asks it, for a run the metadata
 /// cannot classify: each frame's measured exposure in stops relative to the first frame (brighter
 /// positive, the first `0`), one value per frame, and only when the framing is confirmed unchanged;
 /// `None` when it cannot tell — previews not decoded yet, or the framing moved. It must answer from
-/// previews already decoded, in microseconds, and never read a photograph's file. Lane B's is
-/// `previews::PreviewProbe` (`previews::bracket_probe`), which reads a run's stored fingerprints in
-/// one indexed query when it is asked about that run, and nothing for a run it is not asked about.
+/// previews already decoded, in microseconds, and never read a photograph's file. The preview
+/// lane's is `previews::PreviewProbe` (`previews::bracket_probe`), which reads a run's stored
+/// fingerprints in one indexed query when it is asked about that run, and nothing for a run it is
+/// not asked about.
 pub trait BracketProbe {
     fn measure(&self, frames: &[ViewItem]) -> Option<Vec<f32>>;
 }

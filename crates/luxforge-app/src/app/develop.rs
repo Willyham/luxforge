@@ -1,5 +1,5 @@
 //! Developing picks and Develop's development set ([catalog design](../../../../docs/design/catalog.md#developing-picks)).
-//! **Lane D (views and desktop)** owns this seam; its model is `state/develop.rs`.
+//! Its model is `state/develop.rs`.
 //!
 //! - **Develop N.** The title bar's Develop N or `Cmd+Return`, over a view of files with picks,
 //!   reads `pick.plan` of the picks in view and `folder.list` in one owner task, and opens the

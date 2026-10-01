@@ -1,9 +1,9 @@
-//! The catalog lanes on the owner: each lane's owner-side state, the messages its workers post
+//! The catalog's lanes on the owner: every lane's owner-side state, the messages its workers post
 //! back, its method handlers and its per-client clean-up live in a file of its own beside this one
-//! (`files.rs` lane A, `previews.rs` lane B, `library.rs` lane C, `views.rs` lane D), so the lanes
-//! grow the owner in parallel without touching the same lines. The owner holds them together as
-//! [`CatalogLanes`], hands every [`CatalogMessage`] to [`Owner::catalog_message`], tells them when
-//! a client disconnects and stops them when it stops.
+//! (`files.rs` the index lane, `previews.rs` the preview lane, `library.rs` the library lane,
+//! `views.rs` browse views). The owner holds them together as [`CatalogLanes`], hands every
+//! [`CatalogMessage`] to [`Owner::catalog_message`], tells them when a client disconnects and stops
+//! them when it stops.
 //!
 //! A lane's module is a child of `owner`, so its handlers take `&mut Owner` and reach the catalog,
 //! the sessions, the job table, the activity board and the event announcements as the owner's own
@@ -23,7 +23,8 @@ use std::{
     sync::{Arc, mpsc::SyncSender},
 };
 
-/// What a catalog lane's worker posts to the owner, which the owner hands to that lane.
+/// What the index, preview or library lane's worker posts to the owner, which the owner hands to
+/// that lane.
 pub(super) enum CatalogMessage {
     Files(files::FilesMessage),
     Previews(previews::PreviewsMessage),
@@ -48,7 +49,7 @@ impl Poster {
     }
 }
 
-/// Every catalog lane's owner-side state.
+/// The owner-side state of the index, preview and library lanes and of browse views.
 pub(super) struct CatalogLanes {
     pub(super) files: files::FilesLane,
     pub(super) previews: previews::PreviewsLane,
@@ -87,10 +88,10 @@ impl CatalogLanes {
 }
 
 impl Owner {
-    /// A job of a catalog lane was cancelled in the job table (`job.cancel`): the lane that runs it
+    /// A catalog job was cancelled in the job table (`job.cancel`): the lane that runs it
     /// drops it from its queue, and a running one stops at its next checkpoint through its
     /// control. A lane whose job has no one worker to report its end records it in the job table;
-    /// lane A announces the end of an `index.refresh` job that was waiting.
+    /// the index lane announces the end of an `index.refresh` job that was waiting.
     pub(super) fn catalog_cancelled(&mut self, job_id: &JobId, kind: JobKind) {
         match kind {
             JobKind::IndexRefresh => files::cancelled(self, job_id),
@@ -101,11 +102,10 @@ impl Owner {
         }
     }
 
-    /// A library change committed, a change, an undo or a redo alike, under `origin`: each lane
+    /// A library change committed, a change, an undo or a redo alike, under `origin`: every lane
     /// that follows a kind of item it changed hears which, with the owner, so it can schedule work.
-    /// Lane A follows the indexed folders it lists, so an undone `index.add-folder` stops its
-    /// listing and forgets its rows and a redone one lists it again. A lane that follows another
-    /// kind adds its arm here.
+    /// The index lane follows the indexed folders it lists, so an undone `index.add-folder` stops
+    /// its listing and forgets its rows and a redone one lists it again.
     pub(super) fn library_changed(&mut self, origin: &Origin, items: &[LibraryItem]) {
         let folders: Vec<PathBuf> = items
             .iter()
@@ -117,8 +117,8 @@ impl Owner {
         if !folders.is_empty() {
             files::indexed_folders_changed(self, origin, &folders);
         }
-        // Lane C: photographs a change sent back (an `asset.send-back`, or the undo of a Develop)
-        // are gone from the catalog, and lane B forgets their rendered previews.
+        // Photographs a change sent back (an `asset.send-back`, or the undo of a Develop) are gone
+        // from the catalog, and the preview lane forgets their rendered previews.
         let sent_back: Vec<crate::AssetId> = items
             .iter()
             .filter_map(|item| match item {

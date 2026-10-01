@@ -447,7 +447,7 @@ enum Fingerprints<'c> {
 impl PreviewProbe<'_> {
     /// How many frames it has looked up so far: none for a view whose runs the metadata
     /// classifies.
-    #[allow(dead_code, reason = "lane D's browse.view reports it as it lands")]
+    #[allow(dead_code, reason = "read by the tests")]
     pub(crate) fn frames_asked(&self) -> usize {
         self.asked.get()
     }
@@ -553,10 +553,10 @@ impl BracketProbe for PreviewProbe<'_> {
     }
 }
 
-/// The preview bracket probe over the index behind `connection`, for lane D's `browse.view` to
-/// hand to `organize::group`: it reads nothing until organizing asks about a run, and then only
-/// that run's fingerprints (the fingerprints of files' grid tiers whose row is valid for the
-/// file's current signature).
+/// The preview bracket probe over the index behind `connection`, for `browse.view` to hand to
+/// `organize::group`: it reads nothing until organizing asks about a run, and then only that run's
+/// fingerprints (the fingerprints of files' grid tiers whose row is valid for the file's current
+/// signature).
 pub(crate) fn bracket_probe(connection: &Connection) -> PreviewProbe<'_> {
     PreviewProbe {
         fingerprints: Fingerprints::Index(connection),

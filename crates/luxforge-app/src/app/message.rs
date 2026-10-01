@@ -60,7 +60,6 @@ pub(crate) enum Message {
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
-    // ── catalog lane D: views and desktop ──
     /// One Select workspace gesture or owner answer.
     Select(select::SelectMessage),
     /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
@@ -68,7 +67,6 @@ pub(crate) enum Message {
     /// Developing picks and the development set: Develop N's confirmation, the filmstrip and moving
     /// through it.
     Develop(develop::DevelopMessage),
-    // ── end lane D ──
     Close,
 }
 

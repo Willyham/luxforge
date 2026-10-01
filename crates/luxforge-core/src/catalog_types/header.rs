@@ -1,9 +1,9 @@
 //! What a file's header says: capture time, place, camera body, lens, exposure, size, orientation and
 //! where its embedded thumbnail sits.
 //!
-//! The index lane (lane A) fills a [`HeaderMetadata`] from a read bounded in bytes, never the image
-//! data; organizing reads it for events and moments, developing a pick (lane C) stores it in the
-//! catalog's `capture` table, and the Info panel (lane D) shows it. Every field is optional: a file
+//! The index lane fills a [`HeaderMetadata`] from a read bounded in bytes, never the image data;
+//! organizing reads it for events and moments, developing a pick stores it in the catalog's
+//! `capture` table, and the Info panel shows it. Every field is optional: a file
 //! records what its camera wrote and nothing is guessed.
 use crate::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -588,8 +588,8 @@ impl From<EmbeddedImage> for EmbeddedFields {
     }
 }
 
-/// Everything organizing, the Info panel and the catalog read from one file's header. Lane A
-/// fills it from a bounded header read (`index/`); a field its camera did not write is `None`.
+/// Everything organizing, the Info panel and the catalog read from one file's header. The index
+/// lane fills it from a bounded header read (`index/`); a field its camera did not write is `None`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct HeaderMetadata {

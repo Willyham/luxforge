@@ -2,10 +2,10 @@
 //!
 //! A seeded catalog is an ordinary format-12 catalog: every photograph has its asset row, its
 //! Original entry, its state row and its capture row, written through the same row writers the
-//! import and the lanes use (`editor/catalog_rows.rs`, [`crate::index`]), so the core opens, lists
-//! and reads it exactly as it would a catalog developed by hand. Its originals need not exist: a
-//! seeded photograph whose file is absent reads as missing or offline, as its row says. Nothing here
-//! is on any request path; the product never seeds.
+//! import, the index lane and the library use (`editor/catalog_rows.rs`, [`crate::index`]), so the
+//! core opens, lists and reads it exactly as it would a catalog developed by hand. Its originals
+//! need not exist: a seeded photograph whose file is absent reads as missing or offline, as its row
+//! says. Nothing here is on any request path; the product never seeds.
 //!
 //! Everything a seeded row names is the caller's, identities included, so the same rows give the
 //! same catalog: an Original's entry, snapshot and layer identities are derived from the asset's.

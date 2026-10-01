@@ -1,8 +1,8 @@
 //! The catalog in the Select workspace ([catalog
 //! design](../../../../docs/design/catalog.md#the-catalog)): the Catalog sources' folders and
 //! collections, the filter bar over the catalog and the Metadata browser, Save as smart
-//! collection…, and the Info panel's Organize band and batch form. **Lane D (views and desktop)**
-//! owns this seam; its model is `state/select_catalog.rs` and its regions `view/select_catalog.rs`.
+//! collection…, and the Info panel's Organize band and batch form. Its model is
+//! `state/select_catalog.rs` and its regions `view/select_catalog.rs`.
 //!
 //! The desktop holds no catalog logic: every gesture sends the request an API client sends, and
 //! every row and count shows what the owner answered.

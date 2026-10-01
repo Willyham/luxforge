@@ -1,7 +1,7 @@
 //! The library: picks and the journal of library changes, catalog folders and collections,
 //! developing picks, availability and Locate, resolving missing originals, removal and batch jobs.
-//! **Lane C (catalog)** owns this module and the develop lane (`docs/design/catalog.md`, "Picking",
-//! "Developing picks", "The catalog", "Library changes and undo", "Missing originals",
+//! The library lane runs its jobs, developing picks among them (`docs/design/catalog.md`,
+//! "Picking", "Developing picks", "The catalog", "Library changes and undo", "Missing originals",
 //! "Removing").
 //!
 //! Every change here is one library change through [`journal::apply`]: a journal row and its

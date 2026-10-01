@@ -3,13 +3,11 @@
 //! Every job expected to take more than a second publishes [`ActivityProgress`] on the owner's one
 //! activity board under its activity kind, with a count once it knows its extent (an honest "48,210
 //! of about 200,000" while a walk is still discovering it), and is read and cancelled through
-//! `job.read` and `job.cancel` like every other job. Each has its [`JobKind`] already, in the
-//! catalog family: its lane schedules it on its own workers, and a cancel stops it for everyone and
-//! tells the lane. A lane whose job should instead be shared by interest, as a source job is, moves
-//! its kind to that family.
+//! `job.read` and `job.cancel` like every other job. Each has its [`JobKind`] in the catalog
+//! family: the lane that runs it (the index, preview or library lane) schedules it on its own
+//! workers, and a cancel stops it for everyone and tells that lane.
 //!
 //! [`ActivityProgress`]: crate::activity::ActivityProgress
-use super::CatalogLane;
 use crate::jobs::JobKind;
 
 /// One kind of long-running catalog work.
@@ -22,7 +20,6 @@ pub struct CatalogJob {
     pub activity: &'static str,
     /// The board's present-participle label.
     pub label: &'static str,
-    pub lane: CatalogLane,
 }
 
 /// Listing a card or folder and reading headers (`index.refresh`, a card's mount, a first visit, and
@@ -33,7 +30,6 @@ pub const INDEX_REFRESH: CatalogJob = CatalogJob {
     job_kind: "index-refresh",
     activity: "index.refresh",
     label: "Indexing",
-    lane: CatalogLane::Files,
 };
 /// Extracting embedded previews into the grid and loupe tiers (`preview.read` of a file).
 pub const PREVIEW_EXTRACT: CatalogJob = CatalogJob {
@@ -41,7 +37,6 @@ pub const PREVIEW_EXTRACT: CatalogJob = CatalogJob {
     job_kind: "preview-extract",
     activity: "preview.extract",
     label: "Reading previews",
-    lane: CatalogLane::Previews,
 };
 /// A 100% region, from the embedded full-size preview or a neutral development (`preview.region`).
 pub const PREVIEW_REGION: CatalogJob = CatalogJob {
@@ -49,7 +44,6 @@ pub const PREVIEW_REGION: CatalogJob = CatalogJob {
     job_kind: "preview-region",
     activity: "preview.region",
     label: "Checking focus",
-    lane: CatalogLane::Previews,
 };
 /// Rendering developed photographs' grid and large tiers (`preview.read` of a photograph).
 pub const PREVIEW_RENDER: CatalogJob = CatalogJob {
@@ -57,7 +51,6 @@ pub const PREVIEW_RENDER: CatalogJob = CatalogJob {
     job_kind: "preview-render",
     activity: "preview.photo",
     label: "Rendering previews",
-    lane: CatalogLane::Previews,
 };
 /// Bringing picks into the catalog (`pick.develop`).
 pub const DEVELOP_PICKS: CatalogJob = CatalogJob {
@@ -65,7 +58,6 @@ pub const DEVELOP_PICKS: CatalogJob = CatalogJob {
     job_kind: "develop-picks",
     activity: "pick.develop",
     label: "Developing picks",
-    lane: CatalogLane::Catalog,
 };
 /// Checking originals' availability (`source.check`).
 pub const SOURCE_CHECK: CatalogJob = CatalogJob {
@@ -73,7 +65,6 @@ pub const SOURCE_CHECK: CatalogJob = CatalogJob {
     job_kind: "source-check",
     activity: "source.check",
     label: "Checking originals",
-    lane: CatalogLane::Catalog,
 };
 /// Searching a folder for missing originals (`source.find`).
 pub const SOURCE_FIND: CatalogJob = CatalogJob {
@@ -81,7 +72,6 @@ pub const SOURCE_FIND: CatalogJob = CatalogJob {
     job_kind: "source-find",
     activity: "source.find",
     label: "Finding originals",
-    lane: CatalogLane::Catalog,
 };
 /// Verifying one chosen file's fingerprint before relinking (`source.locate`).
 pub const SOURCE_LOCATE: CatalogJob = CatalogJob {
@@ -89,7 +79,6 @@ pub const SOURCE_LOCATE: CatalogJob = CatalogJob {
     job_kind: "source-locate",
     activity: "source.locate",
     label: "Verifying original",
-    lane: CatalogLane::Catalog,
 };
 /// Applying a preset to many photographs (`batch.apply-preset`).
 pub const BATCH_PRESET: CatalogJob = CatalogJob {
@@ -97,7 +86,6 @@ pub const BATCH_PRESET: CatalogJob = CatalogJob {
     job_kind: "batch-preset",
     activity: "batch.apply-preset",
     label: "Applying preset",
-    lane: CatalogLane::Catalog,
 };
 /// Exporting many photographs (`batch.export`).
 pub const BATCH_EXPORT: CatalogJob = CatalogJob {
@@ -105,7 +93,6 @@ pub const BATCH_EXPORT: CatalogJob = CatalogJob {
     job_kind: "batch-export",
     activity: "batch.export",
     label: "Exporting",
-    lane: CatalogLane::Catalog,
 };
 
 /// Every catalog job kind.

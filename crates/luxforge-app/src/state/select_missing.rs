@@ -2,8 +2,8 @@
 //! [resolve board](../../../../docs/design/catalog/resolve-missing.png)): the photographs whose
 //! originals are not where they were, grouped by the folder on disk each was developed from, what a
 //! search of a chosen folder found for each, and the Relink that commits exactly what was verified.
-//! Locate original… in Develop's Original not found notice shares its Locate. **Lane D (views and
-//! desktop)** owns it. Like every view model it names no framework type, no widget and no view.
+//! Locate original… in Develop's Original not found notice shares its Locate. Like every view model
+//! it names no framework type, no widget and no view.
 //!
 //! The desktop holds no catalog logic. The groups and their reasons are `source.missing`'s answer
 //! and each row's result is its search's `source.find` report, read with `job.read`: nothing here

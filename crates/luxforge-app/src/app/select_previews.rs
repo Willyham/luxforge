@@ -1,8 +1,7 @@
 //! The Select grid's decoded previews ([catalog design](../../../../docs/design/catalog.md#architecture),
 //! "Desktop"): each wanted cell's grid preview, read through `preview.read`, decoded off the update
 //! loop at the size its cell needs, and held as one image handle, made once and lent to the grid
-//! while its cell may be shown. **Lane D (views and desktop)** owns this module; the Select seam
-//! (`select.rs`) drives it.
+//! while its cell may be shown. The Select seam (`select.rs`) drives it.
 //!
 //! - **What is wanted.** After every message the Select seam hands over the grid as it is
 //!   ([`GridWindow`]): the files or photographs of the cells on screen, then of those within one

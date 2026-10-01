@@ -195,10 +195,8 @@ impl Editor {
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
             SyncMessage::Changed => {
                 self.sync.poll.offer(());
-                // ── catalog lane D: views and desktop ──
                 // The Select workspace reads the session to see whether its view went stale.
                 self.select_woken();
-                // ── end lane D ──
             }
             SyncMessage::Synced(result) => {
                 self.sync.poll.answered();
@@ -287,10 +285,8 @@ impl Editor {
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
         }
-        // ── catalog lane D: views and desktop ──
         // A file opened is opened alone: Develop has no development set for it.
         self.develop_opened_alone();
-        // ── end lane D ──
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
@@ -600,11 +596,9 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
 /// open photograph with nothing happening to it wakes nothing, and a signal posted while no
 /// photograph is open is buffered and read once one is. An evidence run is woken the same way.
 pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
-    // ── catalog lane D: views and desktop ──
     // The Select workspace listens too while it is shown, for a view gone stale.
     if editor.document.state.is_none() && !editor.select_shown() {
         return Subscription::none();
     }
-    // ── end lane D ──
     waker::events_subscription()
 }
