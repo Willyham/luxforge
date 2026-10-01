@@ -74,6 +74,8 @@ pub static MASK_GPU_PROGRAMS: &[&GpuProgram] = &[
     &range::COLOUR_PROGRAM,
 ];
 
+/// The brush's GPU storage block's bound, which a painted stroke's ticks stay within.
+pub use brush::GPU_BLOCK_WORDS_MAX as BRUSH_GPU_BLOCK_WORDS_MAX;
 pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};

@@ -1,7 +1,8 @@
 //! Each component kind's GPU coverage program as data: the words every kind describes are the terms
 //! its CPU field compiles, narrowed to `f32` once and computed here again from the payload; two
-//! compilations of one payload describe themselves identically; every program ships disabled until
-//! it is qualified; and the constants a program restates are the CPU's `f32` values, bit for bit.
+//! compilations of one payload describe themselves identically; every program ships enabled, as its
+//! qualification on the M4 decided; and the constants a program restates are the CPU's `f32` values,
+//! bit for bit.
 //!
 //! The programs' arithmetic is qualified on a device against the CPU fields by the desktop's
 //! readback tests (`cargo test -p luxforge-app gpu_mask`); the brush's storage block has its own
@@ -55,7 +56,7 @@ fn narrowed(terms: &[f64]) -> Vec<u32> {
 }
 
 #[test]
-fn every_kind_ships_a_disabled_coverage_program_beside_its_field() {
+fn every_kind_ships_an_enabled_coverage_program_beside_its_field() {
     let entries: Vec<&str> = MASK_GPU_PROGRAMS
         .iter()
         .map(|program| program.entry)
@@ -73,8 +74,8 @@ fn every_kind_ships_a_disabled_coverage_program_beside_its_field() {
     for program in MASK_GPU_PROGRAMS {
         assert_eq!(program.kind, GpuProgramKind::Coverage, "{}", program.entry);
         assert!(
-            !program.enabled,
-            "{} ships disabled until it is qualified",
+            program.enabled,
+            "{} met the contour rule and the pointwise limits and ships enabled",
             program.entry
         );
     }

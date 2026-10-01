@@ -276,9 +276,8 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             true,
             "spatial-unit",
         ),
-        // The units have programs; the linear mask component's ships disabled until it is
-        // qualified, and is planned, and drawn, when qualifying.
-        ("a masked colour layer", 0, false, "disabled-program"),
+        // The units and the linear mask component have enabled programs.
+        ("a masked colour layer", 0, false, "plan"),
         ("a masked colour layer", 0, true, "plan"),
         (
             "a masked spatial operation behind geometry",
@@ -645,24 +644,17 @@ fn masked_operations_carry_their_blend_and_draw_the_cpu_frame() {
             masks: vec![mask.clone()],
             ..colour_recipe(layers)
         };
-        // The production answer: the linear component's program ships disabled. Qualifying, it
-        // is planned and the plan draws the CPU frame, its coverage the CPU field's.
+        // The production answer: the linear component's program is enabled, so the stack is
+        // planned and the plan draws the CPU frame, its coverage the CPU field's.
         let masked_layer = recipe
             .layers
             .iter()
             .position(|layer| layer.mask.is_some())
             .unwrap();
-        assert_eq!(
-            answer(&registry, &recipe, GpuPlanRequest::exact(0, stage(41, 29))),
-            GpuAnswer::Fallback(GpuFallback::DisabledProgram {
-                layer: masked_layer,
-                program: "lf_mask_linear"
-            })
-        );
         let plan = planned(answer(
             &registry,
             &recipe,
-            GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+            GpuPlanRequest::exact(0, stage(41, 29)),
         ));
         let blend = plan
             .operations()
