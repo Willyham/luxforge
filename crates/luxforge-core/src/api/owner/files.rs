@@ -106,9 +106,9 @@ pub(super) struct FilesLane {
     notified: bool,
     #[cfg(test)]
     hold: Option<Arc<luxforge_testbase::Gate>>,
-    /// Every header read the lane has taken in.
+    /// The path of every header read the lane has taken in.
     #[cfg(test)]
-    reads: Arc<std::sync::atomic::AtomicUsize>,
+    reads: Arc<std::sync::Mutex<Vec<PathBuf>>>,
 }
 
 /// Work waiting for the lane, with the request it was made under.
@@ -165,9 +165,10 @@ pub(super) enum FilesMessage {
     /// Hand the lane an event as its watcher would, starting it first.
     #[cfg(test)]
     Inject(crate::index::lane::WatchEvent),
-    /// How many header reads the lane has taken in.
+    /// How many header reads of files under this folder the lane has taken in: a test counts
+    /// only its own, since the lane also lists any card the host mounts meanwhile.
     #[cfg(test)]
-    HeaderReads(std::sync::mpsc::SyncSender<usize>),
+    HeaderReads(PathBuf, std::sync::mpsc::SyncSender<usize>),
 }
 
 impl FilesLane {
@@ -623,14 +624,14 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         #[cfg(test)]
         FilesMessage::Limits(limits) => owner.catalog.files.limits = limits,
         #[cfg(test)]
-        FilesMessage::HeaderReads(reply) => {
-            let _ = reply.send(
-                owner
-                    .catalog
-                    .files
-                    .reads
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            );
+        FilesMessage::HeaderReads(under, reply) => {
+            let reads = owner
+                .catalog
+                .files
+                .reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _ = reply.send(reads.iter().filter(|path| path.starts_with(&under)).count());
         }
         #[cfg(test)]
         FilesMessage::Inject(event) => {

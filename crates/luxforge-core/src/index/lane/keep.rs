@@ -343,6 +343,16 @@ impl Keeper {
         }
     }
 
+    /// The lane's stop ended the unit: its cursors are not recorded, and its changes replay from
+    /// each root's cursor recorded before it.
+    pub(super) fn stopped(&mut self) {
+        self.applied.clear();
+        for root in &mut self.roots {
+            root.cursor = None;
+            root.touched = false;
+        }
+    }
+
     /// The unit failed: its cursors are not recorded, and every root it touched is stale, listed
     /// again before a later cursor of its own is. Answers the roots it made stale, for their rows.
     pub(super) fn unrecorded(&mut self) -> Vec<PathBuf> {
