@@ -55,7 +55,7 @@ fn expect_error(result: Result<ImportedPreset, Error>, kind: ErrorKind, detail: 
     assert!(error.detail.contains(detail), "{error}");
 }
 
-const SHARPENING: &str = "Luxforge has no sharpening";
+const SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
 const GRADING: &str = "Luxforge has no colour grading";
 const CURVE: &str = "Luxforge has no tone curve";
 const PROFILES: &str = "Luxforge has no profiles";
@@ -395,7 +395,7 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
             "set-raw": {"white-balance": "as-shot"}
         }))
     );
-    let noise = "Luxforge has no noise reduction";
+    let noise = "Lightroom noise reduction is not mapped to Luxforge Detail";
     let lens = "Luxforge has no lens corrections";
     assert_eq!(
         preset.report,

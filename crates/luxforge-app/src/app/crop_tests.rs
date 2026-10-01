@@ -750,6 +750,7 @@ fn a_first_draft_stops_before_a_finish_layer() {
     let finishing = luxforge_core::ModuleDescriptor {
         id: "luxforge.vignette".into(),
         effects: vec![luxforge_core::EffectDescriptor {
+            fit_settle: Default::default(),
             id: luxforge_core::VIGNETTE_EFFECT.into(),
             format: 1,
             stage: luxforge_core::EffectStage::Finish,

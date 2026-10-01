@@ -188,6 +188,7 @@ fn evaluate(
             tile,
             Parallelism::Serial,
             &mut scratch,
+            &crate::Cancel::never(),
             |region, planes| fill_planes(region, planes, Parallelism::Serial, read),
         )?;
         for y in tile.y0..tile.y1() {
@@ -218,7 +219,12 @@ fn compiled(case: &Value) -> SpatialOperation {
         height: 1,
     };
     match PresenceModule::new()
-        .compile(PRESENCE_EFFECT, 1, &Value::Object(payload), stage)
+        .compile(
+            PRESENCE_EFFECT,
+            1,
+            &Value::Object(payload),
+            crate::CompileStage::exact(stage),
+        )
         .expect("a compiled presence operation")
     {
         crate::modules::Processing::Spatial(operation) => operation,
@@ -315,7 +321,7 @@ fn one_tile_of_a_large_stage_fits_the_spatial_budget() {
                 PRESENCE_EFFECT,
                 1,
                 &json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}),
-                stage,
+                crate::CompileStage::exact(stage),
             )
             .expect("a compiled operation")
         else {
@@ -350,7 +356,7 @@ fn a_tiles_rectangles_follow_the_declared_halos() {
             PRESENCE_EFFECT,
             1,
             &json!({"texture": 20.0, "clarity": 20.0, "dehaze": 20.0}),
-            stage,
+            crate::CompileStage::exact(stage),
         )
         .expect("a compiled operation")
     else {
@@ -424,7 +430,12 @@ fn presence_recipe(payload: Value) -> Recipe {
 
 fn operation(payload: &Value, stage: Stage) -> SpatialOperation {
     match PresenceModule::new()
-        .compile(PRESENCE_EFFECT, EFFECT_FORMAT, payload, stage)
+        .compile(
+            PRESENCE_EFFECT,
+            EFFECT_FORMAT,
+            payload,
+            crate::CompileStage::exact(stage),
+        )
         .unwrap()
     {
         crate::modules::Processing::Spatial(operation) => operation,
@@ -676,7 +687,12 @@ fn slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
         json!({"texture": 60.0, "clarity": -40.0, "dehaze": 35.0}),
     ] {
         let crate::modules::Processing::Spatial(operation) = module
-            .compile(PRESENCE_EFFECT, 1, &payload, stage)
+            .compile(
+                PRESENCE_EFFECT,
+                1,
+                &payload,
+                crate::CompileStage::exact(stage),
+            )
             .expect("a compiled operation")
         else {
             panic!("a spatial operation");
@@ -696,6 +712,7 @@ fn slow_a_tile_evaluated_on_the_pool_is_bit_identical_to_a_serial_one() {
                     tile,
                     parallelism,
                     &mut TileScratch::default(),
+                    &crate::Cancel::never(),
                     |region, planes| fill_planes(region, planes, parallelism, read),
                 )
                 .expect("a tile")
@@ -742,7 +759,12 @@ fn presence_timing() {
         ] {
             let stack = presence_recipe(payload.clone());
             let crate::modules::Processing::Spatial(operation) = module
-                .compile(PRESENCE_EFFECT, 1, &payload, stage)
+                .compile(
+                    PRESENCE_EFFECT,
+                    1,
+                    &payload,
+                    crate::CompileStage::exact(stage),
+                )
                 .expect("a compiled operation")
             else {
                 panic!("a spatial operation");

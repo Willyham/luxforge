@@ -22,6 +22,8 @@ pub enum PreviewPhase {
 /// One phase of one preview job.
 #[derive(Debug)]
 pub struct PreviewResult {
+    /// Whether this proxy built or reused its bounded restoration prefix.
+    pub restoration_prefix: Option<crate::PrefixUse>,
     pub generation: u64,
     pub entry_id: EntryId,
     /// The identity of the job that produced this frame, so the desktop can submit the report under
@@ -104,6 +106,8 @@ pub struct ProxyOutcome {
 /// exactly one.
 #[derive(Debug)]
 pub struct ExactOutcome {
+    /// Display-bounded reduction of the exact final output for opt-in settled Fit.
+    pub display: Option<Raster>,
     /// The frame, the failure, or [`ErrorKind::Cancelled`] when a newer request or
     /// [`PreviewQueue::cancel`] stopped it.
     pub result: Result<Raster, Error>,

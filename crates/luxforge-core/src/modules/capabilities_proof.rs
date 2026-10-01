@@ -9,7 +9,7 @@
 //! `docs/design/module-capabilities.md#proof-module`.
 use super::{
     ActionInput, ActionPlan, CapabilityModule, ColorOperation, LayerReport, LayerUpdate,
-    ModuleDescriptor, NewLayer, PointwiseColor, Processing, Stage, StageContext, ToolModule,
+    ModuleDescriptor, NewLayer, PointwiseColor, Processing, StageContext, ToolModule,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -423,7 +423,7 @@ impl ToolModule for CapabilitiesProofModule {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        _: Stage,
+        _: crate::CompileStage,
     ) -> Result<Processing, Error> {
         match Self::payload(effect_id, format, payload)? {
             None => Ok(Processing::Color(ColorOperation::neutral())),
@@ -447,7 +447,7 @@ impl CapabilityModule for CapabilitiesProofModule {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        _: Stage,
+        _: crate::CompileStage,
         artifacts: &[Arc<PreparedArtifact>],
     ) -> Result<Processing, Error> {
         let Some(named) = Self::payload(effect_id, format, payload)? else {
@@ -545,6 +545,7 @@ impl CapabilityModule for CapabilitiesProofModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::{ModuleRegistry, artifacts::ArtifactId};
     use sha2::{Digest, Sha256};
 
@@ -635,13 +636,20 @@ mod tests {
     #[test]
     fn compile_multiplies_linear_channels_by_the_one_bound_tint_and_refuses_anything_else() {
         let module = CapabilitiesProofModule::new("http://127.0.0.1:9");
-        let neutral = module.compile(PROOF_EFFECT, 1, &json!({}), STAGE).unwrap();
+        let neutral = module
+            .compile(
+                PROOF_EFFECT,
+                1,
+                &json!({}),
+                crate::CompileStage::exact(STAGE),
+            )
+            .unwrap();
         assert!(matches!(neutral, Processing::Color(operation) if operation.is_empty()));
         let good = artifact(PROOF_TINT_KIND, tint([0.5, 1.0, 2.0]));
         let payload = json!({"artifact": good.id.as_str()});
         assert_eq!(
             module
-                .compile(PROOF_EFFECT, 1, &payload, STAGE)
+                .compile(PROOF_EFFECT, 1, &payload, crate::CompileStage::exact(STAGE))
                 .unwrap_err()
                 .kind,
             ErrorKind::Validation,
@@ -652,7 +660,7 @@ mod tests {
                 PROOF_EFFECT,
                 1,
                 &payload,
-                STAGE,
+                crate::CompileStage::exact(STAGE),
                 std::slice::from_ref(&good),
             )
             .unwrap()
@@ -680,7 +688,13 @@ mod tests {
             (json!({}), vec![good.clone()]),
         ] {
             let error = module
-                .compile_bound(PROOF_EFFECT, 1, &payload, STAGE, &bound)
+                .compile_bound(
+                    PROOF_EFFECT,
+                    1,
+                    &payload,
+                    crate::CompileStage::exact(STAGE),
+                    &bound,
+                )
                 .unwrap_err();
             assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
         }

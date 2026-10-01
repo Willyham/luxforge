@@ -77,10 +77,14 @@ pub enum PreviewIntent {
     Immediate,
     Interactive,
     Settle,
+    /// Reduce a retained exact frame to new Fit bounds without rendering its recipe again.
+    Reduce,
 }
 
 #[derive(Clone, Debug)]
 pub struct PreviewJob {
+    /// Shared exact pixels for a reduce-only job; never a full-frame clone.
+    pub reduce: Option<std::sync::Arc<crate::Raster>>,
     /// What this job evaluates, planned once on the catalog owner: the entry it shows, the stack it
     /// renders — the entry's own recipe or an open draft's effective recipe, bound with the verified
     /// bytes of every artifact it lists — the source, the shared registry and render context, and
@@ -128,6 +132,7 @@ impl PreviewJob {
     /// is the evaluation's ([`Evaluation::identity`]), which hashes the stack: `O(recipe)`.
     pub fn new(evaluation: Evaluation) -> Result<Self, Error> {
         Ok(Self {
+            reduce: None,
             identity: evaluation.identity()?,
             evaluation,
             layer_count: None,

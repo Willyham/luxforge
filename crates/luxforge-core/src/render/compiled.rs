@@ -14,7 +14,6 @@ use crate::{
     mask_field::MaskField,
     modules::{ExactGeometry, Global, Processing, Region, Resample, SpatialOperation, Stage},
 };
-use std::sync::Arc;
 
 /// What produces one segment's input frame, and therefore what separates it from the segment
 /// before it. Every kind is a stage boundary: the frame before it is finished, it reads that frame
@@ -95,8 +94,21 @@ impl Entry {
     /// A spatial boundary. `prefix_hash` is the SHA-256 of the canonical JSON of the layers before
     /// this one, which together with the source and the stage identifies what a global estimate
     /// was prepared from.
+    #[cfg(test)]
     pub(crate) fn spatial(operation: SpatialOperation, prefix_hash: String) -> Self {
         Self::Spatial(SpatialEntry::new(operation, prefix_hash))
+    }
+
+    pub(crate) fn spatial_tagged(
+        operation: SpatialOperation,
+        prefix_hash: String,
+        stage: crate::EffectStage,
+        fit_settle: crate::FitSettle,
+    ) -> Self {
+        let mut entry = SpatialEntry::new(operation, prefix_hash);
+        entry.stage = stage;
+        entry.fit_settle = fit_settle;
+        Self::Spatial(entry)
     }
 
     /// The whole stage this boundary produces from the whole stage it receives, before any cut.
@@ -277,17 +289,24 @@ impl Entry {
 
     /// The byte driver's frame of this boundary ([`super::rasterize`]) over `input`, the finished
     /// byte frame of the `received` stage before it. Its dimensions are [`Self::held`]'s.
+    // Keep the explicit driver contract: source/input, stage, scheduling, cancellation, shared
+    // context and output precision are independently supplied to the same boundary dispatch.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn byte_frame(
         &self,
         domain: &Byte<'_>,
-        input: &[u8],
+        input: &super::byte::ByteFrame,
         received: Stage,
         tiling: Tiling,
         cancel: &Cancel,
         context: &RenderContext,
-    ) -> Result<Arc<Vec<u8>>, Error> {
+        wide: bool,
+    ) -> Result<super::byte::ByteFrame, Error> {
         match self {
             Self::Resample(entry) => {
+                let super::byte::ByteFrame::Narrow(input) = input else {
+                    unreachable!("a resample reads a narrow frame")
+                };
                 let frame = resample_frame(
                     input,
                     received.width,
@@ -299,11 +318,11 @@ impl Entry {
                 )?;
                 #[cfg(test)]
                 context.note_resample_bytes(frame.len());
-                Ok(frame)
+                Ok(super::byte::ByteFrame::Narrow(frame))
             }
-            Self::Spatial(entry) => {
-                super::byte::spatial_frame(domain, entry, input, received, tiling, cancel, context)
-            }
+            Self::Spatial(entry) => super::byte::spatial_frame(
+                domain, entry, input, received, tiling, cancel, context, wide,
+            ),
         }
     }
 
@@ -441,10 +460,51 @@ impl Compiled {
     /// supersampled. `O(layers + components)`, no pixel read.
     pub(crate) fn approximation(&self) -> crate::ProxyApproximation {
         crate::ProxyApproximation {
-            spatial: self.evaluates_spatial(),
+            spatial: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Spatial)),
+            restoration: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration)),
             mask: self.supersampled_masks(),
             reduced_detail: false,
         }
+    }
+
+    pub(crate) fn settles_from_exact(&self) -> bool {
+        self.segments.iter().any(|s| {
+            matches!(&s.entry,
+            Some(Entry::Spatial(e)) if e.fit_settle == crate::FitSettle::Exact)
+        })
+    }
+
+    /// The width the full recipe demands at the sampled prefix's last spatial boundary.
+    /// Cutting off later units must not change that earlier hand-off's precision.
+    pub(crate) fn prefix_spatial_input_wide(&self, prefix: &Compiled) -> bool {
+        prefix
+            .segments
+            .iter()
+            .rposition(|segment| matches!(&segment.entry, Some(Entry::Spatial(_))))
+            .and_then(|index| {
+                super::byte::byte_frame_widths(self)
+                    .get(index)
+                    .map(|width| width.input)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Segment whose input holds the last boundary of the leading restoration run.
+    pub(crate) fn restoration_boundary(&self) -> Option<usize> {
+        let mut boundary = None;
+        for (index, segment) in self.segments.iter().enumerate() {
+            match &segment.entry {
+                Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration => {
+                    boundary = Some(index)
+                }
+                Some(_) => break,
+                None => {}
+            }
+            if segment.has_color {
+                break;
+            }
+        }
+        boundary
     }
 
     /// Whether answering one pixel of this compilation evaluates a spatial segment.

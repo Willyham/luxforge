@@ -13,6 +13,7 @@ mod brush;
 mod combination;
 mod commands;
 mod constrained_brush;
+mod detail;
 mod geometry_survival;
 mod kinds;
 mod masked_colour;

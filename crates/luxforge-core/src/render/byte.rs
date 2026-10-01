@@ -2,12 +2,14 @@
 
 use super::{
     ColorRun, Compiled, PixelDomain, Raster, RenderContext, RowScratch, Segment, SegmentRows,
-    SpatialEntry, apply_units, bilinear, color_pixel, frame_mut, segment_pass, spatial,
-    spatial::fill_planes, spatial_entry, zeroed_frame,
+    SpatialEntry, apply_units, bilinear, frame_mut, segment_pass, spatial, spatial::fill_planes,
+    spatial_entry, zeroed_frame,
 };
 use crate::{
     Cancel, Error, SnapshotId, SourceImage,
-    colour::srgb::{decode_pixel, decode_pixel_in, decode_table, quantize_pixel, quantizer},
+    colour::srgb::{
+        decode_pixel_in, decode_table, decode16_table, quantize_pixel, quantize16, quantizer,
+    },
     modules::{ExactGeometry, Parallelism, Region, Stage},
 };
 use rayon::prelude::*;
@@ -36,168 +38,267 @@ pub(super) fn source_pixel(source: &SourceImage, x: u32, y: u32) -> [u8; 4] {
 #[derive(Clone, Copy)]
 pub(crate) struct Byte<'a>(pub(crate) &'a SourceImage);
 
+/// The encoded width of a segment's input and output frames.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FrameWidths {
+    pub(crate) input: bool,
+    pub(crate) output: bool,
+}
+
+/// Backwards demand propagation keeps unbroken spatial chains wide until a real narrow boundary.
+pub(crate) fn byte_frame_widths(compiled: &Compiled) -> Vec<FrameWidths> {
+    let mut widths = vec![FrameWidths::default(); compiled.segments.len()];
+    for index in (0..widths.len()).rev() {
+        let segment = &compiled.segments[index];
+        let next_spatial = compiled
+            .segments
+            .get(index + 1)
+            .is_some_and(|next| matches!(&next.entry, Some(super::Entry::Spatial(_))));
+        let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
+        let pass_through = !segment.writes_pixels();
+        let input = spatial
+            && ((segment.has_color && !segment.has_pixels) || (pass_through && next_spatial));
+        widths[index] = FrameWidths {
+            input,
+            output: next_spatial && (segment.has_color || input),
+        };
+    }
+    widths
+}
+
+#[derive(Clone)]
+pub(crate) enum ByteFrame {
+    Narrow(Arc<Vec<u8>>),
+    Wide(Arc<Vec<u16>>),
+}
+
+impl ByteFrame {
+    pub(crate) fn wide(&self) -> bool {
+        matches!(self, Self::Wide(_))
+    }
+    pub(crate) fn bytes(&self) -> usize {
+        match self {
+            Self::Narrow(v) => v.len(),
+            Self::Wide(v) => v.len() * 2,
+        }
+    }
+    pub(crate) fn new(stage: Stage, wide: bool) -> Result<Self, Error> {
+        if !wide {
+            return Ok(Self::Narrow(zeroed_frame(Raster::expected_len(
+                stage.width,
+                stage.height,
+            )?)));
+        }
+        let bytes = u64::from(stage.width)
+            .checked_mul(u64::from(stage.height))
+            .and_then(|n| n.checked_mul(6))
+            .ok_or_else(|| Error::resource_limit("wide image dimensions overflow"))?;
+        if bytes > luxforge_raw::MAX_FRAME_BYTES {
+            return Err(Error::resource_limit(
+                "wide evaluated image exceeds 512 MiB",
+            ));
+        }
+        let len = usize::try_from(bytes / 2)
+            .map_err(|_| Error::resource_limit("wide image allocation is not addressable"))?;
+        Ok(Self::Wide(Arc::new(vec![0; len])))
+    }
+    pub(crate) fn pixel(&self, stage: Stage, x: u32, y: u32) -> [u16; 3] {
+        let offset = (u64::from(y) * u64::from(stage.width) + u64::from(x)) as usize;
+        match self {
+            Self::Narrow(v) => {
+                [v[offset * 4], v[offset * 4 + 1], v[offset * 4 + 2]].map(|v| u16::from(v) * 257)
+            }
+            Self::Wide(v) => [v[offset * 3], v[offset * 3 + 1], v[offset * 3 + 2]],
+        }
+    }
+}
+
+fn encoded(rgb: [f32; 3], wide: bool) -> [u16; 3] {
+    if wide {
+        rgb.map(quantize16)
+    } else {
+        quantize_pixel(rgb).map(|v| u16::from(v) * 257)
+    }
+}
+fn decoded(rgb: [u16; 3]) -> [f32; 3] {
+    let table = decode16_table();
+    rgb.map(|code| table[usize::from(code)])
+}
+
 impl PixelDomain for Byte<'_> {
-    type Pixel = [u8; 4];
-    type SpatialFrame = Arc<Vec<u8>>;
-    /// A tile's RGBA rows, quantized and opaque, exactly as the frame holds them.
-    type TileOutput = Vec<u8>;
+    type Pixel = [u16; 3];
+    type SpatialFrame = ByteFrame;
+    type TileOutput = ByteFrame;
 
     fn fingerprint(&self) -> &str {
         &self.0.fingerprint
     }
-
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
         Cow::Owned(format!(
             "{prefix_hash}+byte:{}x{}:orientation:{}",
-            self.0.width, self.0.height, self.0.orientation,
+            self.0.width, self.0.height, self.0.orientation
         ))
     }
-
-    #[inline]
-    fn source_pixel(&self, x: u32, y: u32) -> Result<[u8; 4], Error> {
-        Ok(source_pixel(self.0, x, y))
+    fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {
+        let p = source_pixel(self.0, x, y);
+        Ok([p[0], p[1], p[2]].map(|v| u16::from(v) * 257))
     }
-
-    #[inline]
-    fn replace(mut pixel: [u8; 4], rgb: [u8; 3]) -> [u8; 4] {
-        pixel[..3].copy_from_slice(&rgb);
-        pixel
+    fn replace(_: Self::Pixel, rgb: [u8; 3]) -> Self::Pixel {
+        rgb.map(|v| u16::from(v) * 257)
     }
-
     fn colour<'r>(
-        mut pixel: [u8; 4],
+        mut pixel: Self::Pixel,
         runs: impl Iterator<Item = ColorRun<'r>>,
         x: u32,
         y: u32,
-    ) -> Result<[u8; 4], Error> {
-        let mut rgb = [pixel[0], pixel[1], pixel[2]];
+        wide: bool,
+    ) -> Result<Self::Pixel, Error> {
+        let mut snapshot = [[0.0; 3]; 1];
         for run in runs {
-            rgb = color_pixel(rgb, &run, x, y)?;
+            let mut rgb = [decoded(pixel)];
+            apply_units(&run, y, x, &mut rgb, &mut snapshot)?;
+            pixel = encoded(rgb[0], wide && !run.followed_by_replace());
         }
-        pixel[..3].copy_from_slice(&rgb);
         Ok(pixel)
     }
-
-    /// The row form of [`Self::colour`]: each run decodes the row, runs its units over it and
-    /// quantizes it back, with the rows of a rendered segment's own arithmetic
-    /// ([`colour_byte_rows`]).
     fn colour_row<'r>(
-        pixels: &mut [[u8; 4]],
+        pixels: &mut [Self::Pixel],
         runs: impl Iterator<Item = ColorRun<'r>>,
         y: u32,
         x0: u32,
         scratch: &mut RowScratch,
+        wide: bool,
     ) -> Result<(), Error> {
-        let width = pixels.len();
-        if width == 0 {
-            return Ok(());
-        }
         let RowScratch { linear, snapshot } = scratch;
-        snapshot.resize(width, [0.0; 3]);
+        snapshot.resize(pixels.len().max(1), [0.0; 3]);
         for run in runs {
-            colour_byte_rows(
-                &run,
-                pixels.as_flattened_mut(),
-                width,
-                y,
-                x0,
-                linear,
-                snapshot,
-            )?;
+            linear.clear();
+            linear.extend(pixels.iter().copied().map(decoded));
+            apply_units(&run, y, x0, linear, snapshot)?;
+            for (pixel, rgb) in pixels.iter_mut().zip(linear.iter()) {
+                *pixel = encoded(*rgb, wide && !run.followed_by_replace());
+            }
         }
         Ok(())
     }
-
     fn blend(
         u: f64,
         v: f64,
         width: u32,
         height: u32,
-        fetch: impl FnMut(u32, u32) -> Result<[u8; 4], Error>,
-    ) -> Result<[u8; 4], Error> {
-        bilinear(decode_table(), quantizer(), u, v, width, height, fetch)
+        mut fetch: impl FnMut(u32, u32) -> Result<Self::Pixel, Error>,
+    ) -> Result<Self::Pixel, Error> {
+        let result = bilinear(decode_table(), quantizer(), u, v, width, height, |x, y| {
+            let p = fetch(x, y)?;
+            Ok([
+                (p[0] / 257) as u8,
+                (p[1] / 257) as u8,
+                (p[2] / 257) as u8,
+                255,
+            ])
+        })?;
+        Ok([result[0], result[1], result[2]].map(|v| u16::from(v) * 257))
     }
-
-    #[inline]
-    fn spatial_input(pixel: [u8; 4]) -> [f32; 3] {
-        decode_pixel([pixel[0], pixel[1], pixel[2]])
+    fn spatial_input(pixel: Self::Pixel) -> [f32; 3] {
+        decoded(pixel)
     }
-
-    #[inline]
-    fn linear(pixel: [u8; 4]) -> [f64; 3] {
-        Self::spatial_input(pixel).map(f64::from)
+    fn linear(pixel: Self::Pixel) -> [f64; 3] {
+        decoded(pixel).map(f64::from)
     }
-
-    fn spatial_output(rgb: [f32; 3]) -> Result<[u8; 4], Error> {
-        let rgb = quantize_pixel(rgb);
-        Ok([rgb[0], rgb[1], rgb[2], 255])
+    fn spatial_output(rgb: [f32; 3], wide: bool) -> Result<Self::Pixel, Error> {
+        Ok(encoded(rgb, wide))
     }
-
-    #[inline]
-    fn terminal(pixel: [u8; 4]) -> Result<[u8; 4], Error> {
-        Ok(pixel)
+    fn narrow(pixel: Self::Pixel) -> Self::Pixel {
+        encoded(decoded(pixel), false)
     }
-
-    fn spatial_frame(stage: Stage) -> Result<Arc<Vec<u8>>, Error> {
-        Ok(zeroed_frame(Raster::expected_len(
-            stage.width,
-            stage.height,
-        )?))
+    fn finish_width(pixel: Self::Pixel, wide: bool) -> Result<Self::Pixel, Error> {
+        if wide {
+            Ok(pixel)
+        } else {
+            Ok(encoded(decoded(pixel), false))
+        }
     }
-
-    /// Quantized through the same exact thresholds as a colour run's end, opaque, into RGBA rows
-    /// of the tile's width: on the pool under [`Parallelism::Pool`], and otherwise on the worker
-    /// that ran the tile.
+    fn terminal(pixel: Self::Pixel) -> Result<[u8; 4], Error> {
+        Ok([
+            (pixel[0] / 257) as u8,
+            (pixel[1] / 257) as u8,
+            (pixel[2] / 257) as u8,
+            255,
+        ])
+    }
+    fn spatial_frame(stage: Stage, wide: bool) -> Result<ByteFrame, Error> {
+        ByteFrame::new(stage, wide)
+    }
     fn tile_output(
         region: Region,
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
-    ) -> Vec<u8> {
-        let mut bytes = vec![0; (tile.pixels() * 4) as usize];
+        wide: bool,
+    ) -> ByteFrame {
         let plane = region.pixels() as usize;
         let width = tile.width as usize;
-        let quantizer = quantizer();
-        let row = |(row, bytes): (usize, &mut [u8])| {
-            let y = tile.y0 + row as u32;
-            // The tile's row inside each of the last unit's planes.
-            let from =
-                (y - region.y0) as usize * region.width as usize + (tile.x0 - region.x0) as usize;
-            let [red, green, blue] = [0, 1, 2].map(|channel| {
-                let start = channel * plane + from;
-                &values[start..start + width]
-            });
-            for (column, pixel) in bytes.chunks_exact_mut(4).enumerate() {
-                // `quantize_pixel` channel by channel, written out so this hot loop does not
-                // depend on the array map being inlined into it.
-                pixel[0] = quantizer.channel(f64::from(red[column]));
-                pixel[1] = quantizer.channel(f64::from(green[column]));
-                pixel[2] = quantizer.channel(f64::from(blue[column]));
-                pixel[3] = 255;
-            }
+        let fill = |row: usize, column: usize| {
+            let from = (tile.y0 + row as u32 - region.y0) as usize * region.width as usize
+                + (tile.x0 - region.x0) as usize
+                + column;
+            [values[from], values[plane + from], values[2 * plane + from]]
         };
-        let row_bytes = width * 4;
-        match parallelism {
-            Parallelism::Pool => bytes.par_chunks_mut(row_bytes).enumerate().for_each(row),
-            Parallelism::Serial => bytes.chunks_mut(row_bytes).enumerate().for_each(row),
+        if wide {
+            let mut pixels = vec![0u16; tile.pixels() as usize * 3];
+            let row = |(r, pixels): (usize, &mut [u16])| {
+                for (column, p) in pixels.chunks_exact_mut(3).enumerate() {
+                    p.copy_from_slice(&encoded(fill(r, column), true));
+                }
+            };
+            match parallelism {
+                Parallelism::Pool => pixels.par_chunks_mut(width * 3).enumerate().for_each(row),
+                Parallelism::Serial => pixels.chunks_mut(width * 3).enumerate().for_each(row),
+            }
+            ByteFrame::Wide(Arc::new(pixels))
+        } else {
+            let mut pixels = vec![0u8; tile.pixels() as usize * 4];
+            let quantizer = quantizer();
+            let row = |(r, pixels): (usize, &mut [u8])| {
+                for (column, p) in pixels.chunks_exact_mut(4).enumerate() {
+                    p[..3].copy_from_slice(&quantizer.pixel(fill(r, column)));
+                    p[3] = 255;
+                }
+            };
+            match parallelism {
+                Parallelism::Pool => pixels.par_chunks_mut(width * 4).enumerate().for_each(row),
+                Parallelism::Serial => pixels.chunks_mut(width * 4).enumerate().for_each(row),
+            }
+            ByteFrame::Narrow(Arc::new(pixels))
         }
-        bytes
     }
-
-    fn write_tile(frame: &mut Arc<Vec<u8>>, stage: Stage, tile: Region, bytes: Vec<u8>) {
-        let output = frame_mut(frame);
-        let row_bytes = tile.width as usize * 4;
-        for (row, y) in (tile.y0..tile.y1()).enumerate() {
-            let to = ((u64::from(y) * u64::from(stage.width) + u64::from(tile.x0)) * 4) as usize;
-            output[to..to + row_bytes]
-                .copy_from_slice(&bytes[row * row_bytes..(row + 1) * row_bytes]);
+    fn write_tile(frame: &mut ByteFrame, stage: Stage, tile: Region, output: ByteFrame) {
+        match (frame, output) {
+            (ByteFrame::Narrow(frame), ByteFrame::Narrow(output)) => {
+                write_rows(frame_mut(frame), &output, stage, tile, 4)
+            }
+            (ByteFrame::Wide(frame), ByteFrame::Wide(output)) => {
+                write_rows(super::raster::frame_mut16(frame), &output, stage, tile, 3)
+            }
+            _ => unreachable!("tile and frame widths agree"),
         }
     }
-
-    fn frame_pixel(frame: &Arc<Vec<u8>>, stage: Stage, x: u32, y: u32) -> [u8; 4] {
-        let offset = ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-        let pixel = &frame[offset..offset + 4];
-        [pixel[0], pixel[1], pixel[2], pixel[3]]
+    fn frame_pixel(frame: &ByteFrame, stage: Stage, x: u32, y: u32) -> Self::Pixel {
+        frame.pixel(stage, x, y)
+    }
+}
+fn write_rows<T: Copy>(
+    frame: &mut [T],
+    tile_pixels: &[T],
+    stage: Stage,
+    tile: Region,
+    samples: usize,
+) {
+    let row_samples = tile.width as usize * samples;
+    for (row, y) in (tile.y0..tile.y1()).enumerate() {
+        let to = (u64::from(y) * u64::from(stage.width) + u64::from(tile.x0)) as usize * samples;
+        frame[to..to + row_samples]
+            .copy_from_slice(&tile_pixels[row * row_samples..(row + 1) * row_samples]);
     }
 }
 
@@ -228,6 +329,7 @@ impl SegmentRows for ByteRows<'_> {
     /// A chunk's rows decoded to linear light while a run evaluates them: at most
     /// [`super::colour_runs::COLOR_CHUNK_SCRATCH_BYTES`], allocated by the first chunk of a Rayon split and reused by
     /// the rest of that split's chunks.
+    type Sample = u8;
     type Scratch = Vec<[f32; 3]>;
 
     fn scratch_bytes(&self, width: usize, _: usize, coloured: usize) -> usize {
@@ -357,75 +459,244 @@ pub(super) fn rasterize(
     tiling: spatial::Tiling,
     context: &RenderContext,
 ) -> Result<Raster, Error> {
-    // A token already cancelled when the call arrives costs no frame at all.
-    cancel.check()?;
-    let domain = Byte(source);
-    // The frame the next pass reads; `None` is the source itself. Every frame is the raster's
-    // `Arc<Vec<u8>>` from the start, so the last one written is the one returned.
-    let mut frame: Option<Arc<Vec<u8>>> = None;
-    let (mut width, mut height) = (source.width, source.height);
-    for (index, segment) in compiled.segments.iter().enumerate() {
-        if let Some(entry) = &segment.entry {
-            let input = frame.as_deref().unwrap_or(&source.rgba).as_slice();
-            let received = Stage { width, height };
-            let next = entry.byte_frame(&domain, input, received, tiling, cancel, context)?;
-            let held = entry.held(received);
-            (width, height) = (held.width, held.height);
-            // The frame the boundary read is released before the next pass, so two frames is the
-            // peak.
-            frame = Some(next);
-        }
-        let band = band(compiled, index);
-        if segment.geometry.is_identity(width, height) {
-            // An identity pass with nothing to write shares its input instead of copying it. One
-            // over a frame this render wrote writes it in place. The source is shared, so a pass
-            // over it loads the source's rows into a new frame, chunk by chunk inside the pass.
-            if segment.writes_pixels() {
-                let (mut owned, input) = match frame.take() {
-                    Some(owned) => (owned, None),
-                    None => (
-                        zeroed_frame(source.rgba.len()),
-                        Some((source.rgba.as_slice(), width)),
-                    ),
-                };
-                segment_pass(
-                    &ByteRows::new(segment, input),
-                    segment,
-                    frame_mut(&mut owned),
-                    band,
-                    cancel,
-                    context.scratch(),
-                )?;
-                frame = Some(owned);
-            }
-        } else {
-            let input = frame.take();
-            cancel.check()?;
-            let mut next = zeroed_frame(Raster::expected_len(segment.width, segment.height)?);
-            segment_pass(
-                &ByteRows::new(
-                    segment,
-                    Some((input.as_deref().unwrap_or(&source.rgba).as_slice(), width)),
-                ),
-                segment,
-                frame_mut(&mut next),
-                band,
-                cancel,
-                context.scratch(),
-            )?;
-            // Released before the next pass, so two frames is the peak.
-            drop(input);
-            frame = Some(next);
-            (width, height) = (segment.width, segment.height);
-        }
-    }
+    rasterize_suffix(source, compiled, snapshot_id, cancel, tiling, context, None)
+}
+
+pub(super) fn rasterize_suffix(
+    source: &SourceImage,
+    compiled: &Compiled,
+    snapshot_id: SnapshotId,
+    cancel: &Cancel,
+    tiling: spatial::Tiling,
+    context: &RenderContext,
+    held: Option<(usize, ByteFrame, Stage)>,
+) -> Result<Raster, Error> {
+    let (frame, stage) = frames(source, compiled, cancel, tiling, context, None, held)?;
+    let ByteFrame::Narrow(rgba) = frame else {
+        unreachable!("terminal frame is narrow")
+    };
     Ok(Raster {
-        width,
-        height,
-        rgba: frame.unwrap_or_else(|| source.rgba.clone()),
+        width: stage.width,
+        height: stage.height,
+        rgba,
         source_fingerprint: source.fingerprint.clone(),
         snapshot_id,
     })
+}
+
+pub(super) fn frames(
+    source: &SourceImage,
+    compiled: &Compiled,
+    cancel: &Cancel,
+    tiling: spatial::Tiling,
+    context: &RenderContext,
+    stop: Option<usize>,
+    held: Option<(usize, ByteFrame, Stage)>,
+) -> Result<(ByteFrame, Stage), Error> {
+    cancel.check()?;
+    let domain = Byte(source);
+    let widths = byte_frame_widths(compiled);
+    let start = held.as_ref().map_or(0, |(index, _, _)| *index);
+    let reused = held.is_some();
+    let (mut frame, mut stage) = held.map_or_else(
+        || {
+            (
+                ByteFrame::Narrow(source.rgba.clone()),
+                Stage {
+                    width: source.width,
+                    height: source.height,
+                },
+            )
+        },
+        |(_, pixels, stage)| (pixels, stage),
+    );
+    let mut shared = true;
+    for (index, segment) in compiled.segments.iter().enumerate().skip(start) {
+        if let Some(entry) = &segment.entry
+            && !(reused && index == start)
+        {
+            frame = entry.byte_frame(
+                &domain,
+                &frame,
+                stage,
+                tiling,
+                cancel,
+                context,
+                widths[index].input,
+            )?;
+            let held = entry.held(stage);
+            stage = Stage {
+                width: held.width,
+                height: held.height,
+            };
+            shared = false;
+        }
+        if stop == Some(index) {
+            return Ok((frame, stage));
+        }
+        let output_wide = widths[index].output;
+        let identity = segment.geometry.is_identity(stage.width, stage.height);
+        if identity && !segment.writes_pixels() && frame.wide() == output_wide {
+            continue;
+        }
+        let band = band(compiled, index);
+        if identity && frame.wide() == output_wide && !shared {
+            match &mut frame {
+                ByteFrame::Narrow(pixels) => segment_pass(
+                    &ByteRows::new(segment, None),
+                    segment,
+                    frame_mut(pixels),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?,
+                ByteFrame::Wide(pixels) => segment_pass(
+                    &FloatRows::<u16>::new(segment, None),
+                    segment,
+                    super::raster::frame_mut16(pixels),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?,
+            }
+        } else {
+            cancel.check()?;
+            let mut next = ByteFrame::new(segment.stage(), output_wide)?;
+            match (&frame, &mut next) {
+                (ByteFrame::Narrow(input), ByteFrame::Narrow(output)) => segment_pass(
+                    &ByteRows::new(segment, Some((input, stage.width))),
+                    segment,
+                    frame_mut(output),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?,
+                (_, ByteFrame::Narrow(output)) => segment_pass(
+                    &FloatRows::<u8>::new(segment, Some((&frame, stage))),
+                    segment,
+                    frame_mut(output),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?,
+                (_, ByteFrame::Wide(output)) => segment_pass(
+                    &FloatRows::<u16>::new(segment, Some((&frame, stage))),
+                    segment,
+                    super::raster::frame_mut16(output),
+                    band,
+                    cancel,
+                    context.scratch(),
+                )?,
+            }
+            frame = next;
+        }
+        shared = false;
+        stage = segment.stage();
+    }
+    Ok((frame, stage))
+}
+
+trait SampleStore: Copy + Send + Sync {
+    const SAMPLES: usize;
+    fn load(pixel: &[Self]) -> [f32; 3];
+    fn store(pixel: &mut [Self], rgb: [f32; 3]);
+}
+impl SampleStore for u8 {
+    const SAMPLES: usize = 4;
+    fn load(p: &[Self]) -> [f32; 3] {
+        decode_pixel_in(decode_table(), [p[0], p[1], p[2]])
+    }
+    fn store(p: &mut [Self], rgb: [f32; 3]) {
+        p[..3].copy_from_slice(&quantize_pixel(rgb));
+        p[3] = 255;
+    }
+}
+impl SampleStore for u16 {
+    const SAMPLES: usize = 3;
+    fn load(p: &[Self]) -> [f32; 3] {
+        decoded([p[0], p[1], p[2]])
+    }
+    fn store(p: &mut [Self], rgb: [f32; 3]) {
+        p.copy_from_slice(&encoded(rgb, true));
+    }
+}
+struct FloatRows<'a, S> {
+    segment: &'a Segment,
+    input: Option<(&'a ByteFrame, Stage)>,
+    sample: std::marker::PhantomData<S>,
+}
+impl<'a, S> FloatRows<'a, S> {
+    fn new(segment: &'a Segment, input: Option<(&'a ByteFrame, Stage)>) -> Self {
+        Self {
+            segment,
+            input,
+            sample: std::marker::PhantomData,
+        }
+    }
+}
+impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
+    type Sample = S;
+    type Scratch = Vec<[f32; 3]>;
+    fn samples_per_pixel(&self) -> usize {
+        S::SAMPLES
+    }
+    fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
+        width * rows * 12
+    }
+    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [S]) -> Result<(), Error> {
+        scratch.clear();
+        match self.input {
+            Some((input, stage)) => {
+                let width = self.segment.width as usize;
+                scratch.extend((0..chunk.len() / S::SAMPLES).map(|offset| {
+                    let (x, y) = self
+                        .segment
+                        .geometry
+                        .unmap((offset % width) as u32, y0 + (offset / width) as u32);
+                    decoded(input.pixel(stage, x, y))
+                }));
+            }
+            None => scratch.extend(chunk.chunks_exact(S::SAMPLES).map(S::load)),
+        }
+        Ok(())
+    }
+    fn replace(
+        &self,
+        scratch: &mut Self::Scratch,
+        _: &mut [S],
+        offset: usize,
+        rgb: [u8; 3],
+    ) -> Result<(), Error> {
+        scratch[offset] = decode_pixel_in(decode_table(), rgb);
+        Ok(())
+    }
+    fn run(
+        &self,
+        scratch: &mut Self::Scratch,
+        _: &mut [S],
+        run: &ColorRun<'_>,
+        y0: u32,
+        rows: std::ops::Range<usize>,
+        snapshot: &mut [[f32; 3]],
+    ) -> Result<(), Error> {
+        let width = self.segment.width as usize;
+        for row in rows {
+            let pixels = &mut scratch[row * width..(row + 1) * width];
+            apply_units(run, y0 + row as u32, 0, pixels, snapshot)?;
+            if run.followed_by_replace() {
+                for pixel in pixels {
+                    *pixel = decode_pixel_in(decode_table(), quantize_pixel(*pixel));
+                }
+            }
+        }
+        Ok(())
+    }
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [S]) -> Result<(), Error> {
+        for (pixel, rgb) in chunk.chunks_exact_mut(S::SAMPLES).zip(scratch) {
+            S::store(pixel, *rgb);
+        }
+        Ok(())
+    }
 }
 
 /// The rows of segment `index`'s frame its colour runs reach: those the boundary after it reads
@@ -451,24 +722,23 @@ pub(super) fn band(compiled: &Compiled, index: usize) -> std::ops::Range<usize> 
 
 /// The byte driver's frame of the spatial boundary `entry` over `input`, the finished byte frame
 /// of the `stage` it receives: its tiles read the frame through the sRGB decode table.
+// Match the shared spatial_entry contract; this adapter adds the materialized input frame.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spatial_frame(
     domain: &Byte<'_>,
     entry: &SpatialEntry,
-    input: &[u8],
+    input: &ByteFrame,
     stage: Stage,
     tiling: spatial::Tiling,
     cancel: &Cancel,
     context: &RenderContext,
-) -> Result<Arc<Vec<u8>>, Error> {
-    let offset =
-        |x: u32, y: u32| ((u64::from(y) * u64::from(stage.width) + u64::from(x)) * 4) as usize;
-    let table = decode_table();
+    wide: bool,
+) -> Result<ByteFrame, Error> {
+    let table = decode16_table();
     let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
-        let at = offset(x, y);
-        Ok(decode_pixel_in(
-            table,
-            [input[at], input[at + 1], input[at + 2]],
-        ))
+        Ok(input
+            .pixel(stage, x, y)
+            .map(|code| table[usize::from(code)]))
     };
     spatial_entry(
         domain,
@@ -477,6 +747,181 @@ pub(super) fn spatial_frame(
         tiling,
         cancel,
         context,
+        wide,
         |region, planes, parallelism| fill_planes(region, planes, parallelism, read),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Entry, RenderOptions, tests::gradient};
+    use super::*;
+    use crate::{BASIC_EFFECT, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe};
+    use serde_json::json;
+    fn segment(spatial: bool, colour: bool, pixels: bool) -> Segment {
+        let mut segment = Segment::new(
+            spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral(), String::new())),
+            10,
+            10,
+        );
+        segment.has_color = colour;
+        segment.has_pixels = pixels;
+        segment
+    }
+    #[test]
+    fn byte_frame_widths_follow_the_hand_off_rules() {
+        let cases = [
+            (
+                vec![segment(false, false, false), segment(true, true, false)],
+                vec![(false, false), (true, false)],
+            ),
+            (
+                vec![segment(false, true, false), segment(true, false, false)],
+                vec![(false, true), (false, false)],
+            ),
+            (
+                vec![segment(false, false, false), segment(true, false, false)],
+                vec![(false, false), (false, false)],
+            ),
+            (
+                vec![segment(false, false, false), segment(true, true, true)],
+                vec![(false, false), (false, false)],
+            ),
+            (
+                vec![
+                    segment(false, false, false),
+                    segment(true, false, false),
+                    segment(true, false, false),
+                ],
+                vec![(false, false), (true, true), (false, false)],
+            ),
+            (
+                vec![
+                    segment(false, false, false),
+                    segment(true, false, false),
+                    segment(true, true, false),
+                ],
+                vec![(false, false), (true, true), (true, false)],
+            ),
+        ];
+        for (segments, expected) in cases {
+            let compiled = Compiled { segments };
+            let actual: Vec<_> = byte_frame_widths(&compiled)
+                .into_iter()
+                .map(|w| (w.input, w.output))
+                .collect();
+            assert_eq!(actual, expected);
+        }
+        let mut segments = vec![segment(false, true, false), segment(false, true, false)];
+        segments[1].entry = Some(Entry::resample(crate::Resample {
+            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            output_width: 10,
+            output_height: 10,
+        }));
+        assert!(
+            byte_frame_widths(&Compiled { segments })
+                .iter()
+                .all(|w| !w.input && !w.output)
+        );
+    }
+    #[test]
+    fn byte_wide_frame_len_is_checked_against_the_frame_limit() {
+        assert!(
+            matches!(ByteFrame::new(Stage{width:8,height:7},true).unwrap(),ByteFrame::Wide(values) if values.len()==8*7*3)
+        );
+        assert!(
+            ByteFrame::new(
+                Stage {
+                    width: 16384,
+                    height: 6000
+                },
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            ByteFrame::new(
+                Stage {
+                    width: u32::MAX,
+                    height: u32::MAX
+                },
+                true
+            )
+            .is_err()
+        );
+    }
+    fn wide_stack() -> Recipe {
+        Recipe {
+            layers: vec![
+                Layer::new(BASIC_EFFECT, json!({"exposure":0.7,"shadows":40.0})),
+                Layer::new(PRESENCE_EFFECT, json!({"texture":50.0,"clarity":30.0})),
+                Layer::new(crate::MIXER_EFFECT, json!({"red-luminance":12.0})),
+            ],
+            ..Recipe::default()
+        }
+    }
+    #[test]
+    fn byte_point_sample_equals_rendered_byte_through_a_wide_hand_off() {
+        let registry = ModuleRegistry::builtin();
+        let source = gradient(67, 49);
+        let context = RenderContext::new();
+        let recipe = wide_stack();
+        let render = super::super::render(
+            &registry,
+            &source,
+            &recipe,
+            RenderOptions::default(),
+            &context,
+        )
+        .unwrap();
+        let frame = render.frame(SnapshotId::new()).unwrap();
+        for (x, y) in [(0, 0), (13, 8), (34, 24), (66, 48), (0, 48), (66, 0)] {
+            assert_eq!(
+                render.sample(x, y).unwrap().rgba,
+                frame.pixel(x, y),
+                "({x},{y})"
+            );
+        }
+        super::super::parallel::force(Some(true));
+        let pooled = render.frame(SnapshotId::new()).unwrap();
+        super::super::parallel::force(Some(false));
+        let serial = render.frame(SnapshotId::new()).unwrap();
+        super::super::parallel::force(None);
+        assert_eq!(pooled.rgba, serial.rgba);
+    }
+    #[test]
+    fn byte_region_and_window_equal_whole_through_a_wide_hand_off() {
+        let registry = ModuleRegistry::builtin();
+        let source = gradient(97, 73);
+        let context = RenderContext::new();
+        let recipe = wide_stack();
+        let render = super::super::render(
+            &registry,
+            &source,
+            &recipe,
+            RenderOptions::default(),
+            &context,
+        )
+        .unwrap();
+        let frame = render.frame(SnapshotId::new()).unwrap();
+        let region = Region {
+            x0: 19,
+            y0: 13,
+            width: 39,
+            height: 31,
+        };
+        let super::super::RegionRenderOutcome::Rendered(cut) =
+            render.region(SnapshotId::new(), region).unwrap()
+        else {
+            panic!("wide stage supports a region")
+        };
+        for y in 0..region.height {
+            for x in 0..region.width {
+                assert_eq!(
+                    cut.raster.pixel(x, y),
+                    frame.pixel(region.x0 + x, region.y0 + y)
+                );
+            }
+        }
+    }
 }

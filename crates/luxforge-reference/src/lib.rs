@@ -16,6 +16,7 @@
 //! most one output code of difference at a quantization boundary.
 
 pub mod colour;
+pub mod detail;
 pub mod dng;
 pub mod mask;
 pub mod mixer;

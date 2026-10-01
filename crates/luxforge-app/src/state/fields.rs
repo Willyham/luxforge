@@ -667,6 +667,18 @@ mod tests {
         assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
         assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
         assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.00"));
+        for (name, expected) in [
+            ("sharpening", "0"),
+            ("radius", "1.0"),
+            ("sharpen-detail", "25"),
+            ("sharpen-masking", "0"),
+            ("luminance", "0"),
+            ("luminance-detail", "50"),
+            ("colour", "0"),
+            ("colour-detail", "50"),
+        ] {
+            assert_eq!(fields.get("set-detail", name), Some(expected), "{name}");
+        }
         // Only declared fields exist: an action driven by presets alone has none, and every
         // declared number, integer and colour parameter of a built-in has exactly one.
         assert_eq!(
@@ -717,6 +729,14 @@ mod tests {
                 "set-controls.red",
                 "set-controls.rgb",
                 "set-controls.rgb-fields",
+                "set-detail.colour",
+                "set-detail.colour-detail",
+                "set-detail.luminance",
+                "set-detail.luminance-detail",
+                "set-detail.radius",
+                "set-detail.sharpen-detail",
+                "set-detail.sharpen-masking",
+                "set-detail.sharpening",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",

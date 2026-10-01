@@ -13,3 +13,11 @@ pub fn full_presence() -> script::Step {
         json!({"texture":100.0,"clarity":100.0,"dehaze":100.0}),
     )
 }
+
+/// Moderate Detail baseline shared by latency workloads.
+pub fn moderate_detail() -> script::Step {
+    script::Step::call(
+        "edit.set-detail",
+        json!({"sharpening":60.0,"luminance":40.0,"colour":40.0}),
+    )
+}

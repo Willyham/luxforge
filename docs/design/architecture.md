@@ -60,7 +60,7 @@ Paths are under `crates/luxforge-core/src`.
 | `editor/describe.rs` | State and recipe views |
 | `editor/artifact_store.rs` | Derived artifacts |
 | `editor/test_support.rs` | The helpers the service's tests share. Each concern's tests sit in its file, the artifact store's in `artifact_tests.rs` |
-| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (exact geometry, a resample's mapping and read rectangle, and the byte domain's bilinear pass), `colour_runs.rs` (colour runs and their masked blend), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
+| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (exact geometry, a resample's mapping and read rectangle, and the byte domain's bilinear pass), `colour_runs.rs` (colour runs and their masked blend), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `restoration.rs` (the bounded processed restoration-prefix cache), `input_grid.rs` (bounded value-mask inputs), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
 | `source.rs` and `source/linear.rs` | The prepared sources: `SourceImage`, and the RAW source's `LinearImage` with its view |
 | `cancel.rs` | `Cancel`, the crate's one cancellation token |
 | `colour.rs` | Each colour equation the renderers and tool modules share, once: the sRGB transfer function and exact output quantizer, Rec. 709 luminance and the luminance-ratio reconstruction, the Oklab conversion, 3×3 linear algebra, and the Planckian locus with the CIE 1960 `uv` projection |
@@ -126,7 +126,7 @@ An edit layer is an identified, typed operation with parameters and an input/out
 
 Each layer's coordinates refer to its input stage, and the host places a new layer by its effect stage ([content-space edits](content-space-edits.md), [orientation layer](orientation-layer.md)):
 
-- Pixel-stage layers are inserted before the geometry tail of quarter-turns, reflections and crop, so they address the content stage (the source after EXIF orientation) and every later geometry change carries them.
+- New pixel layers precede Restoration. Restoration layers, including Detail, precede colour; spatial-stage effects, including Presence, follow colour. Geometry and finish form the tail. Placement preserves existing layer order and only inserts the new layer; a saved interleaved stack is never normalized.
 - Geometry layers go before any finish layer, with the orientation always ahead of the crop, so the crop frames the turned photograph.
 
 ### Masks
@@ -158,14 +158,14 @@ RAW sensor data stays in an immutable u16 mosaic. White balance redevelops that 
 
 One pipeline, generic over its pixel domain, evaluates a compiled recipe: walking a point through the segments, the colour runs and replacements over a segment's rows, the resample recursion, and a spatial entry with its tiles and estimates exist once. The two domains differ only in what a pixel is between those steps and which frames their drivers materialize:
 
-- The byte domain is 8-bit sRGB, quantized at every run end, replacement, resample and spatial output.
+- The JPEG byte domain begins with RGBA8 source pixels. Spatial output handed to later colour or spatial work uses encoded RGB16 sRGB (six bytes per pixel); a pure width policy over the compiled segments selects the same boundaries for frames, points and windowed renders. Replacement, resampling and terminal display remain RGBA8 boundaries. The 16-bit decode table preserves every original 8-bit code exactly at code × 257, and encode thresholds implement nearest-code rounding without a per-channel power function. Colour work remains bounded f32 row scratch; JPEG gains no full-frame float representation.
 - The linear domain is `f64` from the RAW exposure and approximate white balance on and `f32` through a colour segment, quantized only at the terminal boundary.
 
 A pointwise colour operation is not a stage boundary. It joins its segment's operation list, and the rasterizing pass streams it over that segment's rows in bounded chunks, on both paths, so no full-frame float buffer ever exists. The pass runs on the shared Rayon pool from its pass kind's measured threshold (`luxforge_raw::parallel_pixels`, counted over the rows the colour runs reach; see the [limits](#limits) and [performance rules](../engineering/performance-rules.md) rule 9). Each chunk reserves its float scratch from the render context's budget before it uses it and releases it afterwards; its buffer is allocated once per Rayon split (`try_for_each_init` calls its init once per split, typically tens of times per pass) and reused for every chunk of that split. The budget's 64 MiB is a target: a chunk holds at most 1 MiB, so one chunk per pool worker stays well inside it, and a chunk that finds it taken still runs, with the high-water mark showing the overshoot.
 
 ### Stage boundaries
 
-A recipe compiles into at most one raster pass per segment, and point queries answer from the compiled geometry. Two operations separate segments:
+A recipe compiles into at most one raster pass per segment, and point queries answer from the compiled geometry. Module compilation receives `CompileStage {stage, full, scale}`: actual input dimensions, corresponding full-resolution input dimensions and separate x/y sampling ratios. Exact evaluation uses scale 1; sampled evaluation retains those dimensions before a window cut. Restoration is an effect-placement stage using the existing spatial primitive, not a new boundary kind. Two operations separate segments:
 
 - **A resample** (the crop module's non-zero-angle case). Each segment is an exact raster pass, so at most two full frames — one segment's output feeding the next resample's input — exist at once, each within the applicable JPEG 512 MiB or RAW 1.5 GiB per-buffer bound.
 - **A spatial operation**, at the same dimensions as the stage it receives. It reads the finished frame before it and writes the next one in square tiles anchored at the stage origin — 512 px, or 1024 px once the operation's summed halo at its stage passes 128 px, so a wide halo is not recomputed around every small tile (`luxforge_raw::spatial_tile`, the one rule a render, a point sample and a windowed proxy ask). Each tile is read as the tile grown by the operation's summed halo and clamped to the stage.
@@ -204,13 +204,15 @@ Point queries evaluate through a resample recursively and never allocate a frame
 
 Preview work runs on one persistent worker with one active and one replaceable pending job, tagged with a generation, which takes the pending job itself the moment the active one ends. The histogram analysis and the desktop's clipping overlay run on the same latest-job primitive (`luxforge_core::latest`), each on its own thread. A newer request raises the active job's superseded token and a cancel or withdrawal its abandoned token, and each job decides which of the two its work stops on. A newer request supersedes refinement and exact analysis but does not abandon interactive region work.
 
-- **At Fit and zoomed-out views**, a job renders the recipe against a display-bounded proxy and presents it; the exact full-resolution phase and whole-image report settle after the shared quiet policy or release.
+- **At Fit and zoomed-out views**, motion presents a display-bounded proxy. The exact full-resolution phase and whole-image report settle after the shared quiet policy or release. A nonempty effect declaring `FitSettle::Exact` also supplies a display reduction of the final exact output, so Detail settlement never reruns the stack at proxy size. A view-size change can reduce the retained exact raster on the preview worker without another stack render.
 - **At 100% and above**, motion renders the visible region at half linear resolution, then refines exact visible pixels and runs whole-frame analysis after the same policy. Matching full-image or region texture slots can serve a pan.
 - **While an upload is deferred** and a requested photo has no drawable current pixels, the surface may draw one coherent prior photo, marked updating, with mismatched overlays suppressed. Once a current region draws, any viewport area it does not cover remains canvas background; regions of different recipe content are never mixed. A blank-photo diagnostic counts draws with no photo pixels at all, not partial viewport coverage.
 
-Every colour, geometry and finish layer is resolution independent, so the proxy is an exact render of the recipe at its own scale. A spatial layer's neighbourhoods scale with the stage, so a stack holding one renders an approximate proxy that the result marks as such. A pixel-stage layer makes a stack ineligible and it takes the exact path. See [instant previews](instant-preview.md).
+Every colour, geometry and finish layer is resolution independent, so the proxy is an exact render of the recipe at its own scale. A restoration or spatial layer's neighbourhoods are sampled at the stage, so a stack holding one renders an approximate proxy that the result marks as such. A pixel-stage layer makes a stack ineligible and it takes the exact path. See [instant previews](instant-preview.md).
 
 Each preview worker holds one proxy source, released before its replacement is built, and builds it through one band intermediate per pool worker, fitted to the display bounds in the [limits](#limits). A crop fits its output to the bounds, and the proxy holds only the window of that proxy stage the crop reads: its output for a straight crop, the box its taps read plus 2 px for a straightened one, and under a spatial layer that grown by the operation's summed halo with its origin on the operation's own tile grid. So its size follows the display bounds and not the crop's tightness: 29 MiB of planes for a 1801 × 1574 crop of the X100VI in 1716 × 1576 bounds, 71 MiB under Presence measured on the 512 px grid, where Presence now runs in 1024 px tiles and its window may start up to 512 px further left and up, against 414 MiB for the whole proxy stage.
+
+Each preview worker also keeps one processed leading Source/Pixel/Restoration prefix, capped at 128 MiB. Its key includes the source proxy key (identity, dimensions, bounds and window), the leading layers and referenced masks/strokes, the pixel-domain estimate prefix, the required JPEG boundary width and the retained boundary rectangle (origin and dimensions). Narrow RGBA8, wide RGB16 and RAW planar f32 outputs retain their actual boundary precision; changing that width rebuilds the entry. Cache replacement, cancellation, failure or an oversized prefix releases it before further work. Cached suffix output is byte-identical to uncached rendering. This cache is independent of the source proxy and prepared-estimate stores.
 
 ### Limits
 
@@ -222,7 +224,8 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
-| Evaluated RGBA8 frame (the JPEG path's frames, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| Evaluated RGB16 JPEG spatial frame, per buffer | 512 MiB, checked as width × height × 6 bytes | `ByteFrame::new`, `crates/luxforge-core/src/render/byte.rs` |
 | RAW encoded source | 512 MiB | `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | RAW sensor pixels | 128 million | `MAX_PIXELS`, `crates/luxforge-raw/src/limits.rs` |
 | RAW side | 16384 px | `MAX_SIDE`, `crates/luxforge-raw/src/limits.rs` |
@@ -256,6 +259,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
+| Processed restoration prefixes per preview worker | 1, at most 128 MiB | `RESTORATION_PREFIX_MAX_BYTES`, `crates/luxforge-core/src/render/restoration.rs` |
 | Proxy sources per preview worker | 1, released before its replacement is built | No constant: the worker's one `ProxyCache` (`crates/luxforge-core/src/proxy.rs`), held in `crates/luxforge-core/src/preview/queue.rs` |
 | A proxy build's band intermediate | About 1 MiB per pool worker | `BAND_BYTES`, `crates/luxforge-core/src/proxy.rs` |
 | Display bounds | 4096 px per side and 8 megapixels | `ProxyBounds::MAX_SIDE` and `ProxyBounds::MAX_PIXELS`, `crates/luxforge-core/src/proxy.rs` |
@@ -332,6 +336,6 @@ One typed service backs the desktop and external JSON sessions. While the GUI is
 
 ## Modules and extension path
 
-The nine built-in modules — presets, pixel, RAW, Basic, presence, mixer, transform, crop and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the transform module composes its four actions into one orientation layer ahead of the crop the same way, carrying every geometry layer after it, the crop today, through the transform in the same entry by asking each module's `carry` hook.
+The ten built-in modules — presets, pixel, RAW, Basic, Detail, presence, mixer, transform, crop and vignette, in the order `ModuleRegistry::builtin()` registers them (see [modules and API](modules-and-api.md#registry)) — are linked modules; each declares its current effect identities, payloads and history actions. The crop module adds a `number` parameter kind and the `crop-frame` canvas interaction to the same descriptor shape, and updates its one crop layer in place through `ActionPlan::Update` rather than always appending; the transform module composes its four actions into one orientation layer ahead of the crop the same way, carrying every geometry layer after it, the crop today, through the transform in the same entry by asking each module's `carry` hook.
 
 The host generates `edit.<action>` API methods and the desktop generates controls from the same descriptors, so a module capability cannot exist without an API. Unknown or unavailable effects stay in every snapshot and fail rendering explicitly. Linked built-ins with lazy resources are enough for M4. External loading comes later around a selected use case with measured costs; see [modules](modules-and-api.md).

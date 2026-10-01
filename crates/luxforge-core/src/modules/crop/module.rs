@@ -578,8 +578,9 @@ impl ToolModule for CropModule {
         effect_id: &str,
         format: u32,
         value: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         let payload = payload(effect_id, format, value)?;
         let crop_stage = input_stage(stage, payload.angle);
         // Coverage is validated again here, so a payload saved against a different stage fails
@@ -1239,7 +1240,12 @@ mod tests {
         // Angle zero is an exact integer copy of the source rectangle.
         assert_eq!(
             module
-                .compile(CROP_EFFECT, EFFECT_FORMAT, &payload, INPUT)
+                .compile(
+                    CROP_EFFECT,
+                    EFFECT_FORMAT,
+                    &payload,
+                    crate::CompileStage::exact(INPUT)
+                )
                 .unwrap(),
             Processing::ExactGeometry(ExactGeometry::crop(120, 0, 240, 320))
         );
@@ -1251,7 +1257,12 @@ mod tests {
             .output_rect(&stage)
             .unwrap();
         match module
-            .compile(CROP_EFFECT, EFFECT_FORMAT, &angled, INPUT)
+            .compile(
+                CROP_EFFECT,
+                EFFECT_FORMAT,
+                &angled,
+                crate::CompileStage::exact(INPUT),
+            )
             .unwrap()
         {
             Processing::Resample(resample) => {
@@ -1272,7 +1283,7 @@ mod tests {
                 CROP_EFFECT,
                 EFFECT_FORMAT,
                 &json!({"angle":45.0,"x":0.0,"y":0.0,"width":1.0,"height":1.0}),
-                INPUT,
+                crate::CompileStage::exact(INPUT),
             )
             .unwrap_err();
         assert_eq!(error.kind, ErrorKind::Validation);

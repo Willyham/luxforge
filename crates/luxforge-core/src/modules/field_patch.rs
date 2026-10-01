@@ -33,7 +33,7 @@ use super::{
     ColorOperation, ColorStyle, Control, ControlVariant, EffectDescriptor, EffectStage,
     GroupControl, LayerReport, LayerUpdate, ModuleDescriptor, ModuleLayout, NewLayer,
     NumberControl, NumberStyle, ParameterDescriptor, ParameterKind, Processing, RailDecoration,
-    ResetAction, SpatialOperation, Stage, StageContext, ToolModule, check_value, label_value,
+    ResetAction, SpatialOperation, StageContext, ToolModule, check_value, label_value,
 };
 use crate::{Error, SourceTag};
 use serde_json::{Map, Number, Value};
@@ -527,6 +527,11 @@ impl Spec {
     }
 
     /// The next group of the module's section.
+    pub(crate) fn fit_settle(mut self, policy: super::FitSettle) -> Self {
+        self.effect.fit_settle = policy;
+        self
+    }
+
     pub(crate) fn group(mut self, group: Group) -> Self {
         self.groups.push(group);
         self
@@ -713,7 +718,7 @@ impl Shape {
     fn of(stage: EffectStage) -> Option<Self> {
         match stage {
             EffectStage::Color | EffectStage::Finish => Some(Self::Color),
-            EffectStage::Spatial => Some(Self::Spatial),
+            EffectStage::Restoration | EffectStage::Spatial => Some(Self::Spatial),
             EffectStage::Source | EffectStage::Geometry | EffectStage::Pixel => None,
         }
     }
@@ -775,7 +780,7 @@ pub trait FieldPatch: Send + Sync + 'static {
     /// The processing these canonical values compile to at the layer's input stage. It is asked
     /// only for values [`FieldPatch::is_neutral`] calls not neutral: a neutral layer compiles to no
     /// units, in its effect stage's shape, once for every field-patch module.
-    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error>;
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error>;
 
     /// Whether these values change nothing, so a first set that reaches them commits no layer and
     /// a layer holding them compiles to no units. The default is every field at its default; the
@@ -1147,7 +1152,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
         let values = self.read(effect_id, format, payload)?;
         // A neutral layer, by the module's own rule, compiles to no units in its stage's shape,
@@ -1156,13 +1161,14 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         if self.module.is_neutral(&values) {
             return Ok(self.shape.neutral());
         }
-        self.module.compile(&values, stage)
+        self.module.compile(&values, at)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::{CurveChannel, FixedStage};
     use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
     use serde_json::json;
@@ -1240,9 +1246,19 @@ mod tests {
 
         /// Only a layer the neutrality rule calls not neutral reaches the module, so this answer
         /// shows which compilations the shared short-circuit answered instead.
-        fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+        fn compile(&self, _: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
             Err(Error::validation("compiled by the module"))
         }
+    }
+
+    #[test]
+    fn restoration_field_patch_shape_is_spatial() {
+        let mut spec = Test::spec();
+        spec.effect.stage = EffectStage::Restoration;
+        let (_, descriptor, shape) = spec.build().unwrap();
+        assert_eq!(descriptor.effects[0].stage, EffectStage::Restoration);
+        assert!(matches!(shape, Shape::Spatial));
+        assert!(matches!(shape.neutral(),Processing::Spatial(op) if op.is_empty()));
     }
 
     fn module() -> FieldPatchModule<Test> {
@@ -1554,16 +1570,24 @@ mod tests {
     fn a_neutral_layer_compiles_to_no_units_in_its_stages_shape_without_the_module() {
         let module = module();
         for neutral in [json!({}), json!({"midpoint": 50, "on": false})] {
-            let Ok(Processing::Color(operation)) =
-                module.compile(EFFECT, EFFECT_FORMAT, &neutral, STAGE)
-            else {
+            let Ok(Processing::Color(operation)) = module.compile(
+                EFFECT,
+                EFFECT_FORMAT,
+                &neutral,
+                crate::CompileStage::exact(STAGE),
+            ) else {
                 panic!("{neutral} compiles to the neutral colour operation");
             };
             assert!(operation.is_empty(), "{neutral}");
         }
         assert_eq!(
             module
-                .compile(EFFECT, EFFECT_FORMAT, &json!({"on": true}), STAGE)
+                .compile(
+                    EFFECT,
+                    EFFECT_FORMAT,
+                    &json!({"on": true}),
+                    crate::CompileStage::exact(STAGE)
+                )
                 .err()
                 .map(|error| error.detail),
             Some("compiled by the module".to_owned())

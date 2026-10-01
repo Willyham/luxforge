@@ -11,8 +11,7 @@
 //! no access to the catalog.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, LayerReport,
-    ModuleDescriptor, ModuleLayout, ParameterDescriptor, Processing, Stage, StageContext,
-    ToolModule,
+    ModuleDescriptor, ModuleLayout, ParameterDescriptor, Processing, StageContext, ToolModule,
     descriptor::{PRESET_ID, PRESET_NAME, PRESET_SETTINGS},
 };
 use crate::Error;
@@ -176,7 +175,13 @@ impl ToolModule for PresetsModule {
         Err(no_effects(effect_id))
     }
 
-    fn compile(&self, effect_id: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        effect_id: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Err(no_effects(effect_id))
     }
 }
@@ -184,6 +189,7 @@ impl ToolModule for PresetsModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::{ModuleRegistry, check_parameters};
     use serde_json::json;
     use std::sync::Arc;
@@ -377,7 +383,12 @@ mod tests {
                 .describe("luxforge.presets.any", 1, &json!({}))
                 .unwrap_err(),
             module
-                .compile("luxforge.presets.any", 1, &json!({}), stage)
+                .compile(
+                    "luxforge.presets.any",
+                    1,
+                    &json!({}),
+                    crate::CompileStage::exact(stage),
+                )
                 .unwrap_err(),
         ] {
             assert_eq!(error.kind, ErrorKind::Validation);

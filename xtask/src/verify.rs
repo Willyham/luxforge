@@ -321,6 +321,19 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 )
             });
         }
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                binary: true,
+                manifest: true,
+                ..spec(
+                    &format!("raw-detail-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "raw-detail", "--source", &path],
+                )
+            });
+        }
         specs.push(Spec {
             result: Some("result.json"),
             manifest: true,
@@ -1511,7 +1524,15 @@ mod tests {
             rendered.len(),
             2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count()
         );
-        assert_eq!(rendered[2], "smoke-empty");
+        assert_eq!(
+            &rendered[2..6],
+            [
+                "smoke-detail",
+                "smoke-detail-fit",
+                "smoke-detail-zoom",
+                "smoke-empty"
+            ]
+        );
         assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
         assert_eq!(
             names(Tier::Timing, None, true),
@@ -1552,21 +1573,23 @@ mod tests {
         assert_eq!(names(Tier::Timing, None, false)[0], "generate-fixtures");
     }
     #[test]
-    fn full_adds_raw_editor_and_raw_panel_components_per_source_and_one_raw_performance_run() {
+    fn full_adds_raw_editor_detail_and_panel_per_source_and_one_raw_performance_run() {
         let sources = [
             ("z6".to_owned(), PathBuf::from("/tmp/z6.nef")),
             ("x100vi".to_owned(), PathBuf::from("/tmp/x100vi.raf")),
         ];
         let full = plan(Tier::Full, Some(&sources), true);
         let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
-        // One `raw-editor` and one `raw-panel` component per manifest source, named by source id,
+        // One `raw-editor`, `raw-detail` and `raw-panel` component per manifest source, named by source id,
         // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 11..],
+            &names[names.len() - 13..],
             [
                 "raw-editor-z6",
                 "raw-editor-x100vi",
+                "raw-detail-z6",
+                "raw-detail-x100vi",
                 "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
@@ -1578,6 +1601,19 @@ mod tests {
                 "measure",
             ]
         );
+        let detail_z6 = full.iter().find(|s| s.name == "raw-detail-z6").unwrap();
+        assert_eq!(
+            detail_z6.args,
+            [
+                "smoke",
+                "--scenario",
+                "raw-detail",
+                "--source",
+                "/tmp/z6.nef"
+            ]
+        );
+        assert!(detail_z6.binary && detail_z6.output && detail_z6.manifest);
+        assert_eq!(detail_z6.skip, None);
         let panel_z6 = full.iter().find(|s| s.name == "raw-panel-z6").unwrap();
         assert_eq!(
             panel_z6.args,

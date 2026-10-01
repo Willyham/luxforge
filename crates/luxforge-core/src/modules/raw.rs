@@ -9,8 +9,8 @@ pub(super) mod white_balance;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, Control,
     ControlVariant, EffectDescriptor, EffectStage, ExactGeometry, LayerReport, LayerUpdate,
-    ModuleDescriptor, ParameterDescriptor, Processing, ResetAction, Stage, StageContext,
-    ToolModule, decode_parameters,
+    ModuleDescriptor, ParameterDescriptor, Processing, ResetAction, StageContext, ToolModule,
+    decode_parameters,
 };
 use crate::{Error, Layer, LayerId, SourceTag};
 use serde::{Deserialize, Serialize};
@@ -646,8 +646,9 @@ impl ToolModule for RawModule {
         effect_id: &str,
         format: u32,
         _: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         raw_effect(effect_id, format)?;
         Ok(Processing::ExactGeometry(ExactGeometry {
             a: 1,
@@ -666,6 +667,7 @@ impl ToolModule for RawModule {
 mod tests {
     use super::*;
     use crate::ErrorKind;
+    use crate::Stage;
     use crate::modules::ParameterKind;
     use serde_json::json;
 

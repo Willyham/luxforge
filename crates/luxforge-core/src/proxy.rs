@@ -78,6 +78,9 @@ impl ProxyBounds {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyApproximation {
+    /// Full-resolution restoration filters are evaluated on averaged proxy pixels.
+    #[serde(default)]
+    pub restoration: bool,
     /// The stack compiles to a spatial operation at the proxy stage. Its neighbourhoods scale with
     /// the stage it is rendered at, so a proxy frame is close to the exact render at display size
     /// rather than equal to it. A neutral spatial layer compiles to no operation and does not set
@@ -97,7 +100,7 @@ impl ProxyApproximation {
     /// the exact recipe at proxy size, byte for byte with the exact recipe over the exact
     /// downscale of the source.
     pub fn is_approximate(self) -> bool {
-        self.spatial || self.mask || self.reduced_detail
+        self.restoration || self.spatial || self.mask || self.reduced_detail
     }
 
     /// Why, in one sentence, or `None` when the frame is not approximate. Both reasons are named
@@ -108,6 +111,10 @@ impl ProxyApproximation {
         const MASK: &str = "a mask draws a feature narrower than two proxy pixels, so its field is \
              evaluated with a 2x2 supersample per pixel";
         let mut reasons = Vec::new();
+        if self.restoration {
+            reasons
+                .push("a restoration layer's full-resolution filters run on averaged proxy pixels");
+        }
         if self.spatial {
             reasons.push(SPATIAL);
         }
@@ -639,6 +646,39 @@ impl BoxDownscale {
 /// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
 /// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is
 /// written in place and returned as the proxy's pixels, with no copy.
+/// Reduce final rendered pixels with the same linear-light area average as source proxies.
+/// The source allocation is borrowed through its Arc; only the display raster is allocated.
+pub(crate) fn downscale_raster(
+    raster: &Raster,
+    plan: ProxyPlan,
+    cancel: &Cancel,
+) -> Result<Raster, Error> {
+    check_plan(plan, raster.width, raster.height)?;
+    if plan.window.is_some()
+        || u64::from(plan.width) * u64::from(plan.height) > ProxyBounds::MAX_PIXELS
+    {
+        return Err(Error::resource_limit(
+            "settled display raster exceeds the 8 MP bound",
+        ));
+    }
+    let source = SourceImage {
+        width: raster.width,
+        height: raster.height,
+        rgba: raster.rgba.clone(),
+        fingerprint: raster.source_fingerprint.clone(),
+        orientation: 1,
+        capture: Default::default(),
+    };
+    let reduced = downscale_jpeg(&source, plan, cancel, BAND_BYTES)?;
+    Ok(Raster {
+        width: reduced.width,
+        height: reduced.height,
+        rgba: reduced.rgba,
+        source_fingerprint: raster.source_fingerprint.clone(),
+        snapshot_id: raster.snapshot_id.clone(),
+    })
+}
+
 fn downscale_jpeg(
     source: &SourceImage,
     plan: ProxyPlan,
@@ -2171,5 +2211,44 @@ mod tests {
             }
         }
         crate::render::parallel::force(None);
+    }
+    #[test]
+    fn restoration_settled_reducer_matches_linear_area_reference_and_preserves_identity() {
+        let pixels: Vec<[u8; 3]> = (0..53 * 41)
+            .map(|i| {
+                [
+                    (i * 37 % 251) as u8,
+                    (i * 11 % 239) as u8,
+                    (i * 5 % 241) as u8,
+                ]
+            })
+            .collect();
+        let source = jpeg_source(53, 41, &pixels);
+        let jpeg = jpeg_of(&source);
+        let raster = Raster {
+            width: 53,
+            height: 41,
+            rgba: jpeg.rgba.clone(),
+            source_fingerprint: jpeg.fingerprint.clone(),
+            snapshot_id: SnapshotId::new(),
+        };
+        for (w, h) in [(1, 1), (17, 13), (26, 20), (52, 40)] {
+            let plan = plan(w, h, (w, h));
+            let reduced = downscale_raster(&raster, plan, &Cancel::never()).unwrap();
+            let expected = source.proxy(plan).unwrap();
+            assert_eq!(reduced.rgba.as_ref(), jpeg_of(&expected).rgba.as_ref());
+            assert_eq!(reduced.snapshot_id, raster.snapshot_id);
+            assert_eq!(reduced.source_fingerprint, raster.source_fingerprint);
+            assert_eq!((reduced.width, reduced.height), (w, h));
+        }
+        assert!(std::sync::Arc::ptr_eq(&raster.rgba, &jpeg.rgba));
+        let cancel = Cancel::never();
+        cancel.cancel();
+        assert_eq!(
+            downscale_raster(&raster, plan(17, 13, (17, 13)), &cancel)
+                .unwrap_err()
+                .kind,
+            ErrorKind::Cancelled
+        );
     }
 }

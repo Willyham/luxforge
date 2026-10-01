@@ -7,6 +7,7 @@ mod capability;
 mod controls;
 mod crop;
 mod descriptor;
+mod detail;
 mod field_patch;
 mod mixer;
 mod pixel;
@@ -40,9 +41,9 @@ pub use crop::{CROP_EFFECT, CropAspect};
 pub use descriptor::{
     ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
     ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
-    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
-    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration, ResetAction,
-    check_parameters, check_value, resolve_control, resolve_group_reset,
+    EffectStage, FitSettle, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl,
+    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, RailDecoration,
+    ResetAction, check_parameters, check_value, resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
@@ -55,6 +56,8 @@ pub(crate) use descriptor::{
     PRESET_SETTINGS, check_declaration, check_declared_values, check_parameter_declarations,
     check_settings, check_target, decode_parameters, label_value, not_applicable, title_case,
 };
+pub use detail::DETAIL_EFFECT;
+use detail::DetailModule;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
@@ -66,7 +69,9 @@ pub(crate) use presence::PresenceModule;
 pub(crate) use presets::APPLY_PRESET;
 pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
-pub use processing::{ColorOperation, PointwiseColor, Processing, Stage};
+pub use processing::{
+    ColorOperation, CompileStage, PointwiseColor, Processing, SamplingScale, Stage,
+};
 pub use processing::{ExactGeometry, Resample};
 pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
@@ -208,6 +213,12 @@ pub trait StageQuestions {
     /// One pixel of the stage the first `index` layers produce, or `None` outside that stage.
     /// The host evaluates that one point segment by segment, so it allocates no frame.
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error>;
+    /// A layer's input in linear light, including the spatial hand-off's precision.
+    fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        Ok(self.sample_before(index, x, y)?.map(|rgba| {
+            crate::colour::srgb::decode_pixel([rgba[0], rgba[1], rgba[2]]).map(f64::from)
+        }))
+    }
     /// The mean pre-white-balance sensor values of a bounded patch at upright content coordinates,
     /// green-normalized, which a RAW neutral pick sets its gains from. Only a RAW original has a
     /// sensor, so the default, for a stack without one, refuses.
@@ -290,6 +301,15 @@ impl<'a> StageContext<'a> {
         y: u32,
     ) -> Result<Option<[u8; 4]>, Error> {
         self.questions.sample_before(index, x, y)
+    }
+
+    pub(crate) fn input_before(
+        &self,
+        index: usize,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<[f64; 3]>, Error> {
+        self.questions.input_before(index, x, y)
     }
 
     /// A RAW original's sensor patch at upright content coordinates
@@ -457,7 +477,7 @@ pub trait ToolModule: Send + Sync {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error>;
     /// This stored geometry layer re-expressed for its input stage turned or reflected by
     /// `orientation`, so it selects the same content in the turned stage. `input` is the stage the

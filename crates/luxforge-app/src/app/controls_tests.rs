@@ -1573,6 +1573,7 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
 fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
     let mut raw_only = controls_descriptor();
     raw_only.effects = vec![luxforge_core::EffectDescriptor {
+        fit_settle: Default::default(),
         id: "fixture.raw-only".into(),
         format: 1,
         stage: luxforge_core::EffectStage::Color,
@@ -1658,6 +1659,89 @@ fn reset_group_runs_the_reset_the_panel_resolved() {
             .starts_with(&format!("Running edit.{}", shown.action)),
         "{}",
         editor.status.text
+    );
+    finish(editor, catalog);
+}
+
+#[test]
+fn detail_controls_generate_two_groups_with_hint_and_editable_zero_strength_fields() {
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
+    editor.rederive();
+    let section = editor
+        .workspace
+        .tools
+        .all()
+        .find(|section| section.module_id == "luxforge.detail")
+        .unwrap();
+    assert_eq!(section.hint.as_deref(), Some("Judge fine detail at 100%"));
+    assert!(!section.expanded);
+    assert!(section.enabled);
+    assert_eq!(section.controls.len(), 2);
+    for (control, label) in section
+        .controls
+        .iter()
+        .zip(["Sharpening", "Noise reduction"])
+    {
+        let tools::ControlModel::Group(group) = control else {
+            panic!("expected generated group");
+        };
+        assert_eq!(group.label, label);
+        assert_eq!(group.controls.len(), 4);
+        assert!(
+            group
+                .controls
+                .iter()
+                .all(|control| matches!(control, tools::ControlModel::Slider(_)))
+        );
+    }
+    for name in ["sharpening", "luminance", "colour"] {
+        assert_eq!(editor.controls.fields.get("set-detail", name), Some("0"));
+    }
+    for (name, value) in [
+        ("radius", "1.0"),
+        ("sharpen-detail", "25"),
+        ("sharpen-masking", "0"),
+        ("luminance-detail", "50"),
+        ("colour-detail", "50"),
+    ] {
+        assert_eq!(editor.controls.fields.get("set-detail", name), Some(value));
+        let request = editor.request_for("set-detail", Some(name)).unwrap();
+        assert_eq!(request["method"], "edit.set-detail");
+        assert!(request["params"][name].is_number());
+    }
+    let action = editor
+        .modules
+        .iter()
+        .find(|m| m.id == "luxforge.detail")
+        .unwrap()
+        .action("set-detail")
+        .unwrap();
+    assert_eq!(
+        action
+            .parameters
+            .iter()
+            .find(|p| p.name == "radius")
+            .unwrap()
+            .notes,
+        "Takes effect when Amount is above 0"
+    );
+    assert_eq!(
+        action
+            .parameters
+            .iter()
+            .find(|p| p.name == "luminance-detail")
+            .unwrap()
+            .notes,
+        "Takes effect when Luminance is above 0"
+    );
+    assert_eq!(
+        action
+            .parameters
+            .iter()
+            .find(|p| p.name == "colour-detail")
+            .unwrap()
+            .notes,
+        "Takes effect when Colour is above 0"
     );
     finish(editor, catalog);
 }

@@ -88,7 +88,13 @@ impl ToolModule for Publisher {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
         Ok(crate::LayerReport::new("none"))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Err(Error::internal("the publisher never renders"))
     }
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {

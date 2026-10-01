@@ -368,11 +368,11 @@ fn gesture_launch(
     }
 }
 
-/// The hold launch: the full Basic layer committed into a catalog that outlives it.
-fn hold_launch(catalog: &Path, source: &Path) -> Launch {
+/// The hold launch: full Basic and optional global Detail persisted into a catalog.
+fn hold_launch(catalog: &Path, source: &Path, detail: bool) -> Launch {
     Launch::named("hold")
         .catalog(catalog)
-        .script("hold-script.json", hold_script())
+        .script("hold-script.json", hold_script(detail))
         .open_all(&[source.into()])
         .order(ORDER)
 }
@@ -665,9 +665,9 @@ const BURST_RATE_PER_SEC: f64 = 120.0;
 /// every exposure field's scaled burst reproduces value for value.
 #[cfg(test)]
 const BURST_PEAK_EV: f64 = 2.0;
-/// The triangle's peak for any field, as a fraction of the smaller half of its declared range
-/// around its origin: exactly [`BURST_PEAK_EV`] on an exposure's -5..5 EV, 40 on a -100..100 field
-/// and 1802 K either side of a RAW Temperature's 6504 K.
+/// The triangle's peak, as a fraction of the smaller half of its declared range around an interior
+/// origin, or the available range when its origin is a limit: exactly [`BURST_PEAK_EV`] on an
+/// exposure's -5..5 EV, 40 on a -100..100 field and 1802 K either side of RAW Temperature's 6504 K.
 const BURST_PEAK_FRACTION: f64 = 0.4;
 
 /// One value per tick, in milliseconds, at [`BURST_RATE_PER_SEC`].
@@ -709,14 +709,23 @@ fn burst_units() -> Vec<f64> {
 }
 
 impl FieldTarget {
-    /// The burst's values for this field: the triangle of [`burst_units`] about the field's
-    /// origin, peaking at [`BURST_PEAK_FRACTION`] of the smaller half of its declared range, each
+    /// The burst's values for this field: an interior origin follows [`burst_units`], peaking at
+    /// [`BURST_PEAK_FRACTION`] of the smaller half of its declared range. A limit origin instead
+    /// makes one inward triangle to that fraction of the available range and back. Each value is
     /// on the field's own step grid, as a slider on that step would produce. On an exposure field
     /// (origin 0, -5..5 EV, step 0.01) that is [`burst_values`] itself, value for value; on
     /// RAW Temperature it swings from 6500 K to about 8300 K and 4710 K, and on a -100..100
     /// field ±40.
     fn burst_values(&self) -> Vec<f64> {
-        let amplitude = BURST_PEAK_FRACTION * (self.max - self.origin).min(self.origin - self.min);
+        let above = self.max - self.origin;
+        let below = self.origin - self.min;
+        let at_limit = above == 0.0 || below == 0.0;
+        let amplitude = BURST_PEAK_FRACTION
+            * if at_limit {
+                above.max(below)
+            } else {
+                above.min(below)
+            };
         // A whole step divides exactly; a fractional one multiplies by its inverse, which is how
         // the two-decimal exposure values have always been rounded.
         let snap = |value: f64| {
@@ -727,9 +736,20 @@ impl FieldTarget {
                 (value * per_step).round() / per_step
             }
         };
-        burst_units()
+        let units = burst_units();
+        let last = (units.len() - 1) as f64;
+        units
             .into_iter()
-            .map(|unit| snap(self.origin + unit * amplitude).clamp(self.min, self.max))
+            .enumerate()
+            .map(|(index, unit)| {
+                let unit = if at_limit {
+                    let inward = 1.0 - (2.0 * index as f64 / last - 1.0).abs();
+                    if above == 0.0 { -inward } else { inward }
+                } else {
+                    unit
+                };
+                snap(self.origin + unit * amplitude).clamp(self.min, self.max)
+            })
             .collect()
     }
 }
@@ -787,6 +807,7 @@ pub struct Options<'a> {
     /// Commit a Presence layer with all three fields at full strength before a drag, commit or
     /// crop-start gesture, so the measured stack holds its neighbourhood operations.
     pub presence: bool,
+    pub detail: bool,
     /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
     /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
     /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
@@ -875,14 +896,18 @@ fn paint_path(positions: usize) -> Vec<[f64; 2]> {
         .collect()
 }
 
-/// The steps that build the **bare** recipe the paint measurement wants: one brush mask, one masked
-/// colour layer, and nothing else.
+/// One brush mask and one masked colour layer, plus the requested global Detail precondition.
 ///
 /// The seeding stroke is what creates the mask and its `Brush 1`, because a brush declares no
 /// geometry and therefore has no `mask.create-brush` to call; the mask it makes is the one that
 /// opens, so the Exposure slider under the component list binds to it with nothing to name it by.
 fn paint_precondition(options: &Options) -> Vec<script::Step> {
-    let mut steps = brushed_mask(options);
+    // Commit global Detail before New Mask changes the action target to the brush mask.
+    let mut steps = Vec::new();
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
+    steps.extend(brushed_mask(options));
     steps.push(script::Step::Slider(
         SliderStep::new(SET_BASIC, EXPOSURE, [PAINT_EV]).release(),
     ));
@@ -966,6 +991,9 @@ fn gesture_script(
     if options.basic {
         steps.push(basic_precondition());
     }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
     }
@@ -997,6 +1025,9 @@ fn burst_script(
     if options.basic {
         steps.push(basic_precondition());
     }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     steps.extend(zoom_step(options));
     steps.push(burst_gesture_step(
         field,
@@ -1007,9 +1038,50 @@ fn burst_script(
     steps
 }
 
-/// The hold run's script: the full Basic layer it commits.
-fn hold_script() -> Value {
-    script::write(&[basic_precondition()])
+/// The hold run's script: optional global Detail followed by full Basic.
+fn hold_script(detail: bool) -> Value {
+    let mut steps = Vec::new();
+    if detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
+    steps.push(basic_precondition());
+    script::write(&steps)
+}
+
+/// Refuse a measurement whose captured recipe missed the requested global restoration layer.
+fn check_detail_precondition(frame: &Value, expected: bool) -> Result {
+    let layers = frame["state"]["stack"]["layers"]
+        .as_array()
+        .ok_or("The frame records no stack")?;
+    let detail: Vec<_> = layers
+        .iter()
+        .filter(|l| l["effect"] == luxforge_core::DETAIL_EFFECT)
+        .collect();
+    ensure(
+        detail.len() == usize::from(expected),
+        "Captured Detail layer count disagrees with --detail",
+    )?;
+    if expected {
+        ensure(
+            detail[0]["mask"].is_null()
+                && detail[0]["payload"]
+                    == json!({"sharpening":60.0,"luminance":40.0,"colour":40.0}),
+            "The workload requires the declared moderate global Detail precondition",
+        )?;
+        let detail_index = layers
+            .iter()
+            .position(|l| l["effect"] == luxforge_core::DETAIL_EFFECT)
+            .unwrap();
+        ensure(
+            layers
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l["effect"] == luxforge_core::BASIC_EFFECT)
+                .all(|(index, _)| detail_index < index),
+            "Detail must precede the measured Basic layers",
+        )?;
+    }
+    Ok(())
 }
 
 /// One open draft crosses two pans and a quiet interval. A second value resumes motion before
@@ -1773,6 +1845,9 @@ fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
     if options.basic {
         steps.push(basic_precondition());
     }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
     }
@@ -1934,6 +2009,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
+    check_detail_precondition(last, options.detail)?;
     // The recipe the stroke was painted on is part of the measurement, not context: the figure this
     // mode exists to replace was taken on four masked layers, so this one states its own.
     let masks = last["state"]["masks"]["masks"]
@@ -2082,6 +2158,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
+        "detail_layer":options.detail,
         "mode":"paint",
         "samples":options.samples,
         "mask_overlay":if options.mask_overlay {"tint"} else {"off"},
@@ -2090,8 +2167,10 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "masks":masks.len(),
             "components":components,
             "masked_layers":masked_layers,
+            "global_detail_layers":usize::from(options.detail),
+            "layers":last["state"]["stack"]["layers"],
             "reads_pixels":false,
-            "note":"One brush mask of one component and one masked Basic exposure layer: the bare recipe, stated because the figure this mode replaces was taken on four masked colour layers, three of whose masks hold a component that reads pixels and therefore bounds the whole stage.",
+            "note":"One unlimited brush mask of one component and one masked Basic exposure layer, with requested global Basic/Detail and crop preconditions recorded. The brush reads no input pixels, so this measures overlay coverage and restoration-prefix reuse rather than the value-mask input-grid cache.",
         },
         "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
             "exposure_ev":PAINT_EV,
@@ -2163,6 +2242,9 @@ fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
     let mut steps = Vec::new();
     if options.basic {
         steps.push(basic_precondition());
+    }
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
     }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
@@ -2311,6 +2393,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         "scale":baseline["scale"],
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
+        "detail_layer":options.detail,
         "mode":"crop-start",
         "samples":options.samples,
         "method":format!("Background evidence launch of the release binary, warm filesystem cache, at Fit. Each sample is a crop draft Start step held open for {CROP_START_HOLD_MS} ms, then Cancel and {CROP_START_HOLD_MS} ms more. Times are from the script_step event that sent the Start: to crop_draft_started, which the Start's own update logs, and to the frame_captured of the Start step, which the editor captures once the crop layer's input stage is on screen, so that figure includes the window readback. Memory and GPU are the Performance section's resources.read figures in the frame captured at the end of each hold, sampled at most one second earlier while the draft was open."),
@@ -2642,6 +2725,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
+        "detail_layer":options.detail,
         "mode":options.mode.name(),
         "control":options.control.name(),
         "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
@@ -2709,7 +2793,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
     if options.idle {
-        hold_and_idle(run, &source)?;
+        hold_and_idle(run, &source, options.detail)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
@@ -2954,6 +3038,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     let before_burst = frames
         .get(frames.len().saturating_sub(2))
         .ok_or("No frame was captured before the burst")?;
+    check_detail_precondition(before_burst, options.detail)?;
     let gpu_delta = |field: &str| {
         before_burst["state"]["surface"]["gpu"][field]
             .as_u64()
@@ -2999,13 +3084,14 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         "scale":last["scale"],
         "crop_angle_deg":options.crop,
         "full_basic_layer":options.basic,
+        "detail_layer":options.detail,
         "mode":"burst",
         "control_action":field.action,
         "control_parameter":field.parameter,
         "samples":Value::Null,
         "gesture_values":values,
         "approximate_white_balance_frames":approximate,
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s, a triangle about the field's origin peaking at {} of the smaller half of its declared range (±2 EV on exposure), paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s. An interior origin follows a triangle peaking at {} of the smaller half of its declared range (±2 EV on exposure); a limit origin follows one inward triangle to that fraction of the available range and back. Values are paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
         "queue":{
             "scripted_slider_values":values.len(),
             "draft_set_requests":analysis.draft_sets,
@@ -3077,21 +3163,21 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     Ok(())
 }
 
-/// The resource workload: a 24 MP image holding a full Basic layer with the histogram on, reopened
-/// in a second process that is then left alone for 30 seconds.
+/// The resource workload: the supplied image holding full Basic and optional global Detail with
+/// the histogram on, reopened in a second process and left alone for 30 seconds.
 ///
 /// Two processes are needed because an evidence run exits when its script ends, and the editor's
-/// own evidence deadline is shorter than the idle window. The first run commits the layer into a
+/// own script deadline bounds scripted work. The first run commits the layers into a
 /// catalog that outlives it; the second opens the same file, which the catalog already holds, so it
 /// renders and reduces the committed stack and then has nothing left to do.
-fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
+fn hold_and_idle(run: &mut Run, source: &Path, detail: bool) -> Result {
     let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let catalog = out.join("held-catalog.sqlite");
     let Launched {
         dir: evidence,
         watched: hold_usage,
     } = run.launch(
-        hold_launch(&catalog, source)
+        hold_launch(&catalog, source, detail)
             .deadline(Duration::from_secs(60))
             .watch(sampled(root, "hold")),
     )?;
@@ -3101,6 +3187,7 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
         .and_then(|frames| frames.last())
         .ok_or("The hold run captured no frame")?
         .clone();
+    check_detail_precondition(&frame, detail)?;
 
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
@@ -3138,15 +3225,18 @@ fn hold_and_idle(run: &mut Run, source: &Path) -> Result {
     // The gesture process's resources, then the idle window's figures, as rows of the one shape.
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
-    // above does, and it runs the same colour stack.
+    // above does, and it runs the same committed stack.
     let mut rows = resource_rows(&hold_usage, &frame);
     rows.extend(stats::rows(&idle).iter().cloned());
     write_json(
         &out.join("resources.json"),
         &json!({
             "status":"passed",
-            "workload":"One 24 MP image holding a Basic layer with all ten fields non-neutral, histogram on",
+            "workload":"The supplied image holding a Basic layer with all ten fields non-neutral and optional moderate global Detail, histogram on",
             "basic_payload":full_basic(),
+            "detail_layer":detail,
+            "source_dimensions":frame["state"]["source_dimensions"],
+            "stack":frame["state"]["stack"],
             "rows":rows,
             "gesture_process":{
                 "scratch":frame["state"]["scratch"],
@@ -3206,6 +3296,7 @@ mod tests {
                             idle: false,
                             basic,
                             presence: false,
+                            detail: false,
                             mask,
                             zoom,
                             moving_pan,
@@ -3280,6 +3371,7 @@ mod tests {
                             idle: false,
                             basic,
                             presence: false,
+                            detail: false,
                             mask,
                             zoom: Some(zoom),
                             moving_pan: false,
@@ -3299,7 +3391,8 @@ mod tests {
                 }
             }
         }
-        put("hold".into(), hold_script());
+        put("hold".into(), hold_script(false));
+        put("hold-detail".into(), hold_script(true));
         // Every launch's arguments, as it passes them in a run written to `/out`.
         let out = Path::new("/out");
         for (name, log, file, developer) in [
@@ -3313,7 +3406,7 @@ mod tests {
         let catalog = out.join("held-catalog.sqlite");
         put(
             "hold-arguments".into(),
-            json!(hold_launch(&catalog, &source).command(out)),
+            json!(hold_launch(&catalog, &source, false).command(out)),
         );
         put(
             "idle-arguments".into(),
@@ -3325,6 +3418,123 @@ mod tests {
     /// placeholder for the curve control, which ignores its `field` argument entirely.
     fn unused_field() -> FieldTarget {
         FieldTarget::basic_exposure()
+    }
+
+    #[test]
+    fn detail_measurement_preconditions_keep_paint_and_idle_global() {
+        let source = PathBuf::from("unused.jpg");
+        let mut options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Paint,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: None,
+            idle: true,
+            basic: false,
+            presence: false,
+            detail: true,
+            mask: false,
+            mask_overlay: true,
+            zoom: None,
+            moving_pan: false,
+        };
+        let detail = crate::scenario::recipe::moderate_detail();
+        let paint = paint_precondition(&options);
+        assert_eq!(
+            paint.first(),
+            Some(&detail),
+            "Detail must be committed before mask selection changes the target"
+        );
+        assert!(
+            paint
+                .iter()
+                .skip(1)
+                .any(|s| matches!(s, script::Step::Mask(MaskStep::Paint(PaintStep::NewMask))))
+        );
+        let held = hold_script(true);
+        let held = held.as_array().unwrap();
+        assert_eq!(script::Step::from_value(held[0].clone()).unwrap(), detail);
+        assert_eq!(
+            script::Step::from_value(held[1].clone()).unwrap(),
+            basic_precondition()
+        );
+        options.detail = false;
+        assert!(!paint_precondition(&options).contains(&detail));
+        assert_eq!(hold_script(false), script::write(&[basic_precondition()]));
+    }
+
+    #[test]
+    fn detail_burst_precondition_preserves_the_basic_gesture_and_other_setup() {
+        let source = PathBuf::from("unused.jpg");
+        let mut options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Burst,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: Some(2.0),
+            idle: false,
+            basic: true,
+            presence: false,
+            detail: false,
+            mask: true,
+            mask_overlay: false,
+            zoom: Some(100.0),
+            moving_pan: true,
+        };
+        let field = FieldTarget::basic_exposure();
+        let values = field.burst_values();
+        let interval = burst_interval_ms();
+        let baseline = burst_script(&options, &field, &values, interval);
+        let detail = crate::scenario::recipe::moderate_detail();
+        assert!(!baseline.contains(&detail));
+        assert_eq!(
+            baseline.last(),
+            Some(&burst_gesture_step(&field, &burst_values(), interval, true))
+        );
+        assert!(baseline.contains(&basic_precondition()));
+        assert!(baseline.contains(&script::Step::View(ViewStep::Percent(100.0))));
+        for step in crop_precondition(&options)
+            .into_iter()
+            .chain(mask_precondition())
+        {
+            assert!(baseline.contains(&step));
+        }
+
+        options.detail = true;
+        let with_detail = burst_script(&options, &field, &values, interval);
+        assert_eq!(
+            with_detail.iter().filter(|step| **step == detail).count(),
+            1
+        );
+        let detail_index = with_detail.iter().position(|step| *step == detail).unwrap();
+        assert!(detail_index < with_detail.len() - 1);
+        assert_eq!(
+            with_detail
+                .into_iter()
+                .filter(|step| *step != detail)
+                .collect::<Vec<_>>(),
+            baseline,
+            "--detail must only add its shared recipe precondition"
+        );
+    }
+
+    #[test]
+    fn detail_measurement_refuses_missing_masked_or_reordered_restoration() {
+        let detail = json!({"effect":luxforge_core::DETAIL_EFFECT,"mask":null,
+            "payload":{"sharpening":60.0,"luminance":40.0,"colour":40.0}});
+        let basic = json!({"effect":luxforge_core::BASIC_EFFECT,"payload":{"exposure":0.5}});
+        let frame = |layers: Value| json!({"state":{"stack":{"layers":layers}}});
+        assert!(check_detail_precondition(&frame(json!([detail, basic])), true).is_ok());
+        assert!(check_detail_precondition(&frame(json!([basic])), true).is_err());
+        assert!(check_detail_precondition(&frame(json!([basic, detail])), true).is_err());
+        assert!(check_detail_precondition(&frame(json!([detail, basic])), false).is_err());
+        let mut masked = detail;
+        masked["mask"] = json!("mask-1");
+        assert!(check_detail_precondition(&frame(json!([masked, basic])), true).is_err());
     }
 
     /// A crop-start script at its largest sample count fits the evidence script, and the step
@@ -3343,6 +3553,7 @@ mod tests {
             idle: false,
             basic: true,
             presence: true,
+            detail: false,
             mask: false,
             mask_overlay: false,
             zoom: None,
@@ -3712,7 +3923,7 @@ mod tests {
         assert_eq!(burst_interval_ms(), 8);
     }
 
-    /// Every field's burst is the same triangle, scaled about its own origin: exposure's — Basic's,
+    /// Interior fields follow the same triangle, scaled about their own origin: exposure's — Basic's,
     /// on a JPEG and a RAW photo alike — is the historical ±2 EV one value for value, and the RAW
     /// temperature's and tint's stay inside their declared ranges on their own steps, peaking at
     /// 40% of the smaller half of the range.
@@ -3747,6 +3958,53 @@ mod tests {
                 (field.origin - min - peak).abs() <= 2.0 * field.step,
                 "{min}"
             );
+        }
+    }
+
+    #[test]
+    fn detail_strength_bursts_change_values_and_return_to_the_limit_origin() {
+        for parameter in ["sharpening", "luminance", "colour"] {
+            let mut field =
+                resolve_field(Control::Slider, Some("set-detail"), Some(parameter)).unwrap();
+            assert_eq!(field.origin, field.min);
+            assert_eq!(field.min, 0.0);
+            // The declared Detail fields start at their lower limit; also pin the inward direction
+            // for a field whose origin is its upper limit.
+            for origin in [field.min, field.max] {
+                field.origin = origin;
+                let values = field.burst_values();
+                assert_eq!(values.len(), burst_values().len());
+                assert_eq!(values.first(), Some(&origin));
+                assert_eq!(values.last(), Some(&origin));
+                let middle = values.len() / 2;
+                assert_ne!(
+                    values[middle], origin,
+                    "{parameter} must exercise real edits"
+                );
+                let excursion = (values[middle] - origin).abs();
+                assert!(
+                    (excursion - BURST_PEAK_FRACTION * (field.max - field.min)).abs() <= field.step,
+                    "{parameter}: {excursion}"
+                );
+                for value in &values {
+                    assert!(
+                        (field.min..=field.max).contains(value),
+                        "{parameter}: {value}"
+                    );
+                    assert_eq!((value / field.step).round() * field.step, *value);
+                }
+                let direction = if origin == field.min { 1.0 } else { -1.0 };
+                assert!(
+                    values[..=middle]
+                        .windows(2)
+                        .all(|pair| direction * pair[1] >= direction * pair[0])
+                );
+                assert!(
+                    values[middle..]
+                        .windows(2)
+                        .all(|pair| direction * pair[1] <= direction * pair[0])
+                );
+            }
         }
     }
 

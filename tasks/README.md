@@ -9,12 +9,12 @@ Each JSON file is an independent plan. IDs start at `TASK-001` inside every file
 | [Rendering](rendering.json) | Measure and bound the GPU resources outside the photo-texture ceiling |
 | [RAW](raw.json) | The RAW qualification milestone: controlled quality, the foundation and journey checkpoints, failure hardening, packaging and whole-editor measurement |
 | [Tone curve](tone-curve.json) | The Tone curve module: frozen curve numerics, the shared curve-editor changes, the field-patch module, conformance and placement, the desktop scenario, presets, masks, harness preparation and measurement |
-| [Detail](detail.json) | Planned capture sharpening and manual noise reduction: the restoration stage and compile context, off-owner pixel queries and mutations, the 16-bit JPEG hand-off, exact settled Fit, the restoration-prefix proxy cache, the input-grid overlay cache, shared controls/masks/presets/history and quality/performance qualification |
+| [Detail](detail.json) | Capture sharpening and manual noise reduction in implementation: the restoration stage and compile context, off-owner pixel queries and mutations, the 16-bit JPEG hand-off, exact settled Fit, the restoration-prefix proxy cache, the input-grid overlay cache, shared controls/masks/presets/history and quality/performance qualification |
 | [Lens and perspective](lens-and-perspective.json) | Planned offline profile distortion and manual perspective: the pinned Lensfun resource index, the optics ledger, the mapping refactor and warp chain with closed-form coverage, the query-choice control, coordinate preservation and bounded verification |
 
 The post-consolidation programme is complete and its plans are deleted; its outcome lives in the specs and [feature status](../docs/features.md).
 
-Detail's choices are delegated and recorded in its [design](../docs/design/detail.md), with the owner's four decisions of 2026-09-30 (the 16-bit JPEG hand-off, the restoration-prefix proxy cache, the input-grid overlay cache and the off-owner mutation path) in [decisions](../docs/decisions.md#detail). The plan has no owner-review prerequisite and is not yet authorized for implementation.
+Detail's choices are delegated and recorded in its [design](../docs/design/detail.md), with the owner's four decisions of 2026-09-30 (the 16-bit JPEG hand-off, the restoration-prefix proxy cache, the input-grid overlay cache and the off-owner mutation path) in [decisions](../docs/decisions.md#detail). The plan has no owner-review prerequisite; implementation is authorized and in progress.
 
 The Lens and perspective plan runs on the owner's decisions of 2026-09-30 in [decisions](../docs/decisions.md#lens-and-perspective-planning) and the recorded defaults in its [design](../docs/design/lens-and-perspective.md); it is not yet authorized for implementation. Profile qualification needs authentic photographs the owner supplies; without them it stays incomplete.
 

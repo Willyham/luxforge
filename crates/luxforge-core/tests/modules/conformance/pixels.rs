@@ -109,6 +109,36 @@ pub fn raster(registry: &ModuleRegistry, sources: &Sources, recipe: &Recipe) -> 
         .map_err(|error| format!("the stack did not render: {error}"))
 }
 
+/// Empty compiled work preserves the source allocation and both domains' exact identity pixels,
+/// whether the stored configuration is all-default or retains a nondefault inactive setting.
+fn identity_pixels(
+    registry: &ModuleRegistry,
+    sources: &Sources,
+    recipe: &Recipe,
+    bytes: &Raster,
+    linear_identity: &Raster,
+    what: &str,
+) -> Checked {
+    ensure(
+        (bytes.width, bytes.height) == (sources.byte.width, sources.byte.height)
+            && Arc::ptr_eq(&bytes.rgba, &sources.byte.rgba),
+        format!("{what} did not preserve dimensions and share the source allocation"),
+    )?;
+    let linear = render_linear(
+        registry,
+        &sources.linear,
+        SnapshotId::new(),
+        recipe,
+        LinearSettings::default(),
+    )
+    .map_err(|error| format!("{what} did not render on the linear path: {error}"))?;
+    ensure(
+        (linear.width, linear.height) == (linear_identity.width, linear_identity.height)
+            && linear.rgba == linear_identity.rgba,
+        format!("{what} changed identity dimensions or a byte on the linear path"),
+    )
+}
+
 /// `sample` equals the rendered byte at every probe on the byte path, and `sample_linear` equals
 /// `render_linear` at every probe on the linear path, for the same stack.
 pub fn sample_equals_render(
@@ -172,7 +202,8 @@ pub fn sample_equals_render(
 }
 
 /// How many units a payload compiles to at `stage`: a field patch compiles to one colour or one
-/// spatial operation, and a neutral payload to one with no units, which the host drops entirely.
+/// spatial operation. A neutral payload or an inactive stored configuration may compile to an
+/// operation with no units, which the host drops entirely.
 fn compiled_units(
     registry: &ModuleRegistry,
     module: &FieldPatch,
@@ -183,7 +214,12 @@ fn compiled_units(
         .module(&module.id)
         .ok_or("the module is not registered")?;
     let processing = provider
-        .compile(&module.effect.id, module.effect.format, payload, stage)
+        .compile(
+            &module.effect.id,
+            module.effect.format,
+            payload,
+            luxforge_core::CompileStage::exact(stage),
+        )
         .map_err(|error| format!("{payload} did not compile: {error}"))?;
     match processing {
         Processing::Color(operation) => Ok(operation.len()),
@@ -195,8 +231,9 @@ fn compiled_units(
 }
 
 /// The payload checks that need no catalog: every neutral spelling compiles to nothing, keeps the
-/// identity byte path and shares the source allocation; each single field and each whole payload
-/// is classified by the module's own neutrality rule and has exactly that rule's consequences.
+/// identity byte path and shares the source allocation. Configuration neutrality and compiled
+/// pixel work are checked separately: inactive nondefault settings retain their reported values
+/// while proving the same pixel identity, and active payloads compile and render processing.
 pub fn payloads(
     registry: &ModuleRegistry,
     module: &FieldPatch,
@@ -248,21 +285,13 @@ pub fn payloads(
         )?;
         let recipe = stack(vec![layer]);
         let rendered = raster(registry, sources, &recipe)?;
-        ensure(
-            Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba),
-            format!("{what} {payload} did not share the source allocation"),
-        )?;
-        let linear = render_linear(
+        identity_pixels(
             registry,
-            &sources.linear,
-            SnapshotId::new(),
+            sources,
             &recipe,
-            LinearSettings::default(),
-        )
-        .map_err(|error| format!("{what} did not render on the linear path: {error}"))?;
-        ensure(
-            linear.rgba == identity.rgba,
-            format!("{what} {payload} changed a byte on the linear path"),
+            &rendered,
+            &identity,
+            &format!("{what} {payload}"),
         )?;
         neutral.push(json!({"payload": payload, "shows": what}));
     }
@@ -299,34 +328,48 @@ pub fn payloads(
             )?;
         }
         let units = compiled_units(registry, module, &payload, stage)?;
-        let rendered = raster(registry, sources, &stack(vec![layer]))?;
+        let recipe = stack(vec![layer]);
+        let rendered = raster(registry, sources, &recipe)?;
         let shared = Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba);
         if !module.renders {
             renders_nothing(&payload, units, shared)?;
-        } else if is_neutral {
+        }
+        if is_neutral {
             ensure(
-                units == 0 && shared,
+                units == 0,
                 format!(
-                    "{payload} is neutral by the module's rule but compiled to {units} unit(s) and \
-                     {} the source allocation",
-                    if shared { "shared" } else { "did not share" }
-                ),
-            )?;
-        } else {
-            ensure(
-                units > 0 && !shared,
-                format!(
-                    "{payload} is not neutral but compiled to {units} unit(s) and {} the source \
-                     allocation",
-                    if shared { "shared" } else { "did not share" }
+                    "{payload} is neutral by the module's rule but compiled to {units} unit(s)"
                 ),
             )?;
         }
-        single.push(json!({"payload": payload, "neutral": is_neutral, "units": units}));
+        if units == 0 {
+            identity_pixels(
+                registry,
+                sources,
+                &recipe,
+                &rendered,
+                &identity,
+                &payload.to_string(),
+            )?;
+        } else {
+            ensure(
+                !shared,
+                format!("{payload} compiled to {units} unit(s) but shared the source allocation"),
+            )?;
+        }
+        single.push(
+            json!({"payload": payload, "neutral": is_neutral, "units": units,
+            "pixels_identity": units == 0, "shares_source": shared,
+            "changes_byte_pixels": rendered.rgba != sources.byte.rgba}),
+        );
     }
     ensure(
-        single.iter().any(|case| case["neutral"] == json!(false)),
-        "no single field changes the image",
+        !module.renders
+            || single.iter().any(|case| {
+                case["units"].as_u64().is_some_and(|n| n > 0)
+                    && case["changes_byte_pixels"] == json!(true)
+            }),
+        "no single field compiles pixel work that changes the image",
     )?;
 
     let mut whole = Vec::new();
@@ -340,13 +383,22 @@ pub fn payloads(
             format!("{payload} moves every field but is reported neutral"),
         )?;
         let units = compiled_units(registry, module, &payload, stage)?;
-        let rendered = raster(registry, sources, &stack(vec![layer]))?;
+        let recipe = stack(vec![layer]);
+        let rendered = raster(registry, sources, &recipe)?;
         let shared = Arc::ptr_eq(&rendered.rgba, &sources.byte.rgba);
         if module.renders {
             ensure(units > 0, format!("{payload} compiled to nothing"))?;
             ensure(!shared, format!("{payload} shared the source allocation"))?;
         } else {
             renders_nothing(&payload, units, shared)?;
+            identity_pixels(
+                registry,
+                sources,
+                &recipe,
+                &rendered,
+                &identity,
+                &payload.to_string(),
+            )?;
         }
         whole.push(json!({"payload": payload, "units": units}));
         rasters.push(rendered);

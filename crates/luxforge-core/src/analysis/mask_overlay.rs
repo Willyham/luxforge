@@ -60,6 +60,11 @@ pub trait MaskInputPixel: Sync {
     fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error>;
 }
 
+/// One bounded precomputed input value per overlay cell.
+pub trait MaskInputGrid: Sync {
+    fn linear_cell(&self, cell: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error>;
+}
+
 /// Where a value-based component's pixel comes from, or the caller's own reason there is none.
 ///
 /// The reason is the caller's because only the caller knows it: the grid has a mask and a frame and
@@ -72,6 +77,7 @@ pub enum MaskPixels<'a> {
     Unavailable(&'a str),
     /// The input of the operation this mask modulates.
     Input(&'a (dyn MaskInputPixel + 'a)),
+    Grid(&'a (dyn MaskInputGrid + 'a)),
 }
 
 /// The cell count above which the grid is filled on the shared Rayon pool. It is the same
@@ -135,7 +141,7 @@ struct Cells<'a> {
     /// The masked operation's input, or `None` when this mask reads no pixel at all. It is `None`
     /// for a position-only mask even when the caller offered one, so a geometric grid costs exactly
     /// what it cost before a value-based component existed.
-    input: Option<&'a (dyn MaskInputPixel + 'a)>,
+    input: Option<MaskPixels<'a>>,
 }
 
 impl Cells<'_> {
@@ -166,7 +172,13 @@ impl Cells<'_> {
                 // one with a gradient costs the gradient's rectangle and no more. An empty rectangle
                 // never reaches here — `coverage_grid` answers such a mask with no grid at all.
                 Some(_) if !bounds.contains(x, y) => MASK_COVERAGE_NONE,
-                Some(input) => match input.linear(x, y)? {
+                Some(input) => match match input {
+                    MaskPixels::Input(input) => input.linear(x, y),
+                    MaskPixels::Grid(input) => {
+                        input.linear_cell(cy as usize * self.cells_w as usize + cx, x, y)
+                    }
+                    MaskPixels::Unavailable(_) => unreachable!(),
+                }? {
                     Some(pixel) => quantize_coverage(mask.coverage(x, y, pixel)),
                     // The masked operation's own stage ran out before the frame did, which is the
                     // same absence of a picture a cell outside the content stage reports.
@@ -307,7 +319,7 @@ fn grid_with_threshold(
     // grid, with the caller's own reason named and where the selection *can* be read.
     let input = match (mask.reads_pixels(), pixels) {
         (false, _) => None,
-        (true, MaskPixels::Input(input)) => Some(input),
+        (true, input @ (MaskPixels::Input(_) | MaskPixels::Grid(_))) => Some(input),
         (true, MaskPixels::Unavailable(reason)) => {
             return Err(Error::validation(format!(
                 "this mask has a component whose coverage depends on the pixel it reads, and \

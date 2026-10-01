@@ -9,7 +9,7 @@ use crate::{
     modules::{
         ActionInput, ActionPlan, Availability, BoxRect, ColorOperation, CropPayload, CropStage,
         EffectDescriptor, EffectStage, ExactGeometry, ModuleDescriptor, ModuleRegistry, Processing,
-        Resample, Stage, StageContext, ToolModule,
+        Resample, StageContext, ToolModule,
     },
 };
 use luxforge_reference::srgb;
@@ -163,6 +163,7 @@ impl GeometryTestModule {
             ]
             .into_iter()
             .map(|id| EffectDescriptor {
+                fit_settle: Default::default(),
                 id: id.into(),
                 format: EFFECT_FORMAT,
                 stage: EffectStage::Geometry,
@@ -210,8 +211,9 @@ impl ToolModule for GeometryTestModule {
         effect_id: &str,
         _: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         if effect_id == TEST_OFFSET_EFFECT {
             // A raw translation with a smaller output, including mappings the host must reject.
             return Ok(Processing::ExactGeometry(ExactGeometry::crop(
@@ -554,6 +556,7 @@ impl ColorTestModule {
                 title: "Test colour".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
+                    fit_settle: Default::default(),
                     id: TEST_COLOR_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Color,
@@ -599,7 +602,14 @@ impl ToolModule for ColorTestModule {
     fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
         Ok(crate::LayerReport::new(format!("test colour {payload}")))
     }
-    fn compile(&self, _: &str, _: u32, payload: &Value, stage: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        payload: &Value,
+        at: crate::CompileStage,
+    ) -> Result<Processing, Error> {
+        let stage = at.stage;
         let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
         for ev in payload["exposure"]
             .as_array()

@@ -8,6 +8,9 @@ mod check;
 mod conformance;
 mod controls_smoke;
 mod crop_smoke;
+mod detail_grid_performance;
+mod detail_performance;
+mod detail_smoke;
 mod diagnostics;
 mod editor_acceptance;
 mod editor_latency;
@@ -417,6 +420,23 @@ fn main_result() -> Result {
             let _gate = launch::TimingGate::acquire()?;
             editor_performance::run(&root, &source, &out, samples)?;
         }
+        "detail-performance" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = absolute(&root, &a.path("--output")?);
+            let samples = samples(&mut a, 30)?;
+            let case = a.value("--case")?.unwrap_or_else(|| "all".into());
+            a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
+            detail_performance::run(&root, &source, &out, samples, &case.to_string_lossy())?;
+        }
+        "detail-grid-performance" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = absolute(&root, &a.path("--output")?);
+            let samples = samples(&mut a, 30)?;
+            a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
+            detail_grid_performance::run(&root, &source, &out, samples)?;
+        }
         "editor-latency" => {
             let source = absolute(&root, &a.path("--source")?);
             let out = absolute(&root, &a.path("--output")?);
@@ -431,6 +451,7 @@ fn main_result() -> Result {
             let idle = a.flag("--idle");
             let basic = a.flag("--basic");
             let presence = a.flag("--presence");
+            let detail = a.flag("--detail");
             let mask = a.flag("--mask");
             let zoom = a
                 .value("--zoom")?
@@ -500,6 +521,7 @@ fn main_result() -> Result {
                     idle,
                     basic,
                     presence,
+                    detail,
                     mask,
                     zoom,
                     moving_pan,
@@ -631,7 +653,7 @@ fn main_result() -> Result {
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
+            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--detail] [--mask] [--idle]|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

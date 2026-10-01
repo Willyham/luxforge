@@ -5,7 +5,7 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, export_smoke as export, gallery_smoke as gallery,
+    crop_smoke as crop, detail_smoke as detail, export_smoke as export, gallery_smoke as gallery,
     histogram_smoke as histogram, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
@@ -151,6 +151,62 @@ fn sourced() -> Vec<&'static str> {
 
 /// Every scenario, in the order `verify --tier rendered` runs them.
 pub static SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "detail",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "detail-fit",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::fit_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_fit,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "detail-zoom",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::zoom_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_zoom,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "raw-detail",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::raw_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_raw,
+        source: Source::Supplied { listed: true },
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
     Scenario {
         name: "empty",
         about: "The editor with nothing open",
@@ -1307,7 +1363,7 @@ mod tests {
         };
         assert_eq!(
             refusal("load", None, Some(&manifest)),
-            "--manifest is only for raw-editor"
+            "--manifest is only for raw-detail and raw-editor"
         );
         let photo = Some(vec![tmp.path().join("photo.NEF")]);
         assert!(refusal("raw-editor", photo.clone(), None).contains("needs --manifest"));
@@ -1392,8 +1448,11 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
-        assert_eq!(sourced(), ["performance", "raw-panel", "raw-editor"]);
-        assert_eq!(listed(), ["raw-editor"]);
+        assert_eq!(
+            sourced(),
+            ["raw-detail", "performance", "raw-panel", "raw-editor"]
+        );
+        assert_eq!(listed(), ["raw-detail", "raw-editor"]);
         assert!(find("nothing").is_err());
     }
 

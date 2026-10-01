@@ -28,8 +28,8 @@ pub(crate) use variants::Superseded;
 
 use super::{
     BasicModule, CanvasInteraction, CapabilitiesProofModule, ControlsModule, CropModule,
-    MixerModule, ModuleDescriptor, PixelModule, PresenceModule, PresetsModule, RawModule,
-    ToolModule, TransformModule, VignetteModule,
+    DetailModule, MixerModule, ModuleDescriptor, PixelModule, PresenceModule, PresetsModule,
+    RawModule, ToolModule, TransformModule, VignetteModule,
 };
 use crate::Error;
 #[cfg(test)]
@@ -41,16 +41,17 @@ use std::{
 
 /// The linked providers a run serves, in the order a registry lists them: presets first, because
 /// the module owns no layer and its section leads the tools panel, then the pixel proof, RAW, Basic,
-/// presence, the colour mixer, transforms, crop, the vignette and the controls proof. The two
+/// Detail, Presence, the colour mixer, transforms, crop, the vignette and the controls proof. The two
 /// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
 /// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
-    let linked: [Arc<dyn ToolModule>; 10] = [
+    let linked: [Arc<dyn ToolModule>; 11] = [
         Arc::new(PresetsModule::new()),
         Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
         Arc::new(BasicModule::new()),
+        Arc::new(DetailModule::new()),
         Arc::new(PresenceModule::new()),
         Arc::new(MixerModule::new()),
         Arc::new(TransformModule::new()),
@@ -381,3 +382,6 @@ impl ModuleRegistry {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod restoration_tests;
