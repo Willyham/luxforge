@@ -448,6 +448,38 @@ pub(crate) struct Compiled {
 }
 
 impl Compiled {
+    /// Plan on `cancel`'s progress meter, when it has one, the spatial tiles a whole-frame render
+    /// of the entries of `segments` runs: each spatial entry over the stage it receives, the
+    /// output of the segment before it, or `source` for segment 0.
+    pub(super) fn plan_progress(
+        &self,
+        cancel: &Cancel,
+        source: Option<Stage>,
+        segments: std::ops::Range<usize>,
+        tiling: Tiling,
+    ) {
+        let Some(progress) = cancel.progress() else {
+            return;
+        };
+        let tiles = segments
+            .filter_map(|index| match &self.segments.get(index)?.entry {
+                Some(Entry::Spatial(entry)) => {
+                    let received = match index.checked_sub(1) {
+                        Some(previous) => self.segments[previous].stage(),
+                        None => source?,
+                    };
+                    Some(super::spatial::tile_count(
+                        &entry.operation,
+                        received,
+                        tiling,
+                    ))
+                }
+                _ => None,
+            })
+            .sum();
+        progress.plan(tiles);
+    }
+
     pub(super) fn last(&self) -> &Segment {
         self.segments
             .last()
