@@ -21,10 +21,11 @@ use crate::{
         long_work::LongWorkModel,
         performance::PerformanceModel,
         select::{
-            Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, ChipModel, Count, Dot,
-            FilterBarModel, GridContent, InfoModel, ItemInfo, MenuChoice, PickBand, PickFilter,
-            QueryChange, RowCache, SelectMenu, SelectModel, SelectPanel, SelectStatus, SelectTitle,
-            SelectionModel, Shown, SourceIcon, SourcePress, SourceRow, SourcesModel, StripModel,
+            Availability, CELL_WIDTH_MAX, CELL_WIDTH_MIN, CELL_WIDTH_STEP, CardNotice, ChipModel,
+            Count, Dot, FilterBarModel, ForgetSheet, GridContent, InfoModel, ItemInfo, MenuChoice,
+            PickBand, PickFilter, QueryChange, RowCache, RowChoice, SelectMenu, SelectModel,
+            SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown, SourceIcon, SourcePress,
+            SourceRow, SourcesModel, StripModel,
         },
     },
     view::state_panel,
@@ -36,13 +37,14 @@ use iced::{
     widget::{Column, Space, column, container, mouse_area, row, scrollable, stack, text, tooltip},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, CellAvailability, CellView, ChipEnd, FilterChipModel, FilterOption,
-    FilterSegmentsModel, GridCell, GridLayout, Icon, IconButtonModel, LabelledButtonModel,
-    MenuEntry, MenuItem, SearchFieldModel, SelectStripModel, SourceCount, SourceHeadingModel,
-    SourceRowModel, Volume, WorkspaceTab, caption, filter_bar, filter_chip, filter_segments,
-    header_icon_button, labelled_button, menu_list, popover, search_field, select_strip,
-    source_heading, source_month, source_row, theme, thumbnail_grid, title_bar_icon_button,
-    truncated_text, with_tooltip, workspace_switch,
+    ButtonSize, ButtonTone, CatalogSheetModel, CellAvailability, CellView, ChipEnd,
+    FilterChipModel, FilterOption, FilterSegmentsModel, GridCell, GridLayout, Icon,
+    IconButtonModel, LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SearchFieldModel,
+    SelectStripModel, SourceCount, SourceHeadingModel, SourceRowModel, Tone as NoticeTone, Volume,
+    WorkspaceTab, caption, catalog_sheet, filter_bar, filter_chip, filter_segments,
+    header_icon_button, labelled_button, menu_list, notice_card, popover, search_field,
+    select_strip, source_heading, source_month, source_row, theme, thumbnail_grid,
+    title_bar_icon_button, truncated_text, with_tooltip, workspace_switch,
 };
 
 /// The sources panel's search field, as a focus target.
@@ -50,8 +52,9 @@ pub(crate) const SEARCH_FIELD: &str = "luxforge.select.search";
 /// The sources panel's scrolling list, as a scroll target.
 pub(crate) const SOURCES_SCROLL: &str = "luxforge.select.sources";
 
-/// What is not built yet, as the controls waiting for it say on hover.
-const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
+/// Add a folder…'s tooltip, with its shortcut.
+const ADD_FOLDER_TOOLTIP: &str =
+    "Add a folder, with its subfolders, to the indexed folders (\u{2318}O)";
 /// Develop N's tooltip, with its shortcut.
 const DEVELOP_TOOLTIP: &str = "Develop the picks in view (\u{2318}\u{21a9})";
 /// Why the strip's Loupe cannot be entered without a view.
@@ -106,6 +109,21 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
         .style(theme::title_bar_surface);
     let mut middle = row![].height(Length::Fill);
+    let mut centre = centre(select, grid, &model.long_work);
+    // Over the centre: a connected card's notice at its top, and Remove from indexed folders…'s
+    // confirmation.
+    if let Some(notice) = &select.card_notice {
+        centre = stack![
+            centre,
+            container(card_notice(notice))
+                .center_x(Length::Fill)
+                .padding(Padding::default().top(theme::SPACING * 2.0)),
+        ]
+        .into();
+    }
+    if let Some(sheet) = &select.forget {
+        centre = stack![centre, forget_sheet(sheet)].into();
+    }
     if select.title.sources_open {
         middle = middle.push(
             container(sources(
@@ -120,7 +138,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
         );
         middle = middle.push(vertical_divider());
     }
-    middle = middle.push(centre(select, grid, &model.long_work));
+    middle = middle.push(centre);
     if select.title.info_open {
         middle = middle.push(vertical_divider());
         middle = middle.push(
@@ -175,8 +193,8 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
 
 // -- Title bar -------------------------------------------------------------------------------------
 
-/// The switch, the view's name and summary; Add a folder… (waiting for its lane), Undo and Redo of
-/// library changes, Develop N and the two panel toggles.
+/// The switch, the view's name and summary; Add a folder…, Undo and Redo of library changes,
+/// Develop N and the two panel toggles.
 fn title_bar<'a>(
     model: &'a SelectTitle,
     develop: &'a crate::state::develop::DevelopModel,
@@ -206,11 +224,11 @@ fn title_bar<'a>(
                 tone: ButtonTone::Control,
                 size: ButtonSize::Regular,
                 fill: false,
-                enabled: false,
+                enabled: true,
             },
-            None,
+            Some(Message::Select(SelectMessage::AddFolder)),
         ),
-        NOT_YET_FOLDERS.into(),
+        ADD_FOLDER_TOOLTIP.into(),
         tooltip::Position::Bottom,
     );
     let library = |icon, tooltip: &str, message: SelectMessage| {
@@ -336,7 +354,7 @@ fn sources<'a>(
     }
     let content = content
         .push(events)
-        .push(section("On disk", &model.on_disk))
+        .push(on_disk(&model.on_disk, &model.indexed))
         .push(crate::view::select_catalog::catalog_section(
             &model.catalog,
             catalog,
@@ -362,6 +380,37 @@ fn sources<'a>(
     .width(Length::Fill)
     .height(Length::Fill)
     .into()
+}
+
+/// On disk: its heading with the `+` that adds a folder, the volumes and their open folders, the
+/// folder Browse a folder… chose, the indexed folders under their own label, then Browse a folder….
+fn on_disk<'a>(rows: &'a [SourceRow], indexed: &'a [SourceRow]) -> Element<'a, Message> {
+    let heading = source_heading(
+        &SourceHeadingModel {
+            label: "On disk".into(),
+            tag: None,
+            add: Some("Add a folder\u{2026} (\u{2318}O)".into()),
+        },
+        Some(Message::Select(SelectMessage::AddFolder)),
+    );
+    // Browse a folder… stays last.
+    let (body, browse) = match rows.split_last() {
+        Some((last, body)) if last.press == Some(SourcePress::BrowseFolder) => (body, Some(last)),
+        _ => (rows, None),
+    };
+    let mut column = Column::with_children(std::iter::once(heading).chain(body.iter().map(source)))
+        .spacing(theme::SOURCE_LIST_SPACING)
+        .width(Length::Fill);
+    if !indexed.is_empty() {
+        column = column.push(source_month("Indexed folders"));
+        for row in indexed {
+            column = column.push(source(row));
+        }
+    }
+    if let Some(browse) = browse {
+        column = column.push(source(browse));
+    }
+    column.into()
 }
 
 fn section<'a>(label: &str, rows: &'a [SourceRow]) -> Element<'a, Message> {
@@ -415,13 +464,105 @@ pub(crate) fn source(model: &SourceRow) -> Element<'_, Message> {
             SourcePress::Read(source) => SelectMessage::Read(source.clone()),
             SourcePress::Toggle(path) => SelectMessage::Toggle(path.clone()),
             SourcePress::BrowseFolder => SelectMessage::BrowseFolder,
+            SourcePress::Menu(path) => SelectMessage::IndexedMenu(path.clone()),
+            SourcePress::Forget(path) => SelectMessage::AskForget(Some(path.clone())),
         })
     });
     let toggle = model
         .disclosure
         .as_ref()
         .map(|(_, path)| Message::Select(SelectMessage::Toggle(path.clone())));
-    source_row(&row, press, toggle)
+    let drawn = source_row(&row, press, toggle);
+    let Some(SourcePress::Menu(menu)) = &model.context else {
+        return drawn;
+    };
+    let drawn =
+        mouse_area(drawn).on_right_press(Message::Select(SelectMessage::IndexedMenu(menu.clone())));
+    popover(
+        drawn,
+        model.menu.as_deref().map(row_menu),
+        Message::Select(SelectMessage::IndexedMenu(None)),
+    )
+}
+
+/// A source row's menu: each choice, or why it is refused.
+fn row_menu(choices: &[RowChoice]) -> Element<'_, Message> {
+    menu_list(
+        choices
+            .iter()
+            .map(|choice| {
+                MenuEntry::Item(MenuItem {
+                    icon: None,
+                    label: choice.label.clone(),
+                    trailing: None,
+                    on_press: choice.press.clone().map(|press| {
+                        Message::Select(match press {
+                            SourcePress::Forget(path) => SelectMessage::AskForget(Some(path)),
+                            SourcePress::Menu(path) => SelectMessage::IndexedMenu(path),
+                            SourcePress::View(source) => SelectMessage::Source(source),
+                            SourcePress::Read(source) => SelectMessage::Read(source),
+                            SourcePress::Toggle(path) => SelectMessage::Toggle(path),
+                            SourcePress::BrowseFolder => SelectMessage::BrowseFolder,
+                        })
+                    }),
+                    reason: choice.reason.clone(),
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Remove from indexed folders…'s confirmation over the centre: Cancel, Escape or a press beside it
+/// puts it away; Remove sends `index.remove-folder`.
+fn forget_sheet(model: &ForgetSheet) -> Element<'_, Message> {
+    let drawn = CatalogSheetModel {
+        icon: Icon::Folder,
+        title: model.title.clone(),
+        note: model.note.clone(),
+        sections: Vec::new(),
+        dismiss: "Cancel".into(),
+        confirm: Some(model.confirm.clone()),
+    };
+    let close = Message::Select(SelectMessage::AskForget(None));
+    let sheet = catalog_sheet(
+        &drawn,
+        close.clone(),
+        Some(Message::Select(SelectMessage::Forget)),
+    );
+    stack![
+        mouse_area(
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+        )
+        .on_press(close),
+        container(sheet).center(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// A connected card's notice: what its listing found, with Not now and Browse.
+fn card_notice(model: &CardNotice) -> Element<'_, Message> {
+    notice_card(
+        &NoticeCardModel {
+            icon: Icon::Drive,
+            title: model.title.clone(),
+            body: model.body.clone(),
+            tone: NoticeTone::Warning,
+        },
+        vec![
+            (
+                "Not now".to_owned(),
+                Message::Select(SelectMessage::DismissCard),
+            ),
+            (
+                "Browse".to_owned(),
+                Message::Select(SelectMessage::Read(model.browse.clone())),
+            ),
+        ],
+    )
 }
 
 // -- Centre ----------------------------------------------------------------------------------------
@@ -459,6 +600,7 @@ fn centre<'a>(
             cell_view(cell, rows, content, selection, images)
         })
         .on_press(|press| Message::Select(SelectMessage::Press(press)))
+        .on_context(|context| Message::Select(SelectMessage::Context(context)))
         .on_moment_action(|moment| Message::Select(SelectMessage::PickAll(moment)))
         .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
         .viewport(viewport)
@@ -484,6 +626,10 @@ fn centre<'a>(
             .align_bottom(Length::Fill)
             .padding(Padding::default().bottom(theme::SPACING * 1.75)),
     );
+    // The selected photographs' menu, where a right-click on the grid opened it.
+    if let Some(menu) = &model.catalog.context {
+        layers = layers.push(crate::view::select_catalog::photo_menu(menu, viewport));
+    }
     // A catalog confirmation or a batch's report, over the grid.
     if let Some(sheet) = &model.catalog.sheet {
         layers = layers.push(crate::view::select_catalog::sheet(sheet));

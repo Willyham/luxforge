@@ -397,7 +397,8 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Cmd+Z` and `Shift+Cmd+Z`
 /// undo and redo this desktop's library changes; `Cmd+F` puts the focus in the search field (the
 /// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
-/// `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst; `P`
+/// `Cmd+Option+[` and `]` one each, as in Develop; `Cmd+O` adds a folder to the indexed folders;
+/// `S` collapses or expands the active burst; `P`
 /// picks or clears the selection; `D` develops the active frame, picking it when it is not picked
 /// (over the catalog it opens Develop on the active photograph with the view as its set), and
 /// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
@@ -470,6 +471,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
         if character(key, "d") {
             return Some(Message::Select(SelectMessage::SelectNone));
         }
+        // Add a folder…; in Develop `Cmd+O` opens a single file.
+        if character(key, "o") {
+            return Some(Message::Select(SelectMessage::AddFolder));
+        }
         if character(key, "f") {
             return Some(Message::Select(SelectMessage::Catalog(
                 CatalogMessage::Act(CatalogAction::FocusSearch),
@@ -539,6 +544,11 @@ pub(super) fn raw_event(
     match &event {
         iced::Event::Keyboard(_) | iced::Event::Window(iced::window::Event::CloseRequested) => {
             Some(Message::Key(event, status))
+        }
+        // A file or folder dropped on the window: Select adds a folder to the indexed folders,
+        // Develop opens a file.
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+            Some(Message::Select(SelectMessage::Dropped(path.clone())))
         }
         // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
         // overlay's cells may be. It rides the subscription that is already listening; nothing new
@@ -1210,5 +1220,18 @@ mod tests {
             .is_none(),
             "a pointer event still never wakes the update function"
         );
+        // A file or folder dropped on the window reaches Select, which adds a folder in Select and
+        // opens a file in Develop.
+        let dropped = raw_event(
+            iced::Event::Window(iced::window::Event::FileDropped(
+                "/Users/w/Card dumps".into(),
+            )),
+            iced::event::Status::Ignored,
+            window,
+        );
+        assert!(matches!(
+            dropped,
+            Some(Message::Select(SelectMessage::Dropped(path))) if path == std::path::Path::new("/Users/w/Card dumps")
+        ));
     }
 }

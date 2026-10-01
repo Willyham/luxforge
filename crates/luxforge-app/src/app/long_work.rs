@@ -65,6 +65,10 @@ pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// The most Cancel presses remembered for evidence.
 const CANCELS_KEPT: usize = 8;
 
+/// The board's kind of the index lane's listings: a card listed as it is mounted, an indexed folder
+/// listed, a card or folder read for a client.
+const LISTING: &str = luxforge_core::catalog_types::jobs::INDEX_REFRESH.activity;
+
 /// Long-running work's own state in the editor: the watch on the board, what it read, and when.
 #[derive(Debug, Default)]
 pub(crate) struct LongWork {
@@ -77,6 +81,9 @@ pub(crate) struct LongWork {
     ended: Vec<u64>,
     /// The followed jobs the last read listed running, so a read tells whether any began or ended.
     running: Vec<u64>,
+    /// The index lane's listings (`index.refresh` jobs) the last read listed running, so a read
+    /// tells whether one began or ended.
+    listings: Vec<u64>,
     /// Reads long work took and wakes since launch, for evidence: a run proves long work asleep by
     /// these staying put while nothing runs. The Performance section's reads of the board are its
     /// own and not counted here.
@@ -152,6 +159,8 @@ struct Read {
     ended: Vec<RecentActivity>,
     /// A followed job began or ended since the last read.
     changed: bool,
+    /// A listing of the index lane's began or ended since the last read.
+    listings: bool,
 }
 
 impl Editor {
@@ -259,6 +268,9 @@ impl Editor {
             .collect();
         tasks.push(self.reading_followed(first || read.changed));
         tasks.push(self.missing_followed());
+        if read.listings {
+            tasks.push(self.select_listings_changed());
+        }
         Task::batch(tasks)
     }
 
@@ -268,7 +280,7 @@ impl Editor {
         let board = work.watch.as_ref()?.read();
         work.read_at = Some(Instant::now());
         work.due = false;
-        let ended = board
+        let ended: Vec<RecentActivity> = board
             .recent
             .iter()
             .filter(|job| followed(&job.entry) && !work.ended.contains(&job.entry.id))
@@ -283,8 +295,20 @@ impl Editor {
             .collect();
         let changed = running != work.running;
         work.running = running;
+        let listings: Vec<u64> = board
+            .active
+            .iter()
+            .filter(|job| job.entry.kind == LISTING)
+            .map(|job| job.entry.id)
+            .collect();
+        let listed = listings != work.listings || ended.iter().any(|job| job.entry.kind == LISTING);
+        work.listings = listings;
         work.state.observe(board);
-        Some(Read { ended, changed })
+        Some(Read {
+            ended,
+            changed,
+            listings: listed,
+        })
     }
 
     /// The status bar's job was pressed: the Performance section, expanded, in its panel on screen.

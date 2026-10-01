@@ -65,7 +65,46 @@ impl Editor {
             SelectStep::FirstLook(path) => self.first_look_step(path.into()),
             SelectStep::ContinueInBackground => self.background_step(),
             SelectStep::CancelWork => self.cancel_work_step(),
+            // Add a folder…, bypassing only the native dialog: captured once its listing has ended
+            // and the indexed folders have been read again, with the owner's own `index.folders`.
+            SelectStep::AddFolder(path) => {
+                if !self.select_shown() {
+                    return self.fail_step("Select is not shown");
+                }
+                self.select.evidence_indexed = true;
+                let task = self.update(Message::Select(SelectMessage::AddFolderPicked(Some(
+                    path.into(),
+                ))));
+                // On disk is under the events: scrolled to, as a person scrolls to the folders
+                // they look at, so the frame shows the indexed folders.
+                let scrolled = iced::widget::operation::scroll_to(
+                    iced::widget::Id::from(crate::view::select::SOURCES_SCROLL),
+                    iced::widget::operation::AbsoluteOffset {
+                        x: None,
+                        y: Some(self.on_disk_offset()),
+                    },
+                );
+                self.await_select(Task::batch([task, scrolled]))
+            }
         }
+    }
+
+    /// About how far down the sources panel On disk's heading is: every row, heading and month
+    /// label above it one row's height, with the sections' spacing.
+    fn on_disk_offset(&self) -> f32 {
+        use luxforge_ui::theme;
+        let sources = &self.workspace.select.sources;
+        let rows = 1
+            + usize::from(!sources.cards.is_empty()) * (1 + sources.cards.len())
+            + 1
+            + sources
+                .months
+                .iter()
+                .map(|month| 1 + month.rows.len())
+                .sum::<usize>()
+            + usize::from(sources.events_note.is_some());
+        let row = theme::SOURCE_ROW_HEIGHT + theme::SOURCE_LIST_SPACING;
+        rows as f32 * row + 3.0 * theme::SOURCE_SECTION_SPACING
     }
 
     /// Wait for Select to settle after `task`'s message. Select's hook after this message reports
@@ -111,6 +150,9 @@ impl Editor {
             Some(Some(SourcePress::BrowseFolder)) => self.fail_step(
                 "Browse a folder… opens the native dialog, which a script cannot answer",
             ),
+            Some(Some(SourcePress::Menu(_) | SourcePress::Forget(_))) => {
+                self.fail_step(format!("the source row {name:?} opens a menu when pressed"))
+            }
             Some(None) => self.fail_step(format!("the source row {name:?} does nothing")),
             None => self.fail_step(format!("no source row shows {name:?}")),
         }
@@ -374,6 +416,13 @@ impl Editor {
             Err(error) => json!({ "owner_browse_error": error }),
         };
         self.note_step(owner);
+        if std::mem::take(&mut self.select.evidence_indexed) {
+            let indexed = match call(&self.owner, self.client, "index.folders", json!({})) {
+                Ok((folders, _)) => json!({ "owner_indexed": folders }),
+                Err(error) => json!({ "owner_indexed_error": error }),
+            };
+            self.note_step(indexed);
+        }
         self.settle_step(Settle::Select, by);
     }
 }
