@@ -858,15 +858,14 @@ mod tests {
                 "lens-profiles",
                 serde_json::json!({"assume-uncorrected":true}),
             ) {
-                Ok(rows) => Some(
-                    rows["rows"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-                        .unwrap()
-                        .clone(),
-                ),
+                Ok(rows) => {
+                    let suggestion = rows["status"]["suggestion"].clone();
+                    assert!(
+                        suggestion["match"] == "lens-model" && suggestion["eligible"] == true,
+                        "{rows}"
+                    );
+                    Some(suggestion)
+                }
                 Err(error) if error.kind == ErrorKind::NotReady => None,
                 Err(error) => panic!("{error}"),
             }

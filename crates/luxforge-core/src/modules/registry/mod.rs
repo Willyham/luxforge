@@ -40,15 +40,16 @@ use std::{
     sync::Arc,
 };
 
-/// The linked providers a run serves, in the order a registry lists them: presets first, because
-/// the module owns no layer and its section leads the tools panel, then the pixel proof, RAW, Basic,
-/// Tone curve, Detail, Presence, the colour mixer, transforms, lens correction, perspective, crop,
+/// The linked providers a run serves, in the order a registry lists them: crop first, then presets
+/// (which owns no layer), the pixel proof,
+/// RAW, Basic, Tone curve, Detail, Presence, the colour mixer, transforms, lens correction, perspective,
 /// the vignette and the controls proof. The two
 /// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
 /// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
     let linked: [Arc<dyn ToolModule>; 14] = [
+        Arc::new(CropModule::new()),
         Arc::new(PresetsModule::new()),
         Arc::new(PixelModule::new()),
         Arc::new(RawModule::new()),
@@ -60,7 +61,6 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(TransformModule::new()),
         Arc::new(LensModule::new()),
         Arc::new(PerspectiveModule::new()),
-        Arc::new(CropModule::new()),
         Arc::new(VignetteModule::new()),
         Arc::new(ControlsModule::new()),
     ];

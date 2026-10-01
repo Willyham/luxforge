@@ -402,6 +402,19 @@ impl Activity {
         }
     }
 
+    /// A handle that reports a fraction of 0 to 1 for this activity from another thread, while
+    /// the guard is alive; once the activity has ended a report changes nothing. The fraction is
+    /// floored to whole percent, so one piece of work changes the board at most a hundred times.
+    pub(crate) fn reporter(&self) -> impl Fn(f64) + Send + Sync + 'static {
+        let (board, id) = (self.board.clone(), self.id);
+        move |fraction| {
+            if let Some(id) = id {
+                let percent = (fraction * 100.0).floor() / 100.0;
+                board.set_progress(id, ActivityProgress::new(Some(percent), ""));
+            }
+        }
+    }
+
     /// The progress this activity currently reports on the board, if it has any and the guard
     /// still tracks a live entry. A reader such as `job.read` uses this to answer with the
     /// same progress the board carries, rather than keeping its own copy.

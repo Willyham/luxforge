@@ -412,7 +412,7 @@ On macOS, `develop --background` builds the selected profile and runs a temporar
 Debug builds expose the title-bar **Developer** button automatically. To inspect the gallery in
 an optimized build, run `cargo xtask develop --developer` (automated launches add `--background`).
 Its page chooser and Previous/Next controls browse fourteen pages; Back to editor or Escape returns.
-The `gallery` smoke covers all 102 named widget states and the return to the unchanged editor via
+The `gallery` smoke covers all 104 named widget states and the return to the unchanged editor via
 the same view message as the button; the page is desktop view state, so the session's workspace
 stays unchanged throughout.
 
@@ -678,6 +678,8 @@ LUXFORGE_RAW_OWNER_DIR=/path/to/private/raw cargo test --release --locked -p lux
 The absence of private fixtures is a skip, not passing authentic-file evidence. Synthetic/reference tests remain normal CI checks.
 
 ### Evidence scripts
+
+`{"pinch":{"delta":0.1823215567939546,"x":0.37,"y":0.42}}` supplies a synthetic native magnification increment through the trackpad handler. `delta` is finite and logarithmic (`ln(1.2)` zooms in by 20%); `x` and `y` are canvas fractions in 0–1. It waits for the resulting view's pixels. The `zoom` scenario checks off-centre pinch in and out on both generated photo sizes, source-point anchoring, unchanged history and source hashes, and on macOS installation of the native event monitor. This proves the input handler and rendered result, not physical trackpad delivery or feel.
 
 `--evidence-script FILE` takes a JSON array of steps. They run in order after the last `--open`
 outcome, each ends in exactly one captured frame numbered after the open frames, and each frame gets

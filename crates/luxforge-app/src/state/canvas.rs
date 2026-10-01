@@ -4,13 +4,49 @@ use crate::{
     state::{
         Inputs,
         number::number_text,
-        tools::{applies, canvas_pick, pick_reachable},
+        tools::{PresetChip, applies, canvas_pick, crop_frame, pick_reachable, preset_chips},
     },
 };
 use luxforge_core::{
     Availability, CanvasInteraction, ComponentMode, ErrorKind, MASK_MODE, ModuleDescriptor,
-    POINTER_MODE, Zoom, mask::commands::MaskListing,
+    POINTER_MODE, PREVIEW_PROGRESS_QUIET, PreviewProgress, Zoom, mask::commands::MaskListing,
 };
+use std::time::Duration;
+
+/// The shortest render, start to finish, that the bar over the photograph is shown for: a shorter
+/// one is over before a bar would tell anyone anything.
+pub(crate) const RENDER_BAR_PROJECTED: Duration = Duration::from_secs(1);
+
+/// The bar over the photograph: the preview job whose exact phase it follows, and the finished
+/// share of that phase's spatial tiles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RenderBar {
+    pub(crate) generation: u64,
+    pub(crate) fraction: f32,
+}
+
+/// The bar over the photograph after the preview worker reported `progress`, given the bar
+/// `shown` before it. A render's exact phase earns the bar when it is projected to take at least
+/// [`RENDER_BAR_PROJECTED`]: its time so far over its finished share of the spatial tiles it
+/// planned, trusted only once it has run [`PREVIEW_PROGRESS_QUIET`], and a phase that has
+/// finished nothing by then is projected long. Once shown the bar stays for that phase, whatever
+/// later projections say, until the phase ends, so it never flickers. A phase with no spatial
+/// tiles has no truthful extent, and shows none.
+pub(crate) fn render_bar(
+    progress: Option<PreviewProgress>,
+    shown: Option<RenderBar>,
+) -> Option<RenderBar> {
+    let progress = progress?;
+    let fraction = progress.counts.fraction()?;
+    let kept = shown.is_some_and(|shown| shown.generation == progress.generation);
+    let long = progress.elapsed >= PREVIEW_PROGRESS_QUIET
+        && (fraction <= 0.0
+            || progress.elapsed.as_secs_f64() / fraction >= RENDER_BAR_PROJECTED.as_secs_f64());
+    (kept || long).then_some(RenderBar {
+        generation: progress.generation,
+        fraction: fraction as f32,
+    })
+}
 
 /// How the photograph is sized on the surface. The view never reads the session itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -65,6 +101,9 @@ pub(crate) struct ModeEntry {
 /// one draft lifecycle's, whichever gesture is open, since a client holds only one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftBar {
+    /// The crop draft's declared ratio shortcuts, empty for every other gesture.
+    pub(crate) crop_ratios: Vec<PresetChip>,
+    pub(crate) crop_enabled: bool,
     /// The lead, in the accent: the crop mode's title, or the name of the mask a gesture edits.
     pub(crate) title: String,
     /// What a mask gesture edits, after the lead: its component and that component's mode,
@@ -194,6 +233,9 @@ pub(crate) struct CanvasModel {
     /// The tools panel shows the Masks panel: Mask mode, or one of the host's picks, which is
     /// entered from that panel and must not hide it.
     pub(crate) mask_panel: bool,
+    /// The share of a long render finished, drawn as a bar along the bottom of the photograph
+    /// ([`render_bar`]). Only over the plain photograph: a crop draft draws its own stage.
+    pub(crate) render_bar: Option<f32>,
 }
 
 /// Whether the workspace is on a mask: Mask mode itself, or one of the host's own canvas picks,
@@ -259,8 +301,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 | None => None,
             }),
     );
+    let photo = photo_view(inputs, drafting);
     CanvasModel {
-        photo: photo_view(inputs, drafting),
+        photo: photo.clone(),
         zoom: match inputs.session.preview.view.zoom {
             Zoom::Fit => ZoomView::Fit,
             Zoom::Percent { value } => ZoomView::Percent(value),
@@ -295,6 +338,10 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
         masking: inputs.session.workspace.mode == MASK_MODE,
         // A pick taken on a mask keeps its Masks panel on screen, bound to that mask.
         mask_panel: mask_workspace(&inputs.session.workspace.mode) || inputs.target.is_some(),
+        render_bar: inputs
+            .render_bar
+            .filter(|_| photo == PhotoView::Plain)
+            .map(|bar| bar.fraction),
     }
 }
 
@@ -349,6 +396,11 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         None => return None,
     };
     Some(DraftBar {
+        crop_ratios: crop_frame(inputs.modules)
+            .zip(inputs.draft)
+            .map(|(frame, draft)| preset_chips(&frame.presets(), &draft.preset))
+            .unwrap_or_default(),
+        crop_enabled: inputs.edit_refusal.is_none(),
         title,
         subject: None,
         kind: None,
@@ -368,6 +420,8 @@ fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
     let names = gesture_names(draft, inputs.document.masks.as_ref());
     let done = draft.paints();
     DraftBar {
+        crop_ratios: Vec::new(),
+        crop_enabled: false,
         title: names.mask,
         subject: Some(format!("{} \u{b7} {}", names.component, names.mode)),
         kind: Some(draft.kind()),
@@ -476,5 +530,78 @@ fn unavailable_body(modules: &[ModuleDescriptor], effect: &str) -> String {
             Availability::Available => format!("{} did not provide this layer", module.title),
         },
         None => format!("No registered module provides {effect}"),
+    }
+}
+
+#[cfg(test)]
+mod render_bar_tests {
+    use super::*;
+    use luxforge_core::ProgressCounts;
+
+    fn reading(generation: u64, elapsed_ms: u64, done: u64, planned: u64) -> PreviewProgress {
+        PreviewProgress {
+            generation,
+            elapsed: Duration::from_millis(elapsed_ms),
+            counts: ProgressCounts { done, planned },
+        }
+    }
+
+    /// The bar is earned by a projection of at least a second, made only once the phase has run
+    /// the quiet interval; a phase with nothing planned never earns it.
+    #[test]
+    fn a_render_earns_the_bar_when_it_is_projected_to_take_a_second() {
+        let quiet = PREVIEW_PROGRESS_QUIET.as_millis() as u64;
+        assert_eq!(render_bar(None, None), None, "nothing renders");
+        assert_eq!(
+            render_bar(Some(reading(1, 5_000, 0, 0)), None),
+            None,
+            "no spatial tiles: no truthful extent"
+        );
+        assert_eq!(
+            render_bar(Some(reading(1, quiet - 1, 0, 100)), None),
+            None,
+            "too early to project"
+        );
+        assert_eq!(
+            render_bar(Some(reading(1, quiet, 0, 100)), None),
+            Some(RenderBar {
+                generation: 1,
+                fraction: 0.0
+            }),
+            "no batch finished by the quiet interval is projected long"
+        );
+        // 300 ms for 20% projects 1.5 s; 300 ms for 50% projects 0.6 s.
+        assert_eq!(
+            render_bar(Some(reading(1, 300, 20, 100)), None),
+            Some(RenderBar {
+                generation: 1,
+                fraction: 0.2
+            })
+        );
+        assert_eq!(render_bar(Some(reading(1, 300, 50, 100)), None), None);
+        // Exactly a second is enough.
+        assert!(render_bar(Some(reading(1, 500, 50, 100)), None).is_some());
+    }
+
+    /// Once shown, the bar follows its phase to the end even when a later reading projects less
+    /// than a second, and it goes with the phase; a newer phase earns its own.
+    #[test]
+    fn the_bar_stays_with_its_phase_until_the_phase_ends() {
+        let shown = render_bar(Some(reading(7, 300, 10, 100)), None);
+        assert!(shown.is_some());
+        // The rest ran quickly: 400 ms for 90% projects 0.44 s, and the bar stays.
+        assert_eq!(
+            render_bar(Some(reading(7, 400, 90, 100)), shown),
+            Some(RenderBar {
+                generation: 7,
+                fraction: 0.9
+            })
+        );
+        assert_eq!(render_bar(None, shown), None, "the phase ended");
+        assert_eq!(
+            render_bar(Some(reading(8, 300, 60, 100)), shown),
+            None,
+            "a newer, short phase does not inherit it"
+        );
     }
 }

@@ -757,7 +757,6 @@ mod tests {
                 "mask.set-radial.x",
                 "mask.set-radial.y",
                 "select-controls-choice.show-disabled",
-                "select-lens-profile.assume-uncorrected",
                 "select-lens-profile.focal",
                 "set-basic.blacks",
                 "set-basic.contrast",

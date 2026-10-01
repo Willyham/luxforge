@@ -48,6 +48,8 @@ mod catalog_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
+#[cfg(test)]
+mod first_open_tests;
 mod point;
 mod requests;
 
@@ -344,8 +346,8 @@ struct SourceTask {
 
 /// What a completed source job leaves for its clients to read.
 enum Completed {
-    /// A prepared asset, and whether this job created it.
-    Asset(Box<EditorState>, bool),
+    /// A prepared asset, whether this job created it and the new asset's first-open reports.
+    Asset(Box<EditorState>, bool, Vec<crate::FirstOpen>),
     Value(Value),
 }
 
@@ -392,6 +394,7 @@ impl SourceQueue {
                 path,
                 signature,
                 target,
+                ..
             } => (
                 SourceFlightKey {
                     path: path.clone(),
@@ -545,7 +548,7 @@ impl SourceQueue {
                 asset_id: Some(state.asset.id.clone()),
                 control: JobControl::new(),
             },
-            Output::Asset(Box::new(state)),
+            Output::Asset(Box::new(state), Vec::new()),
         );
         Ok(id)
     }
@@ -1959,8 +1962,12 @@ impl Owner {
         let outcome = if interested {
             result.and_then(|prepared| match prepared {
                 SourceResult::Prepared(prepared) => {
-                    let (state, created) = service.complete_preparation(*prepared)?;
-                    Ok(Completed::Asset(Box::new(state), created))
+                    let completion = service.complete_preparation(*prepared)?;
+                    Ok(Completed::Asset(
+                        Box::new(completion.state),
+                        completion.created,
+                        completion.first_open,
+                    ))
                 }
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
@@ -1971,7 +1978,7 @@ impl Owner {
         };
         // An import is announced when it commits an asset, under the request that asked for it,
         // naming the asset it created.
-        if let Ok(Completed::Asset(state, true)) = &outcome
+        if let Ok(Completed::Asset(state, true, _)) = &outcome
             && let Some(origin) = self.jobs.origin(id)
         {
             let origin = origin
@@ -1982,7 +1989,7 @@ impl Owner {
         self.jobs.finish(
             id,
             outcome.map(|completed| match completed {
-                Completed::Asset(state, _) => Output::Asset(state),
+                Completed::Asset(state, _, first_open) => Output::Asset(state, first_open),
                 Completed::Value(value) => Output::Value(value),
             }),
         );
@@ -2146,7 +2153,7 @@ pub(super) fn job_adopt(
         return Err(Error::conflict("a newer import superseded this job"));
     }
     let state = match owner.jobs.outcome_for(&params.job_id, call.client)? {
-        (JobStatus::Ready, Some(Output::Asset(state)), _) => (**state).clone(),
+        (JobStatus::Ready, Some(Output::Asset(state, _)), _) => (**state).clone(),
         (JobStatus::Queued | JobStatus::Running, ..) => {
             return Err(
                 Error::preparation_required("the import is still being prepared")
@@ -2531,7 +2538,10 @@ mod tests {
         let client = owner.register();
         let state = import_asset(&owner, client, &path);
         let asset = state["asset"]["id"].clone();
+        // The imported entry: the Original, or the first-open lens entry after it when the RAW's
+        // detected profile applies. Either holds the as-shot development.
         let original = state["current_entry"]["id"].clone();
+        let base = state["revision"].as_u64().unwrap();
         let sample = |id: &str| {
             send(
                 &owner,
@@ -2554,7 +2564,7 @@ mod tests {
         // Two custom white balances in turn become current, and each development is prepared:
         // the current one holds the second, the second slot the first, and neither the Original's.
         let mut current = Value::Null;
-        for (revision, temperature) in [(0, 3500.0), (1, 6500.0)] {
+        for (revision, temperature) in [(base, 3500.0), (base + 1, 6500.0)] {
             let request = format!("temperature-{revision}");
             current = ok(
                 &owner,
@@ -6740,9 +6750,11 @@ mod tests {
         let state = import_asset(&owner, client, &path);
         let asset = state["asset"]["id"].clone();
         let asset_id = AssetId::parse(asset.as_str().unwrap()).unwrap();
+        // A RAW whose detected lens profile applies is imported with that first-open entry.
+        let base = state["revision"].as_u64().unwrap();
         for (revision, fields) in [
-            (0, json!({"clarity": 60.0})),
-            (1, json!({"clarity": 60.0, "dehaze": 30.0})),
+            (base, json!({"clarity": 60.0})),
+            (base + 1, json!({"clarity": 60.0, "dehaze": 30.0})),
         ] {
             presence(
                 &owner,
@@ -7166,13 +7178,12 @@ mod tests {
                 None => response.result,
             }
         });
-        let profile = profiles["rows"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
-            .unwrap()["key"]
-            .clone();
+        let suggestion = &profiles["status"]["suggestion"];
+        assert!(
+            suggestion["match"] == "lens-model" && suggestion["eligible"] == true,
+            "{profiles}"
+        );
+        let profile = suggestion["key"].clone();
         ok(
             &owner,
             painter,

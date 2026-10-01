@@ -3,6 +3,33 @@
 use super::*;
 
 #[test]
+fn pinch_steps_round_trip_and_reject_invalid_canvas_positions() {
+    let step = Step::Pinch(PinchStep {
+        delta: 1.2_f64.ln(),
+        x: 0.37,
+        y: 0.42,
+    });
+    let written = write(std::slice::from_ref(&step));
+    assert_eq!(parse(&written.to_string()).unwrap(), vec![step]);
+    for input in [
+        r#"[{"pinch":{"delta":0.1,"x":-0.1,"y":0.5}}]"#,
+        r#"[{"pinch":{"delta":0.1,"x":0.5,"y":1.1}}]"#,
+        r#"[{"pinch":{"delta":0.1,"x":0.5,"y":0.5,"extra":true}}]"#,
+    ] {
+        assert!(parse(input).is_err());
+    }
+    assert!(
+        Step::Pinch(PinchStep {
+            delta: f64::INFINITY,
+            x: 0.5,
+            y: 0.5
+        })
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
 fn mask_reapply_round_trips_as_the_notice_button_and_requires_true() {
     let step: Step = MaskStep::Reapply.into();
     let value = write(std::slice::from_ref(&step));
@@ -17,9 +44,9 @@ fn mask_reapply_round_trips_as_the_notice_button_and_requires_true() {
 
 #[test]
 fn query_choice_steps_round_trip_and_enforce_input_bounds() {
-    let script = r#"[{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"Nikon"}},{"controls":{"gesture":"query-choice-page","action":"select-lens-profile","page":1}},{"controls":{"gesture":"query-choice-shared","action":"select-lens-profile","parameter":"assume-uncorrected","text":"true"}},{"controls":{"gesture":"query-choice-select-first","action":"select-lens-profile"}},{"controls":{"gesture":"query-choice-retry","action":"select-lens-profile"}}]"#;
+    let script = r#"[{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"Nikon"}},{"controls":{"gesture":"query-choice-page","action":"select-lens-profile","page":1}},{"controls":{"gesture":"query-choice-shared","action":"select-lens-profile","parameter":"focal","text":"35"}},{"controls":{"gesture":"query-choice-select-first","action":"select-lens-profile"}},{"controls":{"gesture":"query-choice-retry","action":"select-lens-profile"}},{"controls":{"gesture":"query-choice-apply","action":"select-lens-profile"}},{"controls":{"gesture":"query-choice-change","action":"select-lens-profile","open":true}},{"controls":{"gesture":"query-choice-report","action":"select-lens-profile"}}]"#;
     let steps = parse(script).unwrap();
-    assert_eq!(steps.len(), 5);
+    assert_eq!(steps.len(), 8);
     assert_eq!(
         serde_json::to_value(&steps).unwrap(),
         serde_json::from_str::<Value>(script).unwrap()
@@ -30,6 +57,12 @@ fn query_choice_steps_round_trip_and_enforce_input_bounds() {
     let excessive = serde_json::json!([{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"x".repeat(257)}}]);
     assert!(parse(&excessive.to_string()).is_err());
     assert!(parse(r#"[{"controls":{"gesture":"query-choice-retry","action":""}}]"#).is_err());
+    assert!(parse(r#"[{"controls":{"gesture":"query-choice-apply","action":""}}]"#).is_err());
+    assert!(
+        parse(r#"[{"controls":{"gesture":"query-choice-change","action":"select-lens-profile"}}]"#)
+            .is_err(),
+        "Change names whether it opens or closes"
+    );
     assert!(parse(r#"[{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"x\n"}}]"#).is_err());
 }
 

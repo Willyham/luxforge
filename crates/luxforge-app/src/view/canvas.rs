@@ -10,7 +10,7 @@ use crate::app::message::{history::HistoryMessage, pointer::PointerMessage, view
 use crate::{
     app::{
         crop::SURFACE_ID,
-        message::{Message, capability::CapabilityMessage, draft::DraftMessage},
+        message::{Message, capability::CapabilityMessage, crop::CropMessage, draft::DraftMessage},
     },
     layout::{FIT_INSET_BOTTOM, FIT_INSET_EDGE},
     state::canvas::{
@@ -31,8 +31,9 @@ use iced::{
     widget::{Column, canvas, container, mouse_area, responsive, scrollable, stack, text},
 };
 use luxforge_ui::{
-    DraftBarModel, DraftFinish, DraftSubject, Icon, ModeEntry, NoticeCardModel, ToggleEntry, Tone,
-    draft_bar, mode_strip, notice_card, theme,
+    ChipModel, ControlKey, ControlKeyEvent, DraftBarModel, DraftFinish, DraftSubject, Icon,
+    ModeEntry, NoticeCardModel, ToggleEntry, Tone, chip, draft_bar_with_controls, focus_control,
+    mode_strip, notice_card, theme,
 };
 
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
@@ -74,6 +75,9 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
     let mut layers: Vec<Element<'a, Message>> = vec![photo_area(model, surfaces)];
     if let Some(overlay) = thirds(model) {
         layers.push(overlay);
+    }
+    if let Some(bar) = render_bar(model) {
+        layers.push(bar);
     }
     if let Some(top) = top_chrome(model) {
         layers.push(top);
@@ -179,7 +183,36 @@ fn top_chrome<'a>(model: &'a CanvasModel) -> Option<Element<'a, Message>> {
 
 fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
     // The bar belongs to whichever gesture is open; only one ever is, and all share one lifecycle.
-    draft_bar(
+    let controls = model
+        .crop_ratios
+        .iter()
+        .map(|preset| {
+            let index = preset.index;
+            let control = chip(
+                &ChipModel {
+                    label: preset.label.clone(),
+                    trailing: None,
+                    selected: preset.chosen,
+                    enabled: model.crop_enabled,
+                },
+                model
+                    .crop_enabled
+                    .then_some(Message::Crop(CropMessage::Preset(index))),
+                None,
+            );
+            focus_control(control, model.crop_enabled, move |event| {
+                (matches!(
+                    event,
+                    ControlKeyEvent::Pressed {
+                        key: ControlKey::Enter | ControlKey::Space,
+                        ..
+                    }
+                ))
+                .then_some(Message::Crop(CropMessage::Preset(index)))
+            })
+        })
+        .collect();
+    draft_bar_with_controls(
         &DraftBarModel {
             title: model.title.clone(),
             subject: model.subject.as_ref().map(|label| DraftSubject {
@@ -199,6 +232,7 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
         model
             .can_apply
             .then_some(Message::Draft(DraftMessage::Commit)),
+        controls,
     )
 }
 
@@ -314,6 +348,110 @@ impl canvas::Program<Message> for Thirds {
         _cursor: Cursor,
     ) -> iced::mouse::Interaction {
         // The overlay is decoration: every pointer event belongs to the photo under it.
+        iced::mouse::Interaction::None
+    }
+}
+
+/// The bar along the bottom of the photograph while a long render runs, filled to the share it
+/// has finished ([`CanvasModel::render_bar`]). At Fit it lies inside the padding the photograph is
+/// drawn in, like the thirds; at a percentage it covers the whole canvas region, where the visible
+/// part of the photograph does not depend on the pan.
+fn render_bar(model: &CanvasModel) -> Option<Element<'_, Message>> {
+    let fraction = model.render_bar?;
+    let layer = canvas(RenderBar {
+        dimensions: model.dimensions?,
+        zoom: model.zoom,
+        scale_factor: model.scale_factor,
+        fraction,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill);
+    Some(match model.zoom {
+        ZoomView::Fit => container(layer)
+            .padding(FIT_PADDING)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        ZoomView::Percent(_) => layer.into(),
+    })
+}
+
+/// Where the render bar lies in a layer of `size`: along the bottom of the part of the photograph
+/// on screen, its full width. At Fit that is the contained image rectangle. At a percentage the
+/// zoomed photograph is centred on an axis where it is smaller than the canvas and fills the
+/// canvas on one where it is larger, so its visible part is the same wherever it is panned.
+fn render_bar_rect(
+    dimensions: (u32, u32),
+    zoom: ZoomView,
+    scale_factor: f32,
+    size: Size,
+) -> Option<Rectangle> {
+    let photo = match zoom {
+        ZoomView::Fit => fit_rect(dimensions, size)?,
+        ZoomView::Percent(value) => {
+            let zoomed = percent_size(dimensions, value, scale_factor);
+            let shown = Size::new(zoomed.width.min(size.width), zoomed.height.min(size.height));
+            if !(shown.width > 0.0 && shown.height > 0.0) {
+                return None;
+            }
+            Rectangle::new(
+                Point::new(
+                    (size.width - shown.width) / 2.0,
+                    (size.height - shown.height) / 2.0,
+                ),
+                shown,
+            )
+        }
+    };
+    let height = theme::RENDER_BAR_HEIGHT.min(photo.height);
+    Some(Rectangle::new(
+        Point::new(photo.x, photo.y + photo.height - height),
+        Size::new(photo.width, height),
+    ))
+}
+
+/// The render bar: a translucent track the photograph's width with the finished share filled in
+/// the accent. Decoration only, like the thirds: every pointer event belongs to the photo under it.
+struct RenderBar {
+    dimensions: (u32, u32),
+    zoom: ZoomView,
+    scale_factor: f32,
+    fraction: f32,
+}
+
+impl canvas::Program<Message> for RenderBar {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let Some(track) =
+            render_bar_rect(self.dimensions, self.zoom, self.scale_factor, bounds.size())
+        else {
+            return Vec::new();
+        };
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        frame.fill_rectangle(track.position(), track.size(), theme::RENDER_BAR_TRACK);
+        let filled = track.width * self.fraction.clamp(0.0, 1.0);
+        frame.fill_rectangle(
+            track.position(),
+            Size::new(filled, track.height),
+            theme::ACCENT,
+        );
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        _bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> iced::mouse::Interaction {
         iced::mouse::Interaction::None
     }
 }
@@ -820,6 +958,86 @@ fn image_pixel(x: f32, y: f32, (width, height): (u32, u32)) -> Option<(u32, u32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The render bar lies along the bottom of the part of the photograph on screen, its full
+    /// width: at Fit the contained image rectangle; at a percentage the zoomed photograph,
+    /// centred where it is smaller than the canvas and filling the canvas where it is larger.
+    #[test]
+    fn the_render_bar_lies_along_the_bottom_of_the_photograph_on_screen() {
+        let height = theme::RENDER_BAR_HEIGHT;
+        let fit = render_bar_rect((200, 100), ZoomView::Fit, 2.0, Size::new(400.0, 400.0))
+            .expect("a fitted photograph");
+        assert_eq!(
+            fit,
+            Rectangle::new(Point::new(0.0, 300.0 - height), Size::new(400.0, height))
+        );
+        // 100% of a 600 × 200 px photograph at 2× is 300 × 100 logical px, smaller than the canvas
+        // on both axes, so it is centred.
+        let small = render_bar_rect(
+            (600, 200),
+            ZoomView::Percent(100.0),
+            2.0,
+            Size::new(400.0, 400.0),
+        )
+        .expect("a zoomed photograph");
+        assert_eq!(
+            small,
+            Rectangle::new(Point::new(50.0, 250.0 - height), Size::new(300.0, height))
+        );
+        // 400% is 1200 × 400 logical px: wider than the canvas, so the bar spans it, and exactly
+        // as tall, so it sits on the canvas's bottom edge.
+        let large = render_bar_rect(
+            (600, 200),
+            ZoomView::Percent(400.0),
+            2.0,
+            Size::new(400.0, 400.0),
+        )
+        .expect("a zoomed photograph");
+        assert_eq!(
+            large,
+            Rectangle::new(Point::new(0.0, 400.0 - height), Size::new(400.0, height))
+        );
+        assert_eq!(
+            render_bar_rect(
+                (0, 0),
+                ZoomView::Percent(100.0),
+                2.0,
+                Size::new(400.0, 400.0)
+            ),
+            None
+        );
+    }
+
+    /// The bar is a layer only while the model carries one, at either zoom.
+    #[test]
+    fn the_render_bar_is_drawn_only_while_a_long_render_runs() {
+        let base = CanvasModel {
+            photo: PhotoView::Plain,
+            zoom: ZoomView::Fit,
+            dimensions: Some((480, 320)),
+            ..CanvasModel::default()
+        };
+        assert!(render_bar(&base).is_none());
+        let running = CanvasModel {
+            render_bar: Some(0.4),
+            ..base.clone()
+        };
+        assert!(render_bar(&running).is_some());
+        assert!(
+            render_bar(&CanvasModel {
+                zoom: ZoomView::Percent(200.0),
+                ..running.clone()
+            })
+            .is_some()
+        );
+        assert!(
+            render_bar(&CanvasModel {
+                dimensions: None,
+                ..running
+            })
+            .is_none()
+        );
+    }
 
     /// The overlay's guides land on the contained image rectangle the photo is drawn into, not on
     /// the padded canvas around it, and they divide it in exact thirds.

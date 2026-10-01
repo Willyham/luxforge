@@ -1290,6 +1290,15 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
 /// A job whose one colour layer waits on `gate` in every phase that renders it, so a test can
 /// hold the job in the phase it is about. The layer leaves its pixels as it found them.
 fn held(gate: &Arc<luxforge_testbase::Gate>, proxy: Option<ProxyBounds>) -> PreviewJob {
+    held_behind(gate, proxy, Vec::new())
+}
+
+/// [`held`], with `before` placed ahead of the waiting layer.
+fn held_behind(
+    gate: &Arc<luxforge_testbase::Gate>,
+    proxy: Option<ProxyBounds>,
+    mut before: Vec<Layer>,
+) -> PreviewJob {
     let layer = Layer {
         id: LayerId::new(),
         effect_id: crate::modules::HELD_EFFECT.into(),
@@ -1302,7 +1311,8 @@ fn held(gate: &Arc<luxforge_testbase::Gate>, proxy: Option<ProxyBounds>) -> Prev
     registry
         .register(crate::modules::HeldModule::shared(gate.clone()))
         .expect("a valid holding module");
-    rebuilt(stacked(64, 48, vec![layer], proxy), |parts| {
+    before.push(layer);
+    rebuilt(stacked(64, 48, before, proxy), |parts| {
         parts.registry = Arc::new(registry);
     })
 }
@@ -1375,6 +1385,106 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
         "the job moved on to its exact phase"
     );
     assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+}
+
+/// A job's exact phase publishes how far its spatial tiles have got on the queue while it runs,
+/// and its activity carries the same fraction; once the phase has ended the queue reads nothing.
+/// Detail's tiles all run before the colour layer behind it waits at its gate, so the reading
+/// there is the phase's whole extent, finished.
+#[test]
+fn the_exact_phase_publishes_its_progress_until_it_ends() {
+    let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+    let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+    let mut queue = PreviewQueue::default();
+    queue.set_activity(board.clone());
+    assert_eq!(queue.progress(), None, "nothing runs");
+
+    gate.shut();
+    let detail = Layer::new(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening": 60, "luminance": 30}),
+    );
+    let generation = queue.request(held_behind(&gate, None, vec![detail]));
+    let progress = wait_for("the exact phase never finished its tiles", || {
+        queue
+            .progress()
+            .filter(|progress| progress.counts.done == progress.counts.planned)
+    });
+    assert_eq!(progress.generation, generation);
+    assert!(progress.counts.planned > 0, "{progress:?}");
+    board_until(
+        &board,
+        |snapshot| {
+            snapshot.active.first().is_some_and(|active| {
+                active.entry.progress.as_ref().and_then(|p| p.fraction) == Some(1.0)
+            })
+        },
+        "the activity never reported the finished tiles",
+    );
+
+    gate.open();
+    let results = drain_all(&mut queue);
+    assert_eq!(
+        results.last().map(PreviewResult::phase),
+        Some(PreviewPhase::Exact)
+    );
+    assert_eq!(queue.progress(), None, "the phase has ended");
+
+    // A stack without a spatial operation publishes its phase with nothing planned: there is no
+    // truthful extent to show.
+    gate.shut();
+    queue.request(held(&gate, None));
+    let progress = wait_for("the exact phase never started", || queue.progress());
+    assert_eq!(progress.counts, crate::ProgressCounts::default());
+    gate.open();
+    drain_all(&mut queue);
+    assert_eq!(queue.progress(), None);
+}
+
+/// The exact phase's meter wakes the consumer only once the phase has run
+/// [`super::worker::PROGRESS_QUIET`], and then at most once per interval however many batches
+/// finish; before the phase starts it wakes nothing.
+#[test]
+fn the_exact_meter_wakes_the_consumer_only_after_the_quiet_interval() {
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counted = wakes.clone();
+    let waker: crate::latest::Wake = Arc::new(move || {
+        counted.fetch_add(1, Ordering::Relaxed);
+    });
+    let meter_for = |phase: Option<Instant>| {
+        let started = Arc::new(OnceLock::new());
+        if let Some(phase) = phase {
+            let _ = started.set(phase);
+        }
+        let meter = super::worker::exact_meter(None, Some(waker.clone()), started);
+        meter.plan(8);
+        meter
+    };
+
+    let unstarted = meter_for(None);
+    unstarted.advance(1);
+    let fresh = meter_for(Some(Instant::now()));
+    fresh.advance(1);
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        0,
+        "before the quiet interval"
+    );
+
+    let long = meter_for(Instant::now().checked_sub(Duration::from_secs(1)));
+    for _ in 0..4 {
+        long.advance(1);
+    }
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "batches inside one interval wake the consumer once"
+    );
+    assert_eq!(long.counts().done, 4);
 }
 
 /// A newer request stops the exact phase of the job it replaces, and that job's activity ends
@@ -2716,11 +2826,18 @@ fn restoration_prefix_is_released_on_exact_only_source_switch() {
         let (held_tx, held) = channel();
         let mut source_cache = ProxyCache::default();
         let mut restoration = crate::render::RestorationPrefixCache::default();
+        let progress = super::queue::ExactProgress::default();
         let mut queue = Latest::new(
             "luxforge-preview-source-switch-test",
             move |task: super::queue::PreviewTask, running| {
                 let generation = running.generation();
-                let result = super::worker::run(&mut source_cache, &mut restoration, task, running);
+                let result = super::worker::run(
+                    &mut source_cache,
+                    &mut restoration,
+                    &progress,
+                    task,
+                    running,
+                );
                 held_tx.send((generation, restoration.bytes())).unwrap();
                 result
             },

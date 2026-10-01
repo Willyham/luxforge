@@ -34,13 +34,31 @@ fn lens_profile_selection_over_json_matches_service() {
             Err(error) => panic!("{error}"),
         }
     });
-    let key = rows["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["eligible"] == true)
-        .unwrap()["key"]
-        .clone();
+    // No list without search text: the detected profile is the answer's suggestion.
+    assert_eq!(rows["rows"], json!([]));
+    let suggestion = &rows["status"]["suggestion"];
+    assert_eq!(suggestion["eligible"], true, "{rows}");
+    assert_eq!(
+        suggestion["parameters"],
+        json!({"assume-uncorrected": true})
+    );
+    let key = suggestion["key"].clone();
+    let entry = service.state(&asset).unwrap().current_entry.id;
+    let searched = service
+        .run_query(
+            &asset,
+            &entry,
+            "lens-profiles",
+            json!({"text":"NIKKOR Z 24-70"}),
+        )
+        .unwrap();
+    assert!(
+        searched["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["key"] == key)
+    );
     let parameters = json!({"profile":key,"assume-uncorrected":true});
     // Seed a neutral layer so both copies retain the same layer identity. Entry and snapshot
     // identities remain independently generated; compare their complete recipes and history rows.
@@ -82,7 +100,15 @@ fn lens_profile_selection_over_json_matches_service() {
             _ => panic!("{response}"),
         }
     });
+    // A neutral layer leaves the detected lens offered: the same answer as before any selection.
     assert_eq!(queried, rows);
+    assert_eq!(
+        client.call(
+            "query.lens-profiles",
+            json!({"asset_id":asset,"text":"NIKKOR Z 24-70"})
+        ),
+        searched
+    );
     let refused = client.error(
         "edit.select-lens-profile",
         json!({"asset_id":asset,"profile":key,"mutation":mutation(2,"refused")}),

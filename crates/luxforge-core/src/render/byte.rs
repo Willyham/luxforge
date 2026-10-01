@@ -510,6 +510,10 @@ pub(super) fn frames(
         },
         |(_, pixels, stage)| (pixels, stage),
     );
+    // A held frame is the output of the entry at `start`, so that entry runs no tiles.
+    let first = if reused { start + 1 } else { start };
+    let last = stop.map_or(compiled.segments.len(), |stop| stop + 1);
+    compiled.plan_progress(cancel, Some(stage), first..last, tiling);
     let mut shared = true;
     for (index, segment) in compiled.segments.iter().enumerate().skip(start) {
         if let Some(entry) = &segment.entry

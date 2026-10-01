@@ -3,7 +3,7 @@
   "plan_id": "lens-and-perspective",
   "title": "Lens and perspective correction",
   "objective": "Deliver offline Lensfun v0.3.4 rectilinear profile distortion and manual two-axis perspective through one fused, exactly bounded warp resample, preserving content coordinates, immutable history and exact export while refusing duplicate embedded DNG correction.",
-  "context_summary": "Functional implementation and native integration are complete. Native performance measurement, the full tier and photographic accuracy qualification remain incomplete. docs/design/lens-and-perspective.md is prescriptive: owner decisions of 2026-09-30 (RAW mosaics without a luminance warp are known-unapplied; Perspective is not presettable; combined minification above 1.8x is refused) and recorded defaults (the index is a separate bundled resource parsed once off the owner; no X100VI alias). Coverage, cover scales and read rectangles are closed forms; the index is a static resource with synchronous lookups; lens, perspective and a straightened crop fuse into one resample; the DNG ledger is derived per plane and never persisted. Wave 1 (numerics, index import, optics ledger, affine refactor, query-choice control) can land any time; the warp-chain and render tasks rebase on Detail's host contracts if those land first; shared generated files are regenerated after each rebase, never hand-merged; timing runs only in TASK-015 after all feature work. Run at most four implementation agents at once. Photographic qualification needs owner-supplied photographs and stays incomplete without them.",
+  "context_summary": "Functional implementation and native integration are complete. Native performance measurement, the full tier and photographic accuracy qualification remain incomplete. docs/design/lens-and-perspective.md is prescriptive: owner decisions of 2026-09-30 (RAW mosaics without a luminance warp are known-unapplied; Perspective is not presettable; combined minification above 1.8x is refused) and recorded defaults (the index is a separate bundled resource parsed once off the owner; no X100VI alias). Coverage, cover scales and read rectangles are closed forms; the index is a static resource with synchronous lookups; lens, perspective and a straightened crop fuse into one resample; the DNG ledger is derived per plane and never persisted. Wave 1 (numerics, index import, optics ledger, affine refactor, query-choice control) can land any time; the warp-chain and render tasks rebase on Detail's host contracts if those land first; shared generated files are regenerated after each rebase, never hand-merged; timing runs only in TASK-015 after all feature work. Run at most four implementation agents at once. Photographic qualification needs owner-supplied photographs and stays incomplete without them. The owner's decisions of 2026-10-01 shape the Lens section: no list of lenses (the applied or detected profile as a card, a search of compatible profiles only and a prefilled missing-lens report), a new RAW or DNG whose distortion is known uncorrected gets its eligible detected profile as an ordinary system entry after its Original (a JPEG is offered Apply instead), and a curated DJI product-name table for display and reports.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -917,11 +917,11 @@
         "TASK-011"
       ],
       "extra_context": [
-        "The sections are generated from the descriptors; luxforge-app adds only the Lens status line, the conditional focal and Assume uncorrected controls and the read-only cover line from recipe.describe, in view/tools_panel.rs and its state.",
+        "The sections are generated from the descriptors; luxforge-app adds only the generic query-choice drawing of the module's answer (cards, notice, report link, search), the conditional focal input and the read-only cover line from recipe.describe, in view/tools_panel.rs and its state.",
         "New xtask/src/lens_smoke.rs and a `lens-perspective` row in xtask/src/smoke.rs SCENARIOS, with evidence steps in luxforge-app/src/app/evidence.rs, over fixtures/geometry/z6-24-70-35mm-grid.jpg. The scenario exists only after this task; `verify --tier rendered` then runs it. Build the release app first (`cargo xtask build --release`); launches are background-only.",
-        "Frames: Lens expanded with its candidate list; a selection refused without Assume uncorrected (the reason shown); the selection with it at Fit and at 100%; Perspective +40 / -25 by slider drag with one history entry; a radial mask outline over the warp; a crop straightened 2.5 degrees; each correlated with entry, mapping_sha256, preview generation, UI and API stacks and the source hash.",
+        "Frames: Lens expanded with its detected-lens card and no list; Apply with its JPEG acknowledgement at Fit and at 100%; Change with a compatible-only search, an empty search with its recorded report link; Perspective +40 / -25 by slider drag with one history entry; a radial mask outline over the warp; a crop straightened 2.5 degrees; each correlated with entry, mapping_sha256, preview generation, UI and API stacks and the source hash.",
         "The native scenario also keeps a brush stroke across an external Perspective commit: Apply refuses the conflicted draft, Reapply refreshes the map without moving stored content coordinates, and a subsequent stroke uses the refreshed map. The evidence reopens the isolated catalog to check the actual stored strokes.",
-        "The native Lens scenario also renders a real overlong-search validation error, retries the unchanged query with a fresh sequence and no history mutation, then clears search to recover the candidate rows through the same descriptor control."
+        "The native Lens scenario also renders a real overlong-search validation error, retries the unchanged query with a fresh sequence and no history mutation, then clears search to recover the applied card through the same descriptor control."
       ],
       "context_links": [
         {
@@ -952,7 +952,7 @@
         }
       ],
       "acceptance_criteria": [
-        "`lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_focal` and `perspective_integer_drag_is_one_draft_and_cancel_writes_nothing` pass in luxforge-app; the native scenario proves one committed entry per Perspective gesture, cancelling writes no entry, and the core conformance suite proves same-value reset is a no-op.",
+        "`lens_section_offers_the_detected_lens_then_shows_it_applied_with_a_compatible_search` and `perspective_integer_drag_is_one_draft_and_cancel_writes_nothing` pass in luxforge-app; the native scenario proves one committed entry per Perspective gesture, cancelling writes no entry, and the core conformance suite proves same-value reset is a no-op.",
         "The lens-perspective scenario passes with every frame correlated, stale or missing captures failing, no timer, poll or private worker added, and UI and API stacks identical.",
         "`mask_reapply_rejects_a_delayed_map_after_a_second_geometry_commit` and `render_transform_describes_warp_chain_and_draft_identity` prove delayed requests/replies cannot substitute another geometry base; fields and history survive refusal, and explicit Reapply refreshes the stamped map.",
         "`perspective_fields_follow_local_commits_and_external_refresh_while_a_mask_is_selected` proves global geometry keeps its committed values across mask selection and Pointer return; native frames assert the displayed Horizontal/Vertical values after local and external edits."
@@ -1055,6 +1055,7 @@
         "TASK-014"
       ],
       "extra_context": [
+        "Runs after every other task in this plan, the Lens panel and first-open tasks included. The panel's timed `query.lens-profiles` is now the status-only answer for empty text; time a compatible search (text `NIKKOR Z`) beside it, and record a new RAW import's first-open plan and commit on the owner.",
         "X9: run only after every feature task in this plan and the other plans' feature work is complete, sequentially, on a quiet host, never beside another plan's builds; run each before/after pair back to back and reversed, recording host load.",
         "Add two workloads to xtask/src/fixtures.rs TABLE: `lens-24mp.jpg` (6048x4024 line grid, EXIF NIKON CORPORATION / NIKON Z 6 / NIKKOR Z 24-70mm f/4 S / 24 mm / FL35 24) and `lens-60mp.jpg` (9504x6336, EXIF SONY / ILCE-7RM4 / FE 24-70mm f/4 ZA OSS / 24 mm / FL35 24). Add `--lens` to editor-latency (xtask/src/editor_latency.rs), which commits the first eligible `edit.select-lens-profile` candidate with assume-uncorrected before the gesture, like `--presence`, and add lens steps to editor-performance (xtask/src/editor_performance.rs) timing query.lens-profiles and edit.select-lens-profile. Add warp cases to `render::parallel::tests::parallel_break_even_per_pass`.",
         "Replace NEW_DIR, JPEG, RAW and FILE with fresh output paths, the generated lens workloads, the private manifest's nikon-z6 and dji-air2s files and the manifest. Set PARALLEL_WARP_PIXELS from the measurement and document it in docs/specs/performance.md.",
@@ -1122,6 +1123,196 @@
           "The full tier passes before any milestone claim."
         ]
       }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Answer the Lens section's states from the core: a compatible-only search, a deterministic detected profile, curated camera names and the prefilled missing-lens report.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-014"
+      ],
+      "extra_context": [
+        "modules/lens/resolve.rs classifies every reason as the photo's or the profile's (`Reason::photo_level`); `search` lists nothing for empty text and, for text, only profiles that fit a matching camera record apart from the photo's reasons, identity matches first; `detect` names the first eligible identity match, else the first held back only by the photo's reasons or its focal length, with the status reasons and the photo's own conditions.",
+        "modules/lens/answer.rs builds the whole answer: `state` (applied, already-corrected, camera-not-found, detected, lens-not-found), the lens data (camera_name, product, exif, focal, ledger, reasons, detected) and the query-choice vocabulary (summary, visible_shared, search, current, suggestion with its JPEG `assume-uncorrected` parameters and note, notice, report). Rows carry the same parameters when distortion is unknown and are ineligible with `embedded-distortion-applied` when the source already corrects it.",
+        "modules/lens/products.rs is the one curated DJI table (normalized EXIF make and model to product name; display and reports only). modules/lens/report.rs builds the GitHub new-issue URL on the one `NEW_ISSUE_URL` constant: camera, EXIF identity, focal and 35 mm equivalent, crop factor, source kind and interpretation, distortion status, reasons, Lensfun release and commit, Luxforge version; no file name, path, serial or location; one bounded cell per field and at most 6,000 characters.",
+        "The control shares only `focal`; the descriptor snapshot is regenerated with its ignored generator."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "locator": "Profile resolution",
+          "relevance": "Reasons, detection and the compatible search."
+        },
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "locator": "Modules, API and history",
+          "relevance": "The answer's status fields, the report and the product names."
+        }
+      ],
+      "acceptance_criteria": [
+        "Empty text answers no rows; a text search lists only compatible profiles, identity matches first, and pages without overlap; a camera outside the database lists nothing (`empty_search_lists_nothing_and_text_lists_only_compatible_profiles_identity_first`, `search_pages_compatible_profiles_without_overlap`, `a_camera_outside_the_database_lists_no_search_rows`).",
+        "Detection and every panel state are answered and pass the host's answer validation: the Air 2S DNG's built-in-lens card by product name, the applied card, the JPEG suggestion with its acknowledgement, camera not found, lens not found, already corrected, missing or out-of-range focal and crop mode (`detection_names_the_first_eligible_identity_match_or_what_holds_it_back` and the `answer_tests`).",
+        "`edit.select-lens-profile` still refuses a key search never lists, with its reasons; the report and product-name tests prove the URL's content, encoding and bound, and that the table never guesses."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the lens module's tests and regenerate the descriptor snapshot."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib modules::lens",
+          "cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot",
+          "cargo test -p luxforge-core --test modules"
+        ],
+        "expected_results": [
+          "Every lens module test passes and the regenerated snapshot changes only the Lens descriptor's notes and shared inputs."
+        ]
+      }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Extend the query-choice answer vocabulary with host validation and draw it in the desktop: the current and suggested cards, Change, the notice, the report link and per-choice parameters.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-016"
+      ],
+      "extra_context": [
+        "descriptor/validate.rs `validate_query_choice_answer` checks rows and the optional status vocabulary: cards (`current`, `suggestion`), `notice {level, text}`, `report {label, url}` (https, one token, at most 8,192 bytes), `search`, `visible_shared` (declared shared names) and per-choice `parameters` (declared action parameters other than the key, each valid). docs/design/ui-components.md documents the vocabulary.",
+        "state/query_choice.rs parses the vocabulary, `shows_search`, `shows_inputs`, `set_changing` and `suggested`; view/query_choice.rs draws cards, the inline notice, inputs, the search, Retry, the report button and the summary; app/query_choice.rs handles Apply, Change, Report (opened off the update loop through browser.rs, recorded instead by tests and evidence runs) and closes Change after a choice. luxforge-ui gains the pure `inline_notice` widget and its gallery states.",
+        "The evidence script gains `query-choice-apply`, `query-choice-change` and `query-choice-report`; xtask/src/lens_smoke.rs drives the detected card, Apply, Change, a compatible search, an empty search and its recorded report, and Close."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "UI components",
+          "target": "docs/design/ui-components.md",
+          "locator": "Control kinds",
+          "relevance": "The query-choice vocabulary and its validation."
+        },
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "locator": "Modules, API and history",
+          "relevance": "The Lens panel's four states."
+        }
+      ],
+      "acceptance_criteria": [
+        "`query_choice_rows_contract_is_validated_by_the_host` and the lens answer tests prove the host refuses a malformed vocabulary; the desktop's `query_choice_status_vocabulary_decides_cards_search_and_inputs`, `query_choice_apply_and_rows_send_their_own_parameters_over_shared_inputs` and `lens_section_offers_the_detected_lens_then_shows_it_applied_with_a_compatible_search` pass, and `only_a_single_https_token_is_handed_to_the_opener` bounds what the opener receives.",
+        "The lens-perspective scenario passes with the new states correlated: no list before a search, Apply freezing the JPEG acknowledgement, Change with only compatible rows, an empty search's warning and report URL recorded without a browser, and Close returning to the applied card."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the core, desktop and evidence tests for the control, then the rendered scenario once against a release build, in the background."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib query_choice",
+          "cargo test -p luxforge-app -- query_choice lens_section browser",
+          "cargo test -p luxforge-evidence",
+          "cargo test -p xtask -- lens_smoke retry_verifier",
+          "cargo xtask build --release",
+          "cargo xtask smoke --scenario lens-perspective --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The panel draws only what the core answers, and rendered evidence correlates each state with its captured answer."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Commit a new RAW's eligible detected profile on first open as an ordinary system entry, waiting for the index on the source worker and reporting it on the import job.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-016"
+      ],
+      "extra_context": [
+        "`ToolModule::first_open` and `ToolModule::await_first_open` are the host's extension point. `EditorService::import_prepared` asks every available, applicable module right after a new asset's Original (`EditorService::first_open` in editor/plan.rs) and commits each proposal through `run_action` by the `system` actor; a re-import, a reopen and an asset with history are never asked. `SourceWork::File` for a file no asset names carries the registry so the source worker awaits readiness after decoding, never the owner.",
+        "Lens proposes `select-lens-profile {profile}` only with no lens layer, distortion `known-unapplied` and an eligible detected profile; an unavailable index is an explicit refusal. The import's `job.read` lists `first_open` beside `result`, and `result` and `job.adopt` are the state after the entries.",
+        "Harnesses that assumed revision 0 after a RAW import read the imported revision; the RAW journey accepts a first-open entry, and lens qualification measures `before` on the Original; the latency harness resets a RAW baseline's profile."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "locator": "Modules, API and history",
+          "relevance": "First open, its report and its limits."
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "locator": "Lens and perspective planning",
+          "relevance": "The owner's first-open decision of 2026-10-01."
+        }
+      ],
+      "acceptance_criteria": [
+        "`first_open_selects_only_a_known_uncorrected_photos_eligible_detected_profile` proves the Lens proposal and every refusal; `first_open_commits_one_system_entry_after_the_original_and_never_again`, `an_owner_import_reports_its_first_open_entry_and_waits_off_the_owner` and `a_first_open_refusal_is_reported_and_the_import_still_completes` prove the host: one entry after the Original, Undo back to it, never again on re-import or reopen, the wait off the owner and the job report.",
+        "The whole core library, the module and mask integration tests and the CLI lens parity test pass with JPEG imports unchanged."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the first-open, lens and import-path tests, then the whole core library."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib first_open",
+          "cargo test -p luxforge-core --lib",
+          "cargo test -p luxforge-cli --test json_cli lens"
+        ],
+        "expected_results": [
+          "A new RAW's detected profile is one undoable system entry; nothing else about an import changes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Verify first open on the supplied Air 2S DNG and Z 6 NEF, and rerun the private RAW journeys with their first-open entries.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-017",
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Needs the owner's private RAW manifest and owner fixture directory. The ignored Air 2S test now expects the FC3411 profile as the import's system entry labelled \"Lens profile FC3411 & compatibles\" and the applied card \"DJI Air 2S (FC3411) · built-in lens\". Whether the Z 6 NEF auto-applies depends on its EXIF LensModel; record which.",
+        "The RAW editor journey accepts the first-open entry (one more revision, the opened entry being it and the historical Original lacking only the lens layer); lens qualification's `before` is the Original's geometry."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lens and perspective design",
+          "target": "docs/design/lens-and-perspective.md",
+          "locator": "Qualification matrix",
+          "relevance": "Rows the authentic results update."
+        },
+        {
+          "kind": "file",
+          "label": "Development",
+          "target": "docs/engineering/development.md",
+          "relevance": "The private manifest commands and background launches."
+        }
+      ],
+      "acceptance_criteria": [
+        "The ignored Air 2S admission test and `raw-editor` runs per manifest source pass, with each source's first-open outcome recorded; no authentic source hash changes."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run once with the owner's manifest, sequentially, in the background."
+        ],
+        "commands": [
+          "LUXFORGE_RAW_OWNER_DIR=DIR cargo test -p luxforge-core --lib owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once -- --ignored",
+          "cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Supported RAW sources open with their detected profile applied as one undoable entry, and the journeys pass."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1172,7 +1363,21 @@
     {
       "wave": 7,
       "task_ids": [
-        "TASK-015"
+        "TASK-015",
+        "TASK-016"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-017",
+        "TASK-018"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-019"
       ]
     }
   ]

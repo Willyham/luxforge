@@ -239,6 +239,24 @@ pub struct MutationResult {
     pub deduplicated: bool,
 }
 
+/// What one module's first-open action came to when an import created a new asset
+/// ([`crate::ToolModule::first_open`]): the entry it committed by the `system` actor, or why it
+/// committed nothing. `job.read` of the import lists one per module that proposed an action or
+/// could not plan one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstOpen {
+    pub module_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<EntryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::jobs::JobError>,
+}
+
 /// What one action answers with, and what the request table stores for its retry: the mutation
 /// result, flattened so `outcome`, `revision` and `deduplicated` read exactly where every other
 /// mutation puts them, and what a host action says it touched.

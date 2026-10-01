@@ -272,6 +272,8 @@ Decided by the owner on 2026-09-30, when the plan was made prescriptive; these a
 - **Value-based mask overlays keep working behind Detail** through a bounded input-grid cache on the overlay worker, rather than the refusal that applies to a spatial prefix today.
 - **No pixel work on the catalog owner.** A mutation that must read pixels through a spatial prefix, such as the colour-limited brush's seed, goes owner → point worker → owner with its revision and draft identity checked on return; performance rule 5 gains no exception.
 
+Decided by the owner on 2026-10-01, after heavy sharpening left a long settlement visible only in the status bar and the Performance section: a render expected to take more than a second shows its progress on the photograph itself, as a bar across it. The settlement is not made faster here; the full-resolution restoration frame cache that would avoid it stays not planned ([instant previews](design/instant-preview.md#progress-of-a-long-exact-phase)).
+
 ## Lens and perspective planning
 
 Lens and perspective scope and approach are selected for planning under the owner's delegation on 2026-09-30: [design and rationale](design/lens-and-perspective.md#scope-and-decisions). The initial scope is explicit offline Lensfun profile distortion plus manual two-axis perspective, with fixed-canvas coverage and no duplicate embedded DNG correction. These are planning decisions, not implemented or verified behavior; the plan adds no owner-review gate.
@@ -282,9 +284,17 @@ Decided by the owner on 2026-09-30, when the plan was made prescriptive:
 - **Perspective is not presettable**, like crop and transforms; Lightroom's Perspective and Upright settings stay unsupported as a different perspective model.
 - **Strong minification is refused.** A combined lens and perspective map whose local minification exceeds 1.8× is refused with its reason, because the bilinear sampler would alias; the limit is documented.
 
+Decided by the owner on 2026-10-01, after the Lens correction panel listed every database lens, most of them incompatible ([design](design/lens-and-perspective.md#decisions)):
+
+- **No list of lenses, and never an incompatible one.** The section shows the applied profile with an option to change it, or the detected profile, or a warning that no lens was found with a search to find it. Lenses are listed only as search results, and only compatible ones.
+- **Auto-apply on first open, as an entry.** When an import creates an asset that has never had Lens correction and a compatible profile is detected, Luxforge commits it as an ordinary, undoable history entry with the module's normal label, right after the import's Original. Only where in-camera distortion correction is known not to be applied (a RAW or DNG whose optics ledger says distortion is known-unapplied). A reset turns it off for good, because the reset keeps a neutral layer; a re-import or reopen of an existing asset never applies it again. A JPEG whose in-camera correction is unknown is not auto-corrected: the section shows the detected lens with an Apply button, which applies assuming the camera did not correct it and says so. This lives in the core, so API and agent clients get the same behaviour as the desktop.
+- **Drone names are curated product names.** A small curated core table maps DJI camera codes to product names, keyed by normalized EXIF make and model, so a fixed-lens drone reads "DJI Air 2S (FC3411)". It is used for display and the issue report, never for matching, and lists only well-known codes.
+- **Report a missing lens.** When nothing is compatible, the section warns and offers a button that opens a prefilled GitHub issue asking for support for the lens.
+
 ## Tone curve
 
 - The curve editor removes a point on a double-click on that point, beside Delete for the selected point, and keeps its numeric point list closed behind a Points disclosure until the person opens it (owner, 2026-09-30). Both are changes to the shared curve editor, made with the Tone curve module; the other [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) remain open below.
+- A single click on the plot away from every point adds a point, and a double-click on a point removes it; the plot fills the panel's width up to a maximum and is centred beyond it (owner, 2026-10-01). A double-click on empty plot therefore adds one point and never removes it.
 - Below black the curve uses a floor-subtracted luminance ratio (owner, 2026-09-30): with `L_floor` the linear output of the curve at encoded zero, `rgb_out = L_floor + rgb·(L_out − L_floor)/L`, which equals Basic's frozen ratio rule whenever the curve keeps black at zero. A lifted black then fades the deepest shadows toward grey instead of turning their noise into coloured speckle. Basic's Blacks keeps its frozen rule; changing it is a separate follow-up.
 
 ## Open product questions

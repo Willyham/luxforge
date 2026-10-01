@@ -1836,6 +1836,212 @@
       {
         "actions": [
           {
+            "id": "crop",
+            "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
+            "parameters": [
+              {
+                "default": 0.0,
+                "fine_step": 0.05,
+                "kind": "number",
+                "max": 45.0,
+                "min": -45.0,
+                "name": "angle",
+                "notes": "straightening angle, positive turns the image clockwise on screen",
+                "precision": null,
+                "required": false,
+                "step": 0.5,
+                "unit": "deg"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "x",
+                "notes": "left edge, as a fraction of the rotated box width at angle, measured from the box's left edge",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "y",
+                "notes": "top edge, as a fraction of the rotated box height at angle, measured from the box's top edge",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "width",
+                "notes": "width as a fraction of the rotated box width at angle; x + width may not exceed 1",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "height",
+                "notes": "height as a fraction of the rotated box height at angle; y + height may not exceed 1",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "box"
+              }
+            ],
+            "patch": false,
+            "title": "Crop"
+          },
+          {
+            "id": "crop-fit",
+            "notes": "commits the largest covered rectangle with the chosen ratio about the chosen center",
+            "parameters": [
+              {
+                "default": "free",
+                "kind": "enum",
+                "name": "aspect",
+                "notes": "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio",
+                "options": [
+                  "free",
+                  "original",
+                  "1:1",
+                  "3:2",
+                  "4:3",
+                  "16:9",
+                  "custom"
+                ],
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 100000.0,
+                "min": 0.001,
+                "name": "aspect-width",
+                "notes": "the aspect-width of a custom ratio; required with aspect custom and rejected with any other aspect",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 100000.0,
+                "min": 0.001,
+                "name": "aspect-height",
+                "notes": "the aspect-height of a custom ratio; required with aspect custom and rejected with any other aspect",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "fine_step": 0.05,
+                "kind": "number",
+                "max": 45.0,
+                "min": -45.0,
+                "name": "angle",
+                "notes": "straightening angle, positive turns the image clockwise on screen",
+                "precision": null,
+                "required": false,
+                "step": 0.5,
+                "unit": "deg"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "center-x",
+                "notes": "center-x of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "box"
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 1.0,
+                "min": 0.0,
+                "name": "center-y",
+                "notes": "center-y of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "box"
+              }
+            ],
+            "patch": false,
+            "title": "Fit crop to a ratio"
+          },
+          {
+            "id": "crop-reset",
+            "notes": "returns an existing crop layer to the neutral payload; a no-op without one",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset crop"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": {
+          "action": "crop",
+          "angle": "angle",
+          "aspect": "aspect",
+          "fit_action": "crop-fit",
+          "height": "height",
+          "icon": "crop",
+          "kind": "crop-frame",
+          "shortcut": "R",
+          "title": "Crop",
+          "width": "width",
+          "x": "x",
+          "y": "y"
+        },
+        "collapsed": true,
+        "controls": [],
+        "developer": false,
+        "effects": [
+          {
+            "format": 1,
+            "id": "luxforge.geometry.crop",
+            "order": 10,
+            "single": true,
+            "stage": "geometry"
+          }
+        ],
+        "hint": "Frame, ratio and angle",
+        "id": "luxforge.crop",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "crop-reset",
+          "preset": {}
+        },
+        "title": "Crop and straighten"
+      },
+      {
+        "actions": [
+          {
             "id": "apply-preset",
             "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its value the fields to send it; the host runs the actions in key order, each against the stack the ones before it produced, exactly as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.",
             "parameters": [
@@ -4042,7 +4248,7 @@
         "actions": [
           {
             "id": "select-lens-profile",
-            "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+            "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
             "parameters": [
               {
                 "default": null,
@@ -4105,8 +4311,7 @@
             "page": "page",
             "query": "lens-profiles",
             "shared": [
-              "focal",
-              "assume-uncorrected"
+              "focal"
             ],
             "text": "text"
           }
@@ -4127,7 +4332,7 @@
         "queries": [
           {
             "id": "lens-profiles",
-            "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+            "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
             "parameters": [
               {
                 "default": "",
@@ -4280,212 +4485,6 @@
           "preset": {}
         },
         "title": "Perspective"
-      },
-      {
-        "actions": [
-          {
-            "id": "crop",
-            "notes": "sets the straightening angle and the crop rectangle of the stack's one crop layer, updating it in place or appending it; a rectangle that would need an empty corner is rejected",
-            "parameters": [
-              {
-                "default": 0.0,
-                "fine_step": 0.05,
-                "kind": "number",
-                "max": 45.0,
-                "min": -45.0,
-                "name": "angle",
-                "notes": "straightening angle, positive turns the image clockwise on screen",
-                "precision": null,
-                "required": false,
-                "step": 0.5,
-                "unit": "deg"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "x",
-                "notes": "left edge, as a fraction of the rotated box width at angle, measured from the box's left edge",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "y",
-                "notes": "top edge, as a fraction of the rotated box height at angle, measured from the box's top edge",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "width",
-                "notes": "width as a fraction of the rotated box width at angle; x + width may not exceed 1",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "height",
-                "notes": "height as a fraction of the rotated box height at angle; y + height may not exceed 1",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": "box"
-              }
-            ],
-            "patch": false,
-            "title": "Crop"
-          },
-          {
-            "id": "crop-fit",
-            "notes": "commits the largest covered rectangle with the chosen ratio about the chosen center",
-            "parameters": [
-              {
-                "default": "free",
-                "kind": "enum",
-                "name": "aspect",
-                "notes": "free keeps the existing crop's ratio, or the input stage's without a crop; original is the input stage ratio",
-                "options": [
-                  "free",
-                  "original",
-                  "1:1",
-                  "3:2",
-                  "4:3",
-                  "16:9",
-                  "custom"
-                ],
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 100000.0,
-                "min": 0.001,
-                "name": "aspect-width",
-                "notes": "the aspect-width of a custom ratio; required with aspect custom and rejected with any other aspect",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 100000.0,
-                "min": 0.001,
-                "name": "aspect-height",
-                "notes": "the aspect-height of a custom ratio; required with aspect custom and rejected with any other aspect",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": 0.0,
-                "fine_step": 0.05,
-                "kind": "number",
-                "max": 45.0,
-                "min": -45.0,
-                "name": "angle",
-                "notes": "straightening angle, positive turns the image clockwise on screen",
-                "precision": null,
-                "required": false,
-                "step": 0.5,
-                "unit": "deg"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "center-x",
-                "notes": "center-x of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": "box"
-              },
-              {
-                "default": null,
-                "kind": "number",
-                "max": 1.0,
-                "min": 0.0,
-                "name": "center-y",
-                "notes": "center-y of the fitted rectangle's center, normalized to the rotated box at angle; both center-x and center-y or neither",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": "box"
-              }
-            ],
-            "patch": false,
-            "title": "Fit crop to a ratio"
-          },
-          {
-            "id": "crop-reset",
-            "notes": "returns an existing crop layer to the neutral payload; a no-op without one",
-            "parameters": [],
-            "patch": false,
-            "title": "Reset crop"
-          }
-        ],
-        "availability": {
-          "kind": "available"
-        },
-        "canvas": {
-          "action": "crop",
-          "angle": "angle",
-          "aspect": "aspect",
-          "fit_action": "crop-fit",
-          "height": "height",
-          "icon": "crop",
-          "kind": "crop-frame",
-          "shortcut": "R",
-          "title": "Crop",
-          "width": "width",
-          "x": "x",
-          "y": "y"
-        },
-        "collapsed": true,
-        "controls": [],
-        "developer": false,
-        "effects": [
-          {
-            "format": 1,
-            "id": "luxforge.geometry.crop",
-            "order": 10,
-            "single": true,
-            "stage": "geometry"
-          }
-        ],
-        "hint": "Frame, ratio and angle",
-        "id": "luxforge.crop",
-        "layout": "stacked",
-        "queries": [],
-        "reset": {
-          "action": "crop-reset",
-          "preset": {}
-        },
-        "title": "Crop and straighten"
       },
       {
         "actions": [
@@ -5072,7 +5071,7 @@
       "edit.select-lens-profile": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+        "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
         "optional": {
           "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
           "focal": "a focal length supplied explicitly when EXIF has none"
@@ -8051,7 +8050,7 @@
       },
       "query.lens-profiles": {
         "mutates": false,
-        "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+        "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
         "optional": {
           "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
           "entry_id": "entry to ask about; default the session's selection",

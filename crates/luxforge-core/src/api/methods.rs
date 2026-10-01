@@ -278,7 +278,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "catalog.import",
         owner::Import,
         owner::catalog_import,
-        "queues bounded source preparation; returns a job to inspect with job.read; commits only on verified success, which emits the event",
+        "queues bounded source preparation; returns a job to inspect with job.read; commits only on verified success, which emits the event; a new asset's first-open entries (a RAW's detected lens profile) follow its Original and job.read lists them under first_open",
         retries: Owner,
     ),
     // The one job table belongs to the catalog owner, so the owner answers for every kind.
@@ -2981,13 +2981,9 @@ mod tests {
                         Err(error) => panic!("{error}"),
                     }
                 });
-                let key = rows["rows"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|row| row["eligible"] == true)
-                    .unwrap()["key"]
-                    .clone();
+                let suggestion = &rows["status"]["suggestion"];
+                assert_eq!(suggestion["eligible"], true, "{rows}");
+                let key = suggestion["key"].clone();
                 ok(
                     &mut service,
                     &mut session,
@@ -4079,8 +4075,8 @@ mod tests {
                 // The host modes first — the pointer, the mask mode and one per canvas pick the host
                 // declares for a sampling component kind — then the registry's canvas declarations,
                 // so the RAW and Basic neutral pickers join the list without a change here.
-                "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.pixel, \
-                 luxforge.raw, luxforge.basic, luxforge.crop",
+                "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.crop, \
+                 luxforge.pixel, luxforge.raw, luxforge.basic",
             ),
             (
                 "a module that declares no canvas",

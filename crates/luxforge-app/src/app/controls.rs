@@ -88,7 +88,11 @@ impl Editor {
             | ControlMessage::QueryChoiceRetry { .. }
             | ControlMessage::QueryChoiceShared { .. }
             | ControlMessage::QueryChoiceSelect { .. }
-            | ControlMessage::QueryChoiceAnswered { .. }) => {
+            | ControlMessage::QueryChoiceAnswered { .. }
+            | ControlMessage::QueryChoiceApply { .. }
+            | ControlMessage::QueryChoiceChange { .. }
+            | ControlMessage::QueryChoiceReport { .. }
+            | ControlMessage::QueryChoiceReportOpened { .. }) => {
                 return self.query_choice_update(message);
             }
             ControlMessage::Field {
