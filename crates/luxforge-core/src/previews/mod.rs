@@ -33,7 +33,7 @@
 //!   leave the catalog, and the grid's states.
 //! - `camera.rs`: a developed photograph's camera preview, which it shows until its first render,
 //!   extracted from its original as a browsed file's tiers are, on an extraction worker.
-//! - `bracket.rs`: the brightness check for brackets the metadata cannot show (TASK-008): a
+//! - `bracket.rs`: the brightness check for brackets the metadata cannot show: a
 //!   fingerprint of each complete grid tier, kept beside its row, and [`PreviewProbe`], a
 //!   [`BracketProbe`](crate::catalog_types::BracketProbe) over the index ([`bracket_probe`]) that
 //!   lane D's `browse.view` hands to `organize::group`: it reads a run's fingerprints only when

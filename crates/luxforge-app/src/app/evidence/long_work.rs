@@ -1,4 +1,4 @@
-//! Evidence steps on long-running work (**catalog lane D**, TASK-024): a folder's first look
+//! Evidence steps on long-running work: a folder's first look
 //! captured with its progress sheet, the sheet sent to the background, and the job cancelled from
 //! its Performance row. Each gesture is the message its control sends, and each step is captured
 //! once the model shows what it waits for, judged from the state the models are derived from, so

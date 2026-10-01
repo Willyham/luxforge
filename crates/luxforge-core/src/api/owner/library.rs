@@ -19,19 +19,19 @@ mod journal;
 mod journal_tests;
 mod picks;
 
-// Catalog folders and collections (TASK-012): `folder.*`, `asset.move`, `collection.*`.
+// Catalog folders and collections: `folder.*`, `asset.move`, `collection.*`.
 #[cfg(test)]
 mod catalog_folder_tests;
 pub(in crate::api) mod organize;
 
-// Availability and Locate (TASK-016): `source.check`, `source.locate`.
+// Availability and Locate: `source.check`, `source.locate`.
 #[cfg(test)]
 mod locate_tests;
 pub(in crate::api) mod sources;
 #[cfg(test)]
 mod worker_tests;
 
-// Developing picks (TASK-013): `pick.plan`, `pick.develop`, `asset.send-back`.
+// Developing picks: `pick.plan`, `pick.develop`, `asset.send-back`.
 pub(in crate::api) mod develop;
 #[cfg(test)]
 mod develop_picks_tests;
@@ -39,17 +39,17 @@ mod develop_picks_tests;
 #[cfg(test)]
 pub(in crate::api) mod opening;
 
-// Resolving missing originals (TASK-017): `source.missing`, `source.find`, `source.relink`.
+// Resolving missing originals: `source.missing`, `source.find`, `source.relink`.
 pub(in crate::api) mod missing;
 #[cfg(test)]
 mod resolve_missing_tests;
 
-// Removing (TASK-014): `asset.remove`, `asset.restore`, `catalog.empty-removed`.
+// Removing: `asset.remove`, `asset.restore`, `catalog.empty-removed`.
 pub(in crate::api) mod remove;
 #[cfg(test)]
 mod remove_tests;
 
-// Batch preset and export (TASK-015): `batch.apply-preset`, `batch.export`.
+// Batch preset and export: `batch.apply-preset`, `batch.export`.
 pub(in crate::api) mod batch;
 #[cfg(test)]
 mod batch_tests;
@@ -69,7 +69,7 @@ use crate::{
 use rusqlite::Transaction;
 use std::sync::Arc;
 
-// The lane's worker (TASK-016).
+// The lane's worker.
 use super::catalog::CatalogMessage;
 use crate::{
     AssetId, JobStatus,
@@ -173,7 +173,7 @@ pub(super) struct LibraryLane {
     /// The worker's one-slot channel; it is sent to only while the worker is idle.
     worker: Option<SyncSender<Dispatch>>,
     hold: Option<Hold>,
-    // Resolving missing originals (TASK-017): the files finished finds verified, which
+    // Resolving missing originals: the files finished finds verified, which
     // `source.relink` commits.
     verified: crate::library::missing::Verifications,
 }

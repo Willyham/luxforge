@@ -35,7 +35,7 @@ pub(crate) mod journal;
 pub(crate) mod picks;
 pub(crate) mod targets;
 
-// Catalog folders and collections (TASK-012).
+// Catalog folders and collections.
 #[cfg(test)]
 mod catalog_folder_tests;
 /// Collections, smart collections and groups, and their members.
@@ -45,7 +45,7 @@ pub(crate) mod folders;
 /// What folders and collections share as named trees: names, clashes, order, a planned change.
 pub(crate) mod tree;
 
-// Availability and Locate (TASK-016).
+// Availability and Locate.
 pub(crate) mod availability;
 pub(crate) mod locate;
 /// The one scratch disk image the offline-volume tests attach at a time.
@@ -53,20 +53,20 @@ pub(crate) mod locate;
 pub(crate) mod test_disk;
 pub(crate) mod worker;
 
-// Developing picks (TASK-013).
+// Developing picks.
 /// Developing picks: planning, the develop lane's reads, committing in batches, sending back.
 pub(crate) mod develop;
 
-// Resolving missing originals (TASK-017).
+// Resolving missing originals.
 /// What is missing, finding it in a chosen folder, and relinking what was verified.
 pub(crate) mod missing;
 
-// Removing (TASK-014).
+// Removing.
 /// Removing photographs, putting them back, and emptying Removed.
 pub(crate) mod remove;
 #[cfg(test)]
 mod remove_tests;
 
-// Batch preset and export (TASK-015).
+// Batch preset and export.
 /// Batch preset and export: what both share, the naming, and the report as it grows.
 pub(crate) mod batch;

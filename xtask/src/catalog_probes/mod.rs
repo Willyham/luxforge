@@ -1,5 +1,5 @@
-//! The catalog measurement's desktop probes ([catalog design](../../../docs/design/catalog.md#performance),
-//! TASK-025): grid scroll ([`grid`]), loupe stepping with the look-ahead warm and a held arrow
+//! The catalog measurement's desktop probes ([catalog design](../../../docs/design/catalog.md#performance)):
+//! grid scroll ([`grid`]), loupe stepping with the look-ahead warm and a held arrow
 //! ([`loupe`]), the 100% focus check ([`focus`]), and the decoded previews the grid and the loupe
 //! hold meanwhile. `cargo xtask catalog-measure` runs them in its desktop step
 //! (`catalog_measure/desktop.rs`), which turns each [`Figure`] into a row of its report under the

@@ -13,7 +13,6 @@
 //!
 //! The cost is a sort and a pass: `events` allocates its order vector and then per event, `group`
 //! per moment, and neither holds a string per frame.
-#![allow(dead_code, reason = "catalog contracts: called as lane D's views land")]
 
 use crate::catalog_types::{
     BracketProbe, CameraGroup, DayGroup, EventSet, Exposure, FrameFacts, FrameTables, GroupLayout,
@@ -28,10 +27,6 @@ mod names;
 #[cfg(test)]
 mod tests;
 
-#[allow(
-    unused_imports,
-    reason = "catalog contracts: used as lane D's views land"
-)]
 pub(crate) use names::Gazetteer;
 
 /// Sort `frames` into the order a view shows them under `grouping`, earliest first, or the reverse
