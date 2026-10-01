@@ -149,6 +149,22 @@ impl CoverageQueue {
     pub(crate) fn poll(&mut self) -> Option<Completion> {
         self.worker.poll().map(|(_, done)| done)
     }
+
+    /// The production worker with `gate` in front of every job, so a test can hold a job running
+    /// while it changes what the desktop asks for.
+    #[cfg(test)]
+    pub(crate) fn held(gate: Arc<luxforge_testbase::Gate>) -> Self {
+        let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
+        Self {
+            worker: Latest::new(
+                "luxforge-mask-coverage-held",
+                move |job: Job, running: &Running<'_, _, _>| {
+                    gate.pass();
+                    run_coverage(job, running, &mut cached)
+                },
+            ),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -232,12 +248,19 @@ impl Editor {
             "unavailable":worker.unavailable.as_ref().map(|(stamp,reason)| json!({"request":stamp.summary(),"reason":reason}))})
     }
 
+    /// A grid for the current spec is still on its way: planned, computing, delivered but not yet
+    /// taken up, held for its photograph, or a reuse still to settle.
+    ///
+    /// The worker's own work counts only while a request is outstanding. A spec change, Off or an
+    /// invalidation clears the request and cancels the worker, and a job cancelled while it runs
+    /// keeps the worker busy until it returns although nothing it produces is ever delivered. That
+    /// job brings no grid, so a step that waited on it would wait for a frame nothing renders.
     pub(crate) fn mask_coverage_pending(&self) -> bool {
-        self.coverage_worker.queue.is_busy()
-            || self.coverage_worker.queue.ready()
-            || self.coverage_worker.planning.is_some()
-            || self.coverage_worker.waiting.is_some()
-            || self.coverage_worker.reused.is_some()
+        let worker = &self.coverage_worker;
+        (worker.requested.is_some() && worker.queue.is_busy())
+            || worker.planning.is_some()
+            || worker.waiting.is_some()
+            || worker.reused.is_some()
     }
 
     pub(crate) fn invalidate_mask_coverage(&mut self) {

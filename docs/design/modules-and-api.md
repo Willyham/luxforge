@@ -173,7 +173,7 @@ Only `ready` carries `result`, apart from a running job that reports its answer 
 
 | Kind | Scheduled by | A second request | `job.cancel` | A client disconnecting |
 | --- | --- | --- | --- | --- |
-| Source | The source worker: eight queued, and queued developments pin at most one sensor mosaic | Joins the queued or running job for the same file signature, gains and artifacts; a collection is never joined | Leaves the caller's interest; the work stops only when no client wants it | Leaves its interest, as a cancel does |
+| Source | The source worker: eight queued, and queued developments, with preparations holding the sensor a Develop read, pin at most one sensor mosaic | Joins the queued or running job for the same file signature, gains and artifacts; a collection is never joined | Leaves the caller's interest; the work stops only when no client wants it | Leaves its interest, as a cancel does |
 | Analysis | The analysis worker: one running and one replaceable pending job; a newer request supersedes the pending one | Joins the job for the same identity, a kept report included | As for source | As for source |
 | Capability | The `transfer` and `module` lanes, first in first out: one running and four waiting each | An install or removal already queued or running is answered with that job | Stops the job for every client | Nothing: the job belongs to its module |
 | Export | The `export` lane: one running and four waiting, never superseded | Always a new job | Stops the job for every client; a running export removes its temporary file | Nothing: the export runs on |
