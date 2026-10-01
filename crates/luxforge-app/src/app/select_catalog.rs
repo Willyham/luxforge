@@ -25,23 +25,37 @@
 //! - **The batch form** reads the selection's rows the desktop does not hold near the screen
 //!   (`browse.rows`, at most [`model::MAX_SELECTION_ROWS`]), so its folder and collection chips
 //!   count every selected photograph; a larger selection is organized all the same.
+//! - **Apply preset… and Export…** start `batch.apply-preset` and `batch.export` of the selection,
+//!   sent synchronously in the update of the choice (the owner resolves the selection on screen and
+//!   queues the job; the work runs on the library lane's worker). One batch of this desktop's runs
+//!   at a time. Its progress is the activity board's entry for its job, read whenever long-running
+//!   work reads the board; its record is read with `job.read` as soon as it is named and whenever
+//!   the board no longer lists it running, so its end is heard as a board change and no timer asks
+//!   after it. The report says every photograph left out and why. A batch is not a library change:
+//!   each photograph gets its own history entry, which `Cmd+Z` in Select does not undo.
+//! - **Remove from catalog… and Put back** are library changes of the selection (`asset.remove`,
+//!   `asset.restore`) like the organizing gestures, Remove behind a confirmation. **Empty
+//!   Removed…**, behind its own, is `catalog.empty-removed` as owner tasks off the gesture path,
+//!   called again while photographs remain; it is not a library change and cannot be undone.
 use crate::app::{
     Before, Editor,
     message::{Message, select::SelectMessage, select_catalog::CatalogMessage},
+    select::job_now,
     tasks::{CallError, call, call_detailed, owner_task, request},
 };
 use crate::coalesce::Coalesce;
 use crate::state::select::{LibraryGesture, SelectionModel};
 use crate::state::select_catalog::{
-    self as model, CatalogAction, CatalogChange, CatalogGesture, Naming, NamingTarget,
-    SelectionRows, SourceTotal, YearGroup,
+    self as model, BatchEnd, BatchKind, BatchRun, CatalogAction, CatalogChange, CatalogGesture,
+    CatalogMenu, Confirm, Emptying, Naming, NamingTarget, PresetChoice, SelectionRows, SourceTotal,
+    YearGroup,
 };
 use iced::Task;
 use luxforge_core::{
     ClientId, OwnerHandle,
     catalog_types::{
-        CatalogFolders, CollectionKind, Collections, Facets, LibraryAnswer, MAX_VIEW_ROWS,
-        ViewQuery, ViewRow, ViewRows, ViewSource,
+        BatchReport, CatalogFolders, CollectionKind, Collections, EmptyRemovedAnswer, Facets,
+        LibraryAnswer, MAX_VIEW_ROWS, ViewQuery, ViewRow, ViewRows, ViewSource,
     },
 };
 use serde_json::{Value, json};
@@ -67,6 +81,22 @@ pub(crate) struct SelectCatalog {
     pub(crate) reading: Option<(u64, Vec<(u32, u32)>)>,
     /// A selection whose rows could not be read, not asked again.
     pub(crate) rows_failed: Option<(u64, Vec<(u32, u32)>)>,
+    /// `preset.list` for the Apply preset… menu is in flight.
+    pub(crate) presets_reading: bool,
+    /// A `job.read` of the running batch is in flight.
+    pub(crate) batch_reading: bool,
+    /// The activity board's read (its version) the running batch was last looked for in; `None`
+    /// while it has not been read since it was named.
+    pub(crate) batch_seen: Option<u64>,
+    /// The batch request this desktop sent last and what the owner answered, and the `job.read`
+    /// record its end was read from, for evidence.
+    pub(crate) batch_request: Option<Value>,
+    pub(crate) batch_record: Option<Value>,
+    /// The job and the sentence the status bar says of the batch that just ended, until anything
+    /// else is said: long-running work's own sentence for the job does not replace it.
+    pub(crate) said: Option<(String, String)>,
+    /// Each `catalog.empty-removed` call of the last Empty Removed… and its answer, for evidence.
+    pub(crate) empty_calls: Vec<Value>,
 }
 
 // -- The owner calls, each the body of one owner task (or, for a library change, the one
@@ -152,6 +182,64 @@ pub(crate) fn catalog_call(
         })
 }
 
+/// `preset.list`, as the Apply preset… menu offers the presets.
+pub(crate) fn presets_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+) -> Result<Vec<PresetChoice>, String> {
+    let (presets, _) = crate::app::tasks::list_presets(owner, client)?;
+    Ok(model::preset_choices(&presets))
+}
+
+/// One batch request of this desktop's — `batch.apply-preset` or `batch.export` of the selection —
+/// sent synchronously, answered with the job it started and the whole answer, or its refusal.
+pub(crate) fn batch_call(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<(String, Value), CallError> {
+    let answer = call_detailed(owner, client, method, params)?;
+    match answer["job_id"].as_str() {
+        Some(job) => Ok((job.to_owned(), answer)),
+        None => Err(CallError {
+            code: "internal".into(),
+            message: format!("{method} answered no job: {answer}"),
+            data: None,
+            job_id: None,
+        }),
+    }
+}
+
+/// One `catalog.empty-removed` call, as its own request: the desktop's client has the permission
+/// authority it needs.
+pub(crate) fn empty_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+) -> Result<(Value, EmptyRemovedAnswer), String> {
+    let params = model::empty_params(&request());
+    let (answer, _) = call(owner, client, "catalog.empty-removed", params.clone())?;
+    Ok((params, parse(answer)?))
+}
+
+/// How a batch job's `job.read` record ended it, or `None` while it is queued or running.
+pub(crate) fn batch_end(record: &Value) -> Option<BatchEnd> {
+    Some(match record["status"].as_str() {
+        Some("queued" | "running") => return None,
+        Some("ready") => match parse::<BatchReport>(record["result"].clone()) {
+            Ok(report) => BatchEnd::Done(report),
+            Err(error) => BatchEnd::Failed(format!("its report could not be read: {error}")),
+        },
+        Some("cancelled") => BatchEnd::Cancelled,
+        other => BatchEnd::Failed(
+            record["error"]["message"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("the job ended {}", other.unwrap_or("unknown"))),
+        ),
+    })
+}
+
 impl Editor {
     /// One catalog message.
     pub(crate) fn catalog_update(&mut self, message: CatalogMessage) -> Task<Message> {
@@ -234,6 +322,12 @@ impl Editor {
                     Err(_) => self.select.catalog.rows_failed = Some((revision, ranges)),
                 }
             }
+            CatalogMessage::Presets(result) => {
+                self.select.catalog.presets_reading = false;
+                self.select.state.catalog.presets = Some(result);
+            }
+            CatalogMessage::BatchRead { job, result } => return self.batch_read(&job, result),
+            CatalogMessage::Emptied(result) => return self.emptied(result),
         }
         Task::none()
     }
@@ -270,7 +364,14 @@ impl Editor {
                 self.select.state.menu = None;
                 let state = &mut self.select.state.catalog;
                 state.naming = None;
+                state.confirm = None;
+                state.report = false;
+                let presets = menu == Some(CatalogMenu::Presets);
                 state.menu = menu;
+                // Apply preset… lists the library as it is now.
+                if presets {
+                    return self.read_presets();
+                }
             }
             CatalogAction::Name(target) => return self.start_naming(target),
             CatalogAction::NameText(text) => {
@@ -358,8 +459,378 @@ impl Editor {
                 };
                 return iced::widget::operation::focus(iced::widget::Id::from(field));
             }
+            CatalogAction::ApplyPreset { id, name } => {
+                self.close_catalog_menus();
+                let params = model::batch_preset_params(&id, &request());
+                return self.start_batch(BatchKind::Preset { name }, params);
+            }
+            CatalogAction::Export => return self.ask_export_folder(),
+            CatalogAction::ExportInto(folder) => {
+                self.view_state.picker_open = false;
+                if let Some(folder) = folder {
+                    let params = model::batch_export_params(&folder, &request());
+                    return self.start_batch(BatchKind::Export { folder }, params);
+                }
+            }
+            CatalogAction::Remove => self.ask_remove(),
+            CatalogAction::Restore => {
+                self.close_catalog_menus();
+                if !model::over_removed(&self.select.state) || self.catalog_selection().count == 0 {
+                    return Task::none();
+                }
+                let params = model::removal_params(&request());
+                return self.catalog_library(CatalogGesture::Restore, params).0;
+            }
+            CatalogAction::Empty => {
+                self.close_catalog_menus();
+                if self.select.state.catalog.emptying.is_some() {
+                    return Task::none();
+                }
+                match model::removed_count(&self.select.state) {
+                    Some(count) => {
+                        self.select.state.catalog.confirm = Some(Confirm::Empty { count })
+                    }
+                    None => self.status.text = "Removed is empty".into(),
+                }
+            }
+            CatalogAction::Confirmed => return self.confirmed(),
+            CatalogAction::Report(open) => {
+                self.close_catalog_menus();
+                self.select.state.catalog.report = open;
+            }
         }
         Task::none()
+    }
+
+    /// Read `preset.list` for the Apply preset… menu, one read at a time.
+    fn read_presets(&mut self) -> Task<Message> {
+        self.select.state.catalog.presets = None;
+        if std::mem::replace(&mut self.select.catalog.presets_reading, true) {
+            return Task::none();
+        }
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || presets_now(&owner, client),
+            |result| catalog(CatalogMessage::Presets(result)),
+        )
+    }
+
+    /// Why a batch cannot start for the selection now, as the status bar says it.
+    fn batch_refusal(&self) -> Option<String> {
+        let state = &self.select.state;
+        if !state.over_catalog() || self.missing_shown() {
+            return Some("Select developed photographs first".into());
+        }
+        if let Some(batch) = state.catalog.running() {
+            return Some(format!("Waiting for the batch: {}", batch.running()));
+        }
+        if model::over_removed(state) {
+            return Some("Put them back first: a batch leaves photographs in Removed out".into());
+        }
+        (self.catalog_selection().count == 0).then(|| "Select photographs first".into())
+    }
+
+    /// Export…: the native folder dialog, which answers [`CatalogAction::ExportInto`]. An evidence
+    /// run names its folder with that action instead.
+    fn ask_export_folder(&mut self) -> Task<Message> {
+        self.close_catalog_menus();
+        if let Some(reason) = self.batch_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
+        if self.view_state.picker_open || self.evidence.is_some() {
+            return Task::none();
+        }
+        self.view_state.picker_open = true;
+        let title = format!(
+            "Export {} into",
+            crate::state::select::photographs(self.catalog_selection().count)
+        );
+        Task::perform(
+            async move {
+                rfd::AsyncFileDialog::new()
+                    .set_title(title)
+                    .pick_folder()
+                    .await
+                    .map(|folder| folder.path().to_path_buf())
+            },
+            |folder| catalog(CatalogMessage::Act(CatalogAction::ExportInto(folder))),
+        )
+    }
+
+    /// Start a batch of the selection: `batch.apply-preset` or `batch.export`, sent synchronously
+    /// in this update as this desktop's actor, so it names the selection on screen. The job it
+    /// starts is followed from here ([`Self::follow_batch`]); its record is read once now.
+    fn start_batch(&mut self, kind: BatchKind, params: Value) -> Task<Message> {
+        if let Some(reason) = self.batch_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
+        let method = match kind {
+            BatchKind::Preset { .. } => "batch.apply-preset",
+            BatchKind::Export { .. } => "batch.export",
+        };
+        let selection = self.catalog_selection();
+        let names = model::selected_names(&self.select.state, &selection);
+        let result = batch_call(&self.owner, self.client, method, params.clone());
+        self.select.catalog.batch_request = Some(json!({
+            "method": method,
+            "params": params,
+            "answer": result.as_ref().ok().map(|(_, answer)| answer),
+            "error": result.as_ref().err().map(|error| json!({
+                "code": error.code,
+                "message": error.message,
+                "data": error.data,
+            })),
+        }));
+        self.select.catalog.batch_record = None;
+        match result {
+            Ok((job, _)) => {
+                let batch = BatchRun {
+                    kind,
+                    count: selection.count,
+                    job,
+                    names,
+                    progress: None,
+                    end: None,
+                };
+                self.status.text = batch.running();
+                let state = &mut self.select.state.catalog;
+                state.batch = Some(batch);
+                state.report = false;
+                self.select.catalog.batch_seen = None;
+                self.select.catalog.said = None;
+                self.follow_batch()
+            }
+            Err(error) => {
+                self.status.text = match &kind {
+                    BatchKind::Preset { name } => {
+                        format!("Could not apply {name}: {}", error.message)
+                    }
+                    BatchKind::Export { .. } => format!("Could not export: {}", error.message),
+                };
+                // A stale view refuses its selection: read it again, so the next press acts on
+                // what is shown.
+                if error.code == "conflict" {
+                    self.select.check.offer(());
+                }
+                Task::none()
+            }
+        }
+    }
+
+    /// Follow the running batch through long-running work's reads of the activity board: while the
+    /// board lists its job running, its progress is the entry's; otherwise its record is read with
+    /// `job.read` once for each read of the board since it was last looked for (and once as soon as
+    /// it is named), one read in flight at a time. So its end is heard as a board change.
+    pub(crate) fn follow_batch(&mut self) -> Task<Message> {
+        let Some(job) = self
+            .select
+            .state
+            .catalog
+            .running()
+            .map(|batch| batch.job.clone())
+        else {
+            return Task::none();
+        };
+        let version = self.long_work.state.version;
+        if let Some(running) = self.long_work.state.job(&job) {
+            let progress = running
+                .entry
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.message.clone());
+            if let Some(batch) = self.select.state.catalog.batch.as_mut()
+                && batch.progress != progress
+                && progress.is_some()
+            {
+                batch.progress = progress;
+            }
+            self.select.catalog.batch_seen = Some(version);
+            return Task::none();
+        }
+        let seam = &mut self.select.catalog;
+        if seam.batch_reading || seam.batch_seen == Some(version) {
+            return Task::none();
+        }
+        seam.batch_seen = Some(version);
+        seam.batch_reading = true;
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || {
+                let result = job_now(&owner, client, &job);
+                (job, result)
+            },
+            |(job, result)| catalog(CatalogMessage::BatchRead { job, result }),
+        )
+    }
+
+    /// The running batch's record: still queued or running, how far it has got; ended, the status
+    /// bar says what it did, its report can be opened, and what it changed is read again.
+    fn batch_read(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
+        self.select.catalog.batch_reading = false;
+        let Some(batch) = self
+            .select
+            .state
+            .catalog
+            .batch
+            .as_mut()
+            .filter(|batch| batch.job == job && batch.end.is_none())
+        else {
+            return Task::none();
+        };
+        let end = match &result {
+            Ok(record) => match batch_end(record) {
+                Some(end) => end,
+                None => {
+                    if let Some(progress) = record["progress"]["message"].as_str() {
+                        batch.progress = Some(progress.to_owned());
+                    }
+                    return Task::none();
+                }
+            },
+            Err(error) => BatchEnd::Failed(format!("its job could not be read: {error}")),
+        };
+        batch.end = Some(end);
+        let preset = matches!(batch.kind, BatchKind::Preset { .. });
+        let home = self.select.state.home.clone();
+        let sentence = batch.sentence(home.as_deref()).unwrap_or_default();
+        self.select.catalog.batch_record = result.ok();
+        self.select.catalog.said = Some((job.to_owned(), sentence.clone()));
+        self.status.text = sentence;
+        if !preset {
+            return Task::none();
+        }
+        // Each photograph the preset reached has a new entry: the view says which are edited, and
+        // an open photograph among them is read again by the event sync, since this desktop's own
+        // requests wake nothing.
+        self.resync();
+        self.reread_catalog()
+    }
+
+    /// Read again what a change of this desktop's that is not a library change leaves: the view,
+    /// quietly, and the catalog's counts with the folders and collections.
+    fn reread_catalog(&mut self) -> Task<Message> {
+        let counts = self.read_counts();
+        let Some(query) = self
+            .select
+            .state
+            .summary
+            .as_ref()
+            .map(|summary| summary.query.clone())
+        else {
+            return counts;
+        };
+        let evaluated = self.evaluate(query);
+        self.select.reread = crate::app::select::Reread::Own;
+        Task::batch([counts, evaluated])
+    }
+
+    /// Remove from catalog… (or `Delete` over a catalog view): the confirmation, naming how many
+    /// are selected. Over files or Missing originals it does nothing; over Removed it says why.
+    fn ask_remove(&mut self) {
+        let state = &self.select.state;
+        if !self.select_shown() || !state.over_catalog() || self.missing_shown() {
+            return;
+        }
+        if model::over_removed(state) {
+            self.status.text =
+                "Already in Removed: Put back returns them, Empty Removed\u{2026} deletes them"
+                    .into();
+            return;
+        }
+        let count = self.catalog_selection().count;
+        if count == 0 {
+            self.status.text = "Select photographs to remove".into();
+            return;
+        }
+        self.close_catalog_menus();
+        self.select.state.catalog.confirm = Some(Confirm::Remove { count });
+    }
+
+    /// The confirmation's button: the removal of the selection it counted, one library change —
+    /// asked again when the selection changed meanwhile — or Empty Removed…'s first call.
+    fn confirmed(&mut self) -> Task<Message> {
+        let Some(confirm) = self.select.state.catalog.confirm.take() else {
+            return Task::none();
+        };
+        match confirm {
+            Confirm::Remove { count } => {
+                let now = self.catalog_selection().count;
+                if now != count {
+                    self.status.text = "The selection changed: confirm again".into();
+                    if now > 0 {
+                        self.select.state.catalog.confirm = Some(Confirm::Remove { count: now });
+                    }
+                    return Task::none();
+                }
+                let params = model::removal_params(&request());
+                self.catalog_library(CatalogGesture::Remove, params).0
+            }
+            Confirm::Empty { .. } => {
+                self.select.catalog.empty_calls.clear();
+                self.select.state.catalog.emptying = Some(Emptying::default());
+                self.status.text = "Emptying Removed\u{2026}".into();
+                self.empty_call()
+            }
+        }
+    }
+
+    /// One `catalog.empty-removed` call, an owner task off the gesture path.
+    fn empty_call(&mut self) -> Task<Message> {
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || empty_now(&owner, client),
+            |result| catalog(CatalogMessage::Emptied(result)),
+        )
+    }
+
+    /// One `catalog.empty-removed` answered: called again while photographs remain, then the
+    /// status bar says how many were deleted and the view, counts, folders and collections are
+    /// read again. Nothing it deleted can be restored, and it is no library change.
+    fn emptied(&mut self, result: Result<(Value, EmptyRemovedAnswer), String>) -> Task<Message> {
+        let Some(emptying) = self.select.state.catalog.emptying.as_mut() else {
+            return Task::none();
+        };
+        self.select.catalog.empty_calls.push(match &result {
+            Ok((params, answer)) => json!({"params": params, "answer": answer}),
+            Err(error) => json!({"error": error}),
+        });
+        match result {
+            Ok((_, answer)) => {
+                emptying.deleted = emptying.deleted.saturating_add(answer.deleted);
+                if answer.remaining > 0 && answer.deleted > 0 {
+                    self.status.text = format!(
+                        "Emptying Removed \u{b7} {} deleted, {} left\u{2026}",
+                        crate::state::select::thousands(emptying.deleted),
+                        crate::state::select::thousands(answer.remaining)
+                    );
+                    return self.empty_call();
+                }
+                let deleted = emptying.deleted;
+                self.status.text = if deleted == 0 {
+                    "Removed was already empty".into()
+                } else {
+                    format!(
+                        "Emptied Removed: {} deleted from the catalog",
+                        crate::state::select::photographs(deleted)
+                    )
+                };
+            }
+            Err(error) => {
+                let deleted = emptying.deleted;
+                self.status.text = if deleted == 0 {
+                    format!("Could not empty Removed: {error}")
+                } else {
+                    format!(
+                        "Could not empty Removed after deleting {}: {error}",
+                        crate::state::select::photographs(deleted)
+                    )
+                };
+            }
+        }
+        self.select.state.catalog.emptying = None;
+        self.reread_catalog()
     }
 
     /// Close the catalog's menu and a name being typed, and the shell's own menu.
@@ -535,15 +1006,46 @@ impl Editor {
         }
     }
 
-    /// Nothing the catalog asked the owner for is in flight or still wanted.
+    /// Nothing the catalog asked the owner for is in flight or still wanted, and no batch or
+    /// emptying of this desktop's is still running.
     pub(crate) fn catalog_quiet(&self) -> bool {
         let seam = &self.select.catalog;
+        let state = &self.select.state.catalog;
         seam.lists.idle()
             && seam.totalling.is_none()
             && seam.reading.is_none()
+            && !seam.presets_reading
+            && !seam.batch_reading
+            && state.running().is_none()
+            && state.emptying.is_none()
             && self.total_wanted().is_none()
             && self.rows_wanted().is_none()
             && self.search_wanted().is_none()
+    }
+
+    /// Long-running work's sentence for the batch that just ended replaced the batch's own: say
+    /// the batch's again. Anything else said since ends the batch's claim on the status bar.
+    fn keep_batch_sentence(&mut self) {
+        let Some((job, said)) = &self.select.catalog.said else {
+            return;
+        };
+        if self.status.text == *said {
+            return;
+        }
+        let home = self.select.state.home.as_deref();
+        let generic = self
+            .long_work
+            .state
+            .board
+            .iter()
+            .flat_map(|board| board.recent.iter())
+            .filter(|recent| recent.entry.job_id.as_deref() == Some(job.as_str()))
+            .filter_map(|recent| crate::state::long_work::finished_sentence(recent, None, home))
+            .any(|sentence| self.status.text.starts_with(&sentence));
+        if generic {
+            self.status.text = said.clone();
+        }
+        self.select.catalog.said = None;
     }
 
     /// The source to count with no filter, and the library change to count it at: over the
@@ -669,9 +1171,55 @@ impl Editor {
                 "note": info.organize_note,
                 "edited": info.edited,
                 "previews": info.previews,
+                "band": {
+                    "refused": info.batch.refused,
+                    "export": info.batch.export,
+                    "line": info.batch.line,
+                    "report": info.batch.report,
+                    "presets": info.batch.presets.as_ref().map(|menu| menu.iter().map(|choice| json!([choice.label, choice.action.is_some()])).collect::<Vec<_>>()),
+                },
+                "removal": info.removal.as_ref().map(|button| &button.label),
             })),
             "menu": state.menu.as_ref().map(|menu| format!("{menu:?}")),
             "naming": state.naming.as_ref().map(|naming| &naming.text),
+            // The batch this desktop started last: the request it sent and the owner's answer,
+            // the job's end as `job.read` answered it, and the report as the desktop shows it.
+            "batch": state.batch.as_ref().map(|batch| {
+                let end = batch.end.as_ref().map(|end| match end {
+                    BatchEnd::Done(report) => json!({"status": "ready", "report": report}),
+                    BatchEnd::Cancelled => json!({"status": "cancelled"}),
+                    BatchEnd::Failed(reason) => json!({"status": "failed", "reason": reason}),
+                });
+                json!({
+                    "kind": match &batch.kind {
+                        BatchKind::Preset { name } => json!({"preset": name}),
+                        BatchKind::Export { .. } => json!("export"),
+                    },
+                    "count": batch.count,
+                    "job": batch.job,
+                    "progress": batch.progress,
+                    "end": end,
+                    "sentence": batch.sentence(self.select.state.home.as_deref()),
+                    "named": batch.names.len(),
+                })
+            }),
+            "batch_request": self.select.catalog.batch_request,
+            "batch_record": self.select.catalog.batch_record,
+            "sheet": model.sheet.as_ref().map(|sheet| json!({
+                "kind": format!("{:?}", sheet.kind).to_lowercase(),
+                "title": sheet.title,
+                "note": sheet.note,
+                "sections": sheet.sections.iter().map(|section| json!({
+                    "heading": section.heading,
+                    "rows": section.rows,
+                    "more": section.more,
+                })).collect::<Vec<_>>(),
+                "confirm": sheet.confirm,
+            })),
+            "status_report": model.status_report,
+            "empty": model.filter.as_ref().and_then(|bar| bar.empty.as_ref()).map(|empty| json!({"refused": empty.refused})),
+            "emptying": state.emptying.map(|emptying| emptying.deleted),
+            "empty_calls": self.select.catalog.empty_calls,
         })
     }
 }
@@ -680,10 +1228,13 @@ impl Editor {
 /// the search text once no evaluation is in flight, and count the source and read the selection's
 /// rows when the bar and the Info panel want them.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    // A batch runs on whichever workspace is shown, and its end is said wherever the person is.
+    editor.keep_batch_sentence();
+    let followed = editor.follow_batch();
     if !editor.select_shown() {
-        return Task::none();
+        return followed;
     }
-    let mut tasks = Vec::new();
+    let mut tasks = vec![followed];
     if editor.select.catalog.lists.start().is_some() {
         let (owner, client) = (editor.owner.clone(), editor.client);
         tasks.push(owner_task(

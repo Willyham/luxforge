@@ -529,6 +529,12 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     if !context.loupe_open && character(key, "p") {
         return Some(Message::Select(SelectMessage::Pick));
     }
+    // `Delete` asks to remove the selection from the catalog; over files it does nothing.
+    if !context.loupe_open && matches!(key, Key::Named(Named::Backspace | Named::Delete)) {
+        return Some(Message::Select(SelectMessage::Catalog(
+            CatalogMessage::Act(CatalogAction::Remove),
+        )));
+    }
     // `Space` or `E` shows the active frame in the loupe.
     if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
         return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)));

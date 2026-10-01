@@ -130,6 +130,58 @@ impl Editor {
                     None => Err("the view is not over the catalog".to_owned()),
                 }
             }
+            CatalogStep::ApplyPreset(name) => self.preset_press(&name),
+            // The native folder dialog answered with the step's folder.
+            CatalogStep::ExportInto(folder) => self.band_refusal().map(|()| {
+                vec![act(CatalogAction::ExportInto(Some(
+                    std::path::PathBuf::from(folder),
+                )))]
+            }),
+            CatalogStep::Report => {
+                if self.workspace.select.catalog.status_report {
+                    Ok(vec![act(CatalogAction::Report(true))])
+                } else {
+                    Err("the status bar offers no report".to_owned())
+                }
+            }
+            CatalogStep::Remove | CatalogStep::PutBack => {
+                let wanted = if matches!(step, CatalogStep::Remove) {
+                    CatalogAction::Remove
+                } else {
+                    CatalogAction::Restore
+                };
+                match self
+                    .workspace
+                    .select
+                    .catalog
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.removal.as_ref())
+                {
+                    Some(button) if button.action == wanted => Ok(vec![act(wanted)]),
+                    Some(button) => Err(format!("the Info panel offers {:?}", button.label)),
+                    None => Err("the Info panel describes no photograph".to_owned()),
+                }
+            }
+            CatalogStep::DeleteKey => self.delete_key(),
+            CatalogStep::Confirm => match &self.workspace.select.catalog.sheet {
+                Some(sheet) if sheet.confirm.is_some() => Ok(vec![act(CatalogAction::Confirmed)]),
+                _ => Err("no confirmation is shown".to_owned()),
+            },
+            CatalogStep::EmptyRemoved => match self
+                .workspace
+                .select
+                .catalog
+                .filter
+                .as_ref()
+                .and_then(|bar| bar.empty.as_ref())
+            {
+                Some(empty) => match &empty.refused {
+                    None => Ok(vec![act(CatalogAction::Empty)]),
+                    Some(reason) => Err(format!("Empty Removed… is refused: {reason}")),
+                },
+                None => Err("Empty Removed… is offered only over Removed".to_owned()),
+            },
         };
         let messages = match result {
             Ok(messages) => messages,
@@ -157,6 +209,63 @@ impl Editor {
             self.await_step(Settle::Select);
         }
         Task::batch(tasks)
+    }
+
+    /// Why the Develop band's Apply preset… and Export… are refused, as it draws them.
+    fn band_refusal(&self) -> Result<(), String> {
+        let info = self
+            .workspace
+            .select
+            .catalog
+            .info
+            .as_ref()
+            .ok_or("the Info panel describes no photograph")?;
+        match &info.batch.refused {
+            None => Ok(()),
+            Some(reason) => Err(format!("the Develop band is refused: {reason}")),
+        }
+    }
+
+    /// Apply preset…'s menu opened, the library listed as its task lists it, and the preset named
+    /// `name` chosen.
+    fn preset_press(&mut self, name: &str) -> Result<Vec<Message>, String> {
+        self.band_refusal()?;
+        let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::Presets))));
+        // The menu's `preset.list`, read here exactly as its owner task reads it.
+        let presets = crate::app::select_catalog::presets_now(&self.owner, self.client);
+        let _ = self.update(Message::Select(SelectMessage::Catalog(
+            CatalogMessage::Presets(presets),
+        )));
+        let menu = self
+            .workspace
+            .select
+            .catalog
+            .info
+            .as_ref()
+            .and_then(|info| info.batch.presets.clone());
+        choice(menu.as_deref(), name).map(|action| vec![act(action)])
+    }
+
+    /// ⌫ through the key table, as the keyboard presses it.
+    fn delete_key(&mut self) -> Result<Vec<Message>, String> {
+        use iced::keyboard::{
+            Event as KeyEvent, Key, Location, Modifiers,
+            key::{Named, NativeCode, Physical},
+        };
+        let key = Key::Named(Named::Backspace);
+        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        let status = iced::event::Status::Ignored;
+        crate::app::keymap::keymap(&event, status, &self.key_context())
+            .map(|message| vec![message])
+            .ok_or_else(|| "⌫ does nothing here".to_owned())
     }
 
     /// The catalog folder, year or collection row showing `name`, as the sources panel lists it.
