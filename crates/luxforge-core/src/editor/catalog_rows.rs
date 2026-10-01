@@ -10,9 +10,9 @@ use super::catalog::encode;
 use crate::{
     Error,
     catalog_types::{
-        AssetRowId, CameraBody, CaptureTime, CatalogFolder, CatalogFolderId, Collection,
-        CollectionId, Dimensions, ExifOrientation, Exposure, FileAvailability, GeoPosition,
-        HeaderMetadata, IndexedFolder, MomentId, Pick, Volume, VolumeId,
+        AssetRowId, CaptureTime, CatalogFolder, CatalogFolderId, Collection, CollectionId,
+        ExifOrientation, FileAvailability, HeaderMetadata, IndexedFolder, MomentId, Pick, Volume,
+        VolumeId,
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -171,11 +171,12 @@ pub(crate) fn insert_capture(
 
 /// An asset's capture row as header metadata and its place, or none when it has no row. The
 /// thumbnail is the index's, never the catalog's, so it is always absent here.
-#[allow(dead_code, reason = "catalog contracts: used as the lanes land")]
+#[cfg(test)]
 pub(crate) fn capture_of(
     connection: &Connection,
     row: AssetRowId,
 ) -> Result<Option<(HeaderMetadata, Option<String>)>, Error> {
+    use crate::catalog_types::{CameraBody, Dimensions, Exposure, GeoPosition};
     connection
         .query_row(
             "SELECT capture_ms, local_text, offset_minutes, latitude, longitude, altitude_m,

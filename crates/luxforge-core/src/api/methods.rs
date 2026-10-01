@@ -806,7 +806,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
     // (`crate::catalog_types::api::PickSet`, `owner::library::pick_set`) so no lane edits the
     // imports above. A mutation declares `retries: Owner`.
     // ── catalog lane A: files ──
-    // The index lane (TASK-004): volumes, folders on disk, indexed folders and listings.
+    // The index lane: volumes, folders on disk, indexed folders and listings.
     owner!(
         "volume.list",
         params::NoParams,
@@ -867,7 +867,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
     ),
     // ── end lane B ──
     // ── catalog lane C: catalog ──
-    // Picks and the library journal (TASK-011).
+    // Picks and the library journal.
     owner!(
         "pick.set",
         crate::catalog_types::api::PickSet,
@@ -913,7 +913,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::library::catalog_info,
         "{path, catalog_id, format, index_format, counts: {photographs, recently_developed, removed, unavailable, folders, collections, picks, indexed_folders, library_changes}, index: {path, bytes, files}, previews: {path, bytes, files}}: the catalog's path, identity and formats, the counts behind the Catalog sources (photographs and unavailable ones exclude the removed; recently developed is the last 30 days), the index database's size and the files it lists, and the preview cache's bytes and files as its rows record them"
     ),
-    // Catalog folders and collections (TASK-012).
+    // Catalog folders and collections.
     owner!(
         "folder.list",
         params::NoParams,
@@ -1024,7 +1024,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "removes the photographs targets names from a plain collection as one library change, answering {outcome, change?, items, deduplicated}; photographs not in it are left out and none to remove is a no-op; refused as collection.add",
         retries: Owner,
     ),
-    // Availability and Locate (TASK-016).
+    // Availability and Locate.
     owner!(
         "source.check",
         crate::catalog_types::api::SourceCheck,
@@ -1038,7 +1038,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "starts a source-locate job, answering {job_id, status, deduplicated}, whose result is {outcome, change?, items, deduplicated}: the chosen file's SHA-256 is streamed off the owner, cancellable, and must equal the photograph's fingerprint while the file keeps its signature throughout; the photograph then points at it as one library change (asset-source, undone with library.undo), its volume recorded and its original available, with its history, edits and fingerprint unchanged; refused before anything is read: a relative path or a folder (validation), a file that cannot be read (read-error), one of another length (source-unavailable) and one another photograph names (conflict, naming it in data.asset_id; photographs are never merged); the job fails with source-unavailable when the bytes differ and conflict when the file changes during or after verification or another photograph names it by then; a cancel, a mismatch, an unplugged volume or a failed commit changes nothing; resource-limit when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
-    // Developing picks (TASK-013).
+    // Developing picks.
     owner!(
         "pick.plan",
         crate::catalog_types::api::PickPlan,
@@ -1059,7 +1059,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "sends the photographs targets names back as one library change, answering {outcome, change?, items, deduplicated}: each one's catalog record (asset, capture, Original entry, state and requests) is deleted and its file picked again with its signature now (kept as picked when it already is); refused with conflict, naming the item in data.items and changing nothing, for a photograph with history beyond its Original, a named version or a collection (it leaves only by removal) and for one whose original is not at its locator (it could not be picked again); a sent-back photograph is developed again with pick.develop, so undoing a send-back is conflict; targets as asset.move's; the file is never touched",
         retries: Owner,
     ),
-    // Resolving missing originals (TASK-017).
+    // Resolving missing originals.
     owner!(
         "source.missing",
         crate::catalog_types::api::SourceMissing,
@@ -1079,7 +1079,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "points every photograph of pairs at its file in one transaction as one library change (asset-source items, labelled Relinked <file> or Relinked N originals, undone with library.undo), answering {outcome, change?, items, deduplicated}: each photograph's source folder becomes its file's folder, its volume is recorded and its original recorded available, and its history, edits and fingerprint are unchanged; a pair whose photograph already names its file needs nothing; every other pair must be a file a finished source.find verified for that photograph, still with the signature it had then and named by no other photograph, or nothing changes and the request is refused naming every such pair in data.pairs [{asset_id, path, reason: not-verified | changed | gone | claimed | same-file, by?}] (the first 100, with data.count): source-unavailable when a file is gone, conflict otherwise; a relative path, an unknown photograph, and a photograph or file named twice are validation; more than 50,000 pairs is resource-limit",
         retries: Owner,
     ),
-    // Removing (TASK-014).
+    // Removing.
     owner!(
         "asset.remove",
         crate::catalog_types::api::AssetTargets,
@@ -1101,7 +1101,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, remaining, deduplicated} (remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references and asset row, then the strokes and artifact rows no remaining entry names (the artifacts' files are removed by a collect job it queues); records one event and marks every client's view stale; not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
         retries: Owner,
     ),
-    // Batch preset and export (TASK-015).
+    // Batch preset and export.
     owner!(
         "batch.apply-preset",
         crate::catalog_types::api::BatchApplyPreset,

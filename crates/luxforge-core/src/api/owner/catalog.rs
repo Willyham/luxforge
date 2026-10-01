@@ -9,10 +9,6 @@
 //! the sessions, the job table, the activity board and the event announcements as the owner's own
 //! handlers do. The domain code stays in the lane's core module (`crate::index`, `crate::previews`,
 //! `crate::library`, `crate::browse`); these files are the glue.
-#![allow(
-    dead_code,
-    reason = "catalog contracts: the lanes fill these as they land"
-)]
 
 use super::{ClientId, Owner, OwnerMessage, files, library, previews, views};
 use crate::{
