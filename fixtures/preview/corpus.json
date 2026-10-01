@@ -1,0 +1,284 @@
+{
+  "format": 1,
+  "scope": "The qualification corpus the GPU preview error limits are judged on (docs/design/gpu-preview.md, The preview error limit): every source, every recipe over the sources it applies to, each at Fit and at 100%. A source carries its SHA-256, resolved by `cargo xtask preview-corpus`, or an explicit gap. A RAW source is named by its id in the private RAW manifest (`--manifest FILE`), which holds the file's path and the hash this file repeats. A recipe is a list of evidence-script steps, run after the source opens and before the view step; its class says which limits it is held to. This file lists what to measure; it records no measurement.",
+  "views": [
+    {"id": "fit", "step": {"view": {"zoom": "fit"}}},
+    {"id": "100%", "step": {"view": {"zoom": 100}}}
+  ],
+  "sources": [
+    {"id": "jpeg-24mp", "kind": "generated-jpeg", "path": "fixtures/generated/24mp.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [6000, 4000], "sha256": "b54c2a158a3d384674f5d731f940d553039d61f51b83a0e7b1e3b0247aa056eb", "description": "The generated 24 MP workload: four flat colour quadrants, corner labels, an arrow and fine vertical detail, at 6000 x 4000."},
+    {"id": "jpeg-60mp", "kind": "generated-jpeg", "path": "fixtures/generated/60mp.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [10000, 6000], "sha256": "b9e0118ab69b5d889b62087759be0b33f41b010f8d5bf14d2864dd9e47340221", "description": "The generated 60 MP workload: the same pattern at 10000 x 6000."},
+    {"id": "zone-plate", "kind": "generated-jpeg", "gap": "No committed generator and no file. The zone plate (a radial chirp reaching 0.5 cycles per pixel in the corners, 6000 x 4000, JPEG quality 95 without chroma subsampling) was generated ad hoc for the crop draft's Fit aliasing measurement and never kept, so it has no hash. A generator that gives it one is the first thing the minification task adds; until then every cell over it is a gap, not a pass.", "description": "A high-frequency probe for minification and resampling.", "dimensions": [6000, 4000]},
+    {"id": "presence-fixture", "kind": "generated-jpeg", "path": "fixtures/generated/presence.jpg", "generator": "cargo xtask generate-fixtures", "dimensions": [1440, 960], "sha256": "2491b2d01219c933fed72ea6754876412f4a0774dda21fb51e491d0041429638", "description": "The Presence scenario's own fixture: a smooth gradient, a hard step edge, a low-amplitude checker and a flat grey, one in each quadrant."},
+    {"id": "raw-z6", "kind": "raw", "manifest_id": "nikon-z6", "dimensions": [4024, 6048], "sha256": "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb", "description": "The owner's Nikon Z 6 NEF, resolved through the private RAW manifest."},
+    {"id": "raw-x100vi", "kind": "raw", "manifest_id": "fujifilm-x100vi", "dimensions": [7728, 5152], "sha256": "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246", "description": "The owner's Fujifilm X100VI RAF, resolved through the private RAW manifest."},
+    {"id": "raw-air2s", "kind": "raw", "manifest_id": "dji-air2s", "dimensions": [5464, 3640], "sha256": "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d", "description": "The supplied DJI Air 2S (FC3411) DNG, resolved through the private RAW manifest."}
+  ],
+  "recipes": [
+    {
+      "id": "basic-full-jpeg",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "A full Basic layer: every field of Basic, White balance included, away from zero.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0, "temperature": 20.0, "tint": -10.0}}}
+      ]
+    },
+    {
+      "id": "basic-full-raw",
+      "family": "basic",
+      "class": "pointwise",
+      "description": "A full Basic layer without Temperature and Tint, which a RAW photograph's own development owns (a RAW white balance draft is a separate approximation, measured in the baseline).",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0}}}
+      ]
+    },
+    {
+      "id": "tone-curve",
+      "family": "tone-curve",
+      "class": "pointwise",
+      "description": "The Tone curve study's moderate S-curve, a real pointwise colour operation.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}}
+      ]
+    },
+    {
+      "id": "mixer",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "The colour mixer with a hue, a saturation and a luminance move across several ranges.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-mixer", "params": {"red-hue": 30, "orange-saturation": -40, "green-saturation": 40, "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25}}}
+      ]
+    },
+    {
+      "id": "vignette",
+      "family": "vignette",
+      "class": "pointwise",
+      "description": "A darkening post-crop vignette with a rounded shape and a long feather.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -60, "midpoint": 40, "roundness": 20, "feather": 60}}}
+      ]
+    },
+    {
+      "id": "mask-linear",
+      "family": "mask-linear",
+      "class": "pointwise",
+      "description": "A linear gradient mask carrying a masked Basic layer.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-linear", "params": {"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-radial",
+      "family": "mask-radial",
+      "class": "pointwise",
+      "description": "A rotated, feathered radial mask carrying a masked Basic layer.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-brush",
+      "family": "mask-brush",
+      "class": "pointwise",
+      "description": "A feathered two-point brush stroke carrying a masked Basic layer.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.add-stroke", "params": {"points": [[0.2, 0.4], [0.5, 0.6], [0.8, 0.4]], "size": 0.08, "feather": 50.0, "flow": 100.0, "erase": false}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-luminance-range",
+      "family": "mask-luminance-range",
+      "class": "pointwise",
+      "description": "A luminance range mask over the middle of the tonal range, carrying a masked Basic layer.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-luminance-range", "params": {"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-colour-range",
+      "family": "mask-colour-range",
+      "class": "pointwise",
+      "description": "A colour range mask from two source-independent samples, linear mid-grey and a warm tone, carrying a masked Basic layer. A source with no pixel near either sample reports the mask as an empty cell, not as a pass.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-colour-range", "params": {"refine": 50.0}}},
+        {"api": {"method": "mask.add-colour-range-sample", "params": {"mask": {"name": "Mask 1"}, "component": {"name": "Colour range 1"}, "r": 0.18, "g": 0.18, "b": 0.18}}},
+        {"api": {"method": "mask.add-colour-range-sample", "params": {"mask": {"name": "Mask 1"}, "component": {"name": "Colour range 1"}, "r": 0.45, "g": 0.2, "b": 0.12}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "mask-composed",
+      "family": "mask-composed",
+      "class": "pointwise",
+      "description": "A linear mask with a radial component subtracted, carrying a masked Basic layer: the component algebra.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-linear", "params": {"x0": 0.5, "y0": 0.2, "x1": 0.5, "y1": 0.8}}},
+        {"api": {"method": "mask.add-radial", "params": {"mask": {"name": "Mask 1"}, "mode": "subtract", "x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"mask": {"name": "Mask 1"}, "exposure": 0.8, "contrast": 20.0, "vibrance": 30.0}}}
+      ]
+    },
+    {
+      "id": "crop-straightened",
+      "family": "crop",
+      "class": "pointwise",
+      "description": "A straightened 16:9 crop under a Basic edit.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "16:9", "angle": 7.0}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
+      "id": "perspective-warp",
+      "family": "lens-perspective",
+      "class": "pointwise",
+      "description": "A Perspective warp under a Basic edit, on sources that carry no lens profile.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
+      "id": "lens-perspective-warp",
+      "family": "lens-perspective",
+      "class": "pointwise",
+      "description": "A RAW photograph's own lens profile (applied as its first-open entry) with a Perspective warp, under a Basic edit.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}},
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0}}}
+      ]
+    },
+    {
+      "id": "presence-texture",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": 100}}}
+      ]
+    },
+    {
+      "id": "presence-clarity",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence clarity +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"clarity": 100}}}
+      ]
+    },
+    {
+      "id": "presence-dehaze",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence dehaze +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"dehaze": 100}}}
+      ]
+    },
+    {
+      "id": "presence-texture-clarity",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture +100, clarity +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": 100, "clarity": 100}}}
+      ]
+    },
+    {
+      "id": "presence-all",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture +100, clarity +100, dehaze +100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": 100, "clarity": 100, "dehaze": 100}}}
+      ]
+    },
+    {
+      "id": "presence-negative",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence texture -100, clarity -100, dehaze -100.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"texture": -100, "clarity": -100, "dehaze": -100}}}
+      ]
+    },
+    {
+      "id": "presence-all-masked",
+      "family": "presence",
+      "class": "spatial",
+      "description": "All three Presence fields at +100 through a radial mask.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "texture": 100, "clarity": 100, "dehaze": 100}}}
+      ]
+    },
+    {
+      "id": "detail-moderate",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the study's moderate parameter set (fixtures/detail/corpus.json).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
+      ]
+    },
+    {
+      "id": "detail-noise-stress",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the study's noise-stress parameter set (fixtures/detail/corpus.json).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-detail", "params": {"luminance": 100, "colour": 100, "luminance-detail": 0, "colour-detail": 0}}}
+      ]
+    },
+    {
+      "id": "detail-sharpen-stress",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the study's sharpen-stress parameter set (fixtures/detail/corpus.json).",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-detail", "params": {"sharpening": 150, "radius": 3, "sharpen-detail": 100, "sharpen-masking": 0}}}
+      ]
+    },
+    {
+      "id": "detail-moderate-masked",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the moderate parameter set through a radial mask.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-detail", "params": {"mask": {"name": "Mask 1"}, "luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
+      ]
+    }
+  ]
+}
