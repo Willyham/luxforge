@@ -219,7 +219,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             script::Step::Preview(script::PreviewStep::Current),
         )
         .fit(),
-        Step::new("detail-undo", script::Step::call("edit.undo", json!({})))
+        Step::new("detail-undo", script::Step::call("history.undo", json!({})))
             .commits(1)
             .payload(DETAIL_EFFECT, global_detail())
             .same_layer(DETAIL_EFFECT, "detail-global"),
