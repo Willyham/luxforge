@@ -34,13 +34,7 @@ pub(super) fn probe(
         label: "the generated folder".into(),
         folder: context.folder_10k.clone(),
     };
-    measure(root, context, &source, memory).map_err(|error| {
-        format!(
-            "The grid probe ({}): {error}",
-            context.scratch.join("grid").display()
-        )
-        .into()
-    })
+    measure(root, context, &source, memory)
 }
 
 fn measure(

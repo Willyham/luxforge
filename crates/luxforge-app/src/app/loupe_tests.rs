@@ -914,3 +914,167 @@ fn loupe_strip_over_photographs_reads_and_draws_their_grid_tiers_on_a_real_owner
     assert_eq!(editor.select.loupe.frames.summary()["handles"], 0);
     finish(editor, catalog);
 }
+
+/// The editor viewing one event of `count` Nikon singles a minute apart, the grid at its top with
+/// the rows near the screen read: past [`ROW_BLOCK`](crate::state::select::ROW_BLOCK) frames, the
+/// frames further down are in blocks the rows window has not read.
+fn viewing_singles(count: u32) -> (Editor, PathBuf) {
+    use crate::app::select_owner_tests::{file, seeded_with, selecting_over, z8};
+    let files: Vec<_> = (0..count)
+        .map(|at| {
+            let when = format!("2026:09:12 {:02}:{:02}:00", 8 + at / 60, at % 60);
+            file(&format!("DSC_{at:04}.NEF"), &when, z8(), 250.0, 0.0)
+        })
+        .collect();
+    let (mut editor, catalog) = selecting_over(seeded_with(&files));
+    let Some(SourcePress::View(source)) = editor.workspace.select.sources.months[0].rows[0]
+        .press
+        .clone()
+    else {
+        panic!("an event row views its event");
+    };
+    let _ = editor.update(Message::Select(SelectMessage::Source(source)));
+    let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
+        1000.0, 700.0,
+    ))));
+    evaluate(&mut editor);
+    read_rows(&mut editor);
+    assert_eq!(
+        editor.select.state.summary.as_ref().map(|view| view.count),
+        Some(count)
+    );
+    (editor, catalog)
+}
+
+/// Make `position` the active frame by a press on its cell, as the evidence's `click` step does,
+/// without scrolling the grid to it: the grid then shows another part of the view, as it does when
+/// a person has scrolled away from the active frame.
+fn press_away(editor: &mut Editor, position: u32) {
+    use luxforge_ui::{GridPress, PressModifiers};
+    let layout = &editor.select.layout;
+    let cell = layout.cell(layout.cell_of_item(position).expect("a cell"));
+    let scroll = editor.select.scroll;
+    let _ = editor.update(Message::Select(SelectMessage::Press(GridPress {
+        cell: cell.cell,
+        item: cell.item,
+        span: cell.span,
+        modifiers: PressModifiers::default(),
+        double: false,
+    })));
+    assert_eq!(active(editor), Some(position));
+    assert_eq!(editor.select.scroll, scroll, "the press does not scroll");
+}
+
+/// The loupe opened on an active frame whose block of rows the grid's rows window does not hold —
+/// the stall the catalog measurement's `focus-raw` probe hit at the trip's 201st frame — reads that
+/// block, shows the frame and settles on what its preview read answers, against a real owner: the
+/// grid under the loupe follows the active frame, so its rows window holds the rows the loupe
+/// names, and the grid shows the active frame when the loupe closes.
+#[test]
+fn the_loupe_opened_on_a_frame_outside_the_rows_window_reads_its_row_and_settles() {
+    use crate::state::select::ROW_BLOCK;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let (mut editor, catalog) = viewing_singles(ROW_BLOCK + 50);
+    let position = ROW_BLOCK + 10;
+    assert!(editor.select.state.rows.row(0).is_some());
+    assert!(
+        editor.select.state.rows.row(position).is_none(),
+        "only the rows near the grid's top are read"
+    );
+    press_away(&mut editor, position);
+    send(&mut editor, LoupeMessage::Open);
+    assert!(editor.loupe_open());
+    assert_eq!(
+        editor
+            .select
+            .state
+            .rows
+            .in_flight()
+            .map(|request| request.from),
+        Some(ROW_BLOCK),
+        "the active frame's block is asked for"
+    );
+    read_rows(&mut editor);
+    assert!(editor.select.state.rows.row(position).is_some());
+    let model = &editor.workspace.select.loupe;
+    let frame = model.frame.clone().expect("the active frame, its row read");
+    assert_eq!(frame.position, position);
+    assert_eq!(frame.name, format!("DSC_{position:04}.NEF"));
+    // The frames the loupe now wants, read as its tasks would: the seeded files are not on disk,
+    // so the owner answers each with what it can, and the loupe has nothing more to wait for.
+    let woke = Arc::new(AtomicBool::new(false));
+    let flag = woke.clone();
+    editor.owner.watch_previews(
+        editor.client,
+        Arc::new(move || flag.store(true, Ordering::Release)),
+    );
+    let wants = editor.loupe_wants();
+    assert_eq!(wants[0].slot.item, frame.item);
+    editor.select.loupe.frames = LoupeFrames::default();
+    let mut batch = editor.select.loupe.frames.want(wants.clone());
+    luxforge_testbase::wait_until("the loupe's frames answered", || {
+        while let Some(sent) = batch.take() {
+            let answers = loupe_frames::read(&editor.owner, editor.client, sent);
+            batch = editor.select.loupe.frames.answered(answers);
+        }
+        batch = editor
+            .select
+            .loupe
+            .frames
+            .woken(woke.swap(false, Ordering::AcqRel));
+        batch.is_none() && editor.select.loupe.frames.settled(&wants)
+    });
+    send(&mut editor, LoupeMessage::Pointer(None));
+    assert!(editor.loupe_settled(), "{}", editor.loupe_summary());
+    let frame = editor.workspace.select.loupe.frame.clone().unwrap();
+    assert!(
+        frame.picture.is_some() || frame.note.is_some(),
+        "the frame draws its preview or says why it has none: {frame:?}"
+    );
+    // Back to the grid, which shows the active frame.
+    send(&mut editor, LoupeMessage::Close);
+    let layout = &editor.select.layout;
+    let cell = layout.cell_of_item(position).unwrap();
+    assert!(
+        layout
+            .visible_cells(editor.select.scroll, editor.select.viewport.height, 0.0)
+            .contains(&cell)
+    );
+    finish(editor, catalog);
+}
+
+/// A block of rows the owner refuses is not asked for again until the view is evaluated again: a
+/// loupe open on a frame of it says the frame is unavailable and has nothing more to wait for.
+#[test]
+fn the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
+    use crate::state::select::ROW_BLOCK;
+    let (mut editor, catalog) = viewing_singles(ROW_BLOCK + 50);
+    let position = ROW_BLOCK + 10;
+    press_away(&mut editor, position);
+    send(&mut editor, LoupeMessage::Open);
+    let request = editor
+        .select
+        .state
+        .rows
+        .in_flight()
+        .expect("its block asked for");
+    let _ = editor.update(Message::Select(SelectMessage::Rows {
+        revision: request.revision,
+        from: request.from,
+        result: Err("the index is unavailable".into()),
+    }));
+    assert!(editor.select.state.rows.in_flight().is_none());
+    assert!(editor.select.state.rows.row(position).is_none());
+    assert!(editor.loupe_settled());
+    assert!(
+        editor.select_reads_quiet(),
+        "nothing asked for is still wanted"
+    );
+    let model = &editor.workspace.select.loupe;
+    assert!(model.frame.is_none());
+    assert_eq!(model.info.source, "This frame's row could not be read");
+    finish(editor, catalog);
+}
