@@ -137,8 +137,57 @@ pub(crate) mod testing {
         enabled: true,
     };
 
+    /// A test program that ships disabled, so the plan's handling of a disabled program is tested
+    /// whatever the shipped programs' qualification: the test exposure's arithmetic.
+    pub(crate) static DISABLED: GpuProgram = GpuProgram {
+        entry: "lf_test_disabled",
+        source: "fn lf_test_disabled(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) \
+                 -> vec3<f32> {\n    return rgb * lf_f32(words);\n}\n",
+        kind: GpuProgramKind::Colour,
+        words: 1,
+        enabled: false,
+    };
+
     /// Every test-only program, for the WGSL validation.
-    pub(crate) static PROGRAMS: &[&GpuProgram] = &[&EXPOSURE, &POSITIONAL, &RAMP];
+    pub(crate) static PROGRAMS: &[&GpuProgram] = &[&EXPOSURE, &POSITIONAL, &RAMP, &DISABLED];
+
+    /// The values of the constant `name` that `program` declares, as `naga` evaluates its WGSL
+    /// under the convention's prelude: a scalar, a vector or an array of `f32`, flattened in order.
+    /// A program that restates a CPU unit's constants is held to the `f32` values that unit holds
+    /// through this.
+    pub(crate) fn wgsl_constant(program: &GpuProgram, name: &str) -> Vec<f32> {
+        use naga::{Expression, Handle, Literal, Module};
+        fn flatten(module: &Module, expression: Handle<Expression>, out: &mut Vec<f32>) {
+            match &module.global_expressions[expression] {
+                Expression::Literal(Literal::F32(value)) => out.push(*value),
+                Expression::Compose { components, .. } => {
+                    for component in components {
+                        flatten(module, *component, out);
+                    }
+                }
+                Expression::Splat { size, value } => {
+                    for _ in 0..*size as usize {
+                        flatten(module, *value, out);
+                    }
+                }
+                Expression::Constant(constant) => {
+                    flatten(module, module.constants[*constant].init, out);
+                }
+                other => panic!("a constant of f32 values, not {other:?}"),
+            }
+        }
+        let source = format!("{}\n{}", super::super::wgsl_tests::PRELUDE, program.source);
+        let module = naga::front::wgsl::parse_str(&source)
+            .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
+        let (_, constant) = module
+            .constants
+            .iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("{} declares no constant {name}", program.entry));
+        let mut values = Vec::new();
+        flatten(&module, constant.init, &mut values);
+        values
+    }
 
     /// Two units that describe themselves identically produce identical descriptions, and every
     /// description carries the words its program declares. A unit with no description is allowed

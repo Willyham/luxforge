@@ -26,6 +26,11 @@ serde_json.workspace = true
 [dev-dependencies]
 # An independent JPEG decoder for the export tests.
 image = { workspace = true, features = ["jpeg"] }
+# The independent sRGB reference and preview-difference measure the GPU programs are qualified by.
+luxforge-reference = { path = "../luxforge-reference" }
+# The photo surface with its qualification readback, for the GPU programs' readback tests and the
+# corpus harness only (luxforge-ui's `qualification`).
+luxforge-ui = { path = "../luxforge-ui", features = ["qualification"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
 # The core with the disk flush skipped, for this crate's tests only (luxforge-core's

@@ -531,7 +531,10 @@ fn preview_wait(error: &luxforge_core::Error) -> Result<PreviewWait, String> {
 /// desktop decides that when the answer arrives, from the session generation and the asset
 /// revision the answer carries beside the job ([`super::Editor`]'s `superseded`), and the preview
 /// queue's own generation keeps an older frame from following a newer one on screen.
-fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<PreviewJob, String> {
+pub(crate) fn ready_preview_job(
+    owner: &OwnerHandle,
+    request: PreviewRequest,
+) -> Result<PreviewJob, String> {
     let client = request.client;
     loop {
         let error = match plan_preview(owner, request.clone()) {

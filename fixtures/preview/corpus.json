@@ -66,6 +66,32 @@
       ]
     },
     {
+      "id": "colour-stack-jpeg",
+      "family": "colour-stack",
+      "class": "pointwise",
+      "description": "The four colour recipes above in one stack: a full Basic layer, the Tone curve's S-curve, the mixer and the vignette.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0, "temperature": 20.0, "tint": -10.0}}},
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
+        {"api": {"method": "edit.set-mixer", "params": {"red-hue": 30, "orange-saturation": -40, "green-saturation": 40, "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25}}},
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -60, "midpoint": 40, "roundness": 20, "feather": 60}}}
+      ]
+    },
+    {
+      "id": "colour-stack-raw",
+      "family": "colour-stack",
+      "class": "pointwise",
+      "description": "The four colour recipes above in one stack on a RAW photograph, its Basic layer without Temperature and Tint, which the development owns.",
+      "sources": ["raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-basic", "params": {"exposure": 0.5, "contrast": 25.0, "highlights": -30.0, "shadows": 30.0, "whites": -15.0, "blacks": 15.0, "vibrance": 30.0, "saturation": 15.0}}},
+        {"api": {"method": "edit.set-curve", "params": {"luminance": [[0.0, 0.0], [0.25, 0.2], [0.75, 0.8], [1.0, 1.0]]}}},
+        {"api": {"method": "edit.set-mixer", "params": {"red-hue": 30, "orange-saturation": -40, "green-saturation": 40, "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25}}},
+        {"api": {"method": "edit.set-vignette", "params": {"amount": -60, "midpoint": 40, "roundness": 20, "feather": 60}}}
+      ]
+    },
+    {
       "id": "mask-linear",
       "family": "mask-linear",
       "class": "pointwise",
