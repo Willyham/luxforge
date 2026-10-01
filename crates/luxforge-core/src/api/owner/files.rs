@@ -106,6 +106,8 @@ pub(super) struct FilesLane {
     notified: bool,
     #[cfg(test)]
     hold: Option<Arc<luxforge_testbase::Gate>>,
+    #[cfg(test)]
+    hold_reads: Option<Arc<luxforge_testbase::Gate>>,
     /// The path of every header read the lane has taken in.
     #[cfg(test)]
     reads: Arc<std::sync::Mutex<Vec<PathBuf>>>,
@@ -159,6 +161,10 @@ pub(super) enum FilesMessage {
     /// Hold every listing at each folder while the gate is shut, from the lane's next start.
     #[cfg(test)]
     Hold(Arc<luxforge_testbase::Gate>),
+    /// Hold every header read before it is read while the gate is shut, until its work is
+    /// cancelled, from the lane's next start.
+    #[cfg(test)]
+    HoldReads(Arc<luxforge_testbase::Gate>),
     /// Bound listings by these limits, from the lane's next start.
     #[cfg(test)]
     Limits(WalkLimits),
@@ -187,6 +193,8 @@ impl FilesLane {
             notified: false,
             #[cfg(test)]
             hold: None,
+            #[cfg(test)]
+            hold_reads: None,
             #[cfg(test)]
             reads: Arc::default(),
         }
@@ -490,6 +498,8 @@ fn ensure_lane(owner: &mut Owner) -> Result<(), Error> {
         #[cfg(test)]
         hold: files.hold.clone(),
         #[cfg(test)]
+        hold_reads: files.hold_reads.clone(),
+        #[cfg(test)]
         reads: files.reads.clone(),
     })?;
     files.lane = Some(lane);
@@ -621,6 +631,8 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         }
         #[cfg(test)]
         FilesMessage::Hold(gate) => owner.catalog.files.hold = Some(gate),
+        #[cfg(test)]
+        FilesMessage::HoldReads(gate) => owner.catalog.files.hold_reads = Some(gate),
         #[cfg(test)]
         FilesMessage::Limits(limits) => owner.catalog.files.limits = limits,
         #[cfg(test)]

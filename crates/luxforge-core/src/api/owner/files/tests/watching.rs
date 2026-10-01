@@ -681,6 +681,91 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
     assert!(root(&fixture).0.listed_ms > listed, "listed again");
 }
 
+/// A change whose header read the catalog's close interrupts records no cursor past it: the read is
+/// dropped unwritten, so the cursor the change came with is not kept, and the change is caught up
+/// from the cursor kept before it as the catalog next opens.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
+    let mut fixture = Fixture::new("watch-stop-mid-unit");
+    let photos = fixture.dir.join("photos");
+    let staging = fixture.dir.join("staging");
+    let camera = camera_jpeg();
+    for name in ["a.jpg", "sub/b.jpg"] {
+        put(&photos.join(name), &camera);
+    }
+    let cursor = |fixture: &Fixture| {
+        database::root_cursor(
+            &database::connect_at(&fixture.index_dir()).unwrap(),
+            &photos,
+        )
+        .unwrap()
+    };
+    // Every listing waits at each folder while `listings` is shut, and every header read before
+    // it is read while `headers` is shut, until the close cancels it.
+    let (listings, headers) = (Arc::new(Gate::new()), Arc::new(Gate::new()));
+    let beyond = {
+        let owner = fixture.owner();
+        let client = owner.register();
+        tell(owner, FilesMessage::Hold(listings.clone()));
+        tell(owner, FilesMessage::HoldReads(headers.clone()));
+        add_watched(owner, client, &photos, "add");
+        let kept = wait_for("the root's cursor to be kept", || cursor(&fixture));
+        // A cursor past every event there is, so a cursor recorded from the unit is told apart.
+        let beyond = luxforge_watch::Resume {
+            event_id: u64::MAX / 2,
+            ..kept
+        };
+        // The unit begins with a listing of a subtree, held, so the change joins it.
+        listings.shut();
+        let reached = listings.reached();
+        tell(
+            owner,
+            FilesMessage::Inject(WatchEvent::Rescan {
+                root: 1,
+                subtree: photos.join("sub"),
+                reason: RescanReason::Dropped,
+            }),
+        );
+        listings.wait_reached(reached + 1, "the subtree's listing");
+        headers.shut();
+        let reached = headers.reached();
+        arrive(&staging, &photos.join("new.jpg"), &camera);
+        tell(
+            owner,
+            FilesMessage::Inject(WatchEvent::Changed {
+                root: 1,
+                paths: vec![photos.join("new.jpg")],
+                cursor: Some(beyond),
+            }),
+        );
+        // The owner hands the lane an injected event as it takes the message, so once it has
+        // answered a later one the change waits in the lane's channel behind the held listing.
+        reads(owner, &photos);
+        listings.open();
+        headers.wait_reached(reached + 1, "the new file's header read");
+        beyond
+    };
+    // The catalog closes with the read unwritten.
+    fixture.stop();
+    headers.open();
+    let kept = cursor(&fixture).expect("the cursor kept before the change");
+    assert_ne!(kept, beyond, "no cursor past the read the close dropped");
+    assert!(
+        !read_rows(&fixture, &photos).contains_key(&photos.join("new.jpg")),
+        "its header was never written"
+    );
+    fixture.start();
+    wait_for(
+        "the interrupted change to be caught up as the catalog opens",
+        || {
+            read_rows(&fixture, &photos)
+                .contains_key(&photos.join("new.jpg"))
+                .then_some(())
+        },
+    );
+}
+
 /// A volume the watcher reports mounted is surveyed, and listed when it is a card; one taken out
 /// is gone from `card.list` at once, its roots offline, and an indexed folder on it no longer
 /// watched.
