@@ -293,7 +293,8 @@
         "At draft begin the preview worker renders the boundary (the input of the earliest layer the draft changes) at proxy scale in content space; a JPEG drag with no earlier layer uses the proxy source itself. The surface uploads it once as rgba16float and holds it for the open draft; it is keyed by source, development, prefix identity, scale and window and released when the draft ends or the key changes. On RAW the boundary is a new frame built through the windowed planner.",
         "Until the boundary is ready, ticks take today's CPU path. Once it is, a tick is the synchronous draft update, whose answer carries the plan's uniforms, followed by evaluation and drawing in the surface's next prepare; no proxy job or upload is made for that tick. How the plan reaches the desktop (typed owner reply or another in-process channel) is chosen here; it is preview state, not an API result.",
         "Colour and mask programs run in content space, the geometry tail by bilinear sampling through the matrix or coordinate grid, then finish programs, clipping marks and output encoding, in that order.",
-        "Brush painting and gradient moves at Fit take the same path."
+        "Brush painting and gradient moves at Fit take the same path.",
+        "Pipelines never compile on the UI thread. A pipeline is keyed by its program sequence (each step's kind, entry and source), never by image, size or uniform values, so it compiles at most once per sequence per process. Compilation runs on a background thread with a device clone; a tick whose sequence is still compiling takes the CPU path with a 'compiling' reason, as a tick before its boundary is ready does. The likely sequences are warmed when the stack changes (planning is O(layers)), not when a drag begins. Because Basic and other modules compile only their non-neutral units, the GPU plan gives the drafted layer a shape that does not change as a value leaves or returns to neutral (neutral units as identity uniforms), so a gesture never meets a new sequence mid-drag. Measure the compile cost on the M4 first; if the number of distinct sequences in ordinary editing still causes misses, one pipeline per pass kind with the unit order as data (one compile at launch) is the alternative, at the cost of per-pixel branching."
       ],
       "context_links": [
         {
@@ -327,7 +328,8 @@
         "A GPU-eligible Fit drag makes one boundary job at draft begin and no preview job per tick; each tick's GPU frame is drawn in the update that handled the input, correlated in evidence by draft revision.",
         "Fit frames of every pointwise corpus recipe, including a straightened crop and a lens and perspective warp, meet the pointwise limits against the CPU proxy render.",
         "The boundary is released at draft end, commit and cancel, and on a key change; the budget's in-use figure proves it.",
-        "Ineligible stacks take the CPU path with their reason, and a gesture begun before its boundary is ready shows CPU frames until it is."
+        "Ineligible stacks take the CPU path with their reason, and a gesture begun before its boundary is ready shows CPU frames until it is.",
+        "No pipeline is compiled on the UI thread; a first-seen sequence takes the CPU path with its reason until its background compile completes, and a drag that moves a unit off neutral draws every tick after the first GPU frame from one sequence. The compile cost per sequence on the M4 is recorded."
       ],
       "test_strategy": {
         "approach": "mixed",
