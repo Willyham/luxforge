@@ -5,9 +5,9 @@
 //! --assets 1`, seed 1) into `generated/`, and asks the core for its own answers over a pristine
 //! copy before the editor touches it: the folder read by the index lane and viewed as the desktop
 //! first views it, and its rows. From them and the images' manifest it chooses a burst of at least
-//! three frames and a bracket from metadata. It then imports two of the folder's other images into
-//! the catalog as developed photographs (`catalog.import`), whose originals are real, so a catalog
-//! view has photographs to show. The editor then opens the catalog with nothing open.
+//! three frames and a bracket from metadata. It then reads the folder into the catalog's own index
+//! and develops two of its other images into the catalog (`pick.develop`, into the folders its
+//! plan proposes), whose originals are real, so a catalog view has photographs to show. The editor then opens the catalog with nothing open.
 //! Its frames, in [`plan`] order: `G` showing Select; the folder browsed; the burst's first frame
 //! clicked; `E` opening the loupe on it; `→` twice; `1` back to the moment's first frame; `↓` to
 //! the next moment and `↑` back; `Esc` to the grid; the bracket's first frame clicked and `E`;
@@ -44,8 +44,8 @@ pub const SCENARIO: &str = "loupe";
 pub const NOTE: &str = "The run first generates a folder of images and a catalog into \
     `generated/` with `cargo xtask generate-catalog --images 120 --assets 1 --seed 1`, asks the \
     core for the answers the frames are checked against over a pristine copy \
-    (`loupe-expected.json`), imports two of the folder's other images into the catalog with \
-    `catalog.import`, and launches the editor over that catalog with `--catalog`.";
+    (`loupe-expected.json`), develops two of the folder's other images into the catalog with \
+    `pick.develop`, and launches the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and images.
 pub const GENERATED: &str = "generated";
 /// The core's answers from before the run.
@@ -306,11 +306,30 @@ fn expect(generated: &Path) -> Result<Value> {
     answers
 }
 
-/// Import [`PHOTOGRAPHS`] of the folder's frames into the generated catalog as developed
-/// photographs through the core's own `catalog.import`: the last of the view outside the burst,
-/// the frame after it and the bracket, so the steps over files see nothing change. Answers their
-/// rows (`imported`), and the rows of All photographs as the desktop first views it (`view`): the
-/// catalog's photographs newest first, ungrouped, the generated catalog's own among them.
+/// A job read until it has ended, within two minutes.
+fn settle(owner: &OwnerHandle, client: ClientId, job: &Value) -> Result<Value> {
+    let job = json!({"job_id": job});
+    let started = std::time::Instant::now();
+    loop {
+        let read = ask(owner, client, "job.read", job.clone())?;
+        if !matches!(read["status"].as_str(), Some("queued" | "running")) {
+            return Ok(read);
+        }
+        ensure(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            format!("the setup's job did not end: {read}"),
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Develop [`PHOTOGRAPHS`] of the folder's frames into the generated catalog through the core's
+/// own `pick.develop` (into the folders its plan proposes): the last of the view outside the
+/// burst, the frame after it and the bracket, so the steps over files see nothing change. The
+/// folder is read into the catalog's own index first, since a file is developed from its row.
+/// Answers their rows (`imported`), and the rows of All photographs as the desktop first views it
+/// (`view`): the catalog's photographs newest first, ungrouped, the generated catalog's own among
+/// them.
 fn develop(generated: &Path, expected: &Value) -> Result<Value> {
     let span = |key: &str| {
         let start = expected[key]["start"].as_u64().unwrap_or(0);
@@ -337,32 +356,35 @@ fn develop(generated: &Path, expected: &Value) -> Result<Value> {
         .map_err(|error| format!("the core cannot open the generated catalog: {error}"))?;
     let client = owner.register();
     let view = (|| -> Result<Vec<Value>> {
-        for (at, row) in chosen.iter().enumerate() {
-            let started = ask(
-                &owner,
-                client,
-                "catalog.import",
-                json!({
-                    "path": row["path"],
-                    "mutation": {
-                        "request_id": format!("loupe-smoke-import-{at}"),
-                        "actor": "loupe-smoke",
-                    },
-                }),
-            )?;
-            let job = json!({"job_id": started["job_id"]});
-            let read = loop {
-                let read = ask(&owner, client, "job.read", job.clone())?;
-                if !matches!(read["status"].as_str(), Some("queued" | "running")) {
-                    break read;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            };
-            ensure(
-                read["status"] == "ready",
-                format!("the core could not import {}: {read}", row["file_name"]),
-            )?;
-        }
+        // A file is developed from its row of the catalog's own index, so the folder is read into
+        // it first, as the desktop's folder step would.
+        let started = ask(
+            &owner,
+            client,
+            "index.refresh",
+            json!({"source": {"kind": "folder", "path": generated.join("images")}}),
+        )?;
+        let read = settle(&owner, client, &started["job_id"])?;
+        ensure(
+            read["status"] == "ready",
+            format!("the core could not read the images: {read}"),
+        )?;
+        let paths: Vec<Value> = chosen.iter().map(|row| row["path"].clone()).collect();
+        let started = ask(
+            &owner,
+            client,
+            "pick.develop",
+            json!({
+                "targets": {"kind": "paths", "paths": paths},
+                "into": [],
+                "mutation": {"request_id": "loupe-smoke-develop", "actor": "loupe-smoke"},
+            }),
+        )?;
+        let developed = settle(&owner, client, &started["job_id"])?;
+        ensure(
+            developed["status"] == "ready",
+            format!("the core could not develop the photographs: {developed}"),
+        )?;
         let view = ask(
             &owner,
             client,
