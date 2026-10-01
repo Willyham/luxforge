@@ -234,14 +234,17 @@
     {
       "id": "TASK-005",
       "description": "Write the GPU programs for every mask kind and the masked blend, and qualify them against CPU coverage.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-004"
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "Linear and radial gradients from uniforms; brushes from a storage block holding the segment grid index, capsule distance, profile, per-stroke maximum, screen union across strokes and the optional colour limit in Oklab; luminance and colour ranges reading the operation's input pixel; the component algebra (add, subtract, intersect), inversion and amount; the linear-light blend against the operation's input.",
         "A painted stroke appends its new segments to the storage block each tick, within the existing stroke and segment limits.",
-        "CPU mask coverage stays bit-identical to its f64 reference; the GPU program is judged by the limits and the contour rule, not by bit identity."
+        "CPU mask coverage stays bit-identical to its f64 reference; the GPU program is judged by the limits and the contour rule, not by bit identity.",
+        "The coverage programs and the surface's masked step need only the measure, the GPU stage and the plan; the masked colour stacks it qualifies on the corpus need the enabled colour programs, so the task completes after them."
       ],
       "context_links": [
         {
@@ -285,15 +288,18 @@
     {
       "id": "TASK-006",
       "description": "Draw Fit drags and mask gestures on the GPU over a held input boundary, with no preview job per tick.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-005"
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "At draft begin the preview worker renders the boundary (the input of the earliest layer the draft changes) at proxy scale in content space; a JPEG drag with no earlier layer uses the proxy source itself. The surface uploads it once as rgba16float and holds it for the open draft; it is keyed by source, development, prefix identity, scale and window and released when the draft ends or the key changes. On RAW the boundary is a new frame built through the windowed planner.",
         "Until the boundary is ready, ticks take today's CPU path. Once it is, a tick is the synchronous draft update, whose answer carries the plan's uniforms, followed by evaluation and drawing in the surface's next prepare; no proxy job or upload is made for that tick. How the plan reaches the desktop (typed owner reply or another in-process channel) is chosen here; it is preview state, not an API result.",
         "Colour and mask programs run in content space, the geometry tail by bilinear sampling through the matrix or coordinate grid, then finish programs, clipping marks and output encoding, in that order.",
-        "Brush painting and gradient moves at Fit take the same path."
+        "Brush painting and gradient moves at Fit take the same path.",
+        "Pipelines never compile on the UI thread. A pipeline is keyed by its program sequence (each step's kind, entry and source), never by image, size or uniform values, so it compiles at most once per sequence per process. Compilation runs on a background thread with a device clone; a tick whose sequence is still compiling takes the CPU path with a 'compiling' reason, as a tick before its boundary is ready does. The likely sequences are warmed when the stack changes (planning is O(layers)), not when a drag begins. Because Basic and other modules compile only their non-neutral units, the GPU plan gives the drafted layer a shape that does not change as a value leaves or returns to neutral (neutral units as identity uniforms), so a gesture never meets a new sequence mid-drag. Measure the compile cost on the M4 first; if the number of distinct sequences in ordinary editing still causes misses, one pipeline per pass kind with the unit order as data (one compile at launch) is the alternative, at the cost of per-pixel branching.",
+        "The boundary job, the plan's delivery with the draft answer, background compilation and the boundary's lifetime need only the GPU stage and the plan; its acceptance runs every pointwise corpus recipe, masks and brush painting included, so the task completes after the colour and mask programs."
       ],
       "context_links": [
         {
@@ -327,7 +333,8 @@
         "A GPU-eligible Fit drag makes one boundary job at draft begin and no preview job per tick; each tick's GPU frame is drawn in the update that handled the input, correlated in evidence by draft revision.",
         "Fit frames of every pointwise corpus recipe, including a straightened crop and a lens and perspective warp, meet the pointwise limits against the CPU proxy render.",
         "The boundary is released at draft end, commit and cancel, and on a key change; the budget's in-use figure proves it.",
-        "Ineligible stacks take the CPU path with their reason, and a gesture begun before its boundary is ready shows CPU frames until it is."
+        "Ineligible stacks take the CPU path with their reason, and a gesture begun before its boundary is ready shows CPU frames until it is.",
+        "No pipeline is compiled on the UI thread; a first-seen sequence takes the CPU path with its reason until its background compile completes, and a drag that moves a unit off neutral draws every tick after the first GPU frame from one sequence. The compile cost per sequence on the M4 is recorded."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -458,14 +465,17 @@
     {
       "id": "TASK-009",
       "description": "Write the GPU programs for Presence (Texture, Clarity, Dehaze) and qualify them under the spatial limits at Fit and 100%.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-008"
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "Compute programs for separable box means and minima, the self-guided and guided filters, the 4x block reduction, bilinear upsampling and the soft clip, over the whole boundary (Fit) or region plus halo (100%), with no tile halo to recompute. Single-precision running sums are reseeded at intervals or replaced by a two-level prefix sum, whichever passes the limits more cheaply.",
         "Dehaze's atmospheric light comes from the estimate store when its key matches the boundary's content; otherwise the GPU estimates it from the stage it holds and the frame is labelled approximate, as the CPU proxy already is.",
-        "With Presence on the GPU, drags of layers before it (a Basic drag under Presence) and of Presence itself become GPU-eligible. Intermediate planes count against the GPU-preview budget; a stack that does not fit takes the CPU path."
+        "With Presence on the GPU, drags of layers before it (a Basic drag under Presence) and of Presence itself become GPU-eligible. Intermediate planes count against the GPU-preview budget; a stack that does not fit takes the CPU path.",
+        "The compute passes, the core's spatial program descriptions and the per-filter readback tests need only the measure, the GPU stage and the plan; its drags at Fit and 100% need the held boundary and the region boundary, so the task completes after the Fit and 100% drag paths."
       ],
       "context_links": [
         {
@@ -610,6 +620,7 @@
       "description": "Qualify GPU previews natively: the corpus error report, latency and memory on the M4, functional checks on Windows and Linux, and current documentation.",
       "status": "pending",
       "dependencies": [
+        "TASK-008",
         "TASK-010",
         "TASK-011"
       ],
@@ -675,47 +686,27 @@
     {
       "wave": 2,
       "task_ids": [
-        "TASK-004"
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-009"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-005"
+        "TASK-007",
+        "TASK-010"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-006"
-      ]
-    },
-    {
-      "wave": 5,
-      "task_ids": [
-        "TASK-007"
-      ]
-    },
-    {
-      "wave": 6,
-      "task_ids": [
         "TASK-008"
       ]
     },
     {
-      "wave": 7,
-      "task_ids": [
-        "TASK-009"
-      ]
-    },
-    {
-      "wave": 8,
-      "task_ids": [
-        "TASK-010"
-      ]
-    },
-    {
-      "wave": 9,
+      "wave": 5,
       "task_ids": [
         "TASK-012"
       ]
