@@ -1080,7 +1080,7 @@
       "acceptance_criteria": [
         "p50/p95 recorded on lens-24mp.jpg, lens-60mp.jpg and the nikon-z6 and dji-air2s RAW for query and selection, Perspective Fit drag and commit with a lens layer and a straightened crop, 100% pan and refinement, crop opening, mask paint, pick, export and cancellation, plus RSS, scratch high-water, GPU residency and idle.",
         "Serial versus pool break-even for warps at 0.025 to 2 MP is measured and PARALLEL_WARP_PIXELS is set to the measured value with its ratios documented.",
-        "All eight performance-checklist questions are answered with paths and evidence; regressions against current budgets are reported, not hidden.",
+        "Every performance-checklist question is answered with paths and evidence; regressions against current budgets are reported, not hidden.",
         "The full tier with the authentic manifest and background native M4 evidence passes once; any skipped platform or RAW check is recorded as incomplete. Then the completed plan is removed per repository convention."
       ],
       "test_strategy": {

@@ -122,8 +122,10 @@ still changes most downstream pixels. Cache mask coverage only while its depende
 brush/gradient geometry may be reusable, but luminance/colour ranges depend on the image at their
 binding stage. Dirty regions must grow through spatial halos and geometry; global estimates may
 invalidate the whole downstream stage. Key reuse by source development/view, relevant recipe
-prefix, mask dependencies, stage/region, scale and quality. Existing source/proxy and estimate
-caches are useful foundations, not a general cache of intermediate recipe results.
+prefix, mask dependencies, stage/region, scale and quality. The existing source, proxy and estimate
+caches are the foundation; the boundary cache is recorded as a proposal in
+[instant previews](../design/instant-preview.md#proposals-and-later-work), under
+[performance rule 14](../engineering/performance-rules.md#rules).
 
 ### Accelerate eligible adjustment chains on the existing GPU backend
 
