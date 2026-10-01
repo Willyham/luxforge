@@ -367,9 +367,9 @@ impl Before {
     }
 }
 
-/// The window, the display scale, the two side panels and the local pan: what, with the zoom,
-/// decides the view's geometry.
-pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, (f32, f32));
+/// The window, the display scale, the two side panels, the filmstrip and the local pan: what, with
+/// the zoom, decides the view's geometry.
+pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, bool, (f32, f32));
 
 /// One seam's work after every message, given the state before it.
 type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
@@ -884,14 +884,15 @@ impl Editor {
             || luxforge_ui::surface_retirement_pending()
     }
 
-    /// The window, the display scale, the side panels and the local pan, which with the zoom
-    /// decide the view's geometry: a change to any of them is view motion.
+    /// The window, the display scale, the side panels, the filmstrip and the local pan, which with
+    /// the zoom decide the view's geometry: a change to any of them is view motion.
     pub(crate) fn view_geometry(&self) -> ViewGeometry {
         (
             self.view_state.window,
             self.view_state.scale_factor,
             self.session.workspace.state_panel,
             self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
             self.view_state.local_pan,
         )
     }

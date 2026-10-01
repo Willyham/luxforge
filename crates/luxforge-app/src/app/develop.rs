@@ -1007,9 +1007,11 @@ impl Editor {
         self.develop.switch = None;
     }
 
-    /// The filmstrip is drawn under Develop's canvas.
+    /// Develop's layout has the filmstrip under its canvas: Develop has a set and the strip is not
+    /// collapsed. It is Develop's layout whichever workspace is on screen, so a frame rendered for
+    /// Develop while Select is shown is sized for the canvas it is drawn in.
     pub(crate) fn filmstrip_shown(&self) -> bool {
-        !self.select_shown() && self.develop.state.strip_shown()
+        self.develop.state.strip_shown()
     }
 
     /// The development set's photographs moved to since the key, followed through: the move ends
