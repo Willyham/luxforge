@@ -11,6 +11,12 @@ pub(crate) const SEGMENT_FIT: usize = 0;
 pub(crate) const SEGMENT_HUNDRED: usize = 1;
 pub(crate) const SEGMENT_PERCENT: usize = 2;
 
+/// The zoom stops that drop under the percentage segment, in percent: a quick way to the common
+/// magnifications, each one press away.
+pub(crate) const ZOOM_STOPS: [f32; 9] = [
+    50.0, 100.0, 150.0, 200.0, 300.0, 400.0, 600.0, 800.0, 1200.0,
+];
+
 /// Open's tooltip, with the shortcut the keymap gives it on this platform.
 pub(crate) const OPEN_TOOLTIP: &str = if cfg!(target_os = "macos") {
     "Open (\u{2318}O)"
@@ -32,7 +38,7 @@ pub(crate) const EXPORT_ITEMS: [(&str, bool); 2] = [
     ("Export JPEG, keep metadata\u{2026}", true),
 ];
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct TitleBarModel {
     pub(crate) developer: bool,
     pub(crate) can_open_gallery: bool,
@@ -49,6 +55,15 @@ pub(crate) struct TitleBarModel {
     pub(crate) zoom_percent: String,
     /// Which of [Fit, 100%, percentage] the session's zoom selects.
     pub(crate) zoom_segment: usize,
+    /// Where the zoom on screen sits among [`ZOOM_STOPS`], as a fractional stop index: `None`
+    /// outside them, or before a photograph gives Fit a size.
+    pub(crate) zoom_stop_position: Option<f32>,
+    /// The stop the session's percentage zoom is exactly; never one at Fit.
+    pub(crate) zoom_stop: Option<usize>,
+    /// The zoom on screen as a percentage, which a zoom step moves on from.
+    pub(crate) zoom_effective: Option<f32>,
+    /// Changes with each zoom step, showing the zoom stops for a moment.
+    pub(crate) zoom_reveal: u64,
     /// A photograph is open, so the view controls act on something.
     pub(crate) can_view: bool,
     pub(crate) can_toggle_panels: bool,
@@ -79,6 +94,34 @@ pub(crate) fn percent_text(value: f32) -> String {
     } else {
         let tenths = (value * 10.0).round() / 10.0;
         format!("{tenths}%")
+    }
+}
+
+/// Where `percent` sits among `stops` as a fractional stop index: whole on a stop, and between two
+/// stops as far along as its ratio to the lower one is of theirs, since the stops grow
+/// geometrically rather than evenly. `None` outside the stops.
+pub(crate) fn stop_position(stops: &[f32], percent: f32) -> Option<f32> {
+    let index = stops.iter().position(|stop| percent <= *stop)?;
+    if index == 0 {
+        return (percent == stops[0]).then_some(0.0);
+    }
+    let (low, high) = (stops[index - 1], stops[index]);
+    Some((index - 1) as f32 + (percent / low).ln() / (high / low).ln())
+}
+
+/// The stop a zoom step from `percent` goes to: the next stop above it for a positive `step`, the
+/// next below for a negative one, and `None` past the last stop that way. A percentage within a
+/// tenth of a percent of a stop counts as on it, so Fit landing a hair under 100% steps on to 150%.
+pub(crate) fn step_stop(stops: &[f32], percent: f32, step: i32) -> Option<f32> {
+    const NEAR: f32 = 1.001;
+    if step > 0 {
+        stops.iter().copied().find(|stop| *stop > percent * NEAR)
+    } else {
+        stops
+            .iter()
+            .rev()
+            .copied()
+            .find(|stop| *stop < percent / NEAR)
     }
 }
 
@@ -128,6 +171,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
     // An open draft refuses Undo and Redo, so neither is offered while it is.
     let navigable = editable && inputs.history_refusal.is_none();
     let zoom = &inputs.session.preview.view.zoom;
+    let effective = effective_percent(inputs);
     TitleBarModel {
         developer: inputs.developer,
         // The gallery's one refusal already waits for a request in flight.
@@ -144,7 +188,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         identity: identity(inputs),
         zoom_text: inputs.view_state.zoom.clone(),
         zoom_editing: inputs.view_state.zoom_editing && interacting,
-        zoom_percent: effective_percent(inputs)
+        zoom_percent: effective
             .map(percent_text)
             .unwrap_or_else(|| "%".to_owned()),
         zoom_segment: match zoom {
@@ -152,6 +196,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
             Zoom::Percent { value } if *value == 100.0 => SEGMENT_HUNDRED,
             Zoom::Percent { .. } => SEGMENT_PERCENT,
         },
+        zoom_stop_position: effective.and_then(|percent| stop_position(&ZOOM_STOPS, percent)),
+        zoom_stop: match zoom {
+            Zoom::Fit => None,
+            Zoom::Percent { value } => ZOOM_STOPS.iter().position(|stop| stop == value),
+        },
+        zoom_effective: effective,
+        zoom_reveal: inputs.view_state.zoom_reveal,
         can_view: inputs.document.state.is_some() && interacting,
         can_toggle_panels: interacting,
         can_open: inputs.can_open,
@@ -193,5 +244,41 @@ mod tests {
         assert_eq!(percent_text(9.96), "10%");
         assert_eq!(percent_text(6.25), "6.3%");
         assert_eq!(percent_text(5.0), "5%");
+    }
+
+    /// A stop's own percentage is its index; one between two stops is as far along as its ratio
+    /// to the lower is of theirs, so their geometric mean is halfway; one outside is nowhere.
+    #[test]
+    fn a_percentage_sits_among_the_zoom_stops_geometrically() {
+        for (index, stop) in ZOOM_STOPS.iter().enumerate() {
+            let position = stop_position(&ZOOM_STOPS, *stop).unwrap();
+            assert!(
+                (position - index as f32).abs() < 1e-5,
+                "{stop}% at {position}"
+            );
+        }
+        let between = stop_position(&ZOOM_STOPS, (200.0f32 * 300.0).sqrt()).unwrap();
+        assert!((between - 3.5).abs() < 1e-5, "{between}");
+        let fit = stop_position(&ZOOM_STOPS, 62.0).unwrap();
+        assert!(fit > 0.0 && fit < 1.0, "{fit}");
+        assert_eq!(stop_position(&ZOOM_STOPS, 18.0), None);
+        assert_eq!(stop_position(&ZOOM_STOPS, 1600.0), None);
+    }
+
+    /// A step goes to the next stop each way, from a stop, from between two, from outside them
+    /// all, and from a hair under a stop; past the last stop either way it goes nowhere.
+    #[test]
+    fn a_zoom_step_goes_to_the_next_stop_each_way() {
+        assert_eq!(step_stop(&ZOOM_STOPS, 100.0, 1), Some(150.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 100.0, -1), Some(50.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 250.0, 1), Some(300.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 250.0, -1), Some(200.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 18.0, 1), Some(50.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 1600.0, -1), Some(1200.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 99.95, 1), Some(150.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 100.05, -1), Some(50.0));
+        assert_eq!(step_stop(&ZOOM_STOPS, 1200.0, 1), None);
+        assert_eq!(step_stop(&ZOOM_STOPS, 50.0, -1), None);
+        assert_eq!(step_stop(&ZOOM_STOPS, 18.0, -1), None);
     }
 }
