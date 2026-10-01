@@ -169,6 +169,90 @@ fn catalog_measure_scales_parse() {
     assert_eq!(Scale::Full.sizes().trip, 1_000);
     assert_eq!(Scale::Full.sizes().tree, 200_000);
     assert!(Scale::Tiny.sizes().tree < Scale::Full.sizes().tree);
+    assert_eq!(
+        (Scale::Full.sizes().links, Scale::Tiny.sizes().links),
+        (200_000, 2_000)
+    );
+}
+
+/// A tree of hard links holds exactly its count of links, in folders of its size, each a link to
+/// its source in turn: every link of one source shares its file identity, and each source counts
+/// its links.
+#[test]
+fn catalog_measure_hard_link_tree_shares_each_sources_identity() {
+    let dir = tempdir();
+    let sources: Vec<PathBuf> = (0..3)
+        .map(|index| {
+            let path = dir.path().join(format!("source-{index}.jpg"));
+            fs::write(&path, format!("image {index}")).unwrap();
+            path
+        })
+        .collect();
+    let tree = data::write_links(&sources, &dir.path().join("links"), 7, 3)
+        .unwrap()
+        .unwrap();
+    assert_eq!((tree.files, tree.folders, tree.sources), (7, 3, 3));
+    let written = files(&tree.dir).unwrap();
+    assert_eq!(written.len(), 7);
+    assert_eq!(
+        written[0].strip_prefix(&tree.dir).unwrap(),
+        Path::new("0000/IMG_000001.jpg")
+    );
+    assert_eq!(
+        written[6].strip_prefix(&tree.dir).unwrap(),
+        Path::new("0002/IMG_000007.jpg")
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let identity = |path: &Path| {
+            let metadata = fs::metadata(path).unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        for (index, path) in written.iter().enumerate() {
+            assert_eq!(identity(path), identity(&sources[index % 3]), "{index}");
+        }
+        let identities: std::collections::HashSet<(u64, u64)> =
+            written.iter().map(|path| identity(path)).collect();
+        assert_eq!(identities.len(), 3, "three identities among seven links");
+        // Each source counts itself and its links: 0, 3 and 6 link the first.
+        let links: Vec<u64> = sources
+            .iter()
+            .map(|path| fs::metadata(path).unwrap().nlink())
+            .collect();
+        assert_eq!(links, [4, 3, 3]);
+    }
+}
+
+/// A file system that refuses a hard link skips the tree with its reason, and the hard-link rows
+/// keep their metric names and say so, as every row the design asks for is listed.
+#[test]
+fn catalog_measure_refused_hard_links_skip_their_rows_with_the_reason() {
+    let dir = tempdir();
+    let missing = [dir.path().join("missing.jpg")];
+    let reason = data::write_links(&missing, &dir.path().join("links"), 2, 1)
+        .unwrap()
+        .unwrap_err();
+    assert!(reason.contains("refused a hard link"), "{reason}");
+    let rows: Vec<Value> = measures::first_index_hard_links_skipped(&reason)
+        .into_iter()
+        .map(Row::value)
+        .collect();
+    let metrics: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["metric"].as_str())
+        .collect();
+    assert_eq!(
+        metrics,
+        [
+            "first_index_hard_links.duration",
+            "first_index_hard_links.owner_round_trip"
+        ]
+    );
+    assert!(rows.iter().all(|row| row["status"] == report::SKIPPED
+        && row["reason"] == reason.as_str()
+        && row["target"].is_string()
+        && row["scope"].as_str().unwrap().contains("hard links")));
 }
 
 /// A tree holds exactly its count of copies, in folders of its size, each source in turn and each

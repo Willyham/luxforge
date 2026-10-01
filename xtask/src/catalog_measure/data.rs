@@ -7,10 +7,12 @@
 //! - **A tree** of [`Sizes::tree`] files in folders of [`TREE_FOLDER`], and **a folder** of
 //!   [`Sizes::folder`] files, each file a copy of one of the generated JPEGs in turn. A copy is
 //!   made with `std::fs::copy`, which on macOS clones the file (APFS copy-on-write: no data blocks
-//!   are written) and elsewhere copies it. Copies rather than hard links: every link of one file
-//!   shares its file identity, and the index checks each new file against every row with its
-//!   identity for a move, so a tree of 200,000 links to a few hundred files would time that check
-//!   over thousands of rows a file rather than a first index.
+//!   are written) and elsewhere copies it, so every file has its own file identity, as a
+//!   photographer's folder does.
+//! - **A tree of hard links** ([`Sizes::links`] of them, in folders of [`TREE_FOLDER`]) to the
+//!   generated JPEGs in turn, so every JPEG's links (400 at the design's scale) share its file
+//!   identity, which the index looks up for every new file to tell a moved file from a new one.
+//!   Skipped, with the reason, where the file system refuses hard links.
 //! - **A RAW trip** of [`Sizes::trip`] frames, when the corpus is present: the corpus's RAW files
 //!   in name order, [`BURST`] consecutive frames from each in turn, copied as above under a
 //!   camera's names (`DSC_0001.NEF`, keeping each source's extension), and each copy's EXIF dates
@@ -27,6 +29,8 @@ pub struct Sizes {
     pub trip: usize,
     /// Files in the tree indexed for the first time.
     pub tree: usize,
+    /// Hard links in the tree of links indexed for the first time.
+    pub links: usize,
     /// Files in the folder the desktop probes browse.
     pub folder: usize,
     /// Files in the generated index.
@@ -39,11 +43,12 @@ pub struct Sizes {
     pub picks: usize,
 }
 
-/// The design's scale: a 1,000-frame trip, a 200,000-file first index, a 10,000-file folder and
-/// index, and a 100,000-photograph catalog.
+/// The design's scale: a 1,000-frame trip, a 200,000-file first index, of copies and of hard
+/// links, a 10,000-file folder and index, and a 100,000-photograph catalog.
 pub const FULL: Sizes = Sizes {
     trip: 1_000,
     tree: 200_000,
+    links: 200_000,
     folder: 10_000,
     files: 10_000,
     assets: 100_000,
@@ -55,6 +60,7 @@ pub const FULL: Sizes = Sizes {
 pub const TINY: Sizes = Sizes {
     trip: 50,
     tree: 2_000,
+    links: 2_000,
     folder: 500,
     files: 500,
     assets: 1_000,
@@ -81,12 +87,14 @@ const RAW_EXTENSIONS: &[&str] = &[
     "mrw", "nef", "nrw", "orf", "pef", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw", "x3f",
 ];
 
-/// A folder of copies.
+/// A folder of copies, or of hard links.
 #[derive(Debug)]
 pub struct Tree {
     pub dir: PathBuf,
     pub files: usize,
     pub folders: usize,
+    /// The files its files are copies of, or links to, each in turn.
+    pub sources: usize,
 }
 
 /// One frame of the trip.
@@ -118,6 +126,8 @@ pub struct DataSet {
     /// The generated JPEGs' folder.
     pub images: PathBuf,
     pub tree: Tree,
+    /// The tree of hard links, or why there is none.
+    pub links: std::result::Result<Tree, String>,
     pub folder: Tree,
     /// The trip, or why there is none.
     pub trip: std::result::Result<Trip, String>,
@@ -152,6 +162,9 @@ impl DataSet {
         let tree = write_tree(&jpegs, &scratch.join("tree"), sizes.tree, Some(TREE_FOLDER))?;
         let folder = write_tree(&jpegs, &scratch.join("folder"), sizes.folder, None)?;
         let copies_s = started.elapsed().as_secs_f64();
+        let started = std::time::Instant::now();
+        let links = write_links(&jpegs, &scratch.join("links"), sizes.links, TREE_FOLDER)?;
+        let links_s = started.elapsed().as_secs_f64();
         let started = std::time::Instant::now();
         let (trip, corpus) = match corpus(corpus_dir) {
             Ok(sources) => {
@@ -189,6 +202,19 @@ impl DataSet {
                 "folder": {"path": folder.dir, "files": folder.files},
                 "seconds": copies_s,
             },
+            "links": match &links {
+                Ok(links) => json!({
+                    "method": "std::fs::hard_link to the generated JPEGs in turn: every link of one JPEG shares its file identity",
+                    "path": links.dir,
+                    "links": links.files,
+                    "folders": links.folders,
+                    "per_folder": TREE_FOLDER,
+                    "sources": links.sources,
+                    "links_per_source": links.files.div_ceil(links.sources),
+                    "seconds": links_s,
+                }),
+                Err(reason) => json!({"skipped": reason}),
+            },
             "trip": match &trip {
                 Ok(trip) => json!({
                     "path": trip.dir,
@@ -211,6 +237,7 @@ impl DataSet {
             catalog: generated.join(generate_catalog::CATALOG),
             images,
             tree,
+            links,
             folder,
             trip,
             corpus,
@@ -311,7 +338,49 @@ pub fn write_tree(
         dir: dir.into(),
         files,
         folders,
+        sources: sources.len(),
     })
+}
+
+/// `links` hard links to `sources` in turn under `dir`, `IMG_000001.<ext>` on, in folders of
+/// `per_folder` (`0000/`, `0001/`, …): every link of one source shares its file identity. `Ok(Err)`
+/// with the reason when the file system refuses a hard link.
+pub fn write_links(
+    sources: &[PathBuf],
+    dir: &Path,
+    links: usize,
+    per_folder: usize,
+) -> Result<std::result::Result<Tree, String>> {
+    ensure(!sources.is_empty(), "A tree needs at least one source file")?;
+    ensure(per_folder != 0, "A folder holds at least one file")?;
+    fs::create_dir_all(dir)?;
+    let mut folders = 0;
+    for index in 0..links {
+        let folder = dir.join(format!("{:04}", index / per_folder));
+        if index % per_folder == 0 {
+            fs::create_dir_all(&folder)?;
+            folders += 1;
+        }
+        let source = &sources[index % sources.len()];
+        let extension = source
+            .extension()
+            .map(|extension| extension.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let link = folder.join(format!("IMG_{:06}.{extension}", index + 1));
+        if let Err(error) = fs::hard_link(source, &link) {
+            return Ok(Err(format!(
+                "the file system refused a hard link from {} to {}: {error}",
+                link.display(),
+                source.display()
+            )));
+        }
+    }
+    Ok(Ok(Tree {
+        dir: dir.into(),
+        files: links,
+        folders,
+        sources: sources.len(),
+    }))
 }
 
 /// A trip frame's name: `DSC_0001.<the source's extension>` for the first frame.
