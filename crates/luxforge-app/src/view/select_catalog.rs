@@ -17,8 +17,8 @@ use crate::{
         select::{ChipModel, SelectMenu, SourceRow},
         select_catalog::{
             ActionChoice, CatalogAction, CatalogFilterBar, CatalogIcon, CatalogMenu, CatalogRow,
-            CatalogSources, ConditionGlyph, FacetColumnModel, NOT_YET_EXPORT, NOT_YET_PRESETS,
-            NamingTarget, OrganizeChip, PhotoInfo,
+            CatalogSheet, CatalogSources, ConditionGlyph, FacetColumnModel, NamingTarget,
+            OrganizeChip, PhotoInfo, SheetKind,
         },
     },
     view::select::{band, chip, preview_placeholder, source},
@@ -33,12 +33,13 @@ use iced::{
     },
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, ChipEnd, FacetColumnModel as ColumnWidget, FacetRowModel,
-    FilterChipModel, Icon, LabelledButtonModel, MenuEntry, MenuItem, OrganizeChipModel,
-    OrganizeTone, SearchFieldModel, SourceCount, SourceHeadingModel, SourceRowModel, caption,
-    facet_column, filter_action, filter_bar as bar, filter_chip, labelled_button, menu_list,
-    metadata_browser, organize_chip, organize_chips, popover, search_field, source_heading,
-    source_month, source_row, theme, with_tooltip,
+    ButtonSize, ButtonTone, CatalogSheetModel, ChipEnd, FacetColumnModel as ColumnWidget,
+    FacetRowModel, FilterChipModel, Icon, LabelledButtonModel, MenuEntry, MenuItem,
+    OrganizeChipModel, OrganizeTone, SearchFieldModel, SheetSectionModel, SourceCount,
+    SourceHeadingModel, SourceRowModel, caption, catalog_sheet, facet_column, filter_action,
+    filter_bar as bar, filter_chip, labelled_button, menu_list, metadata_browser, organize_chip,
+    organize_chips, popover, search_field, source_heading, source_month, source_row, text_button,
+    theme, with_tooltip,
 };
 
 /// The catalog's search field, as a focus target for `Cmd+F`.
@@ -298,6 +299,21 @@ pub(crate) fn filter_bar<'a>(
         None => save,
     };
     let save = popover(save, model.naming.as_deref().map(smart_naming), close());
+    // Over Removed, Empty Removed… takes Save as smart collection…'s place.
+    let save = match &model.empty {
+        Some(empty) => {
+            let button = filter_action(
+                "Empty Removed\u{2026}",
+                Some(Icon::Trash),
+                empty.refused.is_none().then(|| act(CatalogAction::Empty)),
+            );
+            match &empty.refused {
+                Some(reason) => with_tooltip(button, reason.clone(), tooltip::Position::Bottom),
+                None => button,
+            }
+        }
+        None => save,
+    };
     let count = text(model.count.clone())
         .size(theme::SIZE_CAPTION)
         .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into()))
@@ -446,6 +462,20 @@ pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<
         content = content.push(band("Metadata", &model.metadata));
     }
     content = content.push(develop(model));
+    if let Some(removal) = &model.removal {
+        content = content.push(labelled_button(
+            &LabelledButtonModel {
+                label: removal.label.clone(),
+                icon: Some(Icon::Trash),
+                key_hint: None,
+                tone: ButtonTone::Control,
+                size: ButtonSize::Regular,
+                fill: true,
+                enabled: true,
+            },
+            Some(act(removal.action.clone())),
+        ));
+    }
     scrollable(
         container(content)
             .padding([theme::PANEL_PADDING_Y, theme::PANEL_PADDING_X])
@@ -558,47 +588,144 @@ fn organize(model: &PhotoInfo) -> Element<'_, Message> {
     band.width(Length::Fill).into()
 }
 
-/// The Develop band: whether the photographs are edited, and Apply preset… and Export…, which wait
-/// for batch jobs.
+/// The Develop band: whether the photographs are edited; Apply preset…, with its menu of the
+/// library's presets, and Export…, each refused with why while a batch runs or over Removed; the
+/// running batch's progress or the last one's sentence with its Report; and the board's note that
+/// each photograph gets its own history entry.
 fn develop(model: &PhotoInfo) -> Element<'_, Message> {
-    let waiting = |label: String, reason: &str, glyph: Option<Icon>| {
-        with_tooltip(
-            labelled_button(
-                &LabelledButtonModel {
-                    label,
-                    icon: glyph,
-                    key_hint: None,
-                    tone: ButtonTone::Control,
-                    size: ButtonSize::Regular,
-                    fill: true,
-                    enabled: false,
-                },
-                None,
-            ),
-            reason.to_owned(),
-            tooltip::Position::Top,
-        )
+    let band_model = &model.batch;
+    let button = |label: String, glyph: Option<Icon>, press: Message| {
+        let enabled = band_model.refused.is_none();
+        let drawn = labelled_button(
+            &LabelledButtonModel {
+                label,
+                icon: glyph,
+                key_hint: None,
+                tone: ButtonTone::Control,
+                size: ButtonSize::Regular,
+                fill: true,
+                enabled,
+            },
+            enabled.then_some(press),
+        );
+        match &band_model.refused {
+            Some(reason) => with_tooltip(drawn, reason.clone(), tooltip::Position::Top),
+            None => drawn,
+        }
     };
+    let open = band_model.presets.is_some();
+    let apply = popover(
+        button(
+            "Apply preset\u{2026}".into(),
+            None,
+            act(CatalogAction::Menu((!open).then_some(CatalogMenu::Presets))),
+        ),
+        band_model.presets.as_deref().map(menu),
+        close(),
+    );
+    let export = button(
+        band_model.export.clone(),
+        Some(Icon::Export),
+        act(CatalogAction::Export),
+    );
     let mut content = Column::new().spacing(theme::SPACING);
     content = content.push(band("Develop", &model.develop));
+    content = content.push(
+        row![
+            container(apply).width(Length::Fill),
+            container(export).width(Length::Fill),
+        ]
+        .spacing(theme::SPACING),
+    );
+    if let Some(line) = &band_model.line {
+        let mut said = row![
+            text(line.clone())
+                .size(theme::SIZE_CAPTION)
+                .line_height(LineHeight::Relative(1.4))
+                .color(theme::TEXT_SECONDARY)
+                .width(Length::Fill)
+        ]
+        .spacing(theme::SPACING)
+        .align_y(Alignment::Center);
+        if band_model.report {
+            said = said.push(text_button(
+                "Report",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(act(CatalogAction::Report(true))),
+            ));
+        }
+        content = content.push(said);
+    }
     content
         .push(
-            row![
-                container(waiting(
-                    "Apply preset\u{2026}".into(),
-                    NOT_YET_PRESETS,
-                    None
-                ))
-                .width(Length::Fill),
-                container(waiting(
-                    model.export.clone(),
-                    NOT_YET_EXPORT,
-                    Some(Icon::Export)
-                ))
-                .width(Length::Fill),
-            ]
-            .spacing(theme::SPACING),
+            text(band_model.note)
+                .size(theme::SIZE_CAPTION)
+                .line_height(LineHeight::Relative(1.4))
+                .color(theme::TEXT_TERTIARY),
         )
         .width(Length::Fill)
         .into()
+}
+
+// -- Sheet -----------------------------------------------------------------------------------------
+
+/// The sheet over the centre: Remove from catalog…'s or Empty Removed…'s confirmation, or the last
+/// batch's report. Cancel, Close, Escape or a press outside it puts it away.
+pub(crate) fn sheet(model: &CatalogSheet) -> Element<'_, Message> {
+    let drawn = CatalogSheetModel {
+        icon: match model.kind {
+            SheetKind::Remove | SheetKind::Empty => Icon::Trash,
+            SheetKind::Preset => Icon::Sliders,
+            SheetKind::Export => Icon::Export,
+        },
+        title: model.title.clone(),
+        note: model.note.clone(),
+        sections: model
+            .sections
+            .iter()
+            .map(|section| SheetSectionModel {
+                heading: section.heading.clone(),
+                rows: section.rows.clone(),
+                more: section.more.clone(),
+            })
+            .collect(),
+        dismiss: if model.confirm.is_some() {
+            "Cancel".into()
+        } else {
+            "Close".into()
+        },
+        confirm: model.confirm.clone(),
+    };
+    let sheet = catalog_sheet(
+        &drawn,
+        close(),
+        model
+            .confirm
+            .is_some()
+            .then(|| act(CatalogAction::Confirmed)),
+    );
+    // A press beside the sheet puts it away, as a menu's does, and never reaches the grid under it.
+    iced::widget::stack![
+        mouse_area(
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+        )
+        .on_press(close()),
+        container(sheet).center(Length::Fill),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+/// The status bar's Report, beside the last batch's sentence.
+pub(crate) fn status_report<'a>() -> Element<'a, Message> {
+    text_button(
+        "Report",
+        ButtonTone::Quiet,
+        ButtonSize::Compact,
+        Some(act(CatalogAction::Report(true))),
+    )
 }

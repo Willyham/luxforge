@@ -1462,7 +1462,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
-    let catalog = super::select_catalog::derive(state, &selection);
+    let catalog = super::select_catalog::derive(state, &selection, status);
     let mut model = SelectModel {
         shown: state.shown,
         title: SelectTitle {

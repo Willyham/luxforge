@@ -3,9 +3,13 @@
 //! photograph's catalog folder and collections, a partial one saying how many of the selection it
 //! holds, and the chip-shaped actions beside them (`Move to…`, `+ Add to…`).
 //!
+//! And the sheet over Select's centre that confirms Remove from catalog… and Empty Removed…, or
+//! lists a batch's report: what it did, and every photograph it left out with why.
+//!
 //! Every piece draws what it is given and sends the caller's messages. A chip's menu is the
 //! caller's, dropped under it through [`crate::popover`].
 
+use super::button_row::{ButtonSize, ButtonTone, text_button};
 use super::icon_button::{Icon, icon};
 use super::text::{caption, section_label};
 use super::truncated_text::truncated_text;
@@ -211,6 +215,148 @@ pub fn organize_chips<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
         .into()
 }
 
+/// A report sheet's width: wide enough for a file name beside why it was left out.
+const REPORT_WIDTH: f32 = 480.0;
+/// The tallest a report's list grows before it scrolls.
+const REPORT_LIST_HEIGHT: f32 = 320.0;
+/// The width of a report row's name.
+const REPORT_NAME_WIDTH: f32 = 170.0;
+
+/// One section of a sheet's list: its heading, a row per photograph (its name and what happened to
+/// it) and how many more there are.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SheetSectionModel {
+    pub heading: String,
+    pub rows: Vec<(String, String)>,
+    pub more: Option<String>,
+}
+
+/// Plain data for a sheet over Select's centre: a confirmation (Remove from catalog…, Empty
+/// Removed…) or a batch's report, drawn on the progress sheet's surface.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogSheetModel {
+    pub icon: Icon,
+    pub title: String,
+    pub note: String,
+    pub sections: Vec<SheetSectionModel>,
+    /// The button that puts the sheet away: Cancel, or Close for a report.
+    pub dismiss: String,
+    /// The confirming button's label; none for a report.
+    pub confirm: Option<String>,
+}
+
+/// Renders a sheet: its icon and title, its note, the sections' rows scrolling past
+/// [`REPORT_LIST_HEIGHT`], and its footer of Cancel (or Close) and the confirming button. A sheet
+/// with a list is [`REPORT_WIDTH`] wide, a confirmation the progress sheet's width.
+pub fn catalog_sheet<'a, M: Clone + 'a>(
+    model: &CatalogSheetModel,
+    on_dismiss: M,
+    on_confirm: Option<M>,
+) -> Element<'a, M> {
+    let mut body = column![
+        row![
+            icon(model.icon, theme::SHEET_ICON_SIZE, theme::TEXT_BRIGHT),
+            text(model.title.clone())
+                .size(theme::SIZE_TITLE)
+                .font(theme::FONT_SEMIBOLD)
+                .color(theme::TEXT_BRIGHT),
+        ]
+        .spacing(theme::SPACING)
+        .align_y(Alignment::Center),
+        text(model.note.clone())
+            .size(theme::SIZE_CAPTION)
+            .line_height(LineHeight::Relative(1.4))
+            .color(theme::TEXT_SECONDARY),
+    ]
+    .spacing(theme::SHEET_SPACING)
+    .width(Length::Fill);
+    if !model.sections.is_empty() {
+        let mut list = Column::new().spacing(theme::SHEET_SPACING);
+        for section in &model.sections {
+            let mut rows = Column::new()
+                .spacing(theme::SPACING / 2.0)
+                .push(section_label(section.heading.clone()));
+            for (name, detail) in &section.rows {
+                rows = rows.push(
+                    row![
+                        container(truncated_text(
+                            name.clone(),
+                            theme::SIZE_CAPTION,
+                            theme::FONT,
+                            theme::TEXT_LABEL,
+                        ))
+                        .width(Length::Fixed(REPORT_NAME_WIDTH)),
+                        text(detail.clone())
+                            .size(theme::SIZE_CAPTION)
+                            .line_height(LineHeight::Relative(1.3))
+                            .color(theme::TEXT_TERTIARY)
+                            .width(Length::Fill),
+                    ]
+                    .spacing(theme::SPACING)
+                    .align_y(Alignment::Start),
+                );
+            }
+            if let Some(more) = &section.more {
+                rows = rows.push(caption(more.clone()));
+            }
+            list = list.push(rows);
+        }
+        body = body.push(
+            container(scrollable(list).direction(theme::panel_scrollbar()))
+                .max_height(REPORT_LIST_HEIGHT),
+        );
+    }
+    let mut buttons = row![Space::new().width(Length::Fill)]
+        .spacing(theme::BUTTON_ROW_SPACING)
+        .align_y(Alignment::Center);
+    buttons = buttons.push(text_button(
+        &model.dismiss,
+        ButtonTone::Control,
+        ButtonSize::Regular,
+        Some(on_dismiss),
+    ));
+    if let Some(label) = &model.confirm {
+        buttons = buttons.push(text_button(
+            label,
+            ButtonTone::Control,
+            ButtonSize::Regular,
+            on_confirm,
+        ));
+    }
+    let footer = container(buttons)
+        .padding(theme::SHEET_FOOTER_PADDING)
+        .width(Length::Fill)
+        .style(|_: &Theme| {
+            // The sheet's lower corners, less its outline, so the footer's fill stays inside them.
+            let corner = theme::SHEET_RADIUS - theme::BORDER_WIDTH;
+            container::Style::default()
+                .background(theme::PANEL)
+                .border(iced::Border {
+                    radius: iced::border::bottom(corner),
+                    width: 0.0,
+                    color: iced::Color::TRANSPARENT,
+                })
+        });
+    let rule = container(Space::new())
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::BORDER_WIDTH))
+        .style(|_: &Theme| container::Style::default().background(theme::SHEET_FOOTER_RULE));
+    let width = if model.sections.is_empty() {
+        theme::SHEET_WIDTH
+    } else {
+        REPORT_WIDTH
+    };
+    container(column![
+        container(body).padding(theme::SHEET_PADDING),
+        rule,
+        footer
+    ])
+    .padding(Padding::new(theme::BORDER_WIDTH))
+    .width(Length::Fixed(width))
+    .style(theme::sheet_surface)
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +403,27 @@ mod tests {
             };
             let _: Element<'_, ()> = organize_chips(vec![organize_chip(&chip, Some(()))]);
         }
+        let confirm = CatalogSheetModel {
+            icon: Icon::Trash,
+            title: "Remove 5 photographs from the catalog?".into(),
+            note: "The files stay on disk.".into(),
+            sections: Vec::new(),
+            dismiss: "Cancel".into(),
+            confirm: Some("Remove 5".into()),
+        };
+        let _: Element<'_, u8> = catalog_sheet(&confirm, 0, Some(1));
+        let report = CatalogSheetModel {
+            icon: Icon::Export,
+            title: "Exported 4 of 5 photographs".into(),
+            note: "Into ~/Exports.".into(),
+            sections: vec![SheetSectionModel {
+                heading: "Left out \u{b7} 1".into(),
+                rows: vec![("DSC_0412.NEF".into(), "the original is missing".into())],
+                more: Some("and 3 more".into()),
+            }],
+            dismiss: "Close".into(),
+            confirm: None,
+        };
+        let _: Element<'_, u8> = catalog_sheet(&report, 0, None);
     }
 }
