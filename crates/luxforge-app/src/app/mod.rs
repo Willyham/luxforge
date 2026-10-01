@@ -43,6 +43,7 @@ mod export_tests;
 pub(crate) mod gesture;
 #[cfg(test)]
 mod gesture_tests;
+pub(crate) mod gpu_identity;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -412,7 +413,9 @@ impl Editor {
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
-            Evidence::new(dir, queue, std::mem::take(&mut config.script))
+            let mut evidence = Evidence::new(dir, queue, std::mem::take(&mut config.script));
+            evidence.gpu_identity = config.gpu_identity.then(Default::default);
+            evidence
         });
         let initial = config.files.pop_front();
         let mut editor = Self {
@@ -733,6 +736,12 @@ impl Editor {
             surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
+        surfaces.gpu = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.gpu_identity.as_ref())
+            .zip(surfaces.photo)
+            .and_then(|(hook, photo)| hook.plan_for(photo));
         surfaces
     }
 

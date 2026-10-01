@@ -34,4 +34,7 @@ pub(crate) enum EvidenceMessage {
     AgentAnswered(Result<Value, String>),
     /// The graphics backend, recorded with every captured frame.
     Info(iced::system::Information),
+    /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or
+    /// `None` when that frame could not be held; see `app/gpu_identity.rs`.
+    GpuBoundary(Option<luxforge_ui::photo_surface::GpuBoundary>),
 }

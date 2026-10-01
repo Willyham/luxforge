@@ -909,6 +909,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--disable-module\"",
             "\"--proof-endpoint\"",
             "\"--window-size\"",
+            "\"--evidence-gpu-identity\"",
             "spawn_editor",
             "editor_args",
         ],

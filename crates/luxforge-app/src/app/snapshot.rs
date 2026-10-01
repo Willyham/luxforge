@@ -313,6 +313,17 @@ impl Editor {
                     },
                 }))),
                 "drawn_clipping_version":gpu.drawn_clipping_version,
+                // The GPU stage, beside the photo-texture figures: which path drew the photograph,
+                // why a frame handed a GPU plan drew the CPU frame instead, the boundary the GPU
+                // output was drawn from, and the GPU-preview budget's own figures.
+                "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
+                "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
+                "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
+                "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
+                "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
+                "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
+                "gpu_preview_passes":gpu.gpu_preview_passes,
+                "gpu_identity":self.evidence.as_ref().is_some_and(|evidence| evidence.gpu_identity.is_some()),
             },
             "views": self.log.loop_timing.get().views,
         })
@@ -491,5 +502,27 @@ impl Editor {
                     "guide": model.guide,
                 })
             })
+    }
+}
+
+/// A GPU-stage fallback as evidence records it: its reason, and for the budget or the texture
+/// limit the figures that refused it.
+fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
+    use luxforge_ui::photo_surface::GpuFallback;
+    match fallback {
+        GpuFallback::BudgetExceeded {
+            requested,
+            in_use,
+            budget,
+        } => json!({"reason":fallback.as_str(),"requested_bytes":requested,
+            "in_use_bytes":in_use,"budget_bytes":budget}),
+        GpuFallback::TextureLimit {
+            width,
+            height,
+            limit,
+        } => json!({"reason":fallback.as_str(),"width":width,"height":height,"limit":limit}),
+        GpuFallback::NoAdapter | GpuFallback::DeviceLost | GpuFallback::PipelineFailed => {
+            json!({"reason":fallback.as_str()})
+        }
     }
 }
