@@ -27,7 +27,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("tone.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 9,
-    enabled: false,
+    enabled: true,
 };
 
 /// The curve domain's pivot: encoded mid-grey. See "Contrast" in the design doc.

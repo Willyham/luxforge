@@ -33,7 +33,7 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     source: include_str!("unit.wgsl"),
     kind: GpuProgramKind::Colour,
     words: 11,
-    enabled: false,
+    enabled: true,
 };
 
 /// The shape family the roundness selects, with everything that does not vary per pixel already
