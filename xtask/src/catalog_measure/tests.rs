@@ -191,7 +191,7 @@ fn catalog_measure_hard_link_tree_shares_each_sources_identity() {
     let tree = data::write_links(&sources, &dir.path().join("links"), 7, 3)
         .unwrap()
         .unwrap();
-    assert_eq!((tree.files, tree.folders), (7, 3));
+    assert_eq!((tree.files, tree.folders, tree.sources), (7, 3, 3));
     let written = files(&tree.dir).unwrap();
     assert_eq!(written.len(), 7);
     assert_eq!(

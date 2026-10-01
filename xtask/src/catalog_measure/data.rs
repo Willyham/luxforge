@@ -93,6 +93,8 @@ pub struct Tree {
     pub dir: PathBuf,
     pub files: usize,
     pub folders: usize,
+    /// The files its files are copies of, or links to, each in turn.
+    pub sources: usize,
 }
 
 /// One frame of the trip.
@@ -207,8 +209,8 @@ impl DataSet {
                     "links": links.files,
                     "folders": links.folders,
                     "per_folder": TREE_FOLDER,
-                    "sources": jpegs.len(),
-                    "links_per_source": links.files.div_ceil(jpegs.len()),
+                    "sources": links.sources,
+                    "links_per_source": links.files.div_ceil(links.sources),
                     "seconds": links_s,
                 }),
                 Err(reason) => json!({"skipped": reason}),
@@ -336,6 +338,7 @@ pub fn write_tree(
         dir: dir.into(),
         files,
         folders,
+        sources: sources.len(),
     })
 }
 
@@ -376,6 +379,7 @@ pub fn write_links(
         dir: dir.into(),
         files: links,
         folders,
+        sources: sources.len(),
     }))
 }
 
