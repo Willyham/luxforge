@@ -1582,17 +1582,17 @@ fn develop_picks_develops_the_owners_raw_files_that_then_open() {
 
 /// How long opening one new file takes through the catalog owner, end to end: the Develop of that
 /// one file, its preparation and its adoption, as `opening::open` and the desktop's open take
-/// them. The files are the RAWs the owner's manifest lists (`LUXFORGE_RAW_MANIFEST`, by default
-/// `~/projects/lightwell/private/raw-manifest.json`) and the photo-sized JPEG
-/// `LUXFORGE_OPEN_JPEG` names, each copied into a scratch folder first and only read there. Each
-/// is opened once untimed, then `LUXFORGE_OPEN_SAMPLES` times (7 by default), and sent back
-/// (`asset.send-back`) after every open, outside the clock, so each open brings a new photograph
-/// into a catalog and index already in use. A measurement, not a gate; the one-minute load
-/// average is read before the first open and after the last:
+/// them. The files are the RAWs the owner's private manifest `LUXFORGE_RAW_MANIFEST` lists and the
+/// photo-sized JPEG `LUXFORGE_OPEN_JPEG` names, each copied into a scratch folder first and only
+/// read there. Each is opened once untimed, then `LUXFORGE_OPEN_SAMPLES` times (7 by default), and
+/// sent back (`asset.send-back`) after every open, outside the clock, so each open brings a new
+/// photograph into a catalog and index already in use. A measurement, not a gate; the one-minute
+/// load average is read before the first open and after the last:
 ///
 /// ```text
-/// LUXFORGE_OPEN_JPEG=fixtures/generated/24mp.jpg cargo test --release --locked -p luxforge-core \
-///   --lib develop_picks_open_timing -- --ignored --nocapture
+/// LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+///   LUXFORGE_OPEN_JPEG=fixtures/generated/24mp.jpg cargo test --release --locked \
+///   -p luxforge-core --lib develop_picks_open_timing -- --ignored --nocapture
 /// ```
 #[test]
 #[ignore = "a measurement, not a gate; run alone in release"]
@@ -1610,14 +1610,8 @@ fn develop_picks_open_timing() {
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
             .unwrap_or_else(|| "unavailable".into())
     };
-    let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").map_or_else(
-        |_| {
-            PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join("projects/lightwell/private/raw-manifest.json")
-        },
-        PathBuf::from,
-    );
-    let listed: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").expect("LUXFORGE_RAW_MANIFEST");
+    let listed: Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
     let mut originals: Vec<PathBuf> = listed["sources"]
         .as_array()
         .unwrap()
