@@ -37,13 +37,13 @@ use iced::{
     widget::{Column, Space, column, container, mouse_area, row, scrollable, stack, text, tooltip},
 };
 use luxforge_ui::{
-    ButtonSize, ButtonTone, CellAvailability, CellView, ChipEnd, DevelopButtonModel,
-    FilterChipModel, FilterOption, FilterSegmentsModel, GridCell, GridLayout, Icon,
-    IconButtonModel, LabelledButtonModel, MenuEntry, MenuItem, SearchFieldModel, SelectStripModel,
-    SourceCount, SourceHeadingModel, SourceRowModel, Volume, WorkspaceTab, caption, develop_button,
-    filter_bar, filter_chip, filter_segments, header_icon_button, labelled_button, menu_list,
-    popover, search_field, select_strip, source_heading, source_month, source_row, theme,
-    thumbnail_grid, title_bar_icon_button, truncated_text, with_tooltip, workspace_switch,
+    ButtonSize, ButtonTone, CellAvailability, CellView, ChipEnd, FilterChipModel, FilterOption,
+    FilterSegmentsModel, GridCell, GridLayout, Icon, IconButtonModel, LabelledButtonModel,
+    MenuEntry, MenuItem, SearchFieldModel, SelectStripModel, SourceCount, SourceHeadingModel,
+    SourceRowModel, Volume, WorkspaceTab, caption, filter_bar, filter_chip, filter_segments,
+    header_icon_button, labelled_button, menu_list, popover, search_field, select_strip,
+    source_heading, source_month, source_row, theme, thumbnail_grid, title_bar_icon_button,
+    truncated_text, with_tooltip, workspace_switch,
 };
 
 /// The sources panel's search field, as a focus target.
@@ -53,7 +53,8 @@ pub(crate) const SOURCES_SCROLL: &str = "luxforge.select.sources";
 
 /// What is not built yet, as the controls waiting for it say on hover.
 const NOT_YET_FOLDERS: &str = "Add a folder\u{2026} comes with indexed folders (not yet available)";
-const NOT_YET_DEVELOP: &str = "Developing picks is not yet available";
+/// Develop N's tooltip, with its shortcut.
+const DEVELOP_TOOLTIP: &str = "Develop the picks in view (\u{2318}\u{21a9})";
 /// Why the strip's Loupe cannot be entered without a view.
 const NO_LOUPE: &str = "choose a source first";
 
@@ -101,7 +102,7 @@ pub(crate) fn switch<'a>(current: Shown) -> Element<'a, Message> {
 /// The whole Select screen: title bar, the middle row and the status bar.
 pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Message> {
     let select = &model.select;
-    let title = container(title_bar(&select.title))
+    let title = container(title_bar(&select.title, &model.develop))
         .width(Length::Fill)
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
         .style(theme::title_bar_surface);
@@ -136,6 +137,24 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
             .style(theme::panel_surface),
         );
     }
+    // Develop N's confirmation, under the button, over whatever lies below it.
+    let middle: Element<'a, Message> = match &model.develop.confirm {
+        Some(confirm) => stack![
+            middle,
+            container(crate::view::develop::confirmation(confirm))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_right(Length::Fill)
+                .padding(Padding {
+                    top: crate::view::develop::CONFIRM_TOP,
+                    right: crate::view::develop::CONFIRM_RIGHT,
+                    bottom: 0.0,
+                    left: 0.0,
+                }),
+        ]
+        .into(),
+        None => middle.into(),
+    };
     let status = container(status_bar(&select.status, &model.long_work))
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
         .padding([0.0, theme::TITLE_BAR_INSET])
@@ -155,7 +174,10 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
 
 /// The switch, the view's name and summary; Add a folder… (waiting for its lane), Undo and Redo of
 /// library changes, Develop N and the two panel toggles.
-fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
+fn title_bar<'a>(
+    model: &'a SelectTitle,
+    develop: &'a crate::state::develop::DevelopModel,
+) -> Element<'a, Message> {
     let identity = row![
         switch(Shown::Select),
         text(model.name.clone())
@@ -211,13 +233,8 @@ fn title_bar(model: &SelectTitle) -> Element<'_, Message> {
         )
     };
     let develop = with_tooltip(
-        develop_button(
-            &DevelopButtonModel::Ready {
-                picks: model.picks as usize,
-            },
-            None,
-        ),
-        NOT_YET_DEVELOP.into(),
+        crate::view::develop::develop_n(model.picks, develop),
+        DEVELOP_TOOLTIP.into(),
         tooltip::Position::Bottom,
     );
     let actions = row![

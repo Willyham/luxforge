@@ -85,7 +85,7 @@ impl Area {
 /// Where the loupe draws its photograph: Select's centre between the panels and the bars, less the
 /// info bar above and the strip and key hints below.
 pub(crate) fn frame_area(window: (f32, f32), sources_open: bool, info_open: bool) -> Area {
-    let [left, top, right, bottom] = canvas_logical(window, sources_open, info_open);
+    let [left, top, right, bottom] = canvas_logical(window, sources_open, info_open, false);
     let above = TOP_INSET + INFO_BAR_HEIGHT + BAR_GAP;
     let below = STRIP_GAP + STRIP_HEIGHT + HINTS_GAP + HINTS_HEIGHT + BOTTOM_INSET;
     Area {
@@ -127,7 +127,7 @@ pub(crate) fn compare_cells(area: Area, count: u32) -> Vec<Area> {
 
 /// How many strip frames fit across Select's centre between its chevrons.
 pub(crate) fn strip_capacity(window: (f32, f32), sources_open: bool, info_open: bool) -> u32 {
-    let [left, _, right, _] = canvas_logical(window, sources_open, info_open);
+    let [left, _, right, _] = canvas_logical(window, sources_open, info_open, false);
     let room = right - left - 2.0 * SIDE_INSET - 2.0 * (STRIP_CHEVRON + STRIP_SPACING);
     ((room + STRIP_SPACING) / (STRIP_FRAME_WIDTH + STRIP_SPACING))
         .floor()

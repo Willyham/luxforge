@@ -95,6 +95,8 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
                 inputs.view_state.window,
                 workspace.state_panel,
                 workspace.tools_panel,
+                inputs.develop.strip_shown()
+                    && inputs.select.shown == crate::state::select::Shown::Develop,
             );
             let (width, _) = histogram::displayed_size(
                 ZoomView::Fit,
@@ -111,6 +113,11 @@ pub(crate) fn effective_percent(inputs: &Inputs<'_>) -> Option<f32> {
 /// The dimensions and the source's format, as far as the core reports them. The core names the
 /// format of the source it decoded and no colour space, so none is shown.
 fn identity(inputs: &Inputs<'_>) -> Option<String> {
+    // A cached preview drawn while a photograph of the development set prepares is the preview's
+    // size, not the photograph's: nothing is said until its state is read.
+    if inputs.document.state.is_none() && inputs.develop.preview.is_some() {
+        return None;
+    }
     let (width, height) = inputs.dimensions?;
     let mut identity = format!("{width} \u{d7} {height}");
     if let Some(state) = inputs.document.state.as_ref() {
@@ -134,13 +141,19 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> TitleBarModel {
         can_open_gallery: inputs.developer
             && inputs.gallery_refusal.is_none()
             && !inputs.compare_held,
-        file_name: inputs.document.state.as_ref().and_then(|state| {
-            state
-                .asset
-                .locator
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        }),
+        // While a photograph of the development set is being switched to, its name.
+        file_name: inputs
+            .document
+            .state
+            .as_ref()
+            .and_then(|state| {
+                state
+                    .asset
+                    .locator
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .or_else(|| inputs.develop.switching.clone()),
         identity: identity(inputs),
         zoom_text: inputs.view_state.zoom.clone(),
         zoom_editing: inputs.view_state.zoom_editing && interacting,
