@@ -185,6 +185,9 @@ pub(crate) struct ViewState {
     pub(crate) zoom: String,
     /// The title bar's percentage segment has been opened for typing a zoom.
     pub(crate) zoom_editing: bool,
+    /// Counts the zoom steps taken from the keyboard; each one shows the zoom stops for a moment,
+    /// so the thumb is seen to move.
+    pub(crate) zoom_reveal: u64,
     pub(crate) menu: Option<MenuTarget>,
     /// The developer components gallery page shown instead of the workspace, or `None` for the
     /// editor. The owner does not hold it.
@@ -208,6 +211,7 @@ impl ViewState {
             scale_factor: 1.0,
             zoom: "100".into(),
             zoom_editing: false,
+            zoom_reveal: 0,
             menu: None,
             gallery: None,
             picker_open: false,
