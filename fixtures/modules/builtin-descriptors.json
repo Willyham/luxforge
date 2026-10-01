@@ -4248,7 +4248,7 @@
         "actions": [
           {
             "id": "select-lens-profile",
-            "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+            "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
             "parameters": [
               {
                 "default": null,
@@ -4311,8 +4311,7 @@
             "page": "page",
             "query": "lens-profiles",
             "shared": [
-              "focal",
-              "assume-uncorrected"
+              "focal"
             ],
             "text": "text"
           }
@@ -4333,7 +4332,7 @@
         "queries": [
           {
             "id": "lens-profiles",
-            "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+            "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
             "parameters": [
               {
                 "default": "",
@@ -5072,7 +5071,7 @@
       "edit.select-lens-profile": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+        "notes": "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
         "optional": {
           "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
           "focal": "a focal length supplied explicitly when EXIF has none"
@@ -8051,7 +8050,7 @@
       },
       "query.lens-profiles": {
         "mutates": false,
-        "notes": "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+        "notes": "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
         "optional": {
           "assume-uncorrected": "acknowledge that this selection assumes no existing distortion correction",
           "entry_id": "entry to ask about; default the session's selection",

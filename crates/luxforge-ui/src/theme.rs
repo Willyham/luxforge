@@ -130,6 +130,17 @@ pub const GUIDE: Color = Color {
     a: 0.30,
 };
 
+/// The track of the bar along the bottom of the photograph while a long render runs: dark enough
+/// to read over a bright image, translucent so the photograph still shows through it.
+pub const RENDER_BAR_TRACK: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.45,
+};
+/// That bar's thickness, a little heavier than a rail so it reads over a photograph.
+pub const RENDER_BAR_HEIGHT: f32 = 3.0;
+
 // -- Typeface -------------------------------------------------------------------------------
 
 /// The one family every piece of workspace text is set in: Inter, bundled so a real semibold

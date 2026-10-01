@@ -35,7 +35,7 @@ The plan runs on these; each is a proposal the owner can revise.
 | Question | Default | Alternative |
 | --- | --- | --- |
 | Board captions and notes | No new control vocabulary. "Judge fine detail at 100%" is the module hint; the sharpening ancillary fields use "Takes effect when Amount is above 0" in schema `notes`; noise-detail fields name their corresponding Luminance or Colour strength; Masking has no caption. The differences from the board are recorded as deviations | Add `NumberControl.caption` and a `Control::Note` to the host vocabulary |
-| Settled-Fit latency | With Detail active, settlement is dominated by full-resolution Detail: the settled Fit is expected about 0.5 s after quiet at 24 MP and about 2.5 s at 60 MP on the M4 (estimate). It is measured and reported, not a blocking gate | A full-resolution restoration frame cache (92–230 MiB JPEG, 275–689 MiB RAW), not planned |
+| Settled-Fit latency | With Detail active, settlement is dominated by full-resolution Detail: the settled Fit is expected about 0.5 s after quiet at 24 MP and about 2.5 s at 60 MP on the M4 (estimate). It is measured and reported, not a blocking gate; a settlement projected past a second shows its progress as a bar along the bottom of the photograph ([instant previews](instant-preview.md#progress-of-a-long-exact-phase)) | A full-resolution restoration frame cache (92–230 MiB JPEG, 275–689 MiB RAW), not planned |
 
 ## Placement and stage
 

@@ -2,14 +2,17 @@
 //!
 //! The widget classifies gestures and publishes them; it never applies a limit or edits a point.
 //! A left press is classified by Iced's [`Click`], as `double_click.rs` does: a single click
-//! on a point selects it and arms a drag, a double-click on a point asks to remove it, a
-//! double-click away from every point asks to add one, and a third click publishes nothing. An
-//! armed drag publishes no move until the pointer has left [`DRAG_SLOP`] of the press, so a click,
-//! or the first press of a double-click, never drafts a move. An add within [`CURVE_SNAP_RADIUS`]
-//! of the drawn curve lands on the nearest host-supplied sample.
+//! on a point selects it and arms a drag, a single click away from every point asks to add one, a
+//! double-click on a point asks to remove it, and a third click publishes nothing. The second
+//! press of a double-click whose first press asked to add publishes nothing, so a double-click on
+//! empty plot adds one point and never removes the point it just added. An armed drag publishes no
+//! move until the pointer has left [`DRAG_SLOP`] of the press, so a click, or the first press of a
+//! double-click, never drafts a move. An add within [`CURVE_SNAP_RADIUS`] of the drawn curve lands
+//! on the nearest host-supplied sample.
 //!
-//! Under the plot: the host's hint, when it gives one, then a Points disclosure row whose numeric
-//! point rows are drawn only while it is open.
+//! The plot is square and fills the width it is given up to [`PLOT_MAX_SIDE`], centred in any
+//! width beyond that. Under it: the host's hint, when it gives one, then a Points disclosure row
+//! whose numeric point rows are drawn only while it is open.
 
 use crate::{
     Icon, IconButtonModel, SegmentedModel, SubGroupHeaderModel, ValueEdit, icon_button, segmented,
@@ -28,7 +31,7 @@ use iced::{
     widget::{
         button,
         canvas::{self, Action, Event, Path, Stroke},
-        column, row, text,
+        column, container, row, text,
     },
 };
 use std::{cell::Cell, rc::Rc};
@@ -36,9 +39,11 @@ use std::{cell::Cell, rc::Rc};
 pub(crate) const POINT_HIT_RADIUS: f32 = 9.0;
 /// How far, in plot pixels, the pointer must move from a press on a point before a drag begins.
 const DRAG_SLOP: f32 = 3.0;
-/// How close, in plot pixels, a double-click must be to the drawn curve for the add to land on
-/// the nearest sample rather than at the pointer.
+/// How close, in plot pixels, a click must be to the drawn curve for the add to land on the
+/// nearest sample rather than at the pointer.
 const CURVE_SNAP_RADIUS: f32 = 4.0;
+/// The widest the square plot grows; a wider column centres it.
+pub(crate) const PLOT_MAX_SIDE: f32 = 320.0;
 
 /// Keep the cache across unrelated redraws; Iced's cache handles size changes itself.
 pub(crate) fn invalidate_on_version_change<K: Copy + PartialEq>(
@@ -116,18 +121,29 @@ fn snap_to_sampled(
     (line <= radius.max(0.0).powi(2)).then_some(nearest.1)
 }
 
-/// What a left press over the plot publishes, from Iced's classification of it and the point it
-/// hit. `None` publishes nothing.
+/// What a left press over the plot publishes, from Iced's classification of it, the point it hit
+/// and whether the press before it in the same run asked to add. `None` publishes nothing.
 fn press_event(
     kind: Kind,
     hit: Option<usize>,
+    after_add: bool,
     add: impl FnOnce() -> [f32; 2],
 ) -> Option<CurveEditorEvent> {
     match (kind, hit) {
         (Kind::Single, Some(index)) => Some(CurveEditorEvent::Select(index)),
-        (Kind::Single, None) | (Kind::Triple, _) => None,
-        (Kind::Double, Some(index)) => Some(CurveEditorEvent::Remove(index)),
-        (Kind::Double, None) => Some(CurveEditorEvent::Add(add())),
+        (Kind::Single, None) => Some(CurveEditorEvent::Add(add())),
+        // The point under a double-click's second press may be the one its first press added.
+        (Kind::Double, Some(index)) if !after_add => Some(CurveEditorEvent::Remove(index)),
+        (Kind::Double, _) | (Kind::Triple, _) => None,
+    }
+}
+
+/// The square plot's side in a column `available` pixels wide.
+fn plot_side(available: f32) -> f32 {
+    if available.is_finite() {
+        available.clamp(0.0, PLOT_MAX_SIDE)
+    } else {
+        PLOT_MAX_SIDE
     }
 }
 
@@ -241,10 +257,13 @@ pub fn curve_editor<'a, M: Clone + 'a>(
             move |index| callback(CurveEditorEvent::Channel(index)),
         ));
     }
-    body = body.push(FocusableCurveCanvas {
-        model: model.clone(),
-        on_event: on_event.clone(),
-    });
+    body = body.push(
+        container(FocusableCurveCanvas {
+            model: model.clone(),
+            on_event: on_event.clone(),
+        })
+        .center_x(Length::Fill),
+    );
     if let Some(hint) = &model.hint {
         body = body.push(
             text(hint.clone())
@@ -327,6 +346,8 @@ struct CurveState {
     dragging: bool,
     /// The last left press, which is all [`Click`] needs to classify the next one.
     last_click: Option<Click>,
+    /// That press asked to add a point.
+    last_added: bool,
     focused: bool,
     nudge_active: bool,
 }
@@ -379,20 +400,20 @@ impl<M: Clone> canvas::Program<M> for FocusableCurveCanvas<'_, M> {
                 state.disarm();
                 let size = bounds.size();
                 let hit = hit_test(&self.model.points, point, size, POINT_HIT_RADIUS);
-                let event = press_event(click.kind(), hit, || {
+                let event = press_event(click.kind(), hit, state.last_added, || {
                     snap_to_sampled(&self.model.sampled, point, size, CURVE_SNAP_RADIUS)
                         .unwrap_or_else(|| {
                             point_fraction(point, Rectangle::new(Point::ORIGIN, size))
                         })
                 });
+                state.last_added = matches!(event, Some(CurveEditorEvent::Add(_)));
                 if let (Kind::Single, Some(index)) = (click.kind(), hit) {
                     state.active = Some(index);
                     state.press = cursor.position();
                 }
                 match event {
                     Some(event) => Some(Action::publish((self.on_event)(event)).and_capture()),
-                    None if click.kind() == Kind::Triple => Some(Action::capture()),
-                    None => None,
+                    None => Some(Action::capture()),
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
@@ -622,7 +643,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusableCurveCanvas<'_, M> {
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fixed(200.0), Length::Fixed(200.0))
+        Size::new(Length::Fill, Length::Shrink)
     }
 
     fn layout(
@@ -631,7 +652,8 @@ impl<M: Clone> Widget<M, Theme, Renderer> for FocusableCurveCanvas<'_, M> {
         _renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::atomic(limits, Length::Fixed(200.0), Length::Fixed(200.0))
+        let side = plot_side(limits.max().width);
+        layout::atomic(limits, Length::Fixed(side), Length::Fixed(side))
     }
 
     fn operate(
@@ -920,7 +942,7 @@ mod tests {
             vec![CurveEditorEvent::Select(0), CurveEditorEvent::Remove(0)]
         );
 
-        // Away from every point: nothing, add, then nothing.
+        // Away from every point: add, then nothing, then nothing.
         let (canvas, mut state) = editor(model());
         let away = Point::new(150.0, 150.0);
         let mut published = Vec::new();
@@ -933,7 +955,47 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_near_the_drawn_curve_adds_at_the_nearest_sample() {
+    fn a_double_click_away_from_the_points_adds_one_and_never_removes_it() {
+        // The host has not answered the add by the second press: nothing is under it.
+        let (canvas, mut state) = editor(model());
+        let away = Point::new(150.0, 150.0);
+        let mut published = Vec::new();
+        published.extend(send(&canvas, &mut state, PRESS, PLOT, away));
+        published.extend(send(&canvas, &mut state, RELEASE, PLOT, away));
+        after_last_press();
+        published.extend(send(&canvas, &mut state, PRESS, PLOT, away));
+        published.extend(send(&canvas, &mut state, RELEASE, PLOT, away));
+        assert_eq!(published, vec![CurveEditorEvent::Add([0.75, 0.25])]);
+
+        // The host answered the add between the presses, so the second lands on the new point:
+        // it still publishes nothing, as the model's new point is the one the first press added.
+        let (mut canvas, mut state) = editor(model());
+        assert_eq!(
+            send(&canvas, &mut state, PRESS, PLOT, away),
+            Some(CurveEditorEvent::Add([0.75, 0.25]))
+        );
+        canvas.model.points = vec![[0.2, 0.2], [0.75, 0.25]];
+        canvas.model.selected = Some(1);
+        after_last_press();
+        assert_eq!(send(&canvas, &mut state, PRESS, PLOT, away), None);
+        assert!(state.active.is_none(), "the second press arms no drag");
+
+        // A later double-click on that point, outside the last run's interval, removes it.
+        state.last_click = None;
+        let mut published = Vec::new();
+        for _ in 0..2 {
+            published.extend(send(&canvas, &mut state, PRESS, PLOT, away));
+            published.extend(send(&canvas, &mut state, RELEASE, PLOT, away));
+            after_last_press();
+        }
+        assert_eq!(
+            published,
+            vec![CurveEditorEvent::Select(1), CurveEditorEvent::Remove(1)]
+        );
+    }
+
+    #[test]
+    fn a_click_near_the_drawn_curve_adds_at_the_nearest_sample() {
         let model = CurveEditorModel {
             points: vec![[0.0, 0.0], [1.0, 1.0]],
             sampled: identity_samples(),
@@ -943,8 +1005,6 @@ mod tests {
         let (canvas, mut state) = editor(model);
         // 1.4 px off the drawn diagonal, whose pointer fraction would be (0.51, 0.5).
         let near = Point::new(102.0, 100.0);
-        assert_eq!(send(&canvas, &mut state, PRESS, PLOT, near), None);
-        after_last_press();
         assert_eq!(
             send(&canvas, &mut state, PRESS, PLOT, near),
             Some(CurveEditorEvent::Add(expected)),
@@ -974,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_away_from_the_curve_adds_at_the_pointer() {
+    fn a_click_away_from_the_curve_adds_at_the_pointer() {
         let (canvas, mut state) = editor(CurveEditorModel {
             sampled: identity_samples(),
             ..model()
@@ -982,12 +1042,20 @@ mod tests {
         // Offset bounds: the add is the pointer's fraction of the plot in local coordinates.
         let bounds = Rectangle::new(Point::new(50.0, 70.0), Size::new(100.0, 100.0));
         let pointer = Point::new(110.0, 120.0);
-        assert_eq!(send(&canvas, &mut state, PRESS, bounds, pointer), None);
-        after_last_press();
         assert_eq!(
             send(&canvas, &mut state, PRESS, bounds, pointer),
             Some(CurveEditorEvent::Add([0.6, 0.5]))
         );
+        assert!(state.active.is_none(), "an add arms no drag");
+        assert_eq!(send(&canvas, &mut state, RELEASE, bounds, pointer), None);
+    }
+
+    #[test]
+    fn the_plot_fills_its_column_up_to_the_maximum_side() {
+        assert_eq!(plot_side(268.0), 268.0);
+        assert_eq!(plot_side(PLOT_MAX_SIDE + 200.0), PLOT_MAX_SIDE);
+        assert_eq!(plot_side(f32::INFINITY), PLOT_MAX_SIDE);
+        assert_eq!(plot_side(-1.0), 0.0);
     }
 
     #[test]
@@ -1000,7 +1068,7 @@ mod tests {
             points: vec![[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]],
             point_rows: vec![row("0", "0"), row("0.5", "0.6"), row("1", "1")],
             points_max: 16,
-            hint: Some("Double-click to add a point, or on one to remove it".into()),
+            hint: Some("Click to add a point, or double-click one to remove it".into()),
             ..model()
         };
         let (header, event) = points_header(&closed);

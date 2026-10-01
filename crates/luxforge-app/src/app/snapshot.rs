@@ -261,6 +261,18 @@ impl Editor {
             "version": self.presentation.presenter.photo().map(luxforge_ui::Frame::version),
             "texture_writes": luxforge_ui::photo_surface::texture_writes(),
             "detail_updating":self.visible_detail_updating(),
+            // The bar over the photograph and the worker reading behind it, so a capture shows
+            // which generation's exact phase it follows and how far that phase had got.
+            "render_bar": self.activity.render_bar.map(|bar| json!({
+                "generation": bar.generation,
+                "fraction": bar.fraction,
+            })),
+            "render_progress": self.presentation.queue.progress().map(|progress| json!({
+                "generation": progress.generation,
+                "elapsed_ms": progress.elapsed.as_secs_f64() * 1000.0,
+                "done": progress.counts.done,
+                "planned": progress.counts.planned,
+            })),
             "desired_view_dirty":self.view_plan.dirty,
             "view_plan_in_flight":self.view_plan.in_flight,
             "view_request_generation":self.view_plan.request_generation,

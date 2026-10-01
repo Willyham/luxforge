@@ -98,7 +98,9 @@ impl Message {
             Self::Palette(message) => matches!(message, palette::PaletteMessage::Open),
             Self::Control(message) => !matches!(
                 message,
-                C::CurveSampled { .. } | C::QueryChoiceAnswered { .. }
+                C::CurveSampled { .. }
+                    | C::QueryChoiceAnswered { .. }
+                    | C::QueryChoiceReportOpened { .. }
             ),
             Self::Overlay(message) => {
                 matches!(message, overlay::OverlayMessage::ToggleClipping(_))

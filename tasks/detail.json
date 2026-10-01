@@ -1308,6 +1308,60 @@
           "Functional checks pass with real native captures; quality gates remain separately required by TASK-013."
         ]
       }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Show a long exact settlement's progress on the photograph: count the spatial tiles a whole-frame render plans and finishes, publish the preview worker's exact phase, and draw a bar along the bottom of the photograph when the phase is projected past a second.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Owner request, 2026-10-01: heavy sharpening can be slow; if that is unavoidable, show the rendering state on the main image rather than only in the Performance section, as a loading bar across the image when something is expected to take more than a second.",
+        "The settled Fit's latency is the recorded default of the Detail design (about 0.5 s at 24 MP and 2.5 s at 60 MP on the M4, estimated); the full-resolution restoration frame cache that would avoid it is not planned, so this task shows the wait rather than removing it.",
+        "Implemented with functional tests: the render-progress planning test on both pixel domains, the preview queue's published phase and wake gating, the desktop's reveal rule, status text and the bar's geometry. The native rendered check of the bar over a long Detail settlement is outstanding."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Instant previews",
+          "target": "docs/design/instant-preview.md",
+          "relevance": "The progress contract: what is measured, who reads it, the wake policy, when the bar shows and what is not covered."
+        },
+        {
+          "kind": "file",
+          "label": "Detail design",
+          "target": "docs/design/detail.md",
+          "relevance": "The settled-Fit latency this task makes visible."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Rule 8: the progress wakes are event-driven and gated; no timer reads progress."
+        }
+      ],
+      "acceptance_criteria": [
+        "A whole-frame render with a progress meter plans every spatial tile before the first runs and finishes exactly what it planned, on the byte and linear paths and across several spatial segments; a stack without spatial work plans nothing and notifies nothing.",
+        "The preview queue publishes only a running whole-frame exact phase and nothing once it ends; the preview.render activity carries the same fraction; the worker wakes the desktop with progress only after 250 ms and at most every 50 ms.",
+        "The desktop shows the bar only for a phase projected to take at least a second, keeps it for that phase until it ends and drops it with the phase; the status bar reads Rendering… N%; the evidence snapshot records render_bar and render_progress.",
+        "A native background capture of a long Detail settlement at Fit on a photo-sized source shows the bar filling along the bottom of the photograph, correlated with render_progress, and its absence after the exact frame is presented."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the core and desktop tests for the meter, the queue, the reveal rule and the geometry.",
+          "Capture a long Detail settlement at Fit in a background launch and inspect the correlated state."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core --lib -- a_render_finishes_exactly_the_spatial_tiles the_exact_phase_publishes_its_progress the_exact_meter_wakes",
+          "cargo test -p luxforge-app -- render_bar the_status_bar_reports_clients_render_state",
+          "cargo run --release --locked --package xtask -- smoke --scenario detail-fit --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Functional tests pass; the native capture shows the bar over a long settlement and none after it."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -1345,7 +1399,8 @@
     {
       "wave": 5,
       "task_ids": [
-        "TASK-012"
+        "TASK-012",
+        "TASK-017"
       ]
     },
     {

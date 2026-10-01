@@ -1,8 +1,13 @@
 //! Optional offline distortion correction. A selection freezes profile terms and source eligibility;
-//! every later evaluation reads only the layer payload.
+//! every later evaluation reads only the layer payload. A new RAW import whose distortion is known
+//! to be uncorrected selects its detected profile once, as an ordinary entry
+//! ([`ToolModule::first_open`]).
+pub(crate) mod answer;
 pub(crate) mod index;
 pub(crate) mod payload;
 pub(crate) mod pinned;
+pub(crate) mod products;
+pub(crate) mod report;
 pub(crate) mod resolve;
 
 use super::{
@@ -65,7 +70,7 @@ impl LensModule {
                         ..ActionDescriptor::new(
                             SELECT,
                             "Select lens profile",
-                            "resolves an offline profile against this photo and freezes its terms; never applies a match automatically",
+                            "resolves an offline profile against this photo and freezes its terms; a new RAW import whose distortion is known uncorrected selects its detected profile once, as a system entry",
                         )
                     },
                     ActionDescriptor {
@@ -88,7 +93,7 @@ impl LensModule {
                     ..ActionDescriptor::new(
                         QUERY,
                         "Lens profiles",
-                        "matching candidates first, then searchable offline profiles; each row reports eligibility and reasons, at most 50 per page",
+                        "the photo's applied and detected profiles in status, and the compatible offline profiles whose maker or model contains text (none for empty text), with eligibility and reasons, at most 50 per page",
                     )
                 }],
                 controls: vec![Control::QueryChoice(QueryChoiceControl {
@@ -98,7 +103,7 @@ impl LensModule {
                     page: "page".into(),
                     action: SELECT.into(),
                     key: "profile".into(),
-                    shared: vec!["focal".into(), "assume-uncorrected".into()],
+                    shared: vec!["focal".into()],
                 })],
                 reset: Some(ResetAction {
                     action: RESET.into(),
@@ -255,78 +260,48 @@ impl ToolModule for LensModule {
         }
         let index = index::shared()?;
         let (optics, input) = self.input(context, parameters)?;
-        let mut page = resolve::search(
+        let applied = context
+            .own_layer(LENS_EFFECT)?
+            .and_then(|(_, l)| payload(&l.effect_id, l.effect_format, &l.payload).ok())
+            .and_then(|p| p.profile);
+        Ok(answer::answer(
             &index,
+            &optics,
             &input,
-            parameters.get("text").and_then(Value::as_str).unwrap_or(""),
-            parameters.get("page").and_then(Value::as_u64).unwrap_or(0) as usize,
-        );
-        let camera = resolve::camera_match(&index, &input);
-        let mut reasons = resolve::status_reasons(&index, &input);
-        let assume = parameters
-            .get("assume-uncorrected")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let optics_reason = match optics.ledger.distortion.status {
-            luxforge_raw::OpticalStatus::Applied => {
-                Some(resolve::Reason::EmbeddedDistortionApplied)
-            }
-            luxforge_raw::OpticalStatus::Unknown if !assume => {
-                Some(resolve::Reason::AssumeUncorrectedRequired)
-            }
-            _ => None,
-        };
-        if let Some(reason) = optics_reason {
-            reasons.push(reason);
-            for row in &mut page.rows {
-                row.eligible = false;
-                row.reasons.push(reason);
-            }
+            applied.as_ref(),
+            &answer::Request {
+                text: parameters.get("text").and_then(Value::as_str).unwrap_or(""),
+                page: parameters.get("page").and_then(Value::as_u64).unwrap_or(0) as usize,
+                assume: parameters
+                    .get("assume-uncorrected")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            },
+        ))
+    }
+    /// Select the detected profile of a new photo whose source is known not to correct
+    /// distortion (a RAW mosaic or a DNG without a distortion warp), when it applies as it stands.
+    /// A JPEG's in-camera correction is unknown, so it is offered instead, never applied.
+    fn first_open(&self, context: &StageContext<'_>) -> Result<Option<ActionInput>, Error> {
+        if context.own_layer(LENS_EFFECT)?.is_some() {
+            return Ok(None);
         }
-        let mut visible_shared = Vec::new();
-        if input.focal_override.is_some()
-            || input.focal_mm.is_none()
-            || reasons.contains(&resolve::Reason::FocalOutOfRange)
-        {
-            visible_shared.push("focal");
+        let optics = context.optics()?;
+        if optics.ledger.distortion.status != luxforge_raw::OpticalStatus::KnownUnapplied {
+            return Ok(None);
         }
-        if optics.ledger.distortion.status == luxforge_raw::OpticalStatus::Unknown {
-            visible_shared.push("assume-uncorrected");
-        }
-        let summary = format!(
-            "{} · {} · {} · distortion {} · lateral CA {} · shading {}",
-            camera.map_or_else(
-                || "Camera not in database".to_owned(),
-                |c| format!("{} {}", c.maker, c.model)
-            ),
-            input.lens_model.as_deref().unwrap_or("Fixed camera lens"),
-            input.focal_override.or(input.focal_mm).map_or_else(
-                || "Focal length missing".to_owned(),
-                |f| format!(
-                    "{f} mm ({})",
-                    if input.focal_override.is_some() {
-                        "override"
-                    } else {
-                        "EXIF"
-                    }
-                )
-            ),
-            serde_json::to_value(optics.ledger.distortion.status)
-                .unwrap()
-                .as_str()
-                .unwrap(),
-            serde_json::to_value(optics.ledger.lateral_ca.status)
-                .unwrap()
-                .as_str()
-                .unwrap(),
-            serde_json::to_value(optics.ledger.shading.status)
-                .unwrap()
-                .as_str()
-                .unwrap()
-        );
-        Ok(
-            json!({"status":{"summary":summary,"visible_shared":visible_shared,"camera":camera.map(|c|json!({"maker":c.maker,"model":c.model})),"lens_model":input.lens_model,"focal_mm":input.focal_override.or(input.focal_mm),"focal_source":if input.focal_override.is_some(){Some("override")}else if input.focal_mm.is_some(){Some("exif")}else{None},"crop_factor":camera.map(|c|c.crop_factor),"distortion":optics.ledger.distortion,"lateral_ca":optics.ledger.lateral_ca,"shading":optics.ledger.shading,"reasons":reasons},"rows":page.rows,"page":page.page,"pages":page.pages,"total":page.total}),
-        )
+        let index = index::shared()?;
+        let (_, input) = self.input(context, &Map::new())?;
+        Ok(resolve::detect(&index, &input)
+            .detected
+            .filter(|detected| detected.eligible)
+            .map(|detected| ActionInput {
+                action_id: SELECT.into(),
+                parameters: Map::from_iter([("profile".into(), Value::String(detected.key))]),
+            }))
+    }
+    fn await_first_open(&self) {
+        index::wait_ready();
     }
     fn compile(
         &self,

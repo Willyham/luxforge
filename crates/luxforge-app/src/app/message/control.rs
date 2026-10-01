@@ -30,6 +30,23 @@ pub(crate) enum ControlMessage {
         identity: crate::state::query_choice::QueryChoiceIdentity,
         result: Result<Value, String>,
     },
+    /// The suggestion card's Apply.
+    QueryChoiceApply {
+        action: String,
+    },
+    /// Open or close Change, which reveals the search under a card.
+    QueryChoiceChange {
+        action: String,
+        open: bool,
+    },
+    /// Open the answer's report page in the default browser.
+    QueryChoiceReport {
+        action: String,
+    },
+    /// The platform's answer to opening a report page.
+    QueryChoiceReportOpened {
+        result: Result<(), String>,
+    },
     /// A generated field changed: the text the user typed for one declared parameter.
     Field {
         action: String,
@@ -180,6 +197,10 @@ impl ControlMessage {
             | Self::QueryChoiceShared { .. }
             | Self::QueryChoiceSelect { .. }
             | Self::QueryChoiceAnswered { .. }
+            | Self::QueryChoiceApply { .. }
+            | Self::QueryChoiceChange { .. }
+            | Self::QueryChoiceReport { .. }
+            | Self::QueryChoiceReportOpened { .. }
             | Self::ToggleSection(_)
             | Self::ResetModule(_)
             | Self::ResetGroup { .. } => None,

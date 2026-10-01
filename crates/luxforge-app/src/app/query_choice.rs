@@ -141,29 +141,67 @@ impl Editor {
                     return Task::none();
                 };
                 let selected = self.query_choice_shared(&control).and_then(|shared| {
-                    let ui = self
-                        .controls
-                        .ui
-                        .query_choices
-                        .get(&action)
-                        .ok_or("Choices are not ready")?;
-                    let request = ui.request.as_ref().ok_or("Choices are not ready")?;
-                    if self.document.state.as_ref().map(|state| &state.asset.id)
-                        != Some(&request.asset)
-                        || self.displayed_entry().as_ref() != Some(&request.entry)
-                        || request.shared != shared
-                    {
-                        return Err("Choices are no longer current".into());
-                    }
-                    ui.selection(&control, &key, shared)
+                    self.current_choices(&action, &shared)?
+                        .selection(&control, &key, shared)
                 });
-                match selected {
-                    Ok(preset) => self.action_update(ActionMessage::Run { action, preset }),
-                    Err(reason) => {
-                        self.status.text = reason;
-                        Task::none()
-                    }
+                self.run_choice(action, selected)
+            }
+            ControlMessage::QueryChoiceApply { action } => {
+                let Some(control) = declaration(&self.modules, &action) else {
+                    return Task::none();
+                };
+                let selected = self.query_choice_shared(&control).and_then(|shared| {
+                    self.current_choices(&action, &shared)?
+                        .suggested(&control, shared)
+                });
+                self.run_choice(action, selected)
+            }
+            ControlMessage::QueryChoiceChange { action, open } => {
+                let ui = self
+                    .controls
+                    .ui
+                    .query_choices
+                    .entry(action.clone())
+                    .or_default();
+                if ui.set_changing(open) {
+                    self.request_query_choice(&action)
+                } else {
+                    Task::none()
                 }
+            }
+            ControlMessage::QueryChoiceReport { action } => {
+                let Some(ui) = self.controls.ui.query_choices.get_mut(&action) else {
+                    return Task::none();
+                };
+                let Some(url) = ui
+                    .report
+                    .as_ref()
+                    .and_then(|report| crate::browser::checked(&report.url).ok())
+                    .map(str::to_owned)
+                else {
+                    self.status.text = "No report page is offered".into();
+                    return Task::none();
+                };
+                ui.opened = Some(url.clone());
+                // Tests and evidence runs record the page; only a person's run opens a browser.
+                if cfg!(test) || self.evidence.is_some() {
+                    self.status.text = "Report page recorded; no browser is opened here".into();
+                    return Task::none();
+                }
+                self.status.text = "Opening the report page in your browser…".into();
+                tasks::owner_work(move || crate::browser::open(&url)).map(|result| {
+                    Message::Control(ControlMessage::QueryChoiceReportOpened { result })
+                })
+            }
+            ControlMessage::QueryChoiceReportOpened { result } => {
+                self.status.text = match result {
+                    Ok(()) => {
+                        "Opened the report page in your browser; review it there before submitting"
+                            .into()
+                    }
+                    Err(error) => error,
+                };
+                Task::none()
             }
             ControlMessage::QueryChoiceAnswered { identity, result } => {
                 self.controls.query_choice_slot.answered();
@@ -188,6 +226,50 @@ impl Editor {
                 self.start_query_choice()
             }
             _ => Task::none(),
+        }
+    }
+
+    /// The control's answer, refused unless it was asked for the displayed photo and entry with
+    /// these shared inputs: a choice from an older answer is never submitted.
+    fn current_choices(
+        &self,
+        action: &str,
+        shared: &Map<String, Value>,
+    ) -> Result<&crate::state::query_choice::QueryChoiceUi, String> {
+        let ui = self
+            .controls
+            .ui
+            .query_choices
+            .get(action)
+            .ok_or("Choices are not ready")?;
+        let request = ui.request.as_ref().ok_or("Choices are not ready")?;
+        if self.document.state.as_ref().map(|state| &state.asset.id) != Some(&request.asset)
+            || self.displayed_entry().as_ref() != Some(&request.entry)
+            || request.shared != *shared
+        {
+            return Err("Choices are no longer current".into());
+        }
+        Ok(ui)
+    }
+
+    /// Run a chosen request through the module's action, as any other control does, and close
+    /// Change with its search: the next answer shows what was chosen.
+    fn run_choice(
+        &mut self,
+        action: String,
+        selected: Result<Map<String, Value>, String>,
+    ) -> Task<Message> {
+        match selected {
+            Ok(preset) => {
+                if let Some(ui) = self.controls.ui.query_choices.get_mut(&action) {
+                    ui.set_changing(false);
+                }
+                self.action_update(ActionMessage::Run { action, preset })
+            }
+            Err(reason) => {
+                self.status.text = reason;
+                Task::none()
+            }
         }
     }
 

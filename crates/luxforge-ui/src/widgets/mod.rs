@@ -21,6 +21,7 @@ mod focus_control;
 mod histogram;
 mod icon_button;
 mod inline_menu;
+mod inline_notice;
 mod job_row;
 mod list_row;
 mod mask_row;
@@ -74,6 +75,7 @@ pub use icon_button::{
     Icon, IconButtonModel, header_icon_button, icon_button, title_bar_icon_button, with_tooltip,
 };
 pub use inline_menu::inline_menu;
+pub use inline_notice::inline_notice;
 pub use job_row::{JobRowModel, job_row};
 pub use list_row::{ListRowModel, Marker, list_heading, list_row, panel_heading};
 pub use mask_row::{

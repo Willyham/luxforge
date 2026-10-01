@@ -64,17 +64,17 @@ fn require_status(read: &Value, status: &str) -> Result {
     )
 }
 
-/// Selection must use the returned key of an eligible row, never a guessed database record.
+/// Selection must use the key of the profile the query detected, never a guessed database record.
+/// A supported RAW's import already applied it; selecting it again with the acknowledgement still
+/// writes the workload's own entry.
 fn candidate(query: &Value) -> Result<Value> {
-    query["rows"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter().find(|row| {
-                row["eligible"] == true && row["key"].as_str().is_some_and(|key| !key.is_empty())
-            })
+    Some(&query["status"]["detected"])
+        .filter(|detected| {
+            detected["eligible"] == true
+                && detected["key"].as_str().is_some_and(|key| !key.is_empty())
         })
         .cloned()
-        .ok_or_else(|| format!("Lens workload needs an eligible profile: {query}").into())
+        .ok_or_else(|| format!("Lens workload needs an eligible detected profile: {query}").into())
 }
 
 fn frozen_profile(state: &Value) -> Result<Value> {
@@ -422,11 +422,9 @@ fn measure(
         let query = workload.query()?;
         measured.query.push(milliseconds(query_started));
         ensure(
-            query["rows"].as_array().is_some_and(|rows| {
-                rows.iter()
-                    .any(|row| row["key"] == workload.candidate["key"] && row["eligible"] == true)
-            }),
-            "Frozen candidate is no longer eligible",
+            query["status"]["detected"]["key"] == workload.candidate["key"]
+                && query["status"]["detected"]["eligible"] == true,
+            "Frozen candidate is no longer the eligible detected profile",
         )?;
         let reset = workload.edit("edit.reset-lens-profile", json!({}))?;
         ensure(
@@ -587,9 +585,16 @@ mod tests {
 
     #[test]
     fn candidate_selection_requires_an_eligible_returned_key() {
-        let query = json!({"rows":[{"key":"refused","eligible":false},{"key":"","eligible":true},{"key":"selected","eligible":true}]});
-        assert_eq!(candidate(&query).unwrap()["key"], "selected");
-        assert!(candidate(&json!({"rows":[{"key":"refused","eligible":false}]})).is_err());
+        let detected = |key: &str, eligible: bool| json!({"rows":[],"status":{"detected":{"key":key,"eligible":eligible}}});
+        assert_eq!(
+            candidate(&detected("selected", true)).unwrap()["key"],
+            "selected"
+        );
+        assert!(candidate(&detected("refused", false)).is_err());
+        assert!(candidate(&detected("", true)).is_err());
+        assert!(candidate(&json!({"rows":[],"status":{"detected":null}})).is_err());
+        // A listed row is never a stand-in for the detected profile.
+        assert!(candidate(&json!({"rows":[{"key":"listed","eligible":true}]})).is_err());
     }
 
     #[test]

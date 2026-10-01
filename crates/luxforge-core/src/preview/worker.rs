@@ -3,16 +3,67 @@
 
 use super::{
     ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult, ProxyOutcome,
-    RegionOutcome, queue::PreviewTask,
+    RegionOutcome,
+    queue::{ExactProgress, PreviewTask},
 };
 use crate::{
-    Error, ErrorKind, ProxyCache, ProxyKey, Recipe, RegionRenderOutcome, Render, RenderOptions,
-    activity::{ActivitySpec, Outcome},
+    Cancel, Error, ErrorKind, ProxyCache, ProxyKey, Recipe, RegionRenderOutcome, Render,
+    RenderOptions,
+    activity::{Activity, ActivitySpec, Outcome},
+    cancel::{ProgressCounts, RenderProgress},
     latest::Running,
     render,
     render::ProxyStage,
 };
-use std::time::Instant;
+use std::{
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+/// How long an exact phase runs before its progress wakes the consumer. A phase that ends sooner
+/// wakes it once, with its result, as it always has; one past this is long enough that the
+/// consumer may show how far it has got.
+pub const PROGRESS_QUIET: Duration = Duration::from_millis(250);
+/// The least time between two progress wakes of one exact phase, so a render of many quick
+/// batches wakes the consumer at most twenty times a second.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The progress meter of one job's exact phase: it reports each finished batch's fraction to the
+/// job's activity and, once the phase has run [`PROGRESS_QUIET`], wakes the consumer at most once
+/// per [`PROGRESS_INTERVAL`]. It wakes nothing before `phase` is set, when the exact phase starts.
+pub(super) fn exact_meter(
+    activity: Option<&Activity>,
+    waker: Option<crate::latest::Wake>,
+    phase: Arc<OnceLock<Instant>>,
+) -> RenderProgress {
+    let report = activity.map(Activity::reporter);
+    // Milliseconds into the phase of the last wake, plus one, so zero means none yet.
+    let woken = AtomicU64::new(0);
+    RenderProgress::new(move |counts: ProgressCounts| {
+        if let (Some(report), Some(fraction)) = (&report, counts.fraction()) {
+            report(fraction);
+        }
+        let Some(started) = phase.get() else {
+            return;
+        };
+        let elapsed = started.elapsed();
+        if elapsed < PROGRESS_QUIET {
+            return;
+        }
+        let now = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX - 1) + 1;
+        let last = woken.load(Ordering::Relaxed);
+        if last != 0 && now.saturating_sub(last) < PROGRESS_INTERVAL.as_millis() as u64 {
+            return;
+        }
+        woken.store(now, Ordering::Relaxed);
+        if let Some(waker) = &waker {
+            waker();
+        }
+    })
+}
 
 /// What the proxy phase of one job should do. Decided on the worker, which owns the proxy cache,
 /// at the start of the job.
@@ -83,6 +134,7 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
 pub(super) fn run(
     cache: &mut ProxyCache,
     restoration: &mut crate::render::RestorationPrefixCache,
+    progress: &ExactProgress,
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
 ) -> Option<PreviewResult> {
@@ -91,7 +143,7 @@ pub(super) fn run(
         return Some(run_reduce(task, running));
     }
     if task.job.viewport.is_some() && task.job.layer_count.is_none() {
-        return run_viewport(cache, restoration, task, running);
+        return run_viewport(cache, restoration, progress, task, running);
     }
     let PreviewTask {
         job,
@@ -100,15 +152,9 @@ pub(super) fn run(
     } = task;
     let queue_wait_ms = requested_at.map(|requested| requested.elapsed().as_secs_f64() * 1000.0);
     let generation = running.generation();
-    let (proxy_cancel, exact_cancel) = (running.abandoned(), running.superseded());
-    let full_cancel = if job.intent == PreviewIntent::Interactive {
-        proxy_cancel
-    } else {
-        exact_cancel
-    };
+    let evaluation = &job.evaluation;
     // One activity spans both phases. A job abandoned mid-way, its results stale before its exact
     // phase could be handed over, drops the guard, which records it as cancelled.
-    let evaluation = &job.evaluation;
     let activity = board.map(|board| {
         board.begin(ActivitySpec {
             kind: "preview.render",
@@ -118,6 +164,20 @@ pub(super) fn run(
             job_id: None,
         })
     });
+    let (proxy_cancel, exact_cancel) = (running.abandoned(), running.superseded());
+    // The exact phase reports its spatial tiles on its own token. An interactive job has no exact
+    // phase, and its full-resolution compilation reads the proxy phase's token.
+    let phase = Arc::new(OnceLock::new());
+    let meter = (job.intent != PreviewIntent::Interactive)
+        .then(|| exact_meter(activity.as_ref(), running.waker(), phase.clone()));
+    let metered: Cancel;
+    let full_cancel = match &meter {
+        None => proxy_cancel,
+        Some(meter) => {
+            metered = exact_cancel.with_progress(meter);
+            &metered
+        }
+    };
     let entry_id = evaluation.entry().id.clone();
     let draft_revision = evaluation.draft_revision();
     let snapshot_id = evaluation.entry().snapshot.id.clone();
@@ -265,6 +325,10 @@ pub(super) fn run(
     // The exact phase's own clock starts here, after the proxy phase has handed over its frame, so
     // the two phases' times never overlap and neither includes the other.
     let started = Instant::now();
+    let _published = meter.as_ref().map(|meter| {
+        let _ = phase.set(started);
+        progress.begin(generation, started, meter)
+    });
     let rendered = exact
         .as_ref()
         .map_err(Clone::clone)
@@ -326,6 +390,7 @@ pub(super) fn run(
 fn run_viewport(
     cache: &mut ProxyCache,
     restoration: &mut crate::render::RestorationPrefixCache,
+    progress: &ExactProgress,
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
 ) -> Option<PreviewResult> {
@@ -463,6 +528,7 @@ fn run_viewport(
             let result = run(
                 cache,
                 restoration,
+                progress,
                 PreviewTask {
                     job,
                     board: None,
@@ -512,6 +578,7 @@ fn run_viewport(
             let result = run(
                 cache,
                 restoration,
+                progress,
                 PreviewTask {
                     job,
                     board: None,
