@@ -462,6 +462,9 @@ impl Presentation {
             render_ms,
         };
         match outcome {
+            // A GPU preview boundary is taken up before any result reaches here
+            // ([`super::Editor::poll_preview`]); it is never a frame to present.
+            PhaseOutcome::Boundary(_) => Presented::Stale,
             PhaseOutcome::Region(region) => Presented::Region(Box::new((delivery, region))),
             PhaseOutcome::Proxy(outcome) => {
                 let frame = ProxyFrame {
@@ -1488,6 +1491,7 @@ impl Editor {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Region => "region",
                 PreviewPhase::Exact => "exact",
+                PreviewPhase::Boundary => "boundary",
             };
             self.event("preview_result_received", || {
                 json!({
@@ -1639,7 +1643,7 @@ impl Editor {
             "exact"
         };
         let (frame, proxy, bounded) = match result.outcome {
-            PhaseOutcome::Region(_) => return (Task::none(), false),
+            PhaseOutcome::Region(_) | PhaseOutcome::Boundary(_) => return (Task::none(), false),
             PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
             // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {

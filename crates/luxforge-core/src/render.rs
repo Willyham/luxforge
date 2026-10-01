@@ -1,6 +1,7 @@
 //! Rendering: a recipe compiled into segments and evaluated over one source, by concept.
 //!
 //! - [`entry`]: the one way in, [`render`], and the [`Render`] it returns.
+//! - [`boundary`]: a GPU preview's held input boundary, rendered once per draft.
 //! - [`compiled`]: the compiled IR, segments separated by stage boundaries, and [`Entry`], the
 //!   one dispatch over the boundary kinds.
 //! - [`gpu`]: the GPU programs modules own and the plan a gesture's preview is drawn from.
@@ -14,6 +15,7 @@
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.
 
+mod boundary;
 mod byte;
 mod colour_runs;
 mod compiled;
@@ -35,6 +37,8 @@ pub(crate) mod testing;
 mod window;
 
 #[cfg(test)]
+mod boundary_tests;
+#[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
 mod colour_tests;
@@ -51,6 +55,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod warp_tests;
 
+pub use boundary::{BOUNDARY_MAX_BYTES, BoundaryFrame};
 use byte::{Byte, check_source, rasterize};
 use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;

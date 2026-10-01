@@ -219,7 +219,12 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
                         "plan"
                     }
                     GpuAnswer::Fallback(reason) => {
-                        assert!(reason.layer() < recipe.layers.len(), "{what}: {reason}");
+                        assert!(
+                            reason
+                                .layer()
+                                .is_some_and(|layer| layer < recipe.layers.len()),
+                            "{what}: {reason}"
+                        );
                         reason.code()
                     }
                 };

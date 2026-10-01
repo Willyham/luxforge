@@ -296,6 +296,7 @@ pub(crate) fn corpus_cell(
                 false,
             ),
             PhaseOutcome::Region(_) => return Ok(Cell::Gap("a region at Fit".into())),
+            PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
         };
         let (width, height) = proxied.dimensions();
         if (cpu.width, cpu.height) != (width, height) {

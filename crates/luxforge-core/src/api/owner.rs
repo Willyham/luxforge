@@ -251,6 +251,10 @@ pub struct PreviewRequest {
     /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
     /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
     pub proxy: Option<ProxyBounds>,
+    /// Plan the draft's GPU preview with the job ([`PreviewJob::gpu`]): the plan a gesture's tick
+    /// is drawn from at these bounds, and the boundary it starts from. Only a draft with bounds
+    /// has one; planning is `O(layers)` here and reads no pixel.
+    pub gpu: bool,
 }
 
 impl PreviewRequest {
@@ -264,6 +268,7 @@ impl PreviewRequest {
             draft: None,
             analyse: false,
             proxy: None,
+            gpu: false,
         }
     }
     /// Show this entry instead of the current one.
@@ -290,6 +295,11 @@ impl PreviewRequest {
     /// Offer this job a proxy phase at the display bounds the frame will be shown in.
     pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
         self.proxy = Some(bounds);
+        self
+    }
+    /// Plan the draft's GPU preview with the job ([`Self::gpu`]).
+    pub fn gpu(mut self) -> Self {
+        self.gpu = true;
         self
     }
 }
@@ -1901,8 +1911,24 @@ impl Owner {
                 "the draft's pixel inputs changed; set or reapply the draft before previewing it",
             ));
         }
+        // A draft's GPU preview, planned from the job's own evaluation at the bounds the frame
+        // is drawn in: `O(layers)`, no pixel. A plan that cannot be made is reported, never an
+        // error the job's own frame would fail with.
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
+            if let (true, Some(draft), Some(bounds), None) =
+                (request.gpu, draft, request.proxy, request.layer_count)
+            {
+                job.gpu = Some(Box::new(
+                    crate::render::gpu::plan_preview(&job.evaluation, draft, bounds)
+                        .unwrap_or_else(|error| crate::GpuPreview {
+                            answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
+                                error.detail,
+                            )),
+                            boundary: None,
+                        }),
+                ));
+            }
             job
         });
         // A stack whose source is not prepared queues that preparation and answers with the job to

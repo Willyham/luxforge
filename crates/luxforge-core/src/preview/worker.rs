@@ -2,8 +2,8 @@
 //! phase, from one compilation of the job's stack at each stage it renders at.
 
 use super::{
-    ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult, ProxyOutcome,
-    RegionOutcome,
+    BoundaryOutcome, ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult,
+    ProxyOutcome, RegionOutcome,
     queue::{ExactProgress, PreviewTask},
 };
 use crate::{
@@ -12,6 +12,7 @@ use crate::{
     activity::{Activity, ActivitySpec, Outcome},
     cancel::{ProgressCounts, RenderProgress},
     latest::Running,
+    modules::{Region, Stage},
     render,
     render::ProxyStage,
 };
@@ -243,31 +244,36 @@ pub(super) fn run(
                     // The source this frame is rendered against: the proxy stage's window when the
                     // plan has one, and the whole proxy stage otherwise.
                     let dimensions = source.dimensions();
+                    // A GPU preview boundary asked of this proxy reads the proxy stage's own uncut
+                    // compilation for where its layer begins, kept before the cut consumes it.
+                    let plan = stage.plan();
+                    let boundary = job
+                        .boundary
+                        .as_ref()
+                        .filter(|request| request.key.plan() == Some(plan))
+                        .and_then(|request| Some((request, stage.compiled().ok()?.clone())));
                     // The proxy stage's one compilation, the one the plan made: the frame and the
                     // reason it is approximate both come from it, so what is reported and what is
                     // drawn cannot disagree. A windowed one is cut from it, and asks the job's
                     // exact compilation for any spatial estimate the window cannot reduce.
-                    let rendered = exact
-                        .as_ref()
-                        .map_err(Clone::clone)
-                        .and_then(|exact| {
-                            exact.render_proxy(
-                                source.input(),
-                                stage,
-                                proxy_cancel,
-                                evaluation.context(),
-                            )
-                        })
-                        .and_then(|proxy| {
-                            let (raster, prefix) = proxy.frame_with_restoration_cache(
-                                snapshot_id.clone(),
-                                evaluation.registry(),
-                                recipe,
-                                &key,
-                                restoration,
-                            )?;
-                            Ok((raster, proxy.approximation(), prefix))
-                        });
+                    let proxied = exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                        exact.render_proxy(
+                            source.input(),
+                            stage,
+                            proxy_cancel,
+                            evaluation.context(),
+                        )
+                    });
+                    let rendered = proxied.as_ref().map_err(Clone::clone).and_then(|proxy| {
+                        let (raster, prefix) = proxy.frame_with_restoration_cache(
+                            snapshot_id.clone(),
+                            evaluation.registry(),
+                            recipe,
+                            &key,
+                            restoration,
+                        )?;
+                        Ok((raster, proxy.approximation(), prefix))
+                    });
                     match rendered {
                         Err(error) => {
                             restoration.clear();
@@ -304,6 +310,35 @@ pub(super) fn run(
                             // means the exact phase is not wanted either.
                             if !send_phase(restoration, running, proxy) {
                                 return None;
+                            }
+                            // The draft's GPU preview boundary, at the stage this frame was drawn
+                            // at, over the same source and cut: one more result of this job.
+                            if let (Some((request, uncut)), Ok(proxy)) = (boundary, &proxied) {
+                                let started = Instant::now();
+                                let whole = Stage {
+                                    width: plan.width,
+                                    height: plan.height,
+                                };
+                                let window =
+                                    plan.window.map_or(Region::whole(whole), |window| Region {
+                                        x0: window.x,
+                                        y0: window.y,
+                                        width: window.width,
+                                        height: window.height,
+                                    });
+                                let result =
+                                    proxy.boundary(&uncut, whole, window, request.position);
+                                let boundary = boundary_result(
+                                    &job,
+                                    generation,
+                                    request,
+                                    result,
+                                    started,
+                                    approximate_white_balance,
+                                );
+                                if !send_phase(restoration, running, boundary) {
+                                    return None;
+                                }
                             }
                             if job.intent == PreviewIntent::Interactive {
                                 if let Some(activity) = activity {
@@ -358,12 +393,42 @@ pub(super) fn run(
         Err(error) => (Err(error), None, None),
     };
     let render_ms = compile_ms.unwrap_or(0.0) + milliseconds_since(started);
+    // A GPU preview boundary at the exact stage: the job has no proxy, so its frame is the exact
+    // one and the boundary is that stage's, rendered from the same compilation.
+    let boundary = job
+        .boundary
+        .as_ref()
+        .filter(|request| request.key.plan().is_none() && job.layer_count.is_none())
+        .map(|request| {
+            let started = Instant::now();
+            let result = exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                let source = evaluation.source().dimensions();
+                let whole = Stage {
+                    width: source.0,
+                    height: source.1,
+                };
+                exact.boundary(
+                    evaluation.compiled()?,
+                    whole,
+                    Region::whole(whole),
+                    request.position,
+                )
+            });
+            boundary_result(
+                &job,
+                generation,
+                request,
+                result,
+                started,
+                approximate_white_balance,
+            )
+        });
     drop(exact);
     // A superseded or abandoned exact phase answers `Cancelled`, so its activity ends cancelled.
     if let Some(activity) = activity {
         activity.finish(Outcome::of(&result));
     }
-    Some(PreviewResult {
+    let exact_result = PreviewResult {
         restoration_prefix: None,
         generation,
         entry_id,
@@ -380,7 +445,17 @@ pub(super) fn run(
         approximate_white_balance,
         render_ms,
         queue_wait_ms,
-    })
+    };
+    match boundary {
+        // The frame first, then the boundary as the job's last result.
+        Some(boundary) => {
+            if !send_phase(restoration, running, exact_result) {
+                return None;
+            }
+            Some(boundary)
+        }
+        None => Some(exact_result),
+    }
 }
 
 /// A percentage view uses its visible rectangle as the first unit of work. Moving inputs stop
@@ -637,6 +712,34 @@ fn run_viewport(
 
 /// A completed phase may be abandoned while waiting for room in the bounded delivery queue.
 /// Its processed prefix is released with that refused delivery; normal delivery keeps it reusable.
+/// One job's boundary phase: `result`, the boundary `request` asked for, as a result of the job's
+/// `generation`. Its time is the boundary's own render.
+fn boundary_result(
+    job: &PreviewJob,
+    generation: u64,
+    request: &crate::BoundaryRequest,
+    result: Result<crate::BoundaryFrame, crate::Error>,
+    started: Instant,
+    approximate_white_balance: bool,
+) -> PreviewResult {
+    PreviewResult {
+        restoration_prefix: None,
+        generation,
+        entry_id: job.evaluation.entry().id.clone(),
+        identity: job.identity.clone(),
+        draft_revision: job.evaluation.draft_revision(),
+        intent: job.intent,
+        viewport_declined: None,
+        outcome: PhaseOutcome::Boundary(BoundaryOutcome {
+            key: request.key.clone(),
+            result,
+        }),
+        approximate_white_balance,
+        render_ms: milliseconds_since(started),
+        queue_wait_ms: None,
+    }
+}
+
 pub(super) fn send_phase(
     restoration: &mut crate::render::RestorationPrefixCache,
     running: &Running<'_, PreviewTask, PreviewResult>,

@@ -728,7 +728,7 @@ impl Spec {
 /// The shape of the processing a field patch's effect compiles to, by its stage: pointwise colour
 /// for a colour or finish effect, spatial processing for restoration or spatial effects,
 /// and a mapping for geometry effects.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shape {
     Color,
     Spatial,
@@ -1240,8 +1240,11 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         let values = self.read(effect_id, format, payload)?;
         // A neutral layer, by the module's own rule, compiles to no units in its stage's shape,
         // which the host drops entirely: the identity byte path and the shared source buffer are
-        // kept, and the module is never asked to compile it.
-        if self.module.is_neutral(&values) {
+        // kept, and the module is never asked to compile it. A colour layer compiled in its GPU
+        // shape is the exception: a GPU plan's drafted layer holds every unit it can, a neutral
+        // one as its identity, so the module compiles it whatever its values
+        // (`CompileStage::gpu_shape`). No CPU compile asks for that shape.
+        if self.module.is_neutral(&values) && !(at.gpu_shape && self.shape == Shape::Color) {
             return Ok(self.shape.neutral(at.stage));
         }
         self.module.compile(&values, at)
