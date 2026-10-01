@@ -522,7 +522,7 @@ pub(crate) fn pick_value(selection: &SelectionModel, rows: &RowCache) -> bool {
         .ranges
         .iter()
         .flat_map(|&(start, end)| start..end)
-        .all(|position| rows.row(position).is_some_and(|row| row.picked))
+        .all(|position| rows.read(position).is_some_and(|row| row.picked))
 }
 
 /// The status bar's sentence for a recorded library change: its label from the journal, as a
@@ -577,31 +577,6 @@ pub(crate) fn frame_files(rows: &RowCache, start: u32, len: u32) -> Option<Vec<F
             RowItem::Photo { .. } => None,
         })
         .collect()
-}
-
-/// Where the loupe moves on to after picking the frame at `position` (the design's P7): the first
-/// frame after the burst or bracket `position` is in, which is the next moment's first frame or
-/// the next single, or the next frame when `position` is a single. `None` past the view's end.
-/// The loupe (TASK-020) calls it after the editor's `pick_active` and makes the answer active with
-/// `browse.select`.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the loupe's P7 (TASK-020) calls it; lane B wires it"
-    )
-)]
-pub(crate) fn next_moment(summary: &ViewSummary, position: u32) -> Option<u32> {
-    let moments = &summary.groups.moments;
-    let after = moments.partition_point(|moment| moment.start <= position);
-    let next = after
-        .checked_sub(1)
-        .map(|index| &moments[index])
-        .filter(|moment| position < moment.start.saturating_add(moment.len))
-        .map_or(position.saturating_add(1), |moment| {
-            moment.start.saturating_add(moment.len)
-        });
-    (next < summary.count).then_some(next)
 }
 
 /// The session's selection in the view on screen, as the grid draws it: disjoint ascending ranges
@@ -925,14 +900,24 @@ pub(crate) fn wanted_blocks(items: Range<u32>, count: u32) -> Range<u32> {
 /// The rows the desktop has read of the view on screen: whole blocks of [`ROW_BLOCK`], at most
 /// [`ROW_BLOCKS_KEPT`] of them, one request in flight. A view evaluated again starts it over, and a
 /// block the owner refused is not asked for again until then.
+///
+/// A view of the same source evaluated again may carry a few rows of its previous revision — the
+/// active item's and its neighbours' ([`carried_rows`]) — each at its position in the new one, so
+/// the active frame keeps its row until the new revision's block replaces it. A carried row is
+/// never counted as read: its block is still wanted.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RowCache {
     revision: u64,
     count: u32,
     blocks: BTreeMap<u32, Vec<ViewRow>>,
+    carried: BTreeMap<u32, ViewRow>,
     in_flight: Option<RowsRequest>,
     failed: BTreeSet<u32>,
 }
+
+/// How many rows either side of the active item a view evaluated again carries over, when its
+/// items keep their positions: the loupe's moment, its strip and its look-ahead.
+pub(crate) const CARRIED_NEIGHBOURS: u32 = 32;
 
 impl RowCache {
     /// Forget every row: the view is now `count` items at `revision`.
@@ -942,6 +927,17 @@ impl RowCache {
             count,
             ..Self::default()
         };
+    }
+
+    /// Forget every row but `carried`, each already at its position at `revision`, until the new
+    /// revision's own rows replace them.
+    pub(crate) fn reset_carrying(&mut self, revision: u64, count: u32, carried: Vec<ViewRow>) {
+        self.reset(revision, count);
+        self.carried = carried
+            .into_iter()
+            .filter(|row| row.position < count)
+            .map(|row| (row.position, row))
+            .collect();
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -969,10 +965,20 @@ impl RowCache {
             .any(|block| !self.blocks.contains_key(&block) && !self.failed.contains(&block))
     }
 
-    pub(crate) fn row(&self, position: u32) -> Option<&ViewRow> {
+    /// The row read at `position` in this revision, never one carried from the last: what a pick
+    /// or clear decides by, since a carried row's pick may be the one before the change.
+    pub(crate) fn read(&self, position: u32) -> Option<&ViewRow> {
         self.blocks
             .get(&(position / ROW_BLOCK))?
             .get((position % ROW_BLOCK) as usize)
+    }
+
+    /// The row to draw at `position`: this revision's, or else one carried from the last.
+    pub(crate) fn row(&self, position: u32) -> Option<&ViewRow> {
+        match self.blocks.get(&(position / ROW_BLOCK)) {
+            Some(block) => block.get((position % ROW_BLOCK) as usize),
+            None => self.carried.get(&position),
+        }
     }
 
     /// What the grid draws for the cell whose first item is `position`, once its row is read.
@@ -1025,6 +1031,9 @@ impl RowCache {
         if self.in_flight.is_some_and(|request| request.from == from) {
             self.in_flight = None;
         }
+        // The block's own rows replace what was carried into it.
+        self.carried
+            .retain(|position, _| !(from..from + ROW_BLOCK).contains(position));
         self.blocks.insert(block, rows);
         let keep = wanted_blocks(wanted, self.count);
         while self.blocks.len() > ROW_BLOCKS_KEPT {
@@ -1060,6 +1069,36 @@ impl RowCache {
         }
         self.failed.insert(block);
     }
+}
+
+/// The rows of the previous revision a view of the same source evaluated again carries, each at its
+/// new position: the active item's row always, since the owner carries the active item over by
+/// item and `now_active` is where it put it; and, when the view kept its count and the active item
+/// its position, so its items kept theirs, the rows within [`CARRIED_NEIGHBOURS`] of it.
+pub(crate) fn carried_rows(
+    rows: &RowCache,
+    was_active: Option<u32>,
+    now_active: Option<u32>,
+    now_count: u32,
+) -> Vec<ViewRow> {
+    let (Some(was), Some(now)) = (was_active, now_active) else {
+        return Vec::new();
+    };
+    let Some(active) = rows.row(was) else {
+        return Vec::new();
+    };
+    if was != now || rows.count != now_count {
+        let mut row = active.clone();
+        row.position = now;
+        return vec![row];
+    }
+    let from = was.saturating_sub(CARRIED_NEIGHBOURS);
+    let to = was
+        .saturating_add(CARRIED_NEIGHBOURS)
+        .min(now_count.saturating_sub(1));
+    (from..=to)
+        .filter_map(|position| rows.row(position).cloned())
+        .collect()
 }
 
 /// A cell's file can be read: available, offline (its volume is not mounted) or unreadable (nothing
@@ -1423,7 +1462,7 @@ pub(crate) fn model(
         return SelectModel::default();
     }
     let selection = SelectionModel::of(browse, state.revision());
-    let catalog = super::select_catalog::derive(state, &selection);
+    let catalog = super::select_catalog::derive(state, &selection, status);
     let mut model = SelectModel {
         shown: state.shown,
         title: SelectTitle {

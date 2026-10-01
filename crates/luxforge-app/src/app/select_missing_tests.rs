@@ -72,6 +72,8 @@ impl Client {
         })
     }
 
+    /// Develop the file at `path` into the catalog, as opening it does: `pick.develop` of its path
+    /// into the plan's folder.
     fn import(&self, path: &Path) -> AssetId {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         let started = self.ok(

@@ -1,4 +1,4 @@
-//! Evidence steps on Missing originals (**lane D**, TASK-023): each gesture sent through the
+//! Evidence steps on Missing originals (**lane D**): each gesture sent through the
 //! message its control sends, the native folder and file dialogs bypassed with the step's path,
 //! and captured once nothing Missing originals asked the owner for is in flight. A `find` step with
 //! `stop` presses Stop search as soon as its search has started, and is captured once the job has

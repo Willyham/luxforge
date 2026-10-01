@@ -239,6 +239,9 @@ pub struct SurfaceDiagnostics {
     pub drawn_fallback_content: Option<u64>,
     pub drawn_content: Option<u64>,
     pub drawn_full_version: Option<u64>,
+    /// `drawn_frames` as it stood after the draw that first drew `drawn_full_version`: which frame
+    /// a photograph handed to the surface first reached the screen in, however late it is read.
+    pub drawn_full_version_frame: u64,
     pub drawn_region_version: Option<u64>,
     pub drawn_region_generation: Option<u64>,
     pub drawn_region_quality: Option<RegionQuality>,
@@ -1424,6 +1427,8 @@ impl shader::Primitive for PhotoPrimitive {
         let status = u8::from(blank_photo) | (u8::from(stale_photo) << 1);
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
         diagnostic.drawn_content = drawn_content;
+        let newly_drawn =
+            drawn_full_version.is_some() && diagnostic.drawn_full_version != drawn_full_version;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
         diagnostic.drawn_region_generation = drawn_region_generation;
@@ -1440,6 +1445,9 @@ impl shader::Primitive for PhotoPrimitive {
             }
         } else if expects_photo {
             diagnostic.blank_photo_draws += 1;
+        }
+        if newly_drawn {
+            diagnostic.drawn_full_version_frame = diagnostic.drawn_frames;
         }
         drop(diagnostic);
         if status_changed {

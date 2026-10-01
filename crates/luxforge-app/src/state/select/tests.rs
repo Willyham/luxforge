@@ -1017,6 +1017,47 @@ fn block(from: u32, len: u32) -> Vec<ViewRow> {
 /// A 10,000-item view reads only the blocks near what is shown, one request at a time, keeps at
 /// most its bound, drops the furthest first, ignores rows of an older revision, and does not ask
 /// again for a block the owner refused.
+/// A view of the same source evaluated again carries the active item's row to where the owner put
+/// the active item, and, when nothing moved, its neighbours' rows, until the new revision's block
+/// replaces them; a carried row is drawn but never decides a pick, and its block is still read.
+#[test]
+fn the_select_rows_carry_the_active_row_across_a_revision() {
+    let mut rows = RowCache::default();
+    rows.reset(1, 500);
+    assert!(rows.answered(1, 200, block(200, 200), 200..400));
+
+    // Nothing moved: the active row and its neighbours, at their places.
+    let carried = carried_rows(&rows, Some(250), Some(250), 500);
+    assert_eq!(carried.len(), 2 * CARRIED_NEIGHBOURS as usize + 1);
+    assert_eq!(carried.first().unwrap().position, 250 - CARRIED_NEIGHBOURS);
+    rows.reset_carrying(2, 500, carried);
+    assert_eq!(rows.revision(), 2);
+    assert_eq!(rows.row(250).unwrap().file_name, "DSC_0250.NEF");
+    assert_eq!(rows.row(251).unwrap().file_name, "DSC_0251.NEF");
+    assert!(rows.row(300).is_none(), "only the neighbours");
+    assert!(rows.read(250).is_none(), "a carried row decides no pick");
+    let active = SelectionModel::of(&session(2, &[(250, 1)], Some(250)), Some(2));
+    assert!(pick_value(&active, &rows), "not read: P picks");
+    assert!(rows.wants(200..400), "its block is still read");
+    assert_eq!(rows.len(), 0);
+    // The new revision's block replaces what was carried into it.
+    let mut fresh = block(200, 200);
+    fresh[50].picked = true;
+    assert!(rows.answered(2, 200, fresh, 200..400));
+    assert!(rows.read(250).unwrap().picked);
+    assert!(rows.row(250).unwrap().picked);
+
+    // The active item moved, or the view's count changed: its own row alone, where it now is.
+    let carried = carried_rows(&rows, Some(250), Some(260), 500);
+    assert_eq!(carried.len(), 1);
+    assert_eq!(carried[0].position, 260);
+    assert_eq!(carried[0].file_name, "DSC_0250.NEF");
+    assert_eq!(carried_rows(&rows, Some(250), Some(250), 499).len(), 1);
+    // No active item, or its row not read: nothing.
+    assert!(carried_rows(&rows, None, Some(250), 500).is_empty());
+    assert!(carried_rows(&rows, Some(10), Some(10), 500).is_empty());
+}
+
 #[test]
 fn the_select_rows_window_reads_near_the_screen_within_its_bound() {
     assert_eq!(wanted_blocks(0..0, 100), 0..0);
@@ -1544,15 +1585,6 @@ fn select_picking_decides_sends_and_says_what_an_agent_sees() {
     assert_eq!(refusal_text(LibraryGesture::Redo, None), None);
     assert_eq!(LibraryGesture::Undo.nothing(), "Nothing to undo");
     assert_eq!(LibraryGesture::Redo.method(), "library.redo");
-
-    // P7: after a frame of the burst 1..4 the loupe moves to 4, after a single to the next frame,
-    // after the bracket 7..10 to 10; past the view's end, nowhere.
-    let trip = trip();
-    assert_eq!(next_moment(&trip, 2), Some(4));
-    assert_eq!(next_moment(&trip, 0), Some(1));
-    assert_eq!(next_moment(&trip, 8), Some(10));
-    assert_eq!(next_moment(&trip, 15), Some(16));
-    assert_eq!(next_moment(&trip, 19), None);
 
     // A collapsed burst shows its first pick; one with no pick read shows its first frame.
     assert_eq!(rows.shown(14, 2), 15);

@@ -1,4 +1,4 @@
-//! The `select` smoke scenario's catalog steps (TASK-022): browsing and organizing developed
+//! The `select` smoke scenario's catalog steps: browsing and organizing developed
 //! photographs in Select, checked against the core's own answers.
 //!
 //! Before the launch the run develops real photographs into its generated catalog, as an agent
@@ -16,8 +16,17 @@
 //! folder again; a photograph clicked and moved to another folder (`asset.move` of the selection);
 //! five photographs selected and added to Print order from the Info panel (`collection.add` of the
 //! selection) and the add undone with `Cmd+Z`; and the folder renamed and nested in Travel
-//! (`folder.rename`, `folder.move`) from its menu. After the run the runner reads what the editor
-//! left: the smart collection's stored query, the folders, the moved photograph and Print order.
+//! (`folder.rename`, `folder.move`) from its menu. Then the batch: five photographs selected, the
+//! library preset [`PRESET`] (made by the setup with `preset.create`) applied from the Develop band
+//! (`batch.apply-preset` of the selection), its report opened from the status bar, and the five
+//! exported into a scratch folder of the run's (`batch.export`), each checked against the job's
+//! own `job.read` record. And removing: one photograph removed from its Info panel
+//! (`asset.remove` of the selection, after its confirmation) and the removal undone, two removed
+//! with ⌫, Removed viewed, one put back (`asset.restore`), and Removed emptied after its
+//! confirmation (`catalog.empty-removed`), each checked against `catalog.info`'s counts. After the
+//! run the runner reads what the editor left: the smart collection's stored query, the folders,
+//! the moved photograph and Print order, each preset photograph's history, the exported files and
+//! the counts.
 use crate::{
     scenario::{Checks, Frame, Step},
     select_smoke::{ask, grid_drawn, library_sent, over_copy, select},
@@ -28,6 +37,11 @@ use luxforge_evidence::{self as script, CatalogStep, FacetColumn, LibraryKey, Se
 
 /// The catalog folder the run develops real photographs into.
 pub const FOLDER: &str = "Real photographs";
+/// The library preset the setup makes and the run applies: Basic's exposure, which every
+/// photograph takes, and a RAW development, which no JPEG takes, so each is listed in the report.
+const PRESET: &str = "Warm";
+/// The run's scratch folder the batch export writes into, in its output directory.
+pub const EXPORT: &str = "batch-export";
 /// What the run renames it to, and the generated folder it nests it in.
 const RENAMED: &str = "Swiss trip";
 const NEST_IN: &str = "Travel";
@@ -42,7 +56,7 @@ const DEVELOPED: [&str; 2] = ["iPhone export", "Card dumps/2026-09-16"];
 /// The actor of the run's own setup changes, which the journal check leaves out.
 const SETUP: &str = "setup";
 /// The frame the catalog steps end on, which the switch back to Develop keeps.
-pub const LAST: &str = "catalog-nested";
+pub const LAST: &str = "catalog-emptied";
 
 fn mutation(id: &str) -> Value {
     json!({"request_id": format!("select-smoke-setup-{id}"), "actor": SETUP})
@@ -136,11 +150,35 @@ pub fn prepare(generated: &Path) -> Result {
             developed["status"] == "ready",
             format!("the setup could not develop the photographs: {developed}"),
         )?;
+        ask(
+            &owner,
+            client,
+            "preset.create",
+            json!({
+                "name": PRESET,
+                "settings": {
+                    "set-basic": {"exposure": 0.3},
+                    "set-raw": {"white-balance": "as-shot"},
+                },
+                "mutation": mutation("preset"),
+            }),
+        )?;
         Ok(())
     })();
     owner.stop();
     let _ = join.join();
     outcome
+}
+
+/// The run's empty scratch folder for the batch export, made afresh in its output directory: the
+/// export never writes into a folder of the person's.
+pub fn export_folder(out: &Path) -> Result<PathBuf> {
+    let folder = out.join(EXPORT);
+    if folder.exists() {
+        fs::remove_dir_all(&folder)?;
+    }
+    fs::create_dir_all(&folder)?;
+    Ok(folder.canonicalize()?)
 }
 
 /// A folder's identity from `folder.list`, by its name.
@@ -209,7 +247,18 @@ pub fn expect(generated: &Path) -> Result<Value> {
             .find(|collection| collection["name"] == ADD_TO)
             .cloned()
             .ok_or_else(|| format!("the generated catalog has no collection {ADD_TO}"))?;
+        let presets = ask(owner, client, "preset.list", json!({}))?;
+        let preset = presets["presets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|preset| preset["name"] == PRESET)
+            .map(|preset| preset["id"].clone())
+            .ok_or_else(|| format!("the generated catalog has no preset {PRESET}"))?;
+        let counts = ask(owner, client, "catalog.info", json!({}))?["counts"].clone();
         Ok(json!({
+            "preset": {"id": preset},
+            "counts": {"photographs": counts["photographs"], "removed": counts["removed"]},
             "folder": {"id": folder, "count": folder_view["count"]},
             "facets": facets,
             "camera": {
@@ -240,6 +289,10 @@ pub fn steps(expected: &Value) -> Result<Vec<Step>> {
         .ok_or("The expected answers name no camera")?
         .to_owned();
     let found = expected["search"]["count"].as_u64().unwrap_or(0);
+    let export = expected["export"]["path"]
+        .as_str()
+        .ok_or("The expected answers name no export folder")?
+        .to_owned();
     let click = |position, shift| SelectStep::Click {
         position,
         shift,
@@ -283,7 +336,7 @@ pub fn steps(expected: &Value) -> Result<Vec<Step>> {
             "Renamed folder {FOLDER} to {RENAMED} \u{b7} Undo \u{2318}Z"
         )),
         catalog(
-            LAST,
+            "catalog-nested",
             CatalogStep::Nest {
                 folder: RENAMED.into(),
                 into: NEST_IN.into(),
@@ -292,10 +345,41 @@ pub fn steps(expected: &Value) -> Result<Vec<Step>> {
         .status(format!(
             "Moved folder {RENAMED} into {NEST_IN} \u{b7} Undo \u{2318}Z"
         )),
+        // The batch: five selected, the library preset applied and its report opened, then the
+        // five exported into the run's scratch folder.
+        select("catalog-batch-first", click(0, false)),
+        select("catalog-batch", click(4, true)),
+        catalog("catalog-preset", CatalogStep::ApplyPreset(PRESET.into())).status(format!(
+            "Applied {PRESET} to 5 photographs \u{b7} 5 without some settings"
+        )),
+        catalog("catalog-preset-report", CatalogStep::Report),
+        catalog("catalog-exported", CatalogStep::ExportInto(export))
+            .status_starts("Exported 5 photographs to "),
+        // Removing: one removed from its Info panel and the removal undone; two removed with ⌫;
+        // Removed viewed, one put back, and Removed emptied.
+        select("catalog-one", click(5, false)),
+        catalog("catalog-remove-asked", CatalogStep::Remove),
+        catalog("catalog-removed", CatalogStep::Confirm).status_starts("Removed "),
+        select(
+            "catalog-remove-undone",
+            SelectStep::Library(LibraryKey::Undo),
+        )
+        .status_starts("Undid Removed "),
+        select("catalog-pair-first", click(5, false)),
+        select("catalog-pair", click(6, true)),
+        catalog("catalog-delete-asked", CatalogStep::DeleteKey),
+        catalog("catalog-removed-two", CatalogStep::Confirm)
+            .status("Removed 2 photographs \u{b7} Undo \u{2318}Z"),
+        select("catalog-removed-view", SelectStep::Source("Removed".into())),
+        select("catalog-put-back-one", click(0, false)),
+        catalog("catalog-put-back", CatalogStep::PutBack).status_starts("Put back "),
+        catalog("catalog-empty-asked", CatalogStep::EmptyRemoved),
+        catalog(LAST, CatalogStep::Confirm).status_starts("Emptied Removed: "),
     ])
 }
 
-/// The methods the catalog steps add to the desktop's journal, in order.
+/// The methods the catalog steps add to the desktop's journal, in order. The batches and the
+/// emptying are no library changes.
 pub fn journal() -> Vec<&'static str> {
     vec![
         "collection.create-smart",
@@ -304,11 +388,87 @@ pub fn journal() -> Vec<&'static str> {
         "library.undo",
         "folder.rename",
         "folder.move",
+        "asset.remove",
+        "library.undo",
+        "asset.remove",
+        "asset.restore",
     ]
 }
 
 fn catalog_block(frame: &Frame) -> &Value {
     &select(frame)["catalog"]
+}
+
+/// The batch request a frame's gesture sent: `method` with `params`, apart from the request
+/// identity, as an agent writes it, with the desktop's actor, and the job the owner answered.
+fn batch_sent(frame: &Frame, name: &str, method: &str, params: Value) -> Result<Value> {
+    let sent = &catalog_block(frame)["batch_request"];
+    let request_id = &sent["params"]["mutation"]["request_id"];
+    ensure(
+        request_id.as_str().is_some_and(|id| !id.is_empty()),
+        format!("{name}: no batch request recorded: {sent}"),
+    )?;
+    let mut expected = params;
+    expected["mutation"] = json!({"request_id": request_id, "actor": "desktop"});
+    ensure(
+        sent["method"] == method && sent["params"] == expected,
+        format!("{name}: the desktop sent {sent}, an agent writes {method} {expected}"),
+    )?;
+    ensure(
+        sent["error"].is_null() && sent["answer"]["job_id"].is_string(),
+        format!("{name}: the owner started no job: {sent}"),
+    )?;
+    Ok(sent.clone())
+}
+
+/// A frame's batch: it ended, the desktop's report is exactly the `result` of the `job.read`
+/// record it read for the job it started, and the band and the status bar say its sentence.
+fn batch_ended(frame: &Frame, name: &str, kind: &str) -> Result<Value> {
+    let block = catalog_block(frame);
+    let batch = &block["batch"];
+    let record = &block["batch_record"];
+    ensure(
+        record["status"] == "ready"
+            && record["kind"] == kind
+            && record["job_id"] == batch["job"]
+            && batch["job"] == block["batch_request"]["answer"]["job_id"],
+        format!(
+            "{name}: the batch's job.read record is {record}, its job {}",
+            batch["job"]
+        ),
+    )?;
+    ensure(
+        batch["end"]["report"] == record["result"],
+        format!(
+            "{name}: the desktop shows {}, job.read answered {}",
+            batch["end"]["report"], record["result"]
+        ),
+    )?;
+    ensure(
+        frame.status()? == batch["sentence"]
+            && block["info"]["band"]["line"] == batch["sentence"]
+            && block["status_report"] == true,
+        format!(
+            "{name}: the status bar says {:?}, the band {}, the batch {}",
+            frame.status()?,
+            block["info"]["band"]["line"],
+            batch["sentence"]
+        ),
+    )?;
+    Ok(record["result"].clone())
+}
+
+/// The count of the Catalog sources' row `index` (All photographs 0, Removed 3) as a frame drew
+/// it, from `catalog.info`.
+fn catalog_count(frame: &Frame, index: usize) -> Option<u64> {
+    select(frame)["source_rows"]["catalog"][index]["count"]
+        .as_str()
+        .and_then(|count| count.replace(',', "").parse().ok())
+}
+
+/// How many photographs a frame's Removed row counts, and its view holds.
+fn removed_and_viewed(frame: &Frame) -> (Option<u64>, Option<u64>) {
+    (catalog_count(frame, 3), select(frame)["count"].as_u64())
 }
 
 /// A frame's view against the core's answer for it: its source, its query's filter and its size.
@@ -554,10 +714,10 @@ pub fn verify(
         format!("catalog-renamed: the title says {}", select(frame)["title"]),
     )?;
     checks.note(frame, "the folder renamed", json!({"request": sent}));
-    let frame = launch.at(LAST)?;
+    let frame = launch.at("catalog-nested")?;
     let sent = library_sent(
         frame,
-        LAST,
+        "catalog-nested",
         "folder.move",
         json!({"folder_id": expected["folder"]["id"], "parent_id": expected["nest_in"]["id"]}),
     )?;
@@ -565,6 +725,252 @@ pub fn verify(
         frame,
         "the folder nested in another",
         json!({"request": sent}),
+    );
+
+    // The batch: five selected, the library preset applied to them, its report job.read's.
+    let frame = launch.at("catalog-batch")?;
+    ensure(
+        catalog_block(frame)["info"]["count"] == 5,
+        format!(
+            "catalog-batch: the batch form shows {}",
+            catalog_block(frame)["info"]
+        ),
+    )?;
+    let frame = launch.at("catalog-preset")?;
+    let sent = batch_sent(
+        frame,
+        "catalog-preset",
+        "batch.apply-preset",
+        json!({"targets": {"kind": "selection"}, "preset_id": expected["preset"]["id"]}),
+    )?;
+    let preset = batch_ended(frame, "catalog-preset", "batch-preset")?;
+    let done = preset["done"].as_array().cloned().unwrap_or_default();
+    ensure(
+        done.len() == 5
+            && preset["skipped"] == json!([])
+            && preset["settings_skipped"].as_array().map(Vec::len) == Some(5),
+        format!(
+            "catalog-preset: five JPEGs take the exposure and not the RAW development: {preset}"
+        ),
+    )?;
+    let info = &catalog_block(frame)["info"];
+    ensure(
+        info["edited"] == "5 of 5",
+        format!("catalog-preset: the view was not read again: {info}"),
+    )?;
+    checks.note(
+        frame,
+        "a library preset applied to five photographs, its report job.read's",
+        json!({"request": sent, "report": preset, "band": info["band"]}),
+    );
+    let frame = launch.at("catalog-preset-report")?;
+    let sheet = &catalog_block(frame)["sheet"];
+    let listed = &sheet["sections"][0];
+    ensure(
+        sheet["kind"] == "preset"
+            && listed["heading"] == "Without some settings \u{b7} 5"
+            && listed["rows"].as_array().map(Vec::len) == Some(5),
+        format!("catalog-preset-report: the report shows {sheet}"),
+    )?;
+    checks.note(
+        frame,
+        "the batch's report, opened from the status bar",
+        json!({"sheet": sheet}),
+    );
+
+    // The five exported into the run's scratch folder: the files written are the report's.
+    let frame = launch.at("catalog-exported")?;
+    let export = &expected["export"]["path"];
+    let sent = batch_sent(
+        frame,
+        "catalog-exported",
+        "batch.export",
+        json!({"targets": {"kind": "selection"}, "destination": export}),
+    )?;
+    let exported = batch_ended(frame, "catalog-exported", "batch-export")?;
+    let mut written: Vec<String> = exported["written"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|path| path.as_str())
+        .map(|path| {
+            let path = Path::new(path);
+            ensure(
+                path.parent() == export.as_str().map(Path::new),
+                format!("an exported file is outside the folder: {}", path.display()),
+            )?;
+            Ok(path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default())
+        })
+        .collect::<Result<_>>()?;
+    written.sort();
+    let mut on_disk: Vec<String> = fs::read_dir(export.as_str().ok_or("no export folder")?)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    on_disk.sort();
+    ensure(
+        exported["done"].as_array().map(Vec::len) == Some(5)
+            && written.len() == 5
+            && written == on_disk,
+        format!(
+            "catalog-exported: the report wrote {written:?}, the folder holds {on_disk:?}: {exported}"
+        ),
+    )?;
+    checks.note(
+        frame,
+        "the five exported into the run's folder, the files written the report's",
+        json!({"request": sent, "report": exported, "folder": on_disk}),
+    );
+
+    // Removing, each step against catalog.info's counts as the sources panel shows them.
+    let removed = expected["counts"]["removed"].as_u64().unwrap_or(0);
+    let folder_count = expected["folder"]["count"].as_u64().unwrap_or(0) - 1;
+    let frame = launch.at("catalog-one")?;
+    ensure(
+        removed_and_viewed(frame) == (Some(removed), Some(folder_count)),
+        format!(
+            "catalog-one: Removed and the view count {:?}, catalog.info said {removed} removed",
+            removed_and_viewed(frame)
+        ),
+    )?;
+    let frame = launch.at("catalog-remove-asked")?;
+    let sheet = &catalog_block(frame)["sheet"];
+    ensure(
+        sheet["kind"] == "remove"
+            && sheet["confirm"] == "Remove"
+            && sheet["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("stays on disk")),
+        format!("catalog-remove-asked: the confirmation shows {sheet}"),
+    )?;
+    checks.note(
+        frame,
+        "Remove from catalog… asks first",
+        json!({"sheet": sheet}),
+    );
+    let steps = [
+        (
+            "catalog-removed",
+            "asset.remove",
+            json!({"targets": {"kind": "selection"}}),
+            removed + 1,
+            folder_count - 1,
+        ),
+        (
+            "catalog-remove-undone",
+            "library.undo",
+            json!({}),
+            removed,
+            folder_count,
+        ),
+        (
+            "catalog-removed-two",
+            "asset.remove",
+            json!({"targets": {"kind": "selection"}}),
+            removed + 2,
+            folder_count - 2,
+        ),
+    ];
+    for (name, method, params, in_removed, in_view) in steps {
+        let frame = launch.at(name)?;
+        let sent = library_sent(frame, name, method, params)?;
+        ensure(
+            removed_and_viewed(frame) == (Some(in_removed), Some(in_view)),
+            format!(
+                "{name}: Removed and the view count {:?}, not {in_removed} and {in_view}",
+                removed_and_viewed(frame)
+            ),
+        )?;
+        checks.note(
+            frame,
+            match name {
+                "catalog-removed" => "one photograph removed, one library change",
+                "catalog-remove-undone" => "Cmd+Z puts it back",
+                _ => "two removed with Delete",
+            },
+            json!({"request": sent, "removed": in_removed, "count": in_view}),
+        );
+    }
+    let frame = launch.at("catalog-delete-asked")?;
+    ensure(
+        catalog_block(frame)["sheet"]["confirm"] == "Remove 2",
+        format!(
+            "catalog-delete-asked: Delete asks {}",
+            catalog_block(frame)["sheet"]
+        ),
+    )?;
+    let frame = launch.at("catalog-removed-view")?;
+    ensure(
+        select(frame)["source"]["kind"] == "removed"
+            && removed_and_viewed(frame) == (Some(removed + 2), Some(removed + 2)),
+        format!(
+            "catalog-removed-view: Removed shows {:?} of {}",
+            removed_and_viewed(frame),
+            select(frame)["source"]
+        ),
+    )?;
+    checks.note(
+        frame,
+        "Removed viewed, holding what catalog.info counts",
+        json!({"count": select(frame)["count"]}),
+    );
+    let frame = launch.at("catalog-put-back")?;
+    let sent = library_sent(
+        frame,
+        "catalog-put-back",
+        "asset.restore",
+        json!({"targets": {"kind": "selection"}}),
+    )?;
+    ensure(
+        removed_and_viewed(frame) == (Some(removed + 1), Some(removed + 1)),
+        format!(
+            "catalog-put-back: Removed and its view count {:?}",
+            removed_and_viewed(frame)
+        ),
+    )?;
+    checks.note(
+        frame,
+        "one put back, one library change",
+        json!({"request": sent}),
+    );
+    let frame = launch.at("catalog-empty-asked")?;
+    let sheet = &catalog_block(frame)["sheet"];
+    let deleting = if removed + 1 == 1 {
+        "Delete 1 photograph".to_owned()
+    } else {
+        format!("Delete {} photographs", removed + 1)
+    };
+    ensure(
+        sheet["kind"] == "empty"
+            && sheet["confirm"] == deleting.as_str()
+            && sheet["note"]
+                .as_str()
+                .is_some_and(|note| note.contains("cannot be undone")),
+        format!("catalog-empty-asked: the confirmation shows {sheet}"),
+    )?;
+    let frame = launch.at(LAST)?;
+    let calls = &catalog_block(frame)["empty_calls"];
+    let photographs = expected["counts"]["photographs"].as_u64().unwrap_or(0);
+    ensure(
+        calls.as_array().map(Vec::len) == Some(1)
+            && calls[0]["params"]["mutation"]["actor"] == "desktop"
+            && calls[0]["answer"]["deleted"] == removed + 1
+            && calls[0]["answer"]["remaining"] == 0
+            && removed_and_viewed(frame) == (Some(0), Some(0))
+            && catalog_count(frame, 0) == Some(photographs - 1),
+        format!(
+            "{LAST}: emptying answered {calls}; Removed and its view count {:?}, All photographs {:?}",
+            removed_and_viewed(frame),
+            catalog_count(frame, 0)
+        ),
+    )?;
+    checks.note(
+        frame,
+        "Removed emptied, catalog.info counting none left",
+        json!({"calls": calls, "photographs": catalog_count(frame, 0)}),
     );
 
     // What the editor left: the smart collection storing exactly the query shown, the folder
@@ -578,8 +984,51 @@ pub fn verify(
             "browse.view",
             json!({"source": {"kind": "catalog-folder", "folder_id": expected["move_to"]["id"]}}),
         )?;
-        Ok(json!({"collections": collections, "folders": folders, "moved": moved["count"]}))
+        // Each photograph the preset reached, with its history's labels.
+        let mut histories = Vec::new();
+        for asset in &done {
+            let page = ask(
+                owner,
+                client,
+                "history.list",
+                json!({"asset_id": asset, "limit": 20}),
+            )?;
+            let labels: Vec<Value> = page["entries"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|entry| entry["label"].clone())
+                .collect();
+            histories.push(json!({"asset_id": asset, "labels": labels}));
+        }
+        let counts = ask(owner, client, "catalog.info", json!({}))?["counts"].clone();
+        Ok(json!({
+            "collections": collections,
+            "folders": folders,
+            "moved": moved["count"],
+            "histories": histories,
+            "counts": counts,
+        }))
     })?;
+    for history in after["histories"].as_array().into_iter().flatten() {
+        let presets = history["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|label| *label == &json!(format!("Preset: {PRESET}")))
+            .count();
+        ensure(
+            presets == 1,
+            format!("A photograph the preset reached has {presets} preset entries: {history}"),
+        )?;
+    }
+    ensure(
+        after["counts"]["removed"] == 0 && after["counts"]["photographs"] == photographs - 1,
+        format!(
+            "The catalog left counts {}, {photographs} photographs before",
+            after["counts"]
+        ),
+    )?;
     let stored = after["collections"]["collections"]
         .as_array()
         .into_iter()
@@ -628,8 +1077,8 @@ pub fn verify(
     )?;
     checks.note(
         launch.at(LAST)?,
-        "the catalog the editor left: the smart collection's query as shown, the folder renamed and nested, the photograph moved, the add undone",
-        json!({"smart": stored, "folder": renamed, "moved": after["moved"], "print": print}),
+        "the catalog the editor left: the smart collection's query as shown, the folder renamed and nested, the photograph moved, the add undone, one preset entry on each photograph the preset reached, Removed empty",
+        json!({"smart": stored, "folder": renamed, "moved": after["moved"], "print": print, "histories": after["histories"], "counts": after["counts"]}),
     );
     Ok(())
 }

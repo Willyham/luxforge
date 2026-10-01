@@ -122,6 +122,10 @@ pub(crate) enum Starting {
     /// an open draft is applied or cancelled first. Neither a previewed entry nor a request in
     /// flight holds it back, and switching pauses neither.
     Workspace,
+    /// Moving to another photograph of the development set, which replaces the one document: one
+    /// draft only, so an open draft is applied or cancelled first. A previewed entry does not hold
+    /// it back; a request of this desktop's in flight is answered by the switch itself.
+    Photograph,
     // ── end lane D ──
 }
 
@@ -145,9 +149,12 @@ impl Starting {
             }
             Self::Slider => (true, true, false),
             Self::Gallery | Self::History => (true, false, true),
-            Self::Mode | Self::Compare | Self::Preset | Self::Refit | Self::Workspace => {
-                (true, false, false)
-            }
+            Self::Mode
+            | Self::Compare
+            | Self::Preset
+            | Self::Refit
+            | Self::Workspace
+            | Self::Photograph => (true, false, false),
             Self::Export => (false, false, true),
         };
         Halves {
@@ -172,6 +179,7 @@ impl Starting {
             Self::Refit => "before refitting the preview",
             Self::Export => "before exporting",
             Self::Workspace => "before switching to Select",
+            Self::Photograph => "before switching photographs",
         }
     }
 }

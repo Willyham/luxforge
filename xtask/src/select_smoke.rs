@@ -28,7 +28,9 @@
 //!
 //! Then the catalog ([`select_catalog_smoke`]): real photographs developed into it before the run,
 //! viewed from their catalog folder with their previews, counted and narrowed by the Metadata
-//! browser and the search, saved as a smart collection, moved, collected and organized.
+//! browser and the search, saved as a smart collection, moved, collected and organized; five of
+//! them given a library preset and exported as batches; and photographs removed, the removal
+//! undone, Removed viewed, one put back and Removed emptied.
 //!
 //! Each frame's `select` block is checked against the core's own answers: the view's size, picks
 //! and group layout as `browse.view` answered the runner's client, the headings' and headers' pick
@@ -58,9 +60,11 @@ pub const NOTE: &str = "The run first generates its catalog and index into `gene
     `cargo xtask generate-catalog --files 2000 --assets 3000 --images 120 --seed 1`, develops 28 of \
     its JPEGs (`iPhone export` and `Card dumps/2026-09-16`) into a new catalog folder `Real \
     photographs` through the runner's own client (`folder.create`, `index.refresh`, `pick.set`, \
-    `pick.plan`, `pick.develop`, as the actor `setup`), asks the core for the \
+    `pick.plan`, `pick.develop`, as the actor `setup`) and makes the library preset `Warm` \
+    (`preset.create`), asks the core for the \
     answers the frames are checked against over a pristine copy (`select-expected.json`), writes \
-    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, and launches \
+    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, makes the empty \
+    folder `batch-export/` the batch export writes into, and launches \
     the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and index.
 pub const GENERATED: &str = "generated";
@@ -529,6 +533,9 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
             select_catalog_smoke::prepare(&generated)?;
             let mut expected = expect(&generated)?;
             expected["catalog"] = select_catalog_smoke::expect(&generated)?;
+            // The batch export's scratch folder, in the run's own output directory.
+            expected["catalog"]["export"] =
+                json!({"path": select_catalog_smoke::export_folder(run.out())?});
             let first_look = run.out().join(FIRST_LOOK);
             write_first_look(&first_look)?;
             expected["first_look"] = json!({"path": first_look, "files": FIRST_LOOK_FILES});
@@ -1517,6 +1524,7 @@ mod tests {
             "folder": {"count": 28},
             "camera": {"label": "iPhone 15 Pro"},
             "search": {"count": 9},
+            "export": {"path": "/run/batch-export"},
         }});
         let catalog = crate::select_catalog_smoke::steps(&expected).unwrap();
         let plan = plan(
@@ -1528,7 +1536,7 @@ mod tests {
             catalog,
         );
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 36);
+        assert_eq!(plan.len(), 54);
         assert!(plan.scripted());
     }
 }

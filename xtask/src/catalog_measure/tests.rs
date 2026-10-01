@@ -128,10 +128,11 @@ fn catalog_measure_skipped_figures_keep_their_metric_names() {
         && row["scope"].is_string()));
 }
 
-/// The desktop probes launch the editor (`desktop.rs`'s own test turns their figures into rows);
-/// the Develop switch names its lane until it is built.
+/// The desktop probes and the Develop switch launch the editor (`desktop.rs`'s own test turns their
+/// figures into rows): without one the switch says which binary is missing, which the report's
+/// step records as a failure.
 #[test]
-fn catalog_measure_develop_switch_names_its_lane() {
+fn catalog_measure_develop_switch_needs_its_editor() {
     let dir = tempdir();
     let context = DesktopContext {
         binary: dir.path().join("luxforge"),
@@ -140,14 +141,11 @@ fn catalog_measure_develop_switch_names_its_lane() {
         folder_10k: dir.path().join("folder"),
         raw_trip: None,
     };
-    let switch: Vec<Value> = develop_switch(&context)
-        .unwrap()
-        .into_iter()
-        .map(Row::value)
-        .collect();
-    assert_eq!(switch.len(), 1);
-    assert_eq!(switch[0]["status"], report::NOT_MEASURED);
-    assert!(switch[0]["reason"].as_str().unwrap().contains("TASK-021"));
+    let switch = develop_switch(&context).unwrap_err().to_string();
+    assert!(
+        switch.contains("luxforge") && switch.contains("does not exist"),
+        "{switch}"
+    );
 }
 
 #[test]

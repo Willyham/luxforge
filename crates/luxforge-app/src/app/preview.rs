@@ -565,6 +565,36 @@ impl Presentation {
         content
     }
 
+    /// Draw a photograph's decoded cached preview in place of whatever is on screen: the
+    /// photograph Develop is switching to, before its original is prepared. Everything that
+    /// described the frame on screen is withdrawn with it — its retained frames, its histogram, its
+    /// overlays and the entry it was rendered for — so nothing claims the preview is another
+    /// photograph's render. The preview gets a content of its own, which no render shares, and the
+    /// render that follows replaces it like any frame. The pixels are the decoded preview's own
+    /// bytes, shared rather than copied. Answers the photo surface's version it was handed over as,
+    /// or `None` when the buffer does not hold its own size.
+    pub(crate) fn show_cached<P: AsRef<[u8]> + Send + Sync + 'static>(
+        &mut self,
+        pixels: Arc<P>,
+        size: (u32, u32),
+    ) -> Option<u64> {
+        self.withdraw();
+        self.presenter.clear_clipping();
+        self.presenter.clear_coverage();
+        self.content_serial = self.content_serial.saturating_add(1);
+        self.content_key = None;
+        let content = self.content_serial;
+        if !self.presenter.show_preview(pixels, size, content) {
+            return None;
+        }
+        self.dimensions = Some(size);
+        self.presented_content = content;
+        self.presented_bounds = None;
+        self.refit_pending = false;
+        self.render_error = None;
+        Some(self.presenter.photo_version())
+    }
+
     /// Make a visible region the region slot's pixels and record that it is on screen. `false`
     /// when the surface refused it, and then nothing is recorded.
     pub(crate) fn show_region(
@@ -906,6 +936,7 @@ impl Editor {
                 self.view_state.window,
                 self.session.workspace.state_panel,
                 self.session.workspace.tools_panel,
+                self.filmstrip_shown(),
             ),
             self.view_state.local_pan,
         )
@@ -1198,6 +1229,7 @@ impl Editor {
                     self.view_state.window,
                     workspace.state_panel,
                     workspace.tools_panel,
+                    self.filmstrip_shown(),
                 );
                 let inset = layout::FIT_INSET;
                 bounds_of((
@@ -1234,6 +1266,7 @@ impl Editor {
                 self.view_state.window,
                 workspace.state_panel,
                 workspace.tools_panel,
+                self.filmstrip_shown(),
             ),
             self.view_state.scale_factor,
             layout::FIT_INSET,

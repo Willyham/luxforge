@@ -720,10 +720,28 @@ fn import_now(
     // The Develop brings the file in (or finds the photograph that has its bytes); then its
     // photograph's original is prepared.
     let asset = developed_photograph(owner, client, &job_id)?;
+    let mut refreshed = open_photograph(owner, client, &asset, generation, open_guard, proxy)?;
+    // An open is announced under the `pick.develop` request that brought the file in.
+    refreshed.request = Some(request);
+    Ok(refreshed)
+}
+
+/// Open a photograph of the catalog as this client's one photograph: its original prepared
+/// (`source.prepare`), the preparation adopted (`job.adopt`) and everything an open reads, read
+/// back. A newer open supersedes it, as [`OpenGuard`] says. The open path every open shares: a
+/// file opened (after its Develop) and a photograph of Develop's development set moved to.
+pub(crate) fn open_photograph(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset: &AssetId,
+    generation: u64,
+    open_guard: &OpenGuard,
+    proxy: Option<ProxyBounds>,
+) -> Result<Refresh, String> {
     if open_guard.superseded(generation) {
         return Err("superseded open".into());
     }
-    let job_id = prepare_photograph(owner, client, &asset)?;
+    let job_id = prepare_photograph(owner, client, asset)?;
     // An older open still preparing is no longer wanted: leaving its job ends its task's wait.
     if let Some(older) = open_guard.claim(generation, &job_id) {
         let _ = call(owner, client, JOB_CANCEL, json!({"job_id":older}));
@@ -738,13 +756,31 @@ fn import_now(
     let mut prepared = prepared.map_err(|error| error.to_string())?;
     let state: EditorState = parse(prepared["result"].take())?;
     call(owner, client, "job.adopt", json!({"job_id":job_id}))?;
-    let mut refreshed = refresh(owner, client, state.asset.id, Scope::Open, proxy)?;
+    let refreshed = refresh(owner, client, state.asset.id, Scope::Open, proxy)?;
     if open_guard.superseded(generation) {
         return Err("superseded open".into());
     }
-    // An open is announced under the `pick.develop` request that brought the file in.
-    refreshed.request = Some(request);
     Ok(refreshed)
+}
+
+/// [`open_photograph`] as an owner task, answered as an import is, under its generation.
+pub(crate) fn photograph_task(
+    owner: OwnerHandle,
+    client: ClientId,
+    asset: AssetId,
+    generation: u64,
+    open_guard: Arc<OpenGuard>,
+    proxy: Option<ProxyBounds>,
+) -> Task<Message> {
+    owner_task(
+        move || open_photograph(&owner, client, &asset, generation, &open_guard, proxy),
+        move |result| {
+            Message::Sync(SyncMessage::ImportRefreshed(
+                generation,
+                result.map(Box::new),
+            ))
+        },
+    )
 }
 
 /// The initial request can begin before the platform event loop and still finish through the

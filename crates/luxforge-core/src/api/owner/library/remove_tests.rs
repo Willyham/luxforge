@@ -816,6 +816,7 @@ fn remove_empty_leaves_every_view_stale() {
     };
     assert_eq!(view(harness.client, &removed), 1);
     assert_eq!(view(harness.admin, &json!({"kind": "all-photographs"})), 1);
+    harness.ok("browse.select", json!({"all": true}));
     assert_eq!(
         (stale(harness.client), stale(harness.admin)),
         (json!(false), json!(false))
@@ -828,7 +829,8 @@ fn remove_empty_leaves_every_view_stale() {
         (json!(true), json!(true)),
         "both views are stale"
     );
-    // The stale Removed view refuses to be acted on, and evaluated again it is empty.
+    // The stale Removed view's selection named the deleted photograph, so a request on the selection
+    // is refused rather than acting on what is left of it; evaluated again it is empty.
     assert_eq!(
         harness
             .refused(

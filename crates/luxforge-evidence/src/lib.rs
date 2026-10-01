@@ -17,9 +17,11 @@ use serde_json::{Map, Value};
 
 mod build;
 mod catalog;
+mod develop;
 mod missing;
 
 pub use catalog::{CatalogStep, FacetColumn};
+pub use develop::{DevelopStep, SetStep};
 pub use missing::{MissingFilterStep, MissingStep};
 
 /// The most steps one evidence run accepts, so a script cannot outlive the evidence deadline
@@ -197,6 +199,9 @@ pub enum Step {
     /// One gesture on the catalog in Select: its folders and collections, filter bar, Metadata
     /// browser and Info panel.
     Catalog(CatalogStep),
+    /// One gesture on developing picks — Develop N's confirmation, `D` — or on Develop's
+    /// development set.
+    Develop(DevelopStep),
 }
 
 impl Step {
@@ -333,6 +338,7 @@ impl Step {
             Self::Loupe(step) => step.validate(),
             Self::GridScroll(step) => step.validate(),
             Self::Catalog(step) => step.validate(),
+            Self::Develop(step) => step.validate(),
         }
     }
 }

@@ -1,11 +1,11 @@
 //! The `resolve-missing` smoke scenario: Select's Missing originals over a catalog whose originals
-//! were reorganized, in the real editor at 1440 × 900 (TASK-023).
+//! were reorganized, in the real editor at 1440 × 900.
 //!
 //! The run first makes its photographs: real generated JPEGs (`generate-catalog --images`), copied
 //! onto a disk image labelled "Photos SSD" (on macOS, made with `hdiutil` and attached with
 //! `-nobrowse` at a mount point inside the run, so nothing appears on the desktop; elsewhere a
 //! scratch folder of that name stands in for it), onto a second image, "Old SSD", and into a
-//! scratch card-dump folder, and develops them into a new catalog with `catalog.import`. It then
+//! scratch card-dump folder, and develops them into a new catalog with `pick.develop`. It then
 //! reorganizes them as a photographer would, never touching anything outside the run:
 //!
 //! - `2026/2026-09 Konstanz` on Photos SSD moves within the image to `Archive/Photographs/…`: five
@@ -181,16 +181,31 @@ fn with_owner<T>(
 }
 
 /// A disk image the run made, attached at a mount point inside the run, and detached when dropped.
-struct DiskImage {
+pub(crate) struct DiskImage {
     image: PathBuf,
     mount: PathBuf,
     attached: bool,
+    /// Attached as a volume a person browses, which Luxforge then knows as a removable volume of
+    /// its own, rather than with `-nobrowse`, which leaves it part of the volume it is mounted in.
+    browsed: bool,
 }
 
 impl DiskImage {
     /// Make an HFS+ image labelled `label` and attach it at `mount`, without showing it anywhere.
     /// Off macOS, a scratch folder at `mount` stands in for it.
-    fn create(dir: &Path, label: &str) -> Result<Self> {
+    pub(crate) fn create(dir: &Path, label: &str) -> Result<Self> {
+        Self::made(dir, label, false)
+    }
+
+    /// Make an HFS+ image labelled `label` and attach it at `mount` as a volume a person browses
+    /// (`-noautoopen` keeping the Finder from opening a window on it), as a camera card is: Luxforge
+    /// knows it by its UUID, as removable media. Off macOS, a scratch folder stands in for it,
+    /// which is not removable.
+    pub(crate) fn card(dir: &Path, label: &str) -> Result<Self> {
+        Self::made(dir, label, true)
+    }
+
+    fn made(dir: &Path, label: &str, browsed: bool) -> Result<Self> {
         let mount = dir.join("volumes").join(label);
         fs::create_dir_all(&mount)?;
         let image = dir.join(format!("{label}.dmg"));
@@ -198,6 +213,7 @@ impl DiskImage {
             image,
             mount,
             attached: false,
+            browsed,
         };
         if cfg!(target_os = "macos") {
             let status = Command::new("hdiutil")
@@ -213,8 +229,13 @@ impl DiskImage {
     }
 
     fn attach(&mut self) -> Result {
+        let visibility = if self.browsed {
+            "-noautoopen"
+        } else {
+            "-nobrowse"
+        };
         let status = Command::new("hdiutil")
-            .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
+            .args(["attach", "-quiet", visibility, "-mountpoint"])
             .arg(&self.mount)
             .arg(&self.image)
             .status()?;
@@ -238,7 +259,7 @@ impl DiskImage {
         Ok(())
     }
 
-    fn root(&self) -> Result<PathBuf> {
+    pub(crate) fn root(&self) -> Result<PathBuf> {
         Ok(self.mount.canonicalize()?)
     }
 }

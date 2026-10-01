@@ -11,6 +11,7 @@ use crate::app::message::{
 use crate::state::palette::Panel;
 // ── catalog lane D: views and desktop ──
 use crate::app::message::{
+    develop::DevelopMessage,
     loupe::LoupeMessage,
     select::{SelectMessage, Step},
     select_catalog::CatalogMessage,
@@ -73,6 +74,10 @@ pub(crate) struct KeyContext {
     pub(crate) select_menu_open: bool,
     /// The loupe is open over Select's centre, so Escape returns to the grid.
     pub(crate) loupe_open: bool,
+    /// Develop N's confirmation is open, so Escape cancels it and Return develops.
+    pub(crate) develop_confirm: bool,
+    /// Develop has a development set, so `←` and `→` move through it.
+    pub(crate) development_set: bool,
     // ── end lane D ──
 }
 
@@ -183,6 +188,12 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             if character(key, "]") {
                 return Some(Message::View(ViewMessage::TogglePanel(Panel::Tools)));
             }
+            // ── catalog lane D: views and desktop ──
+            // The filmstrip collapses and expands with the side panels' modifiers.
+            if context.development_set && character(key, "f") {
+                return Some(Message::Develop(DevelopMessage::Collapse));
+            }
+            // ── end lane D ──
         }
         return None;
     }
@@ -301,6 +312,29 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             }
         }
     }
+    // ── catalog lane D: views and desktop ──
+    // `←` and `→` move through the development set when no text field, draft or gesture holds
+    // them, and repeat while held. A slider on the pointer's rail captures them itself.
+    if context.development_set
+        && !context.drafting
+        && !context.slider_drafting
+        && !context.mask_keys
+        && !modifiers.shift()
+        && !modifiers.alt()
+        && !modifiers.control()
+        && !modifiers.logo()
+    {
+        match key {
+            Key::Named(Named::ArrowLeft) => {
+                return Some(Message::Develop(DevelopMessage::Step(-1)));
+            }
+            Key::Named(Named::ArrowRight) => {
+                return Some(Message::Develop(DevelopMessage::Step(1)));
+            }
+            _ => {}
+        }
+    }
+    // ── end lane D ──
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
     // nothing. A mode that owns a draft answered Escape above by cancelling that draft, which is
     // what returns it to the pointer.
@@ -377,8 +411,10 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// undo and redo this desktop's library changes; `Cmd+F` puts the focus in the search field (the
 /// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
 /// `Cmd+Option+[` and `]` one each, as in Develop; `S` collapses or expands the active burst; `P`
-/// picks or clears the selection. `D`, which will develop the active frame, waits for developing
-/// picks, and the loupe's keys for the loupe.
+/// picks or clears the selection; `D` develops the active frame, picking it when it is not picked
+/// (over the catalog it opens Develop on the active photograph with the view as its set), and
+/// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
+/// Return confirms; the loupe's keys are the loupe's.
 fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
     let Keys::KeyPressed {
         key,
@@ -391,6 +427,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     };
     if context.select_menu_open && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Select(SelectMessage::Menu(None)));
+    }
+    // Develop N's confirmation takes Escape whatever has focus; its name field takes Return itself.
+    if context.develop_confirm && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Develop(DevelopMessage::Cancel));
     }
     if context.loupe_open && matches!(key, Key::Named(Named::Escape)) && status == Status::Ignored {
         return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Close)));
@@ -420,6 +460,10 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
         }
         if *repeat {
             return None;
+        }
+        // Develop N: `Cmd+Return` develops the picks in view.
+        if matches!(key, Key::Named(Named::Enter)) && !modifiers.shift() {
+            return Some(Message::Develop(DevelopMessage::Open));
         }
         // Library undo and redo: in Select, `Cmd+Z` and `Shift+Cmd+Z` are the journal's, never
         // the photograph's history (the design's P10).
@@ -465,6 +509,16 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     if *repeat || !plain(modifiers) {
         return None;
     }
+    // Return develops once the confirmation is open.
+    if context.develop_confirm && matches!(key, Key::Named(Named::Enter)) {
+        return Some(Message::Develop(DevelopMessage::Confirm));
+    }
+    // `D`, over the grid or in the loupe: develop the active frame, picking it when it is not
+    // picked; over the catalog, Develop on the active photograph with the view's photographs as the
+    // set.
+    if character(key, "d") {
+        return Some(Message::Develop(DevelopMessage::Key));
+    }
     if matches!(key, Key::Named(Named::Tab)) {
         return Some(Message::Select(SelectMessage::TogglePanels));
     }
@@ -474,6 +528,12 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     // `P` picks or clears the selection over the grid; the loupe's `P` is the loupe's own.
     if !context.loupe_open && character(key, "p") {
         return Some(Message::Select(SelectMessage::Pick));
+    }
+    // `Delete` asks to remove the selection from the catalog; over files it does nothing.
+    if !context.loupe_open && matches!(key, Key::Named(Named::Backspace | Named::Delete)) {
+        return Some(Message::Select(SelectMessage::Catalog(
+            CatalogMessage::Act(CatalogAction::Remove),
+        )));
     }
     // `Space` or `E` shows the active frame in the loupe.
     if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
@@ -587,6 +647,8 @@ mod tests {
             select: false,
             select_menu_open: false,
             loupe_open: false,
+            develop_confirm: false,
+            development_set: false,
             // ── end lane D ──
         }
     }

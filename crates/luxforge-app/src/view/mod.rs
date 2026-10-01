@@ -12,6 +12,7 @@ pub(crate) mod canvas_view;
 mod capabilities;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
+pub(crate) mod develop;
 mod gallery;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
@@ -71,7 +72,11 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) draft: Option<&'a CropDraft>,
 }
 
-pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {
+pub(crate) fn workspace<'a>(
+    model: &'a Workspace,
+    surfaces: Surfaces<'a>,
+    strip: crate::app::develop::StripImages<'a>,
+) -> Element<'a, Message> {
     let title = container(title_bar::title_bar(model))
         .width(Length::Fill)
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
@@ -81,6 +86,14 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
         .width(Length::Fill)
         .height(Length::Fill)
         .style(theme::canvas_surface);
+    // Develop's filmstrip under the canvas, between the side panels, while it holds a set.
+    let canvas_area: Element<'a, Message> = match &model.develop.strip {
+        Some(model) => column![canvas_area, develop::strip(model, strip)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        None => canvas_area.into(),
+    };
 
     let mut middle = row![].height(Length::Fill);
     if model.title.state_panel_open {

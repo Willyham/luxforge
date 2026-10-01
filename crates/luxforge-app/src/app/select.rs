@@ -591,7 +591,17 @@ impl Editor {
                     .layout
                     .clamp_scroll(self.select.scroll, size.height);
             }
-            SelectMessage::Press(press) => self.press(press),
+            SelectMessage::Press(press) => {
+                // A double-click on a photograph of a catalog view opens it in Develop, with the
+                // view's photographs as the development set.
+                let open = (press.double && self.select.state.over_catalog()).then_some(press.item);
+                self.press(press);
+                if let Some(position) = open {
+                    return self.develop_update(
+                        crate::app::message::develop::DevelopMessage::OpenAt(position),
+                    );
+                }
+            }
             SelectMessage::Move { step, extend } => self.move_active(step, extend),
             SelectMessage::SelectAll => {
                 self.select_now(SelectGesture::All);
@@ -781,7 +791,7 @@ impl Editor {
 
     /// Ask `catalog.info` again for the Catalog sources' counts, and the catalog's folders and
     /// collections with them ([`crate::app::select_catalog`]).
-    fn read_counts(&mut self) -> Task<Message> {
+    pub(crate) fn read_counts(&mut self) -> Task<Message> {
         self.select.counts.offer(());
         self.select.catalog.lists.offer(());
         self.start_counts()
@@ -987,7 +997,9 @@ impl Editor {
                 // Whether the active item was on screen, which decides whether the scroll follows
                 // it or stays where the person left it.
                 let active_shown = self.active_on_screen();
+                let was_active = self.session.browse.selection.active;
                 self.adopt(session);
+                let now_active = self.session.browse.selection.active;
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
                 let same_source = previous
@@ -1010,7 +1022,17 @@ impl Editor {
                 {
                     state.folder = Some(path.clone());
                 }
-                state.rows.reset(summary.revision, summary.count);
+                // The same source read again keeps the active item's row, and its neighbours' when
+                // they kept their places, until the new revision's rows arrive: the loupe's frame
+                // never goes without one.
+                let carried = if same_source {
+                    model::carried_rows(&state.rows, was_active, now_active, summary.count)
+                } else {
+                    Vec::new()
+                };
+                state
+                    .rows
+                    .reset_carrying(summary.revision, summary.count, carried);
                 state.query = Some(summary.query.clone());
                 let count = model::thousands(summary.count);
                 state.summary = Some(summary);
@@ -1374,15 +1396,12 @@ impl Editor {
     }
 
     /// Pick the active frame alone, or clear it when it is picked, through [`Self::select_pick`].
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "the loupe (TASK-020) picks through select_pick")
-    )]
     pub(crate) fn pick_active(&mut self) -> Task<Message> {
         let Some(active) = self.selection().active else {
             return Task::none();
         };
-        let Some(row) = self.select.state.rows.row(active) else {
+        // Whether it is picked now, from this revision's own row.
+        let Some(row) = self.select.state.rows.read(active) else {
             self.status.text = "Reading the frame\u{2026}".into();
             return Task::none();
         };
@@ -1392,10 +1411,10 @@ impl Editor {
 
     /// Pick or clear the files at `positions` of the view: one journaled `pick.set` naming their
     /// files, as this desktop's actor — the request an agent sends, and the one the grid's Pick all
-    /// sends. The loupe's `P` (TASK-020) calls it with its active frame. It is answered in this
+    /// sends. The loupe's `P` calls it with its active frame. It is answered in this
     /// update, like every library gesture here, and [`Self::loupe_picked`] hears the outcome at
     /// once, which is where the loupe moves on to the next moment after a burst's pick (the
-    /// design's P7; [`model::next_moment`] is that position). The view is then evaluated again as
+    /// design's P7). The view is then evaluated again as
     /// after any pick. A position whose row is not read yet, or a developed photograph, refuses
     /// the whole pick with its reason and sends nothing.
     pub(crate) fn select_pick(&mut self, positions: &[u32], picked: bool) -> Task<Message> {

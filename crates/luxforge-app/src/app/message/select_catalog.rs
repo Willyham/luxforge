@@ -1,7 +1,10 @@
-//! The catalog in the Select workspace (TASK-022), carried inside the Select workspace's message as
+//! The catalog in the Select workspace, carried inside the Select workspace's message as
 //! [`SelectMessage::Catalog`](super::select::SelectMessage::Catalog).
-use crate::state::select_catalog::CatalogAction;
-use luxforge_core::catalog_types::{CatalogFolders, Collections, ViewRow, ViewSource};
+use crate::state::select_catalog::{CatalogAction, PresetChoice};
+use luxforge_core::catalog_types::{
+    CatalogFolders, Collections, EmptyRemovedAnswer, ViewRow, ViewSource,
+};
+use serde_json::Value;
 
 /// What the catalog's gestures and owner answers are, handled in `app/select_catalog.rs`. Every
 /// gesture that changes the view sends the whole query to `browse.view`; every organizing gesture
@@ -25,4 +28,13 @@ pub(crate) enum CatalogMessage {
         ranges: Vec<(u32, u32)>,
         result: Result<Vec<ViewRow>, String>,
     },
+    /// `preset.list` answered, for the Apply preset… menu.
+    Presets(Result<Vec<PresetChoice>, String>),
+    /// `job.read` answered the batch job `job`.
+    BatchRead {
+        job: String,
+        result: Result<Value, String>,
+    },
+    /// One `catalog.empty-removed` call answered: its parameters and its answer.
+    Emptied(Result<(Value, EmptyRemovedAnswer), String>),
 }
