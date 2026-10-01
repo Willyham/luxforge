@@ -262,6 +262,12 @@ fn loupe_frames_are_warm_once_the_look_ahead_is_decoded() {
     frames.answered(answer(&again, ready));
     frames.adopt(decoded(&planned(&frames, 7).unwrap()));
     assert!(frames.ready(&wanted[2]) && frames.all_settled(&wanted));
+    // The high-water mark of the bytes held outlives their release.
+    let held = frames.summary()["bytes"].as_u64().unwrap();
+    assert!(held > 0 && frames.summary()["peak_bytes"].as_u64() >= Some(held));
+    let _ = frames.release();
+    assert_eq!(frames.summary()["bytes"], 0);
+    assert!(frames.summary()["peak_bytes"].as_u64() >= Some(held));
 }
 
 /// Identity: a decode that lands for a frame no longer on screen is kept as that frame's own while

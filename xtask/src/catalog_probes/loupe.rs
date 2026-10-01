@@ -14,9 +14,14 @@
 //! presents before the next key or is skipped; the figures are each presented key's latency, the
 //! intervals between the frames presented, and the intervals the keys were handled at, with the
 //! skipped keys and the keys whose frame was already held named in the scope.
+//!
+//! The design's figure is in display frames: a warm key's latency counts as `max(1, ⌈ms ÷ the
+//! display frame interval⌉)` frames, the interval being the median of the window's frame clock the
+//! grid probe observed on the same host and window size, so 1 is a frame presented within one frame
+//! interval of the key's handling: in the frame after the key. The milliseconds are kept beside it.
 use super::{
-    Launched, Prepared, ProbeContext, Source, launch, launch_scope, measured, prepare, start,
-    stepped,
+    Figure, LOUPE_STEP, Launched, Memory, Prepared, ProbeContext, Source, launch, launch_detail,
+    merge, prepare, start, stepped,
 };
 use crate::*;
 use luxforge_evidence::{self as script, ArrowKey, LoupeArrows, LoupeStep, MAX_LOUPE_ARROWS};
@@ -36,50 +41,83 @@ struct Plan {
     hold: Option<(ArrowKey, u32)>,
 }
 
-/// The loupe's rows over the generated JPEGs and, when there is one, the RAW trip.
+/// The loupe's figures over the generated JPEGs, whose warm stepping is the design's figure, and,
+/// when there is one, over the RAW trip beside them; `frame_ms` is the display frame interval
+/// observed, which the design's figure is counted in.
 pub(super) fn probe(
     root: &Path,
     context: &ProbeContext,
     images: &Source,
     raw: Option<&Source>,
-) -> Result<Vec<Value>> {
-    let mut rows = Vec::new();
-    for (name, source) in [("loupe", Some(images)), ("loupe-raw", raw)] {
+    frame_ms: Option<f64>,
+    memory: &mut Memory,
+) -> Result<Vec<Figure>> {
+    let mut figures = Vec::new();
+    for (name, family, source) in [
+        ("loupe", "desktop.loupe_step", Some(images)),
+        ("loupe-raw", "desktop.loupe_step.raw_trip", raw),
+    ] {
         let Some(source) = source else {
             continue;
         };
         let out = context.scratch.join(name);
-        rows.extend(
-            measure(root, context, name, source)
+        let taken = Taken {
+            name,
+            family,
+            frame_ms,
+        };
+        figures.extend(
+            measure(root, context, source, &taken, memory)
                 .map_err(|error| format!("The {name} probe ({}): {error}", out.display()))?,
         );
     }
-    Ok(rows)
+    Ok(figures)
 }
 
-fn measure(root: &Path, context: &ProbeContext, name: &str, source: &Source) -> Result<Vec<Value>> {
+/// One run of the probe: its directory's name, the metric family its figures are named in, and
+/// the display frame interval observed.
+struct Taken<'a> {
+    name: &'a str,
+    family: &'a str,
+    frame_ms: Option<f64>,
+}
+
+fn measure(
+    root: &Path,
+    context: &ProbeContext,
+    source: &Source,
+    taken: &Taken,
+    memory: &mut Memory,
+) -> Result<Vec<Figure>> {
     let prepared = prepare(
-        &context.scratch.join(format!("{name}-catalog")),
+        &context.scratch.join(format!("{}-catalog", taken.name)),
         &source.folder,
     )?;
     let plans = plan(prepared.count, &prepared.moments, context.samples)?;
-    let run = start(root, &context.scratch.join(name), &context.binary)?;
-    let mut rows = Vec::new();
+    let run = start(root, &context.scratch.join(taken.name), &context.binary)?;
+    let mut figures = Vec::new();
     run.check(|run| {
         let mut launches = Vec::new();
         for (index, plan) in plans.iter().enumerate() {
             let steps = script(&prepared, plan);
-            launches.push(launch(
+            let launched = launch(
                 run,
                 &format!("launch-{}", index + 1),
                 &prepared.catalog,
                 &steps,
-            )?);
+            )?;
+            memory.loupe_run(taken.name, &launched, plan.hold.map(|(_, keys)| keys));
+            launches.push(launched);
         }
-        rows = report(source, &prepared, &plans, &launches)?;
+        figures = report(source, &prepared, &plans, &launches, taken)?;
         Ok(())
     })?;
-    Ok(rows)
+    Ok(figures)
+}
+
+/// A warm key's latency in display frames: `max(1, ⌈ms ÷ frame_ms⌉)`.
+fn frames(ms: f64, frame_ms: f64) -> f64 {
+    (ms / frame_ms).ceil().max(1.0)
 }
 
 /// The launches: each opens the loupe on the view's first burst (or its first frame when it has
@@ -341,13 +379,15 @@ fn held(events: &[Value]) -> Result<Option<Held>> {
     Ok(Some(held))
 }
 
-/// The rows of every launch over `source`.
+/// The figures of every launch over `source`: the warm keys in display frames and in ms, then the
+/// held arrow's.
 fn report(
     source: &Source,
     prepared: &Prepared,
     plans: &[Plan],
     launches: &[Launched],
-) -> Result<Vec<Value>> {
+    taken: &Taken,
+) -> Result<Vec<Figure>> {
     let mut samples = Vec::new();
     let (mut cold, mut not_presented, mut preview) = (0, 0, None);
     for launched in launches {
@@ -357,64 +397,121 @@ fn report(
         not_presented += warm.not_presented;
         preview = preview.or(warm.preview);
     }
-    let base = launch_scope(&launches[0]);
+    let base = launch_detail(&launches[0]);
     let preview = preview.map(
         |(origin, (width, height))| json!({"origin": origin, "width": width, "height": height}),
     );
-    let mut scope = json!({
+    let rule = "frames = max(1, ceil(ms / frame_interval_ms)): 1 is a frame presented within one \
+                display frame interval of the key's handling, in the frame after the key. The \
+                interval is the median of the window's frame clock the grid probe observed while \
+                scrolling, on the same host and window size";
+    let mut detail = json!({
         "source": source.label,
         "files": prepared.count,
         "start_position": plans[0].start,
-        "look_ahead": "warm before every key: each frame the loupe wants decoded at its size (loupe_warm)",
-        "from": "the key's handling in the editor's update (loupe_key pressed_ms)",
-        "presented": "the update whose derived model draws the frame's own picture (loupe_presented), not scanout",
         "samples": samples.len(),
         "cold_excluded": cold,
         "not_presented": not_presented,
         "preview": preview,
         "launches": launches.len(),
+        "frame_interval_ms": taken.frame_ms,
+        "rule": rule,
+        "samples_ms": samples,
     });
-    merge(&mut scope, &base);
-    let mut rows = vec![measured(
-        "loupe_warm_key_to_presented",
-        "ms",
-        samples,
-        scope,
-    )];
+    merge(&mut detail, &base);
+    let scope = format!(
+        "Warm key to its frame presented, over {} presses of → from the first burst of {} ({} \
+         files), each once the look-ahead was warm: from the key's handling in the editor's update \
+         (loupe_key pressed_ms) to the update whose derived model draws that frame's own picture \
+         (loupe_presented), not scanout; a stand-in is never counted",
+        samples.len(),
+        source.label,
+        prepared.count
+    );
+    let cache = "the look-ahead warm before each key: every frame it wants decoded at its size \
+                 (loupe_warm), from loupe tiers read in the run; a key whose frame was not held when \
+                 it was handled is counted cold and left out";
+    let in_frames = |family: &str| format!("{family}.key_to_presented");
+    let frames_figure = match taken.frame_ms {
+        Some(frame_ms) => Figure::measured(
+            in_frames(taken.family),
+            "frames",
+            samples.iter().map(|ms| frames(*ms, frame_ms)).collect(),
+        ),
+        None => Figure::not_measured(
+            in_frames(taken.family),
+            "frames",
+            "no display frame interval was observed to count the keys' latency in",
+        ),
+    };
+    let mut figures = vec![
+        frames_figure
+            .scope(format!("{scope}; in display frames by the rule in detail"))
+            .cache(cache)
+            .target(LOUPE_STEP)
+            .detail(detail.clone()),
+        Figure::measured(
+            format!("{}.key_to_presented_ms", taken.family),
+            "ms",
+            samples,
+        )
+        .scope(scope)
+        .cache(cache)
+        .target(LOUPE_STEP)
+        .detail(detail),
+    ];
     let held = launches[0]
         .read(held(&launches[0].events))?
         .ok_or("The first launch held no arrow")?;
     let (direction, keys) = plans[0].hold.ok_or("The first launch plans no hold")?;
-    let mut scope = json!({
+    let mut detail = json!({
         "source": source.label,
         "files": prepared.count,
         "key_repeat_interval_ms": KEY_REPEAT_MS,
         "key_repeat": "macOS's fastest System Settings key repeat (KeyRepeat 2 x 15 ms); the first press, then repeats",
         "direction": format!("{direction:?}").to_lowercase(),
         "keys": keys,
-        "look_ahead": "warm before the first press (loupe_warm)",
         "presented_before_next_key": held.key_to_presented.len(),
         "skipped_keys": held.skipped,
         "ready_at_key": held.ready,
         "stand_ins_presented": held.stand_ins,
-        "presented": "the update whose derived model draws the frame's own picture (loupe_presented), not scanout",
     });
-    merge(&mut scope, &base);
-    for (metric, samples) in [
-        ("loupe_held_key_to_presented", held.key_to_presented),
-        ("loupe_held_presented_interval", held.presented_interval),
-        ("loupe_held_key_interval", held.key_interval),
+    merge(&mut detail, &base);
+    let scope = |what: &str| {
+        format!(
+            "{what}, while → is held for {keys} keys at {KEY_REPEAT_MS} ms over {} ({} files), \
+             each key's own frame presented (loupe_presented) before the next key or counted \
+             skipped in detail; presented is the update that draws it, not scanout",
+            source.label, prepared.count
+        )
+    };
+    let cache = "the look-ahead warm before the first press only (loupe_warm), then as it keeps up";
+    for (metric, what, samples) in [
+        (
+            "held_key_to_presented_ms",
+            "Each key to its own frame presented",
+            held.key_to_presented,
+        ),
+        (
+            "held_presented_interval",
+            "Intervals between the keys' frames presented",
+            held.presented_interval,
+        ),
+        (
+            "held_key_interval",
+            "Intervals between the keys as the editor handled them",
+            held.key_interval,
+        ),
     ] {
-        rows.push(measured(metric, "ms", samples, scope.clone()));
+        figures.push(
+            Figure::measured(format!("{}.{metric}", taken.family), "ms", samples)
+                .scope(scope(what))
+                .cache(cache)
+                .target(LOUPE_STEP)
+                .detail(detail.clone()),
+        );
     }
-    Ok(rows)
-}
-
-/// `extra`'s fields added to `scope`.
-fn merge(scope: &mut Value, extra: &Value) {
-    for (key, value) in extra.as_object().into_iter().flatten() {
-        scope[key] = value.clone();
-    }
+    Ok(figures)
 }
 
 #[cfg(test)]
@@ -499,6 +596,16 @@ mod tests {
         assert_eq!(held.key_to_presented, vec![2.0, 3.0]);
         assert_eq!(held.presented_interval, vec![61.0]);
         assert_eq!(held.key_interval, vec![30.0, 30.0]);
+    }
+
+    #[test]
+    fn a_warm_key_counts_the_display_frames_it_spans_and_at_least_one() {
+        let interval = 1000.0 / 120.0;
+        assert_eq!(frames(0.0, interval), 1.0);
+        assert_eq!(frames(1.2, interval), 1.0);
+        assert_eq!(frames(interval, interval), 1.0);
+        assert_eq!(frames(9.0, interval), 2.0);
+        assert_eq!(frames(21.2, interval), 3.0);
     }
 
     #[test]
