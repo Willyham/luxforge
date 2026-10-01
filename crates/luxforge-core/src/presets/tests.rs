@@ -1079,7 +1079,7 @@ fn a_tone_curve_with_seventeen_points_is_refused_with_its_count() {
 fn a_tone_curve_with_one_point_is_refused_with_its_count() {
     assert_eq!(
         curve_refusal("{ 0, 0 }"),
-        "has 1 points; Luxforge's tone curve needs at least 2"
+        "has 1 point; Luxforge's tone curve needs at least 2"
     );
     assert_eq!(
         curve_refusal("{}"),
