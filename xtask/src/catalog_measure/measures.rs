@@ -550,14 +550,41 @@ fn index_tree(cx: &Context, prefix: &str, tree: &Tree, what: &str) -> Result<Vec
 
 // ── Browse views at the design's scale ─────────────────────────────────────────────────────────
 
-pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
-    let core = Core::open(&cx.data.catalog)?;
-    let memory = |core: &Core| -> Result<f64> {
+/// How long the owner's footprint is watched for the allocator to hand back what an evaluation
+/// freed, and how often it is read meanwhile.
+const SETTLE_WITHIN: Duration = Duration::from_secs(5);
+const SETTLE_EVERY: Duration = Duration::from_millis(100);
+/// A footprint that has not fallen by more than this over five reads in a row has settled.
+const SETTLED_MIB: f64 = 0.5;
+
+/// The process's footprint (`resources.read`, `memory.bytes`) once it has settled: an evaluation
+/// frees a working set of a few hundred bytes an item that the allocator hands back to the system
+/// over the following second or so, and only what is left is what the owner holds. Read every
+/// [`SETTLE_EVERY`] until five reads in a row fall by less than [`SETTLED_MIB`] in all, or for
+/// [`SETTLE_WITHIN`]; answers the lowest read.
+fn settled_memory(core: &Core) -> Result<f64> {
+    let read = || -> Result<f64> {
         Ok(core.ask("resources.read", json!({}))?["memory"]["bytes"]
             .as_f64()
             .ok_or("resources.read reports no memory")?
             / MIB)
     };
+    let started = Instant::now();
+    let mut reads = vec![read()?];
+    while started.elapsed() < SETTLE_WITHIN {
+        std::thread::sleep(SETTLE_EVERY);
+        reads.push(read()?);
+        if let [.., first, _, _, _, last] = reads.as_slice()
+            && first - last < SETTLED_MIB
+        {
+            break;
+        }
+    }
+    Ok(reads.iter().copied().fold(f64::INFINITY, f64::min))
+}
+
+pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
+    let core = Core::open(&cx.data.catalog)?;
     let mut rows = Vec::new();
     for (name, what, source) in [
         (
@@ -572,15 +599,19 @@ pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
         ),
     ] {
         let query = json!({"source": source});
-        let before = memory(&core)?;
+        let before = settled_memory(&core)?;
         let (first, summary) = timed(|| core.ask("browse.view", query.clone()))?;
-        let after = memory(&core)?;
         let count = summary["count"].as_u64().ok_or("the view has no count")?;
         ensure(count > 0, format!("the view of {what} holds nothing"))?;
+        let moments = summary["groups"]["moments"].as_array().map_or(0, Vec::len);
+        // The answer is the harness's, not the owner's: dropped before the owner is measured.
+        drop(summary);
+        let after = settled_memory(&core)?;
         let mut views = Vec::with_capacity(cx.samples);
         for _ in 0..cx.samples {
             views.push(timed(|| core.ask("browse.view", query.clone()))?.0);
         }
+        let again = settled_memory(&core)?;
         let window = count.min(SCREEN);
         let mut windows = Vec::with_capacity(cx.samples);
         for sample in 0..cx.samples as u64 {
@@ -595,7 +626,7 @@ pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
         }
         let detail = json!({
             "count": count,
-            "moments": summary["groups"]["moments"].as_array().map_or(0, Vec::len),
+            "moments": moments,
         });
         let queued = if name == "files" {
             " Each evaluation also queues the view's missing grid previews, which the preview lane's workers fail in the background, since the generated files do not exist on disk."
@@ -633,9 +664,18 @@ pub fn browse_generated(cx: &Context) -> Result<Vec<Row>> {
                 Row::measured("memory.owner_view_photos", "MiB", [after - before])
                     .target("The owner grows by the view's id list")
                     .scope(format!(
-                        "the harness process's memory (resources.read, memory.bytes) after the first browse.view of {count} photographs less before it: the view's id list, its layout and what the evaluation keeps"
+                        "the harness process's footprint (resources.read, memory.bytes) once settled after the first browse.view of {count} photographs, less the settled footprint before it: the view's id list, its layout, the preview lane's queued tasks for it (at most its queue's capacity) and anything else the evaluation keeps, not the working set it freed"
                     ))
                     .detail(json!({"before_mib": before, "after_mib": after, "count": count})),
+            );
+            rows.push(
+                Row::measured("memory.owner_view_photos_growth", "MiB", [again - after])
+                    .target("The same view evaluated again holds nothing more")
+                    .scope(format!(
+                        "the settled footprint after {} more browse.view of the same {count} photographs, less the settled footprint after the first",
+                        cx.samples
+                    ))
+                    .detail(json!({"after_first_mib": after, "after_again_mib": again, "views": cx.samples})),
             );
         }
     }
