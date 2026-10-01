@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Verify the masked tone curve: the masking acceptance chapter's curve binding, reorder and duplicate, the Masks panel's scope chip and coverage input, and the masking design's maskable list.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -530,7 +530,7 @@
     {
       "id": "TASK-008",
       "description": "Prepare the measurement harnesses without timing: editor-latency drives a named module's curve from a seeded mid-tone point, and editor-performance gains a Tone curve row.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
