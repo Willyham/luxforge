@@ -10,7 +10,10 @@ use super::{
 };
 use crate::app::Before;
 use crate::state::palette::Panel;
-use crate::{state::tools, view, window_frame};
+use crate::{
+    state::{title, tools},
+    view, window_frame,
+};
 use iced::{Task, widget::operation};
 use serde_json::{Map, Value, json};
 
@@ -165,11 +168,22 @@ impl Editor {
                 self.view_state.zoom_editing = false;
                 return self.session_command("view.set", json!({"zoom":{"mode":"fit"}}));
             }
-            ViewMessage::HundredPercent => {
-                self.view_state.zoom = "100".into();
-                self.view_state.zoom_editing = false;
-                return self
-                    .session_command("view.set", json!({"zoom":{"mode":"percent","value":100.0}}));
+            ViewMessage::HundredPercent => return self.zoom_to(100.0),
+            ViewMessage::ZoomTo(value) => return self.zoom_to(value),
+            ViewMessage::ZoomStep(step) => {
+                if !self.workspace.title.can_view {
+                    return Task::none();
+                }
+                // Shown even with no stop left that way, so the end of the rail is seen.
+                self.view_state.zoom_reveal = self.view_state.zoom_reveal.wrapping_add(1);
+                let target = self
+                    .workspace
+                    .title
+                    .zoom_effective
+                    .and_then(|percent| title::step_stop(&title::ZOOM_STOPS, percent, step));
+                if let Some(value) = target {
+                    return self.zoom_to(value);
+                }
             }
             ViewMessage::ApplyZoom => {
                 let Ok(value) = self.view_state.zoom.parse::<f32>() else {
@@ -204,6 +218,13 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    /// Ask the session for a percentage zoom, as the 100% segment and a zoom stop do.
+    fn zoom_to(&mut self, value: f32) -> Task<Message> {
+        self.view_state.zoom = title::percent_text(value).trim_end_matches('%').to_owned();
+        self.view_state.zoom_editing = false;
+        self.session_command("view.set", json!({"zoom":{"mode":"percent","value":value}}))
     }
 
     /// Pan is session state like zoom, but scroll events arrive faster than round trips complete:

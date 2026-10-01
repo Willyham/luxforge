@@ -45,7 +45,7 @@ pub fn gallery_states() -> Vec<iced::Element<'static, ()>> {
 /// keep every example visible in a native 1440×1000 background capture: the two large canvases get
 /// their own pages, while related compact states stay together.
 #[doc(hidden)]
-pub const GALLERY_PAGES: [(&str, &[&str]); 13] = [
+pub const GALLERY_PAGES: [(&str, &[&str]); 14] = [
     (
         "Sliders and sections",
         &[
@@ -207,6 +207,14 @@ pub const GALLERY_PAGES: [(&str, &[&str]); 13] = [
             "Face · mask draft bar, brush with Done",
         ],
     ),
+    (
+        "Zoom stops",
+        &[
+            "Zoom stops · resting on 100%",
+            "Zoom stops · Fit between 50% and 100%",
+            "Zoom stops · disabled",
+        ],
+    ),
 ];
 
 /// Builds gallery page `page`'s states in draw order, each with its 1-based number on the whole
@@ -253,7 +261,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 99);
+        assert_eq!(next - 1, 102);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

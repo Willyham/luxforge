@@ -11,6 +11,11 @@ pub(crate) enum ViewMessage {
     Zoom(String),
     Fit,
     HundredPercent,
+    /// A zoom stop under the percentage segment was chosen: this percentage.
+    ZoomTo(f32),
+    /// Step to the next zoom stop in (`1`) or out (`-1`) from the zoom on screen, showing the
+    /// stops for a moment: Command-plus and Command-minus, or an arrow key while they show.
+    ZoomStep(i32),
     ApplyZoom,
     /// The title bar's percentage segment was pressed: it opens as the zoom field, holding the
     /// effective percentage, with the focus in it.

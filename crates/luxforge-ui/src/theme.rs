@@ -579,6 +579,25 @@ pub const SEGMENT_INSET: f32 = 2.0;
 /// The track's corner radius; a segment inside it is [`RADIUS`] less its inset, so the two
 /// curves stay concentric.
 pub const SEGMENT_RADIUS: f32 = 7.0;
+/// The chevron after a segment's label that has more behind it, and the gap before it.
+pub const SEGMENT_CHEVRON_SIZE: f32 = 8.0;
+pub const SEGMENT_CHEVRON_SPACING: f32 = 4.0;
+/// A notched rail's stops: one cell each, wide enough for `1200%` at caption size, with its notch
+/// on the rail line (tall enough for a held thumb's halo) and its label under it.
+pub const NOTCH_CELL_WIDTH: f32 = 38.0;
+pub const NOTCH_RAIL_HEIGHT: f32 = 2.0 * THUMB_HALO_RADIUS;
+pub const NOTCH_LABEL_GAP: f32 = 2.0;
+pub const NOTCH_LABEL_HEIGHT: f32 = 14.0;
+pub const NOTCH_HEIGHT: f32 = NOTCH_RAIL_HEIGHT + NOTCH_LABEL_GAP + NOTCH_LABEL_HEIGHT + 2.0;
+pub const NOTCH_TICK_WIDTH: f32 = 1.0;
+pub const NOTCH_TICK_HEIGHT: f32 = 8.0;
+/// The zoom stops' panel: the menu surface, inset so the end labels clear its rounded corners.
+pub const NOTCH_PANEL_PADDING: Padding = Padding {
+    top: 6.0,
+    right: 8.0,
+    bottom: 4.0,
+    left: 8.0,
+};
 /// The state panel's padding: above its first section and below its last, and at its sides. A row
 /// adds its own [`SPACING`] inside, so text sits 16 pt from the panel's edge.
 pub const PANEL_PADDING_Y: f32 = 12.0;
