@@ -485,16 +485,16 @@ pub fn first_index_hard_links(cx: &Context) -> Result<Vec<Row>> {
         Ok(tree) => tree,
         Err(reason) => return Ok(first_index_hard_links_skipped(reason)),
     };
-    let sources = cx.data.record["links"]["sources"].as_u64().unwrap_or(0);
     index_tree(
         cx,
         HARD_LINKS,
         tree,
         &format!(
-            "a tree of {} hard links to the {sources} generated JPEGs in turn in {} folders, the {} links of each JPEG sharing its file identity",
+            "a tree of {} hard links to the {} generated JPEGs in turn in {} folders, the {} links of each JPEG sharing its file identity",
             tree.files,
+            tree.sources,
             tree.folders,
-            (tree.files as u64).div_ceil(sources.max(1))
+            tree.files.div_ceil(tree.sources)
         ),
     )
 }
