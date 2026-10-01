@@ -414,7 +414,7 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         let owner = fixture.owner();
         let client = owner.register();
         // Every listing is held at each folder while the gate is shut, from the lane's start.
-        tell(owner, FilesMessage::Hold(gate.clone()));
+        tell(owner, FilesMessage::Hold(gate.clone(), photos.clone()));
         add_watched(owner, client, &photos, "add");
         // A last change, so every earlier one the watcher delivers late has been applied first.
         arrive(&staging, &photos.join("sentinel.jpg"), &camera_jpeg());
@@ -711,8 +711,11 @@ fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_
     let beyond = {
         let owner = fixture.owner();
         let client = owner.register();
-        tell(owner, FilesMessage::Hold(listings.clone()));
-        tell(owner, FilesMessage::HoldReads(headers.clone()));
+        tell(owner, FilesMessage::Hold(listings.clone(), photos.clone()));
+        tell(
+            owner,
+            FilesMessage::HoldReads(headers.clone(), photos.clone()),
+        );
         add_watched(owner, client, &photos, "add");
         let kept = wait_for("the root's cursor to be kept", || cursor(&fixture));
         // A cursor past every event there is, so a cursor recorded from the unit is told apart.

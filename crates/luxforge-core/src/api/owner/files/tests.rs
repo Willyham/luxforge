@@ -551,7 +551,7 @@ fn job_cancel_stops_a_listing_mid_walk() {
         put(&root.join(folder).join("x.jpg"), &camera_jpeg());
     }
     let gate = Arc::new(Gate::new());
-    tell(owner, FilesMessage::Hold(gate.clone()));
+    tell(owner, FilesMessage::Hold(gate.clone(), root.clone()));
     gate.shut();
     let started = ok(
         owner,
