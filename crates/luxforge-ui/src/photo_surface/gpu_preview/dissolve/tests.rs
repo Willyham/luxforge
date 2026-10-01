@@ -13,8 +13,7 @@ use super::super::tests::{
 use super::*;
 use crate::photo_surface::{DrawingPath, GpuBoundary, GpuPlan};
 use iced::advanced::{
-    Layout, Renderer as _, Shell, Widget, clipboard, image, layout, mouse, renderer,
-    widget::Tree,
+    Layout, Renderer as _, Shell, Widget, clipboard, image, layout, mouse, renderer, widget::Tree,
 };
 use iced::{Background, Color, Event, Length, Rectangle, Size, Transformation, Vector, window};
 use luxforge_reference::srgb;
@@ -103,7 +102,11 @@ impl iced::advanced::Renderer for Recorder {
 }
 
 impl iced_wgpu::primitive::Renderer for Recorder {
-    fn draw_primitive(&mut self, _bounds: Rectangle, primitive: impl iced_wgpu::primitive::Primitive) {
+    fn draw_primitive(
+        &mut self,
+        _bounds: Rectangle,
+        primitive: impl iced_wgpu::primitive::Primitive,
+    ) {
         let primitive: Box<dyn Any> = Box::new(primitive);
         if let Ok(photo) = primitive.downcast::<PhotoPrimitive>() {
             self.drawn.push(*photo);

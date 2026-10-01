@@ -1435,8 +1435,8 @@ mod position;
 pub use position::PositionMap;
 
 mod dissolve;
-pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
+pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
 
 #[cfg(feature = "qualification")]
 pub mod qualification;

@@ -1700,12 +1700,13 @@ impl shader::Primitive for PhotoPrimitive {
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
         // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
-        let drawn_path =
-            drew_photo.then_some(if drawn_gpu_boundary.is_some() && drawn_dissolve.is_none() {
+        let drawn_path = drew_photo.then_some(
+            if drawn_gpu_boundary.is_some() && drawn_dissolve.is_none() {
                 DrawingPath::Gpu
             } else {
                 DrawingPath::Cpu
-            });
+            },
+        );
         let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
         // Each surface compares against its own last draw, so two surfaces in different states
         // do not wake each other every frame. A change of drawing path, a new fallback, or a
