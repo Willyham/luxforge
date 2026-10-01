@@ -20,7 +20,7 @@
 mod unit;
 
 use super::{
-    ColorOperation, EffectStage, PointwiseColor, Processing, Stage,
+    ColorOperation, EffectStage, PointwiseColor, Processing,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -146,7 +146,8 @@ impl FieldPatch for Vignette {
         values.number(AMOUNT) == 0.0
     }
 
-    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
+        let stage = at.stage;
         let unit: Arc<dyn PointwiseColor> = Arc::new(unit::Vignette::new(
             values.number(AMOUNT),
             values.number(MIDPOINT),
@@ -161,6 +162,7 @@ impl FieldPatch for Vignette {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::check_parameters;
     use crate::modules::{ActionInput, ActionPlan, FixedStage, ToolModule};
     use crate::{EFFECT_FORMAT, Layer};
@@ -247,7 +249,7 @@ mod tests {
                 VIGNETTE_EFFECT,
                 EFFECT_FORMAT,
                 &json!({"amount": -35.0}),
-                STAGE,
+                crate::CompileStage::exact(STAGE),
             )
             .expect("compiles");
         match processing {

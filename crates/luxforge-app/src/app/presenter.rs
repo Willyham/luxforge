@@ -75,6 +75,11 @@ impl Presenter {
         shown
     }
 
+    /// A settled reduction has photograph content, but never full-detail texels.
+    pub(crate) fn show_settled(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
+        self.show_proxy(raster, content)
+    }
+
     pub(crate) fn show_full(&mut self, raster: &luxforge_core::Raster, content: u64) -> bool {
         let shown = self.show_photo(raster);
         self.photo_content = shown.then_some(content);

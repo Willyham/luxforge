@@ -66,19 +66,19 @@ pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle, Availability,
     BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction,
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
-    Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload, CropStage,
-    CurveBackground, CurveChannel, CurveControl, Edge, EffectDescriptor, EffectStage,
-    ExactGeometry, FieldPatch, FieldPatchModule, GroupControl, IdentityKind, LENS_EFFECT,
-    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor,
-    ModuleLayout, ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT,
-    OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH,
-    PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl,
-    PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef,
-    RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample,
-    ResetAction, ResolvedControl, ResolvedReset, SpatialOperation, Spec, Stage, StageContext,
-    StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, Values,
-    WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint, guide_angle,
-    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
+    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GroupControl,
+    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE,
+    MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
+    NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
+    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec,
+    Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    Values, WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint,
+    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
     resolve_group_reset, temperature_tint_from_gains,
 };
 pub use presets::{
@@ -93,9 +93,10 @@ pub use preview::{
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::{
-    ContentPoint, GeometryMap, LinearSettings, MapError, MappingDescriptor, MappingShape, Raster,
-    RegionFrame, Render, RenderContext, RenderOptions, RenderSource, Sample, ScratchBudget,
-    StageSize, WhiteBalanceApproximation, render, stage_transform,
+    ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
+    MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
+    RenderOptions, RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation,
+    render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 

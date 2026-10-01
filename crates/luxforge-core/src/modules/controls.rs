@@ -7,7 +7,7 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, ActionStyle, ChoiceStyle, ColorOperation,
     ColorStyle, Control, CurveBackground, CurveChannel, EffectStage, NumberStyle,
-    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, Stage, StageContext,
+    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, StageContext,
     field_patch::{Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -215,7 +215,7 @@ impl FieldPatch for Controls {
         .developer()
     }
 
-    fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+    fn compile(&self, _: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
         Ok(Processing::Color(ColorOperation::neutral()))
     }
 

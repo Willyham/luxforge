@@ -12,7 +12,7 @@ use luxforge_core::{
     ActionDescriptor, ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, CURVE_EFFECT,
     Draft, EditorService, Error, ErrorKind, Layer, MaskId, ModuleDescriptor, ModuleRegistry,
     Mutation, MutationOutcome, OwnerHandle, ParameterDescriptor, ParameterKind, Processing, Recipe,
-    Stage, StageContext, ToolModule,
+    StageContext, ToolModule,
 };
 use luxforge_testbase::paths::{self, jpeg};
 use luxforge_testkit::client::{self, call, import, refused};
@@ -601,7 +601,13 @@ impl ToolModule for Composer {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<luxforge_core::LayerReport, Error> {
         Err(Error::validation("no effects"))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: luxforge_core::CompileStage,
+    ) -> Result<Processing, Error> {
         Err(Error::validation("no effects"))
     }
 }

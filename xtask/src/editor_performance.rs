@@ -905,10 +905,10 @@ mod tests {
                 &layer.effect_id,
                 layer.effect_format,
                 &layer.payload,
-                Stage {
+                luxforge_core::CompileStage::exact(Stage {
                     width: 4,
                     height: 4,
-                },
+                }),
             )
             .expect("a compiled layer")
         else {

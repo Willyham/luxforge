@@ -1,6 +1,6 @@
 use super::*;
 use crate::editor::mutation;
-use crate::{EditorService, ErrorKind, ModuleRegistry, MutationOutcome};
+use crate::{EditorService, ErrorKind, ModuleRegistry, MutationOutcome, Stage};
 use luxforge_testbase::paths::temp_path as temp;
 use std::{fs, path::PathBuf, sync::Arc};
 fn grid() -> PathBuf {
@@ -218,10 +218,10 @@ fn evaluation_never_reads_the_lens_index() {
             LENS_EFFECT,
             EFFECT_FORMAT,
             &frozen,
-            Stage {
+            crate::CompileStage::exact(Stage {
                 width: 300,
                 height: 200,
-            },
+            }),
         )
         .unwrap();
     drop(reopened);

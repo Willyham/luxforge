@@ -9,6 +9,7 @@ mod conformance;
 mod controls;
 mod curve;
 mod descriptors;
+mod detail;
 mod field_patch;
 mod mixer;
 mod presence;

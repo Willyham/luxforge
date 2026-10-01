@@ -568,6 +568,8 @@ mod tests {
                 "Basic \u{00b7} Tone",
                 "Basic \u{00b7} Colour",
                 "Tone curve \u{00b7} Tone curve",
+                "Detail \u{00b7} Sharpening",
+                "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",
                 "Colour mixer \u{00b7} Hue",
                 "Colour mixer \u{00b7} Saturation",
@@ -612,6 +614,21 @@ mod tests {
                 vec!["temperature".to_owned(), "tint".to_owned()]
             )]
         );
+        for (group, fields) in [
+            (
+                4,
+                ["sharpening", "radius", "sharpen-detail", "sharpen-masking"],
+            ),
+            (
+                5,
+                ["luminance", "luminance-detail", "colour", "colour-detail"],
+            ),
+        ] {
+            assert_eq!(
+                groups[group].fields,
+                [("set-detail".to_owned(), fields.map(str::to_owned).to_vec())]
+            );
+        }
         // The white-balance rule is the only default: every other group starts checked.
         let unchecked: Vec<_> = groups
             .iter()

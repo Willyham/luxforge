@@ -541,10 +541,10 @@ mod tests {
         use crate::modules::{Processing, ToolModule};
         use serde_json::json;
         let module = super::super::CurveModule::new();
-        let stage = crate::modules::Stage {
+        let stage = crate::CompileStage::exact(crate::modules::Stage {
             width: 4,
             height: 4,
-        };
+        });
         let units = |payload: Value| match module
             .compile(super::super::CURVE_EFFECT, 1, &payload, stage)
             .unwrap()

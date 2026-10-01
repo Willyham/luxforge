@@ -5,12 +5,13 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, curve_smoke as curve, export_smoke as export, gallery_smoke as gallery,
-    histogram_smoke as histogram, lens_smoke as lens, mask_brush_smoke as mask_brush,
-    mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
-    mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
-    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
-    presets_smoke as presets, raw_panel_smoke as raw_panel,
+    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail, export_smoke as export,
+    gallery_smoke as gallery, histogram_smoke as histogram, lens_smoke as lens,
+    mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
+    mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
+    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
+    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
+    raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
     zoom_smoke as zoom, *,
@@ -151,6 +152,62 @@ fn sourced() -> Vec<&'static str> {
 
 /// Every scenario, in the order `verify --tier rendered` runs them.
 pub static SCENARIOS: &[Scenario] = &[
+    Scenario {
+        name: "detail",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "detail-fit",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::fit_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_fit,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "detail-zoom",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::zoom_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_zoom,
+        source: Source::Fixtures(&[detail::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: "raw-detail",
+        about: "Detail controls and correlated rendered presentation",
+        launches: &[LaunchSpec {
+            plan: detail::raw_plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: detail::verify_raw,
+        source: Source::Supplied { listed: true },
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
     Scenario {
         name: "empty",
         about: "The editor with nothing open",
@@ -440,9 +497,10 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "lens-perspective",
-        about: "Offline lens selection, Perspective drags, a warped radial mask and a straightened crop",
+        about: "Tone curve and Detail with Lens/Perspective, warped masks, crop and exact native Undo pixels",
         launches: &[LaunchSpec {
             plan: lens::plan,
+            deadline: Some(Duration::from_secs(310)),
             ..APP
         }],
         verify: lens::verify,
@@ -1339,7 +1397,7 @@ mod tests {
         };
         assert_eq!(
             refusal("load", None, Some(&manifest)),
-            "--manifest is only for raw-editor"
+            "--manifest is only for raw-detail and raw-editor"
         );
         let photo = Some(vec![tmp.path().join("photo.NEF")]);
         assert!(refusal("raw-editor", photo.clone(), None).contains("needs --manifest"));
@@ -1424,8 +1482,11 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
-        assert_eq!(sourced(), ["performance", "raw-panel", "raw-editor"]);
-        assert_eq!(listed(), ["raw-editor"]);
+        assert_eq!(
+            sourced(),
+            ["raw-detail", "performance", "raw-panel", "raw-editor"]
+        );
+        assert_eq!(listed(), ["raw-detail", "raw-editor"]);
         assert!(find("nothing").is_err());
     }
 

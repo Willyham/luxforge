@@ -25,7 +25,7 @@ mod texture;
 mod oracle;
 
 use super::{
-    EffectStage, Processing, SpatialOperation, SpatialUnit, Stage,
+    EffectStage, Processing, SpatialOperation, SpatialUnit,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -107,7 +107,8 @@ impl FieldPatch for Presence {
     /// The stage decides every radius and therefore every halo, so each unit is built with the long
     /// side of the stage this layer is compiled against, which is the stage the host evaluates the
     /// operation at.
-    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
+        let stage = at.stage;
         let (texture, clarity, dehaze) = (
             values.number(TEXTURE),
             values.number(CLARITY),
@@ -138,6 +139,7 @@ pub(crate) fn presence_halo(long_side: u32) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::{ActionInput, ToolModule};
 
     use serde_json::Value;
@@ -175,7 +177,15 @@ mod tests {
     fn compile_orders_the_units_dehaze_texture_clarity() {
         let module = PresenceModule::new();
         let operation = |payload: Value| -> SpatialOperation {
-            match module.compile(PRESENCE_EFFECT, 1, &payload, STAGE).unwrap() {
+            match module
+                .compile(
+                    PRESENCE_EFFECT,
+                    1,
+                    &payload,
+                    crate::CompileStage::exact(STAGE),
+                )
+                .unwrap()
+            {
                 Processing::Spatial(operation) => operation,
                 other => panic!("expected a spatial operation, got {other:?}"),
             }
@@ -238,7 +248,7 @@ mod tests {
                 PRESENCE_EFFECT,
                 1,
                 &json!({"texture": 10.0, "clarity": 10.0, "dehaze": 10.0}),
-                stage,
+                crate::CompileStage::exact(stage),
             )
             .unwrap()
         else {

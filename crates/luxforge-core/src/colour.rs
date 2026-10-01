@@ -74,6 +74,43 @@ pub mod srgb {
         &TO_LINEAR
     }
 
+    static TO_LINEAR16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
+        let narrow = decode_table();
+        (0..=u16::MAX)
+            .map(|code| {
+                if code % 257 == 0 {
+                    narrow[usize::from(code / 257)]
+                } else {
+                    decode(f64::from(code) / 65535.0) as f32
+                }
+            })
+            .collect()
+    });
+
+    pub(crate) fn decode16_table() -> &'static [f32] {
+        &TO_LINEAR16
+    }
+
+    static CODE_THRESHOLDS16: LazyLock<Box<[f32]>> = LazyLock::new(|| {
+        (0..65535)
+            .map(|index| {
+                let threshold = decode((f64::from(index) + 0.5) / 65535.0);
+                let rounded = threshold as f32;
+                // First representable f32 in the upper code's exact interval.
+                if f64::from(rounded) < threshold {
+                    rounded.next_up()
+                } else {
+                    rounded
+                }
+            })
+            .collect()
+    });
+
+    #[inline]
+    pub(crate) fn quantize16(value: f32) -> u16 {
+        CODE_THRESHOLDS16.partition_point(|threshold| *threshold <= value) as u16
+    }
+
     /// One 8-bit pixel decoded into linear sRGB through a table the caller already holds.
     #[inline]
     pub(crate) fn decode_pixel_in(table: &[f32; 256], rgb: [u8; 3]) -> [f32; 3] {
@@ -623,6 +660,37 @@ mod tests {
             assert_eq!(out[channel], l_floor + rgb[channel] * scale);
             assert!(out[channel] > l_floor);
         }
+    }
+
+    #[test]
+    fn byte_decode16_table_matches_the_8_bit_table_at_every_code() {
+        for code in 0..=255_usize {
+            assert_eq!(
+                srgb::decode16_table()[257 * code].to_bits(),
+                srgb::decode_table()[code].to_bits()
+            );
+        }
+        for code in 0..=65535_usize {
+            assert_eq!(
+                usize::from(srgb::quantize16(srgb::decode16_table()[code])),
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn byte_quantize16_is_monotone_and_exact_at_every_threshold() {
+        for code in 0..65535 {
+            let threshold = srgb::decode((f64::from(code) + 0.5) / 65535.0) as f32;
+            for value in [threshold.next_down(), threshold, threshold.next_up()] {
+                let expected =
+                    (srgb::encode(f64::from(value)).clamp(0.0, 1.0) * 65535.0).round() as u16;
+                assert_eq!(srgb::quantize16(value), expected, "{code}: {value}");
+            }
+        }
+        assert_eq!(srgb::quantize16(f32::NAN), 0);
+        assert_eq!(srgb::quantize16(f32::NEG_INFINITY), 0);
+        assert_eq!(srgb::quantize16(f32::INFINITY), 65535);
     }
 
     #[test]

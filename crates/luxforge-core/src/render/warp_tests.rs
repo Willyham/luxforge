@@ -47,7 +47,14 @@ impl ToolModule for WarpModule {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
         Ok(crate::LayerReport::new("Warp"))
     }
-    fn compile(&self, id: &str, _: u32, p: &Value, stage: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        id: &str,
+        _: u32,
+        p: &Value,
+        at: crate::CompileStage,
+    ) -> Result<Processing, Error> {
+        let stage = at.stage;
         if let Some(step) = p.get("declared_step") {
             return Ok(Processing::Warp(
                 serde_json::from_value(step.clone()).unwrap(),
@@ -121,6 +128,295 @@ fn fused(w: u32, h: u32) -> Recipe {
         Layer::crop(fitted_crop(w, h, 7.0, [0.12, 0.12, 0.7, 0.65])),
     ])
 }
+
+fn detail_warp_recipe(width: u32, height: u32) -> Recipe {
+    let mut mask = crate::Mask::new("Restoration gradient");
+    mask.components.push(crate::Component::new(
+        "Linear",
+        crate::ComponentMode::Add,
+        "linear",
+        json!({"x0":0.1,"y0":0.2,"x1":0.9,"y1":0.8}),
+    ));
+    let mut masked_detail = layer(
+        crate::DETAIL_EFFECT,
+        json!({"sharpening":30.0,"luminance":12.0,"colour":15.0}),
+    );
+    masked_detail.mask = Some(mask.id.clone());
+    Recipe {
+        layers: vec![
+            layer(
+                crate::DETAIL_EFFECT,
+                json!({"sharpening":40.0,"luminance":25.0,"colour":20.0}),
+            ),
+            masked_detail,
+            layer(BASIC_EFFECT, json!({"exposure":0.25})),
+            layer(
+                crate::CURVE_EFFECT,
+                json!({"luminance":[[0.0,0.03],[0.5,0.6],[1.0,1.0]]}),
+            ),
+            layer(crate::PRESENCE_EFFECT, json!({"clarity":5.0})),
+            testing::frozen_lens(width, height, 35.0),
+            perspective(),
+            Layer::crop(fitted_crop(width, height, 3.0, [0.1, 0.12, 0.75, 0.7])),
+            layer(crate::VIGNETTE_EFFECT, json!({"amount":-20.0})),
+        ],
+        masks: vec![mask],
+        ..Recipe::default()
+    }
+}
+
+fn detail_warp_sources() -> [crate::PreviewSource; 2] {
+    let (width, height) = (96, 64);
+    let raw = image(
+        width,
+        height,
+        &(0..width * height)
+            .map(|i| {
+                [
+                    (i % 29) as f32 / 21.0 - 0.25,
+                    (i % 37) as f32 / 31.0,
+                    (i % 43) as f32 / 23.0,
+                ]
+            })
+            .collect::<Vec<_>>(),
+    );
+    assert!(raw.planes().iter().any(|value| *value < 0.0));
+    assert!(raw.planes().iter().any(|value| *value > 1.0));
+    [
+        crate::PreviewSource::Jpeg(gradient(width, height)),
+        crate::PreviewSource::Raw {
+            image: raw,
+            settings: LinearSettings::default(),
+        },
+    ]
+}
+
+#[test]
+fn detail_and_curve_keep_warp_full_point_and_window_pixels_identical() {
+    let registry = crate::ModuleRegistry::builtin();
+    let recipe = detail_warp_recipe(96, 64);
+    for source in detail_warp_sources() {
+        let (original_bytes, original_planes) = match &source {
+            crate::PreviewSource::Jpeg(image) => (image.rgba.clone(), Vec::new()),
+            crate::PreviewSource::Raw { image, .. } => {
+                (Arc::new(Vec::new()), image.planes().to_vec())
+            }
+        };
+        let context = RenderContext::new();
+        let rendered = render(
+            &registry,
+            source.input(),
+            &recipe,
+            RenderOptions::default(),
+            &context,
+        )
+        .unwrap();
+        assert!(rendered.settles_from_exact());
+        let widths = super::byte::byte_frame_widths(&rendered.compiled);
+        let mut warps = 0;
+        for (index, segment) in rendered.compiled.segments.iter().enumerate() {
+            if segment.entry.as_ref().is_some_and(Entry::has_warp) {
+                warps += 1;
+                assert!(!widths[index].input && !widths[index].output);
+                let Entry::Resample(entry) = segment.entry.as_ref().unwrap() else {
+                    unreachable!()
+                };
+                let Mapping::Warp(chain) = &entry.resample.map else {
+                    unreachable!()
+                };
+                assert_eq!(chain.steps.len(), 3);
+            }
+        }
+        assert_eq!(warps, 1, "Lens, Perspective and crop interpolate once");
+        let boundary = rendered.compiled.restoration_boundary().unwrap();
+        assert!(
+            widths[boundary].input,
+            "Basic and Curve receive the wide restoration boundary"
+        );
+        let colour_units = rendered.compiled.segments[boundary]
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                Processing::Color(operation) => Some(operation.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        assert!(colour_units >= 2, "Basic and Curve compile into real units");
+        let frame = rendered.frame(SnapshotId::new()).unwrap();
+        for (x, y) in [
+            (0, 0),
+            (frame.width / 2, frame.height / 2),
+            (frame.width - 1, frame.height - 1),
+            (frame.width / 3, frame.height / 4),
+        ] {
+            assert_eq!(rendered.sample(x, y).unwrap().rgba, frame.pixel(x, y));
+        }
+        let rect = Region {
+            x0: frame.width / 3,
+            y0: frame.height / 4,
+            width: frame.width / 3,
+            height: frame.height / 3,
+        };
+        let RegionRenderOutcome::Rendered(window) =
+            rendered.region(SnapshotId::new(), rect).unwrap()
+        else {
+            panic!("combined restoration and warp window declined")
+        };
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                assert_eq!(
+                    window.raster.pixel(x, y),
+                    frame.pixel(rect.x0 + x, rect.y0 + y)
+                );
+            }
+        }
+        match &source {
+            crate::PreviewSource::Jpeg(image) => {
+                assert!(Arc::ptr_eq(&image.rgba, &original_bytes));
+                assert_eq!(image.rgba, original_bytes);
+            }
+            crate::PreviewSource::Raw { image, .. } => assert_eq!(image.planes(), original_planes),
+        }
+        assert_eq!(context.scratch().in_use(), 0);
+        assert_eq!(context.spatial().in_use(), 0);
+    }
+}
+
+#[test]
+fn detail_warp_cache_matches_recomputed_pixels_and_reuses_downstream_changes() {
+    let registry = crate::ModuleRegistry::builtin();
+    for source in detail_warp_sources() {
+        let context = RenderContext::new();
+        let mut recipe = detail_warp_recipe(96, 64);
+        let key = crate::ProxyKey {
+            identity: source.identity(),
+            plan: crate::ProxyPlan {
+                width: 96,
+                height: 64,
+                bounds: crate::ProxyBounds {
+                    width: 96,
+                    height: 64,
+                },
+                window: None,
+            },
+        };
+        let mut cache = super::RestorationPrefixCache::default();
+        let mut previous = None;
+        for (exposure, midtone, vertical, expected) in [
+            (0.25, 0.6, -25, super::PrefixUse::Built),
+            (0.6, 0.6, -25, super::PrefixUse::Reused),
+            (0.6, 0.7, -25, super::PrefixUse::Reused),
+            (0.6, 0.7, -10, super::PrefixUse::Reused),
+        ] {
+            for layer in &mut recipe.layers {
+                match layer.effect_id.as_str() {
+                    BASIC_EFFECT => layer.payload = json!({"exposure":exposure}),
+                    crate::CURVE_EFFECT => {
+                        layer.payload = json!({"luminance":[[0.0,0.03],[0.5,midtone],[1.0,1.0]]});
+                    }
+                    PERSPECTIVE => {
+                        layer.payload = json!({"horizontal":35,"vertical":vertical});
+                    }
+                    _ => {}
+                }
+            }
+            let rendered = render(
+                &registry,
+                source.input(),
+                &recipe,
+                RenderOptions::default(),
+                &context,
+            )
+            .unwrap();
+            let (cached, used) = rendered
+                .frame_with_restoration_cache(
+                    SnapshotId::new(),
+                    &registry,
+                    &recipe,
+                    &key,
+                    &mut cache,
+                )
+                .unwrap();
+            assert_eq!(used, Some(expected));
+            assert_eq!(cached.rgba, rendered.frame(SnapshotId::new()).unwrap().rgba);
+            if let Some(previous) = previous.replace(cached.rgba.clone()) {
+                assert_ne!(
+                    previous, cached.rgba,
+                    "the downstream edit must change output"
+                );
+            }
+            let bytes_per_pixel = if matches!(&source, crate::PreviewSource::Jpeg(_)) {
+                6
+            } else {
+                12
+            };
+            assert_eq!(cache.bytes(), 96 * 64 * bytes_per_pixel);
+        }
+
+        // A real half-scale viewport compiles Detail with the full-resolution input stage while
+        // Lens keeps its frozen normalization; cached and uncached window cuts must agree.
+        let full = render(
+            &registry,
+            source.input(),
+            &recipe,
+            RenderOptions::default(),
+            &context,
+        )
+        .unwrap();
+        let plan = full
+            .plan_proxy_region(
+                &registry,
+                &recipe,
+                Region {
+                    x0: 10,
+                    y0: 8,
+                    width: 24,
+                    height: 18,
+                },
+            )
+            .unwrap();
+        let proxy = source.proxy(plan.proxy).unwrap();
+        let key = crate::ProxyKey {
+            identity: source.identity(),
+            plan: plan.proxy,
+        };
+        let mut cache = super::RestorationPrefixCache::default();
+        for expected in [super::PrefixUse::Built, super::PrefixUse::Reused] {
+            let (cached, used) = full
+                .render_proxy_region_cached(
+                    &registry,
+                    proxy.input(),
+                    &recipe,
+                    plan,
+                    SnapshotId::new(),
+                    &context,
+                    &key,
+                    &mut cache,
+                )
+                .unwrap();
+            let RegionRenderOutcome::Rendered(cached) = cached else {
+                panic!("cached warp window declined")
+            };
+            let RegionRenderOutcome::Rendered(uncached) = full
+                .render_proxy_region(
+                    &registry,
+                    proxy.input(),
+                    &recipe,
+                    plan,
+                    SnapshotId::new(),
+                    &context,
+                )
+                .unwrap()
+            else {
+                panic!("uncached warp window declined")
+            };
+            assert_eq!(used, Some(expected));
+            assert_eq!(cached.raster.rgba, uncached.raster.rgba);
+            assert_eq!(cached.rect, plan.output);
+        }
+    }
+}
+
 #[test]
 fn lens_perspective_straighten_compile_to_one_resample_entry() {
     let r = registry();

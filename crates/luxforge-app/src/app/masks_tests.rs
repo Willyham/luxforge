@@ -5745,6 +5745,13 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
     use luxforge_core::{Cancel, PreviewRequest};
 
     let mut masking = Masking::opened();
+    // The same curve-input contract holds behind restoration: the worker materializes the
+    // bounded Detail grid, then evaluates the pointwise Basic and curve suffix per cell.
+    agent_edits(
+        &mut masking,
+        "edit.set-detail",
+        json!({"luminance":30.0,"colour":25.0}),
+    );
     masking.enter_mask_mode();
     masking.run(MaskMessage::New("luminance-range".to_owned()));
     let listed = masking.listing().masks[0].clone();

@@ -322,15 +322,22 @@ impl EditorService {
             source: OnceCell::new(),
             settings: OnceCell::new(),
             sample_prefixes: RefCell::new(HashMap::new()),
+            full_compiled: OnceCell::new(),
         };
-        answer(&StageContext {
+        let result = answer(&StageContext {
             layers: &recipe.layers,
             registry: &self.registry,
             target,
             kind: asset.source.tag(),
             masks: &recipe.masks,
             questions: &questions,
-        })
+        });
+        // A module may catch a sampling error; a recorded read still suspends planning before
+        // the resulting recipe can be admitted or any transaction can write it.
+        if self.pixel_reads.borrow().deferred.is_some() {
+            return Err(Error::internal("pixel read deferred to the point worker"));
+        }
+        result
     }
 
     /// Answer one module query about a saved entry's stack: the read-only counterpart of
@@ -804,9 +811,32 @@ struct HostStage<'s> {
     /// indices one planning call asks about, at most the stack's layer count, and dropped with this
     /// context when the plan or query returns.
     sample_prefixes: RefCell<HashMap<usize, Compiled>>,
+    full_compiled: OnceCell<Compiled>,
 }
 
 impl HostStage<'_> {
+    fn input_wide(&self, prefix: &Compiled) -> Result<bool, Error> {
+        if !prefix.evaluates_spatial() {
+            return Ok(false);
+        }
+        if self.full_compiled.get().is_none() {
+            let recipe = self.recipe;
+            let full = self.service.registry.compile_layers(
+                self.asset.width,
+                self.asset.height,
+                &recipe.layers,
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )?;
+            self.full_compiled.get_or_init(|| full);
+        }
+        Ok(self
+            .full_compiled
+            .get()
+            .unwrap()
+            .prefix_spatial_input_wide(prefix))
+    }
     /// The verified source, from the prepared-source cache: `preparation-required` when it is not
     /// there, since the catalog owner never decodes.
     fn source(&self) -> Result<&PreparedSource, Error> {
@@ -925,12 +955,75 @@ impl StageQuestions for HostStage<'_> {
                 RenderSource::Linear { image, settings }
             }
         };
+        let preview = match source {
+            RenderSource::Byte(image) => crate::PreviewSource::Jpeg(image.clone()),
+            RenderSource::Linear { image, settings } => crate::PreviewSource::Raw {
+                image: image.clone(),
+                settings,
+            },
+        };
+        if let Some(answer) = self.service.spatial_read(
+            self.asset,
+            self.recipe,
+            preview,
+            &compiled,
+            self.input_wide(&compiled)?,
+            super::pixels::PixelRead { index, x, y },
+        )? {
+            return Ok(answer.rgba);
+        }
         let context = self.service.render_context();
+        if compiled.evaluates_spatial() {
+            let wide = self.input_wide(&compiled)?;
+            return crate::render::prefix_pixels(
+                source,
+                compiled,
+                context,
+                &crate::Cancel::never(),
+                wide,
+                crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+            )?
+            .rgba(x, y);
+        }
         Ok(
             Render::compiled(source, compiled, RenderOptions::default(), context)?
                 .sample(x, y)?
                 .rgba,
         )
+    }
+
+    fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let compiled = self.compiled_prefix(index)?;
+        let preview = match self.source()? {
+            PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
+            PreparedSource::Raw(_) => {
+                let (image, settings) = self.linear()?;
+                crate::PreviewSource::Raw {
+                    image: image.clone(),
+                    settings,
+                }
+            }
+        };
+        if let Some(answer) = self.service.spatial_read(
+            self.asset,
+            self.recipe,
+            preview.clone(),
+            &compiled,
+            self.input_wide(&compiled)?,
+            super::pixels::PixelRead { index, x, y },
+        )? {
+            return Ok(answer.linear);
+        }
+        let wide = self.input_wide(&compiled)?;
+        crate::render::prefix_pixels(
+            preview.input(),
+            compiled,
+            self.service.render_context(),
+            &crate::Cancel::never(),
+            wide,
+            crate::render::MaskInputMode::for_layer(&self.service.registry, self.recipe, index),
+        )?
+        .linear(x, y)
     }
 
     /// The RAW mosaic's own patch, which needs the decoded sensor and no development.
@@ -3160,7 +3253,7 @@ mod tests {
     #[test]
     fn every_built_in_action_stores_the_label_of_this_table() {
         let registry = ModuleRegistry::developer();
-        let table: [(&str, Value, &str); 86] = [
+        let table = [
             (
                 "apply-preset",
                 json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
@@ -3226,6 +3319,62 @@ mod tests {
             ),
             ("set-basic", json!({}), "Set Basic"),
             ("reset-basic", json!({}), "Reset Basic"),
+            ("set-detail", json!({"sharpening":150.0}), "Sharpening 150"),
+            ("set-detail", json!({"sharpening":0.0}), "Sharpening 0"),
+            ("set-detail", json!({"radius":1.7}), "Sharpen radius 1.7 px"),
+            (
+                "set-detail",
+                json!({"sharpen-detail":75.0}),
+                "Sharpen detail 75",
+            ),
+            (
+                "set-detail",
+                json!({"sharpen-masking":25.0}),
+                "Sharpen masking 25",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":30.0}),
+                "Luminance noise 30",
+            ),
+            (
+                "set-detail",
+                json!({"luminance-detail":65.0}),
+                "Luminance noise detail 65",
+            ),
+            ("set-detail", json!({"colour":40.0}), "Colour noise 40"),
+            (
+                "set-detail",
+                json!({"colour-detail":60.0}),
+                "Colour noise detail 60",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":40.0,"radius":1.7,"sharpen-detail":75.0,"sharpen-masking":25.0}),
+                "Sharpening",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":0.0,"radius":1.0,"sharpen-detail":25.0,"sharpen-masking":0.0}),
+                "Reset Sharpening",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":30.0,"luminance-detail":65.0,"colour":40.0,"colour-detail":60.0}),
+                "Noise reduction",
+            ),
+            (
+                "set-detail",
+                json!({"luminance":0.0,"luminance-detail":50.0,"colour":0.0,"colour-detail":50.0}),
+                "Reset Noise reduction",
+            ),
+            (
+                "set-detail",
+                json!({"sharpening":20.0,"colour":25.0}),
+                "Detail (2 fields)",
+            ),
+            ("set-detail", json!({}), "Set Detail"),
+            ("reset-detail", json!({}), "Reset Detail"),
             ("set-presence", json!({"texture":100.0}), "Texture +100"),
             ("set-presence", json!({"dehaze":-100.0}), "Dehaze -100"),
             (
@@ -3515,5 +3664,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sample_curve_remains_scalar_with_restoration_and_geometry() {
+        let catalog = temp("curve-scalar-restoration.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let imported = service.import(&fixture()).unwrap();
+        let asset = imported.asset.id;
+        let original = imported.current_entry.id;
+        let parameters = json!({"luminance":[[0.0,0.1],[0.5,0.7],[1.0,1.0]]});
+        let expected = service
+            .run_query(&asset, &original, "sample-curve", parameters.clone())
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(0, "detail"),
+                "set-detail",
+                json!({"luminance":30.0}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "basic"),
+                "set-basic",
+                json!({"exposure":0.5}),
+            )
+            .unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(2, "perspective"),
+                "set-perspective",
+                json!({"horizontal":40,"vertical":-25}),
+            )
+            .unwrap();
+        let current = service.state(&asset).unwrap();
+        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        crate::render::spatial::observe_tiles(tiles.clone());
+        service.begin_pixel_call(None, super::super::pixels::PixelMemo::default());
+        let actual = service
+            .run_query(
+                &asset,
+                &current.current_entry.id,
+                "sample-curve",
+                parameters,
+            )
+            .unwrap();
+        assert!(
+            service.take_pixel_read().is_none(),
+            "a scalar curve query never parks a pixel read"
+        );
+        service.end_pixel_call();
+        assert_eq!(actual, expected);
+        assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(service.state(&asset).unwrap(), current);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
     }
 }

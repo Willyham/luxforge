@@ -312,6 +312,112 @@ const MAX_TOLERANCE: u8 = 80;
 const NEAR: u8 = 8;
 const FAR_SHARE: f64 = 0.05;
 
+/// Count the real Detail operation on the export lane, then compare its file with the same
+/// deterministic encoder reading an independently evaluated exact raster. JPEG decoding is not
+/// used as an exact-pixel oracle.
+#[test]
+fn detail_export_evaluates_exact_detail_once() {
+    use sha2::{Digest, Sha256};
+
+    let mut harness = Harness::start("detail-once");
+    let state = harness.import("detail-original.jpg");
+    let original = harness.dir.join("detail-original.jpg");
+    let original_hash = format!("{:x}", Sha256::digest(fs::read(&original).unwrap()));
+    let asset = state["asset"]["id"].clone();
+    harness.ok(
+        "edit.set-detail",
+        json!({
+            "asset_id":asset,
+            "luminance":40,"colour":40,"sharpening":50,"radius":1,
+            "mutation":{"expected_revision":0,"request_id":"detail-export-settings","actor":"test"}
+        }),
+    );
+    let edited = harness.ok("asset.state", json!({"asset_id":asset}));
+    let entry = edited["current_entry"]["id"].clone();
+    let recipe: crate::Recipe =
+        serde_json::from_value(edited["current_entry"]["snapshot"]["recipe"].clone()).unwrap();
+    assert_eq!(recipe.layers.len(), 1);
+    assert_eq!(recipe.layers[0].effect_id, crate::DETAIL_EFFECT);
+
+    // The 480x320 stage fits one spatial tile, so run_tile is called on the export thread even
+    // when its internal rows use the pool. This observer counts that worker alone.
+    let tiles = Arc::new(AtomicU64::new(0));
+    let observed = tiles.clone();
+    let (entered, reached) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let entered = Mutex::new(entered);
+    let released = Mutex::new(released);
+    harness.owner.hold_exports(Some(Arc::new(move |phase| {
+        if phase == "rendering" {
+            crate::render::spatial::observe_tiles(observed.clone());
+            let _ = entered.lock().unwrap().send(());
+            let _ = released.lock().unwrap().recv();
+        }
+    })));
+    let destination = destinations(&harness).join("detail.jpg");
+    let parameters = json!({
+        "asset_id":asset,"entry_id":entry,"destination":destination,
+        "mutation":{"request_id":"detail-export-once","actor":"test"}
+    });
+    let accepted = harness.ok("export.jpeg", parameters.clone());
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        0,
+        "the export is held before rendering"
+    );
+    // The accepted entry stays frozen while a different Detail recipe becomes current.
+    harness.ok(
+        "edit.set-detail",
+        json!({
+            "asset_id":asset,"sharpening":120,"luminance":90,
+            "mutation":{"expected_revision":1,"request_id":"detail-after-export","actor":"test"}
+        }),
+    );
+    release.send(()).unwrap();
+    assert_eq!(harness.settle(&accepted["job_id"])["status"], "ready");
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        1,
+        "one exact Detail tile chain"
+    );
+    let retry = harness.ok("export.jpeg", parameters);
+    assert_eq!(retry["job_id"], accepted["job_id"]);
+    assert_eq!(retry["deduplicated"], true);
+    assert_eq!(
+        tiles.load(Ordering::Relaxed),
+        1,
+        "retry evaluates no Detail tile"
+    );
+
+    harness.stop();
+    let exact = reference(&harness.catalog, &asset, &entry);
+    let source = crate::open_source(&original).unwrap();
+    let independently_evaluated = crate::render(
+        &ModuleRegistry::builtin(),
+        &source,
+        &recipe,
+        crate::RenderOptions::default(),
+        &crate::RenderContext::new(),
+    )
+    .unwrap()
+    .frame(exact.snapshot_id.clone())
+    .unwrap();
+    assert_eq!(
+        exact.rgba, independently_evaluated.rgba,
+        "exact saved-entry RGBA"
+    );
+    assert_ne!(
+        exact.rgba, source.rgba,
+        "the fixture exercises active Detail"
+    );
+    assert_encodes(&destination, &exact, "one exact Detail evaluation");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(fs::read(&original).unwrap())),
+        original_hash
+    );
+}
+
 /// An export plans the entry's output stage and suggests a name beside the original, writes the
 /// exact render of that entry as a new JPEG, reports every phase on the board and records one
 /// event under the request that asked for it.

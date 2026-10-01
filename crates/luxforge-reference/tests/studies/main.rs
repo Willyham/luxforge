@@ -9,6 +9,8 @@ mod brush;
 mod colour;
 mod colour_visual;
 mod curve;
+mod detail;
+mod detail_corpus;
 mod dng;
 mod exposure;
 mod geometry;

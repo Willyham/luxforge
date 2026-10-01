@@ -32,7 +32,7 @@ use luxforge_core::{
     ActionInput, ActionPlan, AssetId, Availability, BASIC_EFFECT, ColorOperation, CropPayload,
     CropStage, EFFECT_FORMAT, EffectDescriptor, EffectStage, EntryId, Error, ErrorKind,
     HistoryEntry, Layer, LayerId, ModuleDescriptor, ModuleRegistry, POINTER_MODE, PointwiseColor,
-    PreviewJob, PreviewSource, Processing, SourceImage, Stage, StageContext, ToolModule, Zoom,
+    PreviewJob, PreviewSource, Processing, SourceImage, StageContext, ToolModule, Zoom,
 };
 use luxforge_testbase::{Gate, wait_until};
 use serde_json::{Map, Value, json};
@@ -88,7 +88,13 @@ impl ToolModule for HeldModule {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<luxforge_core::LayerReport, Error> {
         Ok(luxforge_core::LayerReport::new("held render"))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: luxforge_core::CompileStage,
+    ) -> Result<Processing, Error> {
         let unit: Arc<dyn PointwiseColor> = Arc::new(HeldUnit(self.gate.clone()));
         Ok(Processing::Color(ColorOperation::new(vec![unit])))
     }
@@ -128,6 +134,7 @@ impl Hold {
                     id: "test.held".into(),
                     title: "Held".into(),
                     effects: vec![EffectDescriptor {
+                        fit_settle: Default::default(),
                         id: HELD_EFFECT.into(),
                         format: EFFECT_FORMAT,
                         stage: EffectStage::Color,

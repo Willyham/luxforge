@@ -40,6 +40,50 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 
 A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-resolution float processing needs tiling before it is promised.
 
+## Detail and shared restoration: contract and review
+
+Scope: the Restoration placement stage and `CompileStage`, Detail's bounded spatial units,
+RGB16 JPEG hand-offs shared with Presence, exact-derived Fit display, the processed restoration
+prefix cache, off-owner pixel reads and value-mask input grids. The [Detail design](../design/detail.md)
+and [study](../design/detail-study.md) separate delivered code from outstanding image-quality gates.
+This section records the [performance-rules checklist](../engineering/performance-rules.md#review-checklist);
+it contains no new timing, native residency or total-memory qualification.
+
+| Review question | Answer for this change |
+| --- | --- |
+| Which paths read, hash or decode originals? | Preparation still uses the signature-verified source worker and decoded-source cache. Rendering, cached prefixes, deferred point reads and overlay grids receive immutable prepared sources. Cache keys hash bounded recipe/mask data, never source pixels. |
+| Which full-frame allocations are new and how are they bounded/shared? | JPEG spatial hand-offs can be RGB16 at six bytes per pixel; each buffer is checked against 512 MiB and the uncached byte driver keeps at most two evaluated frames live. The one restoration-prefix entry adds at most 128 MiB, independently of the one source proxy and eight prepared estimates; narrow RGBA8, RGB16 and RAW planar f32 prefix buffers are shared by `Arc` into suffix rendering. RAW spatial frames keep the 1.5 GiB per-buffer limit. Exact-derived Fit output is at most 8 MP of RGBA8 (32 MiB); reduce-only jobs share the retained full raster. One overlay input grid holds at most 8 million cells (six JPEG bytes or twelve RAW bytes per cell, plus an outside bitset), and its temporary grouped indices use four bytes per cell. Row scratch keeps the 64 MiB target; spatial work keeps the shared 256 MiB target and at least one finite oversized tile may progress. Overflowed working-set byte counts fail before allocation. These bounds do not define total process or GPU residency. |
+| Do point queries, validation or no-op checks render a frame? | Validation and no-op planning read payloads and stage metadata. Spatial point queries evaluate bounded tiles and retain one point evaluation per requested prefix, with no spatial frame materialization. Dense overlay cells share one tile pass; sparse cells evaluate grown windows through the same tile runner. Only an explicit whole-frame render materializes spatial frames. |
+| What runs on the owner thread? | Descriptor/recipe validation, compilation, stage calculation, request identity, transactions and replay checks remain owner work. A pixel read through a spatial prefix is parked and evaluated on the bounded point worker; queries retain their prefix evaluation, and mutation replay checks the entry, revision, draft and verified source before committing. Preview rendering, cache construction, exact display reduction and overlay grid evaluation remain worker work. |
+| Which desktop messages request state, history, previews or uploads? | Existing mutations keep their normal state/history refresh and one preview request. Fit resize, panel/display-scale changes and zoom-back request reduction alone when matching exact pixels exist; no additional `asset.state` or `history.list` call is introduced. The matching exact-derived display is uploaded once; it names displayed content without claiming full-resolution texture residency through `full_content`. Value-mask overlays rebuild only when their input/grid key changes. |
+| Which timers, polls or subscriptions were added? | None. The existing event-driven workers, bounded latest-job queues and shared 25 ms quiet timer/120 ms settlement policy remain. Detail checks cancellation between levels and bounded row chunks, including within the first tile. Disconnect drops queued/parked point reads and cancels active work; obsolete reductions supersede on the preview worker. |
+| Which unchanged work is cached, with which keys, limits and measurements? | The restoration prefix avoids repeated denoise/sharpen work during downstream drags; overlay and thumbnail input grids avoid repeated prefix evaluation when only mask coverage changes. Keys include source/development identity, canonical prefix and referenced masks, geometry, window, sampling dimensions, byte width and mask-input domain as applicable. Each worker keeps one disposable derived-pixel entry: at most 128 MiB for the restoration prefix or 8 million cells for an input grid. Neither cache retains an evaluation or source. Exact recomputation, key invalidation and reuse are tested; photo-sized hit rates, rebuild costs and retained-byte measurements remain unqualified in TASK-014. |
+| What did 24 MP before/after performance report? | Pending finished-build measurements. No speedup, latency-budget pass, Presence JPEG regression verdict or total-memory claim follows from the focused functional tests. Native measurements must record build/source identity, host load, sample counts, warm/cold prefix use, source-proxy construction and the extra exact-derived display reduction. |
+| Which tests prove exactness and sharing? | Detail's independent reference and deterministic production oracle cover coefficients, extended/constant pixels, tile sizes, sampled kernels and serial/pool parity. RGB16 tests cover every threshold, original 8-bit decode identity, the dark smoothing ramp through Basic, full/sample/region/window equality and buffer limits. Restoration-cache tests compare cached suffix bytes with uncached JPEG/RAW output, whole and cut-window stages, masks, boundary-width changes, downstream reuse and key invalidation. Worker/app tests check exact-derived Fit reduction, generation/content adoption, retained-raster sharing and the distinction between displayed and full-resolution content. Deferred-read and input-grid tests check exact prefix values, owner responsiveness, revision fences, dense/sparse equality and cache invalidation. Native rendered/photo qualification and measurement-only tests remain separate evidence. |
+
+### Detail RAW residency diagnostic
+
+The background native RAW journeys on the M4 Pro/Metal at 2x density expose a memory investigation
+case. These are ten functional captures per supplied photograph, with Detail, white balance and
+geometry changes, from release editor SHA-256
+`3a89cb5db2709acef271ca0f0beea15111543cafaa1b09b4e73f84ad87af2a9a`.
+All three final-build functional journeys pass. Surrounding host-load observations exceed the
+8.0 quiet-host threshold; these are not performance distributions or residency qualification.
+State resources include the process's source,
+developments, caches, retained previews and unified GPU allocations; GPU bytes are not added again.
+
+| Supplied source | OS footprint high-water MiB | Maximum captured resident MiB | Maximum captured reported GPU MiB |
+| --- | --- | --- | --- |
+| Nikon Z6, 4024 × 6048 | 2583.41 | 1909.75 | 348.53 |
+| Fujifilm X100VI, 7728 × 5152 | 3301.11 | 2615.39 | 454.14 |
+| DJI Air 2S, 5464 × 3640 | 2339.78 | 1820.70 | 319.03 |
+
+The resident column is a maximum over captured resource samples, not a measured process RSS peak.
+Even these samples exceed the 1536 MiB RAW investigation target on each source. TASK-014 remains
+open for attribution, idle/cache release, transient/backend staging and finished-build measurements;
+the per-buffer and scratch bounds above do not constitute a total-memory pass. Correlated states
+and captures are in `artifacts/detail-20260930/native-raw-{nikon,fuji,dji}-final/app/`.
+
 ## Recorded baselines
 
 Native M4 Pro, release builds, warm filesystem cache, synthetic fixtures. Diagnostic observations, not accepted budgets or cross-platform claims.

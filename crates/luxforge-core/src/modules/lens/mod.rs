@@ -8,7 +8,7 @@ pub(crate) mod resolve;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Control, EffectDescriptor, EffectStage,
     ExactGeometry, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer, ParameterDescriptor,
-    Processing, QueryChoiceControl, ResetAction, Stage, StageContext, ToolModule, WarpStep,
+    Processing, QueryChoiceControl, ResetAction, StageContext, ToolModule, WarpStep,
 };
 use crate::{EFFECT_FORMAT, Error, Layer, SourceOptics};
 use serde_json::{Map, Value, json};
@@ -333,8 +333,9 @@ impl ToolModule for LensModule {
         effect: &str,
         format: u32,
         value: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         match payload(effect, format, value)?.profile {
             None => Ok(Processing::ExactGeometry(ExactGeometry::identity(
                 stage.width,

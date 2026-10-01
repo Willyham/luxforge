@@ -710,6 +710,18 @@ mod tests {
         assert_eq!(fields.get("mask.set-amount", "amount"), Some("0"));
         assert_eq!(fields.get("mask.set-component-mode", "mode"), Some("add"));
         assert_eq!(fields.get("mask.set-linear", "x0"), Some("-1.00"));
+        for (name, expected) in [
+            ("sharpening", "0"),
+            ("radius", "1.0"),
+            ("sharpen-detail", "25"),
+            ("sharpen-masking", "0"),
+            ("luminance", "0"),
+            ("luminance-detail", "50"),
+            ("colour", "0"),
+            ("colour-detail", "50"),
+        ] {
+            assert_eq!(fields.get("set-detail", name), Some(expected), "{name}");
+        }
         // A curve field seeds its declared default points: the Tone curve's identity.
         assert_eq!(
             fields.get("set-curve", "luminance"),
@@ -769,6 +781,14 @@ mod tests {
                 "set-controls.rgb",
                 "set-controls.rgb-fields",
                 "set-curve.luminance",
+                "set-detail.colour",
+                "set-detail.colour-detail",
+                "set-detail.luminance",
+                "set-detail.luminance-detail",
+                "set-detail.radius",
+                "set-detail.sharpen-detail",
+                "set-detail.sharpen-masking",
+                "set-detail.sharpening",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",

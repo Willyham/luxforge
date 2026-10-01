@@ -79,11 +79,12 @@ pub(crate) struct CoverageQueue {
 impl Default for CoverageQueue {
     fn default() -> Self {
         let mut cached: Option<(u64, MaskOverlayOutcome)> = None;
+        let mut input_cache = luxforge_core::InputGridCache::default();
         Self {
             worker: Latest::new(
                 "luxforge-mask-coverage",
                 move |job: Job, running: &Running<'_, _, _>| {
-                    run_coverage(job, running, &mut cached)
+                    run_coverage(job, running, &mut cached, &mut input_cache)
                 },
             ),
         }
@@ -94,8 +95,9 @@ fn run_coverage(
     job: Job,
     running: &Running<'_, Job, Completion>,
     cached: &mut Option<(u64, MaskOverlayOutcome)>,
+    input_cache: &mut luxforge_core::InputGridCache,
 ) -> Option<Completion> {
-    let result = job.evaluation.mask_overlay_coverage(
+    let result = job.evaluation.mask_overlay_coverage_with_cache(
         &job.stamp.spec.target,
         job.stamp.spec.cells,
         job.stamp.spec.region,
@@ -103,6 +105,7 @@ fn run_coverage(
         // Accepted mask revisions are useful feedback even while a newer set waits. Only a
         // semantic cancellation abandons the active snapshot.
         running.abandoned(),
+        input_cache,
     );
     let outcome = match result {
         Ok(MaskCoverage {
@@ -683,6 +686,7 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let mut cached = None;
+        let mut input_cache = luxforge_core::InputGridCache::default();
         let queue = CoverageQueue {
             worker: Latest::new("coverage-progress-test", move |job: Job, running| {
                 started_tx
@@ -691,7 +695,7 @@ mod tests {
                 // A deterministic slow computation: several accepted inputs arrive while this job
                 // runs. The same production coverage function then reads its abandonment token.
                 release_rx.recv().ok()?;
-                run_coverage(job, running, &mut cached)
+                run_coverage(job, running, &mut cached, &mut input_cache)
             }),
         };
         let initial = progressive_stamp(&accepted_revision(&base, &draft_id, 1), &mask, 1, 1);

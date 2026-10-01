@@ -778,7 +778,7 @@ impl crate::ToolModule for Colliding {
         _: &str,
         _: u32,
         _: &Value,
-        _: crate::Stage,
+        _: crate::CompileStage,
     ) -> Result<crate::Processing, crate::Error> {
         unreachable!("registration is refused before anything is compiled")
     }
