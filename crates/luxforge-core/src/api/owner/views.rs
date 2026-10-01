@@ -782,7 +782,12 @@ mod tests {
         let card = json!({"kind": "card", "volume_id": testing::volume("card")});
         let summary = ok(&owner, client, "browse.view", json!({ "source": card }));
         let revision = summary["revision"].as_u64().unwrap();
-        ok(&owner, client, "browse.select", json!({"range": {"start": 0, "len": 1}, "active": 0}));
+        ok(
+            &owner,
+            client,
+            "browse.select",
+            json!({"range": {"start": 0, "len": 1}, "active": 0}),
+        );
         testing::set_index_revision(&index(&fx), 7);
         assert_eq!(
             ok(&owner, client, "session.state", json!({}))["browse"]["stale"],
