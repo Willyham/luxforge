@@ -3,8 +3,8 @@
 //! its new segments to the segment part, which the rest of the block follows; and the block stays
 //! within the bound the stroke limits set.
 use super::{
-    BrushStrokes, Compiled, GPU_ERASE, GPU_HARD, GPU_LIMITED, GPU_RECORD_WORDS, GPU_SEGMENT_WORDS,
-    GRID_SIDE_MAX, SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT,
+    BrushStrokes, Compiled, GPU_BLOCK_WORDS_MAX, GPU_ERASE, GPU_HARD, GPU_LIMITED,
+    GPU_RECORD_WORDS, GPU_SEGMENT_WORDS, SEGMENTS_PER_PIXEL,
 };
 use crate::{
     mask::{ColourLimit, ComponentField, Stroke},
@@ -16,18 +16,6 @@ const STAGE: Stage = Stage {
     width: 1200,
     height: 800,
 };
-
-/// The most words a brush component's block can hold under the stroke limits: every point of a mask
-/// as a segment, the largest grid's cell table, every cell at the occupancy cap, and a record per
-/// stroke.
-fn block_bound() -> usize {
-    let cells = (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1);
-    GPU_SEGMENT_WORDS * crate::model::POINTS_PER_MASK
-        + cells
-        + 1
-        + cells * SEGMENTS_PER_PIXEL
-        + GPU_RECORD_WORDS * STROKES_PER_COMPONENT
-}
 
 fn compiled(strokes: &[Stroke], stage: Stage) -> Compiled {
     let mut table = StrokeTable::new("the brush GPU block tests");
@@ -163,7 +151,7 @@ fn the_block_is_the_cpu_index_narrowed_once() {
         ]
     );
     assert_eq!(description.block.as_deref(), Some(&block[..]));
-    assert!(block.len() <= block_bound());
+    assert!(block.len() <= GPU_BLOCK_WORDS_MAX);
 }
 
 /// One painted stroke over 200 ticks, after two committed strokes: each tick compiles the component
@@ -212,7 +200,7 @@ fn a_painted_stroke_appends_its_new_segments_each_tick() {
         );
         let ([cells_at, ..], block) = field.gpu_block();
         let cells_at = cells_at as usize;
-        assert!(block.len() <= block_bound(), "tick {tick}");
+        assert!(block.len() <= GPU_BLOCK_WORDS_MAX, "tick {tick}");
         largest = largest.max(block.len());
         if let Some((held_segments, held)) = &previous {
             assert!(cells_at > *held_segments, "tick {tick} adds a segment");
@@ -235,7 +223,7 @@ fn a_painted_stroke_appends_its_new_segments_each_tick() {
     eprintln!(
         "200 ticks: {appended} segment words appended, {rewritten} index and record words \
          rewritten, the largest block {largest} words; the bound is {} words",
-        block_bound()
+        GPU_BLOCK_WORDS_MAX
     );
     assert_eq!(appended, 199 * GPU_SEGMENT_WORDS, "one new segment a tick");
 }

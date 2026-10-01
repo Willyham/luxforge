@@ -28,15 +28,16 @@ use std::sync::{Arc, LazyLock};
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "linear";
 
-/// The linear gradient's GPU coverage program (`linear.wgsl`), for a preview during a gesture. It
-/// ships disabled until it is qualified against this field
-/// (`docs/design/gpu-preview.md#qualifying-a-program`).
+/// The linear gradient's GPU coverage program (`linear.wgsl`), for a preview during a gesture.
+/// It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mask_linear",
     source: include_str!("linear.wgsl"),
     kind: GpuProgramKind::Coverage,
     words: 6,
-    enabled: false,
+    enabled: true,
 };
 
 /// The legal range of a stored normalized position: the frame is `[0, 1]` and one stage extent of

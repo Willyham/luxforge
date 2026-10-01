@@ -48,15 +48,16 @@ use std::sync::{Arc, LazyLock};
 /// The token a stored component of this kind carries.
 pub(super) const KIND: &str = "radial";
 
-/// The radial gradient's GPU coverage program (`radial.wgsl`), for a preview during a gesture. It
-/// ships disabled until it is qualified against this field
-/// (`docs/design/gpu-preview.md#qualifying-a-program`).
+/// The radial gradient's GPU coverage program (`radial.wgsl`), for a preview during a gesture.
+/// It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mask_radial",
     source: include_str!("radial.wgsl"),
     kind: GpuProgramKind::Coverage,
     words: 10,
-    enabled: false,
+    enabled: true,
 };
 
 /// The legal range of a stored `angle`, in degrees. The falloff is total on any finite angle — the

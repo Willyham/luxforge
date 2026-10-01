@@ -74,15 +74,16 @@ pub const STROKES_PER_COMPONENT: usize = 64;
 pub const SEGMENTS_PER_PIXEL: usize = 64;
 
 /// The brush's GPU coverage program (`brush.wgsl`), for a preview during a gesture: the uniform
-/// grid index this field compiles, laid out as a storage block ([`Compiled::gpu_block`]). It ships
-/// disabled until it is qualified against this field
-/// (`docs/design/gpu-preview.md#qualifying-a-program`).
+/// grid index this field compiles, laid out as a storage block ([`Compiled::gpu_block`]).
+/// It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mask_brush",
     source: include_str!("brush.wgsl"),
     kind: GpuProgramKind::Coverage,
     words: 9,
-    enabled: false,
+    enabled: true,
 };
 
 /// Words one segment takes in the GPU block: `ax, ay, ex, ey, len2`.
@@ -91,6 +92,16 @@ const GPU_SEGMENT_WORDS: usize = 5;
 /// Words one stroke's record takes in the GPU block: `R, band, flags, flow / 100`, and the colour
 /// limit's seed `(a, b)` and radius.
 const GPU_RECORD_WORDS: usize = 7;
+
+/// The most words a brush component's GPU storage block holds under the stroke limits: every point
+/// a mask may hold as a segment of five words, the largest grid's cell table, each of its cells at
+/// the occupancy cap, and a record of seven words for each stroke a component may hold. 316,034
+/// words, 1.21 MiB.
+pub const GPU_BLOCK_WORDS_MAX: usize = GPU_SEGMENT_WORDS * crate::model::POINTS_PER_MASK
+    + (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1)
+    + 1
+    + (GRID_SIDE_MAX + 1) * (GRID_SIDE_MAX + 1) * SEGMENTS_PER_PIXEL
+    + GPU_RECORD_WORDS * STROKES_PER_COMPONENT;
 
 /// A record's flags.
 const GPU_HARD: u32 = 1;
@@ -717,10 +728,8 @@ impl Compiled {
     /// The segments come first, in stored stroke order, so a stroke being painted — always the
     /// component's last — only appends its new segments to that part between ticks; the cell table,
     /// the entries and the records after it are this index, which the CPU rebuilds whenever the
-    /// strokes change, and are rewritten with it. Its size is bounded by the stroke limits: at most
-    /// [`crate::model::POINTS_PER_MASK`] segments of five words, a grid of at most
-    /// `(GRID_SIDE_MAX + 1)²` cells each listing at most [`SEGMENTS_PER_PIXEL`] entries at the
-    /// content stage, and [`STROKES_PER_COMPONENT`] records of seven words: under 1.3 MiB.
+    /// strokes change, and are rewritten with it. Its size is bounded by the stroke limits
+    /// ([`GPU_BLOCK_WORDS_MAX`]).
     pub(super) fn gpu_block(&self) -> ([u32; 3], Arc<[u32]>) {
         let segments: usize = self
             .strokes

@@ -42,24 +42,27 @@ use serde_json::json;
 use std::sync::{Arc, LazyLock};
 
 /// The luminance range's GPU coverage program (`luminance_range.wgsl`), for a preview during a
-/// gesture. It ships disabled until it is qualified against this field
-/// (`docs/design/gpu-preview.md#qualifying-a-program`).
+/// gesture. It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
 pub(crate) static LUMINANCE_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mask_luminance_range",
     source: include_str!("luminance_range.wgsl"),
     kind: GpuProgramKind::Coverage,
     words: 4,
-    enabled: false,
+    enabled: true,
 };
 
 /// The colour range's GPU coverage program (`colour_range.wgsl`): the sample count, the radius and
-/// room for every sample's Oklab pair. It ships disabled until it is qualified against this field.
+/// room for every sample's Oklab pair. It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
 pub(crate) static COLOUR_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mask_colour_range",
     source: include_str!("colour_range.wgsl"),
     kind: GpuProgramKind::Coverage,
     words: 2 + 2 * MAX_SAMPLES,
-    enabled: false,
+    enabled: true,
 };
 
 /// The token a stored luminance-range component carries.
