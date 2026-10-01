@@ -675,8 +675,8 @@ impl GpuStage {
         }
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
         figures.compiles.fetch_add(1, Ordering::Relaxed);
-        let pipeline =
-            compile(device, &support.pipeline_layout, steps, OUTPUT_FORMAT).map_err(Arc::<str>::from);
+        let pipeline = compile(device, &support.pipeline_layout, steps, OUTPUT_FORMAT)
+            .map_err(Arc::<str>::from);
         if self.cache.len() >= PIPELINE_CACHE
             && let Some(oldest) = self
                 .cache

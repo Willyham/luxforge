@@ -269,12 +269,7 @@ fn every_stack_shape_of_the_render_table_plans_in_recipe_order_or_names_a_reason
             false,
             "spatial-unit",
         ),
-        (
-            "colour after a spatial operation's frame",
-            2,
-            true,
-            "plan",
-        ),
+        ("colour after a spatial operation's frame", 2, true, "plan"),
         (
             "a spatial operation then a straightened crop",
             0,

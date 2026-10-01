@@ -649,8 +649,7 @@ mod tests {
         let mut sets = Vec::new();
         for amount in [-100.0, -40.0, 1e-9, 60.0, 100.0] {
             for roundness in [-100.0, -0.0, 0.0, 35.0, 100.0] {
-                for (midpoint, feather) in [(0.0, 0.0), (50.0, 0.0), (30.0, 60.0), (100.0, 100.0)]
-                {
+                for (midpoint, feather) in [(0.0, 0.0), (50.0, 0.0), (30.0, 60.0), (100.0, 100.0)] {
                     sets.push((amount, midpoint, roundness, feather));
                 }
             }

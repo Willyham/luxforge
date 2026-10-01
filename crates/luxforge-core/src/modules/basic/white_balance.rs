@@ -236,7 +236,11 @@ impl PointwiseColor for WhiteBalance {
     fn gpu(&self) -> Option<GpuDescription> {
         Some(GpuDescription::new(
             &PROGRAM,
-            self.matrix.iter().flatten().map(|value| value.to_bits()).collect(),
+            self.matrix
+                .iter()
+                .flatten()
+                .map(|value| value.to_bits())
+                .collect(),
         ))
     }
 }

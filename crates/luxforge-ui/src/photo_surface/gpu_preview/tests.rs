@@ -226,7 +226,10 @@ fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() 
         )
     };
     for (entry, base) in [("scale", 4), ("swap", 12), ("scale", 20)] {
-        assert!(source.contains(&call(entry, base)), "{entry} at {base}:\n{source}");
+        assert!(
+            source.contains(&call(entry, base)),
+            "{entry} at {base}:\n{source}"
+        );
     }
     validate(&source).expect("the chain validates");
     validate(&assemble(&[]).expect("no steps")).expect("an empty chain is the identity");
