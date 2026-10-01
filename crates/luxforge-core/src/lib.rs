@@ -92,6 +92,11 @@ pub use preview::{
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
+pub use render::gpu::{
+    CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer, GpuBoundary, GpuClipping,
+    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPlan,
+    GpuPlanRequest, GpuPosition, GpuProgram, GpuProgramKind, gpu_plan,
+};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
