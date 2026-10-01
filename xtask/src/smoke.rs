@@ -62,6 +62,8 @@ pub struct LaunchSpec {
     pub catalog: Option<&'static str>,
     /// Built-in modules registered as unavailable.
     pub disable: &'static [&'static str],
+    /// Draw the photograph at Fit through the GPU preview stage's identity program.
+    pub gpu_identity: bool,
     pub developer: bool,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
@@ -76,6 +78,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     plan: |_| Plan::default(),
     catalog: None,
     disable: &[],
+    gpu_identity: false,
     developer: false,
     watch: None,
     deadline: None,
@@ -312,6 +315,25 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&["fixtures/generated/60mp.jpg"]),
         window: None,
         note: None,
+        own: None,
+    },
+    Scenario {
+        name: GPU_IDENTITY,
+        about: "One JPEG at Fit drawn by the GPU preview stage's identity program, with its path and budget",
+        launches: &[LaunchSpec {
+            plan: opens,
+            gpu_identity: true,
+            ..APP
+        }],
+        verify: gpu_identity,
+        source: Source::Fixtures(&[ORIENTATION_6]),
+        window: None,
+        note: Some(
+            "The launch passes `--evidence-gpu-identity`, the evidence run's test hook: the editor \
+             holds each Fit frame it presents as an rgba16float boundary and draws the photograph \
+             through the photo surface's GPU stage with the identity program, the frame itself \
+             staying the fallback.",
+        ),
         own: None,
     },
     Scenario {
@@ -1050,6 +1072,9 @@ fn launch_of(
     for module in spec.disable {
         launch = launch.disable(module);
     }
+    if spec.gpu_identity {
+        launch = launch.gpu_identity();
+    }
     if spec.developer {
         launch = launch.developer();
     }
@@ -1194,6 +1219,83 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
         Checks::new().write(&launch.evidence, scenario, json!({"render_times": record}))?;
     }
     Ok(())
+}
+
+/// The scenario that draws its photograph through the GPU preview stage.
+const GPU_IDENTITY: &str = "gpu-identity";
+
+/// The GPU-preview budget the editor records, its recorded default.
+const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// `load`'s checks — the fixture at its orientation, size and colours, placed at Fit — over frames
+/// the GPU stage drew: the identity program over a boundary held from the frame on screen, so the
+/// fixture's own colours are the stage's output. Each frame's state records the hook, the GPU
+/// drawing path with no fallback, the boundary of the frame on screen with the CPU frame itself not
+/// drawn, at least one encoded pass, and GPU-preview figures within the recorded budget.
+fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = &launches[0];
+    plain_checks(run.scenario(), launch)?;
+    let mut checks = Checks::new();
+    for frame in &launch.frames {
+        let surface = &frame.state()["surface"];
+        let gpu = &surface["gpu"];
+        let figure = |name: &str| gpu[name].as_u64().unwrap_or(0);
+        checks.note(
+            frame,
+            "the photograph drawn by the GPU stage",
+            json!({
+                "gpu_identity": gpu["gpu_identity"],
+                "drawing_path": gpu["drawing_path"],
+                "gpu_fallback": gpu["gpu_fallback"],
+                "drawn_gpu_boundary": gpu["drawn_gpu_boundary"],
+                "surface_version": surface["version"],
+                "drawn_full_version": gpu["drawn_full_version"],
+                "gpu_preview_passes": gpu["gpu_preview_passes"],
+                "gpu_preview_budget_bytes": gpu["gpu_preview_budget_bytes"],
+                "gpu_preview_in_use_bytes": gpu["gpu_preview_in_use_bytes"],
+                "gpu_preview_peak_bytes": gpu["gpu_preview_peak_bytes"],
+                "full_resident_bytes": gpu["full_resident_bytes"],
+            }),
+        );
+        ensure(
+            gpu["gpu_identity"] == json!(true)
+                && gpu["drawing_path"] == json!("gpu")
+                && gpu["gpu_fallback"].is_null(),
+            format!(
+                "The GPU identity frame was not drawn by the GPU stage: path {}, fallback {}",
+                gpu["drawing_path"], gpu["gpu_fallback"]
+            ),
+        )?;
+        ensure(
+            gpu["drawn_gpu_boundary"] == surface["version"] && gpu["drawn_full_version"].is_null(),
+            format!(
+                "The GPU stage drew boundary {} over surface version {}, with CPU frame {} drawn",
+                gpu["drawn_gpu_boundary"], surface["version"], gpu["drawn_full_version"]
+            ),
+        )?;
+        let (budget, in_use, peak) = (
+            figure("gpu_preview_budget_bytes"),
+            figure("gpu_preview_in_use_bytes"),
+            figure("gpu_preview_peak_bytes"),
+        );
+        ensure(
+            budget == GPU_PREVIEW_BUDGET
+                && in_use > 0
+                && in_use <= peak
+                && peak <= budget
+                && figure("gpu_preview_passes") > 0,
+            format!(
+                "GPU-preview figures out of bounds: {in_use} in use, {peak} peak, {budget} budget, \
+                 {} passes",
+                gpu["gpu_preview_passes"]
+            ),
+        )?;
+    }
+    checks.write(
+        &launch.evidence,
+        run.scenario(),
+        json!({"budget_bytes": GPU_PREVIEW_BUDGET}),
+    )
 }
 
 /// Check an `empty` launch's evidence made elsewhere, as `measure` does for its empty-shell

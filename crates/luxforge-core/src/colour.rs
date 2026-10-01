@@ -68,9 +68,10 @@ pub mod srgb {
 
     /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many pixels: it
     /// takes the table once and hands it to [`decode_pixel_in`], since every dereference of the
-    /// lazy static is an atomic load the compiler cannot merge.
+    /// lazy static is an atomic load the compiler cannot merge. The desktop's evidence runs read
+    /// it too, to hold a displayed frame as a GPU boundary.
     #[inline]
-    pub(crate) fn decode_table() -> &'static [f32; 256] {
+    pub fn decode_table() -> &'static [f32; 256] {
         &TO_LINEAR
     }
 

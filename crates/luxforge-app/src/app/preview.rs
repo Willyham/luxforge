@@ -735,6 +735,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             draft: None,
+            gpu: None,
         }
     }
 
