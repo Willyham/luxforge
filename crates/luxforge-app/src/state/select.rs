@@ -15,10 +15,10 @@ use super::{Inputs, status::clients_text};
 use luxforge_core::{
     MutationRequest, SourceTag,
     catalog_types::{
-        BodyKey, BracketEvidence, BrowseSession, Cards, CatalogCounts, DiskFolders, Event,
-        EventList, Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexSource,
-        LibraryChange, LibraryItem, LocalDay, Moment, MomentKind, Month, PreviewState, RowItem,
-        SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary, VolumeId, Volumes,
+        BodyKey, BracketEvidence, BrowseSession, Card, Cards, CatalogCounts, DiskFolders, Event,
+        EventList, Exposure, Facet, Facets, FileAvailability, FileId, Grouping, IndexFolders,
+        IndexSource, LibraryChange, LibraryItem, LocalDay, Moment, MomentKind, Month, PreviewState,
+        RowItem, SortKey, Targets, ViewQuery, ViewRow, ViewSource, ViewSummary, VolumeId, Volumes,
     },
 };
 use serde_json::{Value, json};
@@ -176,6 +176,21 @@ pub(crate) struct SelectState {
     /// The catalog's counts behind the Catalog sources, as `catalog.info` last answered, read when
     /// Select is shown and after a library change.
     pub(crate) counts: Option<CatalogCounts>,
+    /// The indexed folders, as `index.folders` last answered, read with the cards and volumes.
+    pub(crate) indexed: Option<IndexFolders>,
+    /// The indexed folder whose first listing, after this desktop added it, is still running: its
+    /// row says so.
+    pub(crate) adding: Option<PathBuf>,
+    /// The indexed folder whose row menu is open.
+    pub(crate) indexed_menu: Option<PathBuf>,
+    /// The indexed folder whose removal is being confirmed over the centre.
+    pub(crate) forget: Option<PathBuf>,
+    /// The cards `card.list` answered last, by volume, once it has answered: a card not among them
+    /// in a later answer was connected meanwhile.
+    pub(crate) seen_cards: Option<BTreeSet<VolumeId>>,
+    /// The card connected while Luxforge ran that the notice offers, by volume, until it is
+    /// browsed, dismissed or taken out.
+    pub(crate) card_notice: Option<VolumeId>,
 }
 
 impl Default for SelectState {
@@ -209,11 +224,46 @@ impl Default for SelectState {
             disk: BTreeMap::new(),
             open: BTreeSet::new(),
             counts: None,
+            indexed: None,
+            adding: None,
+            indexed_menu: None,
+            forget: None,
+            seen_cards: None,
+            card_notice: None,
         }
     }
 }
 
 impl SelectState {
+    /// Take in a `card.list` answer: a card that was not in the previous answer was connected
+    /// while Luxforge ran, and the notice offers it; a card taken out takes its notice with it.
+    /// The first answer offers nothing, since those cards were there before.
+    pub(crate) fn take_cards(&mut self, cards: Cards) {
+        let now: BTreeSet<VolumeId> = cards
+            .cards
+            .iter()
+            .map(|card| card.volume.id.clone())
+            .collect();
+        if let Some(seen) = &self.seen_cards
+            && let Some(new) = cards
+                .cards
+                .iter()
+                .rev()
+                .find(|card| !seen.contains(&card.volume.id))
+        {
+            self.card_notice = Some(new.volume.id.clone());
+        }
+        if self
+            .card_notice
+            .as_ref()
+            .is_some_and(|volume| !now.contains(volume))
+        {
+            self.card_notice = None;
+        }
+        self.seen_cards = Some(now);
+        self.cards = Some(cards);
+    }
+
     /// The view lists developed photographs, which the catalog's larger cells draw.
     pub(crate) fn over_catalog(&self) -> bool {
         self.query
@@ -443,6 +493,10 @@ pub(crate) enum LibraryGesture {
     Undo,
     /// `Shift+Cmd+Z` or the title bar's Redo.
     Redo,
+    /// Add a folder…: a folder added to the indexed folders.
+    AddFolder,
+    /// An indexed folder's Remove from indexed folders….
+    RemoveFolder,
     /// Organizing the catalog: a folder, a collection or the selected photographs.
     Catalog(super::select_catalog::CatalogGesture),
 }
@@ -454,6 +508,8 @@ impl LibraryGesture {
             Self::Pick { .. } | Self::PickAll => "pick.set",
             Self::Undo => "library.undo",
             Self::Redo => "library.redo",
+            Self::AddFolder => "index.add-folder",
+            Self::RemoveFolder => "index.remove-folder",
             Self::Catalog(gesture) => gesture.method(),
         }
     }
@@ -466,6 +522,8 @@ impl LibraryGesture {
             Self::Pick { picked: false } => "Nothing to clear",
             Self::Undo => "Nothing to undo",
             Self::Redo => "Nothing to redo",
+            Self::AddFolder => "Already an indexed folder",
+            Self::RemoveFolder => "Not an indexed folder",
         }
     }
 
@@ -478,6 +536,8 @@ impl LibraryGesture {
             Self::PickAll => "Picked the frames \u{b7} Undo \u{2318}Z",
             Self::Undo => "Undid the last library change \u{b7} Redo \u{21e7}\u{2318}Z",
             Self::Redo => "Redid the last library change \u{b7} Undo \u{2318}Z",
+            Self::AddFolder => "Added the folder to indexed folders \u{b7} Undo \u{2318}Z",
+            Self::RemoveFolder => "Removed the folder from indexed folders \u{b7} Undo \u{2318}Z",
         }
     }
 
@@ -489,6 +549,8 @@ impl LibraryGesture {
             Self::Pick { picked: false } => "Could not clear",
             Self::Undo => "Could not undo",
             Self::Redo => "Could not redo",
+            Self::AddFolder => "Could not add the folder",
+            Self::RemoveFolder => "Could not remove the folder",
         }
     }
 }
@@ -502,6 +564,11 @@ pub(crate) fn pick_params(targets: &Targets, picked: bool, mutation: &MutationRe
 /// scope, so this desktop undoes only its own changes.
 pub(crate) fn library_params(mutation: &MutationRequest) -> Value {
     json!({ "mutation": mutation })
+}
+
+/// `index.add-folder`'s and `index.remove-folder`'s parameters: the folder and the envelope.
+pub(crate) fn folder_params(path: &Path, mutation: &MutationRequest) -> Value {
+    json!({ "path": path, "mutation": mutation })
 }
 
 /// `library.journal`'s parameters for the one change `sequence`: the page after the change before
@@ -528,6 +595,10 @@ pub(crate) fn pick_value(selection: &SelectionModel, rows: &RowCache) -> bool {
 /// The status bar's sentence for a recorded library change: its label from the journal, as a
 /// person reads it, with the key that takes it back. An undo says what it undid and offers redo.
 pub(crate) fn change_text(change: &LibraryChange) -> String {
+    // A photograph sent back has left the catalog: what it leaves is its file, picked again.
+    if change.method == "asset.send-back" {
+        return format!("{} \u{b7} its file is picked again", change.label);
+    }
     if change.undoes.is_some() {
         let undone = change.label.strip_prefix("Undo ").unwrap_or(&change.label);
         format!("Undid {undone} \u{b7} Redo \u{21e7}\u{2318}Z")
@@ -545,6 +616,11 @@ pub(crate) fn change_text(change: &LibraryChange) -> String {
 pub(crate) fn refusal_text(gesture: LibraryGesture, data: Option<&Value>) -> Option<String> {
     let data = data?;
     let first: LibraryItem = serde_json::from_value(data.get("items")?.get(0)?.clone()).ok()?;
+    // A photograph sent back, or one that cannot be, is refused with the core's own reason, which
+    // the caller says.
+    if matches!(first, LibraryItem::DevelopedAsset { .. }) {
+        return None;
+    }
     let count = data.get("count").and_then(Value::as_u64).unwrap_or(1);
     let name = match &first {
         LibraryItem::Pick { path } | LibraryItem::IndexedFolder { path } => {
@@ -1252,6 +1328,18 @@ pub(crate) enum SourcePress {
     Toggle(PathBuf),
     /// Browse a folder…: the native folder dialog.
     BrowseFolder,
+    /// An indexed folder's menu: open it (a right-click on its row), or close the one open.
+    Menu(Option<PathBuf>),
+    /// Remove from indexed folders…: its confirmation.
+    Forget(PathBuf),
+}
+
+/// One item of a source row's menu: `press` none draws it disabled, with `reason` saying why.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RowChoice {
+    pub(crate) label: String,
+    pub(crate) press: Option<SourcePress>,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1271,6 +1359,10 @@ pub(crate) struct SourceRow {
     pub(crate) disclosure: Option<(bool, PathBuf)>,
     /// What pressing it does; nothing for an offline volume.
     pub(crate) press: Option<SourcePress>,
+    /// What a right-click on it opens.
+    pub(crate) context: Option<SourcePress>,
+    /// Its menu, while open.
+    pub(crate) menu: Option<Vec<RowChoice>>,
 }
 
 impl SourceRow {
@@ -1287,6 +1379,8 @@ impl SourceRow {
             indent: 0,
             disclosure: None,
             press,
+            context: None,
+            menu: None,
         }
     }
 }
@@ -1309,6 +1403,8 @@ pub(crate) struct SourcesModel {
     /// The volumes, each open one's folders under it, the folder browsed with Browse a folder…
     /// when it is not among them, and Browse a folder… itself.
     pub(crate) on_disk: Vec<SourceRow>,
+    /// The indexed folders, listed under On disk after the volumes, each with its state.
+    pub(crate) indexed: Vec<SourceRow>,
     pub(crate) catalog: Vec<SourceRow>,
 }
 
@@ -1443,6 +1539,27 @@ pub(crate) struct SelectModel {
     /// The catalog's folders and collections, and over the catalog its filter bar, Metadata
     /// browser and Info panel.
     pub(crate) catalog: super::select_catalog::CatalogModel,
+    /// Remove from indexed folders…'s confirmation, over the centre.
+    pub(crate) forget: Option<ForgetSheet>,
+    /// The notice of a card connected while Luxforge ran, over the centre's top.
+    pub(crate) card_notice: Option<CardNotice>,
+}
+
+/// Remove from indexed folders…'s confirmation: what it removes and what it leaves.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ForgetSheet {
+    pub(crate) title: String,
+    pub(crate) note: String,
+    pub(crate) confirm: String,
+}
+
+/// The notice a card connected while Luxforge ran gets: its name, what its listing found and
+/// Browse, which reads and views it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CardNotice {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) browse: ReadSource,
 }
 
 /// The Select workspace's model, derived from the inputs.
@@ -1491,6 +1608,8 @@ pub(crate) fn model(
         loupe: super::loupe::derive(state, browse),
         missing: super::select_missing::derive(state),
         catalog,
+        forget: forget_sheet(state),
+        card_notice: card_notice(state),
     };
     // The loupe says what it shows and whether its next frames are ready.
     if model.loupe.open && !model.loupe.status.is_empty() {
@@ -1674,8 +1793,119 @@ pub(crate) fn sources(state: &SelectState) -> SourcesModel {
         months,
         events_note,
         on_disk: disk_rows(state, selected),
+        indexed: indexed_rows(state, &is),
         catalog,
     }
+}
+
+/// The indexed folders, as `index.folders` answered them: each by its name with what its last
+/// listing found, and its state beside it — listing while this desktop's first listing of it runs,
+/// offline (a hollow dot, dimmed) while its volume is not connected, stale while a listing of the
+/// index lane's own did not complete, and why it is not watched when it is not. Pressing one views
+/// it with its subfolders; a right-click opens its menu, Remove from indexed folders….
+fn indexed_rows(state: &SelectState, is: &impl Fn(&ViewSource) -> bool) -> Vec<SourceRow> {
+    let Some(indexed) = &state.indexed else {
+        return Vec::new();
+    };
+    indexed
+        .folders
+        .iter()
+        .map(|listed| {
+            let path = &listed.folder.path;
+            let source = ViewSource::Folder {
+                path: path.clone(),
+                subfolders: true,
+            };
+            let secondary = if state.adding.as_ref() == Some(path) {
+                Some("listing\u{2026}".to_owned())
+            } else if listed.offline {
+                Some("offline".to_owned())
+            } else if listed.stale {
+                Some("stale".to_owned())
+            } else if !listed.watching {
+                listed.unwatched.clone()
+            } else {
+                None
+            };
+            let menu = (state.indexed_menu.as_ref() == Some(path)).then(|| {
+                vec![RowChoice {
+                    label: "Remove from indexed folders\u{2026}".to_owned(),
+                    press: Some(SourcePress::Forget(path.clone())),
+                    reason: None,
+                }]
+            });
+            SourceRow {
+                secondary,
+                count: listed
+                    .files
+                    .map_or(Count::None, |files| Count::Total(thousands(files))),
+                dot: listed.offline.then_some(Dot::Offline),
+                dimmed: listed.offline,
+                selected: is(&source),
+                context: Some(SourcePress::Menu(Some(path.clone()))),
+                menu,
+                ..SourceRow::plain(
+                    SourceIcon::Folder,
+                    file_name(path),
+                    Some(SourcePress::View(source)),
+                )
+            }
+        })
+        .collect()
+}
+
+/// Remove from indexed folders…'s confirmation, while it is asked.
+fn forget_sheet(state: &SelectState) -> Option<ForgetSheet> {
+    let path = state.forget.as_ref()?;
+    Some(ForgetSheet {
+        title: format!("Remove {} from indexed folders?", file_name(path)),
+        note: format!(
+            "{} is no longer organized into events, and what Luxforge read from its files is \
+             forgotten. Nothing on disk changes, and picks and developed photographs stay. Undo \
+             with \u{2318}Z.",
+            shown_path(path, state.home.as_deref())
+        ),
+        confirm: "Remove".to_owned(),
+    })
+}
+
+/// The notice of the card connected while Luxforge ran, while it is still mounted: named after
+/// the first camera its files were read from (or its volume), with what its listing found once it
+/// has been listed.
+fn card_notice(state: &SelectState) -> Option<CardNotice> {
+    let volume = state.card_notice.as_ref()?;
+    let card: &Card = state
+        .cards
+        .as_ref()?
+        .cards
+        .iter()
+        .find(|card| &card.volume.id == volume)?;
+    let name = card
+        .cameras
+        .first()
+        .cloned()
+        .unwrap_or_else(|| card.volume.label.clone());
+    let found = match (card.files, card.events) {
+        (Some(files), Some(events)) => format!(
+            "{}, organized into {}. ",
+            photographs(files),
+            if events == 1 {
+                "1 event".to_owned()
+            } else {
+                format!("{} events", thousands(events))
+            }
+        ),
+        (Some(files), None) => format!("{}. ", photographs(files)),
+        (None, _) => "Not read yet. ".to_owned(),
+    };
+    Some(CardNotice {
+        title: format!("{name} card connected"),
+        body: format!("{found}Nothing is copied or changed."),
+        browse: ReadSource::Card {
+            volume_id: card.volume.id.clone(),
+            name: card.volume.label.clone(),
+        },
+    })
 }
 
 /// Cards: each mounted card by its volume's name, with the first camera its files were read from
@@ -1749,7 +1979,15 @@ fn disk_rows(state: &SelectState, selected: Option<&ViewSource>) -> Vec<SourceRo
             folder_rows(state, mount, 1, &viewing, &mut rows);
         }
     }
+    let indexed = |folder: &Path| {
+        state
+            .indexed
+            .iter()
+            .flat_map(|indexed| &indexed.folders)
+            .any(|listed| listed.folder.path == folder)
+    };
     if let Some(folder) = &state.folder
+        && !indexed(folder)
         && !rows.iter().any(|row| {
             matches!(&row.press, Some(SourcePress::Read(ReadSource::Folder(path))) if path == folder)
         })

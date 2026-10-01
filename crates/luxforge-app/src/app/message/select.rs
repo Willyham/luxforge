@@ -3,11 +3,11 @@ use crate::state::select::{QueryChange, ReadSource, SelectMenu, SelectPanel, Sho
 use luxforge_core::{
     ClientSession,
     catalog_types::{
-        Cards, CatalogCounts, DiskFolders, EventList, Facets, LibraryChange, ViewRows, ViewSource,
-        ViewSummary, Volumes,
+        Cards, CatalogCounts, DiskFolders, EventList, Facets, IndexFolders, LibraryChange,
+        ViewRows, ViewSource, ViewSummary, Volumes,
     },
 };
-use luxforge_ui::GridPress;
+use luxforge_ui::{GridContext, GridPress};
 use std::path::PathBuf;
 
 /// An arrow key's direction in the grid.
@@ -49,8 +49,36 @@ pub(crate) enum SelectMessage {
         path: PathBuf,
         result: Result<DiskFolders, String>,
     },
-    /// `card.list` and `volume.list` answered, read each time Select is shown.
-    Disks(Result<Box<(Cards, Volumes)>, String>),
+    /// `card.list`, `volume.list` and `index.folders` answered, read each time Select is shown,
+    /// after a change of the indexed folders and when a listing begins or ends.
+    Disks(Result<Box<(Cards, Volumes, IndexFolders)>, String>),
+    /// Add a folder…: the title bar's button, `Cmd+O` or On disk's `+` — the native folder dialog.
+    AddFolder,
+    /// The folder the dialog chose, or none when it was dismissed: `index.add-folder` of it.
+    AddFolderPicked(Option<PathBuf>),
+    /// `index.add-folder` answered: the parameters sent, and the answer or the refusal.
+    FolderAdded {
+        params: serde_json::Value,
+        result: Result<serde_json::Value, crate::app::tasks::CallError>,
+    },
+    /// `job.read` of the added folder's listing answered: read when the activity board changes.
+    AddListed {
+        job: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// A file or folder dropped on the window: in Select a folder is added to the indexed folders;
+    /// in Develop a file opens.
+    Dropped(PathBuf),
+    /// An indexed folder's menu (a right-click on its row) opened, or the one open closed.
+    IndexedMenu(Option<PathBuf>),
+    /// Remove from indexed folders…'s confirmation asked for a folder, or put away.
+    AskForget(Option<PathBuf>),
+    /// The confirmation's Remove: `index.remove-folder` of the folder it names.
+    Forget,
+    /// The notice of a connected card put away without browsing it.
+    DismissCard,
+    /// A secondary press (a right-click) on a grid cell: over the catalog, the photographs' menu.
+    Context(GridContext),
     /// `catalog.info` answered with the counts behind the Catalog sources.
     Counted(Result<CatalogCounts, String>),
     /// `P`, or the Info panel's Pick: pick or clear the selection.

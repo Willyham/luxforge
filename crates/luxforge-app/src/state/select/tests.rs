@@ -1592,3 +1592,248 @@ fn select_picking_decides_sends_and_says_what_an_agent_sees() {
     assert_eq!(rows.shown(0, 3), 0);
     assert_eq!(rows.shown(3, 1), 3);
 }
+
+fn indexed(
+    path: &str,
+    files: Option<u32>,
+    offline: bool,
+) -> luxforge_core::catalog_types::IndexedFolderState {
+    luxforge_core::catalog_types::IndexedFolderState {
+        folder: luxforge_core::catalog_types::IndexedFolder {
+            path: path.into(),
+            volume_id: volume("Photos SSD", "/Volumes/Photos SSD").id,
+            added_ms: 1,
+            actor: "desktop".into(),
+        },
+        offline,
+        files,
+        listed_ms: files.map(|_| 2),
+        watching: !offline,
+        unwatched: offline.then(|| "offline".to_owned()),
+        stale: false,
+    }
+}
+
+/// The indexed folders are listed under On disk, each by its name with what its last listing found
+/// and its state — listing while this desktop's first listing runs, offline (hollow, dimmed), stale,
+/// or why it is not watched — pressed to view it with its subfolders and right-clicked for Remove
+/// from indexed folders…, which asks first; the folder Browse a folder… chose is not listed twice;
+/// and the requests are what an agent writes.
+#[test]
+fn the_select_sources_panel_lists_the_indexed_folders_with_their_state() {
+    let mut pictures = indexed("/Users/w/Pictures", Some(1042), false);
+    let mut dumps = indexed("/Users/w/Card dumps", None, false);
+    dumps.watching = false;
+    dumps.unwatched = Some("not watched yet".into());
+    let archive = indexed("/Volumes/SSD/Archive", Some(12_408), true);
+    let mut state = SelectState {
+        shown: Shown::Select,
+        home: Some("/Users/w".into()),
+        indexed: Some(IndexFolders {
+            folders: vec![pictures.clone(), dumps.clone(), archive.clone()],
+        }),
+        folder: Some("/Users/w/Pictures".into()),
+        query: Some(ViewQuery::of(ViewSource::Folder {
+            path: "/Users/w/Pictures".into(),
+            subfolders: true,
+        })),
+        ..SelectState::default()
+    };
+    let model = sources(&state);
+    type Shape = (String, Option<String>, Count, Option<Dot>, bool, bool);
+    let shape: Vec<Shape> = model
+        .indexed
+        .iter()
+        .map(|row| {
+            (
+                row.name.clone(),
+                row.secondary.clone(),
+                row.count.clone(),
+                row.dot,
+                row.dimmed,
+                row.selected,
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec![
+            (
+                "Pictures".into(),
+                None,
+                Count::Total("1,042".into()),
+                None,
+                false,
+                true
+            ),
+            (
+                "Card dumps".into(),
+                Some("not watched yet".into()),
+                Count::None,
+                None,
+                false,
+                false
+            ),
+            (
+                "Archive".into(),
+                Some("offline".into()),
+                Count::Total("12,408".into()),
+                Some(Dot::Offline),
+                true,
+                false
+            ),
+        ]
+    );
+    assert_eq!(
+        model.indexed[0].press,
+        Some(SourcePress::View(ViewSource::Folder {
+            path: "/Users/w/Pictures".into(),
+            subfolders: true
+        }))
+    );
+    assert_eq!(
+        model.indexed[0].context,
+        Some(SourcePress::Menu(Some("/Users/w/Pictures".into())))
+    );
+    assert_eq!(model.indexed[0].menu, None);
+    // The folder being viewed is an indexed one: On disk does not list it again.
+    assert!(
+        model.on_disk.iter().all(|row| row.name != "Pictures"),
+        "{:?}",
+        model.on_disk
+    );
+    // Stale, and listing while this desktop's first listing of it runs.
+    pictures.stale = true;
+    state.indexed = Some(IndexFolders {
+        folders: vec![pictures, dumps, archive],
+    });
+    state.adding = Some("/Users/w/Card dumps".into());
+    let model = sources(&state);
+    assert_eq!(model.indexed[0].secondary.as_deref(), Some("stale"));
+    assert_eq!(
+        model.indexed[1].secondary.as_deref(),
+        Some("listing\u{2026}")
+    );
+    // The row's menu, then its confirmation.
+    state.indexed_menu = Some("/Users/w/Card dumps".into());
+    let menu = sources(&state).indexed[1].menu.clone().unwrap();
+    assert_eq!(
+        menu,
+        vec![RowChoice {
+            label: "Remove from indexed folders\u{2026}".into(),
+            press: Some(SourcePress::Forget("/Users/w/Card dumps".into())),
+            reason: None,
+        }]
+    );
+    assert_eq!(forget_sheet(&state), None);
+    state.forget = Some("/Users/w/Card dumps".into());
+    let sheet = forget_sheet(&state).unwrap();
+    assert_eq!(sheet.title, "Remove Card dumps from indexed folders?");
+    assert!(
+        sheet
+            .note
+            .starts_with("~/Card dumps is no longer organized into events")
+    );
+    assert!(sheet.note.contains("Nothing on disk changes"));
+    assert_eq!(sheet.confirm, "Remove");
+    // What Add a folder… and Remove from indexed folders… send, as an agent writes them.
+    let mutation = MutationRequest {
+        request_id: "request-test".into(),
+        actor: "desktop".into(),
+    };
+    assert_eq!(
+        folder_params(Path::new("/Users/w/Card dumps"), &mutation),
+        json!({"path": "/Users/w/Card dumps", "mutation": {"request_id": "request-test", "actor": "desktop"}})
+    );
+    assert_eq!(LibraryGesture::AddFolder.method(), "index.add-folder");
+    assert_eq!(LibraryGesture::RemoveFolder.method(), "index.remove-folder");
+}
+
+fn card(
+    label: &str,
+    files: Option<u32>,
+    events: Option<u32>,
+) -> luxforge_core::catalog_types::Card {
+    let volume = volume(label, &format!("/Volumes/{label}"));
+    luxforge_core::catalog_types::Card {
+        dcim: volume.mount_point.join("DCIM"),
+        volume,
+        files,
+        cameras: vec!["NIKON Z 8".into()],
+        events,
+    }
+}
+
+/// A card that was not in the previous `card.list` answer was connected while Luxforge ran: its
+/// notice offers it, saying what its listing found once it has been listed, until it is browsed,
+/// dismissed or taken out. The cards of the first answer were there before and get none.
+#[test]
+fn a_card_connected_while_select_runs_is_offered_by_its_notice() {
+    let mut state = SelectState {
+        shown: Shown::Select,
+        ..SelectState::default()
+    };
+    let before = card("NIKON Z 6", Some(40), Some(1));
+    state.take_cards(Cards {
+        cards: vec![before.clone()],
+    });
+    assert_eq!(
+        state.card_notice, None,
+        "a card there before is not offered"
+    );
+    assert_eq!(card_notice(&state), None);
+    // Connected: not listed yet, then listed.
+    let new = card("UNTITLED CARD", None, None);
+    state.take_cards(Cards {
+        cards: vec![before.clone(), new.clone()],
+    });
+    assert_eq!(state.card_notice, Some(new.volume.id.clone()));
+    let notice = card_notice(&state).unwrap();
+    assert_eq!(notice.title, "NIKON Z 8 card connected");
+    assert_eq!(notice.body, "Not read yet. Nothing is copied or changed.");
+    assert_eq!(
+        notice.browse,
+        ReadSource::Card {
+            volume_id: new.volume.id.clone(),
+            name: "UNTITLED CARD".into()
+        }
+    );
+    let listed = card("UNTITLED CARD", Some(612), Some(3));
+    state.take_cards(Cards {
+        cards: vec![before.clone(), listed],
+    });
+    assert_eq!(
+        card_notice(&state).unwrap().body,
+        "612 photographs, organized into 3 events. Nothing is copied or changed."
+    );
+    // Taken out: the notice goes with it.
+    state.take_cards(Cards {
+        cards: vec![before],
+    });
+    assert_eq!(state.card_notice, None);
+}
+
+/// A photograph sent back says its file is picked again, not that Cmd+Z takes it back; a refusal
+/// naming a photograph sent back, or one that cannot be, says the core's own reason.
+#[test]
+fn a_send_back_is_said_as_the_core_records_and_refuses_it() {
+    let change = LibraryChange {
+        sequence: LibraryChangeSeq(9),
+        actor: "desktop".into(),
+        request_id: "request-1".into(),
+        method: "asset.send-back".into(),
+        label: "Sent back DSC_0412.JPG".into(),
+        time_ms: 1,
+        item_count: 2,
+        undoes: None,
+        redoes: None,
+        undone_by: None,
+    };
+    assert_eq!(
+        change_text(&change),
+        "Sent back DSC_0412.JPG \u{b7} its file is picked again"
+    );
+    let data =
+        json!({"items": [{"kind": "developed-asset", "asset_id": AssetId::new()}], "count": 1});
+    assert_eq!(refusal_text(LibraryGesture::Undo, Some(&data)), None);
+}

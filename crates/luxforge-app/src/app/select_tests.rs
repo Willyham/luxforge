@@ -451,12 +451,27 @@ fn the_select_keys_are_its_own() {
             &loupe,
             Some("Select(Loupe(Pick))"),
         ),
+        // Cmd+O adds a folder in Select, and opens a single file in Develop.
         (
-            "open",
+            "add a folder",
             pressed(letter("o"), command),
             Status::Ignored,
             &select,
+            Some("Select(AddFolder)"),
+        ),
+        (
+            "add a folder held",
+            held(letter("o"), command, true),
+            Status::Ignored,
+            &select,
             None,
+        ),
+        (
+            "open in Develop",
+            pressed(letter("o"), command),
+            Status::Ignored,
+            &develop,
+            Some("Sync(Open)"),
         ),
         (
             "export",

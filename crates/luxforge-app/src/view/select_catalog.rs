@@ -17,7 +17,7 @@ use crate::{
         select_catalog::{
             ActionChoice, CatalogAction, CatalogFilterBar, CatalogIcon, CatalogMenu, CatalogRow,
             CatalogSheet, CatalogSources, ConditionGlyph, FacetColumnModel, NamingTarget,
-            OrganizeChip, PhotoInfo, SheetKind,
+            OrganizeChip, PhotoInfo, PhotoMenu, SheetKind,
         },
     },
     view::select::{band, chip, preview_placeholder, source},
@@ -461,6 +461,28 @@ pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<
         content = content.push(band("Metadata", &model.metadata));
     }
     content = content.push(develop(model));
+    // Send back, refused with the core's reason when the rows already say it would be.
+    if let Some(send_back) = &model.send_back {
+        let enabled = send_back.refused.is_none();
+        let button = labelled_button(
+            &LabelledButtonModel {
+                label: send_back.label.clone(),
+                icon: Some(Icon::Undo),
+                key_hint: None,
+                tone: ButtonTone::Control,
+                size: ButtonSize::Regular,
+                fill: true,
+                enabled,
+            },
+            enabled.then(|| act(CatalogAction::SendBack)),
+        );
+        let reason = send_back.refused.clone().unwrap_or_else(|| {
+            "Delete the catalog record and pick the file again: only a photograph with nothing \
+             but its Original"
+                .to_owned()
+        });
+        content = content.push(with_tooltip(button, reason, tooltip::Position::Top));
+    }
     if let Some(removal) = &model.removal {
         content = content.push(labelled_button(
             &LabelledButtonModel {
@@ -665,6 +687,33 @@ fn develop(model: &PhotoInfo) -> Element<'_, Message> {
         )
         .width(Length::Fill)
         .into()
+}
+
+/// The selected photographs' menu, at the point of the grid the right-click was at, moved in as
+/// little as keeps it inside the grid's `viewport`. A press beside it puts it away and never reaches
+/// the grid under it.
+pub(crate) fn photo_menu(model: &PhotoMenu, viewport: iced::Size) -> Element<'_, Message> {
+    let height = model.choices.len() as f32 * theme::MENU_ITEM_HEIGHT + 2.0 * theme::MENU_PADDING;
+    let x = model.x.min((viewport.width - theme::MENU_WIDTH).max(0.0));
+    let y = model.y.min((viewport.height - height).max(0.0));
+    iced::widget::stack![
+        mouse_area(
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fill)
+        )
+        .on_press(close())
+        .on_right_press(close()),
+        container(menu(&model.choices)).padding(Padding {
+            top: y,
+            right: 0.0,
+            bottom: 0.0,
+            left: x,
+        }),
+    ]
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 // -- Sheet -----------------------------------------------------------------------------------------

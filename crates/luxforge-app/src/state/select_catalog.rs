@@ -93,6 +93,8 @@ pub(crate) enum CatalogMenu {
     Member(CollectionId),
     /// The Develop band's Apply preset…: the library's presets.
     Presets,
+    /// The selected photographs' menu, opened by a right-click on a grid cell.
+    Photos,
 }
 
 /// A confirmation over the centre, before a gesture that removes photographs from view.
@@ -304,6 +306,8 @@ pub(crate) struct CatalogState {
     pub(crate) report: bool,
     /// Empty Removed… is deleting.
     pub(crate) emptying: Option<Emptying>,
+    /// Where the photographs' menu opened, in the grid's own coordinates.
+    pub(crate) context_at: Option<(f32, f32)>,
 }
 
 impl CatalogState {
@@ -315,6 +319,7 @@ impl CatalogState {
     /// Close the open menu, a confirmation and the report, and drop a name being typed.
     pub(crate) fn close(&mut self) {
         self.menu = None;
+        self.context_at = None;
         self.naming = None;
         self.confirm = None;
         self.report = false;
@@ -400,6 +405,9 @@ pub(crate) enum CatalogAction {
     Remove,
     /// Put back: `asset.restore` of the selection, over Removed.
     Restore,
+    /// Send back: `asset.send-back` of the selection, each photograph's record deleted and its file
+    /// picked again.
+    SendBack,
     /// Empty Removed…: its confirmation.
     Empty,
     /// The confirmation's own button: the removal or the emptying it names.
@@ -429,6 +437,8 @@ pub(crate) enum CatalogGesture {
     Remove,
     /// Put back: the selection returned from Removed.
     Restore,
+    /// Send back: the selection's records deleted and their files picked again.
+    SendBack,
 }
 
 impl CatalogGesture {
@@ -449,6 +459,7 @@ impl CatalogGesture {
             Self::RemovePhotos => "collection.remove",
             Self::Remove => "asset.remove",
             Self::Restore => "asset.restore",
+            Self::SendBack => "asset.send-back",
         }
     }
 
@@ -465,7 +476,12 @@ impl CatalogGesture {
     pub(crate) fn of_selection(self) -> bool {
         matches!(
             self,
-            Self::MovePhotos | Self::AddPhotos | Self::RemovePhotos | Self::Remove | Self::Restore
+            Self::MovePhotos
+                | Self::AddPhotos
+                | Self::RemovePhotos
+                | Self::Remove
+                | Self::Restore
+                | Self::SendBack
         )
     }
 
@@ -477,6 +493,7 @@ impl CatalogGesture {
             Self::RemovePhotos => "Not in that collection",
             Self::Remove => "Already in Removed",
             Self::Restore => "Not in Removed",
+            Self::SendBack => "Nothing was sent back",
             Self::RenameFolder | Self::RenameCollection => "The name is unchanged",
             Self::MoveFolder => "Already there",
             _ => "Nothing changed",
@@ -501,6 +518,7 @@ impl CatalogGesture {
             Self::RemovePhotos => "Removed from the collection \u{b7} Undo \u{2318}Z",
             Self::Remove => "Removed from the catalog \u{b7} Undo \u{2318}Z",
             Self::Restore => "Put back \u{b7} Undo \u{2318}Z",
+            Self::SendBack => "Sent back \u{b7} their files are picked again",
         }
     }
 
@@ -521,6 +539,7 @@ impl CatalogGesture {
             Self::RemovePhotos => "Could not remove from the collection",
             Self::Remove => "Could not remove from the catalog",
             Self::Restore => "Could not put back",
+            Self::SendBack => "Could not send back",
         }
     }
 }
@@ -1028,6 +1047,24 @@ pub(crate) struct PhotoInfo {
     pub(crate) batch: BatchBand,
     /// Remove from catalog…, or Put back over Removed.
     pub(crate) removal: Option<RemovalButton>,
+    /// Send back, over every catalog view but Removed.
+    pub(crate) send_back: Option<SendBackButton>,
+}
+
+/// The Info panel's Send back: its label, and why the core will refuse it when the rows the
+/// desktop holds already say so (a photograph edited since it was developed).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SendBackButton {
+    pub(crate) label: String,
+    pub(crate) refused: Option<String>,
+}
+
+/// The selected photographs' menu, open where a right-click on a grid cell opened it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PhotoMenu {
+    pub(crate) x: f32,
+    pub(crate) y: f32,
+    pub(crate) choices: Vec<ActionChoice>,
 }
 
 /// The Develop band's batch actions, as the catalog board draws them: Apply preset… with its menu
@@ -1107,6 +1144,8 @@ pub(crate) struct CatalogModel {
     pub(crate) sheet: Option<CatalogSheet>,
     /// The status bar says the last batch's sentence, so it offers its report beside it.
     pub(crate) status_report: bool,
+    /// The selected photographs' menu, while a right-click on the grid holds it open.
+    pub(crate) context: Option<PhotoMenu>,
 }
 
 /// The catalog's model while Select is shown; `status` is what the status bar says.
@@ -1123,15 +1162,77 @@ pub(crate) fn derive(
         .as_ref()
         .and_then(|batch| batch.sentence(home))
         .is_some_and(|sentence| sentence == status);
+    let info = over.then(|| info(state, selection)).flatten();
+    let context = photo_menu(catalog, info.as_ref());
     CatalogModel {
         shown: over,
         sources: sources(state),
         filter: over.then(|| filter_bar(state)),
         metadata: (over && catalog.metadata).then(|| metadata(state)),
-        info: over.then(|| info(state, selection)).flatten(),
+        info,
         sheet: over.then(|| sheet(state, selection)).flatten(),
         status_report: said && report_of(catalog).is_some(),
+        context,
     }
+}
+
+/// The selected photographs' menu, while open: Send back (refused with why when the rows say the
+/// core will refuse it), then Remove from catalog…, or Put back over Removed.
+fn photo_menu(catalog: &CatalogState, info: Option<&PhotoInfo>) -> Option<PhotoMenu> {
+    if catalog.menu != Some(CatalogMenu::Photos) {
+        return None;
+    }
+    let (x, y) = catalog.context_at?;
+    let info = info?;
+    let mut choices = Vec::new();
+    if let Some(button) = &info.send_back {
+        choices.push(match &button.refused {
+            Some(reason) => ActionChoice::refused(button.label.clone(), reason.clone()),
+            None => ActionChoice::new(button.label.clone(), CatalogAction::SendBack),
+        });
+    }
+    if let Some(removal) = &info.removal {
+        let choice = ActionChoice::new(removal.label.clone(), removal.action.clone());
+        choices.push(if choices.is_empty() {
+            choice
+        } else {
+            choice.separated()
+        });
+    }
+    Some(PhotoMenu { x, y, choices })
+}
+
+/// The core's own reason for refusing to send back a photograph edited since it was developed
+/// (`asset.send-back`'s `conflict`), which the desktop says before asking when the photograph's row
+/// says it is edited.
+pub(crate) fn edited_refusal(file_name: &str) -> String {
+    format!(
+        "{file_name} has been edited since it was developed: it leaves the catalog only by being \
+         removed"
+    )
+}
+
+/// Send back for `count` selected photographs, over every catalog view but Removed: refused, with
+/// the core's reason, when a selected photograph's row says it is edited.
+fn send_back_button(
+    state: &SelectState,
+    count: u32,
+    rows: Option<&[&ViewRow]>,
+) -> Option<SendBackButton> {
+    if over_removed(state) {
+        return None;
+    }
+    let refused = rows
+        .and_then(|rows| rows.iter().find(|row| row.edited))
+        .map(|row| edited_refusal(&row.file_name));
+    Some(SendBackButton {
+        label: if count == 1 {
+            "Send back".to_owned()
+        } else {
+            format!("Send back {}", thousands(count))
+        },
+        refused,
+    })
 }
 
 /// Whether the view shows Removed.
@@ -2361,6 +2462,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
         info.develop = develop_rows(&info);
         info.batch = batch_band(state, count);
         info.removal = Some(removal_button(state));
+        info.send_back = send_back_button(state, count, None);
         return Some(info);
     };
     // Folders: how many of the selection each holds, most first.
@@ -2436,6 +2538,7 @@ pub(crate) fn info(state: &SelectState, selection: &SelectionModel) -> Option<Ph
     info.develop = develop_rows(&info);
     info.batch = batch_band(state, count);
     info.removal = Some(removal_button(state));
+    info.send_back = send_back_button(state, count, Some(&rows));
     Some(info)
 }
 

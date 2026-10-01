@@ -20,7 +20,11 @@
 //! library preset [`PRESET`] (made by the setup with `preset.create`) applied from the Develop band
 //! (`batch.apply-preset` of the selection), its report opened from the status bar, and the five
 //! exported into a scratch folder of the run's (`batch.export`), each checked against the job's
-//! own `job.read` record. And removing: one photograph removed from its Info panel
+//! own `job.read` record. Then sending back: an edited photograph clicked, its Info panel's Send
+//! back refused with the core's reason, and an unedited one right-clicked, its menu's Send back
+//! sending `asset.send-back` of the selection, checked against `catalog.info` and, after the run,
+//! the file picked again and the core's own refusal of each edited photograph. And removing: one
+//! photograph removed from its Info panel
 //! (`asset.remove` of the selection, after its confirmation) and the removal undone, two removed
 //! with ⌫, Removed viewed, one put back (`asset.restore`), and Removed emptied after its
 //! confirmation (`catalog.empty-removed`), each checked against `catalog.info`'s counts. After the
@@ -355,6 +359,15 @@ pub fn steps(expected: &Value) -> Result<Vec<Step>> {
         catalog("catalog-preset-report", CatalogStep::Report),
         catalog("catalog-exported", CatalogStep::ExportInto(export))
             .status_starts("Exported 5 photographs to "),
+        // Sending back: an edited photograph's Send back is refused with the core's reason; an
+        // unedited one is right-clicked and sent back from its menu.
+        select("catalog-edited", click(0, false)),
+        catalog("catalog-context", CatalogStep::Context(5)),
+        catalog(
+            "catalog-sent-back",
+            CatalogStep::ContextChoice("Send back".into()),
+        )
+        .status_starts("Sent back "),
         // Removing: one removed from its Info panel and the removal undone; two removed with ⌫;
         // Removed viewed, one put back, and Removed emptied.
         select("catalog-one", click(5, false)),
@@ -388,6 +401,7 @@ pub fn journal() -> Vec<&'static str> {
         "library.undo",
         "folder.rename",
         "folder.move",
+        "asset.send-back",
         "asset.remove",
         "library.undo",
         "asset.remove",
@@ -825,9 +839,79 @@ pub fn verify(
         json!({"request": sent, "report": exported, "folder": on_disk}),
     );
 
+    // Sending back: the edited photograph's Send back refused with the core's reason, which the
+    // runner asks the core for after the run; the unedited one right-clicked, its menu's Send back
+    // one library change, the photograph leaving the folder and the catalog's count.
+    let photographs = expected["counts"]["photographs"].as_u64().unwrap_or(0);
+    let frame = launch.at("catalog-edited")?;
+    let info = &catalog_block(frame)["info"];
+    let edited_reason = info["send_back"]["refused"]
+        .as_str()
+        .ok_or_else(|| format!("catalog-edited: Send back is not refused: {info}"))?
+        .to_owned();
+    ensure(
+        info["edited"] == "Yes"
+            && info["title"]
+                .as_str()
+                .is_some_and(|name| edited_reason.starts_with(name)),
+        format!("catalog-edited: the Info panel shows {info}"),
+    )?;
+    checks.note(
+        frame,
+        "an edited photograph's Send back, refused with the core's reason",
+        json!({"send_back": info["send_back"]}),
+    );
+    let moved_count = expected["folder"]["count"].as_u64().unwrap_or(0) - 1;
+    let frame = launch.at("catalog-context")?;
+    let menu = &catalog_block(frame)["context"];
+    let sent_name = catalog_block(frame)["info"]["title"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    ensure(
+        menu[0]["label"] == "Send back"
+            && menu[0]["enabled"] == true
+            && menu[1]["label"] == "Remove from catalog\u{2026}"
+            && select(frame)["selection"]["active"] == 5
+            && select(frame)["selection"]["count"] == 1,
+        format!(
+            "catalog-context: the menu shows {menu} over the selection {}",
+            select(frame)["selection"]
+        ),
+    )?;
+    checks.note(
+        frame,
+        "a right-click selects the photograph and opens its menu",
+        json!({"menu": menu, "photograph": sent_name}),
+    );
+    let frame = launch.at("catalog-sent-back")?;
+    let sent = library_sent(
+        frame,
+        "catalog-sent-back",
+        "asset.send-back",
+        json!({"targets": {"kind": "selection"}}),
+    )?;
+    ensure(
+        frame.status()? == format!("Sent back {sent_name} \u{b7} its file is picked again")
+            && select(frame)["count"] == moved_count - 1
+            && catalog_count(frame, 0) == Some(photographs - 1)
+            && catalog_block(frame)["context"].is_null(),
+        format!(
+            "catalog-sent-back: the status says {:?}, the view holds {}, All photographs {:?}",
+            frame.status()?,
+            select(frame)["count"],
+            catalog_count(frame, 0)
+        ),
+    )?;
+    checks.note(
+        frame,
+        "Send back from the menu: one library change, the photograph out of the catalog",
+        json!({"request": sent, "status": frame.status()?, "count": select(frame)["count"]}),
+    );
+
     // Removing, each step against catalog.info's counts as the sources panel shows them.
     let removed = expected["counts"]["removed"].as_u64().unwrap_or(0);
-    let folder_count = expected["folder"]["count"].as_u64().unwrap_or(0) - 1;
+    let folder_count = moved_count - 1;
     let frame = launch.at("catalog-one")?;
     ensure(
         removed_and_viewed(frame) == (Some(removed), Some(folder_count)),
@@ -953,14 +1037,13 @@ pub fn verify(
     )?;
     let frame = launch.at(LAST)?;
     let calls = &catalog_block(frame)["empty_calls"];
-    let photographs = expected["counts"]["photographs"].as_u64().unwrap_or(0);
     ensure(
         calls.as_array().map(Vec::len) == Some(1)
             && calls[0]["params"]["mutation"]["actor"] == "desktop"
             && calls[0]["answer"]["deleted"] == removed + 1
             && calls[0]["answer"]["remaining"] == 0
             && removed_and_viewed(frame) == (Some(0), Some(0))
-            && catalog_count(frame, 0) == Some(photographs - 1),
+            && catalog_count(frame, 0) == Some(photographs - 2),
         format!(
             "{LAST}: emptying answered {calls}; Removed and its view count {:?}, All photographs {:?}",
             removed_and_viewed(frame),
@@ -1002,12 +1085,30 @@ pub fn verify(
             histories.push(json!({"asset_id": asset, "labels": labels}));
         }
         let counts = ask(owner, client, "catalog.info", json!({}))?["counts"].clone();
+        // The core's own refusal to send back each photograph the preset edited, asked of this
+        // copy, which a refusal leaves as it was.
+        let mut refusals = Vec::new();
+        for asset in &done {
+            let refused = ask(
+                owner,
+                client,
+                "asset.send-back",
+                json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "mutation": mutation("send-back")}),
+            );
+            refusals.push(match refused {
+                Ok(answer) => json!({"answered": answer}),
+                Err(error) => json!(error.to_string()),
+            });
+        }
+        let picks = ask(owner, client, "pick.list", json!({}))?;
         Ok(json!({
             "collections": collections,
             "folders": folders,
             "moved": moved["count"],
             "histories": histories,
             "counts": counts,
+            "refusals": refusals,
+            "picks": picks,
         }))
     })?;
     for history in after["histories"].as_array().into_iter().flatten() {
@@ -1023,11 +1124,38 @@ pub fn verify(
         )?;
     }
     ensure(
-        after["counts"]["removed"] == 0 && after["counts"]["photographs"] == photographs - 1,
+        after["counts"]["removed"] == 0 && after["counts"]["photographs"] == photographs - 2,
         format!(
             "The catalog left counts {}, {photographs} photographs before",
             after["counts"]
         ),
+    )?;
+    // The edited photograph's Send back said the core's own reason, and the sent-back photograph's
+    // file is picked again by the desktop.
+    let refusal = format!("asset.send-back: conflict: {edited_reason}");
+    ensure(
+        after["refusals"]
+            .as_array()
+            .is_some_and(|refusals| refusals.contains(&json!(refusal))),
+        format!(
+            "The core refuses the edited photographs with {}, the desktop said {edited_reason:?}",
+            after["refusals"]
+        ),
+    )?;
+    let repicked = after["picks"]["picks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|pick| {
+            pick["path"]
+                .as_str()
+                .is_some_and(|path| Path::new(path).file_name() == Some(sent_name.as_ref()))
+        })
+        .cloned()
+        .ok_or_else(|| format!("{sent_name} is not picked again: {}", after["picks"]))?;
+    ensure(
+        repicked["actor"] == "desktop",
+        format!("{sent_name} is picked again as {}", repicked["actor"]),
     )?;
     let stored = after["collections"]["collections"]
         .as_array()
@@ -1077,8 +1205,8 @@ pub fn verify(
     )?;
     checks.note(
         launch.at(LAST)?,
-        "the catalog the editor left: the smart collection's query as shown, the folder renamed and nested, the photograph moved, the add undone, one preset entry on each photograph the preset reached, Removed empty",
-        json!({"smart": stored, "folder": renamed, "moved": after["moved"], "print": print, "histories": after["histories"], "counts": after["counts"]}),
+        "the catalog the editor left: the smart collection's query as shown, the folder renamed and nested, the photograph moved, the add undone, one preset entry on each photograph the preset reached, the edited ones refused a send-back with the reason the desktop said, the sent-back file picked again, Removed empty",
+        json!({"smart": stored, "folder": renamed, "moved": after["moved"], "print": print, "histories": after["histories"], "counts": after["counts"], "refusals": after["refusals"], "repicked": repicked}),
     );
     Ok(())
 }
