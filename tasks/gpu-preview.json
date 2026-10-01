@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Build the preview-difference measure, the qualification corpus and a baseline of today's accepted CPU approximations.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The measure compares two 8-bit sRGB frames over the photograph rectangle only (not the canvas, per the owner's 2026-09-30 white-balance rule): per-pixel CIEDE2000 through CIELAB D65 in f64, reporting mean, worst 16 x 16 block mean, p99 and signed mean delta L*. It lives in luxforge-reference, independent of production code, and a comparison command in xtask reads two captures and writes the four statistics with the class verdict.",
@@ -63,7 +63,7 @@
     {
       "id": "TASK-002",
       "description": "Build the GPU stage in the photo surface: shared device, the bounded GPU-preview slot, plain-data program execution, fallback reasons and evidence fields, proven with an identity program.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Execution happens in PhotoPrimitive::prepare on the device and queue Iced already passes in, so a GPU frame is drawn in the frame that evaluates it. The UI thread encodes commands only: it never reads back, waits for the GPU or does CPU pixel work.",
@@ -119,7 +119,7 @@
     {
       "id": "TASK-003",
       "description": "Give the core optional GPU program descriptions and a GPU plan from a boundary to the terminal output, planned on the owner in O(layers), with no GPU dependency and no change to CPU output.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "PointwiseColor and the mask components gain an optional description: a WGSL function as static text owned by the module, a uniform block of 32-bit words and an optional storage block (curve knots, a brush segment grid). Two units that describe() identically produce identical uniforms.",
@@ -179,7 +179,7 @@
     {
       "id": "TASK-004",
       "description": "Write the GPU programs for the seven pointwise colour units and qualify each against its CPU unit.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -557,7 +557,7 @@
     {
       "id": "TASK-011",
       "description": "Confirm and fix minification aliasing when a full-resolution texture is drawn below its size, starting with Before/After at Fit.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Before/After prefers the retained exact raster even at Fit (crates/luxforge-app/src/app/history.rs), which the surface would draw through its bilinear sampler with mip_level_count 1, the case the zone-plate measurement showed aliasing. Confirm with a zone-plate capture of compare at Fit before changing anything.",

@@ -1,6 +1,6 @@
 # GPU previews
 
-Status: **planned; not implemented.** The owner set the direction on 2026-10-01: during a gesture, speed comes first, as long as the picture does not visibly jump when it settles. The error limits, the dissolve, the label and the preference below are proposals with recorded defaults. The plan runs on them until the owner revises them. [Task plan](../../tasks/gpu-preview.json) · [decisions](../decisions.md#gpu-previews).
+Status: **in implementation.** The preview-difference measure and corpus, the photo surface's GPU stage, the core's program descriptions and plan, and mipmapped minification are built; no gesture draws on the GPU yet. The owner set the direction on 2026-10-01: during a gesture, speed comes first, as long as the picture does not visibly jump when it settles. The error limits, the dissolve, the label and the preference below are proposals with recorded defaults. The plan runs on them until the owner revises them. [Task plan](../../tasks/gpu-preview.json) · [decisions](../decisions.md#gpu-previews).
 
 ## Outcome and scope
 

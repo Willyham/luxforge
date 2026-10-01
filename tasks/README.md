@@ -21,7 +21,7 @@ The Lens and perspective plan runs on the owner's decisions of 2026-09-30 in [de
 
 The Tone curve's features are implemented (authorized by the owner on 2026-09-30); only the measurement task, TASK-009's point-drag and unit-cost figures, remains. The module runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
 
-The GPU previews plan runs on the owner's direction of 2026-10-01 in [decisions](../docs/decisions.md#gpu-previews): speed first for interactive previews, GPU arithmetic for previews only. Its error limits, dissolve, label, preference and budget are proposals with recorded defaults in its [design](../docs/design/gpu-preview.md#proposals-with-recorded-defaults). Implementation has not started.
+The GPU previews plan runs on the owner's direction of 2026-10-01 in [decisions](../docs/decisions.md#gpu-previews): speed first for interactive previews, GPU arithmetic for previews only. Its error limits, dissolve, label, preference and budget are proposals with recorded defaults in its [design](../docs/design/gpu-preview.md#proposals-with-recorded-defaults). Implementation is in progress: the measure and corpus, the surface's GPU stage, the core's GPU plan and mipmapped minification are done.
 
 The three modules share the restoration stage, compile context, window planner, mask input mapping and Fit settlement contracts, with combined exact-buffer and native rendering checks. Their outstanding measurements run after all feature work, one plan at a time on a quiet host.
 
