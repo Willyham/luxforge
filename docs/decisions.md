@@ -297,6 +297,16 @@ Decided by the owner on 2026-10-01, after the Lens correction panel listed every
 - A single click on the plot away from every point adds a point, and a double-click on a point removes it; the plot fills the panel's width up to a maximum and is centred beyond it (owner, 2026-10-01). A double-click on empty plot therefore adds one point and never removes it.
 - Below black the curve uses a floor-subtracted luminance ratio (owner, 2026-09-30): with `L_floor` the linear output of the curve at encoded zero, `rgb_out = L_floor + rgb·(L_out − L_floor)/L`, which equals Basic's frozen ratio rule whenever the curve keeps black at zero. A lifted black then fades the deepest shadows toward grey instead of turning their noise into coloured speckle. Basic's Blacks keeps its frozen rule; changing it is a separate follow-up.
 
+## GPU previews
+
+Decided by the owner on 2026-10-01, after a review of where the CPU spends its time ([design](design/gpu-preview.md), [plan](../tasks/gpu-preview.json)):
+
+- **Speed comes first for interactive previews**, provided settling causes no large, noticeable jump in the image. Generous preview error limits are acceptable, especially with interface affordances that soften the hand-off.
+- **GPU arithmetic is for previews only.** The CPU stays the reference for settled frames, the histogram and clipping counts, point samples, mask grids, export and history; no GPU pixel reaches them.
+- **Order of work:** measurable error limits first, then the Fit colour stage, then Presence and Detail, with mipmapped minification alongside.
+
+The specific limits (CIEDE2000, in a pointwise and a spatial class), the 150 ms settle dissolve, the "GPU preview" label, the `workspace.set` preference and the 256 MiB GPU-preview budget are proposals with recorded defaults in the [design](design/gpu-preview.md#proposals-with-recorded-defaults); the plan runs on them until the owner revises them.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -308,7 +318,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
 - Which measured workloads and responsiveness budgets become acceptance requirements?
-- For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above.
+- For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).
 - Which of the [Tone curve proposals](design/tone-curve.md#proposals-with-recorded-defaults) stand — a luminance composite with the luminance-ratio reconstruction rather than Lightroom's per-channel composite, one channel, order 5 after Basic and before the mixer, free endpoints, the unit-slope tail past white, sixteen points, the Lightroom `ToneCurvePV2012` transfer including an identity curve, a double-click add that snaps to the drawn curve, end points the desktop does not remove, and the delivered point rows? The module is implemented on these defaults.
 - Which of the [Presence, colour mixer and vignette proposals](design/presence-mixer-vignette.md#proposals-with-recorded-defaults) (section names, stage order, mixer layout, vignette style, spatial gesture latency, sample cost) stand? Implementation was authorized on 2026-09-22 on the recorded defaults and is delivered; the owner refines the defaults after review, including whether spatial sliders should draft at a bounded resolution now that the measured misses are recorded.
