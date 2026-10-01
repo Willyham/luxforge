@@ -105,9 +105,9 @@ pub(super) struct FilesLane {
     /// current without a survey per call.
     notified: bool,
     #[cfg(test)]
-    hold: Option<Arc<luxforge_testbase::Gate>>,
+    hold: Option<crate::index::lane::Hold>,
     #[cfg(test)]
-    hold_reads: Option<Arc<luxforge_testbase::Gate>>,
+    hold_reads: Option<crate::index::lane::Hold>,
     /// The path of every header read the lane has taken in.
     #[cfg(test)]
     reads: Arc<std::sync::Mutex<Vec<PathBuf>>>,
@@ -158,13 +158,14 @@ pub(super) enum FilesMessage {
     /// How many calls wait behind the query thread's running question.
     #[cfg(test)]
     QueriesWaiting(std::sync::mpsc::SyncSender<usize>),
-    /// Hold every listing at each folder while the gate is shut, from the lane's next start.
+    /// Hold every listing under the folder at each of its folders while the gate is shut, from the
+    /// lane's next start: only the test's own, not a card the host mounts meanwhile.
     #[cfg(test)]
-    Hold(Arc<luxforge_testbase::Gate>),
-    /// Hold every header read before it is read while the gate is shut, until its work is
+    Hold(Arc<luxforge_testbase::Gate>, PathBuf),
+    /// Hold every header read of a file under the folder while the gate is shut, until its work is
     /// cancelled, from the lane's next start.
     #[cfg(test)]
-    HoldReads(Arc<luxforge_testbase::Gate>),
+    HoldReads(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Bound listings by these limits, from the lane's next start.
     #[cfg(test)]
     Limits(WalkLimits),
@@ -630,9 +631,11 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
             let _ = reply.send(owner.catalog.files.queries_waiting());
         }
         #[cfg(test)]
-        FilesMessage::Hold(gate) => owner.catalog.files.hold = Some(gate),
+        FilesMessage::Hold(gate, under) => owner.catalog.files.hold = Some((gate, under)),
         #[cfg(test)]
-        FilesMessage::HoldReads(gate) => owner.catalog.files.hold_reads = Some(gate),
+        FilesMessage::HoldReads(gate, under) => {
+            owner.catalog.files.hold_reads = Some((gate, under))
+        }
         #[cfg(test)]
         FilesMessage::Limits(limits) => owner.catalog.files.limits = limits,
         #[cfg(test)]
