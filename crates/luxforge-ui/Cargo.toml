@@ -18,6 +18,9 @@ wgpu.workspace = true
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
+# The one independent sRGB transfer function, which tests compute linear-light expectations through.
+# It depends on no workspace crate, so the widget crate stays core-free.
+luxforge-reference = { path = "../luxforge-reference" }
 
 [lints]
 workspace = true
