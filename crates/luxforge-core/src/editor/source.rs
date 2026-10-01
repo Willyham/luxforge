@@ -2489,16 +2489,10 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// The paths of the RAWs the owner's private manifest lists (`LUXFORGE_RAW_MANIFEST`, by
-    /// default `~/projects/lightwell/private/raw-manifest.json`), which is only read.
+    /// The paths of the RAWs the owner's private manifest `LUXFORGE_RAW_MANIFEST` lists, which is
+    /// only read.
     fn manifest_raws() -> Vec<PathBuf> {
-        let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").map_or_else(
-            |_| {
-                PathBuf::from(std::env::var("HOME").expect("HOME"))
-                    .join("projects/lightwell/private/raw-manifest.json")
-            },
-            PathBuf::from,
-        );
+        let manifest = std::env::var("LUXFORGE_RAW_MANIFEST").expect("LUXFORGE_RAW_MANIFEST");
         let listed: Value = serde_json::from_slice(&std::fs::read(manifest).unwrap()).unwrap();
         listed["sources"]
             .as_array()
@@ -2511,9 +2505,11 @@ mod tests {
     /// On the owner's Mac: opening a copy of each RAW the owner's manifest lists decodes it once.
     /// The preparation after its Develop reads and decodes nothing and adopts the very sensor the
     /// Develop unpacked, whose interpretation it checks as a file's; a copy changed between its
-    /// Develop and its preparation is read and decoded afresh. Each file is only copied.
+    /// Develop and its preparation is read and decoded afresh. Each file is only copied. Run with
+    /// `LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json cargo test -p luxforge-core --lib
+    /// an_opened_raw_is_decoded_once -- --ignored`.
     #[test]
-    #[ignore = "requires the owner's RAW files through the private manifest"]
+    #[ignore = "requires the private RAW fixtures and their manifest"]
     fn an_opened_raw_is_decoded_once() {
         for original in manifest_raws() {
             let name = original.file_name().unwrap().to_string_lossy().into_owned();
