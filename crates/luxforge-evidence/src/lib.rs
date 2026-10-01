@@ -442,6 +442,8 @@ pub enum DraftStep {
     Lock,
     Option(bool),
     Guide(bool),
+    /// One straighten-guide drag, `[start_x, start_y, end_x, end_y]` in crop-box pixels.
+    GuideLine([f64; 4]),
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]
     Apply,
     #[serde(deserialize_with = "only_true", serialize_with = "write_true")]

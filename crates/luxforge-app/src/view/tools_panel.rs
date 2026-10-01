@@ -1767,9 +1767,10 @@ fn picker_view<'a>(
 }
 
 /// The crop section, driven by [`CropMessage`]: the API-equivalent path and this panel share the
-/// same state machine. Idle and drafting it lays out the same Ratio group (chips, custom ratio,
-/// lock and swap) and Angle group (stepper, rail and straighten guide), so opening a draft moves
-/// none of them; idle they read the committed crop, and a change to one opens the draft with it.
+/// same state machine. The Ratio group holds custom ratio, lock and swap;
+/// its preset chips move into the floating bar while drafting. The Angle group holds the stepper,
+/// rail and one-shot Straighten button; idle they read the committed crop, and a change to one
+/// opens the draft with it.
 /// Drafting adds the draft's exact readout and Cancel and Apply below them, every row a widget of
 /// the library.
 fn crop_section_view<'a>(
@@ -1824,7 +1825,7 @@ fn crop_section_view<'a>(
             (
                 IconButtonModel {
                     icon: Icon::Swap,
-                    tooltip: "Swap".into(),
+                    tooltip: "Swap ratio orientation (X)".into(),
                     enabled: model.can_swap,
                     selected: false,
                 },
@@ -1832,7 +1833,7 @@ fn crop_section_view<'a>(
             ),
         ],
     ));
-    if !model.presets.is_empty() {
+    if !model.drafting && !model.presets.is_empty() {
         let chips = model
             .presets
             .iter()
@@ -1897,7 +1898,7 @@ fn crop_section_view<'a>(
             theme::FIELD_ROW_HEIGHT,
         ));
     }
-    rows.push(straighten_toggle(model));
+    rows.push(straighten_button(model));
     if !model.drafting {
         return column(rows).spacing(theme::ROW_SPACING).into();
     }
@@ -2000,14 +2001,24 @@ fn custom_field<'a>(
     .into()
 }
 
-fn straighten_toggle(model: &CropSectionModel) -> Element<'_, Message> {
-    let control = toggle(
-        &ToggleModel {
-            label: "Straighten guide".into(),
-            on: model.guide,
+fn straighten_button(model: &CropSectionModel) -> Element<'_, Message> {
+    let control = labelled_button(
+        &LabelledButtonModel {
+            label: "Straighten".into(),
+            icon: Some(Icon::Ruler),
+            key_hint: None,
+            tone: if model.guide {
+                ButtonTone::Selected
+            } else {
+                ButtonTone::Control
+            },
+            size: ButtonSize::Regular,
+            fill: true,
             enabled: model.enabled,
         },
-        |on| Message::Crop(CropMessage::Guide(on)),
+        model
+            .enabled
+            .then_some(Message::Crop(CropMessage::Guide(!model.guide))),
     );
     let on = model.guide;
     focus_control(control, model.enabled, move |event| {

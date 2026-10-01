@@ -141,7 +141,9 @@ pub(crate) fn edit_refusal(
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CropSection {
     pub(crate) custom: (String, String),
-    /// The Straighten guide: a drag on the image draws a levelling line instead.
+    /// The module disclosures to restore when the crop draft ends, including implicit defaults.
+    pub(crate) previous_expanded: Option<BTreeMap<String, bool>>,
+    /// The one-shot Straighten tool: a drag draws a levelling line, then returns to crop handles.
     pub(crate) guide: bool,
     /// Option (Alt) is held, so a handle scales uniformly about the centre.
     pub(crate) option: bool,
@@ -153,6 +155,7 @@ impl Default for CropSection {
     fn default() -> Self {
         Self {
             custom: ("5".into(), "4".into()),
+            previous_expanded: None,
             guide: false,
             option: false,
             space: false,

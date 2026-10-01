@@ -4602,15 +4602,15 @@ mod tests {
             steps.push(script::Step::tools_scroll(0.0));
             steps
         };
-        // The presets and Basic sections sit above the Tone curve. The RAW module, between them in
+        // The Crop, Presets and Basic sections sit above the Tone curve. The RAW module, between them in
         // the registry, declares no controls and so draws no section for either kind of photo.
         assert_eq!(
             curve_view_steps(&field, SourceTag::Jpeg, false),
-            collapsed(&["luxforge.presets", "luxforge.basic"])
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
         );
         assert_eq!(
             curve_view_steps(&field, SourceTag::Raw, false),
-            collapsed(&["luxforge.presets", "luxforge.basic"])
+            collapsed(&["luxforge.crop", "luxforge.presets", "luxforge.basic"])
         );
         // The mask workspace lists only modules with a maskable effect.
         assert_eq!(

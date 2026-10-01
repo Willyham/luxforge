@@ -4,7 +4,7 @@ use super::button_row::{ButtonSize, ButtonTone, LabelledButtonModel, labelled_bu
 use super::icon_button::{Icon, icon};
 use crate::theme;
 use iced::widget::text::Wrapping;
-use iced::widget::{Row, Space, container, text, tooltip};
+use iced::widget::{Row, Space, column, container, text, tooltip};
 use iced::{Alignment, Element, Length, Theme};
 
 /// Renders a floating, bordered bar holding `children` laid out in a row, in order: the canvas
@@ -140,6 +140,24 @@ pub fn draft_bar<'a, M: Clone + 'a>(
         }
     }
     floating_bar(children)
+}
+
+/// A draft bar with a compact second row of mode-specific controls. Keeping the rows separate
+/// preserves room for the draft's readout and finish buttons on narrower canvases.
+pub fn draft_bar_with_controls<'a, M: Clone + 'a>(
+    model: &DraftBarModel,
+    on_cancel: M,
+    on_apply: Option<M>,
+    controls: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    let bar = draft_bar(model, on_cancel, on_apply);
+    if controls.is_empty() {
+        return bar;
+    }
+    column![bar, floating_bar(controls)]
+        .spacing(theme::CHROME_STACK_SPACING)
+        .align_x(Alignment::Center)
+        .into()
 }
 
 /// The subject: the kind's icon and the name beside it, in the label ink.

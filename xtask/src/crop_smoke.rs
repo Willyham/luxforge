@@ -132,15 +132,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .label("Crop 7\u{b0}")
         .same_layer(CROP_EFFECT, "fit"),
         // A draft on that layer, an angle change and a discard: nothing commits.
-        uncommitted("started", script::Step::Draft(DraftStep::Start)),
+        uncommitted("started", script::Step::Draft(DraftStep::Start))
+            .expanded(CROP_MODULE).collapsed(BASIC_MODULE),
         uncommitted("angled", script::Step::Draft(DraftStep::Angle(12.0))),
-        uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel)),
+        uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel))
+            .expanded(BASIC_MODULE).collapsed(CROP_MODULE),
         // A second draft, one nudge and Apply, which commits once to the same layer.
         uncommitted("restarted", script::Step::Draft(DraftStep::Start)),
         uncommitted("nudged", script::Step::Draft(DraftStep::Nudge(1))),
         Step::new("applied", DraftStep::Apply)
             .commits(1)
             .label("Crop 7.5\u{b0}")
+            .expanded(BASIC_MODULE).collapsed(CROP_MODULE)
             .same_layer(CROP_EFFECT, "fit"),
     ])
 }
@@ -190,6 +193,13 @@ pub fn draft_plan(_: &[PathBuf]) -> Plan {
             script::Step::Draft(DraftStep::Preset("16:9".into())),
         )
         .mode(CROP_MODULE),
+        uncommitted("portrait", script::Step::key("x")),
+        uncommitted("landscape", script::Step::key("x")),
+        uncommitted("guide-armed", script::Step::Draft(DraftStep::Guide(true))),
+        uncommitted(
+            "guide-used",
+            script::Step::Draft(DraftStep::GuideLine([100.0, 100.0, 300.0, 120.0])),
+        ),
         // Cancel ends it with the committed layer untouched.
         uncommitted("cancelled", script::Step::Draft(DraftStep::Cancel))
             .same_layer(CROP_EFFECT, "applied"),
@@ -747,6 +757,13 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         "a neutral draft over the whole stage",
         shows_draft(started)?,
     );
+    let ratios = started["state"]["draft_bar"]["crop_ratios"]
+        .as_array()
+        .ok_or("The crop bar records no ratio shortcuts")?;
+    ensure(
+        ratios.len() == 7 && ratios[0]["label"] == "Free" && ratios[0]["selected"] == true,
+        "The floating bar does not show the declared ratio shortcuts and selection",
+    )?;
     // Two corner gestures reach the rectangle exactly in Free mode.
     ensure(
         rect_frame["state"]["crop"]["rect"] == json!([40.0, 24.0, 300.0, 200.0]),
@@ -869,6 +886,30 @@ pub fn verify_draft(_: &mut Run, launches: &[Checked]) -> Result {
         "16:9 pressed in the idle section: a draft on the committed square, refitted to 16:9",
         json!({"overlay":shows_draft(idle_preset)?,"seeded":seeded["detail"],"changed":correlated(events, "crop_draft_changed", idle_preset)?["detail"]}),
     );
+
+    for (id, ratio) in [("portrait", 9.0 / 16.0), ("landscape", 16.0 / 9.0)] {
+        let frame = launch.at(id)?;
+        let rect: [f64; 4] = serde_json::from_value(frame["state"]["crop"]["rect"].clone())?;
+        ensure(
+            (rect[2] - rect[3] * ratio).abs() <= 2.0 * ratio.max(1.0),
+            format!("X did not swap the crop ratio in {id}: {rect:?}"),
+        )?;
+        checks.note(
+            frame,
+            "X swaps the ratio orientation without committing",
+            shows_draft(frame)?,
+        );
+    }
+    let armed = launch.at("guide-armed")?;
+    let used = launch.at("guide-used")?;
+    ensure(
+        armed["state"]["crop"]["section"]["guide"] == true
+            && used["state"]["crop"]["section"]["guide"] == false
+            && used["state"]["crop"]["angle"] != armed["state"]["crop"]["angle"],
+        "Straighten did not change the angle and return to the crop handles",
+    )?;
+    checks.note(used, "one guide straightens and automatically puts the ruler down",
+        json!({"overlay":shows_draft(used)?, "event":correlated(events, "crop_draft_changed", used)?["detail"]}));
 
     // Cancel ends that draft: the plan holds the same layer and nothing committed, and the idle
     // section reads the unchanged committed square again.

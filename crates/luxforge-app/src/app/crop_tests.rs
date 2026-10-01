@@ -93,6 +93,104 @@ fn section_angle(editor: &Editor) -> Value {
     editor.snapshot()["crop"]["section"]["angle"].clone()
 }
 
+#[test]
+fn crop_focus_restores_all_disclosures_on_cancel_noop_and_failed_stage() {
+    for exit in ["cancel", "noop", "failed-stage"] {
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.basic".into(), true);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.crop".into(), false);
+        editor
+            .controls
+            .expanded
+            .insert("luxforge.controls".into(), true);
+        let before = editor.controls.expanded.clone();
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        assert!(
+            editor
+                .workspace
+                .tools
+                .all()
+                .all(|section| { section.expanded == (section.module_id == "luxforge.crop") })
+        );
+        // A second Start must not replace the saved layout with the focused one. Changes to
+        // disclosures during crop are temporary too; implicit defaults must remain implicit.
+        let _ = editor.update(Message::Crop(CropMessage::Start));
+        let _ = editor.update(Message::Control(ControlMessage::ToggleSection(
+            "luxforge.basic".into(),
+        )));
+        match exit {
+            "cancel" => draft_message(&mut editor, DraftMessage::Cancel),
+            "noop" => {
+                draft_message(&mut editor, DraftMessage::Commit);
+                answer_commit(&mut editor, Ok(None));
+            }
+            _ => {
+                let _ = editor.update(Message::Crop(CropMessage::PreviewReady(
+                    StagePlan::Open,
+                    Err("source unavailable".into()),
+                )));
+            }
+        }
+        assert!(editor.crop().is_none(), "{exit}");
+        assert_eq!(editor.controls.expanded, before, "{exit}");
+        assert!(editor.crop_section.previous_expanded.is_none());
+        finish(editor, catalog);
+    }
+}
+
+#[test]
+fn straighten_is_one_shot_and_the_next_drag_uses_crop_handles() {
+    let (mut editor, catalog, _, _) = opened(Vec::new(), 2);
+    let _ = editor.update(Message::Crop(CropMessage::Guide(true)));
+    assert!(editor.crop_section.guide);
+    for pointer in [
+        CropPointer::Begin {
+            handle: Handle::Guide,
+            x: 100.0,
+            y: 100.0,
+        },
+        CropPointer::Drag {
+            x: 300.0,
+            y: 120.0,
+            option: false,
+        },
+        CropPointer::End,
+    ] {
+        let _ = editor.update(Message::Crop(CropMessage::Pointer(pointer)));
+    }
+    assert!(!editor.crop_section.guide);
+    assert_eq!(
+        editor.workspace.canvas.surface_mode,
+        crate::state::canvas::SurfaceMode::Frame
+    );
+    let angle = editor.crop().expect("a crop draft").stage.angle;
+    assert!(angle.abs() > 1.0);
+    for pointer in [
+        CropPointer::Begin {
+            handle: Handle::Move,
+            x: 200.0,
+            y: 150.0,
+        },
+        CropPointer::Drag {
+            x: 210.0,
+            y: 150.0,
+            option: false,
+        },
+        CropPointer::End,
+    ] {
+        let _ = editor.update(Message::Crop(CropMessage::Pointer(pointer)));
+    }
+    assert_eq!(editor.crop().expect("a crop draft").stage.angle, angle);
+    assert_eq!(editor.document.state.as_ref().expect("a state").revision, 2);
+    finish(editor, catalog);
+}
+
 /// The stage the rows of [`opened`] give a crop with no geometry ahead of it.
 fn stage() -> CropStage {
     CropStage {
@@ -1080,8 +1178,8 @@ fn a_refused_crop_start_sends_no_workspace_change() {
     let task = editor.dispatch(Message::View(ViewMessage::SetMode(crop_id.clone())));
     assert_eq!(
         task.units(),
-        1,
-        "its input stage's truncated preview: the draft's begin answered in this update"
+        2,
+        "the input stage's preview and the panel scroll: the draft's begin answered in this update"
     );
     assert!(editor.crop().is_some());
     assert_eq!(editor.sync.mode.as_deref(), Some(crop_id.as_str()));

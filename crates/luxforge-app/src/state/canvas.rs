@@ -4,7 +4,7 @@ use crate::{
     state::{
         Inputs,
         number::number_text,
-        tools::{applies, canvas_pick, pick_reachable},
+        tools::{PresetChip, applies, canvas_pick, crop_frame, pick_reachable, preset_chips},
     },
 };
 use luxforge_core::{
@@ -65,6 +65,9 @@ pub(crate) struct ModeEntry {
 /// one draft lifecycle's, whichever gesture is open, since a client holds only one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DraftBar {
+    /// The crop draft's declared ratio shortcuts, empty for every other gesture.
+    pub(crate) crop_ratios: Vec<PresetChip>,
+    pub(crate) crop_enabled: bool,
     /// The lead, in the accent: the crop mode's title, or the name of the mask a gesture edits.
     pub(crate) title: String,
     /// What a mask gesture edits, after the lead: its component and that component's mode,
@@ -349,6 +352,11 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         None => return None,
     };
     Some(DraftBar {
+        crop_ratios: crop_frame(inputs.modules)
+            .zip(inputs.draft)
+            .map(|(frame, draft)| preset_chips(&frame.presets(), &draft.preset))
+            .unwrap_or_default(),
+        crop_enabled: inputs.edit_refusal.is_none(),
         title,
         subject: None,
         kind: None,
@@ -368,6 +376,8 @@ fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
     let names = gesture_names(draft, inputs.document.masks.as_ref());
     let done = draft.paints();
     DraftBar {
+        crop_ratios: Vec::new(),
+        crop_enabled: false,
         title: names.mask,
         subject: Some(format!("{} \u{b7} {}", names.component, names.mode)),
         kind: Some(draft.kind()),

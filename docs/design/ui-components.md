@@ -80,7 +80,7 @@ A curve control names its module-owned query in `sample_query`. The query declar
 
 ### Icons
 
-Icon buttons name an icon; they never embed one. `luxforge-ui` owns one `Icon` enumeration (rotate-left, rotate-right, flip, mirror, crop, picker, reset, plus, minus, lock, swap, guide, pointer, and the ones the state panel and title bar already use) and draws each as a vector path in the text colour, replacing today's Unicode glyphs. The core validates only that an icon name is a lowercase hyphenated name; the desktop maps it and falls back to the label. This keeps the core free of a UI asset list and the widget crate free of a registry.
+Icon buttons name an icon; they never embed one. `luxforge-ui` owns one `Icon` enumeration (rotate-left, rotate-right, flip, mirror, crop, picker, reset, plus, minus, lock, swap, guide, ruler, pointer, and the ones the state panel and title bar already use) and draws each as a vector path in the text colour, replacing today's Unicode glyphs. The core validates only that an icon name is a lowercase hyphenated name; the desktop maps it and falls back to the label. This keeps the core free of a UI asset list and the widget crate free of a registry.
 
 ## Widget library
 
