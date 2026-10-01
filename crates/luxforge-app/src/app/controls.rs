@@ -42,6 +42,7 @@ pub(crate) struct CurveSampleRequest {
 /// reset waiting for a gesture's commit. Authoritative values stay in the recipe.
 #[derive(Default)]
 pub(crate) struct Controls {
+    pub(crate) query_choice_slot: Coalesce<super::query_choice::QueryChoiceRequest>,
     /// The text typed into each generated field, by (action id, parameter name).
     pub(crate) fields: Fields,
     /// Local presentation state of generated controls.
@@ -82,6 +83,14 @@ impl Editor {
             return self.crop_control(message);
         }
         match message {
+            message @ (ControlMessage::QueryChoiceSearch { .. }
+            | ControlMessage::QueryChoicePage { .. }
+            | ControlMessage::QueryChoiceRetry { .. }
+            | ControlMessage::QueryChoiceShared { .. }
+            | ControlMessage::QueryChoiceSelect { .. }
+            | ControlMessage::QueryChoiceAnswered { .. }) => {
+                return self.query_choice_update(message);
+            }
             ControlMessage::Field {
                 action,
                 parameter,
@@ -1059,7 +1068,8 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
     // A value typed but not submitted belongs to the mask or component it was typed for. When the
     // fields address another one, the edit is dropped and the fields show the new target's own
     // values, so a later Enter cannot land it there.
-    if editor.field_target() != before.field_target && editor.controls.editing.take().is_some() {
+    if editor.field_target() != before.field_target {
+        editor.controls.editing = None;
         editor.seed_values();
         editor.seed_mask_fields();
     }
@@ -1069,7 +1079,10 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
 /// After the screen is derived: a curve is sampled once it is on screen, which the derived tools
 /// panel says ([`Editor::request_visible_curve_samples`]).
 pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
-    editor.request_visible_curve_samples()
+    Task::batch([
+        editor.request_visible_curve_samples(),
+        editor.request_visible_query_choices(),
+    ])
 }
 
 #[cfg(test)]

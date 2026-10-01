@@ -6,6 +6,7 @@
 //! trait it holds are re-exported through this module's parent alongside everything here.
 use super::spatial::SpatialOperation;
 use crate::mask_field::MaskField;
+use crate::render::map::{Mapping, WarpStep};
 use std::sync::Arc;
 
 /// One image stage: the dimensions a layer's payload addresses.
@@ -29,20 +30,12 @@ pub struct ExactGeometry {
     pub output_height: u32,
 }
 
-/// An interpolating stage boundary: an affine map from output pixel centers back to input
-/// coordinates, with the stage it produces.
-///
-/// Output pixel `(x, y)` has its center at `(x' , y') = (x + 0.5, y + 0.5)` in output continuous
-/// coordinates, and `inverse` maps that center to continuous input coordinates
-/// `u = m0·x' + m1·y' + m2` and `v = m3·x' + m4·y' + m5` for `inverse = [m0, m1, m2, m3, m4, m5]`.
-/// `(u, v)` is a pixel-center coordinate of the input stage, so the input raster is read at index
-/// coordinates `(u - 0.5, v - 0.5)`, bilinearly in linear light with indices clamped to its edge.
-///
-/// The exact layers before a resample rasterize into one bounded intermediate frame, the resample
-/// writes the next frame and exact layers after it compose as before.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One interpolating boundary. `map` sends continuous output centres to input coordinates.
+/// Bilinear taps are evaluated in linear light, with replicated edge indices. The host fuses
+/// supported adjacent geometry into this boundary so it samples and quantizes only once.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Resample {
-    pub inverse: [f64; 6],
+    pub map: Mapping,
     pub output_width: u32,
     pub output_height: u32,
 }
@@ -196,4 +189,5 @@ pub enum Processing {
     /// produced and writes the next one, at the same dimensions.
     Spatial(SpatialOperation),
     Resample(Resample),
+    Warp(WarpStep),
 }

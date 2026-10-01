@@ -5,9 +5,9 @@
 //! describes control values but compiles to an identity colour operation, so it cannot change
 //! photo pixels.
 use super::{
-    ActionDescriptor, ActionStyle, ChoiceStyle, ColorOperation, ColorStyle, Control,
-    CurveBackground, CurveChannel, EffectStage, NumberStyle, ParameterDescriptor, Processing,
-    RailDecoration, Stage, StageContext,
+    ActionDescriptor, ActionInput, ActionPlan, ActionStyle, ChoiceStyle, ColorOperation,
+    ColorStyle, Control, CurveBackground, CurveChannel, EffectStage, NumberStyle,
+    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, Stage, StageContext,
     field_patch::{Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -16,6 +16,8 @@ use serde_json::{Map, Value, json};
 pub const CONTROLS_EFFECT: &str = "luxforge.controls.identity";
 pub(super) const SET_CONTROLS: &str = "set-controls";
 pub(super) const SAMPLE_CONTROLS_CURVE: &str = "sample-controls-curve";
+const QUERY_CONTROLS_CHOICES: &str = "controls-choices";
+const SELECT_CONTROLS_CHOICE: &str = "select-controls-choice";
 const SAMPLE_SEGMENTS: usize = 256;
 const NOTES: &str = "Developer control parity fixture; values never alter pixels";
 /// The two curve fields, which are the curve control's channels and the sample query's parameters.
@@ -165,7 +167,16 @@ impl FieldPatch for Controls {
                         .preset(preset("amount", json!(0.0)))
                         .action_style(ActionStyle::Icon)
                         .icon("reset"),
-                ),
+                )
+                .extra(Control::QueryChoice(QueryChoiceControl {
+                    label: "Query choice".into(),
+                    query: QUERY_CONTROLS_CHOICES.into(),
+                    text: "text".into(),
+                    page: "page".into(),
+                    action: SELECT_CONTROLS_CHOICE.into(),
+                    key: "key".into(),
+                    shared: vec!["show-disabled".into()],
+                })),
         )
         .query(ActionDescriptor {
             parameters: CURVES
@@ -177,11 +188,47 @@ impl FieldPatch for Controls {
                 "257 linearly interpolated fractions from the one submitted channel",
             )
         })
+        .query(ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::string("text", 64).default(""),
+                ParameterDescriptor::integer("page", 0, 99).default(0),
+                ParameterDescriptor::boolean("show-disabled").default(true),
+            ],
+            ..ActionDescriptor::new(
+                QUERY_CONTROLS_CHOICES,
+                "Controls choices",
+                "Search the developer proof choices",
+            )
+        })
+        .action(ActionDescriptor {
+            preset: false,
+            parameters: vec![
+                ParameterDescriptor::string("key", 32).required(true),
+                ParameterDescriptor::boolean("show-disabled").default(true),
+            ],
+            ..ActionDescriptor::new(
+                SELECT_CONTROLS_CHOICE,
+                "Select controls choice",
+                "Set Count through an eligible query row",
+            )
+        })
         .developer()
     }
 
     fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
         Ok(Processing::Color(ColorOperation::neutral()))
+    }
+
+    fn plan_extra(&self, input: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+        let count = match input.parameters.get("key").and_then(Value::as_str) {
+            Some("one") => 1,
+            Some("two") => 2,
+            _ => return Err(Error::validation("unknown or ineligible controls choice")),
+        };
+        Ok(ActionPlan::Compose(vec![ActionInput {
+            action_id: SET_CONTROLS.into(),
+            parameters: preset("count", json!(count)),
+        }]))
     }
 
     /// 257 samples of the one channel sent, linearly interpolated between its points and held flat
@@ -192,6 +239,29 @@ impl FieldPatch for Controls {
         parameters: &Map<String, Value>,
         _: &StageContext<'_>,
     ) -> Result<Value, Error> {
+        if query_id == QUERY_CONTROLS_CHOICES {
+            let text = parameters
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_lowercase();
+            let page = parameters.get("page").and_then(Value::as_u64).unwrap_or(0);
+            let show_disabled = parameters
+                .get("show-disabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let rows = [("one", "One", true), ("two", "Two", true), ("three", "Three", false)].into_iter()
+                .filter(|(_, title, eligible)| title.to_lowercase().contains(&text) && (*eligible || show_disabled))
+                .map(|(key, title, eligible)| json!({"key": key, "title": title, "eligible": eligible, "reasons": if eligible { vec![] } else { vec!["Developer refusal example"] }})).collect::<Vec<_>>();
+            let total = rows.len();
+            let pages = total.max(1).div_ceil(2);
+            let rows = rows
+                .into_iter()
+                .skip(page as usize * 2)
+                .take(2)
+                .collect::<Vec<_>>();
+            return Ok(json!({"rows": rows, "page": page, "pages": pages, "total": total}));
+        }
         if query_id != SAMPLE_CONTROLS_CURVE {
             return Err(Error::validation(format!("unknown query {query_id}")));
         }

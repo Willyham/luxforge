@@ -234,6 +234,7 @@ fn command(
             // plan knows; `plan` renders it at commit and the entry stores it, exactly as a
             // module's label is stored.
             patch,
+            preset: false,
             parameters: addressed(mask, component, parameters),
         },
     }
@@ -524,6 +525,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                     posted path always produces the same stored stroke"
                 .to_owned(),
             patch: false,
+            preset: false,
             // Where the stroke lands is the two optional identities: neither draws a new mask,
             // a mask alone puts a further brush on it, and both append to that brush.
             parameters: vec![

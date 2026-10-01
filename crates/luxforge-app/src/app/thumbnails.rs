@@ -450,18 +450,12 @@ mod tests {
             height: 40,
         };
         let compiled = CompiledMask::new(mask, stage, &Default::default()).unwrap();
-        let transform = luxforge_core::StageTransform {
-            content: luxforge_core::StageSize {
-                width: 60,
-                height: 40,
-            },
-            output: luxforge_core::StageSize {
-                width: 60,
-                height: 40,
-            },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        let size = luxforge_core::StageSize {
+            width: 60,
+            height: 40,
         };
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        let transform = luxforge_core::GeometryMap::affine(size, size, identity, identity);
         coverage_grid(
             &compiled,
             &transform,

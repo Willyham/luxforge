@@ -385,9 +385,16 @@ fn plain<'a>(
                     Some((draft, map, view, rect)) => stack([
                         photo,
                         iced::widget::container(
-                            canvas(MaskCanvas::new(draft, Placement { map, view }))
-                                .width(Length::Fill)
-                                .height(Length::Fill),
+                            canvas(MaskCanvas::new(
+                                draft,
+                                Placement {
+                                    map: map.clone(),
+                                    view,
+                                    scale_factor: model.scale_factor,
+                                },
+                            ))
+                            .width(Length::Fill)
+                            .height(Length::Fill),
                         )
                         .padding(iced::Padding {
                             top: rect.y,
@@ -474,10 +481,17 @@ fn plain<'a>(
                 let layered: Element<'a, Message> = match handles {
                     Some(((draft, map), view)) => stack([
                         photo,
-                        canvas(MaskCanvas::new(draft, Placement { map, view }))
-                            .width(box_width)
-                            .height(box_height)
-                            .into(),
+                        canvas(MaskCanvas::new(
+                            draft,
+                            Placement {
+                                map: map.clone(),
+                                view,
+                                scale_factor: model.scale_factor,
+                            },
+                        ))
+                        .width(box_width)
+                        .height(box_height)
+                        .into(),
                     ])
                     .into(),
                     None => photo,

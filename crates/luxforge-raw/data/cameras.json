@@ -116,6 +116,7 @@
         "calibration_identity": "ColorMatrix2-D65-fixed-XYZ-to-camera",
         "corrections": "stage3_gain_map_then_warp",
         "interpretation": "fc3411-stage3-active-v1-unclipped-bicubic-a-0.75",
+        "optics": {"GainMap": "shading", "WarpRectilinear": "lateral-ca"},
         "required_opcodes": [
           {
             "id": 9,

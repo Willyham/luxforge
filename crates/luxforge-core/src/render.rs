@@ -21,6 +21,7 @@ mod entry;
 mod geometry;
 pub(crate) mod linear;
 mod locate;
+pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
@@ -43,6 +44,8 @@ mod mask_tests;
 mod sample_tests;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg(test)]
+mod warp_tests;
 
 use byte::{Byte, check_source, rasterize};
 use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_pixel, color_runs};
@@ -56,8 +59,9 @@ pub(crate) use entry::{ProxyStage, RegionRenderOutcome, layer_input};
 pub use entry::{RegionFrame, Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
 pub use linear::{LinearSettings, WhiteBalanceApproximation};
-pub use locate::{ContentPoint, Sample, StageSize, StageTransform, stage_transform};
+pub use locate::{ContentPoint, Sample, stage_transform};
 pub(crate) use locate::{locate, transform_of};
+pub use map::{GeometryMap, MapError, MappingDescriptor, MappingShape, StageSize};
 pub(crate) use pipeline::{Evaluation, PixelDomain, RowScratch, SpatialMode};
 use pipeline::{SegmentRows, SpatialEntry, Taps, segment_pass, spatial_entry};
 pub use raster::Raster;

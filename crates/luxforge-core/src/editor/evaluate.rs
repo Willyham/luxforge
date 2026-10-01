@@ -7,8 +7,8 @@ use super::{
 use crate::ErrorKind;
 use crate::{
     AssetId, Cancel, ContentPoint, Draft, EffectStage, EntryId, Error, HistoryEntry,
-    ModuleRegistry, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe, Render, RenderContext,
-    RenderOptions, StageTransform,
+    MappingDescriptor, ModuleRegistry, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe,
+    Render, RenderContext, RenderOptions,
     analysis::AnalysisIdentity,
     export::CaptureMetadata,
     render::{Compiled, locate, transform_of},
@@ -269,6 +269,7 @@ impl EditorService {
                     &entry.snapshot.recipe,
                     &framing.snapshot.recipe,
                 )?;
+                validate_source_recipe(&self.registry, &asset, &recipe)?;
                 (asset, entry, Some((recipe, None)))
             }
             // A draft is evaluated at the revision it holds now: its effective recipe is planned
@@ -656,7 +657,7 @@ impl EditorService {
         )
     }
 
-    /// The content-to-output affine of a saved entry's geometry tail, both ways. `locate_entry`
+    /// The content-to-output map of a saved entry's geometry tail, both ways. `locate_entry`
     /// answers one point; this answers all of them at once, so a gesture over the photograph maps
     /// pointer positions itself instead of asking per move. Like `locate_entry` it reads the compiled
     /// stack only and rasterizes nothing.
@@ -664,7 +665,7 @@ impl EditorService {
         &self,
         asset_id: &AssetId,
         entry_id: &EntryId,
-    ) -> Result<StageTransform, Error> {
+    ) -> Result<MappingDescriptor, Error> {
         self.transform_selected(asset_id, AnalysisSelection::Entry(entry_id))
     }
 
@@ -673,13 +674,22 @@ impl EditorService {
         &self,
         asset_id: &AssetId,
         selection: AnalysisSelection<'_>,
-    ) -> Result<StageTransform, Error> {
+    ) -> Result<MappingDescriptor, Error> {
         let stack = self.evaluation(asset_id, selection, Purpose::Exact)?;
-        transform_of(
+        let geometry = transform_of(
             stack.evaluation.compiled()?,
             stack.asset.width,
             stack.asset.height,
-        )
+        )?;
+        let evaluation = &stack.evaluation;
+        let entry = evaluation.entry();
+        Ok(MappingDescriptor {
+            entry_id: entry.id.clone(),
+            snapshot_id: entry.snapshot.id.clone(),
+            source_fingerprint: evaluation.bound.fingerprint.clone(),
+            draft: evaluation.draft().cloned(),
+            geometry,
+        })
     }
 }
 
@@ -821,6 +831,339 @@ mod tests {
     use crate::editor::test_support::{
         SHRINK_ACTION, ShrinkModule, fixture, mutation, shrink, temp,
     };
+
+    fn geometry_photo() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg")
+    }
+
+    fn select_lens(service: &mut EditorService, asset: &AssetId) {
+        let row = luxforge_testbase::wait_for("the offline lens index", || {
+            let entry = service.state(asset).unwrap().current_entry.id;
+            match service.run_query(
+                asset,
+                &entry,
+                "lens-profiles",
+                serde_json::json!({"assume-uncorrected":true}),
+            ) {
+                Ok(rows) => Some(
+                    rows["rows"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
+                        .unwrap()
+                        .clone(),
+                ),
+                Err(error) if error.kind == ErrorKind::NotReady => None,
+                Err(error) => panic!("{error}"),
+            }
+        });
+        let revision = service.state(asset).unwrap().revision;
+        service
+            .apply_action(
+                asset,
+                mutation(revision, "lens"),
+                "select-lens-profile",
+                serde_json::json!({"profile":row["key"],"assume-uncorrected":true}),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn orientation_carries_perspective_and_crop_in_one_action() {
+        use crate::{Orientation, Transform};
+        let orientations: Vec<_> = [false, true]
+            .into_iter()
+            .flat_map(|mirror| (0..4).map(move |turns| Orientation { mirror, turns }))
+            .collect();
+        for (index, target) in orientations.iter().enumerate() {
+            let catalog = temp(&format!("carry-service-{index}.sqlite"));
+            let mut service = EditorService::open(&catalog).unwrap();
+            let imported = service.import(&geometry_photo()).unwrap();
+            let asset = imported.asset.id;
+            let original = imported.current_entry.id;
+            select_lens(&mut service, &asset);
+            service
+                .apply_action(
+                    &asset,
+                    mutation(1, "perspective"),
+                    "set-perspective",
+                    serde_json::json!({"horizontal":40,"vertical":-25}),
+                )
+                .unwrap();
+            service
+                .apply_action(
+                    &asset,
+                    mutation(2, "crop"),
+                    "crop",
+                    serde_json::json!({"angle":2.5,"x":0.1,"y":0.1,"width":0.7,"height":0.7}),
+                )
+                .unwrap();
+            let action = [
+                Transform::RotateRight,
+                Transform::RotateLeft,
+                Transform::MirrorHorizontal,
+                Transform::FlipVertical,
+            ][index % 4];
+            let ahead = orientations
+                .iter()
+                .find(|ahead| ahead.then(action) == *target)
+                .unwrap();
+            let mut revision = 3;
+            if ahead.mirror {
+                service
+                    .apply_transform(
+                        &asset,
+                        mutation(revision, "setup-mirror"),
+                        Transform::MirrorHorizontal,
+                    )
+                    .unwrap();
+                revision += 1;
+            }
+            for turn in 0..ahead.turns {
+                service
+                    .apply_transform(
+                        &asset,
+                        mutation(revision, &format!("setup-turn-{turn}")),
+                        Transform::RotateRight,
+                    )
+                    .unwrap();
+                revision += 1;
+            }
+            let before = service.state(&asset).unwrap();
+            let history = service.history(&asset, None, 100).unwrap().entries.len();
+            let lens = before
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .find(|layer| layer.effect_id == crate::LENS_EFFECT)
+                .unwrap();
+            let crop = before
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .find(|layer| layer.effect_id == crate::CROP_EFFECT)
+                .unwrap();
+            let perspective = before
+                .current_entry
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .find(|layer| layer.effect_id == crate::PERSPECTIVE_EFFECT)
+                .unwrap();
+            service
+                .apply_transform(&asset, mutation(revision, "carry"), action)
+                .unwrap();
+            let after = service.state(&asset).unwrap();
+            assert_eq!(after.revision, revision + 1);
+            assert_eq!(
+                service.history(&asset, None, 100).unwrap().entries.len(),
+                history + 1
+            );
+            let layers = &after.current_entry.snapshot.recipe.layers;
+            assert_eq!(
+                layers
+                    .iter()
+                    .find(|layer| layer.effect_id == crate::LENS_EFFECT)
+                    .unwrap(),
+                lens
+            );
+            assert_eq!(
+                layers
+                    .iter()
+                    .find(|layer| layer.effect_id == crate::CROP_EFFECT)
+                    .unwrap()
+                    .id,
+                crop.id
+            );
+            assert_eq!(
+                layers
+                    .iter()
+                    .find(|layer| layer.effect_id == crate::PERSPECTIVE_EFFECT)
+                    .unwrap()
+                    .id,
+                perspective.id
+            );
+            let held: Orientation = serde_json::from_value(
+                layers
+                    .iter()
+                    .find(|layer| layer.effect_id == crate::ORIENTATION_EFFECT)
+                    .unwrap()
+                    .payload
+                    .clone(),
+            )
+            .unwrap();
+            assert_eq!(held, *target);
+            let output = service
+                .transform_entry(&asset, &after.current_entry.id)
+                .unwrap();
+            let expected = if target.turns % 2 == 0 {
+                (600, 400)
+            } else {
+                (400, 600)
+            };
+            assert_eq!((output.content.width, output.content.height), (600, 400));
+            assert_eq!(
+                service
+                    .registry
+                    .compile(
+                        600,
+                        400,
+                        &Recipe {
+                            layers: layers
+                                .iter()
+                                .filter(|layer| layer.effect_id != crate::CROP_EFFECT)
+                                .cloned()
+                                .collect(),
+                            ..Recipe::default()
+                        }
+                    )
+                    .unwrap()
+                    .stage(),
+                crate::Stage {
+                    width: expected.0,
+                    height: expected.1
+                }
+            );
+            let untouched = service.render_entry(&asset, &original).unwrap();
+            assert_eq!((untouched.width, untouched.height), (600, 400));
+            assert!(
+                service
+                    .entry(&asset, &original)
+                    .unwrap()
+                    .snapshot
+                    .recipe
+                    .layers
+                    .is_empty()
+            );
+            drop(service);
+            std::fs::remove_file(catalog).unwrap();
+        }
+    }
+
+    #[test]
+    fn crop_input_preview_includes_warps() {
+        let catalog = temp("warp-crop-prefix.sqlite");
+        let mut service = EditorService::open(&catalog).unwrap();
+        let asset = service.import(&geometry_photo()).unwrap().asset.id;
+        select_lens(&mut service, &asset);
+        service
+            .apply_action(
+                &asset,
+                mutation(1, "perspective"),
+                "set-perspective",
+                serde_json::json!({"horizontal":40,"vertical":-25}),
+            )
+            .unwrap();
+        let covered = service.render_current(&asset).unwrap();
+        service
+            .apply_action(
+                &asset,
+                mutation(2, "crop"),
+                "crop",
+                serde_json::json!({"x":0.1,"y":0.1,"width":0.7,"height":0.7}),
+            )
+            .unwrap();
+        let layers = &service
+            .state(&asset)
+            .unwrap()
+            .current_entry
+            .snapshot
+            .recipe
+            .layers;
+        let count = layers
+            .iter()
+            .position(|layer| layer.effect_id == crate::CROP_EFFECT)
+            .unwrap();
+        let job = service
+            .preview_job(
+                &asset,
+                None,
+                Some(count),
+                None,
+                Some(ProxyBounds {
+                    width: 120,
+                    height: 80,
+                }),
+            )
+            .unwrap();
+        assert!(matches!(
+            job.evaluation
+                .exact(&Cancel::never())
+                .unwrap()
+                .transform()
+                .unwrap()
+                .mapping,
+            crate::MappingShape::Warp { .. }
+        ));
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let proxy = luxforge_testbase::wait_for("warp prefix proxy", || queue.poll());
+        assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
+        assert_eq!(
+            (
+                proxy.raster().unwrap().width,
+                proxy.raster().unwrap().height
+            ),
+            (120, 80)
+        );
+        let exact = luxforge_testbase::wait_for("warp prefix exact", || queue.poll())
+            .into_raster()
+            .unwrap();
+        assert_eq!((exact.width, exact.height), (600, 400));
+        assert_eq!(exact.rgba, covered.rgba);
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn keep_geometry_copies_the_whole_optional_warp_tail_and_original_excludes_it() {
+        let registry = ModuleRegistry::builtin();
+        let make = |id: &str, payload: serde_json::Value| crate::Layer {
+            id: crate::LayerId::new(),
+            effect_id: id.into(),
+            effect_format: crate::EFFECT_FORMAT,
+            payload,
+            mask: None,
+            artifacts: Vec::new(),
+        };
+        let original = Recipe::default();
+        let framing = Recipe {
+            layers: vec![
+                make(crate::BASIC_EFFECT, serde_json::json!({"exposure":1.0})),
+                crate::Layer::orientation(crate::Orientation::of(crate::Transform::RotateRight)),
+                crate::render::testing::frozen_lens(320, 480, 35.0),
+                make(
+                    "luxforge.perspective",
+                    serde_json::json!({"horizontal":35,"vertical":-25}),
+                ),
+                crate::Layer::crop(crate::render::tests::fitted_crop(
+                    320,
+                    480,
+                    7.0,
+                    [0.1, 0.1, 0.7, 0.7],
+                )),
+            ],
+            ..Recipe::default()
+        };
+        let kept = framed(&registry, &original, &framing).unwrap();
+        assert_eq!(kept.layers, framing.layers[1..]);
+        assert!(original.layers.is_empty());
+        let map = crate::stage_transform(&registry, 480, 320, &kept).unwrap();
+        assert!(matches!(map.mapping, crate::MappingShape::Warp { .. }));
+        assert!(matches!(
+            crate::stage_transform(&registry, 480, 320, &original)
+                .unwrap()
+                .mapping,
+            crate::MappingShape::Affine { .. }
+        ));
+    }
 
     #[test]
     fn a_truncated_preview_job_renders_the_layer_prefix_and_rejects_an_out_of_range_count() {

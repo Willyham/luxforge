@@ -3,12 +3,12 @@
   "plan_id": "lens-and-perspective",
   "title": "Lens and perspective correction",
   "objective": "Deliver offline Lensfun v0.3.4 rectilinear profile distortion and manual two-axis perspective through one fused, exactly bounded warp resample, preserving content coordinates, immutable history and exact export while refusing duplicate embedded DNG correction.",
-  "context_summary": "Planned work, not yet authorized for implementation. docs/design/lens-and-perspective.md is prescriptive: owner decisions of 2026-09-30 (RAW mosaics without a luminance warp are known-unapplied; Perspective is not presettable; combined minification above 1.8x is refused) and recorded defaults (the index is a separate bundled resource parsed once off the owner; no X100VI alias). Coverage, cover scales and read rectangles are closed forms; the index is a static resource with synchronous lookups; lens, perspective and a straightened crop fuse into one resample; the DNG ledger is derived per plane and never persisted. Wave 1 (numerics, index import, optics ledger, affine refactor, query-choice control) can land any time; the warp-chain and render tasks rebase on Detail's host contracts if those land first; shared generated files are regenerated after each rebase, never hand-merged; timing runs only in TASK-015 after all feature work. Run at most four implementation agents at once. Photographic qualification needs owner-supplied photographs and stays incomplete without them.",
+  "context_summary": "Functional implementation and native integration are complete. Native performance measurement, the full tier and photographic accuracy qualification remain incomplete. docs/design/lens-and-perspective.md is prescriptive: owner decisions of 2026-09-30 (RAW mosaics without a luminance warp are known-unapplied; Perspective is not presettable; combined minification above 1.8x is refused) and recorded defaults (the index is a separate bundled resource parsed once off the owner; no X100VI alias). Coverage, cover scales and read rectangles are closed forms; the index is a static resource with synchronous lookups; lens, perspective and a straightened crop fuse into one resample; the DNG ledger is derived per plane and never persisted. Wave 1 (numerics, index import, optics ledger, affine refactor, query-choice control) can land any time; the warp-chain and render tasks rebase on Detail's host contracts if those land first; shared generated files are regenerated after each rebase, never hand-merged; timing runs only in TASK-015 after all feature work. Run at most four implementation agents at once. Photographic qualification needs owner-supplied photographs and stays incomplete without them.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Freeze the lens and perspective numerics in an independent f64 reference and its committed fixture.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "New files: crates/luxforge-reference/src/geometry.rs (add `pub mod geometry;` to src/lib.rs), crates/luxforge-reference/tests/studies/geometry.rs (add `mod geometry;` to tests/studies/main.rs), fixtures/geometry/lens-perspective.json and fixtures/geometry/README.md. The reference crate imports no product crate.",
@@ -68,7 +68,7 @@
         "`warp_reads_bound_never_underestimates_dense_reference`: over 3,000 random windows per named calibration, `reads_radial_rect` contains every densely sampled input coordinate; the corner-only rule is shown underestimating Olympus 14-42 at 14 by more than 30 px.",
         "`focal_beyond_calibrations_refuses_without_extrapolation` and `prime_focal_within_one_percent_snaps_to_calibration` (FC3411 at 8.38 mm uses the 8.4 mm terms; 8.3 mm is refused) hold.",
         "`local_minification_bounds_hold_over_dense_sampling`: the lens closed form and the perspective bound are never below the densely sampled maximum singular value; the Sigma 17-50 at 17 mm reports about 1.732 and the 1:1 double extreme 1.50.",
-        "fixtures/geometry/lens-perspective.json holds the named mappings, cover scales, local scales, reads windows, eight-orientation vectors and the alias-energy table, and `committed_geometry_fixtures_are_current` passes."
+        "fixtures/geometry/lens-perspective.json holds the named mappings, cover scales, local scales, eight-orientation vectors and alias-energy table; generated read windows are proved in the independent study, and `committed_geometry_fixtures_are_current` passes."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -89,7 +89,7 @@
     {
       "id": "TASK-002",
       "description": "Import the pinned Lensfun database into the bundled index resource and load it once off the owner.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "New `cargo xtask lensfun-import --source DIR --output DIR` (arm in xtask/src/main.rs, code in new xtask/src/lensfun_import.rs) with a table of the 55 v0.3.4 data/db blob SHA-1s; `import(source, output, expected: &HashMap<&str, &str>)` so tests pass a synthetic table. It exists only after this task.",
@@ -166,7 +166,7 @@
     {
       "id": "TASK-003",
       "description": "Expose source optical identity and derive the per-plane DNG correction ledger without persisting it.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "crates/luxforge-core/src/export/metadata/mod.rs: add `CaptureMetadata::{make, model, lens_make, lens_model}() -> Option<&str>`, `focal_length_mm() -> Option<f64>` and `focal_length_35mm() -> Option<u16>` over the already parsed fields.",
@@ -242,7 +242,7 @@
     {
       "id": "TASK-004",
       "description": "Refactor the affine resample and render.transform onto a Mapping and GeometryMap with no behavior change.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "modules/processing.rs: `Resample { map: Mapping, output_width, output_height }` (Clone, not Copy) replaces `inverse`; `pub enum Mapping { Affine([f64; 6]) }` with `Mapping::input_at(x, y)` as the one output-to-input evaluator. Crop's module (`modules/crop/module.rs`) builds `Mapping::Affine`.",
@@ -293,7 +293,7 @@
       ],
       "acceptance_criteria": [
         "No rendered byte, locate result or overlay changes: the existing core, app and xtask suites pass unchanged apart from the render.transform shape.",
-        "`render_transform_reports_entry_identity_and_mapping_hash` returns entry, snapshot, source fingerprint, draft stamp and a mapping_sha256 that `mapping_hash_changes_with_crop_angle` shows changing with the crop angle and not with a colour edit.",
+        "`render_transform_reports_entry_identity_and_mapping_hash` returns entry, snapshot, source fingerprint, draft stamp and a mapping_sha256 that `mapping_hash_changes_with_crop_angle_and_not_colour` shows changing with the crop angle and not with a colour edit.",
         "`geometry_map_round_trips_affine_tail` maps 10,000 points to_output then to_content within 1e-9 px across orientation and a straightened crop.",
         "`coverage_cache_key_is_the_mapping_hash` shows the overlay cache keyed by mapping_sha256.",
         "No file outside render/map.rs and Mapping::input_at applies the six coefficients (grep for `.inverse[` and `.forward[` finds only them), and `cargo xtask check-repository` passes."
@@ -308,8 +308,8 @@
           "cargo test -p luxforge-core --lib render",
           "cargo test -p luxforge-core --lib api::methods",
           "cargo test -p luxforge-core --test mask",
-          "cargo test -p luxforge-app --lib mask",
-          "cargo test -p luxforge-app --lib crop",
+          "cargo test -p luxforge-app mask",
+          "cargo test -p luxforge-app crop",
           "cargo test -p xtask mask",
           "cargo test -p luxforge-cli --test json_cli",
           "cargo xtask check-repository"
@@ -323,7 +323,7 @@
     {
       "id": "TASK-005",
       "description": "Add the descriptor-backed query-choice control and its desktop widget.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "modules/descriptor/types.rs: `Control::QueryChoice(QueryChoiceControl { label, query, text, page, action, key, #[serde(default)] shared: Vec<String> })`. modules/descriptor/validate.rs checks at registration: `query` is the module's own query with `text` a String parameter and `page` an Integer parameter; `action` is its own non-patch action with `key` a String parameter; every `shared` name is declared with equal kinds by both; at most one per module.",
@@ -369,7 +369,8 @@
         "`query_choice_registration_refuses_unbound_or_mismatched_parameters` covers a missing query, a patch action, a non-String key, an Integer text, a shared name declared with different kinds and a second QueryChoice in one module.",
         "`query_choice_rows_contract_is_validated_by_the_host` refuses a row without key, title or eligible and more than 100 rows.",
         "`query_choice_drops_answers_for_stale_text`, `query_choice_pages_next_and_previous`, `query_choice_sends_shared_parameters_to_query_and_action` and `query_choice_ineligible_row_shows_reasons_and_does_not_submit` pass in luxforge-app.",
-        "module.list and schema.list describe the proof's QueryChoice control through the generic descriptor serialization."
+        "module.list and schema.list describe the proof's QueryChoice control through the generic descriptor serialization.",
+        "A failed visible query exposes Retry. `query_choice_same_input_retry_recovers_and_rejects_pre_retry_answers` proves a fresh sequence with unchanged inputs, recovery, and stale-answer rejection; retry stays idle while loading or after success and adds no polling."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -379,7 +380,7 @@
         "commands": [
           "cargo test -p luxforge-core --lib modules::descriptor",
           "cargo test -p luxforge-core --test modules controls",
-          "cargo test -p luxforge-app --lib query_choice"
+          "cargo test -p luxforge-app query_choice"
         ],
         "expected_results": [
           "The control is registered, validated, described and rendered generically, with no lens-specific code."
@@ -389,7 +390,7 @@
     {
       "id": "TASK-006",
       "description": "Resolve optical identity against the index: candidates, search, eligibility reasons and frozen Hermite terms.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -453,7 +454,7 @@
     {
       "id": "TASK-007",
       "description": "Add warp steps, compile fusion, canonical-order admission, closed-form coverage and the exact reads rule.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-004"
@@ -508,9 +509,9 @@
       "acceptance_criteria": [
         "`lens_perspective_straighten_compile_to_one_resample_entry` and `integer_crop_after_warp_stays_exact_geometry` pass; `crop_only_stack_compiles_as_before` shows unchanged segments for stacks without warps.",
         "`noncanonical_warp_interleavings_are_refused_without_rewrite` covers [lens, colour, crop], [crop, lens], [lens, orientation] and [perspective, lens], each refused with the design message and the stored stack untouched.",
-        "`cover_scale_above_four_is_refused`, `strong_minification_is_refused` (unsupported-input, 'strong minification: bilinear would alias'), `folded_radial_step_is_refused` and `identity_steps_compile_to_exact_identity` pass.",
+        "`cover_scale_above_four_is_refused`, `strong_minification_is_refused` (unsupported-input, 'strong minification: bilinear would alias'), `folded_radial_step_is_refused` and `identity_calibration_keeps_exact_byte_path_and_shared_buffer` and neutral Perspective pass.",
         "`warp_mapping_matches_reference_fixture`: input_at, cover and local_scale_max agree with fixtures/geometry/lens-perspective.json within 1e-9 px; `warp_reads_bound_never_underestimates_dense_reference` holds over 3,000 random windows per fixture profile.",
-        "`lens_forward_reports_outside_beyond_visible_radius`, `inverse_unconverged_is_explicit` and `locate_through_warp_uses_floor_of_mapped_centre` pass; `render_transform_describes_warp_chain` returns the warp descriptor with a mapping_sha256 that changes when only a lens term changes.",
+        "`lens_forward_reports_outside_beyond_visible_radius`, `inverse_unconverged_is_explicit` and `locate_through_warp_uses_floor_of_mapped_centre` pass; `render_transform_describes_warp_chain_and_draft_identity` returns the warp descriptor with a mapping_sha256 that `warp_map_hash_changes_with_lens_terms` shows changing when only a lens term changes.",
         "`cargo xtask check-repository` passes with Resample::reads the only read-rectangle rule."
       ],
       "test_strategy": {
@@ -533,7 +534,7 @@
     {
       "id": "TASK-008",
       "description": "Render warp chains in both domains through full, region, proxy and point paths.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-007"
       ],
@@ -594,7 +595,7 @@
         "`warp_sample_equals_render_at_ten_thousand_points` is bit-exact in both domains; `warp_serial_equals_pool` is bit-exact.",
         "`byte_tail_quantizes_once_under_lens_perspective_straighten` is within 1 code per channel of a single f64 interpolation; `linear_tail_with_lens_perspective_and_straighten_renders` is within 1e-6 + 1e-6*|ref|; `raw_highlights_survive_warp_until_terminal_quantization` keeps negative and above-one values.",
         "`identity_calibration_keeps_exact_byte_path_and_shared_buffer` shares the source buffer; `lens_proxy_map_equals_scaled_full_map_within_rounding` stays within 0.5 proxy px.",
-        "`warp_render_cancels_between_tap_blocks` publishes no partial frame; `warp_tap_scratch_stays_within_tap_block` never reads more than TAP_BLOCK_PIXELS per block at 2.6x minification geometry."
+        "`warp_render_cancels_between_tap_blocks` publishes no partial frame; `warp_tap_scratch_stays_within_tap_block` never reads more than TAP_BLOCK_PIXELS per block in an unchecked 2.6x minification stress fixture that bypasses product admission (the product limit remains 1.8x)."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -614,7 +615,7 @@
     {
       "id": "TASK-009",
       "description": "Register Lens correction and Perspective with their commands, eligibility, presets rule and history.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005",
@@ -703,7 +704,7 @@
           "cargo test -p luxforge-core --lib presets",
           "cargo test -p luxforge-core --lib editor",
           "cargo test -p luxforge-core --test modules",
-          "cargo test -p luxforge-app --lib presets",
+          "cargo test -p luxforge-app presets",
           "cargo test -p luxforge-cli --test json_cli lens"
         ],
         "expected_results": [
@@ -714,7 +715,7 @@
     {
       "id": "TASK-010",
       "description": "Carry warps through mask overlays, outlines, pointer mapping and picks.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008",
         "TASK-009"
@@ -760,10 +761,10 @@
       ],
       "acceptance_criteria": [
         "`mask_overlay_cache_misses_when_only_lens_changes` and `mask_overlay_under_warp_matches_content_coverage` pass.",
-        "`mask_outline_outside_content_is_clipped_under_perspective` (3:2, H = V = +100, radial centred at (-1, -1)) draws no vertex through the pole; `outline_line_follows_warp_within_quarter_pixel` and `outline_segment_cap_reports_approximate` pass.",
+        "`mask_outline_outside_content_is_clipped_under_perspective` (3:2, H = V = +100, radial centred at (-1, -1)) draws no vertex through the pole; `outline_line_follows_warp_within_quarter_pixel` and `outline_segment_cap_reports_approximate_under_warp` pass.",
         "`brush_tolerance_uses_local_scale_under_warp` and `pointer_maps_to_content_before_quantization_under_warp` pass; stored masks and strokes are byte-identical before and after lens and perspective changes (extended geometry_survival).",
-        "`pick_positions_agree_core_ui_api`: the same content pixel for pixel centres and within 1e-9 px for continuous positions at Fit, 100%, a pan and all eight orientations.",
-        "`raw_neutral_pick_applies_recipe_inverse_then_sensor_query_once` on the DNG path and `active_stroke_conflicts_on_geometry_commit` pass."
+        "`pick_positions_agree_core_ui_api`: the same content pixel for pixel centres and within 1e-9 px for continuous positions at Fit, 100%, a pan and all eight orientations. The real `render.transform` and `render.locate` handlers are separately checked by `nonlinear_api_locate_agrees_with_the_stamped_map_in_all_orientations`; UI comparisons use the same observed output coordinate, without assuming sub-f32 pointer round-trip precision.",
+        "`owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once` passes on the supplied authentic Air 2S DNG, retaining mandatory lateral CA/shading; active-stroke conflict and refreshed geometry after Discard/Reapply pass on an external Perspective commit."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -774,8 +775,9 @@
           "cargo test -p luxforge-core --test mask",
           "cargo test -p luxforge-core --lib analysis::mask_overlay",
           "cargo test -p luxforge-core --lib preview::coverage",
-          "cargo test -p luxforge-app --lib mask",
-          "cargo test -p xtask mask"
+          "cargo test -p luxforge-app mask",
+          "cargo test -p xtask mask",
+          "LUXFORGE_RAW_OWNER_DIR=DIR cargo test -p luxforge-core --lib owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once -- --ignored --nocapture"
         ],
         "expected_results": [
           "Masks, overlays, outlines and picks follow the photograph's map without rewriting stored coordinates."
@@ -785,7 +787,7 @@
     {
       "id": "TASK-011",
       "description": "Prove the fixed canvas with crop, orientation carry and compare.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008",
         "TASK-009"
@@ -824,7 +826,7 @@
       "acceptance_criteria": [
         "`crop_reset_restores_covered_canvas`, `lens_sweep_returns_to_identical_base` and `crop_payload_and_id_unchanged_by_lens_or_perspective_change` pass.",
         "`orientation_carries_perspective_and_crop_in_one_action` passes for all eight orientations with one history entry and unchanged Original dimensions.",
-        "`keep_geometry_carries_lens_and_perspective` and `uncropped_original_has_no_optional_warp` pass; `crop_input_preview_includes_warps` passes.",
+        "`keep_geometry_copies_the_whole_optional_warp_tail_and_original_excludes_it` proves framed compare carries Lens and Perspective while uncropped Original has no optional warp; `crop_input_preview_includes_warps` passes.",
         "`crop_reapply_after_external_geometry_edit_rebinds_mapping` passes in luxforge-app; `vignette_uses_final_output_coordinates_after_warps` passes."
       ],
       "test_strategy": {
@@ -836,7 +838,7 @@
           "cargo test -p luxforge-core --lib crop",
           "cargo test -p luxforge-core --lib modules::transform",
           "cargo test -p luxforge-core --lib editor::evaluate",
-          "cargo test -p luxforge-app --lib crop"
+          "cargo test -p luxforge-app crop"
         ],
         "expected_results": [
           "The fixed canvas, carry and compare behave as the design states."
@@ -846,7 +848,7 @@
     {
       "id": "TASK-012",
       "description": "Prove persistence, recovery and exact export for corrected recipes.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008",
         "TASK-009"
@@ -885,8 +887,8 @@
       "acceptance_criteria": [
         "`lens_history_survives_undo_redo_restore_reopen` keeps layer IDs and the frozen payload; one selection or gesture is one entry; original hashes are unchanged.",
         "`evaluation_never_reads_the_lens_index`: with the index forced not-ready, reopen, history preview and export of a resolved edit succeed and new selection answers not-ready.",
-        "`export_of_warped_entry_matches_exact_render` compares the lossless pre-encode buffer with the exact render bit for bit; `export_plan_dimensions_unchanged_by_warps` passes.",
-        "`applied_embedded_distortion_refuses_on_every_admission_path` (validate_source_recipe over a constructed AssetRecord with an undeclared applied WarpRectilinear, through draft, commit, Restore, reopen and export) and `export_refuses_forged_lens_payload_before_publication` pass with no file published.",
+        "`export_of_warped_entry_matches_exact_render_and_dimensions_are_fixed` compares the lossless pre-encode buffer with the exact render bit for bit and proves unchanged dimensions.",
+        "`applied_distortion_refuses_lens_drafts_commits_restore_reopen_and_export` injects a synthetic undeclared applied WarpRectilinear source interpretation into an isolated catalog and verifies draft, selection commit, direct commit, Restore, reopen/preparation, render and export refuse without changing stored history or original bytes; `export_refuses_forged_lens_payload_before_publication` publishes no file.",
         "Cancellation at render, encode and publication, and a failed catalog write, leave originals and history intact (`warped_export_cancellation_publishes_nothing`)."
       ],
       "test_strategy": {
@@ -895,8 +897,9 @@
           "Use lossless buffers as the oracle and decoded JPEG only for dimensions and metadata."
         ],
         "commands": [
-          "cargo test -p luxforge-core --lib export",
-          "cargo test -p luxforge-core --lib editor::history",
+          "cargo test -p luxforge-core --lib modules::lens",
+          "cargo test -p luxforge-core --lib editor::source::lens_admission_tests",
+          "cargo test -p luxforge-core --lib api::owner::export_tests",
           "cargo test -p luxforge-cli --test json_cli lens"
         ],
         "expected_results": [
@@ -907,7 +910,7 @@
     {
       "id": "TASK-013",
       "description": "Deliver the desktop sections and a rendered lens-perspective smoke scenario with correlated evidence.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005",
         "TASK-010",
@@ -916,7 +919,9 @@
       "extra_context": [
         "The sections are generated from the descriptors; luxforge-app adds only the Lens status line, the conditional focal and Assume uncorrected controls and the read-only cover line from recipe.describe, in view/tools_panel.rs and its state.",
         "New xtask/src/lens_smoke.rs and a `lens-perspective` row in xtask/src/smoke.rs SCENARIOS, with evidence steps in luxforge-app/src/app/evidence.rs, over fixtures/geometry/z6-24-70-35mm-grid.jpg. The scenario exists only after this task; `verify --tier rendered` then runs it. Build the release app first (`cargo xtask build --release`); launches are background-only.",
-        "Frames: Lens expanded with its candidate list; a selection refused without Assume uncorrected (the reason shown); the selection with it at Fit and at 100%; Perspective +40 / -25 by slider drag with one history entry; a radial mask outline over the warp; a crop straightened 2.5 degrees; each correlated with entry, mapping_sha256, preview generation, UI and API stacks and the source hash."
+        "Frames: Lens expanded with its candidate list; a selection refused without Assume uncorrected (the reason shown); the selection with it at Fit and at 100%; Perspective +40 / -25 by slider drag with one history entry; a radial mask outline over the warp; a crop straightened 2.5 degrees; each correlated with entry, mapping_sha256, preview generation, UI and API stacks and the source hash.",
+        "The native scenario also keeps a brush stroke across an external Perspective commit: Apply refuses the conflicted draft, Reapply refreshes the map without moving stored content coordinates, and a subsequent stroke uses the refreshed map. The evidence reopens the isolated catalog to check the actual stored strokes.",
+        "The native Lens scenario also renders a real overlong-search validation error, retries the unchanged query with a fresh sequence and no history mutation, then clears search to recover the candidate rows through the same descriptor control."
       ],
       "context_links": [
         {
@@ -947,8 +952,10 @@
         }
       ],
       "acceptance_criteria": [
-        "`lens_section_shows_status_and_conditional_controls` and `perspective_drag_is_one_draft_and_one_entry` pass in luxforge-app; cancelling a drag leaves no entry and a same-value reset is a no-op.",
-        "The lens-perspective scenario passes with every frame correlated, stale or missing captures failing, no timer, poll or private worker added, and UI and API stacks identical."
+        "`lens_section_shows_status_and_conditional_controls_and_reselect_keeps_exif_focal` and `perspective_integer_drag_is_one_draft_and_cancel_writes_nothing` pass in luxforge-app; the native scenario proves one committed entry per Perspective gesture, cancelling writes no entry, and the core conformance suite proves same-value reset is a no-op.",
+        "The lens-perspective scenario passes with every frame correlated, stale or missing captures failing, no timer, poll or private worker added, and UI and API stacks identical.",
+        "`mask_reapply_rejects_a_delayed_map_after_a_second_geometry_commit` and `render_transform_describes_warp_chain_and_draft_identity` prove delayed requests/replies cannot substitute another geometry base; fields and history survive refusal, and explicit Reapply refreshes the stamped map.",
+        "`perspective_fields_follow_local_commits_and_external_refresh_while_a_mask_is_selected` proves global geometry keeps its committed values across mask selection and Pointer return; native frames assert the displayed Horizontal/Vertical values after local and external edits."
       ],
       "test_strategy": {
         "approach": "end-to-end",
@@ -956,8 +963,10 @@
           "Add the section specifics with app tests, then the smoke script and evidence steps; run the scenario once at the end."
         ],
         "commands": [
-          "cargo test -p luxforge-app --lib lens",
-          "cargo test -p luxforge-app --lib perspective",
+          "cargo test -p luxforge-app lens",
+          "cargo test -p luxforge-app perspective",
+          "cargo test -p luxforge-app mask_reapply",
+          "cargo test -p luxforge-core --lib render_transform_describes_warp_chain_and_draft_identity",
           "cargo xtask build --release",
           "cargo xtask smoke --scenario lens-perspective --output NEW_DIR"
         ],
@@ -969,7 +978,7 @@
     {
       "id": "TASK-014",
       "description": "Qualify on named photographs, add the integrated and fault checks, and update current documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-012",
         "TASK-013"
@@ -977,7 +986,7 @@
       "extra_context": [
         "New `cargo xtask lens-qualification --manifest FILE --edges FILE --output NEW_DIR` (xtask/src/lens_qualification.rs; exists only after this task): for each manifest id in the edges file (at least three edges of at least five content-coordinate points each, marked by the owner or the implementer on the uncorrected content), resolve and select a profile through the JSON API, map the points with the stored map and report each edge's maximum deviation from its fitted line before and after, against the design's criterion. It reads the manifest through the existing `raw::manifest` reader (check-repository's raw-manifest-reader rule).",
         "Available photographs in the private RAW manifest: `nikon-z6` (NIKKOR Z 24-200mm f/4-6.3 VR at 200 mm), `dji-air2s` (FC3411 at 8.38 mm; lateral CA applied, distortion known-unapplied) and `fujifilm-x100vi` (expected camera-not-in-database). Required and not in the repository or manifest: straight-line photographs from the Z 6 with the 24-200 at 24 mm and with the NIKKOR Z 24-70mm f/4 S at 24 and 70 mm, an Air 2S DNG with straight lines, a Z 6 camera JPEG and a keystoned building. The owner supplies them; each missing one leaves its matrix row untested and qualification incomplete. Do not invent or substitute files.",
-        "Integrated recipes: new crates/luxforge-core/tests/modules/lens.rs covers colour, spatial and masked edits, lens, perspective, crop, orientation and the finish vignette in both domains, including the FC3411 path, history, compare and export.",
+        "Integrated recipes: crates/luxforge-core/src/modules/lens/tests.rs covers colour, spatial and masked edits, Lens, Perspective, crop, orientation and the finish vignette in both domains, including the FC3411 path, history, compare and export. Fault checks live there and in editor/lens_admission_tests.rs and api/owner/export_tests.rs.",
         "Docs describing only delivered behavior: this design's Qualification matrix, docs/features.md, docs/user-guide.md, docs/design/architecture.md (Geometry beyond an exact orientation becomes current), docs/design/modules-and-api.md, docs/design/masking.md, docs/specs/single-image.md, docs/design/air2s-dng.md (optical roles) and docs/engineering/development.md (importer, qualification and smoke commands)."
       ],
       "context_links": [
@@ -1014,7 +1023,7 @@
         }
       ],
       "acceptance_criteria": [
-        "`integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains` and `fault_matrix_preserves_data_under_lens_edits` (cancellation, missing index, malformed payload, missing source, failed durable write) pass.",
+        "`integrated_recipe_with_masks_lens_perspective_crop_and_finish_in_both_domains` and the Lens fault tests pass: `evaluation_never_reads_the_lens_index`, `lens_payload_refuses_unknown_fields_and_forged_normalization`, `missing_original_after_lens_and_perspective_preserves_saved_edits`, `failed_catalog_write_leaves_lens_selection_and_original_intact`, and `warped_export_cancellation_publishes_nothing` (render, encode and publication cancellation).",
         "lens-qualification runs on every available manifest photograph and records its matrix row with the criterion's result; the nikon-z6 and dji-air2s selections resolve and export, and fujifilm-x100vi reports camera-not-in-database.",
         "The Qualification matrix lists every camera, lens and focal as qualified, failed or untested (missing photograph), and no untested row is described as supported.",
         "The listed docs describe only delivered commands and behavior; the quick tier passes once and the rendered tier passes once at integration."
@@ -1026,7 +1035,8 @@
           "Run quick once at hand-off and rendered once at integration; timing stays in the measurement task."
         ],
         "commands": [
-          "cargo test -p luxforge-core --test modules lens",
+          "cargo test -p luxforge-core --lib modules::lens",
+          "cargo test -p luxforge-core --lib api::owner::export_tests",
           "cargo xtask lens-qualification --manifest FILE --edges FILE --output NEW_DIR",
           "cargo xtask verify --tier quick --output NEW_DIR",
           "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
@@ -1047,7 +1057,10 @@
       "extra_context": [
         "X9: run only after every feature task in this plan and the other plans' feature work is complete, sequentially, on a quiet host, never beside another plan's builds; run each before/after pair back to back and reversed, recording host load.",
         "Add two workloads to xtask/src/fixtures.rs TABLE: `lens-24mp.jpg` (6048x4024 line grid, EXIF NIKON CORPORATION / NIKON Z 6 / NIKKOR Z 24-70mm f/4 S / 24 mm / FL35 24) and `lens-60mp.jpg` (9504x6336, EXIF SONY / ILCE-7RM4 / FE 24-70mm f/4 ZA OSS / 24 mm / FL35 24). Add `--lens` to editor-latency (xtask/src/editor_latency.rs), which commits the first eligible `edit.select-lens-profile` candidate with assume-uncorrected before the gesture, like `--presence`, and add lens steps to editor-performance (xtask/src/editor_performance.rs) timing query.lens-profiles and edit.select-lens-profile. Add warp cases to `render::parallel::tests::parallel_break_even_per_pass`.",
-        "Replace NEW_DIR, JPEG, RAW and FILE with fresh output paths, the generated lens workloads, the private manifest's nikon-z6 and dji-air2s files and the manifest. Set PARALLEL_WARP_PIXELS from the measurement and document it in docs/specs/performance.md."
+        "Replace NEW_DIR, JPEG, RAW and FILE with fresh output paths, the generated lens workloads, the private manifest's nikon-z6 and dji-air2s files and the manifest. Set PARALLEL_WARP_PIXELS from the measurement and document it in docs/specs/performance.md.",
+        "The lens-only editor-performance mode accepts JPEG or RAW and compares a neutral Lens layer against the selected profile with the same Perspective and 2.5-degree crop; it measures point picks, serial export completion and cancellation-to-terminal with source preservation. Run each supplied source separately on the quiet host.",
+        "Harness setup is implemented: `--perspective` seeds +20/-10 alongside `--lens` and `--crop`; viewport `--samples 30` runs 30 sequential journeys and reports 60 correlated pan/refinement observations. Crop opening is bounded to 14 repeats per run and reports its actual count; `--idle` reopens the same edited catalog. OS GPU allocation may be unavailable and backend staging is unmeasured, so application-owned surface counters are not a total GPU-memory guarantee.",
+        "CORE_TEST_BINARY is the release luxforge_core test executable reported by the preceding --no-run build. These fixture/build commands finish before the quiet timing window; the following commands use rebuilt binaries directly. After setting the measured threshold, rebuild again before the final full tier."
       ],
       "context_links": [
         {
@@ -1086,16 +1099,23 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Add the workloads and harness flags, generate fixtures, then run each timing command once, sequentially.",
+          "The workloads and harness flags are implemented. Rebuild the release artifacts before the timing window; run the rebuilt xtask and core test binaries directly, sequentially, without overlapping Cargo. For each of the two generated JPEGs and two supported authentic RAWs, run core lens-only once, then each desktop mode as baseline/selected and selected/baseline pairs; baseline omits --lens but retains identical Perspective and crop flags. Keep each output path fresh, record load and actual sample counts, and stop on failure.",
           "Run the full tier last."
         ],
         "commands": [
           "cargo xtask generate-fixtures --output fixtures/generated",
-          "LUXFORGE_BREAK_EVEN_CASE=warp cargo test --release -p luxforge-core --lib render::parallel::tests::parallel_break_even_per_pass -- --ignored --exact",
-          "cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR --samples 30",
-          "cargo run --release --locked --package xtask -- editor-latency --source JPEG --output NEW_DIR --lens --crop 2.5 --action set-perspective --parameter horizontal --samples 30",
-          "cargo run --release --locked --package xtask -- editor-latency --source RAW --output NEW_DIR --lens --action set-perspective --parameter horizontal --samples 30",
-          "cargo run --release --locked --package xtask -- verify --tier full --manifest FILE --output NEW_DIR"
+          "cargo xtask build --release",
+          "cargo test --release -p luxforge-core --lib --no-run",
+          "LUXFORGE_BREAK_EVEN_CASE=warp CORE_TEST_BINARY --ignored --exact render::parallel::tests::parallel_break_even_per_pass --nocapture",
+          "target/release/xtask editor-performance --source JPEG --output NEW_DIR --samples 30",
+          "target/release/xtask editor-performance --lens-only --source JPEG_OR_RAW --output NEW_DIR --samples 30",
+          "target/release/xtask editor-latency --source JPEG --output NEW_DIR --lens --perspective --crop 2.5 --action set-perspective --parameter horizontal --samples 30",
+          "target/release/xtask editor-latency --source RAW --output NEW_DIR --lens --perspective --crop 2.5 --action set-perspective --parameter horizontal --samples 30",
+          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode commit --action set-perspective --parameter horizontal --samples 30 --idle",
+          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode viewport --zoom 100 --action set-perspective --parameter horizontal --samples 30",
+          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode crop-start --samples 14",
+          "target/release/xtask editor-latency --source JPEG_OR_RAW --output NEW_DIR --lens --perspective --crop 2.5 --mode paint --samples 400",
+          "target/release/xtask verify --tier full --manifest FILE --output NEW_DIR"
         ],
         "expected_results": [
           "Measured distributions, the warp threshold and the checklist answers are recorded with their scope.",
