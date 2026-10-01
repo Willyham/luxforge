@@ -434,13 +434,11 @@ pub(crate) fn sample_mode(editor: &Editor) -> (String, String, String) {
         .expect("a declared sample-apply canvas")
 }
 
-/// Attach a real diagnostics log so the evidence records a pick writes can be read back.
+/// Attach a real diagnostics log so the evidence records a pick writes can be read back. Its path is
+/// the test base's scratch path, which clears whatever an earlier process with the same id left
+/// there, so a reused process id never finds the log already present.
 pub(crate) fn attach_log(editor: &mut Editor) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "luxforge-pick-{}-{}.jsonl",
-        std::process::id(),
-        REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let path = luxforge_testbase::paths::temp_path("pick.jsonl");
     editor.log.diagnostics =
         Some(crate::diagnostics::Diagnostics::start(&path).expect("a fresh log"));
     path
