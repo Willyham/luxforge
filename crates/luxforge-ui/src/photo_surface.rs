@@ -27,7 +27,9 @@
 //!   which is the identity on an opaque texel drawn one-to-one.
 //! - **Filtering.** The photograph and the crop stage are sampled with a linear sampler clamped to
 //!   the edge, the image widget's `FilterMethod::Linear` default. The overlays are cell grids and
-//!   are sampled with the nearest texel, which is how they were drawn as images.
+//!   are sampled with the nearest texel, which is how they were drawn as images. The linear
+//!   sampler also filters between mip levels, which only a photograph drawn under half its size
+//!   has: see [`mips`].
 //! - **Blending.** The image pipeline's own blend state, so an overlay's translucent cells and the
 //!   crop stage's dimmed part composite exactly as the image widget composited them; a photograph's
 //!   raster is opaque, where that blend is the identity. The image shader applies an opacity by
@@ -78,11 +80,16 @@
 //! resident or retiring — is one budget shared by every surface: a second surface draws from it
 //! rather than doubling it, and an allocation that would pass it is deferred, leaving every
 //! surface's current picture in place, until a retirement or a released surface makes room. The
-//! crop stage and overlays have separate textures outside that budget. The crop stage's is
-//! reserved at exactly its frame's size: the display-size proxy a draft shows at Fit, and a
-//! full-size exact stage only at a percentage zoom that needs one, never kept for the proxy after
-//! it. The pixels are borrowed from desktop frames, and uploads read their rows directly from those
-//! buffers.
+//! mip levels of a photograph drawn under half its size ([`mips`]) are part of the slot that holds
+//! them, a third more than its base, and counted with it. The crop stage and overlays have
+//! separate textures outside that budget. The crop stage's is reserved at exactly its frame's
+//! size: the display-size proxy a draft shows at Fit, and a full-size exact stage only at a
+//! percentage zoom that needs one, never kept for the proxy after it. The pixels are borrowed from
+//! desktop frames, and uploads read their rows directly from those buffers.
+
+mod mips;
+
+pub use mips::admissible as mips_admissible;
 
 use iced::{
     ContentFit, Element, Length, Point, Rectangle, Size, Vector,
@@ -116,6 +123,8 @@ struct SurfaceFigures {
     /// nothing. The crop stage and the overlays have textures of their own and are not counted.
     writes: AtomicU64,
     upload_bytes: AtomicU64,
+    /// How many mip chains the pipeline has generated.
+    mip_generations: AtomicU64,
     retirement_pending: AtomicU64,
     diagnostics: Mutex<SurfaceDiagnostics>,
     /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
@@ -240,6 +249,11 @@ pub struct SurfaceDiagnostics {
     pub upload_bytes: u64,
     pub full_resident_bytes: u64,
     pub region_resident_bytes: u64,
+    /// The part of `full_resident_bytes` that is mip levels beyond the first: a photograph drawn
+    /// under half its size has them, in the slot that holds it.
+    pub mip_resident_bytes: u64,
+    /// How many mip chains have been generated: once per photograph written while drawn that small.
+    pub mip_generations: u64,
     /// The crop draft's input-stage texture: a display-size proxy's at Fit, the exact stage's only
     /// at a percentage zoom that needs it, and nothing once the draft ends.
     pub stage_resident_bytes: u64,
@@ -1160,6 +1174,10 @@ impl shader::Primitive for PhotoPrimitive {
                 surface.slots[layer.index()] = None;
             }
         }
+        // The picture's size on screen in physical pixels, which says whether a photograph's
+        // texture is drawn under half its size and so is held with mip levels.
+        let scale = viewport.scale_factor();
+        let drawn = (self.size.width * scale, self.size.height * scale);
         for (layer, frame) in &self.layers {
             let content_id = self.viewport.as_ref().and_then(|viewport| {
                 (viewport.current_content
@@ -1170,7 +1188,17 @@ impl shader::Primitive for PhotoPrimitive {
                 .then_some(viewport.current_content)
             });
             if self.viewport.is_none() || *layer != Layer::Photo {
-                pipeline.write_slot(&mut surface, device, queue, *layer, frame, content_id, None);
+                let minified = *layer == Layer::Photo && mips::minified(frame.size(), drawn);
+                pipeline.write_slot(
+                    &mut surface,
+                    device,
+                    queue,
+                    *layer,
+                    frame,
+                    content_id,
+                    None,
+                    minified,
+                );
             }
         }
         if let Some(view) = &self.viewport {
@@ -1185,6 +1213,7 @@ impl shader::Primitive for PhotoPrimitive {
                     frame,
                     Some(*content),
                     None,
+                    mips::minified(frame.size(), drawn),
                 );
             }
             let full_ready = surface.slots[Layer::Photo.index()]
@@ -1210,14 +1239,15 @@ impl shader::Primitive for PhotoPrimitive {
                         &overlay.frame,
                         Some(key.content_id),
                         Some(key),
+                        false,
                     );
                 }
             }
         }
+        pipeline.generate_mips(device, queue, &mut surface, drawn);
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
-        let scale = viewport.scale_factor();
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
@@ -1676,7 +1706,15 @@ struct Picture {
     version: u64,
     content_id: Option<u64>,
     region_key: Option<RegionKey>,
+    /// Every level of every tile's texture.
     allocated_bytes: u64,
+    /// The levels of its one texture: 1, or the whole chain of a photograph that was drawn under
+    /// half its size when it was allocated, which is then exactly the frame's size.
+    mip_levels: u32,
+    /// The bytes of the levels beyond the first, inside `allocated_bytes`.
+    mip_bytes: u64,
+    /// Whether those levels hold the reduction of the pixels now in the first.
+    mips_current: bool,
 }
 
 struct RetiredPicture {
@@ -1853,6 +1891,8 @@ pub struct PhotoPipeline {
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     texture_format: wgpu::TextureFormat,
+    /// The pass that writes mip levels, built the first time a photograph needs them.
+    mips: Option<mips::MipPipeline>,
     surfaces: HashMap<SurfaceId, SurfaceSlots>,
     /// Every surface's retiring allocations, which the shared budget counts.
     retiring: Arc<Retiring>,
@@ -1939,6 +1979,13 @@ impl PhotoPipeline {
             .filter_map(|surface| surface.slots[Layer::Stage.index()].as_ref())
             .map(|picture| picture.allocated_bytes)
             .sum();
+        diagnostic.mip_resident_bytes = self
+            .surfaces
+            .values()
+            .filter_map(|surface| surface.slots[Layer::Photo.index()].as_ref())
+            .map(|picture| picture.mip_bytes)
+            .sum();
+        diagnostic.mip_generations = self.figures.mip_generations.load(Ordering::Relaxed);
         diagnostic.photo_writes = self.figures.writes.load(Ordering::Relaxed);
         diagnostic.upload_bytes = self.figures.upload_bytes.load(Ordering::Relaxed);
     }
@@ -1984,7 +2031,9 @@ impl PhotoPipeline {
         region_key: Option<RegionKey>,
     ) -> bool {
         self.with_surface(id, |pipeline, surface| {
-            pipeline.write_slot(surface, device, queue, layer, frame, content_id, region_key)
+            pipeline.write_slot(
+                surface, device, queue, layer, frame, content_id, region_key, false,
+            )
         })
     }
 
@@ -2014,27 +2063,48 @@ impl PhotoPipeline {
         frame: &Frame,
         content_id: Option<u64>,
         region_key: Option<RegionKey>,
+        minified: bool,
     ) -> bool {
         let (width, height) = frame.size();
         // The device's limit, not the GPU's: Iced asks wgpu for its default limits, so this is
         // 8192 on the owner's Mac although the GPU could hold larger textures.
         let limit = device.limits().max_texture_dimension_2d;
+        // A photograph drawn under half its size is held with mip levels when they may exist; see
+        // [`mips`]. One that may not is the plain texture, drawn through the bilinear sampler.
+        let chain = layer == Layer::Photo && minified && mips::admissible((width, height), limit);
         let reusable = surface.slots[layer.index()]
             .as_ref()
             // A crop stage is reserved at exactly its frame's size, so the display-size proxy a
             // draft shows at Fit never keeps the full-size texture an exact stage at a percentage
             // zoom allocated.
             .filter(|picture| layer != Layer::Stage || picture.capacity == (width, height))
+            // A chain is cut for exactly the size it was allocated at, and a photograph that is
+            // now minified but holds none is rebuilt with one; a chain, once held, is kept.
+            .filter(|picture| picture.mip_levels == 1 || picture.capacity == (width, height))
+            .filter(|picture| !chain || picture.mip_levels > 1)
             .and_then(|picture| picture.layouts_for((width, height), limit));
         let fresh = reusable.is_none();
         if fresh {
-            let capacity = if layer == Layer::Photo {
+            let capacity = if chain {
+                (width, height)
+            } else if layer == Layer::Photo {
                 full_capacity((width, height), limit)
             } else {
                 (width, height)
             };
             let layouts = tile_layout(capacity, limit);
-            let bytes = allocated_bytes(&layouts);
+            let level_zero = allocated_bytes(&layouts);
+            let mip_levels = if chain {
+                mips::level_count(capacity)
+            } else {
+                1
+            };
+            // The chain is one tile's texture, so its levels follow from the one tile's size.
+            let bytes = if chain {
+                mips::chain_bytes(capacity, mip_levels)
+            } else {
+                level_zero
+            };
             if layer == Layer::Photo {
                 // At most this surface's current and one retiring full allocation may exist, and
                 // every surface's together stay within the shared ceiling. While an older
@@ -2063,7 +2133,7 @@ impl PhotoPipeline {
             let grid = tile_grid(capacity, limit);
             let tiles = layouts
                 .into_iter()
-                .map(|tile| self.tile(device, layer, tile))
+                .map(|tile| self.tile(device, layer, tile, mip_levels))
                 .collect();
             surface.slots[layer.index()] = Some(Picture {
                 tiles,
@@ -2077,6 +2147,9 @@ impl PhotoPipeline {
                 content_id: None,
                 region_key: None,
                 allocated_bytes: bytes,
+                mip_levels,
+                mip_bytes: bytes - level_zero,
+                mips_current: false,
             });
         }
         let Some(picture) = &mut surface.slots[layer.index()] else {
@@ -2102,6 +2175,7 @@ impl PhotoPipeline {
         picture.version = frame.version;
         picture.content_id = content_id;
         picture.region_key = region_key;
+        picture.mips_current = false;
         if layer == Layer::Photo {
             self.figures.writes.fetch_add(1, Ordering::Relaxed);
         }
@@ -2111,6 +2185,33 @@ impl PhotoPipeline {
             wake_surface();
         }
         true
+    }
+
+    /// Write the mip levels of `surface`'s photograph when it has them, they do not yet hold its
+    /// current pixels and it is drawn under half its size, which is the only draw that samples them.
+    /// The passes are encoded and submitted here and never waited on.
+    fn generate_mips(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface: &mut SurfaceSlots,
+        drawn: (f32, f32),
+    ) {
+        let Some(picture) = surface.slots[Layer::Photo.index()]
+            .as_mut()
+            .filter(|picture| picture.mip_levels > 1 && !picture.mips_current)
+            .filter(|picture| mips::minified((picture.width, picture.height), drawn))
+        else {
+            return;
+        };
+        let mips = self
+            .mips
+            .get_or_insert_with(|| mips::MipPipeline::new(device));
+        for tile in &picture.tiles {
+            mips.generate(device, queue, &tile.texture, picture.mip_levels);
+        }
+        picture.mips_current = true;
+        self.figures.mip_generations.fetch_add(1, Ordering::Relaxed);
     }
 
     fn write_region_slot(
@@ -2165,7 +2266,7 @@ impl PhotoPipeline {
             let grid = tile_grid(capacity, limit);
             let tiles = layouts
                 .into_iter()
-                .map(|tile| self.tile(device, Layer::Photo, tile))
+                .map(|tile| self.tile(device, Layer::Photo, tile, 1))
                 .collect();
             surface.regions[index] = Some(Picture {
                 tiles,
@@ -2178,6 +2279,9 @@ impl PhotoPipeline {
                 content_id: None,
                 region_key: None,
                 allocated_bytes: bytes,
+                mip_levels: 1,
+                mip_bytes: 0,
+                mips_current: false,
             });
         }
         let picture = surface.regions[index].as_mut().expect("admitted region");
@@ -2203,8 +2307,23 @@ impl PhotoPipeline {
     }
 
     /// One tile's texture, uniform and bindings, sampled as its layer is.
-    fn tile(&self, device: &wgpu::Device, layer: Layer, layout: TileLayout) -> Tile {
+    fn tile(
+        &self,
+        device: &wgpu::Device,
+        layer: Layer,
+        layout: TileLayout,
+        mip_levels: u32,
+    ) -> Tile {
         let (width, height) = layout.texture_size();
+        // Levels are written by render passes through an sRGB-typed view, so a texture of any
+        // other format names that view.
+        let chain = mip_levels > 1;
+        let view_formats: &[wgpu::TextureFormat] =
+            if chain && self.texture_format != mips::MIP_FORMAT {
+                &[mips::MIP_FORMAT]
+            } else {
+                &[]
+            };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("luxforge.photo_surface.texture"),
             size: wgpu::Extent3d {
@@ -2212,12 +2331,25 @@ impl PhotoPipeline {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: mip_levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.texture_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            usage: {
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+                // A test reads its textures back.
+                let usage = if cfg!(test) {
+                    usage | wgpu::TextureUsages::COPY_SRC
+                } else {
+                    usage
+                };
+                if chain {
+                    usage | wgpu::TextureUsages::RENDER_ATTACHMENT
+                } else {
+                    usage
+                }
+            },
+            view_formats,
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.photo_surface.uniform"),
@@ -2680,6 +2812,7 @@ impl PhotoPipeline {
             linear,
             nearest,
             texture_format,
+            mips: None,
             surfaces: HashMap::new(),
             retiring,
             retirement_sender,
@@ -4264,6 +4397,342 @@ mod gpu_surface_tests {
                 .map(|picture| picture.capacity),
             Some((30, 20))
         );
+    }
+
+    /// An opaque raster of vertical stripes: a white column in every four, black between. Its
+    /// light averages to a quarter, which encodes as 137, where an average of the codes would be 64
+    /// and a sampler that skips texels reads black.
+    fn stripe_raster(width: u32, height: u32, version: u64) -> Frame {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let code = if x % 4 == 0 { 255 } else { 0 };
+                pixels.extend_from_slice(&[code, code, code, 255]);
+            }
+        }
+        Frame::new(Arc::new(pixels), width, height, version).expect("stripes")
+    }
+
+    /// `frame` on the default surface, drawn `size` physical pixels square from the target's origin.
+    fn drawn_at(frame: &Frame, size: f32) -> PhotoPrimitive {
+        let mut primitive = full_primitive(frame.clone());
+        primitive.size = Size::new(size, size);
+        primitive
+    }
+
+    /// The first `count` pixels of the target's first row as BGRA.
+    fn row(bytes: &[u8], count: usize) -> Vec<[u8; 4]> {
+        bytes
+            .chunks_exact(4)
+            .take(count)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+            .collect()
+    }
+
+    /// A photograph drawn under half its size is held with a chain of linear-light mip levels,
+    /// which the draw samples: stripes a fine four texels apart average to the light's quarter, 137,
+    /// and no output pixel is black or white as the skipped texels would make it.
+    #[test]
+    fn a_photograph_drawn_under_half_its_size_is_sampled_from_linear_light_mips() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(256, 256, 1);
+        let drawn = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        for (index, pixel) in drawn.chunks_exact(4).enumerate() {
+            for channel in &pixel[..3] {
+                assert!(
+                    channel.abs_diff(137) <= 2,
+                    "output pixel {index} reads {pixel:?}, not the quarter-light grey 137"
+                );
+            }
+        }
+        // The chain is the slot's own, counted with it, and written once.
+        let levels = mips::level_count((256, 256));
+        assert_eq!(levels, 9);
+        let chain = mips::chain_bytes((256, 256), levels);
+        let base = 256 * 256 * 4;
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.full_resident_bytes, chain);
+        assert_eq!(figures.mip_resident_bytes, chain - base);
+        assert_eq!(figures.mip_generations, 1);
+        // Drawn again, nothing is written and nothing is generated again.
+        let again = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        assert_eq!(again, drawn);
+        assert_eq!(writes(&pipeline), 1);
+        assert_eq!(diagnostics(&pipeline).mip_generations, 1);
+        // A new version of the photograph rewrites level 0 and so its levels.
+        let next = stripe_raster(256, 256, 2);
+        paint(&device, &queue, &mut pipeline, &drawn_at(&next, 64.0));
+        assert_eq!(writes(&pipeline), 2);
+        assert_eq!(diagnostics(&pipeline).mip_generations, 2);
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+    }
+
+    /// The same photograph drawn at half its size or more has no chain, and is the plain bucketed
+    /// texture it has always been.
+    #[test]
+    fn a_photograph_drawn_at_its_size_has_no_mip_levels_and_the_bytes_it_always_had() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(64, 64, 1);
+        for size in [64.0, 33.0] {
+            let drawn = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, size));
+            if size == 64.0 {
+                for (x, pixel) in row(&drawn, 64).iter().enumerate() {
+                    let code = if x % 4 == 0 { 255 } else { 0 };
+                    assert_eq!(*pixel, [code, code, code, 255], "column {x}");
+                }
+            }
+        }
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.mip_generations, 0);
+        assert_eq!(
+            figures.full_resident_bytes,
+            allocated_bytes(&tile_layout(full_capacity((64, 64), 8192), 8192))
+        );
+    }
+
+    /// A photograph that was drawn at its size and is then drawn under half of it is rebuilt with a
+    /// chain, once; drawn at its size again it keeps the chain and uploads nothing, and the
+    /// chain's level 0 draws the same pixels. Closing the surface retires the whole chain.
+    #[test]
+    fn a_photograph_minified_after_being_drawn_at_its_size_gains_a_chain_it_then_keeps() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(160, 160, 1);
+        let plain = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 160.0));
+        let plain_bytes = diagnostics(&pipeline).full_resident_bytes;
+        assert_eq!(diagnostics(&pipeline).mip_resident_bytes, 0);
+        paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        let chain = mips::chain_bytes((160, 160), mips::level_count((160, 160)));
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+        assert_eq!(
+            diagnostics(&pipeline).mip_resident_bytes,
+            chain - 160 * 160 * 4
+        );
+        assert_eq!(writes(&pipeline), 2);
+        // The plain texture it replaced retires, and is no longer charged.
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        assert_ne!(plain_bytes, chain);
+        // Back at its size: the chain stays, nothing is uploaded, and level 0 draws as it did.
+        let at_size = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 160.0));
+        assert_eq!(writes(&pipeline), 2);
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+        for (a, b) in at_size.iter().zip(&plain) {
+            assert!(a.abs_diff(*b) <= 2, "level 0 drew {a}, not {b}");
+        }
+        // The surface closes: its chain retires with it, at the end of the first frame without it.
+        pipeline.trim();
+        let other = placed(
+            SurfaceId::new(9),
+            solid_raster(8, 8, 1, [0, 255, 0, 255]),
+            Vector::new(0.0, 0.0),
+            Size::new(8.0, 8.0),
+        );
+        paint_frame(&device, &queue, &mut pipeline, &[&other]);
+        pipeline.trim();
+        assert!(!pipeline.surfaces.contains_key(&ID));
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.retiring_bytes, 0);
+        assert_eq!(
+            figures.full_resident_bytes,
+            allocated_bytes(&tile_layout(full_capacity((8, 8), 8192), 8192))
+        );
+    }
+
+    /// A photograph wider than the device's texture is held in tiles, whose aprons would put a seam
+    /// into every level, so it never has a chain: it is drawn through the bilinear sampler, and
+    /// the desktop draws its display reduction instead.
+    #[test]
+    fn a_tiled_photograph_never_has_mip_levels() {
+        let Some((device, queue)) = headless_with_texture_limit(64) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(100, 100, 1);
+        assert!(!mips::admissible((100, 100), 64));
+        paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 40.0));
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.mip_generations, 0);
+        assert!(figures.full_resident_bytes >= 100 * 100 * 4);
+    }
+
+    /// The upper-left, `width` by `height`, of level `level` of `texture`, as RGBA bytes.
+    fn read_level(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        level: u32,
+        (width, height): (u32, u32),
+    ) -> Vec<u8> {
+        let row = (width * 4).next_multiple_of(256);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mip readback"),
+            size: u64::from(row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).expect("readback receiver")
+            });
+        wait(device, index);
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("readback callback")
+            .expect("readback mapping");
+        let mapped = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        mapped
+            .chunks_exact(row as usize)
+            .flat_map(|line| line[..(width * 4) as usize].to_vec())
+            .collect()
+    }
+
+    /// An sRGB code's linear light, and a linear value's code: the transfer function, independently.
+    fn to_linear(code: u8) -> f64 {
+        let encoded = f64::from(code) / 255.0;
+        if encoded <= 0.04045 {
+            encoded / 12.92
+        } else {
+            ((encoded + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn to_code(linear: f64) -> u8 {
+        let encoded = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (encoded * 255.0).round() as u8
+    }
+
+    /// Each level is the mean, in linear light, of the 2 × 2 texels of the level above it, for an
+    /// sRGB-typed texture and for the plain one a non-sRGB target gets, whose levels are still
+    /// written through an sRGB view. A side of one texel repeats its edge, and an odd side drops
+    /// its last texel as the GPU's own chains do.
+    #[test]
+    fn each_mip_level_is_the_linear_light_mean_of_the_level_above_for_both_texture_formats() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let size = (13u32, 6u32);
+        for target in [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ] {
+            let pipeline = PhotoPipeline::with_figures(&device, &queue, target, Arc::default());
+            let levels = mips::level_count(size);
+            assert_eq!(levels, 4);
+            let layout = tile_layout(size, 8192)[0];
+            let tile = pipeline.tile(&device, Layer::Photo, layout, levels);
+            let mut expected: Vec<u8> = (0..size.1)
+                .flat_map(|y| {
+                    (0..size.0).flat_map(move |x| {
+                        [
+                            ((x * 53 + y * 29) % 256) as u8,
+                            ((x * 7 + y * 113) % 256) as u8,
+                            ((x * x + y * 5) % 256) as u8,
+                            255,
+                        ]
+                    })
+                })
+                .collect();
+            queue.write_texture(
+                tile.texture.as_image_copy(),
+                &expected,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.0 * 4),
+                    rows_per_image: Some(size.1),
+                },
+                wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            mips::MipPipeline::new(&device).generate(&device, &queue, &tile.texture, levels);
+            let mut above = size;
+            for level in 1..levels {
+                let here = ((above.0 / 2).max(1), (above.1 / 2).max(1));
+                let mut next = Vec::new();
+                for y in 0..here.1 {
+                    for x in 0..here.0 {
+                        for channel in 0..4 {
+                            let at = |dx: u32, dy: u32| {
+                                let sx = (2 * x + dx).min(above.0 - 1);
+                                let sy = (2 * y + dy).min(above.1 - 1);
+                                expected[((sy * above.0 + sx) * 4) as usize + channel]
+                            };
+                            next.push(if channel == 3 {
+                                at(0, 0)
+                            } else {
+                                to_code(
+                                    (to_linear(at(0, 0))
+                                        + to_linear(at(1, 0))
+                                        + to_linear(at(0, 1))
+                                        + to_linear(at(1, 1)))
+                                        / 4.0,
+                                )
+                            });
+                        }
+                    }
+                }
+                let read = read_level(&device, &queue, &tile.texture, level, here);
+                for (index, (got, want)) in read.iter().zip(&next).enumerate() {
+                    assert!(
+                        got.abs_diff(*want) <= 1,
+                        "{target:?} level {level} byte {index}: the GPU wrote {got}, the linear-light mean is {want}"
+                    );
+                }
+                expected = next;
+                above = here;
+            }
+        }
     }
 
     #[test]
