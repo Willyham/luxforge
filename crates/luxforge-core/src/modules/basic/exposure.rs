@@ -1,5 +1,18 @@
-//! The Basic module's exposure unit: the one pointwise equation this slice owns.
+//! The Basic module's exposure unit: the one pointwise equation this slice owns, and its GPU
+//! program (`exposure.wgsl`).
 use crate::modules::PointwiseColor;
+use crate::render::gpu::{GpuDescription, GpuProgram, GpuProgramKind};
+
+/// The exposure unit's GPU program. It ships disabled: it has not yet been qualified against the
+/// pointwise error limits (`docs/design/gpu-preview.md`), so a stack holding it takes the CPU path
+/// and names it.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_basic_exposure",
+    source: include_str!("exposure.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 1,
+    enabled: false,
+};
 
 /// Multiply every linear-light channel by `2^EV`.
 ///
@@ -43,6 +56,12 @@ impl PointwiseColor for Exposure {
     /// `ev`.
     fn describe(&self) -> String {
         format!("exposure({:+})", self.ev)
+    }
+
+    /// The gain this unit multiplies by, as its one uniform word: the same `f32` the CPU path
+    /// applies, and a pure function of the `ev` the description writes.
+    fn gpu(&self) -> Option<GpuDescription> {
+        Some(GpuDescription::new(&PROGRAM, vec![self.gain.to_bits()]))
     }
 }
 
@@ -119,6 +138,35 @@ mod tests {
             Exposure::new(0.5).describe(),
             Exposure::new(0.501).describe(),
             "a value that rounds to the same display string is still a different gain"
+        );
+    }
+
+    /// The GPU program's one word is the gain the CPU path multiplies by, and two separately
+    /// compiled units that describe themselves identically carry identical uniforms, across the
+    /// whole slider range, its extremes and both signed zeros.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let values: Vec<f64> = (-500..=500)
+            .map(|step| f64::from(step) / 100.0)
+            .chain([-0.0, 0.0, 1.0 / 3.0, -1.0 / 3.0, 4.999_999_999])
+            .collect();
+        let first: Vec<Exposure> = values.iter().map(|ev| Exposure::new(*ev)).collect();
+        let second: Vec<Exposure> = values.iter().map(|ev| Exposure::new(*ev)).collect();
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for unit in &first {
+            let description = unit.gpu().expect("exposure has a program");
+            assert_eq!(description.words, vec![unit.gain.to_bits()]);
+            assert!(description.block.is_none());
+            assert_eq!(description.program.entry, "lf_basic_exposure");
+        }
+        assert!(
+            !PROGRAM.enabled,
+            "the exposure program ships disabled until it is qualified"
         );
     }
 }
