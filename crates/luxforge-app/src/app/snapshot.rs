@@ -246,7 +246,7 @@ impl Editor {
             "desired_view_dirty":self.view_plan.dirty,
             "view_plan_in_flight":self.view_plan.in_flight,
             "view_request_generation":self.view_plan.request_generation,
-            "quiet_timer_armed":self.view_plan.quiet_since.is_some() && !self.view_plan.quiet_settle_requested,
+            "quiet_timer_armed":self.quiet_timer_armed(),
             "quiet_elapsed_ms":self.view_plan.quiet_since.map(|at| at.elapsed().as_secs_f64()*1000.0),
             "gpu": {
                 "photo_writes":gpu.photo_writes,

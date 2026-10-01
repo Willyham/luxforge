@@ -9,7 +9,10 @@
 //! - A file at a path the index does not know whose file identity is a row's elsewhere, where that
 //!   file no longer is, has **moved** or been renamed within its volume: the row is carried to the
 //!   new path, keeping its [`FileId`], and read again only if its length or time changed too.
-//! - Anything else is **new**.
+//! - Anything else is **new**, a second hard link to a file whose first is still at its path
+//!   included: every link has its own row. Every link shares its file's identity, so the rows
+//!   with a new file's identity are looked through a page at a time, each once a listing at most
+//!   ([`Reconciler::moved_from`]): a tree of links costs a query a file, not a look at every link.
 //! - A row under the listed root that the listing never saw has **vanished**, once the listing is
 //!   complete ([`Reconciler::vanished`]).
 use super::{
@@ -18,7 +21,7 @@ use super::{
 };
 use crate::{
     Error,
-    catalog_types::{FileId, FileSignature, VolumeId},
+    catalog_types::{FileId, FileIdentity, FileSignature, VolumeId},
 };
 use rusqlite::Connection;
 use std::{
@@ -55,11 +58,43 @@ pub(crate) fn unchanged(stored: &FileSignature, now: &FileSignature, same_volume
     }
 }
 
+/// The rows with one file identity a query answers at most, as a reconciliation looks through them
+/// for a moved file's row: every row a moved file or a lone new file has, in one query.
+const IDENTITY_PAGE: usize = 64;
+
 /// One listing's reconciliation, folder by folder, with the rows it has seen. It reads the index
 /// through the connection each call is given, which is the one the listing's batches commit on.
+///
+/// Its memory is the rows it has seen and, for each file identity of a new file whose rows it has
+/// looked through, the last row it looked at: both at most one entry for each file the listing
+/// takes, which its file limit bounds ([`MAX_INDEX_FILES`](super::walk::MAX_INDEX_FILES)), and
+/// dropped with it.
 pub(crate) struct Reconciler {
     volume: VolumeId,
     seen: HashSet<FileId>,
+    /// The highest row the index held as this reconciliation first looked for a moved file's row:
+    /// the rows above it were written since, by the listing (or the unit of watched changes it is
+    /// part of) at paths it had just looked at, so none is a moved file's row.
+    earlier: Option<FileId>,
+    /// For each file identity of a new file whose rows it has looked through, the last row it
+    /// looked at: every row with that identity up to it was seen, is still at its path (a hard
+    /// link) or was carried to a new path, so none is looked at again.
+    looked: HashMap<FileIdentity, FileId>,
+    #[cfg(test)]
+    looks: Looks,
+}
+
+/// What a reconciliation asked the index and the disk to tell moved files from new ones, for a
+/// test that counts it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Looks {
+    /// Queries of the rows with a file identity.
+    pub queries: usize,
+    /// The rows those queries answered.
+    pub rows: usize,
+    /// The rows whose path was looked at on disk (one `lstat` each).
+    pub stats: usize,
 }
 
 impl Reconciler {
@@ -68,7 +103,17 @@ impl Reconciler {
         Self {
             volume,
             seen: HashSet::new(),
+            earlier: None,
+            looked: HashMap::new(),
+            #[cfg(test)]
+            looks: Looks::default(),
         }
+    }
+
+    /// What it has asked the index and the disk so far to find moved files.
+    #[cfg(test)]
+    pub(crate) fn looks(&self) -> Looks {
+        self.looks
     }
 
     /// What each of `folder`'s files means, in its order.
@@ -116,11 +161,18 @@ impl Reconciler {
         Ok(decisions)
     }
 
-    /// The row a file new at `path` was moved from: one with its file identity, not seen by this
-    /// listing, whose own path no longer holds that file. A second link to the same file, still at
-    /// its path, is not a move.
+    /// The row a file new at `path` was moved from: the first, in row order, with its file
+    /// identity, which the index held when the listing first looked for a moved file, not seen by
+    /// this listing, whose own path no longer holds that file. A second link to the same file,
+    /// still at its path, is not a move.
+    ///
+    /// Each row is looked at once a listing at most: the rows with the identity are read a page at
+    /// a time from the last one looked at, and one found still at its path is passed for good. So
+    /// a file with no other row costs one query, a moved file one query and one `lstat`, and every
+    /// further link of a file the listing met costs one query that finds nothing, where looking
+    /// again at every row with the identity cost the listing of `N` links to a file `N²/2` `lstat`s.
     fn moved_from(
-        &self,
+        &mut self,
         connection: &Connection,
         path: &Path,
         signature: &FileSignature,
@@ -128,15 +180,46 @@ impl Reconciler {
         let Some(identity) = signature.identity else {
             return Ok(None);
         };
-        Ok(database::files_with_identity(connection, identity)?
-            .into_iter()
-            .find(|row| {
-                row.path != path
-                    && !self.seen.contains(&row.id)
-                    && row.path.symlink_metadata().map_or(true, |metadata| {
-                        FileSignature::of(&metadata).identity != Some(identity)
-                    })
-            }))
+        let earlier = match self.earlier {
+            Some(earlier) => earlier,
+            None => *self.earlier.insert(database::last_file_id(connection)?),
+        };
+        let from = self.looked.get(&identity).copied();
+        let mut after = from.unwrap_or(FileId(i64::MIN));
+        let moved = 'pages: loop {
+            let page =
+                database::files_with_identity(connection, identity, after, earlier, IDENTITY_PAGE)?;
+            #[cfg(test)]
+            {
+                self.looks.queries += 1;
+                self.looks.rows += page.len();
+            }
+            let last = page.len() < IDENTITY_PAGE;
+            for row in page {
+                after = row.id;
+                if row.path == path || self.seen.contains(&row.id) {
+                    continue;
+                }
+                #[cfg(test)]
+                {
+                    self.looks.stats += 1;
+                }
+                let there = row
+                    .path
+                    .symlink_metadata()
+                    .is_ok_and(|metadata| FileSignature::of(&metadata).identity == Some(identity));
+                if !there {
+                    break 'pages Some(row);
+                }
+            }
+            if last {
+                break None;
+            }
+        };
+        if from != Some(after) && after != FileId(i64::MIN) {
+            self.looked.insert(identity, after);
+        }
+        Ok(moved)
     }
 
     /// The rows under `root` the listing never saw, among those last seen before it started
@@ -157,43 +240,5 @@ impl Reconciler {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::catalog_types::FileIdentity;
-
-    #[test]
-    fn a_remounted_cards_device_alone_changing_keeps_its_file() {
-        let identity = FileIdentity {
-            device: 5,
-            inode: 9,
-        };
-        let stored = FileSignature {
-            len: 10,
-            modified_ns: 20,
-            identity: Some(identity),
-        };
-        let remounted = FileSignature {
-            identity: Some(FileIdentity {
-                device: 6,
-                ..identity
-            }),
-            ..stored
-        };
-        assert!(unchanged(&stored, &stored, true));
-        assert!(unchanged(&stored, &remounted, true));
-        assert!(!unchanged(&stored, &remounted, false));
-        let replaced = FileSignature {
-            identity: Some(FileIdentity {
-                inode: 10,
-                ..identity
-            }),
-            ..stored
-        };
-        assert!(!unchanged(&stored, &replaced, true));
-        assert!(!unchanged(
-            &stored,
-            &FileSignature { len: 11, ..stored },
-            true
-        ));
-    }
-}
+#[path = "reconcile_tests.rs"]
+mod tests;
