@@ -18,9 +18,9 @@ Detail's choices are delegated and recorded in its [design](../docs/design/detai
 
 The Lens and perspective plan runs on the owner's decisions of 2026-09-30 in [decisions](../docs/decisions.md#lens-and-perspective-planning) and the recorded defaults in its [design](../docs/design/lens-and-perspective.md); functional implementation and native integration are complete. Its measurement task waits for the other feature work and a quiet host. Profile accuracy qualification needs authentic photographs and marked edges the owner supplies; without them it stays incomplete.
 
-The Tone curve plan is planned work, not yet authorized for implementation: it runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
+The Tone curve's features are implemented (authorized by the owner on 2026-09-30); only the measurement task, TASK-009's point-drag and unit-cost figures, remains. The module runs on the owner's below-black decision of 2026-09-30 and the recorded defaults in the [Tone curve design](../docs/design/tone-curve.md#proposals-with-recorded-defaults), each a proposal the owner can revise.
 
-The three plans share host surfaces. When they are implemented, the Tone curve and the first wave of Lens and perspective can land at any time; Detail's host contracts (the restoration stage, compile context, window planner and Fit settlement) land before the Lens warp and render tasks; measurements run after all feature work, one plan at a time on a quiet host.
+The three modules share the restoration stage, compile context, window planner, mask input mapping and Fit settlement contracts, with combined exact-buffer and native rendering checks. Their outstanding measurements run after all feature work, one plan at a time on a quiet host.
 
 ## Other plans
 

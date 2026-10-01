@@ -2,8 +2,8 @@
 //! `set-<name>` field patch and a `reset-<name>` action, whose payload is a JSON object of declared
 //! fields in which a missing key means that field's default.
 //!
-//! Basic, the colour mixer, Presence, the vignette and the developer controls proof are each a
-//! [`Spec`] — the field table, its groups and the module's identity — and a
+//! Basic, the Tone curve, Detail, the colour mixer, Presence, Perspective, the vignette and the
+//! developer controls proof are each a [`Spec`] — the field table, its groups and the module's identity — and a
 //! [`FieldPatch::compile`]. A field is any parameter of the field vocabulary: a number, an
 //! integer, a boolean, an enum, a colour or a curve. Everything the modules share lives here once:
 //! the descriptor built from the table, parsing, planning a commit, update or no-op, payload
@@ -785,6 +785,26 @@ impl Values<'_> {
             .expect("a module reads a number only from its own number fields")
     }
 
+    /// One curve field's points, by name: the canonical `[[x, y], ...]` the stored payload holds,
+    /// or the field's default, each coordinate as the finite f64 it reads as. The host has checked
+    /// the list against the field's curve declaration.
+    pub(crate) fn curve(&self, name: &str) -> Vec<[f64; 2]> {
+        let coordinate = |value: &Value| {
+            value
+                .as_f64()
+                .expect("a module reads a curve only from its own curve fields")
+        };
+        self.value(name)
+            .as_array()
+            .expect("a module reads a curve only from its own curve fields")
+            .iter()
+            .map(|point| match point.as_array().map(Vec::as_slice) {
+                Some([x, y]) => [coordinate(x), coordinate(y)],
+                _ => panic!("a module reads a curve only from its own curve fields"),
+            })
+            .collect()
+    }
+
     /// Whether every field holds its default, by value.
     pub(crate) fn is_default(&self) -> bool {
         self.fields
@@ -1484,6 +1504,34 @@ mod tests {
             ),
             json!({"level": 0.0, "midpoint": 50.0, "on": false, "mode": "one", "tint": [0, 0, 0], "curve": [[0.0, 0.0], [1.0, 1.0]]})
         );
+    }
+
+    /// A curve field reads as its points in the canonical form, whether the payload spells a
+    /// coordinate as an integer or a float, and as its default when the payload omits it.
+    #[test]
+    fn values_read_a_curve_field_in_its_canonical_form() {
+        let module = module();
+        let values = module
+            .read(
+                EFFECT,
+                EFFECT_FORMAT,
+                &json!({"curve": [[0, 0.125], [0.5, 0.75], [1, 1]]}),
+            )
+            .unwrap();
+        assert_eq!(
+            values.curve("curve"),
+            vec![[0.0, 0.125], [0.5, 0.75], [1.0, 1.0]]
+        );
+        let defaults = module.read(EFFECT, EFFECT_FORMAT, &json!({})).unwrap();
+        assert_eq!(defaults.curve("curve"), vec![[0.0, 0.0], [1.0, 1.0]]);
+    }
+
+    #[test]
+    #[should_panic(expected = "a module reads a curve only from its own curve fields")]
+    fn values_refuse_to_read_a_number_field_as_a_curve() {
+        let module = module();
+        let values = module.read(EFFECT, EFFECT_FORMAT, &json!({})).unwrap();
+        values.curve("level");
     }
 
     #[test]

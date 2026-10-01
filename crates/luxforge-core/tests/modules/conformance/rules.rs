@@ -298,11 +298,9 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     let (set, reset) = (module.set.as_str(), module.reset.as_str());
     let lead_index = lead(rules)?;
     let lead = &module.fields[lead_index];
-    let other = module
-        .fields
-        .iter()
-        .find(|field| field.name != lead.name)
-        .ok_or("the module declares one field, so a merge cannot be shown")?;
+    // A merge needs a second field; a module of one field (the Tone curve) has none to merge, and
+    // its one field replacing its own stored value is shown by `every_field`.
+    let other = module.fields.iter().find(|field| field.name != lead.name);
 
     let declared = module
         .descriptor
@@ -347,18 +345,25 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
 
     let existing = rules.layer(high.clone());
     let stack = std::slice::from_ref(&existing);
-    let merged = rules.updated(
-        set,
-        json!({other.name.clone(): other.high()}),
-        stack,
-        &existing,
-        "a set of another field",
-    )?;
-    let expected = json!({lead.name.clone(): lead.high(), other.name.clone(): other.high()});
-    ensure(
-        merged == expected,
-        format!("a set of another field over {high} stored {merged}, not {expected}"),
-    )?;
+    let merged = match other {
+        Some(other) => {
+            let merged = rules.updated(
+                set,
+                json!({other.name.clone(): other.high()}),
+                stack,
+                &existing,
+                "a set of another field",
+            )?;
+            let expected =
+                json!({lead.name.clone(): lead.high(), other.name.clone(): other.high()});
+            ensure(
+                merged == expected,
+                format!("a set of another field over {high} stored {merged}, not {expected}"),
+            )?;
+            Some((other, expected))
+        }
+        None => None,
+    };
     rules.no_op(set, high.clone(), stack, "the stored value set again")?;
     if let Some(respelled) = lead.respelled(&lead.high()) {
         rules.no_op(
@@ -370,19 +375,25 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     }
     rules.no_op(set, json!({}), stack, "an empty patch over a stored layer")?;
 
-    let both = rules.layer(expected);
-    let cleared = rules.updated(
-        set,
-        json!({lead.name.clone(): lead.default.clone()}),
-        std::slice::from_ref(&both),
-        &both,
-        "a field set back to its default",
-    )?;
-    let kept = json!({other.name.clone(): other.high()});
-    ensure(
-        cleared == kept,
-        format!("a field set back to its default stored {cleared}, not {kept}"),
-    )?;
+    let cleared = match &merged {
+        Some((other, expected)) => {
+            let both = rules.layer(expected.clone());
+            let cleared = rules.updated(
+                set,
+                json!({lead.name.clone(): lead.default.clone()}),
+                std::slice::from_ref(&both),
+                &both,
+                "a field set back to its default",
+            )?;
+            let kept = json!({other.name.clone(): other.high()});
+            ensure(
+                cleared == kept,
+                format!("a field set back to its default stored {cleared}, not {kept}"),
+            )?;
+            Some(cleared)
+        }
+        None => None,
+    };
 
     for stored in [json!({}), json!({lead.name.clone(): lead.default.clone()})] {
         let layer = rules.layer(stored.clone());
@@ -419,8 +430,8 @@ fn plans(rules: &Rules<'_>) -> Checked<Value> {
     let fields = every_field(rules)?;
     Ok(json!({
         "lead": lead.name,
-        "other": other.name,
-        "merged": merged,
+        "other": merged.as_ref().map(|(other, _)| other.name.clone()),
+        "merged": merged.map(|(_, expected)| expected),
         "cleared": cleared,
         "fields": fields,
     }))

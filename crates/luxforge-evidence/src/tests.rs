@@ -542,6 +542,72 @@ fn generated_control_steps_round_trip_and_refuse_invalid_fractions_and_ambiguous
     }
 }
 
+/// The Points disclosure and a typed coordinate are curve events of their own on the wire, `points`
+/// and `type`, and neither takes a finish: opening the list is view state and a typed coordinate
+/// commits on its Enter.
+#[test]
+fn curve_points_and_type_steps_round_trip_on_the_wire() {
+    let steps = round_trip(json!([
+        {"curve":{"action":"set-curve","parameter":"luminance","event":"points","open":true}},
+        {"curve":{"action":"set-curve","parameter":"luminance","event":"type","index":2,"axis":1,"text":"0.8"}},
+        {"curve":{"action":"set-curve","parameter":"luminance","event":"points","open":false}},
+    ]));
+    assert_eq!(
+        steps[0],
+        Step::Curve(CurveStep {
+            action: "set-curve".into(),
+            parameter: "luminance".into(),
+            event: CurveStepEvent::Points(true),
+            finish: SliderEnd::Open,
+        })
+    );
+    assert_eq!(
+        steps[1],
+        Step::Curve(CurveStep {
+            action: "set-curve".into(),
+            parameter: "luminance".into(),
+            event: CurveStepEvent::Type {
+                index: 2,
+                axis: 1,
+                text: "0.8".into(),
+            },
+            finish: SliderEnd::Open,
+        })
+    );
+    assert!(matches!(
+        &steps[2],
+        Step::Curve(CurveStep {
+            event: CurveStepEvent::Points(false),
+            ..
+        })
+    ));
+
+    for (script, expected) in [
+        (
+            json!({"curve":{"action":"a","parameter":"p","event":"points"}}),
+            "missing field `open`",
+        ),
+        (
+            json!({"curve":{"action":"a","parameter":"p","event":"points","open":true,"finish":"release"}}),
+            "unknown field `finish`",
+        ),
+        (
+            json!({"curve":{"action":"a","parameter":"p","event":"type","index":1,"axis":0}}),
+            "missing field `text`",
+        ),
+        (
+            json!({"curve":{"action":"a","parameter":"p","event":"type","index":1,"axis":2,"text":"0.5"}}),
+            "curve type axis",
+        ),
+        (
+            json!({"curve":{"action":"a","parameter":"p","event":"type","index":1,"axis":0,"text":"0.5","finish":"release"}}),
+            "unknown field `finish`",
+        ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}
+
 #[test]
 fn every_mask_verb_round_trips_its_script() {
     let steps = round_trip(json!([

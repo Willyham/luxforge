@@ -1014,3 +1014,58 @@ fn an_index_outside_the_list_it_addresses_is_refused_with_the_count() {
         "index 3 is outside the 1 masks of this stack"
     );
 }
+
+/// The Tone curve declares `maskable` and nothing else, so the host's one coverage-input rule holds
+/// for it unchanged: a mask whose only bound layer is a curve layer reads its value-based parts at
+/// the input of that curve layer, placed after the global Basic and curve layers by the ordering
+/// rule — not at the global curve's input, and not at the source. Before the curve is bound, the
+/// same mask is refused by name.
+#[test]
+fn the_input_layer_of_a_curve_only_mask_is_its_curve_layer() {
+    let (recipe, _) = created();
+    let mask = recipe.masks[0].id.clone();
+    let layer = |effect: &str, bound: Option<&MaskId>, payload: Value| Layer {
+        id: LayerId::new(),
+        effect_id: effect.to_owned(),
+        effect_format: crate::EFFECT_FORMAT,
+        payload,
+        mask: bound.cloned(),
+        artifacts: Vec::new(),
+    };
+    let mut recipe = recipe;
+    recipe.layers = vec![
+        layer(crate::BASIC_EFFECT, None, json!({"exposure": 0.5})),
+        layer(
+            crate::CURVE_EFFECT,
+            None,
+            json!({"luminance": [[0.0, 0.1], [1.0, 1.0]]}),
+        ),
+    ];
+    assert_eq!(
+        input_layer_index(&recipe, &mask).unwrap_err().detail,
+        "no layer is bound to mask Mask 1, and reading the pixel an operation receives needs an \
+         operation; apply an adjustment through Mask 1 first",
+        "a mask bound to nothing has no operation whose input it reads"
+    );
+
+    recipe.layers.push(layer(
+        crate::CURVE_EFFECT,
+        Some(&mask),
+        json!({"luminance": [[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]]}),
+    ));
+    let mut sorted = recipe.layers.clone();
+    registry().sort_masked_layers(&mut sorted, &recipe.masks);
+    assert_eq!(
+        sorted, recipe.layers,
+        "the masked curve layer follows the global one, as the ordering rule places it"
+    );
+    registry()
+        .compile(400, 300, &recipe)
+        .expect("a global and a masked curve layer are two targets");
+    assert_eq!(
+        input_layer_index(&recipe, &mask).unwrap(),
+        2,
+        "the coverage input of a curve-only mask is its own curve layer"
+    );
+    assert_eq!(recipe.layers[2].effect_id, crate::CURVE_EFFECT);
+}

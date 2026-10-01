@@ -567,6 +567,7 @@ mod tests {
                 "Basic \u{00b7} White balance",
                 "Basic \u{00b7} Tone",
                 "Basic \u{00b7} Colour",
+                "Tone curve \u{00b7} Tone curve",
                 "Detail \u{00b7} Sharpening",
                 "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",

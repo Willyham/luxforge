@@ -1,12 +1,13 @@
-//! The tool modules end to end, one module per tool: the colour mixer, Presence and the vignette
-//! against their independent references through the real render paths, the developer controls
-//! proof, and presets; and the one field-patch conformance suite (`conformance/`) every field-patch
-//! module passes, a slow test `cargo xtask check --quick` leaves out and `cargo xtask
-//! editor-acceptance` also runs in release; and the one committed
-//! snapshot of what the built-in registry publishes (`descriptors`).
+//! The tool modules end to end, one module per tool: the Tone curve, the colour mixer, Presence and
+//! the vignette against their independent references through the real render paths, the developer
+//! controls proof, and presets; and the one field-patch conformance suite (`conformance/`) every
+//! field-patch module passes, a slow test `cargo xtask check --quick` leaves out and `cargo xtask
+//! editor-acceptance` also runs in release; and the one committed snapshot of what the built-in
+//! registry publishes (`descriptors`).
 
 mod conformance;
 mod controls;
+mod curve;
 mod descriptors;
 mod detail;
 mod field_patch;

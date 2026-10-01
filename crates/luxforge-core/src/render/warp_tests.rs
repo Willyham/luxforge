@@ -150,6 +150,10 @@ fn detail_warp_recipe(width: u32, height: u32) -> Recipe {
             ),
             masked_detail,
             layer(BASIC_EFFECT, json!({"exposure":0.25})),
+            layer(
+                crate::CURVE_EFFECT,
+                json!({"luminance":[[0.0,0.03],[0.5,0.6],[1.0,1.0]]}),
+            ),
             layer(crate::PRESENCE_EFFECT, json!({"clarity":5.0})),
             testing::frozen_lens(width, height, 35.0),
             perspective(),
@@ -188,7 +192,7 @@ fn detail_warp_sources() -> [crate::PreviewSource; 2] {
 }
 
 #[test]
-fn detail_and_masked_detail_keep_warp_full_point_and_window_pixels_identical() {
+fn detail_and_curve_keep_warp_full_point_and_window_pixels_identical() {
     let registry = crate::ModuleRegistry::builtin();
     let recipe = detail_warp_recipe(96, 64);
     for source in detail_warp_sources() {
@@ -227,8 +231,17 @@ fn detail_and_masked_detail_keep_warp_full_point_and_window_pixels_identical() {
         let boundary = rendered.compiled.restoration_boundary().unwrap();
         assert!(
             widths[boundary].input,
-            "Basic receives the wide restoration boundary"
+            "Basic and Curve receive the wide restoration boundary"
         );
+        let colour_units = rendered.compiled.segments[boundary]
+            .operations
+            .iter()
+            .filter_map(|operation| match operation {
+                Processing::Color(operation) => Some(operation.len()),
+                _ => None,
+            })
+            .sum::<usize>();
+        assert!(colour_units >= 2, "Basic and Curve compile into real units");
         let frame = rendered.frame(SnapshotId::new()).unwrap();
         for (x, y) in [
             (0, 0),
@@ -289,13 +302,24 @@ fn detail_warp_cache_matches_recomputed_pixels_and_reuses_downstream_changes() {
         };
         let mut cache = super::RestorationPrefixCache::default();
         let mut previous = None;
-        for (exposure, vertical, expected) in [
-            (0.25, -25, super::PrefixUse::Built),
-            (0.6, -25, super::PrefixUse::Reused),
-            (0.6, -10, super::PrefixUse::Reused),
+        for (exposure, midtone, vertical, expected) in [
+            (0.25, 0.6, -25, super::PrefixUse::Built),
+            (0.6, 0.6, -25, super::PrefixUse::Reused),
+            (0.6, 0.7, -25, super::PrefixUse::Reused),
+            (0.6, 0.7, -10, super::PrefixUse::Reused),
         ] {
-            recipe.layers[2].payload = json!({"exposure":exposure});
-            recipe.layers[5].payload = json!({"horizontal":35,"vertical":vertical});
+            for layer in &mut recipe.layers {
+                match layer.effect_id.as_str() {
+                    BASIC_EFFECT => layer.payload = json!({"exposure":exposure}),
+                    crate::CURVE_EFFECT => {
+                        layer.payload = json!({"luminance":[[0.0,0.03],[0.5,midtone],[1.0,1.0]]});
+                    }
+                    PERSPECTIVE => {
+                        layer.payload = json!({"horizontal":35,"vertical":vertical});
+                    }
+                    _ => {}
+                }
+            }
             let rendered = render(
                 &registry,
                 source.input(),
