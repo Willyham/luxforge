@@ -13,6 +13,7 @@ pub(crate) mod palette;
 pub(crate) mod panel;
 pub(crate) mod performance;
 pub(crate) mod presets;
+pub(crate) mod query_choice;
 pub(crate) mod status;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -415,6 +416,7 @@ impl Workspace {
                             tools::ControlModel::Action(action) => Some(json!({
                                 "kind": "action", "label": action.label, "action": action.action,
                             })),
+                            tools::ControlModel::QueryChoice(choice) => Some(json!({"kind":"query-choice", "label":choice.control.label, "action":choice.control.action, "query":choice.control.query})),
                             tools::ControlModel::Picker(picker) => Some(json!({
                                 "kind": "picker", "label": picker.label, "mode": picker.module_id,
                             })),

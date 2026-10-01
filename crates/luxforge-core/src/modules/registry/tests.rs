@@ -766,6 +766,8 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.presence",
             "luxforge.mixer",
             "luxforge.transform",
+            "luxforge.lens",
+            "luxforge.perspective",
             "luxforge.crop",
             "luxforge.vignette",
             "luxforge.controls",
@@ -903,8 +905,8 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        9,
-        "basic, detail, presence, mixer, vignette, pixel, transform, crop, controls"
+        11,
+        "basic, detail, presence, mixer, lens, perspective, vignette, pixel, transform, crop, controls"
     );
     modules.push(&proof);
     for module in modules {

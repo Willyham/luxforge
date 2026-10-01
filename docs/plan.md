@@ -47,14 +47,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
 - Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
 
-**Detail** (planned, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
+**Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
 - Bounded numerical kernels and shared restoration/scale contracts
 - Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence), a restoration-prefix proxy cache and an input-grid overlay cache
 - Generated controls/API, masks, native presets and history
 - Approximate motion, exact-derived settled Fit and 100% inspection
 - Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
 
-**Lens and perspective correction** (planned, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Scope and approach are selected for planning; implementation and qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
+**Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
 - Owner decisions: behaviour, repair-stage order, scope

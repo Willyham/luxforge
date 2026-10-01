@@ -3,6 +3,37 @@
 use super::*;
 
 #[test]
+fn mask_reapply_round_trips_as_the_notice_button_and_requires_true() {
+    let step: Step = MaskStep::Reapply.into();
+    let value = write(std::slice::from_ref(&step));
+    assert_eq!(value, json!([{"mask":{"reapply":true}}]));
+    assert_eq!(parse(&value.to_string()).unwrap(), vec![step]);
+    assert!(
+        parse(r#"[{"mask":{"reapply":false}}]"#)
+            .unwrap_err()
+            .contains("takes true")
+    );
+}
+
+#[test]
+fn query_choice_steps_round_trip_and_enforce_input_bounds() {
+    let script = r#"[{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"Nikon"}},{"controls":{"gesture":"query-choice-page","action":"select-lens-profile","page":1}},{"controls":{"gesture":"query-choice-shared","action":"select-lens-profile","parameter":"assume-uncorrected","text":"true"}},{"controls":{"gesture":"query-choice-select-first","action":"select-lens-profile"}},{"controls":{"gesture":"query-choice-retry","action":"select-lens-profile"}}]"#;
+    let steps = parse(script).unwrap();
+    assert_eq!(steps.len(), 5);
+    assert_eq!(
+        serde_json::to_value(&steps).unwrap(),
+        serde_json::from_str::<Value>(script).unwrap()
+    );
+    assert!(parse(r#"[{"controls":{"gesture":"query-choice-page","action":"select-lens-profile","page":100}}]"#).is_err());
+    let module_rejected = serde_json::json!([{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"x".repeat(65)}}]);
+    assert!(parse(&module_rejected.to_string()).is_ok());
+    let excessive = serde_json::json!([{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"x".repeat(257)}}]);
+    assert!(parse(&excessive.to_string()).is_err());
+    assert!(parse(r#"[{"controls":{"gesture":"query-choice-retry","action":""}}]"#).is_err());
+    assert!(parse(r#"[{"controls":{"gesture":"query-choice-search","action":"select-lens-profile","text":"x\n"}}]"#).is_err());
+}
+
+#[test]
 fn native_canvas_hover_round_trips_and_bounds_both_fractions() {
     let step = Step::canvas_hover(0.25, 0.75);
     assert_eq!(

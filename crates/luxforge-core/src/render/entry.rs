@@ -12,8 +12,8 @@
 //! ([`super::rasterize`] or [`linear::rasterize`]) writes its frame.
 
 use super::{
-    Byte, Compiled, Evaluation, PixelDomain, Raster, Sample, SpatialMode, StageSize,
-    StageTransform, check_source,
+    Byte, Compiled, Evaluation, GeometryMap, PixelDomain, Raster, Sample, SpatialMode, StageSize,
+    check_source,
     linear::{self, Linear, LinearSettings},
     rasterize,
     spatial::Tiling,
@@ -725,9 +725,9 @@ impl<'a> Render<'a> {
         }
     }
 
-    /// The whole geometry tail as one affine map between the content stage and the output stage,
-    /// from this compilation: `O(layers)`, no pixel read.
-    pub(crate) fn transform(&self) -> Result<StageTransform, Error> {
+    /// The whole geometry tail as one bounded map between the content and output stages, from
+    /// this compilation: `O(layers)`, no pixel read.
+    pub(crate) fn transform(&self) -> Result<GeometryMap, Error> {
         let (width, height) = self.source.dimensions();
         transform_of(&self.compiled, width, height)
     }

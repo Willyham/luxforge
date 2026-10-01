@@ -227,7 +227,7 @@ impl ToolModule for GeometryTestModule {
             // Both axes read the same line of the input stage: finite, non-empty, and not a
             // mapping anything can be projected back through.
             return Ok(Processing::Resample(Resample {
-                inverse: [1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+                map: crate::modules::Mapping::Affine([1.0, 1.0, 0.0, 1.0, 1.0, 0.0]),
                 output_width: stage.width,
                 output_height: stage.height,
             }));
@@ -235,7 +235,14 @@ impl ToolModule for GeometryTestModule {
         if effect_id == TEST_SCALE_EFFECT {
             let scale = payload["scale"].as_f64().expect("test scale");
             return Ok(Processing::Resample(Resample {
-                inverse: [1.0 / scale, 0.0, 0.0, 0.0, 1.0 / scale, 0.0],
+                map: crate::modules::Mapping::Affine([
+                    1.0 / scale,
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0 / scale,
+                    0.0,
+                ]),
                 output_width: (f64::from(stage.width) * scale) as u32,
                 output_height: (f64::from(stage.height) * scale) as u32,
             }));
@@ -257,7 +264,9 @@ impl ToolModule for GeometryTestModule {
             )));
         }
         Ok(Processing::Resample(Resample {
-            inverse: crop_stage.inverse_map((rect.x as f64, rect.y as f64)),
+            map: crate::modules::Mapping::Affine(
+                crop_stage.inverse_map((rect.x as f64, rect.y as f64)),
+            ),
             output_width: rect.width,
             output_height: rect.height,
         }))
@@ -444,15 +453,6 @@ impl CropReference {
             .round() as u8;
         pixel
     }
-}
-
-/// One affine map applied to a continuous coordinate, written out here rather than shared with
-/// the composition under test.
-pub(crate) fn at(matrix: [f64; 6], x: f64, y: f64) -> (f64, f64) {
-    (
-        matrix[0] * x + matrix[1] * y + matrix[2],
-        matrix[3] * x + matrix[4] * y + matrix[5],
-    )
 }
 
 /// A test-only colour unit: multiply linear light by `2^EV`. The coefficient is computed in f64

@@ -814,7 +814,7 @@ mod tests {
         }
         let mut segments = vec![segment(false, true, false), segment(false, true, false)];
         segments[1].entry = Some(Entry::resample(crate::Resample {
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            map: crate::modules::Mapping::Affine([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
             output_width: 10,
             output_height: 10,
         }));

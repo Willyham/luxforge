@@ -509,6 +509,9 @@ pub struct RecipeDescription {
     /// for that row; `null` exactly when `output_stage` is, or when an orientation cannot be read.
     #[serde(default)]
     pub output_orientation: Option<Orientation>,
+    /// Bounded geometry diagnostics from the same compilation the renderer uses.
+    #[serde(default)]
+    pub geometry: Option<Value>,
 }
 
 /// A named reference to one retained history entry: the Lightroom-style saved state.

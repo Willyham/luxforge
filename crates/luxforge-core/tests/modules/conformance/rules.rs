@@ -9,8 +9,8 @@ use super::{
     shape::{Field, FieldPatch, Label},
 };
 use luxforge_core::{
-    ActionInput, ActionPlan, Error, ErrorKind, Layer, ModuleRegistry, Orientation, Provider, Stage,
-    StageContext, StageQuestions, check_parameters,
+    ActionInput, ActionPlan, EffectStage, Error, ErrorKind, Layer, ModuleRegistry, Orientation,
+    Provider, Stage, StageContext, StageQuestions, check_parameters,
 };
 use serde_json::{Map, Value, json};
 
@@ -162,20 +162,59 @@ fn stored_payloads(rules: &Rules<'_>) -> Checked<Value> {
             rules
                 .validate(effect.format, &payload)
                 .map_err(|error| format!("{payload} was refused: {error}"))?;
-            // A field patch addresses no coordinates of its input stage, so a turn leaves it as it
-            // is: the carry hook's default, which no geometry module's own answer is checked here.
-            let turned = Orientation {
-                turns: 1,
-                mirror: true,
-            };
-            let carried = rules
-                .provider
-                .carry(&effect.id, effect.format, &payload, rules.stage, turned)
-                .map_err(|error| format!("{payload} was refused a carry: {error}"))?;
-            ensure(
-                carried.is_none(),
-                format!("{payload} was rewritten by a turn: {carried:?}"),
-            )?;
+            for mirror in [false, true] {
+                for turns in 0..4 {
+                    let turned = Orientation { turns, mirror };
+                    let carried = rules
+                        .provider
+                        .carry(&effect.id, effect.format, &payload, rules.stage, turned)
+                        .map_err(|error| format!("{payload} was refused a carry: {error}"))?;
+                    if effect.stage != EffectStage::Geometry {
+                        // Colour and spatial fields do not address input-stage coordinates.
+                        ensure(
+                            carried.is_none(),
+                            format!("{payload} was rewritten by a turn: {carried:?}"),
+                        )?;
+                    } else {
+                        // Geometry fields may move with orientation. Each carried spelling must
+                        // remain valid, and carrying the inverse must restore every field value.
+                        let carried = carried.unwrap_or_else(|| payload.clone());
+                        rules.validate(effect.format, &carried).map_err(|error| {
+                            format!("the carried {carried} is invalid: {error}")
+                        })?;
+                        let stage = if turns % 2 == 0 {
+                            rules.stage
+                        } else {
+                            Stage {
+                                width: rules.stage.height,
+                                height: rules.stage.width,
+                            }
+                        };
+                        let inverse = Orientation {
+                            mirror,
+                            turns: if mirror { turns } else { (4 - turns) % 4 },
+                        };
+                        let restored = rules
+                            .provider
+                            .carry(&effect.id, effect.format, &carried, stage, inverse)
+                            .map_err(|error| {
+                                format!("{carried} was refused an inverse carry: {error}")
+                            })?
+                            .unwrap_or(carried);
+                        let describe = |payload: &Value| {
+                            rules
+                                .provider
+                                .describe(&effect.id, effect.format, payload)
+                                .map(|report| report.values)
+                                .map_err(|error| error.to_string())
+                        };
+                        ensure(
+                            describe(&restored)? == describe(&payload)?,
+                            format!("{payload} did not round-trip through {turned:?}: {restored}"),
+                        )?;
+                    }
+                }
+            }
             accepted.push(payload);
         }
         for (value, reason) in field.refused() {

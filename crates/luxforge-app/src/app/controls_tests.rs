@@ -1745,3 +1745,162 @@ fn detail_controls_generate_two_groups_with_hint_and_editable_zero_strength_fiel
     );
     finish(editor, catalog);
 }
+
+/// Geometry controls read their global layer while maskable adjustments follow the selected mask.
+/// Local command completion, another client's refresh and leaving Mask mode all read stored values.
+#[test]
+fn perspective_fields_follow_local_commits_and_external_refresh_while_a_mask_is_selected() {
+    use luxforge_core::{MASK_MODE, PERSPECTIVE_EFFECT};
+    const ACTION: &str = "set-perspective";
+    let catalog = luxforge_testbase::paths::temp_catalog("perspective-field-readback");
+    let (mut editor, asset, agent) = testing::real_photo(&catalog);
+    let owner = editor.owner.clone();
+    let refresh = |editor: &mut Editor| {
+        let read = tasks::refresh(
+            &owner,
+            editor.client,
+            asset.clone(),
+            tasks::Scope::Open,
+            None,
+        )
+        .unwrap();
+        let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(read)))));
+    };
+    let mode = |editor: &mut Editor, name: &str| {
+        let _ = editor.update(Message::View(ViewMessage::SetMode(name.into())));
+        tasks::call(&owner, editor.client, "workspace.set", json!({"mode":name})).unwrap();
+        let (session, _) = tasks::call(&owner, editor.client, "session.state", json!({})).unwrap();
+        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(
+            serde_json::from_value(session).unwrap(),
+        ))));
+    };
+    let assert_fields = |editor: &Editor, h: i64, v: i64| {
+        assert_eq!(
+            editor.controls.fields.get(ACTION, "horizontal"),
+            Some(h.to_string().as_str())
+        );
+        assert_eq!(
+            editor.controls.fields.get(ACTION, "vertical"),
+            Some(v.to_string().as_str())
+        );
+        let row = editor
+            .document
+            .recipe
+            .as_ref()
+            .unwrap()
+            .layers
+            .iter()
+            .find(|row| row.effect == PERSPECTIVE_EFFECT)
+            .unwrap();
+        assert_eq!(row.values["horizontal"], h);
+        assert_eq!(row.values["vertical"], v);
+        assert!(!row.neutral);
+        assert!(row.mask.is_none());
+    };
+    let preset = Map::from_iter([
+        ("horizontal".into(), json!(-35)),
+        ("vertical".into(), json!(20)),
+    ]);
+    let request = editor
+        .request_for_preset(ACTION, None, Some(&preset))
+        .unwrap();
+    let _ = editor.update(Message::Action(ActionMessage::Run {
+        action: ACTION.into(),
+        preset,
+    }));
+    let read = tasks::command_now(
+        &owner,
+        editor.client,
+        asset.clone(),
+        request["method"].as_str().unwrap(),
+        request["params"].clone(),
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(read)))));
+    assert_fields(&editor, -35, 20);
+
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    tasks::call(
+        &owner,
+        agent,
+        "edit.set-basic",
+        json!({"asset_id":asset,"exposure":1.0,"mutation":tasks::mutation(revision)}),
+    )
+    .unwrap();
+    refresh(&mut editor);
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    tasks::call(&owner, agent, "mask.create-linear", json!({"asset_id":asset,"x0":0.1,"y0":0.1,"x1":0.9,"y1":0.9,"mutation":tasks::mutation(revision)})).unwrap();
+    refresh(&mut editor);
+    mode(&mut editor, MASK_MODE);
+    let mask = editor
+        .section_target()
+        .expect("Mask mode selects the existing mask")
+        .clone();
+    assert_fields(&editor, -35, 20);
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    tasks::call(
+        &owner,
+        agent,
+        "edit.set-basic",
+        json!({"asset_id":asset,"mask":mask,"exposure":2.0,"mutation":tasks::mutation(revision)}),
+    )
+    .unwrap();
+    refresh(&mut editor);
+    assert_eq!(
+        editor.controls.fields.get("set-basic", "exposure"),
+        Some("2.00")
+    );
+    assert_fields(&editor, -35, 20);
+
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    tasks::call(&owner, agent, "edit.set-perspective", json!({"asset_id":asset,"horizontal":-30,"vertical":15,"mutation":tasks::mutation(revision)})).unwrap();
+    refresh(&mut editor);
+    assert_fields(&editor, -30, 15);
+    mode(&mut editor, POINTER_MODE);
+    assert!(editor.section_target().is_none());
+    assert_fields(&editor, -30, 15);
+    assert_eq!(
+        editor.controls.fields.get("set-basic", "exposure"),
+        Some("1.00"),
+        "leaving Mask mode restores the global adjustment values without needing a typed field"
+    );
+    mode(&mut editor, MASK_MODE);
+    assert_fields(&editor, -30, 15);
+    assert_eq!(
+        editor.controls.fields.get("set-basic", "exposure"),
+        Some("2.00")
+    );
+    mode(&mut editor, POINTER_MODE);
+    let request = editor
+        .request_for_preset("reset-perspective", None, Some(&Map::new()))
+        .unwrap();
+    let _ = editor.update(Message::Control(ControlMessage::ResetModule(
+        "luxforge.perspective".into(),
+    )));
+    let read = tasks::command_now(
+        &owner,
+        editor.client,
+        asset.clone(),
+        request["method"].as_str().unwrap(),
+        request["params"].clone(),
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(read)))));
+    assert_eq!(editor.controls.fields.get(ACTION, "horizontal"), Some("0"));
+    assert_eq!(editor.controls.fields.get(ACTION, "vertical"), Some("0"));
+    assert!(
+        editor
+            .document
+            .recipe
+            .as_ref()
+            .unwrap()
+            .layers
+            .iter()
+            .find(|row| row.effect == PERSPECTIVE_EFFECT)
+            .unwrap()
+            .neutral
+    );
+    finish(editor, catalog);
+}

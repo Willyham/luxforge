@@ -5,7 +5,7 @@ use super::{
     color_runs, linear::Linear, spatial::Tiling,
 };
 use crate::{
-    Cancel, EffectStage, Error, ModuleRegistry, Recipe, Region, StageTransform,
+    Cancel, EffectStage, Error, GeometryMap, ModuleRegistry, Recipe, Region,
     analysis::{MaskInputGrid, cell_pixel},
 };
 use sha2::{Digest, Sha256};
@@ -17,7 +17,7 @@ pub const INPUT_GRID_MAX_CELLS: u64 = 8_000_000;
 #[derive(Clone, Copy)]
 pub(crate) struct GridRequest<'a> {
     pub layer: usize,
-    pub transform: &'a StageTransform,
+    pub transform: &'a GeometryMap,
     pub region: Region,
     pub cells: (u32, u32),
 }
@@ -27,7 +27,7 @@ struct InputGridKey {
     source: String,
     prefix: [u8; 32],
     wide: bool,
-    transform: [u64; 6],
+    transform: String,
     region: Region,
     cells: (u32, u32),
 }
@@ -220,7 +220,7 @@ pub(crate) fn grid_input(
         source: source_key,
         prefix: hash.into(),
         wide,
-        transform: transform.forward.map(f64::to_bits),
+        transform: transform.sha256().to_owned(),
         region,
         cells,
     };
@@ -265,7 +265,7 @@ pub(crate) fn grid_input(
         if cell % 1024 == 0 {
             cancel.check()?;
         }
-        if coordinate(transform, region, cells, cell).is_none() {
+        if coordinate(transform, region, cells, cell)?.is_none() {
             outside[cell / 8] |= 1 << (cell % 8);
         }
     }
@@ -280,23 +280,24 @@ pub(crate) fn grid_input(
 }
 
 fn coordinate(
-    transform: &StageTransform,
+    transform: &GeometryMap,
     region: Region,
     cells: (u32, u32),
     cell: usize,
-) -> Option<(u32, u32)> {
+) -> Result<Option<(u32, u32)>, Error> {
     let x = region.x0 + cell_pixel(cell as u32 % cells.0, region.width, cells.0);
     let y = region.y0 + cell_pixel(cell as u32 / cells.0, region.height, cells.1);
-    let inverse = transform.inverse;
     let ox = f64::from(x) + 0.5;
     let oy = f64::from(y) + 0.5;
-    let px = (inverse[0] * ox + inverse[1] * oy + inverse[2]).floor();
-    let py = (inverse[3] * ox + inverse[4] * oy + inverse[5]).floor();
-    (px >= 0.0
+    let (px, py) = transform.to_content(ox, oy).map_err(|e| e.error())?;
+    let (px, py) = (px.floor(), py.floor());
+    Ok((px.is_finite()
+        && py.is_finite()
+        && px >= 0.0
         && py >= 0.0
         && px < f64::from(transform.content.width)
         && py < f64::from(transform.content.height))
-    .then_some((px as u32, py as u32))
+    .then_some((px as u32, py as u32)))
 }
 
 fn build<D: PixelDomain, P: Copy>(
@@ -341,7 +342,7 @@ fn build<D: PixelDomain, P: Copy>(
         if cell % 1024 == 0 {
             cancel.check()?;
         }
-        if let Some((x, y)) = coordinate(transform, region, cells, cell) {
+        if let Some((x, y)) = coordinate(transform, region, cells, cell)? {
             groups
                 .entry((y / tile, x / tile))
                 .or_default()
@@ -373,14 +374,14 @@ fn build<D: PixelDomain, P: Copy>(
                 if index % 1024 == 0 {
                     cancel.check()?;
                 }
-                let (x, y) = coordinate(transform, region, cells, cell as usize).unwrap();
+                let (x, y) = coordinate(transform, region, cells, cell as usize)?.unwrap();
                 output[cell as usize] =
                     keep(pixels[((y - rect.y0) * rect.width + (x - rect.x0)) as usize]);
             }
         } else {
             for &cell in group {
                 cancel.check()?;
-                let (x, y) = coordinate(transform, region, cells, cell as usize).unwrap();
+                let (x, y) = coordinate(transform, region, cells, cell as usize)?.unwrap();
                 output[cell as usize] = keep(
                     evaluation.restoration_region(Region {
                         x0: x,
@@ -423,13 +424,13 @@ mod tests {
             capture: Default::default(),
         }
     }
-    fn identity(width: u32, height: u32) -> StageTransform {
-        StageTransform {
-            content: StageSize { width, height },
-            output: StageSize { width, height },
-            forward: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-            inverse: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        }
+    fn identity(width: u32, height: u32) -> GeometryMap {
+        GeometryMap::affine(
+            StageSize { width, height },
+            StageSize { width, height },
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        )
     }
     fn recipe() -> Recipe {
         Recipe {
@@ -511,7 +512,9 @@ mod tests {
                 .unwrap()
                 .unwrap();
                 for cell in 0..cells.0 as usize * cells.1 as usize {
-                    let (x, y) = coordinate(&transform, region, cells, cell).unwrap();
+                    let (x, y) = coordinate(&transform, region, cells, cell)
+                        .unwrap()
+                        .unwrap();
                     assert_eq!(
                         grid.linear_cell(cell, x, y).unwrap(),
                         reference.linear(x, y).unwrap(),
@@ -524,6 +527,143 @@ mod tests {
                     );
                 }
                 assert_eq!(cache.cells(), cells.0 as usize * cells.1 as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
+        let registry = ModuleRegistry::builtin();
+        let jpeg = source();
+        let context = RenderContext::new();
+        let raw = LinearImage::with_fingerprint(
+            jpeg.width,
+            jpeg.height,
+            (0..3)
+                .flat_map(|channel| {
+                    let jpeg = &jpeg;
+                    (0..jpeg.width * jpeg.height)
+                        .map(move |i| f32::from(jpeg.rgba[i as usize * 4 + channel]) / 255.0 - 0.05)
+                })
+                .collect::<Vec<_>>(),
+            "warped-input-grid-raw",
+        )
+        .unwrap();
+        let mut recipe = recipe();
+        recipe.layers.extend([
+            Layer::new(crate::BASIC_EFFECT, json!({"exposure":0.2})),
+            Layer::orientation(crate::Orientation::of(crate::Transform::RotateRight)),
+            super::super::testing::frozen_lens(jpeg.height, jpeg.width, 24.0),
+            Layer::new(
+                crate::PERSPECTIVE_EFFECT,
+                json!({"horizontal":35,"vertical":-20}),
+            ),
+        ]);
+        let mut mask = crate::Mask::new("Warped range");
+        mask.components.push(crate::Component::new(
+            "Range",
+            crate::ComponentMode::Add,
+            "luminance-range",
+            json!({"low":15.0,"high":80.0,"low_feather":5.0,"high_feather":5.0}),
+        ));
+        recipe.layers[2].mask = Some(mask.id.clone());
+        recipe.masks.push(mask);
+        for source in [
+            RenderSource::Byte(&jpeg),
+            RenderSource::Linear {
+                image: &raw,
+                settings: LinearSettings::default(),
+            },
+        ] {
+            for cells in [(3, 2), (40, 30)] {
+                let mut held = recipe.clone();
+                let mut cache = InputGridCache::default();
+                let mut first = None;
+                for focal in [24.0, 35.0] {
+                    held.layers[4] =
+                        super::super::testing::frozen_lens(jpeg.height, jpeg.width, focal);
+                    let full = registry.compile(jpeg.width, jpeg.height, &held).unwrap();
+                    let transform =
+                        super::super::transform_of(&full, jpeg.width, jpeg.height).unwrap();
+                    let prefix = registry
+                        .compile_layers(
+                            jpeg.width,
+                            jpeg.height,
+                            &held.layers[..2],
+                            &held.masks,
+                            &held.strokes,
+                            &held.artifacts,
+                        )
+                        .unwrap();
+                    let reference = crate::render::prefix_pixels(
+                        source,
+                        prefix.clone(),
+                        &context,
+                        &Cancel::never(),
+                        full.prefix_spatial_input_wide(&prefix),
+                        super::super::MaskInputMode::ColourRun,
+                    )
+                    .unwrap();
+                    let region = Region {
+                        x0: 0,
+                        y0: 0,
+                        width: transform.output.width,
+                        height: transform.output.height,
+                    };
+                    let request = GridRequest {
+                        layer: 2,
+                        transform: &transform,
+                        region,
+                        cells,
+                    };
+                    let grid = grid_input(
+                        &registry,
+                        source,
+                        &held,
+                        request,
+                        &Cancel::never(),
+                        &context,
+                        &mut cache,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    for cell in 0..cells.0 as usize * cells.1 as usize {
+                        let ox = cell_pixel(cell as u32 % cells.0, region.width, cells.0);
+                        let oy = cell_pixel(cell as u32 / cells.0, region.height, cells.1);
+                        let (x, y) = transform
+                            .to_content(f64::from(ox) + 0.5, f64::from(oy) + 0.5)
+                            .unwrap();
+                        let (x, y) = (x.floor() as u32, y.floor() as u32);
+                        assert_eq!(
+                            grid.linear_cell(cell, x, y).unwrap(),
+                            reference.linear(x, y).unwrap(),
+                            "warped cell {cell}, grid {cells:?}, focal {focal}"
+                        );
+                    }
+                    assert_eq!(grid.grid.key.transform, transform.sha256());
+                    if let Some(first) = &first {
+                        assert_ne!(grid.grid.key, *first, "a Lens-only edit rebuilds the grid");
+                    } else {
+                        first = Some(grid.grid.key.clone());
+                    }
+                    held.masks[0].amount = 0.5;
+                    let reused = grid_input(
+                        &registry,
+                        source,
+                        &held,
+                        request,
+                        &Cancel::never(),
+                        &context,
+                        &mut cache,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    match (&grid.grid.values, &reused.grid.values) {
+                        (Values::Byte(a), Values::Byte(b)) => assert!(Arc::ptr_eq(a, b)),
+                        (Values::Linear(a), Values::Linear(b)) => assert!(Arc::ptr_eq(a, b)),
+                        _ => panic!("the grid's source domain changed"),
+                    }
+                }
             }
         }
     }
@@ -601,7 +741,9 @@ mod tests {
         .unwrap()
         .unwrap();
         for cell in 0..cells.0 as usize * cells.1 as usize {
-            let (x, y) = coordinate(&transform, region, cells, cell).unwrap();
+            let (x, y) = coordinate(&transform, region, cells, cell)
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 grid.linear_cell(cell, x, y).unwrap(),
                 Some(Byte::linear(frame.pixel(stage, x, y)))
@@ -660,7 +802,9 @@ mod tests {
             .unwrap()
             .unwrap();
             for cell in 0..cells.0 as usize * cells.1 as usize {
-                let (x, y) = coordinate(&transform, region, cells, cell).unwrap();
+                let (x, y) = coordinate(&transform, region, cells, cell)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     grid.linear_cell(cell, x, y).unwrap(),
                     Some(Byte::linear(frame.pixel(stage, x, y))),
@@ -704,7 +848,9 @@ mod tests {
             .unwrap()
             .unwrap();
             for cell in 0..cells.0 as usize * cells.1 as usize {
-                let (x, y) = coordinate(&transform, region, cells, cell).unwrap();
+                let (x, y) = coordinate(&transform, region, cells, cell)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(
                     suffix_grid.linear_cell(cell, x, y).unwrap(),
                     point.linear(x, y).unwrap(),
@@ -790,9 +936,12 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_ne!(first.grid.key, changed.grid.key);
-        let mut moved = transform;
-        moved.forward[2] = 1.0;
-        moved.inverse[2] = -1.0;
+        let moved = GeometryMap::affine(
+            transform.content,
+            transform.output,
+            [1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            [1.0, 0.0, -1.0, 0.0, 1.0, 0.0],
+        );
         let geometry = grid_input(
             &registry,
             RenderSource::Byte(&jpeg),

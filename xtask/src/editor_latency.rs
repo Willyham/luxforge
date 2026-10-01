@@ -1,7 +1,7 @@
 //! Desktop control-to-uploaded-frame measurement: the real editor, gesture and GPU upload.
 //!
-//! [`editor_performance`](crate::editor_performance) measures `render` on the catalog owner's own
-//! thread. Nothing there schedules, uploads or presents, so it cannot answer the responsiveness
+//! [`editor_performance`](crate::editor_performance) measures exact core rendering over a cached
+//! source. Nothing there schedules, uploads or presents, so it cannot answer the responsiveness
 //! question the [Basic design][design] asks: how long after a slider input the frame carrying that
 //! input is on screen. This module answers it by driving the shipped binary in a background
 //! evidence launch, with one `slider` script step per input, and reading the timestamps out of the
@@ -38,7 +38,7 @@ use luxforge_evidence::{
     Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
 
@@ -251,7 +251,7 @@ fn gesture_values(samples: usize, control: Control, field: &FieldTarget) -> Vec<
 /// seconds (from [`sampled`]) and the owner render context's scratch high-water mark at the last
 /// captured frame.
 fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
-    vec![
+    let mut rows = vec![
         stats::scalar(
             "sampled_peak_rss_mib",
             "MiB",
@@ -267,7 +267,30 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             "bytes",
             last["state"]["scratch"]["peak_bytes"].as_f64(),
         ),
-    ]
+        stats::scalar(
+            "spatial_scratch_peak_bytes",
+            "bytes",
+            last["state"]["performance"]["resources"]["budgets"]["spatial"]["peak_bytes"].as_f64(),
+        ),
+        stats::scalar(
+            "last_native_gpu_allocated",
+            "MiB",
+            resource_mib(last, &["gpu", "allocated_bytes"]),
+        ),
+    ];
+    for field in [
+        "full_resident_bytes",
+        "region_resident_bytes",
+        "retiring_bytes",
+        "stage_resident_bytes",
+    ] {
+        rows.push(counter(
+            &format!("last_surface_{field}"),
+            "bytes",
+            last["state"]["surface"]["gpu"][field].as_u64(),
+        ));
+    }
+    rows
 }
 
 /// A GPU counter as a one-sample row.
@@ -368,22 +391,18 @@ fn gesture_launch(
     }
 }
 
-/// The hold launch: full Basic and optional global Detail persisted into a catalog.
-fn hold_launch(catalog: &Path, source: &Path, detail: bool) -> Launch {
-    Launch::named("hold")
-        .catalog(catalog)
-        .script("hold-script.json", hold_script(detail))
-        .open_all(&[source.into()])
-        .order(ORDER)
-}
-
 /// The idle launch: the held catalog, reopened by an ordinary launch.
-fn idle_launch(catalog: &Path, data: &Path, source: &Path) -> Launch {
-    Launch::ordinary("idle")
+fn idle_launch(catalog: &Path, data: &Path, source: &Path, developer: bool) -> Launch {
+    let launch = Launch::ordinary("idle")
         .catalog(catalog)
         .data_root(data)
         .open_all(&[source.into()])
-        .order(ORDER)
+        .order(ORDER);
+    if developer {
+        launch.developer()
+    } else {
+        launch
+    }
 }
 
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
@@ -799,7 +818,7 @@ pub struct Options<'a> {
     /// Commit a straightening crop before the gesture, so the measured stack carries the crop
     /// resample as well as the colour pass.
     pub crop: Option<f64>,
-    /// Also hold a full Basic layer and measure idle CPU for 30 seconds after it settles.
+    /// Reopen the gesture's committed stack and measure idle CPU for 30 seconds after it settles.
     pub idle: bool,
     /// Commit a Basic layer with every field non-neutral before the gesture, so the measured
     /// exposure drag runs every one of the module's colour units on each frame.
@@ -807,7 +826,12 @@ pub struct Options<'a> {
     /// Commit a Presence layer with all three fields at full strength before a drag, commit or
     /// crop-start gesture, so the measured stack holds its neighbourhood operations.
     pub presence: bool,
+    /// Seed moderate global Detail before binding any masked gesture target.
     pub detail: bool,
+    /// Resolve and select the first eligible offline profile before the measured gesture.
+    pub lens: bool,
+    /// Seed a nonneutral +20/-10 Perspective before the crop and measured gesture.
+    pub perspective: bool,
     /// Draw a linear gradient mask first and bind the panel's sections to it, so the measured
     /// gesture is a *masked* drag: the same slider, drafting and committing a layer the masked
     /// colour primitive evaluates per pixel. It is the end-to-end figure for what a mask costs a
@@ -954,10 +978,36 @@ fn crop_precondition(options: &Options) -> Option<script::Step> {
         .map(|angle| script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":angle})))
 }
 
+/// Geometry is seeded through the same module actions in every measured mode. Lens remains an
+/// independent option; Perspective is explicit so comparisons can keep that stack unchanged.
+fn geometry_preconditions(options: &Options) -> Vec<script::Step> {
+    let mut steps = Vec::new();
+    if options.lens {
+        steps.extend(crate::scenario::recipe::lens_profile());
+    }
+    if options.perspective {
+        steps.push(script::Step::call(
+            "edit.set-perspective",
+            json!({"horizontal":20,"vertical":-10}),
+        ));
+    }
+    steps.extend(crop_precondition(options));
+    steps
+}
+
+fn report_geometry(result: &mut Value, options: &Options) {
+    result["lens_layer"] = json!(options.lens);
+    result["perspective_layer"] = json!(options.perspective);
+    result["perspective_seed"] = if options.perspective {
+        json!({"horizontal":20,"vertical":-10})
+    } else {
+        Value::Null
+    };
+}
+
 /// The paint run's script: its preconditions, then the one paced stroke along `path`.
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
     if options.basic {
         steps.push(basic_precondition());
     }
@@ -983,16 +1033,15 @@ fn gesture_script(
     values: &[f64],
     drag: bool,
 ) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
     if options.basic {
         steps.push(basic_precondition());
-    }
-    if options.detail {
-        steps.push(crate::scenario::recipe::moderate_detail());
     }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
@@ -1017,16 +1066,15 @@ fn burst_script(
     values: &[f64],
     interval_ms: u64,
 ) -> Vec<script::Step> {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
     if options.basic {
         steps.push(basic_precondition());
-    }
-    if options.detail {
-        steps.push(crate::scenario::recipe::moderate_detail());
     }
     steps.extend(zoom_step(options));
     steps.push(burst_gesture_step(
@@ -1036,16 +1084,6 @@ fn burst_script(
         options.moving_pan,
     ));
     steps
-}
-
-/// The hold run's script: optional global Detail followed by full Basic.
-fn hold_script(detail: bool) -> Value {
-    let mut steps = Vec::new();
-    if detail {
-        steps.push(crate::scenario::recipe::moderate_detail());
-    }
-    steps.push(basic_precondition());
-    script::write(&steps)
 }
 
 /// Refuse a measurement whose captured recipe missed the requested global restoration layer.
@@ -1087,8 +1125,10 @@ fn check_detail_precondition(frame: &Value, expected: bool) -> Result {
 /// One open draft crosses two pans and a quiet interval. A second value resumes motion before
 /// release; after the exact report settles, a final pan tests the retained full texture slot.
 fn viewport_script(options: &Options, field: &FieldTarget) -> (Vec<script::Step>, [usize; 7]) {
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
+    if options.detail {
+        steps.push(crate::scenario::recipe::moderate_detail());
+    }
     if options.mask {
         steps.extend(mask_precondition());
     }
@@ -1140,9 +1180,82 @@ fn gpu_count(frame: &Value, name: &str) -> Result<u64> {
         .ok_or_else(|| format!("Captured frame has no surface.gpu.{name}").into())
 }
 
+/// Pair each pan with the interactive and quiet-settlement generations requested in its own
+/// script window. A neighbouring input's frame can never stand in for the pan being measured.
+fn pan_region_samples(events: &[Value], windows: &[(usize, usize)]) -> Result<Vec<Value>> {
+    let step_index = |step| {
+        events
+            .iter()
+            .position(|event| {
+                event["event"] == "script_step" && event["detail"]["step"] == json!(step)
+            })
+            .ok_or_else(|| format!("Viewport step {step} was never sent"))
+    };
+    windows.iter().map(|&(pan, end)| {
+        let start = step_index(pan)?;
+        let stop = step_index(end)?;
+        ensure(start < stop, "Viewport pan window is reversed")?;
+        let window = &events[start..stop];
+        let requested = |intent:&str| -> Result<&Value> {
+            window.iter().find(|event|event["event"] == "preview_view_requested" && event["detail"]["intent"] == intent)
+                .ok_or_else(|| format!("Pan step {pan} requested no {intent} region").into())
+        };
+        let interactive = requested("interactive")?;
+        let refined = requested("settle")?;
+        let shown = |request:&Value, quality:&str| -> Result<&Value> {
+            let generation = request["detail"]["generation"].as_u64().ok_or("Viewport request has no generation")?;
+            window.iter().find(|event|event["event"] == "preview_displayed"
+                && event["detail"]["generation"] == generation && event["detail"]["path"] == "region"
+                && event["detail"]["quality"] == quality)
+                .ok_or_else(|| format!("Pan step {pan} has no {quality} adoption for generation {generation}").into())
+        };
+        let interactive_shown = shown(interactive,"interactive")?;
+        let exact_shown = shown(refined,"exact")?;
+        ensure(interactive_shown["detail"]["draft_revision"].is_u64()
+            && interactive_shown["detail"]["draft_revision"] == exact_shown["detail"]["draft_revision"]
+            && interactive_shown["detail"]["entry_id"] == exact_shown["detail"]["entry_id"]
+            && interactive_shown["detail"]["source_fingerprint"] == exact_shown["detail"]["source_fingerprint"],
+            "Pan refinement changed the draft, entry or source identity")?;
+        let pan_ms = elapsed(&events[start])?;
+        let interactive_ms = elapsed(interactive_shown)?;
+        let exact_ms = elapsed(exact_shown)?;
+        let refine_ms = elapsed(refined)?;
+        ensure(pan_ms <= elapsed(interactive)? && interactive_ms <= refine_ms && refine_ms <= exact_ms,
+            "Viewport pan/refinement timestamps are out of order")?;
+        Ok(json!({"step":pan,"interactive_generation":interactive["detail"]["generation"],
+            "exact_generation":refined["detail"]["generation"],"draft_revision":interactive_shown["detail"]["draft_revision"],
+            "source_fingerprint":interactive_shown["detail"]["source_fingerprint"],
+            "pan_to_interactive_ms":interactive_ms-pan_ms,"pan_to_exact_ms":exact_ms-pan_ms,
+            "refinement_request_to_exact_ms":exact_ms-refine_ms}))
+    }).collect()
+}
+
+/// Merge the actual observations, rather than averaging the journeys' percentiles.
+fn combined_rows(reports: &[Value]) -> Vec<Value> {
+    let mut observations: BTreeMap<(String, String), Vec<f64>> = BTreeMap::new();
+    for report in reports {
+        for row in stats::rows(report) {
+            let metric = row["metric"].as_str().unwrap_or_default().to_owned();
+            let unit = row["unit"].as_str().unwrap_or_default().to_owned();
+            let values = observations.entry((metric, unit)).or_default();
+            if let Some(samples) = row["distribution"]["samples"].as_array() {
+                values.extend(samples.iter().filter_map(Value::as_f64));
+            }
+        }
+    }
+    observations
+        .into_iter()
+        .map(|((metric, unit), values)| stats::row(&metric, &unit, values))
+        .collect()
+}
+
 /// A focused native viewport journey. Event timestamps measure desktop adoption; capture-side
 /// `surface.gpu` counters report actual draw encoding and writes, never display scanout.
 fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
+    ensure(
+        (1..=60).contains(&options.samples),
+        "Viewport samples must be 1..60 sequential journeys",
+    )?;
     ensure(
         matches!(options.zoom, Some(100.0 | 200.0)),
         "--mode viewport requires --zoom 100 or --zoom 200",
@@ -1162,15 +1275,28 @@ fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Resul
     )?;
     let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
     run.check(|run| {
-        viewport(
-            run,
-            options,
-            &field,
-            &source,
-            &source_hash,
-            &steps,
-            positions,
-        )
+        let mut reports = Vec::with_capacity(options.samples);
+        for journey in 0..options.samples {
+            let report = viewport(run,options,&field,&source,&source_hash,(&steps,positions),journey)?;
+            ensure(report["status"] == "passed", format!("Viewport journey {journey} is unavailable"))?;
+            reports.push(report);
+        }
+        let mut result = reports[0].clone();
+        result.as_object_mut().expect("viewport report").remove("frames");
+        result.as_object_mut().expect("viewport report").remove("regions");
+        result["rows"] = json!(combined_rows(&reports));
+        result["samples"] = json!(options.samples);
+        result["pan_samples"] = json!(options.samples*2);
+        result["journeys"] = json!((0..options.samples).map(|index|format!("viewport-{index:03}.json")).collect::<Vec<_>>());
+        let maximum_load = reports.iter().flat_map(|report|[report["load"]["load_average_1m"].as_f64(),report["load_average_1m_end"].as_f64()]).flatten().reduce(f64::max);
+        result["load_before"] = reports[0]["load"].clone();
+        result["load"] = launch::load(maximum_load);
+        result["load_average_1m_end"] = reports.last().expect("viewport report")["load_average_1m_end"].clone();
+        result["load_scope"] = json!("Maximum observed load before/after all sequential journeys; each journey retains its own endpoints");
+        result["method"] = json!("Each sample is one sequential background viewport journey with two pans over an open draft, quiet exact refinement, release and retained full-texture pan. The pan/refinement rows pool the actual generation-correlated observations from every journey; filesystem cache is warm, each journey imports/prepares its own source before the measured gesture. Readbacks and per-step settling occur between measured pans. No concurrent editor launches.");
+        write_json(&out.join("latency.json"), &result)?;
+        println!("PASS editor latency ({} viewport journeys): {}",options.samples,out.display());
+        Ok(())
     })
 }
 
@@ -1181,19 +1307,16 @@ fn viewport(
     field: &FieldTarget,
     source: &Path,
     source_hash: &str,
-    steps: &[script::Step],
-    positions: [usize; 7],
-) -> Result {
+    sequence: (&[script::Step], [usize; 7]),
+    journey: usize,
+) -> Result<Value> {
+    let (steps, positions) = sequence;
     let out = &run.out().to_path_buf();
-    let viewport = gesture_launch(
-        out,
-        "viewport",
-        "viewport-script.json",
-        steps,
-        source,
-        false,
-    )
-    .watch(sampled(run.root(), "viewport"));
+    let name = format!("viewport-{journey:03}");
+    let load_start = launch::load_average(run.root());
+    let viewport = gesture_launch(out, &name, "viewport-script.json", steps, source, false)
+        .evidence_dir(&out.join(&name))
+        .watch(sampled(run.root(), "viewport"));
     let Launched {
         dir: evidence,
         watched: usage,
@@ -1267,12 +1390,13 @@ fn viewport(
             "source_sha256":source_hash,
             "zoom_percent":options.zoom,
         });
+        report_geometry(&mut result, options);
         stamp(&mut result, &header);
-        write_json(&out.join("latency.json"), &result)?;
+        write_json(&out.join(format!("{name}.json")), &result)?;
         run.record("latency", json!("unavailable"));
         ensure(hash(source)? == source_hash, "The source changed")?;
         println!("UNAVAILABLE editor latency (viewport): {}", out.display());
-        return Ok(());
+        return Ok(result);
     }
     let region_summary: Vec<Value> = regions
         .iter()
@@ -1405,7 +1529,14 @@ fn viewport(
         .ok_or("The first draft has no region event")?;
     // The one scalar and the GPU counters, each a one-sample row. The counters are the photo
     // surface's actual texture writes, counted during draw encoding.
-    let rows = vec![
+    let pan_samples = pan_region_samples(
+        &events,
+        &[
+            (positions[1], positions[3]),
+            (positions[4] - 1, positions[5] - 1),
+        ],
+    )?;
+    let mut rows = vec![
         stats::scalar(
             "input_to_first_region_adoption_ms",
             "ms",
@@ -1437,12 +1568,27 @@ fn viewport(
             "bytes",
             Some(gpu_count(final_pan, "upload_bytes")?),
         ),
-        stats::scalar(
-            "sampled_peak_rss_mib",
-            "MiB",
-            usage["peak_rss_mib"].as_f64(),
-        ),
     ];
+    for (metric, field) in [
+        (
+            "pan_to_interactive_region_adoption",
+            "pan_to_interactive_ms",
+        ),
+        ("pan_to_exact_region_adoption", "pan_to_exact_ms"),
+        (
+            "quiet_refinement_request_to_exact_adoption",
+            "refinement_request_to_exact_ms",
+        ),
+    ] {
+        rows.push(stats::row(
+            metric,
+            "ms",
+            pan_samples
+                .iter()
+                .filter_map(|sample| sample[field].as_f64()),
+        ));
+    }
+    rows.extend(resource_rows(&usage, final_pan));
     let mut result = json!({
         "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
         "source":source, "source_sha256":source_hash,
@@ -1450,6 +1596,7 @@ fn viewport(
         "control_action":field.action, "control_parameter":field.parameter,
         "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
         "rows":rows,
+        "pan_samples":pan_samples,"load":launch::load(load_start),"load_average_1m_end":launch::load_average(run.root()),
         "regions":region_summary,
         "frames":{
             "draft":draft["state"], "first_pan":first_pan["state"],
@@ -1460,11 +1607,11 @@ fn viewport(
         "gpu_note":"The photo_writes and upload_bytes rows are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
         "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
-    write_json(&out.join("latency.json"), &result)?;
+    write_json(&out.join(format!("{name}.json")), &result)?;
     ensure(hash(source)? == source_hash, "The source changed")?;
-    println!("PASS editor latency (viewport): {}", out.display());
-    Ok(())
+    Ok(result)
 }
 
 #[derive(Clone, Debug)]
@@ -1840,8 +1987,7 @@ fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
     } else {
         field.gesture_values(1)[0]
     };
-    let mut steps = Vec::new();
-    steps.extend(crop_precondition(options));
+    let mut steps = geometry_preconditions(options);
     if options.basic {
         steps.push(basic_precondition());
     }
@@ -1962,6 +2108,7 @@ fn run_hover(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
             "checks":["Each move emitted its real surrounding pointer message and built brush cursor geometry",
                 "No hover queued a photograph job, posted a mask draft or committed a second mask","Source SHA-256 is unchanged"]
         });
+        report_geometry(&mut result, options);
         stamp(&mut result,&header);
         write_json(&out.join("latency.json"),&result)?;
         ensure(hash(&source)? == source_hash,"The source changed")?;
@@ -2221,6 +2368,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "Source SHA-256 is unchanged",
         ],
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -2239,7 +2387,7 @@ const CROP_START_HOLD_MS: u64 = 1500;
 /// section opened and a settled baseline, then per sample a Start held open, its Cancel and a
 /// settle.
 fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
-    let mut steps = Vec::new();
+    let mut steps = geometry_preconditions(options);
     if options.basic {
         steps.push(basic_precondition());
     }
@@ -2287,6 +2435,10 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
     let (steps, starts) = crop_start_script(options);
+    ensure(
+        steps.len() <= script::MAX_SCRIPT_STEPS,
+        "Crop-start recipe and samples exceed the 64-step evidence bound",
+    )?;
     let load_start = launch::load_average(root);
     let launch = gesture_launch(
         out,
@@ -2394,6 +2546,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
         "detail_layer":options.detail,
+        "lens_layer":options.lens,
         "mode":"crop-start",
         "samples":options.samples,
         "method":format!("Background evidence launch of the release binary, warm filesystem cache, at Fit. Each sample is a crop draft Start step held open for {CROP_START_HOLD_MS} ms, then Cancel and {CROP_START_HOLD_MS} ms more. Times are from the script_step event that sent the Start: to crop_draft_started, which the Start's own update logs, and to the frame_captured of the Start step, which the editor captures once the crop layer's input stage is on screen, so that figure includes the window readback. Memory and GPU are the Performance section's resources.read figures in the frame captured at the end of each hold, sampled at most one second earlier while the draft was open."),
@@ -2404,6 +2557,7 @@ fn crop_start(run: &mut Run, options: &Options) -> Result {
         "resources":{"rss_samples":usage["rss_samples"]},
         "scope":"Opening a crop draft at Fit on this source and recipe: CropMessage::Start to crop_draft_started, and to the captured frame showing the input stage; and the process memory and GPU allocation while the draft is open, beside the settled baseline before the first Start.",
     });
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -2415,6 +2569,14 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     ensure(
         cfg!(target_os = "macos"),
         "Editor latency measurement currently reads native macOS ps only",
+    )?;
+    ensure(
+        !options.idle || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--idle requires --mode drag or commit",
+    )?;
+    ensure(
+        options.mode != Mode::CropStart || options.zoom.is_none(),
+        "Crop-start is measured at Fit; omit --zoom",
     )?;
     if let Some(zoom) = options.zoom {
         ensure(
@@ -2455,12 +2617,13 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     run.check(|run| gesture(run, &options, &field))
 }
 
-/// A drag or commit run's launch and its report, in `run`, with the hold and idle launches after
-/// them when `--idle` asks for them.
+/// A drag or commit run's launch and report, followed by an idle launch on its committed catalog
+/// when `--idle` asks for one.
 fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
+    let load_start = launch::load_average(root);
     // A drag needs one more value than the measured sample count: the extra one is the release,
     // whose own drafted preview the commit supersedes, so it is measured to the settled histogram
     // instead. A commit run measures every value it sends.
@@ -2519,9 +2682,23 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     )?;
     let frames = app["frames"].as_array().ok_or("Missing frames")?;
     let last = frames.last().ok_or("No frame was captured")?;
+    if options.detail {
+        let seed = steps
+            .iter()
+            .position(|step| *step == crate::scenario::recipe::moderate_detail())
+            .ok_or("The Detail precondition step is missing")?;
+        let seeded = frames
+            .get(seed + 1)
+            .ok_or("No frame follows the Detail precondition")?;
+        check_detail_precondition(seeded, true)?;
+    }
 
     if options.control == Control::Curve {
-        let setup_index = usize::from(options.crop.is_some()) + curve_view_steps().len();
+        let setup_index = steps
+            .iter()
+            .position(|step| Some(step) == curve_view_steps().last())
+            .map(|index| index + 1)
+            .ok_or("The curve setup step is absent")?;
         let setup = frames
             .get(setup_index)
             .ok_or("No captured frame follows the curve viewport setup")?;
@@ -2726,6 +2903,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         "full_basic_layer":options.basic,
         "presence_layer":options.presence,
         "detail_layer":options.detail,
+        "lens_layer":options.lens,
         "mode":options.mode.name(),
         "control":options.control.name(),
         "control_action":if options.control == Control::Curve { SET_CONTROLS } else { field.action.as_str() },
@@ -2775,6 +2953,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             "rss_samples":usage["rss_samples"],
             "note":"RSS is sampled about every 50 ms by ps and includes captures, GPU resources and allocator retention; it is not a CPU-heap figure. The scratch object is the owner render context's colour budget at the last captured frame, with peak_bytes (the scratch_peak_bytes row) its high-water mark over the whole run.",
         },
+        "load":launch::load(load_start),
+        "load_average_1m_end":launch::load_average(root),
         "workspace":last["state"]["workspace"],
         "histogram":last["state"]["histogram"],
         "checks":[
@@ -2788,12 +2968,13 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     // Beside the rest rather than inside it: the report is already as deep as json! expands.
     result["approximate_white_balance_frames"] = approximate;
     result["zoom_percent"] = json!(options.zoom);
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
     if options.idle {
-        hold_and_idle(run, &source, options.detail)?;
+        hold_and_idle(run, options, &source, last, &usage)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
@@ -2978,6 +3159,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
     let source = options.source.canonicalize()?;
     let source_hash = hash(&source)?;
+    let load_start = launch::load_average(root);
     let interval_ms = burst_interval_ms();
     // The burst's values are a triangle about the field's own origin, scaled to its declared
     // range: Basic's Exposure by default, any drafting slider with `--action`.
@@ -3128,6 +3310,8 @@ fn burst(run: &mut Run, options: &Options) -> Result {
             "Source SHA-256 is unchanged"
         ],
     });
+    result["load"] = launch::load(load_start);
+    result["load_average_1m_end"] = json!(launch::load_average(root));
     result["zoom_percent"] = json!(options.zoom);
     result["moving_pan"] = json!(options.moving_pan);
     result["burst"]["pan_moves"] = json!(analysis.pan_moves);
@@ -3155,6 +3339,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     result["burst"]["adoption_note"] = json!(
         "presented_frames/presented_fps count preview_displayed adoption events. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
     );
+    report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
@@ -3163,37 +3348,73 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     Ok(())
 }
 
-/// The resource workload: the supplied image holding full Basic and optional global Detail with
-/// the histogram on, reopened in a second process and left alone for 30 seconds.
-///
-/// Two processes are needed because an evidence run exits when its script ends, and the editor's
-/// own script deadline bounds scripted work. The first run commits the layers into a
-/// catalog that outlives it; the second opens the same file, which the catalog already holds, so it
-/// renders and reduces the committed stack and then has nothing left to do.
-fn hold_and_idle(run: &mut Run, source: &Path, detail: bool) -> Result {
-    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
-    let catalog = out.join("held-catalog.sqlite");
-    let Launched {
-        dir: evidence,
-        watched: hold_usage,
-    } = run.launch(
-        hold_launch(&catalog, source, detail)
-            .deadline(Duration::from_secs(60))
-            .watch(sampled(root, "hold")),
+/// Reopen the gesture's own committed catalog, then observe its ordinary idle state. This keeps
+/// the selected profile, Perspective, crop and any other committed edits identical to the measured
+/// gesture's final stack. A scripted process has exited by then, so an ordinary second launch is
+/// needed for the 30-second window.
+/// The catalog reopened for idle contains the gesture's final recipe, including edited Detail
+/// strengths. It must retain every committed layer's identity, payload, mask and artifact links.
+fn idle_catalog_stack(catalog: &Path, source: &Path) -> Result<Value> {
+    let service = luxforge_core::EditorService::open(catalog)?;
+    let assets = service.assets(None, 1)?;
+    ensure(
+        assets.assets.len() == 1 && assets.next.is_none(),
+        "The idle catalog must contain exactly the measured source",
     )?;
-    let held = read_json(&evidence.join("result.json"))?;
-    let frame = held["frames"]
-        .as_array()
-        .and_then(|frames| frames.last())
-        .ok_or("The hold run captured no frame")?
-        .clone();
-    check_detail_precondition(&frame, detail)?;
+    ensure(
+        assets.assets[0].locator.canonicalize()? == source.canonicalize()?,
+        "The idle catalog reopened a different source",
+    )?;
+    let state = service.state(&assets.assets[0].id)?;
+    let layers: Vec<_> = state
+        .current_entry
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .map(|layer| {
+            json!({"id":layer.id,"effect":layer.effect_id,"payload":layer.payload,
+            "mask":layer.mask,"artifacts":layer.artifacts})
+        })
+        .collect();
+    Ok(json!({"entry":state.current_entry.id,"revision":state.revision,"layers":layers}))
+}
+
+fn check_idle_stack(frame: &Value, reopened: &Value) -> Result {
+    let captured = &frame["state"]["stack"];
+    ensure(
+        captured["entry"].is_string()
+            && captured["revision"].is_u64()
+            && captured["layers"].is_array()
+            && ["entry", "revision", "layers"]
+                .into_iter()
+                .all(|key| captured[key] == reopened[key]),
+        "The idle catalog differs from the gesture's committed entry or recipe",
+    )
+}
+
+fn hold_and_idle(
+    run: &mut Run,
+    options: &Options,
+    source: &Path,
+    frame: &Value,
+    hold_usage: &Value,
+) -> Result {
+    let (root, out) = (&run.root().to_path_buf(), &run.out().to_path_buf());
+    let catalog = out.join("app/catalog.sqlite");
+    ensure(
+        catalog.is_file(),
+        "The gesture catalog is missing for idle measurement",
+    )?;
+    let reopened_stack = idle_catalog_stack(&catalog, source)?;
+    check_idle_stack(frame, &reopened_stack)?;
+    let load_start = launch::load_average(root);
 
     // The second process: the same catalog, no script, left idle after its first frame.
     let data = out.join("idle-data");
     let (log, events) = (out.join("idle.log"), data.join("logs/events.jsonl"));
     let idle_root = root.clone();
-    let idle = idle_launch(&catalog, &data, source)
+    let idle = idle_launch(&catalog, &data, source, options.control == Control::Curve)
         .deadline(Duration::from_secs(30))
         .watch(Box::new(move |child, _, deadline| {
             let poll = Poll {
@@ -3226,17 +3447,18 @@ fn hold_and_idle(run: &mut Run, source: &Path, detail: bool) -> Result {
     // The scratch budget travels in the state snapshot written beside a captured frame, and an
     // ordinary launch captures none, so the idle process cannot report it. The gesture process
     // above does, and it runs the same committed stack.
-    let mut rows = resource_rows(&hold_usage, &frame);
+    let mut rows = resource_rows(hold_usage, frame);
     rows.extend(stats::rows(&idle).iter().cloned());
     write_json(
         &out.join("resources.json"),
         &json!({
             "status":"passed",
-            "workload":"The supplied image holding a Basic layer with all ten fields non-neutral and optional moderate global Detail, histogram on",
-            "basic_payload":full_basic(),
-            "detail_layer":detail,
-            "source_dimensions":frame["state"]["source_dimensions"],
-            "stack":frame["state"]["stack"],
+            "workload":"The gesture's own committed stack, reopened from its catalog with histogram on",
+            "source":source,"source_dimensions":frame["state"]["source_dimensions"],
+            "lens_layer":options.lens,"perspective_layer":options.perspective,"crop_angle_deg":options.crop,
+            "load":launch::load(load_start),"load_average_1m_end":launch::load_average(root),
+            "detail_layer":options.detail,"stack":frame["state"]["stack"],
+            "reopened_stack":reopened_stack,
             "rows":rows,
             "gesture_process":{
                 "scratch":frame["state"]["scratch"],
@@ -3248,7 +3470,7 @@ fn hold_and_idle(run: &mut Run, source: &Path, detail: bool) -> Result {
                 "events":idle["events"],
                 "scratch":"not observable: the budget travels in the state snapshot beside a captured frame, and an ordinary launch captures none",
             },
-            "method":"The first process commits the layer into a catalog that outlives it and is sampled by ps about every 50 ms while it edits, with its frame captures included in that RSS. The second opens the same file from that catalog, renders and reduces the committed stack, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated.",
+            "method":"The gesture process's own committed catalog is reused unchanged. The second process opens the same source and exact stack, renders and reduces it, then is left alone; CPU is the ps CPU-time delta over 30 seconds after one second of settling. This includes the ordinary editor's open Performance section sampler. The child is then killed, so this is not clean-close evidence. RSS includes GPU resources and allocator retention and is not separated. Native GPU and scratch figures come from the gesture's correlated captured state, not an idle-process capture.",
         }),
     )?;
     Ok(())
@@ -3257,6 +3479,145 @@ fn hold_and_idle(run: &mut Run, source: &Path, detail: bool) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pan_refinement_samples_require_their_own_generation_and_identity() {
+        let mut events = vec![
+            json!({"event":"script_step","elapsed_ms":10,"detail":{"step":1}}),
+            json!({"event":"preview_view_requested","elapsed_ms":12,"detail":{"intent":"interactive","generation":7}}),
+            json!({"event":"preview_displayed","elapsed_ms":15,"detail":{"generation":99,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"preview_displayed","elapsed_ms":20,"detail":{"generation":7,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"preview_view_requested","elapsed_ms":150,"detail":{"intent":"settle","generation":8}}),
+            json!({"event":"preview_displayed","elapsed_ms":180,"detail":{"generation":8,"path":"region","quality":"exact","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
+            json!({"event":"script_step","elapsed_ms":200,"detail":{"step":4}}),
+        ];
+        let samples = pan_region_samples(&events, &[(1, 4)]).unwrap();
+        assert_eq!(samples[0]["pan_to_interactive_ms"], 10.0);
+        assert_eq!(samples[0]["pan_to_exact_ms"], 170.0);
+        assert_eq!(samples[0]["refinement_request_to_exact_ms"], 30.0);
+        events[5]["detail"]["draft_revision"] = json!(4);
+        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
+        events[5]["detail"]["draft_revision"] = json!(3);
+        events[5]["detail"]["generation"] = json!(99);
+        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
+    }
+
+    #[test]
+    fn viewport_combines_raw_observations_instead_of_percentiles() {
+        let reports = [
+            json!({"rows":[stats::row("pan","ms",[1.0,2.0])]}),
+            json!({"rows":[stats::row("pan","ms",[10.0,20.0])]} ),
+        ];
+        let rows = combined_rows(&reports);
+        assert_eq!(rows[0]["distribution"]["count"], 4);
+        assert_eq!(rows[0]["distribution"]["p50"], 2.0);
+        assert_eq!(rows[0]["distribution"]["p95"], 20.0);
+    }
+
+    #[test]
+    fn lens_geometry_is_kept_for_crop_opening_paint_and_viewport() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 14,
+            mode: Mode::CropStart,
+            control: Control::Slider,
+            action: Some("set-perspective"),
+            parameter: Some("horizontal"),
+            crop: Some(2.5),
+            idle: false,
+            basic: false,
+            presence: false,
+            detail: false,
+            lens: true,
+            perspective: true,
+            mask: false,
+            zoom: Some(100.0),
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let geometry = geometry_preconditions(&options);
+        assert_eq!(geometry.len(), 5);
+        assert_eq!(
+            geometry[3],
+            script::Step::call(
+                "edit.set-perspective",
+                json!({"horizontal":20,"vertical":-10})
+            )
+        );
+        assert_eq!(
+            geometry[4],
+            script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":2.5}))
+        );
+        let (crop, starts) = crop_start_script(&options);
+        let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
+        let (viewport, _) = viewport_script(&options, &field);
+        for steps in [crop, paint_script(&options, paint_path(30)), viewport] {
+            assert_eq!(&steps[..geometry.len()], geometry.as_slice());
+            assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
+            assert_eq!(
+                script::parse(&script::write(&steps).to_string()).unwrap(),
+                steps
+            );
+        }
+        assert_eq!(starts.len(), 14);
+    }
+
+    #[test]
+    fn idle_reopens_the_gesture_catalog_with_its_provider_registry() {
+        let out = Path::new("/out");
+        let catalog = out.join("app/catalog.sqlite");
+        let args = idle_launch(
+            &catalog,
+            &out.join("idle-data"),
+            Path::new("/photo.raw"),
+            true,
+        )
+        .command(out);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair == ["--catalog", "/out/app/catalog.sqlite"])
+        );
+        assert!(args.iter().any(|arg| arg == "--developer"));
+        assert!(!args.iter().any(|arg| arg == "--evidence-script"));
+    }
+
+    #[test]
+    fn detail_idle_accepts_the_edited_payload_but_requires_the_same_committed_stack() {
+        let edited = json!({"id":"detail-layer","effect":luxforge_core::DETAIL_EFFECT,
+            "payload":{"sharpening":35.0,"luminance":40.0,"colour":40.0},
+            "mask":null,"artifacts":[]});
+        let stack = json!({"entry":"edited-entry","revision":3,"layers":[edited]});
+        let frame = json!({"state":{"stack":stack}});
+        assert!(
+            check_detail_precondition(&frame, true).is_err(),
+            "The seed is intentionally no longer moderate"
+        );
+        assert!(check_idle_stack(&frame, &stack).is_ok());
+        let mut mismatched = stack.clone();
+        mismatched["layers"][0]["payload"]["sharpening"] = json!(60.0);
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["layers"][0]["id"] = json!("replaced-detail");
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["entry"] = json!("old-entry");
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+        mismatched = stack.clone();
+        mismatched["revision"] = json!(2);
+        assert!(check_idle_stack(&frame, &mismatched).is_err());
+    }
+
+    #[test]
+    fn native_resource_rows_keep_gpu_residency_and_missing_counters_explicit() {
+        let last = json!({"state":{"scratch":{"peak_bytes":123},"surface":{"gpu":{"full_resident_bytes":456,"region_resident_bytes":78,"retiring_bytes":90,"stage_resident_bytes":12}}}});
+        let report = json!({"rows":resource_rows(&Value::Null,&last)});
+        assert_eq!(
+            stats::distribution(&report, "last_surface_full_resident_bytes").unwrap()["p50"],
+            456.0
+        );
+        assert!(stats::distribution(&report, "last_native_gpu_allocated").is_none());
+    }
 
     /// Every script this harness can write, into `$SCRIPT_DUMP/editor-latency/`, over each mode,
     /// control, precondition, zoom and `--moving-pan`, and every launch's argument list: the proof
@@ -3297,6 +3658,8 @@ mod tests {
                             basic,
                             presence: false,
                             detail: false,
+                            lens: false,
+                            perspective: false,
                             mask,
                             zoom,
                             moving_pan,
@@ -3372,6 +3735,8 @@ mod tests {
                             basic,
                             presence: false,
                             detail: false,
+                            lens: false,
+                            perspective: false,
                             mask,
                             zoom: Some(zoom),
                             moving_pan: false,
@@ -3391,8 +3756,6 @@ mod tests {
                 }
             }
         }
-        put("hold".into(), hold_script(false));
-        put("hold-detail".into(), hold_script(true));
         // Every launch's arguments, as it passes them in a run written to `/out`.
         let out = Path::new("/out");
         for (name, log, file, developer) in [
@@ -3403,14 +3766,10 @@ mod tests {
             let launch = gesture_launch(out, log, file, &[], &source, developer);
             put(format!("{name}-arguments"), json!(launch.command(out)));
         }
-        let catalog = out.join("held-catalog.sqlite");
-        put(
-            "hold-arguments".into(),
-            json!(hold_launch(&catalog, &source, false).command(out)),
-        );
+        let catalog = out.join("app/catalog.sqlite");
         put(
             "idle-arguments".into(),
-            json!(idle_launch(&catalog, &out.join("idle-data"), &source).command(out)),
+            json!(idle_launch(&catalog, &out.join("idle-data"), &source, false).command(out)),
         );
     }
 
@@ -3421,7 +3780,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_measurement_preconditions_keep_paint_and_idle_global() {
+    fn detail_measurement_preconditions_keep_paint_global() {
         let source = PathBuf::from("unused.jpg");
         let mut options = Options {
             source: &source,
@@ -3435,6 +3794,8 @@ mod tests {
             basic: false,
             presence: false,
             detail: true,
+            lens: false,
+            perspective: false,
             mask: false,
             mask_overlay: true,
             zoom: None,
@@ -3453,16 +3814,8 @@ mod tests {
                 .skip(1)
                 .any(|s| matches!(s, script::Step::Mask(MaskStep::Paint(PaintStep::NewMask))))
         );
-        let held = hold_script(true);
-        let held = held.as_array().unwrap();
-        assert_eq!(script::Step::from_value(held[0].clone()).unwrap(), detail);
-        assert_eq!(
-            script::Step::from_value(held[1].clone()).unwrap(),
-            basic_precondition()
-        );
         options.detail = false;
         assert!(!paint_precondition(&options).contains(&detail));
-        assert_eq!(hold_script(false), script::write(&[basic_precondition()]));
     }
 
     #[test]
@@ -3480,6 +3833,8 @@ mod tests {
             basic: true,
             presence: false,
             detail: false,
+            lens: false,
+            perspective: false,
             mask: true,
             mask_overlay: false,
             zoom: Some(100.0),
@@ -3511,7 +3866,11 @@ mod tests {
             1
         );
         let detail_index = with_detail.iter().position(|step| *step == detail).unwrap();
-        assert!(detail_index < with_detail.len() - 1);
+        let mask_index = with_detail
+            .iter()
+            .position(|step| *step == mask_precondition()[0])
+            .unwrap();
+        assert!(detail_index < mask_index, "Detail is a global precondition");
         assert_eq!(
             with_detail
                 .into_iter()
@@ -3519,6 +3878,44 @@ mod tests {
                 .collect::<Vec<_>>(),
             baseline,
             "--detail must only add its shared recipe precondition"
+        );
+    }
+
+    #[test]
+    fn combined_viewport_keeps_global_detail_before_the_masked_basic_target() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 5,
+            mode: Mode::Viewport,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: Some(2.5),
+            idle: false,
+            basic: true,
+            presence: false,
+            detail: true,
+            lens: true,
+            perspective: true,
+            mask: true,
+            zoom: Some(100.0),
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let field = FieldTarget::basic_exposure();
+        let (steps, positions) = viewport_script(&options, &field);
+        let geometry = geometry_preconditions(&options);
+        let detail = crate::scenario::recipe::moderate_detail();
+        assert_eq!(&steps[..geometry.len()], geometry.as_slice());
+        assert_eq!(steps[geometry.len()], detail);
+        assert_eq!(steps[geometry.len() + 1], mask_precondition()[0]);
+        assert!(steps.contains(&basic_precondition()));
+        assert_eq!(steps.iter().filter(|step| **step == detail).count(), 1);
+        assert!(positions.into_iter().all(|index| index <= steps.len()));
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).unwrap(),
+            steps
         );
     }
 
@@ -3535,6 +3932,42 @@ mod tests {
         let mut masked = detail;
         masked["mask"] = json!("mask-1");
         assert!(check_detail_precondition(&frame(json!([masked, basic])), true).is_err());
+    }
+
+    #[test]
+    fn lens_latency_precondition_selects_the_first_eligible_row_before_the_gesture() {
+        let source = PathBuf::from("lens-24mp.jpg");
+        let options = Options {
+            source: &source,
+            samples: 30,
+            mode: Mode::Drag,
+            control: Control::Slider,
+            action: Some("set-perspective"),
+            parameter: Some("horizontal"),
+            crop: Some(2.5),
+            idle: false,
+            basic: false,
+            presence: false,
+            detail: false,
+            lens: true,
+            perspective: false,
+            mask: false,
+            zoom: None,
+            moving_pan: false,
+            mask_overlay: false,
+        };
+        let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
+        let values = field.gesture_values(30);
+        let steps = gesture_script(&options, &field, &values, true);
+        assert_eq!(&steps[..3], &crate::scenario::recipe::lens_profile());
+        assert!(
+            matches!(&steps[2],script::Step::Controls(script::ControlsStep::QueryChoiceSelectFirst {action}) if action=="select-lens-profile")
+        );
+        assert_eq!(
+            script::parse(&script::write(&steps).to_string()).unwrap(),
+            steps
+        );
+        assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
     }
 
     /// A crop-start script at its largest sample count fits the evidence script, and the step
@@ -3554,6 +3987,8 @@ mod tests {
             basic: true,
             presence: true,
             detail: false,
+            lens: false,
+            perspective: false,
             mask: false,
             mask_overlay: false,
             zoom: None,

@@ -29,14 +29,17 @@ Doctor reports missing tools and the graphics environment without installing any
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
 | Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
 | Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
-| Core timing on a real-sized JPEG | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]` |
+| Core timing on a real-sized JPEG; `--lens-only` accepts JPEG or RAW and measures profile queries, commits, matched exact renders, point picks, serial export and cancellation | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]`; for Lens, `--lens-only --source JPEG\|RAW` |
 | Headless Detail full render/export, reopened-owner neutral picks, first/later colour-limited draft ticks, active cancellation cleanup and neutral source sharing; accepts the planned 24 MP or 60 MP JPEG | `cargo run --release --locked --package xtask -- detail-performance --source JPEG --output NEW_DIR [--samples N] [--case all\|render\|export\|points\|cancel\|sharing]` |
 | Detail value-mask input grids through the production coverage evaluator: dense overlay 2880×1800 and sparse thumbnail 28×19, first build and mask-amount-only reuse | `cargo run --release --locked --package xtask -- detail-grid-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--detail` commits moderate sharpening 60, luminance 40 and colour 40 before the gesture. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--detail] [--mask] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--detail` commits moderate sharpening 60, luminance 40 and colour 40 before the gesture. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--detail] [--lens] [--perspective] [--mask] [--idle]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, and the `mask-range` scenario's own colour-chart patches | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Adding a camera: download selected CC0 samples from the raw.pixls.us index, verify their SHA-256 and read each with the RAW adapter, or see why it refuses them | `cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR [--max-source-mib N]` |
 | Adding a camera: a DNG or TIFF's IFDs, geometry and calibration tags and opcode-list layouts, read-only | `cargo xtask inspect-dng --source DNG [--json NEW_FILE]` |
 | Authentic RAW editor journey and reopen over one file the RAW manifest lists | `cargo xtask smoke --scenario raw-editor --source RAW --manifest FILE --output NEW_DIR [--binary PATH]` |
+| Rebuild the pinned offline Lensfun resource | `cargo xtask lensfun-import --source UPSTREAM_DIR --output NEW_DIR` |
+| Lens selection/export and marked-edge qualification through the JSON API | `cargo xtask lens-qualification --manifest FILE --edges FILE --output NEW_DIR` |
+| Rendered Lens correction and Perspective workflow | `cargo xtask smoke --scenario lens-perspective --output NEW_DIR` |
 | Rendered smoke scenario, needs a native graphical session | `cargo xtask smoke --scenario NAME --output NEW_DIR [--binary PATH]` |
 | Every smoke scenario, with its launches and frame counts, what it opens and its window | `cargo xtask smoke --list` |
 | A recorded smoke run's checks again, over a copy and without launching | `cargo xtask smoke --verify-only RUN_DIR --output NEW_DIR [--scenario NAME] [--source RAW]` |
@@ -288,14 +291,14 @@ it; the tiers above `quick` run the whole `check` in place of its quick subset:
 | Tier | What it runs |
 | --- | --- |
 | `quick` | `check --quick`: every check and test but the [slow tests](#how-check-runs-the-tests) and the doctests. It builds nothing in release and launches no editor |
-| `rendered` | the whole `check`, `editor-acceptance` and all 35 smoke scenarios, including `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
+| `rendered` | the whole `check`, `editor-acceptance` and every checkout smoke scenario, including `detail`, `detail-fit`, `detail-zoom`, `zoom`, `presets`, `export`, `gallery`, `controls`, `capabilities`, `performance`, `lens-perspective`, the three viewport scenarios and the five `mask-*` ones, through a bounded pool |
 | `timing` | the whole `check`, `editor-acceptance`, then `editor-performance`, `editor-latency` and `measure`, in that order, serially, after everything else in the tier and behind the host-wide timing lock |
-| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
+| `full` | rendered plus timing plus `hardening`, plus, with `--manifest FILE`, a `smoke --scenario raw-editor` run per manifest source (`raw-editor-<id>`), the owner-supplied authentic RAW tests via `raw-authentic`, a `smoke --scenario raw-panel` run and a `smoke --scenario raw-detail` run per manifest source and one `smoke --scenario performance` run over the first manifest source |
 
 When to run each tier is in [when to verify](#when-to-verify). `hardening` needs only `--binary` and
 runs in `full` whether or not a manifest is given. Without a manifest, `full` lists `raw-editor` and
 `raw-authentic` as `skipped` with the reason `no --manifest`, and adds no per-source `raw-editor`,
-`raw-panel` or RAW `performance` components at all, since there is no source to run them over.
+`raw-panel`, `raw-detail` or RAW `performance` components at all, since there is no source to run them over.
 `verify` reads the manifest through the one RAW manifest reader, so a manifest the `raw-editor`
 scenario would refuse is refused before anything runs. `raw-authentic` runs the
 `#[ignore]`d authentic-file tests in `luxforge-raw`'s `real_files` and the `raw::` module of
@@ -387,7 +390,7 @@ smoke run per manifest source and one RAW `performance` smoke run over the first
 
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
-Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only.
+Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only. The Performance scenario has a 75-second process ceiling around the editor's 60-second script deadline, allowing its full 60 MP render and fixed sampler windows to report a result. Its checks validate sampled state and completion; latency measurements use the timing tier's quiet-host conditions. External memory comparisons use observation intervals wholly before and after each app sample, excluding calls that overlap it; the complete intervals must stay within 1,000 ms, with the existing 8 MiB memory slack.
 
 ## Running the application
 
@@ -875,8 +878,8 @@ cargo run --release --locked --package xtask -- detail-grid-performance --source
 
 Desktop `editor-latency --detail` commits sharpening 60, luminance 40 and colour 40. Paint commits
 that global layer before selecting its brush mask and verifies it in the captured stack. The
-separate `--idle` workload also persists Detail when requested, reopens that catalog, settles and
-samples 30 seconds of idle CPU with the worker caches held. Its idle process has no frame captures,
+`--idle` workload reopens the gesture catalog with Detail preserved, settles and samples 30 seconds
+of idle CPU with the worker caches held. Its idle process has no frame captures,
 so its private cache bytes and scratch counters are unavailable. Paint and hover use an unlimited
 brush, which reads no input pixels: their overlay/coverage figures exercise restoration-prefix
 reuse but do not prove value-mask input-grid build/reuse. Use the separate value-mask grid
@@ -885,8 +888,22 @@ region events reports `unavailable`, which cannot establish region latency. Comm
 commit-to-histogram rows describe release; latency after the quiet gate needs correlated quiet and
 settled-display events. Preserve all of these gaps in the performance task and evidence record.
 
-`editor-latency` is the desktop counterpart to `editor-performance`, which measures `render` on the
-catalog owner's thread and so cannot see scheduling, GPU upload or presentation. It writes its own
+`editor-performance --lens-only` accepts JPEG or RAW. It prepares one source before measurement,
+queries the first eligible profile, freezes its terms and compares exact full renders with Lens
+neutral and selected while holding Perspective at +20/-10 and an original-aspect crop at 2.5°.
+Each selection sample resets Lens first, so the timed selection must make a durable change rather
+than return a no-op. Query, selection, render, a centre-point `render.sample`, serial JPEG export
+completion and immediate export cancellation each have their own distribution. Completed files
+are removed outside the timed window; cancellation must reach the cancelled terminal state
+without leaving a destination or staging file. The report records both render identities,
+dimensions, frame hashes, the exact point result, source preservation, scratch high-water and
+process resources. Baseline and corrected renders alternate order over the same warm prepared
+source. This is a comparison within the current build; it excludes decoding, desktop scheduling,
+GPU upload and presentation. Cancellation timing starts at `job.cancel`, after export admission,
+and terminal-job polling has a 2 ms interval.
+
+`editor-latency` is the desktop counterpart to `editor-performance`, which measures exact core
+rendering over cached sources and so cannot see desktop scheduling, GPU upload or presentation. It writes its own
 evidence script, drives the release binary through a background evidence launch, and reads the
 timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
 open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
@@ -912,14 +929,21 @@ was refused — logged as `slider_draft_unpreviewed`, a RAW draft whose developm
 because a redevelopment is in flight — has no frame of its own, and a drag with one is refused with
 that reason rather than timed. A RAW slider's gesture values start from zero when its range holds
 it and from its declared default otherwise (Custom temperature's 6504 K); `--mode burst` takes
-`--action`/`--parameter` too. `--crop DEGREES` commits a straightening 16:9 crop first, so the measured stack
-carries the crop resample as well as the colour pass. `--basic` commits a Basic layer with every
-field non-neutral first, so each measured frame runs every one of the module's colour units. `--idle` adds a second workload: one evidence
-run commits a Basic layer with all ten fields non-neutral, plus moderate global Detail when
-`--detail` is set, into a catalog that outlives it, then an
-ordinary launch reopens the same file from that catalog and is left alone for thirty seconds, which
-is where peak RSS with a full stack and idle CPU come from. `latency.json` and `resources.json` keep
-every sample, the scratch budget's high-water mark and the correlated state.
+`--action`/`--parameter` too. `--lens` selects the first eligible profile through the Lens control,
+carrying the assume-uncorrected acknowledgement explicitly. `--perspective` commits +20 horizontal
+and -10 vertical before measurement. `--crop DEGREES` commits a straightening 16:9 crop first, so
+the measured stack carries the fused geometry resample as well as the colour pass. These flags
+apply to drag, commit, burst, viewport, paint, hover and crop-start. `--basic` commits a Basic layer
+with every field non-neutral first, so each measured frame runs every one of the module's colour
+units. `--idle`, available in drag and commit modes, reopens the gesture's own committed catalog
+and source in an ordinary launch. After the exact histogram is adopted and one second of settling,
+it measures CPU time and sampled RSS for thirty seconds with the same Detail, Lens, Perspective, crop and
+colour stack. This includes the open Performance section's sampler. The harness then stops the
+process; this is no clean-close check. `latency.json` and `resources.json` keep every sample,
+scratch high-water and correlated state. Native GPU allocation, when the platform provides it,
+and the photo surface's full, region, retiring and crop-stage texture bytes are captured levels
+from the gesture, not idle-process measurements or peaks. Surface bytes exclude backend staging;
+invisible windows provide no compositor or scanout figures. Missing counters remain null.
 
 `--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
 measure: one scripted `slider` step, paced through `interval_ms` at 120 values a second for 3
@@ -949,21 +973,31 @@ revision, quality, generation and geometry alongside the captured surface GPU co
 still measures adoption rather than scanout; multiple adoptions can occur before one draw.
 
 `--zoom PERCENT` sets the view before the measured gesture. `--mode viewport` requires `--zoom
-100` or `--zoom 200`; it opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
+100` or `--zoom 200`; each journey opens a slider draft, pans, leaves the draft quiet for 1.5 seconds,
 moves the slider again, pans and pauses again, then releases and pans after the full report
 settles. The captured states and `preview_displayed` events must name interactive and exact
 regions for each draft revision. The first viewport-only frame keeps the histogram updating;
 release must produce a current full-image histogram. The final settled pan must draw the same
-full texture without another photograph write. `latency.json` records region geometry, quality,
-generation and draft revision, and its rows hold `input_to_first_region_adoption_ms` and the photo
-surface's actual draw and write counters, each a one-sample row.
-`preview_displayed` remains an adoption timestamp, not GPU upload or display scanout. An older
-binary with no region events is reported as `unavailable`, never as a passing viewport run.
+full texture without another photograph write. `--samples` is 1 to 60 sequential journeys, with
+one background editor at a time. Each imports and prepares its source before measured inputs;
+filesystem caches are warm, while prepared buffers belong to that journey. A journey contributes
+two observations each for pan-to-interactive adoption, pan-to-exact adoption and refinement-request
+to exact adoption. The first two start at the pan's scripted input; the refinement row starts at
+the quiet-settlement request and excludes the preceding quiet delay. Every pair must name its
+own requested generations and the same draft revision, entry and source. Thirty journeys therefore
+give sixty pan and refinement observations. `latency.json` pools actual observations into
+distributions; `viewport-NNN.json` and the matching evidence directory retain each journey's
+frames, regions, draw/write counters, RSS, scratch and GPU levels. Readbacks and step settling occur
+between measured pans. Aggregate reliability uses the highest observed load before or after any
+journey, with each endpoint retained. `preview_displayed` remains an adoption timestamp, not GPU
+upload or display scanout. A binary with no region events leaves an `unavailable` journey report
+and fails the aggregate run.
 
 `--mode paint` measures a **paint** gesture instead of a slider, because a stroke is not a field patch
-and the slider modes cannot drive one. It builds the bare recipe the figure is about — one brush mask
+and the slider modes cannot drive one. It builds the recipe the figure is about — one brush mask
 of one component, seeded by one stroke, and one masked Basic exposure layer, asserted in the captured
-state rather than assumed, plus any requested global Detail precondition — and then paints one stroke whose positions are handed to the desktop one
+state rather than assumed, plus any requested global Detail, Lens, Perspective and crop — and then paints one stroke
+whose positions are handed to the desktop one
 per 24 ms in real time: the first tick presses, each later one moves and the last releases, so one
 paced step is still one stroke and one history entry. `--samples` is the number of positions, 2 to 1000.
 Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
@@ -992,9 +1026,11 @@ exact-query versus retained-readout counts, coalescing, photo writes and sampled
 the emitted count is the distribution's sample count.
 
 `--mode crop-start` measures opening a crop draft at Fit. It commits the recipe the flags ask for
-(`--basic`, and `--presence` for a Presence layer with all three fields at 100), opens the
+(`--detail`, `--lens`, `--perspective`, `--crop`, `--basic`, and `--presence` for a Presence layer with all three fields at 100), opens the
 Performance section, settles for 1.5 s, then per sample Starts a crop draft, holds it open for 1.5 s,
-cancels it and settles 1.5 s more; `--samples` is 1 to 14. From events every binary logs it reads
+cancels it and settles 1.5 s more; `--samples` is 1 to 14 and `--zoom` is refused. The complete
+script must remain within the 64-step evidence bound, including all preconditions; fourteen samples
+with Lens, Perspective and crop use 63 steps, or 64 with Detail too; additional preconditions need fewer repetitions. From events every binary logs it reads
 the Start step's `script_step` to `crop_draft_started` and to the `frame_captured` of that step, which
 the editor captures once the crop layer's input stage is on screen, so that figure includes the
 window readback. The Performance section's `resources.read` memory and GPU allocation are read from
@@ -1042,3 +1078,7 @@ Rules for any UI or image check:
 ## CI
 
 `.github/workflows/check.yml` runs the whole `cargo xtask check` (slow tests, doctests and the golden-fixture test included) and `editor-acceptance` in release, an optimized build and packaging on macOS arm64 and Ubuntu x64 with seven-day artifact retention, plus a separate dependency-policy job. Windows CI is disabled; Windows support will come later. Linux additionally runs eight smoke scenarios (`empty` through `large60`, the first eight of `smoke --list`) against the packaged binary under Xvfb with software Vulkan and records runtime imports. The list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan; the other scenarios are not run in CI. Hosted results are compilation and functional evidence, never native desktop or GPU acceptance. Inspect actual run results for the tested commit; a configured step is not a passing result. Fresh hosted verification of the current tree and manual Windows/Linux desktop checks are open items on the [roadmap](../plan.md).
+
+### Lens edge annotations
+
+`lens-qualification` reads the existing RAW manifest reader and an annotation file with `{"format":1,"sources":[{"id":"manifest-id","edges":[[[x,y],...],...]}]}`. Coordinates are full-resolution content pixel centres before optional recipe geometry. Each marked photo needs at least three edges with at least five points each. A corrected edge must have at most 25% of the original maximum orthogonal line-fit deviation and at most 3 px after normalization to a 6,048-px long side. An empty `sources` array exercises selection and export for every manifest photo while reporting edge quality untested. It does not qualify missing photographs or fabricate edges. Outputs include the query, frozen selection, mapping descriptor, export result and unchanged source hash.

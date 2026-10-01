@@ -394,7 +394,9 @@ fn the_stage_transform_and_locate_name_the_same_content_pixel() {
             let x = (rng.next_unit() * f64::from(stage_width)).floor() as u32;
             let y = (rng.next_unit() * f64::from(stage_height)).floor() as u32;
             let (x, y) = (x.min(stage_width - 1), y.min(stage_height - 1));
-            let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (u, v) = transform
+                .to_content(f64::from(x) + 0.5, f64::from(y) + 0.5)
+                .unwrap();
             assert!(
                 u.fract() != 0.0 && v.fract() != 0.0,
                 "{case}: ({x}, {y}) maps onto a content pixel boundary at ({u}, {v}), \
@@ -443,14 +445,23 @@ fn projecting_a_content_point_forward_locates_the_pixel_it_came_from() {
             ..Recipe::default()
         };
         let transform = stage_transform(&registry, width, height, &recipe).unwrap();
-        let budget_x = 0.5 * (transform.inverse[0].abs() + transform.inverse[1].abs());
-        let budget_y = 0.5 * (transform.inverse[3].abs() + transform.inverse[4].abs());
+        let origin = transform.to_content(0.0, 0.0).unwrap();
+        let corners = [(-0.5, -0.5), (-0.5, 0.5), (0.5, -0.5), (0.5, 0.5)]
+            .map(|(x, y)| transform.to_content(x, y).unwrap());
+        let budget_x = corners
+            .iter()
+            .map(|p| (p.0 - origin.0).abs())
+            .fold(0.0_f64, f64::max);
+        let budget_y = corners
+            .iter()
+            .map(|p| (p.1 - origin.1).abs())
+            .fold(0.0_f64, f64::max);
         let mut rng = Lcg(0x5EED_0070);
         let mut located_points = 0;
         for _ in 0..1000 {
             let px = rng.next_unit() * f64::from(width);
             let py = rng.next_unit() * f64::from(height);
-            let (qx, qy) = at(transform.forward, px, py);
+            let (qx, qy) = transform.to_output(px, py).unwrap();
             // A content point the crop discarded has no rendered pixel to locate.
             if qx < 0.0
                 || qy < 0.0
@@ -474,7 +485,9 @@ fn projecting_a_content_point_forward_locates_the_pixel_it_came_from() {
             }
             // The centre of the pixel the projection landed in, carried back: within the budget
             // of the content point it started from, and therefore within one content pixel.
-            let (u, v) = at(transform.inverse, f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let (u, v) = transform
+                .to_content(f64::from(x) + 0.5, f64::from(y) + 0.5)
+                .unwrap();
             assert!(
                 (u - px).abs() <= budget_x + 1e-9 && (v - py).abs() <= budget_y + 1e-9,
                 "{case}: ({px}, {py}) came back as ({u}, {v}), outside \
@@ -517,16 +530,16 @@ fn the_stage_transform_and_its_inverse_are_mutual_inverses() {
         for _ in 0..400 {
             let px = rng.next_unit() * f64::from(width);
             let py = rng.next_unit() * f64::from(height);
-            let (qx, qy) = at(transform.forward, px, py);
-            let (rx, ry) = at(transform.inverse, qx, qy);
+            let (qx, qy) = transform.to_output(px, py).unwrap();
+            let (rx, ry) = transform.to_content(qx, qy).unwrap();
             assert!(
                 (rx - px).abs() < 1e-9 && (ry - py).abs() < 1e-9,
                 "{case}: ({px}, {py}) round-tripped to ({rx}, {ry})"
             );
             let ox = rng.next_unit() * f64::from(transform.output.width);
             let oy = rng.next_unit() * f64::from(transform.output.height);
-            let (cx, cy) = at(transform.inverse, ox, oy);
-            let (bx, by) = at(transform.forward, cx, cy);
+            let (cx, cy) = transform.to_content(ox, oy).unwrap();
+            let (bx, by) = transform.to_output(cx, cy).unwrap();
             assert!(
                 (bx - ox).abs() < 1e-9 && (by - oy).abs() < 1e-9,
                 "{case}: output ({ox}, {oy}) round-tripped to ({bx}, {by})"

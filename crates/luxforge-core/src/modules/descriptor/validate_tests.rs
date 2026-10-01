@@ -5,6 +5,91 @@ use crate::ErrorKind;
 use serde::Deserialize;
 use serde_json::{Map, json};
 
+fn query_choice_descriptor() -> ModuleDescriptor {
+    ModuleDescriptor {
+        id: "test.querychoice".into(),
+        title: "Query choice".into(),
+        queries: vec![ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::string("text", 64),
+                ParameterDescriptor::integer("page", 0, 99),
+                ParameterDescriptor::number("focal", 0.5, 2000.0),
+            ],
+            ..ActionDescriptor::new("profiles", "Profiles", "test")
+        }],
+        actions: vec![ActionDescriptor {
+            parameters: vec![
+                ParameterDescriptor::string("key", 32),
+                ParameterDescriptor::number("focal", 0.5, 2000.0),
+            ],
+            ..ActionDescriptor::new("select-profile", "Select profile", "test")
+        }],
+        controls: vec![Control::QueryChoice(QueryChoiceControl {
+            label: "Profile".into(),
+            query: "profiles".into(),
+            text: "text".into(),
+            page: "page".into(),
+            action: "select-profile".into(),
+            key: "key".into(),
+            shared: vec!["focal".into()],
+        })],
+        ..ModuleDescriptor::default()
+    }
+}
+
+#[test]
+fn query_choice_registration_refuses_unbound_or_mismatched_parameters() {
+    query_choice_descriptor().validate().unwrap();
+    let mutate: [fn(&mut ModuleDescriptor); 6] = [
+        |d| d.queries.clear(),
+        |d| d.actions[0].patch = true,
+        |d| d.actions[0].parameters[0] = ParameterDescriptor::integer("key", 0, 99),
+        |d| d.queries[0].parameters[0] = ParameterDescriptor::integer("text", 0, 99),
+        |d| d.actions[0].parameters[1] = ParameterDescriptor::integer("focal", 1, 2000),
+        |d| d.controls.push(d.controls[0].clone()),
+    ];
+    for mutate in mutate {
+        let mut descriptor = query_choice_descriptor();
+        mutate(&mut descriptor);
+        assert_eq!(
+            descriptor.validate().unwrap_err().kind,
+            ErrorKind::Validation
+        );
+    }
+}
+
+#[test]
+fn query_choice_rows_contract_is_validated_by_the_host() {
+    let descriptor = query_choice_descriptor();
+    let row = json!({"key": "lf1-0", "title": "Lens", "eligible": true, "subtitle": "test", "reasons": []});
+    descriptor
+        .validate_query_choice_answer("profiles", &json!({"rows": [row.clone()]}))
+        .unwrap();
+    for key in ["key", "title", "eligible"] {
+        let mut malformed = row.clone();
+        malformed.as_object_mut().unwrap().remove(key);
+        let error = descriptor
+            .validate_query_choice_answer("profiles", &json!({"rows": [malformed]}))
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Internal);
+        assert!(error.detail.contains("test.querychoice"));
+    }
+    for malformed in [
+        json!({}),
+        json!({"rows": vec![row; 101]}),
+        json!({"rows": [{"key":"a", "title":"A", "eligible":true, "reasons":"bad"}]}),
+    ] {
+        assert!(
+            descriptor
+                .validate_query_choice_answer("profiles", &malformed)
+                .is_err()
+        );
+    }
+    descriptor
+        .validate_query_choice_answer("different-query", &json!({}))
+        .unwrap();
+}
+
 #[test]
 fn a_points_parameter_is_declared_within_the_host_path_bound() {
     let limit = crate::path::POSTED_POINTS_PER_STROKE;
