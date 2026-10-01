@@ -1772,13 +1772,15 @@ impl Editor {
     }
 }
 
-/// After every message: read the rows near the screen and start a staleness check a wake asked for.
-/// An evidence run also hears when nothing Select asked for is in flight any more.
+/// After every message: read the rows near the screen — with the loupe open, the grid under it
+/// following its active frame first — and start a staleness check a wake asked for. An evidence
+/// run also hears when nothing Select asked for is in flight any more.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let waiting = editor.waiting_source();
     if editor.select.state.reading != waiting {
         editor.select.state.reading = waiting;
     }
+    editor.loupe_follow();
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();

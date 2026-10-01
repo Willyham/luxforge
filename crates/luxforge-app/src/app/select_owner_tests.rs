@@ -47,7 +47,7 @@ fn ssd() -> VolumeId {
     VolumeId::parse("volume-ssd-00000000").unwrap()
 }
 
-fn z8() -> CameraBody {
+pub(super) fn z8() -> CameraBody {
     CameraBody {
         make: "NIKON CORPORATION".into(),
         model: "NIKON Z 8".into(),
@@ -65,7 +65,13 @@ fn q3() -> CameraBody {
 
 /// One file of the lake folder, taken at `when` (`YYYY:MM:DD HH:MM:SS[.mmm]`, +02:00) by `camera`
 /// at 1/`speed` s and f/8.
-fn file(name: &str, when: &str, camera: CameraBody, speed: f32, bias: f32) -> FileRecord {
+pub(super) fn file(
+    name: &str,
+    when: &str,
+    camera: CameraBody,
+    speed: f32,
+    bias: f32,
+) -> FileRecord {
     let (datetime, subsec) = match when.split_once('.') {
         Some((datetime, subsec)) => (datetime, Some(subsec)),
         None => (when, None),
@@ -109,6 +115,24 @@ fn file(name: &str, when: &str, camera: CameraBody, speed: f32, bias: f32) -> Fi
 /// three, two Nikon singles and a Leica bracket of three exposures from its metadata; on the
 /// second, four Nikon singles.
 fn seeded() -> PathBuf {
+    seeded_with(&[
+        file("DSC_0001.NEF", "2026:09:12 09:00:00.000", z8(), 250.0, 0.0),
+        file("DSC_0002.NEF", "2026:09:12 09:00:00.300", z8(), 250.0, 0.0),
+        file("DSC_0003.NEF", "2026:09:12 09:00:00.600", z8(), 250.0, 0.0),
+        file("DSC_0004.NEF", "2026:09:12 09:30:00", z8(), 250.0, 0.0),
+        file("DSC_0005.NEF", "2026:09:12 10:15:00", z8(), 250.0, 0.0),
+        file("L1000001.DNG", "2026:09:12 11:00:00.000", q3(), 500.0, -1.0),
+        file("L1000002.DNG", "2026:09:12 11:00:00.800", q3(), 250.0, 0.0),
+        file("L1000003.DNG", "2026:09:12 11:00:01.600", q3(), 125.0, 1.0),
+        file("DSC_0006.NEF", "2026:09:13 08:00:00", z8(), 250.0, 0.0),
+        file("DSC_0007.NEF", "2026:09:13 09:00:00", z8(), 250.0, 0.0),
+        file("DSC_0008.NEF", "2026:09:13 10:00:00", z8(), 250.0, 0.0),
+        file("DSC_0009.NEF", "2026:09:13 11:00:00", z8(), 250.0, 0.0),
+    ])
+}
+
+/// A catalog with one indexed folder of `files`, each of the lake folder ([`file`]).
+pub(super) fn seeded_with(files: &[FileRecord]) -> PathBuf {
     let dir = luxforge_testbase::paths::temp_dir("select-owner");
     let catalog = dir.join("catalog.sqlite");
     let mut seeder = CatalogSeeder::create(&catalog, CATALOG_ID).unwrap();
@@ -132,29 +156,14 @@ fn seeded() -> PathBuf {
         .unwrap();
     seeder.finish().unwrap();
     let mut index = IndexSeeder::create(&catalog, CATALOG_ID).unwrap();
-    index
-        .files(&[
-            file("DSC_0001.NEF", "2026:09:12 09:00:00.000", z8(), 250.0, 0.0),
-            file("DSC_0002.NEF", "2026:09:12 09:00:00.300", z8(), 250.0, 0.0),
-            file("DSC_0003.NEF", "2026:09:12 09:00:00.600", z8(), 250.0, 0.0),
-            file("DSC_0004.NEF", "2026:09:12 09:30:00", z8(), 250.0, 0.0),
-            file("DSC_0005.NEF", "2026:09:12 10:15:00", z8(), 250.0, 0.0),
-            file("L1000001.DNG", "2026:09:12 11:00:00.000", q3(), 500.0, -1.0),
-            file("L1000002.DNG", "2026:09:12 11:00:00.800", q3(), 250.0, 0.0),
-            file("L1000003.DNG", "2026:09:12 11:00:01.600", q3(), 125.0, 1.0),
-            file("DSC_0006.NEF", "2026:09:13 08:00:00", z8(), 250.0, 0.0),
-            file("DSC_0007.NEF", "2026:09:13 09:00:00", z8(), 250.0, 0.0),
-            file("DSC_0008.NEF", "2026:09:13 10:00:00", z8(), 250.0, 0.0),
-            file("DSC_0009.NEF", "2026:09:13 11:00:00", z8(), 250.0, 0.0),
-        ])
-        .unwrap();
+    index.files(files).unwrap();
     index
         .roots(&[IndexRoot {
             path: PICTURES.into(),
             kind: RootKind::Indexed,
             volume_id: ssd(),
             listed_ms: Some(1),
-            file_count: Some(12),
+            file_count: Some(u32::try_from(files.len()).unwrap()),
             offline: false,
         }])
         .unwrap();
@@ -165,7 +174,11 @@ fn seeded() -> PathBuf {
 /// The editor over the seeded catalog, with Select shown and what showing it reads — the events,
 /// the cards and volumes, and the catalog's counts — answered by the owner.
 pub(super) fn selecting() -> (Editor, PathBuf) {
-    let catalog = seeded();
+    selecting_over(seeded())
+}
+
+/// The editor over `catalog`, as [`selecting`] opens it.
+pub(super) fn selecting_over(catalog: PathBuf) -> (Editor, PathBuf) {
     let (owner, join) = OwnerHandle::start(&catalog).unwrap();
     let (mut editor, _) = Editor::new(Boot {
         owner,

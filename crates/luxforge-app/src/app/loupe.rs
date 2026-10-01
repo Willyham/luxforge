@@ -338,9 +338,10 @@ impl Editor {
     }
 
     /// The look-ahead is warm: the loupe has settled, the rows of every frame ahead in the direction
-    /// of travel are read, and every frame it wants — on screen and ahead — is decoded at the size
-    /// it is drawn at, or has nothing more to wait for. A key that moves to the next frame then
-    /// presents it in its own update. An evidence step that times the loupe presses once it is.
+    /// of travel are read (or refused), and every frame it wants — on screen and ahead — is decoded
+    /// at the size it is drawn at, or has nothing more to wait for. A key that moves to the next
+    /// frame then presents it in its own update. An evidence step that times the loupe presses once
+    /// it is.
     pub(crate) fn loupe_warm(&self) -> bool {
         let state = &self.select.state;
         let (Some(summary), Some(subject)) = (
@@ -353,7 +354,9 @@ impl Editor {
             && self.loupe_settled()
             && model::look_ahead(summary, subject.position, state.loupe.travel)
                 .iter()
-                .all(|position| state.rows.row(*position).is_some())
+                .all(|position| {
+                    state.rows.row(*position).is_some() || state.rows.refused(*position)
+                })
             && self.select.loupe.frames.all_settled(&self.loupe_wants())
     }
 
@@ -399,6 +402,21 @@ impl Editor {
         if let Some(position) = target(summary, subject.position, goto) {
             self.loupe_select(position);
         }
+    }
+
+    /// While the loupe is open, the grid under it keeps the active frame on screen, so the grid's
+    /// rows window reads the rows the loupe names however the frame became active: stepped to, or
+    /// the loupe opened on a frame the grid was scrolled away from, whose block of rows the window
+    /// never read or has let go. Without it the loupe would wait for a row nothing asks for. Select's
+    /// hook calls this before it asks for the rows near the screen.
+    pub(crate) fn loupe_follow(&mut self) {
+        let Some(position) = self.loupe_open().then(|| self.loupe_position()).flatten() else {
+            return;
+        };
+        let select = &mut self.select;
+        select.scroll = select
+            .layout
+            .reveal(position, select.scroll, select.viewport.height);
     }
 
     /// `browse.select` of `position` alone, synchronously in this update, and the grid under the
@@ -525,9 +543,10 @@ impl Editor {
         };
     }
 
-    /// Everything the loupe waits for has arrived: the frames on screen decoded at their size, and
-    /// the focus check's region of the rectangle under the pointer. True while it is closed. An
-    /// evidence step captures once it is.
+    /// Everything the loupe waits for has arrived: the active frame's row, the frames on screen
+    /// decoded at their size, and the focus check's region of the rectangle under the pointer; or
+    /// it has nothing more to wait for, the owner having refused the active frame's row, which the
+    /// loupe says. True while it is closed. An evidence step captures once it is.
     pub(crate) fn loupe_settled(&self) -> bool {
         if !self.loupe_open() {
             return true;
@@ -536,8 +555,11 @@ impl Editor {
         let Some(subject) = subject(state.summary.as_ref(), &self.session.browse) else {
             return true;
         };
-        if state.rows.revision() != subject.revision || state.rows.row(subject.position).is_none() {
+        if state.rows.revision() != subject.revision {
             return false;
+        }
+        if state.rows.row(subject.position).is_none() {
+            return state.rows.refused(subject.position);
         }
         let wants = self.loupe_wants();
         self.select.loupe.frames.settled(&wants)
