@@ -57,8 +57,9 @@ impl Evidence {
 /// proof, whose fields are the non-numeric kinds. A new field-patch module needs no entry here to
 /// be checked; this list only makes sure a descriptor change can never drop one of these from the
 /// suite silently.
-pub const KNOWN: [&str; 5] = [
+pub const KNOWN: [&str; 6] = [
     "luxforge.basic",
+    "luxforge.detail",
     "luxforge.presence",
     "luxforge.mixer",
     "luxforge.vignette",
@@ -150,7 +151,7 @@ fn check(
     let mut evidence = Evidence::default();
     let payloads = within("payloads", || pixels::payloads(registry, module, sources))?;
     evidence.record(
-        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field alone and each whole payload has exactly the consequences of the module's own neutrality rule, and a developer proof's renders nothing",
+        "every neutral spelling compiles to nothing, is reported neutral and Neutral, renders the shared source allocation and changes no byte on the linear path; each field retains its declared values independently of compiled pixel work; an inactive stored configuration preserves exact byte and linear identity with source sharing; active payloads compile processing, whole payloads render distinct images, and a developer proof renders nothing",
         payloads,
     );
     let rules = within("the field-patch rules", || {

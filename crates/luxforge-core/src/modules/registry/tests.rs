@@ -7,7 +7,7 @@ use crate::{
     EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
     modules::{
         ActionInput, ActionPlan, Availability, CapabilityModule, EffectStage, ModuleDescriptor,
-        Processing, Stage, StageContext,
+        Processing, StageContext,
     },
 };
 use luxforge_testbase::Gate;
@@ -70,7 +70,13 @@ impl ToolModule for TestModule {
             "test layer of {effect_id}"
         )))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Err(Error::internal("test module never renders"))
     }
     /// A test writes any descriptor, capability declarations included, so the module offers
@@ -220,7 +226,13 @@ impl ToolModule for PatchModule {
             ..crate::LayerReport::new(format!("Patch {red}, {green}"))
         })
     }
-    fn compile(&self, _: &str, _: u32, payload: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        payload: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         let [red, green] = Self::channels(payload);
         Ok(Processing::PointReplace {
             x: 0,
@@ -298,7 +310,13 @@ impl ToolModule for StageModule {
             "stage layer of {effect_id}"
         )))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::neutral()))
     }
 }
@@ -386,7 +404,13 @@ impl ToolModule for HeldModule {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
         Ok(crate::LayerReport::new("held render"))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::new(vec![
             self.gate.clone(),
         ])))
@@ -738,6 +762,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.pixel",
             "luxforge.raw",
             "luxforge.basic",
+            "luxforge.detail",
             "luxforge.presence",
             "luxforge.mixer",
             "luxforge.transform",
@@ -878,8 +903,8 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        8,
-        "basic, presence, mixer, vignette, pixel, transform, crop, controls"
+        9,
+        "basic, detail, presence, mixer, vignette, pixel, transform, crop, controls"
     );
     modules.push(&proof);
     for module in modules {

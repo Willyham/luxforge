@@ -393,6 +393,8 @@ impl ModuleRegistry {
         self.compile_sampled(
             width,
             height,
+            width,
+            height,
             recipe,
             crate::mask_field::MaskSampling::ThinFeature,
         )

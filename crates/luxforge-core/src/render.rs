@@ -19,11 +19,13 @@ mod compiled;
 mod context;
 mod entry;
 mod geometry;
+mod input_grid;
 pub(crate) mod linear;
 mod locate;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
+mod restoration;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -45,16 +47,20 @@ mod sample_tests;
 pub(crate) mod tests;
 
 use byte::{Byte, check_source, rasterize};
-use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_pixel, color_runs};
+use colour_runs::{ColorRun, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
 pub use context::{RenderContext, ScratchBudget};
 #[cfg(test)]
 pub(crate) use entry::ProxyRegionPlan;
-pub(crate) use entry::{ProxyStage, RegionRenderOutcome, layer_input};
+pub(crate) use entry::{
+    MaskInputMode, ProxyStage, RegionRenderOutcome, StagePixels, layer_input, prefix_pixels,
+};
 pub use entry::{RegionFrame, Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
+pub(crate) use input_grid::{GridRequest, grid_input};
+pub use input_grid::{INPUT_GRID_MAX_CELLS, InputGridCache};
 pub use linear::{LinearSettings, WhiteBalanceApproximation};
 pub use locate::{ContentPoint, Sample, StageSize, StageTransform, stage_transform};
 pub(crate) use locate::{locate, transform_of};
@@ -64,3 +70,6 @@ pub use raster::Raster;
 #[cfg(test)]
 pub(crate) use raster::frame_writes;
 pub(crate) use raster::{frame_mut, zeroed_frame};
+
+pub use restoration::PrefixUse;
+pub(crate) use restoration::RestorationPrefixCache;

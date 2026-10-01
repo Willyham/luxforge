@@ -184,6 +184,41 @@ fn encode_presence(path: &Path) -> Result {
     Ok(())
 }
 
+/// Functional Detail probes; the 24/60 MP fixtures remain separate timing workloads.
+fn encode_detail(path: &Path) -> Result {
+    let (width, height) = (2400, 1600);
+    let image = RgbImage::from_fn(width, height, |x, y| {
+        let mut seed = u64::from(y) * u64::from(width) + u64::from(x) + 0x5eeda11;
+        seed ^= seed >> 30;
+        seed = seed.wrapping_mul(0xbf58476d1ce4e5b9);
+        seed ^= seed >> 27;
+        seed = seed.wrapping_mul(0x94d049bb133111eb);
+        seed ^= seed >> 31;
+        let noise = ((seed >> 11) as f64 / ((1u64 << 53) as f64) - 0.5) * 24.0;
+        let mut rgb = if y < height / 2 && x < width / 2 {
+            let level = 60.0 + 100.0 * f64::from(x) / f64::from(width / 2);
+            [level; 3]
+        } else if y < height / 2 {
+            let edge = f64::from(x)
+                - f64::from(width) * 0.75
+                - (f64::from(y) - f64::from(height) * 0.25) * 5.0_f64.to_radians().tan();
+            [90.0 + 65.0 * (1.0 + edge.tanh()); 3]
+        } else if x < width / 2 {
+            [128.0 + 18.0 * (std::f64::consts::TAU * f64::from(x) / 6.0).sin(); 3]
+        } else {
+            let blotch = 12.0 * (f64::from(x) / 16.0).sin() * (f64::from(y) / 24.0).cos();
+            [128.0 + blotch, 128.0, 128.0 - blotch]
+        };
+        for value in &mut rgb {
+            *value += noise;
+        }
+        Rgb(rgb.map(|v| v.round().clamp(0.0, 255.0) as u8))
+    });
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&image)?;
+    Ok(())
+}
+
 /// The `mask-range` smoke scenario's own fixture: twelve flat patches of the 24-patch reflective
 /// colour chart's own measured sRGB renderings, which is what the
 /// [range study](../../docs/design/range-study.md) measured every one of its figures over. Nothing
@@ -259,7 +294,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 5] = [
+pub const TABLE: [Fixture; 6] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -293,6 +328,11 @@ pub const TABLE: [Fixture; 5] = [
                 "patches":RANGE_PATCHES.map(|(name,codes)| json!({"name":name,"srgb":codes})),
             })
         },
+    },
+    Fixture {
+        file: "detail.jpg",
+        write: encode_detail,
+        manifest: || json!({"width":2400,"height":1600,"scope":"Detail functional synthetic probe; timing uses separate 24/60 MP fixtures"}),
     },
 ];
 

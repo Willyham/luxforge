@@ -7,8 +7,7 @@
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, Availability, Control, EffectDescriptor,
     EffectStage, ExactGeometry, LayerEdit, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer,
-    ParameterDescriptor, Processing, Stage, StageContext, ToolModule, decode_parameters,
-    label_value,
+    ParameterDescriptor, Processing, StageContext, ToolModule, decode_parameters, label_value,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -454,8 +453,9 @@ impl ToolModule for TransformModule {
         effect_id: &str,
         format: u32,
         value: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
+        let stage = at.stage;
         Ok(Processing::ExactGeometry(
             payload(effect_id, format, value)?.geometry(stage.width, stage.height),
         ))
@@ -465,6 +465,7 @@ impl ToolModule for TransformModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::{
         ActionControl, CROP_EFFECT, CropPayload, GroupControl, LayerId, ModuleRegistry,
         PIXEL_EFFECT, VIGNETTE_EFFECT,
@@ -775,7 +776,12 @@ mod tests {
             let layer = Layer::orientation(Orientation::of(transform));
             assert_eq!(
                 module
-                    .compile(&layer.effect_id, layer.effect_format, &layer.payload, STAGE)
+                    .compile(
+                        &layer.effect_id,
+                        layer.effect_format,
+                        &layer.payload,
+                        crate::CompileStage::exact(STAGE)
+                    )
                     .unwrap(),
                 Processing::ExactGeometry(transform.geometry(STAGE.width, STAGE.height)),
                 "{transform:?}"
@@ -788,7 +794,7 @@ mod tests {
                     ORIENTATION_EFFECT,
                     EFFECT_FORMAT,
                     &json!({"mirror":false,"turns":0}),
-                    STAGE
+                    crate::CompileStage::exact(STAGE)
                 )
                 .unwrap(),
             Processing::ExactGeometry(ExactGeometry::identity(STAGE.width, STAGE.height))

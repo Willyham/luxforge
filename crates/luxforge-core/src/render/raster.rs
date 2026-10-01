@@ -53,6 +53,12 @@ pub(crate) fn frame_mut(frame: &mut Arc<Vec<u8>>) -> &mut [u8] {
     Arc::get_mut(frame).expect("a frame is not shared until its render returns it")
 }
 
+pub(crate) fn frame_mut16(frame: &mut Arc<Vec<u16>>) -> &mut [u16] {
+    #[cfg(test)]
+    frame_writes::note(frame);
+    Arc::get_mut(frame).expect("a frame is not shared until its render returns it")
+}
+
 /// Which frames the passes on this thread were handed to write, for the tests that prove a render
 /// returns the frame its last pass wrote rather than a copy of it.
 #[cfg(test)]
@@ -64,7 +70,7 @@ pub(crate) mod frame_writes {
         static WRITTEN: RefCell<Option<Vec<usize>>> = const { RefCell::new(None) };
     }
 
-    pub(super) fn note(frame: &[u8]) {
+    pub(super) fn note<T>(frame: &[T]) {
         WRITTEN.with_borrow_mut(|written| {
             if let Some(written) = written {
                 written.push(frame.as_ptr() as usize);

@@ -209,8 +209,8 @@ const TRANSFORM: Option<Panel> = Some(Panel::Transform);
 const CURVE: Option<Panel> = Some(Panel::ToneCurve);
 const CALIBRATION: Option<Panel> = Some(Panel::Calibration);
 
-const NO_SHARPENING: &str = "Luxforge has no sharpening";
-const NO_NOISE_REDUCTION: &str = "Luxforge has no noise reduction";
+const NO_SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
+const NO_NOISE_REDUCTION: &str = "Lightroom noise reduction is not mapped to Luxforge Detail";
 const NO_GRAIN: &str = "Luxforge has no grain";
 const NO_GRADING: &str = "Luxforge has no colour grading";
 const NO_CURVE: &str = "Luxforge has no tone curve";

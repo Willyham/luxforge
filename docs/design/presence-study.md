@@ -4,6 +4,8 @@ Status: frozen and implemented by the `luxforge.presence` module, which is check
 
 No formula below claims Lightroom or darktable numeric equivalence. The [Lightroom detail research](../research/lightroom/detail-and-local-contrast.md) and [darktable detail research](../research/darktable/detail-and-local-contrast.md) are context and candidate mechanisms only, as their own documents say.
 
+JPEG frame hand-offs use the shared RGB16 encoded-sRGB boundary when a spatial output feeds colour or another spatial operation, and when a colour segment feeds a spatial operation. Terminal, resample and point replacement boundaries remain 8-bit. The [Detail precision contract](detail.md#the-16-bit-hand-off-on-the-byte-path) owns the exact tables and width selection; the equations and independent linear-light oracle here are unchanged. The quantization ramp below ends directly at the terminal, so it retains its original 8-bit boundary. Native rendered and performance requalification of mixed Presence stacks remains part of the Detail task plan.
+
 ## Working domains
 
 **Luminance** is the tone study's: Rec. 709 coefficients on **linear** sRGB, not gamut-clamped.

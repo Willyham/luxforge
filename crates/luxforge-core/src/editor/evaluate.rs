@@ -122,6 +122,14 @@ impl<S> Evaluation<S> {
         self.bound.compiled.as_ref().map_err(Clone::clone)
     }
 
+    /// Whether Fit needs an exact processed settlement, read from compilation metadata only.
+    pub fn settles_from_exact(&self) -> bool {
+        self.bound
+            .compiled
+            .as_ref()
+            .is_ok_and(Compiled::settles_from_exact)
+    }
+
     /// This evaluation reading `source`.
     fn reading<T>(self, source: T) -> Evaluation<T> {
         Evaluation {
@@ -686,7 +694,7 @@ impl EditorService {
 /// The buffer a prepared source is evaluated on under `mode`: the decoded JPEG, or the developed
 /// RAW planes with the linear settings `recipe` asks for ([`raw_settings`]). `O(1)`; it reads no
 /// pixel.
-fn source_of(
+pub(super) fn source_of(
     prepared: PreparedSource,
     recipe: &Recipe,
     mode: RawSettingsMode,
@@ -741,10 +749,14 @@ impl PointPlan {
     /// layer the one tile that contains it, whose byte is the byte a render writes there. A point
     /// outside the rendered image is a validation error naming the stage it missed.
     pub(crate) fn evaluate(self) -> Result<PixelSample, Error> {
+        self.evaluate_cancelled(&Cancel::never())
+    }
+
+    pub(crate) fn evaluate_cancelled(self, cancel: &Cancel) -> Result<PixelSample, Error> {
         let Self {
             evaluation, x, y, ..
         } = self;
-        let sampled = evaluation.exact(&Cancel::never())?.sample(x, y)?;
+        let sampled = evaluation.exact(cancel)?.sample(x, y)?;
         let rgba = sampled.rgba.ok_or_else(|| {
             Error::validation(format!(
                 "sample ({x}, {y}) is outside the {}x{} rendered image",

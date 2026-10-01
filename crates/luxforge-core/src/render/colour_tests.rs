@@ -606,6 +606,104 @@ fn two_consecutive_colour_operations_keep_values_outside_the_range_between_them(
 }
 
 #[test]
+fn mask_colour_input_retains_replacement_boundaries_and_terminal_bytes() {
+    let registry = colour_registry();
+    let source = greys();
+    let context = RenderContext::new();
+    for tail in [false, true] {
+        let mut layers = vec![exposure_layer(&[0.5]), Layer::pixel(0, 0, [10, 20, 30])];
+        if tail {
+            layers.push(exposure_layer(&[-0.5]));
+        }
+        let recipe = colour_recipe(layers);
+        let compiled = registry
+            .compile(source.width, source.height, &recipe)
+            .unwrap();
+        let input = prefix_pixels(
+            RenderSource::Byte(&source),
+            compiled,
+            &context,
+            &crate::Cancel::never(),
+            false,
+            MaskInputMode::ColourRun,
+        )
+        .unwrap();
+        // The replacement is elsewhere, but it still ends the previous run at eight bits. Its
+        // white pixel therefore reaches the following operation as one, never sqrt(2).
+        let expected = if tail { (-0.5_f64).exp2() as f32 } else { 1.0 };
+        assert_eq!(
+            input.linear(255, 0).unwrap(),
+            Some([f64::from(expected); 3])
+        );
+        for x in [0, 128, 255] {
+            assert_eq!(
+                input.rgba(x, 0).unwrap(),
+                sample(&registry, &source, &recipe, x, 0).unwrap().rgba
+            );
+        }
+    }
+}
+
+#[test]
+fn mask_colour_input_after_raw_resample_uses_f32_at_run_entry() {
+    let registry = colour_registry();
+    let values = [
+        [0.12, 0.23, 0.34],
+        [0.37, 0.48, 0.59],
+        [0.70, 0.81, 0.92],
+        [0.90, 1.01, 1.12],
+    ];
+    let source = image(2, 2, &values);
+    let recipe = colour_recipe(vec![scale_layer(1.5)]);
+    let compiled = registry.compile(2, 2, &recipe).unwrap();
+    let context = RenderContext::new();
+    let boundary = prefix_pixels(
+        linear(&source, LinearSettings::default()),
+        compiled.clone(),
+        &context,
+        &crate::Cancel::never(),
+        false,
+        MaskInputMode::Boundary,
+    )
+    .unwrap();
+    let input = prefix_pixels(
+        linear(&source, LinearSettings::default()),
+        compiled,
+        &context,
+        &crate::Cancel::never(),
+        false,
+        MaskInputMode::ColourRun,
+    )
+    .unwrap();
+    // The inverse maps this output centre to the centre of the four source centres. The
+    // resample accumulates in f64, while the receiving colour operation's row begins in f32.
+    let interpolated = std::array::from_fn(|channel| {
+        values
+            .iter()
+            .map(|pixel| f64::from(pixel[channel]) * 0.25)
+            .sum::<f64>()
+    });
+    let expected = interpolated.map(|channel| f64::from(channel as f32));
+    assert_ne!(expected, interpolated);
+    assert_eq!(boundary.linear(1, 1).unwrap(), Some(interpolated));
+    assert_eq!(input.linear(1, 1).unwrap(), Some(expected));
+    assert_eq!(
+        input.rgba(1, 1).unwrap(),
+        sample_in(
+            &context,
+            &registry,
+            linear(&source, LinearSettings::default()),
+            &recipe,
+            RenderOptions::default(),
+            1,
+            1,
+        )
+        .unwrap()
+        .rgba
+    );
+}
+
+#[test]
 fn a_replacement_before_a_colour_operation_is_exposed_and_one_after_it_is_not() {
     let registry = colour_registry();
     let source = gradient(8, 6);

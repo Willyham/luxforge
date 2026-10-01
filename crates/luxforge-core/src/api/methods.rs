@@ -117,14 +117,17 @@ impl Mutated {
 pub(super) enum Planned {
     Value(Value),
     Sample(Box<PointPlan>),
+    Query(Box<crate::editor::pixels::QueryPlan>),
 }
 
+#[cfg(test)]
 impl Planned {
     /// The answer, evaluating a planned sample here.
     pub(super) fn answer(self) -> Result<Value, Error> {
         match self {
             Self::Value(value) => Ok(value),
             Self::Sample(plan) => sample_value((*plan).evaluate()?),
+            Self::Query(plan) => plan.evaluate(&crate::Cancel::never()),
         }
     }
 }
@@ -929,7 +932,8 @@ impl Method {
             Self::Action(action_id) => {
                 edit_action(service, session, action_id, params).map(mutated)
             }
-            Self::Query(query_id) => module_query(service, session, query_id, params).map(read),
+            Self::Query(query_id) => module_query(service, session, query_id, params)
+                .map(|plan| (plan, Changed::Nothing)),
             Self::Host(MethodSpec {
                 name,
                 handler: Handler::Owner(_),
@@ -1535,12 +1539,19 @@ fn module_query(
     session: &mut ClientSession,
     query_id: &str,
     request: &Value,
-) -> Result<Value, Error> {
+) -> Result<Planned, Error> {
     let mut parameters = params::generated(request)?;
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     let entry_id = params::take_optional(&mut parameters, "entry_id")?;
     let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
-    service.run_query(&asset_id, &entry_id, query_id, Value::Object(parameters))
+    let parameters = Value::Object(parameters);
+    let result = service.run_query(&asset_id, &entry_id, query_id, parameters.clone());
+    if service.take_pixel_read().is_some() {
+        return service
+            .query_plan(&asset_id, &entry_id, query_id, parameters)
+            .map(|plan| Planned::Query(Box::new(plan)));
+    }
+    result.map(Planned::Value)
 }
 
 fn history_undo(
@@ -1942,7 +1953,7 @@ fn render_sample(
     }
 }
 
-fn sample_value(sample: PixelSample) -> Result<Value, Error> {
+pub(super) fn sample_value(sample: PixelSample) -> Result<Value, Error> {
     let mut sampled = value(sample)?;
     sampled["source_detail_ready"] = json!(true);
     Ok(sampled)
@@ -2012,6 +2023,7 @@ fn draft_begin(
     let revision = service.revision(&p.asset_id)?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
     draft.target = target;
+    session.pixel_memo.clear();
     session.draft = Some(draft);
     session.touch();
     value(session.draft.as_ref().expect("the draft just opened"))
@@ -2034,8 +2046,26 @@ fn draft_set(
         .map(|mask| MaskId::parse(mask.as_str()))
         .transpose()?;
     service.check_draft(&draft.asset_id, &draft.action, mask.as_ref(), &p.fields)?;
-    let draft = session.draft.as_mut().expect("the draft was just found");
-    draft.merge(p.fields);
+    let mut next = session
+        .draft
+        .as_ref()
+        .expect("the draft was just found")
+        .clone();
+    next.merge(p.fields);
+    // A partial gesture may still lack a required field. Once complete, a stack containing
+    // spatial operations seeds any planning reads before acceptance; pointwise drafts keep
+    // their existing field-only set path. This metadata check neither compiles nor reads pixels.
+    let request = next.request();
+    if action
+        .descriptor()
+        .parameters
+        .iter()
+        .all(|field| !field.required || request.contains_key(&field.name))
+        && service.draft_has_spatial_inputs(&next.asset_id)?
+    {
+        service.draft_recipe(&next.asset_id, &next)?;
+    }
+    session.draft = Some(next);
     session.touch();
     draft_value(service, session)
 }
@@ -2055,6 +2085,7 @@ fn draft_cancel(
     p: DraftParams,
 ) -> Result<Value, Error> {
     session.held_draft(&p.draft_id)?;
+    session.pixel_memo.clear();
     session.draft = None;
     session.touch();
     Ok(json!({"cancelled": true}))
@@ -2087,6 +2118,7 @@ fn draft_commit(
     // exactly like an applied one, because the gesture is over either way.
     let request = draft.request();
     let result = service.run_action(&asset_id, p.mutation, &action, Value::Object(request))?;
+    session.pixel_memo.clear();
     session.draft = None;
     session.touch();
     Mutated::asset(&result.mutation, &result)
@@ -2103,9 +2135,16 @@ fn draft_reapply(
     let action = draft_action(service, &draft.action)?;
     draft.checked_fields(&action.descriptor().parameters, &draft.fields)?;
     let revision = service.revision(&draft.asset_id)?;
-    let draft = session.draft.as_mut().expect("the draft was just found");
-    draft.base_revision = revision;
-    draft.conflicted = false;
+    let mut next = session
+        .draft
+        .as_ref()
+        .expect("the draft was just found")
+        .clone();
+    next.base_revision = revision;
+    next.conflicted = false;
+    service.draft_recipe(&next.asset_id, &next)?;
+    session.pixel_memo.clear();
+    session.draft = Some(next);
     session.touch();
     value(session.draft.as_ref().expect("the draft is still open"))
 }
@@ -2203,8 +2242,7 @@ mod tests {
     use crate::api::ApiResponse;
     use crate::{
         ActionInput, ActionPlan, Availability, EFFECT_FORMAT, EffectDescriptor, EffectStage,
-        ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing, Stage, StageContext,
-        ToolModule,
+        ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing, StageContext, ToolModule,
         editor::mutation_json,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
@@ -3174,7 +3212,13 @@ mod tests {
         fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
             Ok(crate::LayerReport::new("Angle"))
         }
-        fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+        fn compile(
+            &self,
+            _: &str,
+            _: u32,
+            _: &Value,
+            _: crate::CompileStage,
+        ) -> Result<Processing, Error> {
             Err(Error::internal("test module never renders"))
         }
     }
@@ -3188,6 +3232,7 @@ mod tests {
                 title: "Angle".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
+                    fit_settle: Default::default(),
                     id: "test.angle.effect".into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
@@ -3279,6 +3324,7 @@ mod tests {
                 title: "Mark".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
+                    fit_settle: Default::default(),
                     id: MARK_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Geometry,
@@ -3336,7 +3382,14 @@ mod tests {
         fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
             Ok(crate::LayerReport::new("Marked"))
         }
-        fn compile(&self, _: &str, _: u32, _: &Value, stage: Stage) -> Result<Processing, Error> {
+        fn compile(
+            &self,
+            _: &str,
+            _: u32,
+            _: &Value,
+            at: crate::CompileStage,
+        ) -> Result<Processing, Error> {
+            let stage = at.stage;
             Ok(Processing::ExactGeometry(ExactGeometry {
                 a: 1,
                 b: 0,

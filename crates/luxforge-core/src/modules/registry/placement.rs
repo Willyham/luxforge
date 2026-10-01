@@ -178,8 +178,10 @@ impl ModuleRegistry {
     /// | Stage | Placement |
     /// | --- | --- |
     /// | `source` | index zero |
-    /// | `pixel`, `color` | before the first spatial, geometry or finish layer |
-    /// | `spatial` | before the first geometry or finish layer, after every pixel and colour layer |
+    /// | `pixel` | before the first restoration, spatial, geometry or finish layer |
+    /// | `restoration` | before the first colour, spatial, geometry or finish layer |
+    /// | `color` | before the first spatial, geometry or finish layer |
+    /// | `spatial` | before the first geometry or finish layer, after every pixel, restoration and colour layer |
     /// | `geometry` | before the first finish layer |
     /// | `finish` | at the end |
     ///
@@ -221,7 +223,18 @@ fn placement_index(
         placement(&layer.effect_id).map(|(stage, _)| stage) == Some(EffectStage::Source)
     }));
     let opens_region = |candidate: EffectStage| match stage {
-        EffectStage::Pixel | EffectStage::Color => matches!(
+        EffectStage::Pixel => matches!(
+            candidate,
+            EffectStage::Restoration
+                | EffectStage::Spatial
+                | EffectStage::Geometry
+                | EffectStage::Finish
+        ),
+        EffectStage::Restoration => matches!(
+            candidate,
+            EffectStage::Color | EffectStage::Spatial | EffectStage::Geometry | EffectStage::Finish
+        ),
+        EffectStage::Color => matches!(
             candidate,
             EffectStage::Spatial | EffectStage::Geometry | EffectStage::Finish
         ),
@@ -245,7 +258,10 @@ fn placement_index(
         // A spatial layer reads what the pointwise colour run produced, so it never lands
         // before a pixel or colour layer a stored stack kept later than usual.
         if stage == EffectStage::Spatial
-            && matches!(layer_stage, EffectStage::Pixel | EffectStage::Color)
+            && matches!(
+                layer_stage,
+                EffectStage::Pixel | EffectStage::Restoration | EffectStage::Color
+            )
         {
             lower = index + 1;
         }

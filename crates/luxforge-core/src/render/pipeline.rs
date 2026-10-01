@@ -41,6 +41,28 @@ use super::{
         run_batches, run_tile,
     },
 };
+
+/// The input received by a colour operation inside its final float run. Replacement boundaries
+/// retain normal domain quantization; the final run retains its unclamped working values.
+pub(super) fn colour_input<'r, D: PixelDomain>(
+    mut pixel: D::Pixel,
+    runs: impl Iterator<Item = ColorRun<'r>>,
+    x: u32,
+    y: u32,
+    wide: bool,
+) -> Result<[f64; 3], Error> {
+    let mut linear = [D::spatial_input(pixel)];
+    let mut snapshot = [[0.0; 3]; 1];
+    for run in runs {
+        if run.followed_by_replace() {
+            pixel = D::colour(pixel, std::iter::once(run), x, y, wide)?;
+            linear[0] = D::spatial_input(pixel);
+        } else {
+            super::apply_units(&run, y, x, &mut linear, &mut snapshot)?;
+        }
+    }
+    Ok(linear[0].map(f64::from))
+}
 use crate::{
     Cancel, Error,
     modules::{Global, Parallelism, Reduction, Region, SpatialOperation, Stage},
@@ -89,12 +111,21 @@ pub(crate) trait PixelDomain: Sync {
         runs: impl Iterator<Item = ColorRun<'r>>,
         x: u32,
         y: u32,
+        wide: bool,
     ) -> Result<Self::Pixel, Error>;
 
     /// The pixel a segment answers, once its replacement and colour are applied: the pixel itself
     /// unless a domain checks it; the linear path refuses a non-finite value here.
     fn finish(pixel: Self::Pixel) -> Result<Self::Pixel, Error> {
         Ok(pixel)
+    }
+
+    fn narrow(pixel: Self::Pixel) -> Self::Pixel {
+        pixel
+    }
+
+    fn finish_width(pixel: Self::Pixel, _: bool) -> Result<Self::Pixel, Error> {
+        Self::finish(pixel)
     }
 
     /// [`Self::colour`] and [`Self::finish`] over one contiguous run of row `y` starting at column
@@ -107,6 +138,7 @@ pub(crate) trait PixelDomain: Sync {
         y: u32,
         x0: u32,
         scratch: &mut RowScratch,
+        wide: bool,
     ) -> Result<(), Error>;
 
     /// One resample tap set: the bilinear blend at the continuous input coordinate `(u, v)` of a
@@ -127,13 +159,13 @@ pub(crate) trait PixelDomain: Sync {
     fn linear(pixel: Self::Pixel) -> [f64; 3];
 
     /// A spatial operation's output value as a pixel.
-    fn spatial_output(rgb: [f32; 3]) -> Result<Self::Pixel, Error>;
+    fn spatial_output(rgb: [f32; 3], wide: bool) -> Result<Self::Pixel, Error>;
 
     /// The terminal byte of one output pixel.
     fn terminal(pixel: Self::Pixel) -> Result<[u8; 4], Error>;
 
     /// An empty spatial frame of `stage`, inside the domain's frame limit.
-    fn spatial_frame(stage: Stage) -> Result<Self::SpatialFrame, Error>;
+    fn spatial_frame(stage: Stage, wide: bool) -> Result<Self::SpatialFrame, Error>;
 
     /// One tile's output, from the rectangle `region` its last unit wrote, with each of the tile's
     /// rows in the layout the frame holds it in, computed in the parallel phase.
@@ -142,6 +174,7 @@ pub(crate) trait PixelDomain: Sync {
         values: Vec<f32>,
         tile: Region,
         parallelism: Parallelism,
+        wide: bool,
     ) -> Self::TileOutput;
 
     /// Place one tile's output into the frame of `stage`, one `copy_from_slice` per row and plane.
@@ -154,6 +187,16 @@ pub(crate) trait PixelDomain: Sync {
 
     /// One pixel of a spatial frame of `stage`.
     fn frame_pixel(frame: &Self::SpatialFrame, stage: Stage, x: u32, y: u32) -> Self::Pixel;
+}
+
+/// Identify the pixels of a recipe prefix in this domain. This only builds metadata: it neither
+/// reads pixels nor prepares an estimate. Global estimates and retained restoration frames use
+/// the same source development, view and approximation identity through this one key builder.
+pub(super) fn input_prefix_key<'p, D: PixelDomain>(
+    domain: &D,
+    prefix_hash: &'p str,
+) -> Cow<'p, str> {
+    domain.estimate_prefix(prefix_hash)
 }
 
 /// How an [`Evaluation`] answers the pixels of its spatial segments.
@@ -181,6 +224,7 @@ pub(super) struct SpatialFrame<F> {
 pub(crate) struct Evaluation<'a, D: PixelDomain> {
     pub(super) domain: D,
     pub(super) compiled: Cow<'a, Compiled>,
+    widths: Vec<super::byte::FrameWidths>,
     /// The latest spatial frame, in [`SpatialMode::Frames`]. A pull stops at the first spatial
     /// entry it meets walking back — a spatial entry reads its own frame and only a resample reads
     /// the segment before it — so once a spatial segment's frame exists nothing reads an earlier
@@ -214,6 +258,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     ) -> Result<Self, Error> {
         let mut evaluation = Self {
             domain,
+            widths: super::byte::byte_frame_widths(&compiled),
             compiled,
             frame: None,
             #[cfg(test)]
@@ -252,6 +297,105 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         Ok(evaluation)
     }
 
+    pub(super) fn frames_prefix(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        tiling: Tiling,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+        boundary: usize,
+    ) -> Result<Self, Error> {
+        let mut evaluation = Self::new(
+            domain,
+            compiled,
+            tiling,
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        evaluation.tiles = None;
+        evaluation.materialize(0, boundary + 1, cancel)?;
+        Ok(evaluation)
+    }
+
+    pub(super) fn frames_suffix(
+        domain: D,
+        compiled: Cow<'a, Compiled>,
+        tiling: Tiling,
+        cancel: &Cancel,
+        context: &'a RenderContext,
+        boundary: usize,
+        planes: Arc<D::SpatialFrame>,
+    ) -> Result<Self, Error> {
+        let mut evaluation = Self::new(
+            domain,
+            compiled,
+            tiling,
+            SpatialMode::Point,
+            cancel,
+            context,
+        )?;
+        evaluation.tiles = None;
+        evaluation.frame = Some(SpatialFrame {
+            index: boundary,
+            planes,
+        });
+        evaluation.materialize(boundary + 1, evaluation.compiled.segments.len(), cancel)?;
+        Ok(evaluation)
+    }
+
+    fn materialize(&mut self, start: usize, end: usize, cancel: &Cancel) -> Result<(), Error> {
+        for index in start..end {
+            let Some(entry) = &self.compiled.segments[index].entry else {
+                continue;
+            };
+            let Some(frame) = entry.frame(self, index, cancel)? else {
+                continue;
+            };
+            self.frame = Some(SpatialFrame {
+                index,
+                planes: Arc::new(frame),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read an operation's prefix with the spatial boundary width selected by the whole recipe.
+    /// A truncated prefix can otherwise choose a different width from a later point replacement
+    /// or colour run. Only point evaluations use this mode.
+    pub(crate) fn with_input_width(mut self, wide: bool) -> Self {
+        debug_assert!(self.frame.is_none());
+        let last = self.widths.len() - 1;
+        let Some(target) = self
+            .compiled
+            .segments
+            .iter()
+            .rposition(|segment| matches!(&segment.entry, Some(super::Entry::Spatial(_))))
+        else {
+            return self;
+        };
+        for index in (0..=last).rev() {
+            let segment = &self.compiled.segments[index];
+            let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
+            let next_spatial = self
+                .compiled
+                .segments
+                .get(index + 1)
+                .is_some_and(|s| matches!(&s.entry, Some(super::Entry::Spatial(_))));
+            let output = (index == last && target == last && wide && !segment.has_pixels)
+                || (next_spatial && (segment.has_color || self.widths[index + 1].input));
+            let input = spatial
+                && (if index == target {
+                    wide
+                } else {
+                    (segment.has_color && !segment.has_pixels)
+                        || (!segment.writes_pixels() && next_spatial)
+                });
+            self.widths[index] = super::byte::FrameWidths { input, output };
+        }
+        self
+    }
+
     #[cfg(test)]
     /// The same point evaluation with another spatial tile size. A spatial unit's value at a
     /// pixel depends on that pixel's neighbourhood only, so this changes nothing but the schedule.
@@ -283,6 +427,58 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
+    /// The final spatial prefix on one output rectangle, through the render's own tile function.
+    /// Input grids use a whole tile for dense cells and a one-pixel window for sparse cells.
+    pub(crate) fn restoration_region(&self, region: Region) -> Result<Vec<D::Pixel>, Error> {
+        let index = self.compiled.segments.len() - 1;
+        let segment = &self.compiled.segments[index];
+        let Some(super::Entry::Spatial(entry)) = &segment.entry else {
+            return Err(Error::internal(
+                "an input grid prefix must end at a restoration boundary",
+            ));
+        };
+        if segment.writes_pixels() {
+            return Err(Error::internal("an input grid prefix has a pointwise tail"));
+        }
+        self.cancel.check()?;
+        let stage = segment.stage();
+        let plan = SpatialPlan::new(&entry.operation, stage, self.tiling)?;
+        let globals = self.spatial_globals(index, entry)?;
+        let _reservation = self.context.spatial().reserve(plan.working_set(), 1);
+        let parallelism = if super::parallel::pooled(
+            super::parallel::RenderPass::Spatial,
+            stage.width as u64 * stage.height as u64,
+        ) {
+            crate::modules::Parallelism::Pool
+        } else {
+            crate::modules::Parallelism::Serial
+        };
+        let (written, values) = run_tile(
+            &plan,
+            &entry.operation,
+            &globals,
+            region,
+            parallelism,
+            &mut super::spatial::TileScratch::default(),
+            &self.cancel,
+            |input, planes| self.fill_rows(index - 1, input, planes, parallelism),
+        )?;
+        let count = written.pixels() as usize;
+        let mut output = Vec::with_capacity(region.pixels() as usize);
+        for y in region.y0..region.y1() {
+            self.cancel.check()?;
+            for x in region.x0..region.x1() {
+                let from =
+                    (y - written.y0) as usize * written.width as usize + (x - written.x0) as usize;
+                output.push(D::spatial_output(
+                    [values[from], values[count + from], values[2 * count + from]],
+                    self.widths[index].input,
+                )?);
+            }
+        }
+        Ok(output)
+    }
+
     /// One output pixel, `None` when the coordinate lies outside the output stage.
     pub(crate) fn pixel(&self, x: u32, y: u32) -> Result<Option<D::Pixel>, Error> {
         self.pixel_in(self.compiled.segments.len() - 1, x, y)
@@ -291,6 +487,27 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// One output pixel's terminal byte, `None` outside the output stage.
     pub(crate) fn terminal(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         self.pixel(x, y)?.map(D::terminal).transpose()
+    }
+
+    pub(super) fn colour_input(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        let index = self.compiled.segments.len() - 1;
+        let segment = &self.compiled.segments[index];
+        let Some(resolved) = segment.resolve(x, y) else {
+            return Ok(None);
+        };
+        let mut pixel = self.entry_pixel(index, resolved.input_x, resolved.input_y)?;
+        if let Some((_, rgb)) = resolved.replacement {
+            pixel = D::replace(pixel, rgb);
+        }
+        let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+        colour_input::<D>(
+            pixel,
+            color_runs(segment).filter(|run| run.start >= after),
+            x,
+            y,
+            self.widths[index].output,
+        )
+        .map(Some)
     }
 
     /// One pixel of one segment's output stage. A resample is evaluated recursively as the bilinear
@@ -320,9 +537,10 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                 color_runs(segment).filter(|run| run.start >= after),
                 x,
                 y,
+                self.widths[index].output,
             )?;
         }
-        D::finish(pixel).map(Some)
+        D::finish_width(pixel, self.widths[index].output).map(Some)
     }
 
     /// One pixel of segment `index`'s input frame, which its exact geometry reads: the source, or
@@ -390,6 +608,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             self.tiling,
             cancel,
             self.context,
+            self.widths[index].input,
             |region, planes, parallelism| self.fill_rows(index - 1, region, planes, parallelism),
         )
     }
@@ -433,6 +652,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
                     y,
                     region.x0,
                     scratch,
+                    self.widths[index].output,
                 )?;
             }
         }
@@ -566,10 +786,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             self.spatial_stage(index),
             x,
             y,
+            &self.cancel,
             || self.spatial_globals(index, entry),
             |region, planes| self.fill_rows(index - 1, region, planes, Parallelism::Serial),
         )?;
-        D::spatial_output(rgb)
+        D::spatial_output(rgb, self.widths[index].input)
     }
 }
 
@@ -639,6 +860,8 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
 #[derive(Clone)]
 pub(crate) struct SpatialEntry {
     pub(super) operation: SpatialOperation,
+    pub(crate) stage: crate::EffectStage,
+    pub(crate) fit_settle: crate::FitSettle,
     /// The SHA-256 of the canonical JSON of the layers before this one, which together with the
     /// source and the stage identifies what a global estimate was prepared from.
     prefix_hash: String,
@@ -652,6 +875,8 @@ impl SpatialEntry {
     pub(super) fn new(operation: SpatialOperation, prefix_hash: String) -> Self {
         Self {
             operation,
+            stage: crate::EffectStage::Spatial,
+            fit_settle: crate::FitSettle::Proxy,
             prefix_hash,
             globals: None,
         }
@@ -722,7 +947,7 @@ impl SpatialEntry {
             &self.operation,
             stage,
             domain.fingerprint(),
-            &domain.estimate_prefix(&self.prefix_hash),
+            &input_prefix_key(domain, &self.prefix_hash),
             reduce,
         )
     }
@@ -744,6 +969,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
     tiling: Tiling,
     cancel: &Cancel,
     context: &RenderContext,
+    wide: bool,
     fill: impl Fn(Region, &mut [f32], Parallelism) -> Result<(), Error> + Sync,
 ) -> Result<D::SpatialFrame, Error> {
     let operation = &entry.operation;
@@ -753,7 +979,7 @@ pub(super) fn spatial_entry<D: PixelDomain>(
             fill(region, planes, Parallelism::Serial)
         })
     })?;
-    let mut frame = D::spatial_frame(stage)?;
+    let mut frame = D::spatial_frame(stage, wide)?;
     #[cfg(test)]
     context.note_spatial_frame();
     run_batches(
@@ -768,9 +994,10 @@ pub(super) fn spatial_entry<D: PixelDomain>(
                 tile,
                 parallelism,
                 scratch,
+                cancel,
                 |region, planes| fill(region, planes, parallelism),
             )?;
-            Ok(D::tile_output(region, values, tile, parallelism))
+            Ok(D::tile_output(region, values, tile, parallelism, wide))
         },
         |tile, output| {
             D::write_tile(&mut frame, stage, tile, output);
@@ -783,6 +1010,10 @@ pub(super) fn spatial_entry<D: PixelDomain>(
 /// How one domain holds a chunk of a segment's output rows while the segment's operations run over
 /// them. [`segment_pass`] calls these in the one order both domains share.
 pub(super) trait SegmentRows: Sync {
+    type Sample: Send + Sync;
+    fn samples_per_pixel(&self) -> usize {
+        4
+    }
     /// What one worker reuses for every chunk it takes.
     type Scratch: Default + Send;
 
@@ -792,13 +1023,18 @@ pub(super) trait SegmentRows: Sync {
 
     /// Read the segment's input into the chunk of output rows starting at row `y0`: through the
     /// segment's exact geometry, from its input frame or its entry.
-    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [u8]) -> Result<(), Error>;
+    fn load(
+        &self,
+        scratch: &mut Self::Scratch,
+        y0: u32,
+        chunk: &mut [Self::Sample],
+    ) -> Result<(), Error>;
 
     /// Write one point replacement at pixel `offset` of the chunk.
     fn replace(
         &self,
         scratch: &mut Self::Scratch,
-        chunk: &mut [u8],
+        chunk: &mut [Self::Sample],
         offset: usize,
         rgb: [u8; 3],
     ) -> Result<(), Error>;
@@ -808,7 +1044,7 @@ pub(super) trait SegmentRows: Sync {
     fn run(
         &self,
         scratch: &mut Self::Scratch,
-        chunk: &mut [u8],
+        chunk: &mut [Self::Sample],
         run: &ColorRun<'_>,
         y0: u32,
         rows: Range<usize>,
@@ -816,7 +1052,7 @@ pub(super) trait SegmentRows: Sync {
     ) -> Result<(), Error>;
 
     /// Write the chunk's finished values as its bytes.
-    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error>;
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [Self::Sample]) -> Result<(), Error>;
 }
 
 /// One segment's output, `frame`, written in bounded row chunks: each chunk is loaded, then the
@@ -838,7 +1074,7 @@ pub(super) trait SegmentRows: Sync {
 pub(super) fn segment_pass<R: SegmentRows>(
     rows: &R,
     segment: &Segment,
-    frame: &mut [u8],
+    frame: &mut [R::Sample],
     band: Range<usize>,
     cancel: &Cancel,
     budget: &ScratchBudget,
@@ -874,14 +1110,14 @@ pub(super) fn segment_pass<R: SegmentRows>(
         ) || colour.is_some_and(|pass| pooled(pass, coloured))
     };
     let chunk_rows = color_chunk_rows(segment.width);
-    let chunk_bytes = chunk_rows * width * 4;
+    let chunk_bytes = chunk_rows * width * rows.samples_per_pixel();
     let process = |scratch: &mut (R::Scratch, Vec<[f32; 3]>),
                    index: usize,
-                   chunk: &mut [u8]|
+                   chunk: &mut [R::Sample]|
      -> Result<(), Error> {
         // Before the reservation, so a cancelled pass never takes scratch it will not use.
         cancel.check()?;
-        let count = chunk.len() / (width * 4);
+        let count = chunk.len() / (width * rows.samples_per_pixel());
         let y0 = index * chunk_rows;
         // The chunk's rows that colour runs reach, as rows of the chunk.
         let coloured = band.start.clamp(y0, y0 + count) - y0..band.end.clamp(y0, y0 + count) - y0;
@@ -905,7 +1141,7 @@ pub(super) fn segment_pass<R: SegmentRows>(
         };
         rows.load(scratch, y0 as u32, chunk)?;
         let mut next = 0;
-        let mut write = |scratch: &mut R::Scratch, chunk: &mut [u8], before: usize| {
+        let mut write = |scratch: &mut R::Scratch, chunk: &mut [R::Sample], before: usize| {
             while let Some(&(index, x, y, rgb)) = replacements.get(next) {
                 if index >= before {
                     break;

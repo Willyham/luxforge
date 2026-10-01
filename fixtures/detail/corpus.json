@@ -1,0 +1,487 @@
+{
+  "format": 1,
+  "scope": "Available owner originals and explicit controlled Detail quality gaps; functional evidence is not photographic qualification.",
+  "parameter_sets": [
+    {
+      "id": "moderate",
+      "parameters": {
+        "luminance": 40,
+        "colour": 40,
+        "sharpening": 50,
+        "radius": 1.0
+      }
+    },
+    {
+      "id": "noise-stress",
+      "parameters": {
+        "luminance": 100,
+        "colour": 100,
+        "luminance-detail": 0,
+        "colour-detail": 0
+      }
+    },
+    {
+      "id": "sharpen-stress",
+      "parameters": {
+        "sharpening": 150,
+        "radius": 3,
+        "sharpen-detail": 100,
+        "sharpen-masking": 0
+      }
+    }
+  ],
+  "sources": [
+    {
+      "manifest_key": "nikon-z6",
+      "sha256": "e4db4e1f152110da0a3feb77a4b666c9de4e005509c4c443d15a2d8071bd49fb",
+      "camera": "Nikon Z 6",
+      "dimensions": [
+        4024,
+        6048
+      ],
+      "iso": null,
+      "exposure_settings": null,
+      "metadata_gap": "ISO and exposure settings are not recorded by the existing private editor manifest; no inferred ISO qualification.",
+      "provenance": "Owner supplied original; hash checked against the private editor manifest.",
+      "paired_clean_capture": false,
+      "inspection_crops": [
+        [
+          1006,
+          1512,
+          256,
+          256
+        ],
+        [
+          2012,
+          3024,
+          256,
+          256
+        ],
+        [
+          2762,
+          4280,
+          256,
+          256
+        ],
+        [
+          1550,
+          2820,
+          256,
+          256
+        ]
+      ],
+      "parameter_sets": [
+        "moderate",
+        "noise-stress",
+        "sharpen-stress"
+      ]
+    },
+    {
+      "manifest_key": "fujifilm-x100vi",
+      "sha256": "187e3403bdb93617a906e059209e91037e56efbaf5b6824700e96e0d4abd7246",
+      "camera": "Fujifilm X100VI",
+      "dimensions": [
+        7728,
+        5152
+      ],
+      "iso": null,
+      "exposure_settings": null,
+      "metadata_gap": "ISO and exposure settings are not recorded by the existing private editor manifest; no inferred ISO qualification.",
+      "provenance": "Owner supplied original; hash checked against the private editor manifest.",
+      "paired_clean_capture": false,
+      "inspection_crops": [
+        [
+          1932,
+          1288,
+          256,
+          256
+        ],
+        [
+          3864,
+          2576,
+          256,
+          256
+        ],
+        [
+          5540,
+          3608,
+          256,
+          256
+        ]
+      ],
+      "parameter_sets": [
+        "moderate",
+        "noise-stress",
+        "sharpen-stress"
+      ]
+    },
+    {
+      "manifest_key": "dji-air2s",
+      "sha256": "aab79ce1795a7dd5f1c2e52ec7bd07345cb9bda0262d1d5aa3701db212b09e1d",
+      "camera": "DJI FC3411",
+      "dimensions": [
+        5464,
+        3640
+      ],
+      "iso": null,
+      "exposure_settings": null,
+      "metadata_gap": "ISO and exposure settings are not recorded by the existing private editor manifest; no inferred ISO qualification.",
+      "provenance": "Owner supplied original; hash checked against the private editor manifest.",
+      "paired_clean_capture": false,
+      "inspection_crops": [
+        [
+          1366,
+          910,
+          256,
+          256
+        ],
+        [
+          2732,
+          1820,
+          256,
+          256
+        ],
+        [
+          3842,
+          2474,
+          256,
+          256
+        ]
+      ],
+      "parameter_sets": [
+        "moderate",
+        "noise-stress",
+        "sharpen-stress"
+      ]
+    },
+    {
+      "manifest_key": "will-sapa-drone-jpeg",
+      "sha256": "8706b1fe34fc0e6d62d483a6868a5764e97429ca32a8dd9147dd66501a2e93b5",
+      "camera": "Photographic JPEG; camera metadata unqualified",
+      "dimensions": [
+        3389,
+        4236
+      ],
+      "iso": null,
+      "exposure_settings": null,
+      "metadata_gap": "Edited photographic JPEG; capture ISO/exposure and a paired unprocessed image are unavailable.",
+      "provenance": "Owner photograph of terraced fields at Sapa; visually inspected for fine foliage, field edges and repeating terrace texture.",
+      "paired_clean_capture": false,
+      "inspection_crops": [
+        [
+          1600,
+          100,
+          256,
+          256
+        ],
+        [
+          2100,
+          800,
+          256,
+          256
+        ],
+        [
+          1800,
+          3000,
+          256,
+          256
+        ]
+      ],
+      "parameter_sets": [
+        "moderate",
+        "noise-stress",
+        "sharpen-stress"
+      ]
+    }
+  ],
+  "required_cells": [
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "low",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "nikon-z6",
+      "iso_class": "high",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "low",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "fujifilm-x100vi",
+      "iso_class": "high",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "low",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "dji-air2s",
+      "iso_class": "high",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "low",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "skin",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "hair-or-fur",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "foliage-or-fabric",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "skies-and-shadows",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "coloured-edges",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    },
+    {
+      "source": "will-sapa-drone-jpeg",
+      "iso_class": "high",
+      "scene": "repeating-texture",
+      "gap": "A controlled capture with known ISO/exposure and registered clean/noisy comparison has not been supplied for this cell. Available originals provide functional/visual inspection only."
+    }
+  ]
+}
