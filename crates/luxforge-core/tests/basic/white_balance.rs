@@ -139,10 +139,10 @@ fn white_balance_runs_before_exposure_inside_the_one_layer() {
             BASIC_EFFECT,
             EFFECT_FORMAT,
             &payload,
-            Stage {
+            luxforge_core::CompileStage::exact(Stage {
                 width: 4,
                 height: 1,
-            },
+            }),
         )
         .expect("a compiled layer")
     else {

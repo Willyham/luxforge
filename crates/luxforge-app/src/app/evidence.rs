@@ -50,9 +50,10 @@ use std::{
 
 /// An evidence run that has not finished by then is stuck; exit so the harness reaps nothing.
 pub(crate) const EVIDENCE_DEADLINE: Duration = Duration::from_secs(25);
-/// Full RAW edit/history scripts can redevelop a 100 MP source several times.
-/// The Q2 correction journey makes progress beyond the single-open deadline.
-pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(60);
+/// Native functional scripts can evaluate several whole-photo restoration frames or redevelop
+/// a large RAW repeatedly. This bounds the complete journey; latency budgets are measured
+/// separately rather than inferred from a functional script's timeout.
+pub(crate) const SCRIPT_EVIDENCE_DEADLINE: Duration = Duration::from_secs(300);
 
 /// The actor an `agent` step's edits are committed under, so history tells them from the
 /// desktop's own.

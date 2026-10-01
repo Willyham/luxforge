@@ -1,0 +1,698 @@
+[
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-green-reduction",
+    "value": 0.773276493787532,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-green-drift",
+    "value": 0.06374782986111072,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.7687080512509474,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-luma-drift",
+    "value": 0.006690006511579583,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.7721224385404131,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.06559244791666785,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.7678613301846559,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.007447477214732601,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-green-reduction",
+    "value": 0.32411844008985546,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-green-drift",
+    "value": 0.45502387152777857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.3285685081595947,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-luma-drift",
+    "value": 0.236184592013565,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.36224483887144576,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.2819552951388893,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.3612587262411142,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.06122689344599763,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-green-reduction",
+    "value": 0.943523151251953,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-green-drift",
+    "value": 0.1214192708333357,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9411035273025922,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-luma-drift",
+    "value": 0.11225597330724213,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9416287393189988,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.11984592013889284,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.9391589628334096,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.11067717556429102,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-green-reduction",
+    "value": 0.6600027878232907,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-green-drift",
+    "value": 0.05474175347222143,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.65236487882708,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-luma-drift",
+    "value": 0.007459239367328507,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.6586507634563574,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.05878363715277857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.6510281860565215,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.004860422092683336,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-green-reduction",
+    "value": 0.8578143911460432,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-green-drift",
+    "value": 0.1959635416666714,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.8576926970107164,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-luma-drift",
+    "value": 0.19790791015111608,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.8559284030121023,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.19029405381944287,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.8554329464998841,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.19215081379716992,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-green-reduction",
+    "value": 0.805055020235685,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-green-drift",
+    "value": 0.027452256944442865,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.7967009008549887,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-luma-drift",
+    "value": 0.04871134982560932,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.8041917942012764,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.025254991319442865,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.796117396531001,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.04742136501697303,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-green-reduction",
+    "value": 0.9748226540485585,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-green-drift",
+    "value": 0.13332790798611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9745367833425569,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-luma-drift",
+    "value": 0.13430630967877732,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9733988287455104,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.1328938802083428,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.9733699510744571,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.13407619900164036,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-green-reduction",
+    "value": 0.8795878863733518,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-green-drift",
+    "value": 0.05447048611111427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.8726500803662206,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-luma-drift",
+    "value": 0.06487434351160459,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.878162665106034,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.05338541666665719,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.8709092383365872,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.06444400496982894,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "correlated-sigma8-levels3-reduction",
+    "value": 0.1273948402187115,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma8-levels4-reduction",
+    "value": 0.25983731553858413,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma16-levels3-reduction",
+    "value": 0.0411512934802144,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma16-levels4-reduction",
+    "value": 0.1411860352500247,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-mtf50-improvement",
+    "value": 0.3058000374617731,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-overshoot",
+    "value": 0.018823626063498407,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-undershoot",
+    "value": 0.022295449366155767,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-mtf50-improvement",
+    "value": 0.3056332834728672,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-overshoot",
+    "value": 0.01852347140905282,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-undershoot",
+    "value": 0.02118870189780151,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-mtf50-improvement",
+    "value": 0.20526509190562758,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-overshoot",
+    "value": 0.007466127845009929,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-undershoot",
+    "value": 0.010391902555993954,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-mtf50-improvement",
+    "value": 0.20500506458521972,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-overshoot",
+    "value": 0.00700280746778556,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-undershoot",
+    "value": 0.010450910917508861,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "proxy-gaussian-1over2-rms",
+    "value": 0.908716121490854,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "proxy-gaussian-1over2-p99",
+    "value": 4.132739271018334,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "proxy-clamp-1over2-rms",
+    "value": 2.6680061152194283,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-clamp-1over2-p99",
+    "value": 8.588985229708964,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over2-rms",
+    "value": 1.7009590518780071,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over2-p99",
+    "value": 4.29895624516055,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-gaussian-1over3-rms",
+    "value": 1.0037401972077293,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "proxy-gaussian-1over3-p99",
+    "value": 2.7061338135147395,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "proxy-clamp-1over3-rms",
+    "value": 4.036795538206848,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-clamp-1over3-p99",
+    "value": 12.187868472490983,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over3-rms",
+    "value": 1.442257070190624,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over3-p99",
+    "value": 3.283693406365316,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-gaussian-1over4-rms",
+    "value": 1.047144821456719,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "proxy-gaussian-1over4-p99",
+    "value": 2.292634991238394,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "proxy-clamp-1over4-rms",
+    "value": 5.628881563237448,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-clamp-1over4-p99",
+    "value": 14.190357616380414,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over4-rms",
+    "value": 1.2957473403734239,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over4-p99",
+    "value": 2.6683905616933714,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-gaussian-1over6-rms",
+    "value": 0.8075725375041408,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "proxy-gaussian-1over6-p99",
+    "value": 2.4794594848794205,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "proxy-clamp-1over6-rms",
+    "value": 6.937006374480114,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-clamp-1over6-p99",
+    "value": 14.138820061772016,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over6-rms",
+    "value": 1.0946658216692584,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over6-p99",
+    "value": 2.0866330839796348,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-gaussian-1over8-rms",
+    "value": 0.9457730909325308,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "proxy-gaussian-1over8-p99",
+    "value": 1.7802796274886816,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "proxy-clamp-1over8-rms",
+    "value": 5.9970630878622755,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-clamp-1over8-p99",
+    "value": 13.480759470204532,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over8-rms",
+    "value": 0.9811575989387131,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "proxy-skip-1over8-p99",
+    "value": 1.85288692613031,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "banding-8bit-max-neighbour-mean-code-jump",
+    "value": 0.625,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "banding-8bit-max-neighbour-code-jump",
+    "value": 15.0,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "banding-16bit-max-neighbour-mean-code-jump",
+    "value": 0.578125,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "banding-16bit-max-neighbour-code-jump",
+    "value": 16.0,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "banding-32bit-max-neighbour-mean-code-jump",
+    "value": 0.515625,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "banding-32bit-max-neighbour-code-jump",
+    "value": 16.0,
+    "minimum": null,
+    "maximum": null
+  }
+]

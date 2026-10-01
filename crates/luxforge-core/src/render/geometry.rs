@@ -194,12 +194,11 @@ impl Resample {
     /// rectangle of its full output stage: the one read-rectangle rule, for the colour band before
     /// a resample, a windowed proxy's cut and the linear driver's tap blocks alike.
     ///
-    /// The mapping is affine, so the coordinates the window samples lie in the convex hull of its
-    /// four mapped corners, up to rounding. A bilinear tap reads the pixel at `floor(u - ½)` and
-    /// the one after it, clamped to the stage edge, and [`TAP_MARGIN`] pixels on every side cover
-    /// the rounding with room to spare. `None` when the window is empty, `input` is empty or a
-    /// corner maps to a coordinate that is not finite, which a caller answers by reading
-    /// everything or reading each tap on its own.
+    /// The mapping supplies conservative continuous bounds, including radial extrema for a warp
+    /// chain. A bilinear tap reads the pixel at `floor(u - ½)` and the one after it, clamped to the
+    /// stage edge, and [`TAP_MARGIN`] pixels on every side cover rounding with room to spare.
+    /// `None` when the window or input is empty or the mapping cannot bound finite coordinates,
+    /// which a caller answers by reading everything or reading each tap on its own.
     pub(crate) fn reads(&self, origin: (u32, u32), window: Region, input: Stage) -> Option<Region> {
         if window.is_empty() || input.width == 0 || input.height == 0 {
             return None;

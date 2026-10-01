@@ -35,6 +35,7 @@ mod entries;
 mod evaluate;
 mod history;
 mod masks;
+pub(crate) mod pixels;
 mod plan;
 mod source;
 #[cfg(test)]
@@ -579,6 +580,7 @@ pub struct EditorService {
     /// that moves a head updates it where it commits.
     entries: RefCell<entries::EntryCache>,
     source_cache: RefCell<Option<CachedSource>>,
+    pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
     registry: Arc<ModuleRegistry>,
     /// The budgets and the estimate store every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -655,6 +657,7 @@ impl EditorService {
             // Opening starts empty: nothing read before a reopen is trusted after it.
             entries: RefCell::new(entries::EntryCache::default()),
             source_cache: RefCell::new(None),
+            pixel_reads: RefCell::new(pixels::PixelReads::default()),
             registry,
             render: RenderContext::new(),
             catalog_id,

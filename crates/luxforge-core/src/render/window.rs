@@ -443,6 +443,8 @@ mod tests {
             .compile_sampled(
                 plan.proxy.width,
                 plan.proxy.height,
+                plan.proxy.width,
+                plan.proxy.height,
                 stack,
                 crate::mask_field::MaskSampling::ThinFeature,
             )
@@ -1015,7 +1017,14 @@ mod tests {
             height: 85,
         };
         let compiled = registry
-            .compile_sampled(width, 128, stack, crate::mask_field::MaskSampling::Point)
+            .compile_sampled(
+                width,
+                128,
+                width,
+                128,
+                stack,
+                crate::mask_field::MaskSampling::Point,
+            )
             .unwrap();
         let plan = WindowPlan::of_rect(&compiled, (width, 128), requested).unwrap();
         let tile = compiled
@@ -1610,6 +1619,8 @@ mod tests {
                 let whole = source.proxy(plan.whole()).unwrap();
                 let mut compiled = registry
                     .compile_sampled(
+                        plan.width,
+                        plan.height,
                         plan.width,
                         plan.height,
                         stack,

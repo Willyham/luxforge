@@ -2,8 +2,8 @@
 //! `set-<name>` field patch and a `reset-<name>` action, whose payload is a JSON object of declared
 //! fields in which a missing key means that field's default.
 //!
-//! Basic, the Tone curve, the colour mixer, Presence, the vignette and the developer controls proof
-//! are each a [`Spec`] — the field table, its groups and the module's identity — and a
+//! Basic, the Tone curve, Detail, the colour mixer, Presence, Perspective, the vignette and the
+//! developer controls proof are each a [`Spec`] — the field table, its groups and the module's identity — and a
 //! [`FieldPatch::compile`]. A field is any parameter of the field vocabulary: a number, an
 //! integer, a boolean, an enum, a colour or a curve. Everything the modules share lives here once:
 //! the descriptor built from the table, parsing, planning a commit, update or no-op, payload
@@ -537,6 +537,11 @@ impl Spec {
     }
 
     /// The next group of the module's section.
+    pub(crate) fn fit_settle(mut self, policy: super::FitSettle) -> Self {
+        self.effect.fit_settle = policy;
+        self
+    }
+
     pub(crate) fn group(mut self, group: Group) -> Self {
         self.groups.push(group);
         self
@@ -721,8 +726,8 @@ impl Spec {
 }
 
 /// The shape of the processing a field patch's effect compiles to, by its stage: pointwise colour
-/// for a colour or finish effect, a spatial operation for a spatial one. No other stage can hold a
-/// field patch.
+/// for a colour or finish effect, spatial processing for restoration or spatial effects,
+/// and a mapping for geometry effects.
 #[derive(Clone, Copy, Debug)]
 enum Shape {
     Color,
@@ -734,7 +739,7 @@ impl Shape {
     fn of(stage: EffectStage) -> Option<Self> {
         match stage {
             EffectStage::Color | EffectStage::Finish => Some(Self::Color),
-            EffectStage::Spatial => Some(Self::Spatial),
+            EffectStage::Restoration | EffectStage::Spatial => Some(Self::Spatial),
             EffectStage::Geometry => Some(Self::Geometry),
             EffectStage::Source | EffectStage::Pixel => None,
         }
@@ -834,7 +839,7 @@ pub trait FieldPatch: Send + Sync + 'static {
     /// The processing these canonical values compile to at the layer's input stage. It is asked
     /// only for values [`FieldPatch::is_neutral`] calls not neutral: a neutral layer compiles to no
     /// units, in its effect stage's shape, once for every field-patch module.
-    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error>;
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error>;
 
     /// Re-express this payload after an exact orientation; never evaluates a raster.
     fn carry(
@@ -1230,16 +1235,16 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
         let values = self.read(effect_id, format, payload)?;
         // A neutral layer, by the module's own rule, compiles to no units in its stage's shape,
         // which the host drops entirely: the identity byte path and the shared source buffer are
         // kept, and the module is never asked to compile it.
         if self.module.is_neutral(&values) {
-            return Ok(self.shape.neutral(stage));
+            return Ok(self.shape.neutral(at.stage));
         }
-        self.module.compile(&values, stage)
+        self.module.compile(&values, at)
     }
 
     fn carry(
@@ -1258,6 +1263,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::{CurveChannel, FixedStage};
     use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
     use serde_json::json;
@@ -1335,9 +1341,21 @@ mod tests {
 
         /// Only a layer the neutrality rule calls not neutral reaches the module, so this answer
         /// shows which compilations the shared short-circuit answered instead.
-        fn compile(&self, _: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+        fn compile(&self, _: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
             Err(Error::validation("compiled by the module"))
         }
+    }
+
+    #[test]
+    fn restoration_field_patch_shape_is_spatial() {
+        let mut spec = Test::spec();
+        spec.effect.stage = EffectStage::Restoration;
+        let (_, descriptor, shape) = spec.build().unwrap();
+        assert_eq!(descriptor.effects[0].stage, EffectStage::Restoration);
+        assert!(matches!(shape, Shape::Spatial));
+        assert!(
+            matches!(shape.neutral(Stage { width: 16, height: 12 }),Processing::Spatial(op) if op.is_empty())
+        );
     }
 
     fn module() -> FieldPatchModule<Test> {
@@ -1677,16 +1695,24 @@ mod tests {
     fn a_neutral_layer_compiles_to_no_units_in_its_stages_shape_without_the_module() {
         let module = module();
         for neutral in [json!({}), json!({"midpoint": 50, "on": false})] {
-            let Ok(Processing::Color(operation)) =
-                module.compile(EFFECT, EFFECT_FORMAT, &neutral, STAGE)
-            else {
+            let Ok(Processing::Color(operation)) = module.compile(
+                EFFECT,
+                EFFECT_FORMAT,
+                &neutral,
+                crate::CompileStage::exact(STAGE),
+            ) else {
                 panic!("{neutral} compiles to the neutral colour operation");
             };
             assert!(operation.is_empty(), "{neutral}");
         }
         assert_eq!(
             module
-                .compile(EFFECT, EFFECT_FORMAT, &json!({"on": true}), STAGE)
+                .compile(
+                    EFFECT,
+                    EFFECT_FORMAT,
+                    &json!({"on": true}),
+                    crate::CompileStage::exact(STAGE)
+                )
                 .err()
                 .map(|error| error.detail),
             Some("compiled by the module".to_owned())

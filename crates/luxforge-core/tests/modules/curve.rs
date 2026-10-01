@@ -12,8 +12,8 @@
 //! widened by the forward tolerance. Identity stacks and byte sharing are exact.
 
 use luxforge_core::{
-    BASIC_EFFECT, CURVE_EFFECT, Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, OwnerHandle,
-    Processing, SnapshotId, Stage,
+    BASIC_EFFECT, CURVE_EFFECT, CompileStage, Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry,
+    OwnerHandle, Processing, SnapshotId, Stage,
 };
 use luxforge_reference::{
     self as reference,
@@ -269,10 +269,10 @@ fn on_diagonal_points_compile_to_no_units_and_share_the_source() {
                 CURVE_EFFECT,
                 1,
                 &payload,
-                Stage {
+                CompileStage::exact(Stage {
                     width: 256,
                     height: 1,
-                },
+                }),
             )
             .unwrap()
         else {

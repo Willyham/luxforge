@@ -73,7 +73,7 @@ pub enum RenderPhase {
 }
 
 impl RenderPhase {
-    fn sampling(self) -> MaskSampling {
+    pub(super) fn sampling(self) -> MaskSampling {
         match self {
             Self::Exact => MaskSampling::Point,
             Self::Proxy => MaskSampling::ThinFeature,
@@ -133,12 +133,12 @@ impl RenderOptions {
 /// read. Compiling costs `O(layers + components)` and reads no pixel; everything after it reuses
 /// that one compilation.
 pub struct Render<'a> {
-    source: RenderSource<'a>,
+    pub(super) source: RenderSource<'a>,
     /// Owned when this render compiled it, borrowed when it renders a compilation an
     /// [`crate::Evaluation`] already holds.
-    compiled: Cow<'a, Compiled>,
-    options: RenderOptions,
-    context: &'a RenderContext,
+    pub(super) compiled: Cow<'a, Compiled>,
+    pub(super) options: RenderOptions,
+    pub(super) context: &'a RenderContext,
 }
 
 /// A job's proxy stage, planned by [`Render::proxy_window`] and rendered by
@@ -271,7 +271,14 @@ pub fn render<'a>(
     let (width, height) = source.dimensions();
     #[cfg(test)]
     context.note_compile();
-    let compiled = registry.compile_sampled(width, height, recipe, options.phase.sampling())?;
+    let compiled = registry.compile_sampled(
+        width,
+        height,
+        width,
+        height,
+        recipe,
+        options.phase.sampling(),
+    )?;
     Render::compiled(source, compiled, options, context)
 }
 
@@ -443,6 +450,8 @@ impl<'a> Render<'a> {
             .compile_sampled(
                 proxy.width,
                 proxy.height,
+                source_width,
+                source_height,
                 recipe,
                 RenderPhase::Proxy.sampling(),
             )
@@ -485,6 +494,7 @@ impl<'a> Render<'a> {
 
     /// Render a planned half-detail viewport from the worker's cached/built source proxy. The
     /// whole exact `Render` supplies pan-independent exact global estimates when needed.
+    #[cfg(test)]
     pub(crate) fn render_proxy_region(
         &self,
         registry: &ModuleRegistry,
@@ -503,6 +513,8 @@ impl<'a> Render<'a> {
         let compiled = registry.compile_sampled(
             plan.proxy.width,
             plan.proxy.height,
+            self.source.dimensions().0,
+            self.source.dimensions().1,
             recipe,
             RenderPhase::Proxy.sampling(),
         )?;
@@ -561,6 +573,121 @@ impl<'a> Render<'a> {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn render_proxy_region_cached(
+        &self,
+        registry: &ModuleRegistry,
+        source: RenderSource<'_>,
+        recipe: &Recipe,
+        plan: ProxyRegionPlan,
+        snapshot_id: SnapshotId,
+        context: &RenderContext,
+        key: &crate::ProxyKey,
+        cache: &mut super::RestorationPrefixCache,
+    ) -> Result<(RegionRenderOutcome, Option<super::PrefixUse>), Error> {
+        let result = self.proxy_region_cached(
+            registry,
+            source,
+            recipe,
+            plan,
+            snapshot_id,
+            context,
+            key,
+            cache,
+        );
+        if !matches!(&result, Ok((RegionRenderOutcome::Rendered(_), _))) {
+            cache.clear();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn proxy_region_cached(
+        &self,
+        registry: &ModuleRegistry,
+        source: RenderSource<'_>,
+        recipe: &Recipe,
+        plan: ProxyRegionPlan,
+        snapshot_id: SnapshotId,
+        context: &RenderContext,
+        key: &crate::ProxyKey,
+        cache: &mut super::RestorationPrefixCache,
+    ) -> Result<(RegionRenderOutcome, Option<super::PrefixUse>), Error> {
+        self.options.cancel.check()?;
+        if source.dimensions() != plan.proxy.source_dimensions() {
+            return Ok((
+                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
+                None,
+            ));
+        }
+        let compiled = registry.compile_sampled(
+            plan.proxy.width,
+            plan.proxy.height,
+            self.source.dimensions().0,
+            self.source.dimensions().1,
+            recipe,
+            RenderPhase::Proxy.sampling(),
+        )?;
+        if !same_segments(&compiled, &self.compiled) {
+            return Ok((
+                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
+                None,
+            ));
+        }
+        let windows = match WindowPlan::of_rect(
+            &compiled,
+            (plan.proxy.width, plan.proxy.height),
+            plan.output,
+        ) {
+            Ok(windows) => windows,
+            Err(reason) => return Ok((RegionRenderOutcome::Declined(reason), None)),
+        };
+        let expected = plan.proxy.window.map_or(
+            Region::whole(Stage {
+                width: plan.proxy.width,
+                height: plan.proxy.height,
+            }),
+            |window| Region {
+                x0: window.x,
+                y0: window.y,
+                width: window.width,
+                height: window.height,
+            },
+        );
+        if windows.source != expected {
+            return Ok((
+                RegionRenderOutcome::Declined(RegionFallback::SegmentMismatch),
+                None,
+            ));
+        }
+        let compiled = windows.apply(compiled, (plan.proxy.width, plan.proxy.height), |index| {
+            self.spatial_globals(index)
+        })?;
+        let approximation = {
+            let mut approximation = compiled.approximation();
+            approximation.reduced_detail = true;
+            approximation
+        };
+        let (raster, prefix_use) = Render::compiled(
+            source,
+            compiled,
+            RenderOptions::proxy(&self.options.cancel),
+            context,
+        )?
+        .frame_with_restoration_cache(snapshot_id, registry, recipe, key, cache)?;
+        Ok((
+            RegionRenderOutcome::Rendered(RegionFrame {
+                raster,
+                rect: plan.output,
+                stage: plan.stage,
+                full_rect: plan.full_rect,
+                full_stage: plan.full_stage,
+                approximation,
+            }),
+            prefix_use,
+        ))
+    }
+
     /// One output pixel without rasterizing a frame: `O(layers)`, and through a spatial layer the
     /// one tile that contains it, which is the declared exception to point queries never
     /// rasterizing. The byte is the byte [`Self::frame`] writes there. `rgba` is `None` outside the
@@ -598,8 +725,8 @@ impl<'a> Render<'a> {
         }
     }
 
-    /// The whole geometry tail as one affine map between the content stage and the output stage,
-    /// from this compilation: `O(layers)`, no pixel read.
+    /// The whole geometry tail as one bounded map between the content and output stages, from
+    /// this compilation: `O(layers)`, no pixel read.
     pub(crate) fn transform(&self) -> Result<GeometryMap, Error> {
         let (width, height) = self.source.dimensions();
         transform_of(&self.compiled, width, height)
@@ -609,6 +736,10 @@ impl<'a> Render<'a> {
     /// compilation the frame itself uses, so what is reported and what is drawn cannot disagree:
     /// a spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
     /// supersampled. `O(layers + components)`, no pixel read.
+    pub(crate) fn settles_from_exact(&self) -> bool {
+        self.compiled.settles_from_exact()
+    }
+
     pub(crate) fn approximation(&self) -> ProxyApproximation {
         self.compiled.approximation()
     }
@@ -639,6 +770,8 @@ impl<'a> Render<'a> {
         let compiled = registry.compile_sampled(
             plan.width,
             plan.height,
+            self.source.dimensions().0,
+            self.source.dimensions().1,
             recipe,
             RenderPhase::Proxy.sampling(),
         );
@@ -830,9 +963,9 @@ fn same_segments(left: &Compiled, right: &Compiled) -> bool {
 ///
 /// The answer is the stage the layer receives, which is the stage a mask bound to it is compiled
 /// against, and the point query over it, in the domain the render's masked primitives blend in.
-/// The byte path's prefix ends at a quantized boundary, exactly as the brush's stored seed and
-/// `mask.sample-input` do, so the overlay and the seed read one value; the linear path never
-/// quantizes at all.
+/// A colour layer receives the final run's unclamped `f32` input, before JPEG encoding; a spatial
+/// layer receives the decoded, encoded boundary selected by the whole recipe. The overlay,
+/// colour-constrained seed and `mask.sample-input` read the same value in either domain.
 pub(crate) fn layer_input<'a>(
     registry: &ModuleRegistry,
     source: RenderSource<'a>,
@@ -850,6 +983,7 @@ pub(crate) fn layer_input<'a>(
         &recipe.strokes,
         &recipe.artifacts,
     )?;
+    let mode = MaskInputMode::for_layer(registry, recipe, layer);
     if compiled.evaluates_spatial() {
         return Err(Error::resource_limit(
             "a spatial layer before the masked one means reading the pixel it receives \
@@ -859,11 +993,11 @@ pub(crate) fn layer_input<'a>(
     match source {
         RenderSource::Byte(image) => {
             check_source(image)?;
-            point(Byte(image), compiled, context)
+            point(Byte(image), compiled, context, mode)
         }
         RenderSource::Linear { image, settings } => {
             linear::check_resamples(&compiled)?;
-            point(Linear::new(image, settings)?, compiled, context)
+            point(Linear::new(image, settings)?, compiled, context, mode)
         }
     }
 }
@@ -896,6 +1030,7 @@ fn point<'a, D: PixelDomain + 'a>(
     domain: D,
     compiled: Compiled,
     context: &'a RenderContext,
+    mode: MaskInputMode,
 ) -> Result<(Stage, Box<dyn MaskInputPixel + 'a>), Error> {
     let evaluation = Evaluation::new(
         domain,
@@ -905,5 +1040,105 @@ fn point<'a, D: PixelDomain + 'a>(
         &Cancel::never(),
         context,
     )?;
-    Ok((evaluation.stage(), Box::new(evaluation)))
+    Ok((
+        evaluation.stage(),
+        Box::new(InputPixels { evaluation, mode }),
+    ))
+}
+
+/// A spatial operation receives an encoded boundary; a pointwise colour operation receives the
+/// float value inside its run, including extended values that terminal JPEG encoding clamps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MaskInputMode {
+    Boundary,
+    ColourRun,
+}
+impl MaskInputMode {
+    pub(crate) fn for_layer(registry: &ModuleRegistry, recipe: &Recipe, layer: usize) -> Self {
+        match recipe
+            .layers
+            .get(layer)
+            .and_then(|layer| registry.effect_stage(&layer.effect_id))
+        {
+            Some(crate::EffectStage::Color) => Self::ColourRun,
+            _ => Self::Boundary,
+        }
+    }
+}
+
+struct InputPixels<'a, D: PixelDomain> {
+    evaluation: Evaluation<'a, D>,
+    mode: MaskInputMode,
+}
+impl<D: PixelDomain> MaskInputPixel for InputPixels<'_, D> {
+    fn linear(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
+        match self.mode {
+            MaskInputMode::Boundary => self.evaluation.linear(x, y),
+            MaskInputMode::ColourRun => self.evaluation.colour_input(x, y),
+        }
+    }
+}
+
+/// One prefix point evaluation retained for a complete query, including all spatial tile caches.
+pub(crate) trait StagePixels: MaskInputPixel {
+    fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error>;
+}
+
+impl<D: PixelDomain> StagePixels for Evaluation<'_, D> {
+    fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        self.pixel(x, y)?
+            .map(|pixel| D::terminal(D::narrow(pixel)))
+            .transpose()
+    }
+}
+
+impl<D: PixelDomain> StagePixels for InputPixels<'_, D> {
+    fn rgba(&self, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
+        self.evaluation.rgba(x, y)
+    }
+}
+
+pub(crate) fn prefix_pixels<'a>(
+    source: RenderSource<'a>,
+    compiled: Compiled,
+    context: &'a RenderContext,
+    cancel: &Cancel,
+    wide: bool,
+    mode: MaskInputMode,
+) -> Result<Box<dyn StagePixels + 'a>, Error> {
+    fn in_domain<'a, D: PixelDomain + 'a>(
+        domain: D,
+        compiled: Compiled,
+        context: &'a RenderContext,
+        cancel: &Cancel,
+        wide: bool,
+        mode: MaskInputMode,
+    ) -> Result<Box<dyn StagePixels + 'a>, Error> {
+        Ok(Box::new(InputPixels {
+            evaluation: Evaluation::new(
+                domain,
+                Cow::Owned(compiled),
+                Tiling::Halo,
+                SpatialMode::Point,
+                cancel,
+                context,
+            )?
+            .with_input_width(wide),
+            mode,
+        }))
+    }
+    match source {
+        RenderSource::Byte(image) => {
+            check_source(image)?;
+            in_domain(Byte(image), compiled, context, cancel, wide, mode)
+        }
+        RenderSource::Linear { image, settings } => in_domain(
+            Linear::new(image, settings)?,
+            compiled,
+            context,
+            cancel,
+            wide,
+            mode,
+        ),
+    }
 }

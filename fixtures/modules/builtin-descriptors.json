@@ -2578,6 +2578,234 @@
       {
         "actions": [
           {
+            "id": "set-detail",
+            "notes": "merges the named Detail fields into one layer per target before the colour run; omitted fields keep their stored values; noise reduction precedes capture sharpening; a patch that changes nothing is a reported no-op",
+            "parameters": [
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 150.0,
+                "min": 0.0,
+                "name": "sharpening",
+                "notes": "capture-sharpening gain; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 1.0,
+                "kind": "number",
+                "max": 3.0,
+                "min": 0.5,
+                "name": "radius",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 1,
+                "required": false,
+                "step": 0.1,
+                "unit": "px"
+              },
+              {
+                "default": 25.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "sharpen-detail",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "sharpen-masking",
+                "notes": "Takes effect when Amount is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "luminance",
+                "notes": "lightness-noise suppression; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "luminance-detail",
+                "notes": "Takes effect when Luminance is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "colour",
+                "notes": "chroma-noise suppression; zero is off",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "colour-detail",
+                "notes": "Takes effect when Colour is above 0",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              }
+            ],
+            "patch": true,
+            "title": "Set Detail"
+          },
+          {
+            "id": "reset-detail",
+            "notes": "returns the stack's one Detail layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "parameters": [],
+            "patch": false,
+            "title": "Reset Detail"
+          }
+        ],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "collapsed": true,
+        "controls": [
+          {
+            "controls": [
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Amount",
+                "parameter": "sharpening"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Radius",
+                "parameter": "radius"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Detail",
+                "parameter": "sharpen-detail"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Masking",
+                "parameter": "sharpen-masking"
+              }
+            ],
+            "kind": "group",
+            "label": "Sharpening",
+            "reset": {
+              "action": "set-detail",
+              "preset": {
+                "radius": 1.0,
+                "sharpen-detail": 25.0,
+                "sharpen-masking": 0.0,
+                "sharpening": 0.0
+              }
+            }
+          },
+          {
+            "controls": [
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Luminance",
+                "parameter": "luminance"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Luminance detail",
+                "parameter": "luminance-detail"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Colour",
+                "parameter": "colour"
+              },
+              {
+                "action": "set-detail",
+                "kind": "number",
+                "label": "Colour detail",
+                "parameter": "colour-detail"
+              }
+            ],
+            "kind": "group",
+            "label": "Noise reduction",
+            "reset": {
+              "action": "set-detail",
+              "preset": {
+                "colour": 0.0,
+                "colour-detail": 50.0,
+                "luminance": 0.0,
+                "luminance-detail": 50.0
+              }
+            }
+          }
+        ],
+        "developer": false,
+        "effects": [
+          {
+            "fit_settle": "exact",
+            "format": 1,
+            "id": "luxforge.detail.adjust",
+            "maskable": true,
+            "order": 0,
+            "single": true,
+            "stage": "restoration"
+          }
+        ],
+        "hint": "Judge fine detail at 100%",
+        "id": "luxforge.detail",
+        "layout": "stacked",
+        "queries": [],
+        "reset": {
+          "action": "reset-detail",
+          "preset": {}
+        },
+        "title": "Detail"
+      },
+      {
+        "actions": [
+          {
             "id": "set-presence",
             "notes": "merges the named presence fields into the stack's one Presence layer, which the host places after the pointwise colour run and before the geometry tail on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
             "parameters": [
@@ -4730,6 +4958,31 @@
           "unit": null
         }
       },
+      "edit.reset-detail": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "returns the stack's one Detail layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "optional": {
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
       "edit.reset-lens-profile": {
         "mutates": true,
         "mutation": "revision",
@@ -5064,6 +5317,143 @@
             "required": false,
             "step": 0.01,
             "unit": null
+          }
+        ],
+        "patch": true,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
+      },
+      "edit.set-detail": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "merges the named Detail fields into one layer per target before the colour run; omitted fields keep their stored values; noise reduction precedes capture sharpening; a patch that changes nothing is a reported no-op",
+        "optional": {
+          "colour": "chroma-noise suppression; zero is off",
+          "colour-detail": "Takes effect when Colour is above 0",
+          "luminance": "lightness-noise suppression; zero is off",
+          "luminance-detail": "Takes effect when Luminance is above 0",
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "radius": "Takes effect when Amount is above 0",
+          "sharpen-detail": "Takes effect when Amount is above 0",
+          "sharpen-masking": "Takes effect when Amount is above 0",
+          "sharpening": "capture-sharpening gain; zero is off"
+        },
+        "parameters": [
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 150.0,
+            "min": 0.0,
+            "name": "sharpening",
+            "notes": "capture-sharpening gain; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 1.0,
+            "kind": "number",
+            "max": 3.0,
+            "min": 0.5,
+            "name": "radius",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 1,
+            "required": false,
+            "step": 0.1,
+            "unit": "px"
+          },
+          {
+            "default": 25.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "sharpen-detail",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "sharpen-masking",
+            "notes": "Takes effect when Amount is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "luminance",
+            "notes": "lightness-noise suppression; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "luminance-detail",
+            "notes": "Takes effect when Luminance is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "colour",
+            "notes": "chroma-noise suppression; zero is off",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "colour-detail",
+            "notes": "Takes effect when Colour is above 0",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
           }
         ],
         "patch": true,

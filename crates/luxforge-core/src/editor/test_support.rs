@@ -8,7 +8,7 @@ use super::{
 use crate::{
     ActionDescriptor, Availability, Component, ComponentMode, EFFECT_FORMAT, EffectDescriptor,
     EffectStage, EntryId, Error, ExactGeometry, HistoryEntry, LayerId, Mask, ModuleDescriptor,
-    ModuleRegistry, Mutation, ParameterDescriptor, Processing, Recipe, Snapshot, SnapshotId, Stage,
+    ModuleRegistry, Mutation, ParameterDescriptor, Processing, Recipe, Snapshot, SnapshotId,
     ToolModule,
     modules::{ActionInput, ActionPlan, LayerUpdate, NewLayer, StageContext},
 };
@@ -161,6 +161,7 @@ impl ShrinkModule {
             parameters: vec![extent("width"), extent("height")],
         };
         let effect = |id: &str| EffectDescriptor {
+            fit_settle: Default::default(),
             id: id.into(),
             format: EFFECT_FORMAT,
             stage: EffectStage::Geometry,
@@ -278,7 +279,14 @@ impl ToolModule for ShrinkModule {
         )))
     }
 
-    fn compile(&self, _: &str, _: u32, payload: &Value, stage: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        payload: &Value,
+        at: crate::CompileStage,
+    ) -> Result<Processing, Error> {
+        let stage = at.stage;
         let (width, height) = Self::extents(payload)?;
         if width > stage.width || height > stage.height {
             return Err(Error::validation(format!(

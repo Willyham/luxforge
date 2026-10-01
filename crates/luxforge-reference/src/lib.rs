@@ -18,6 +18,7 @@
 
 pub mod colour;
 pub mod curve;
+pub mod detail;
 pub mod dng;
 pub mod geometry;
 pub mod mask;

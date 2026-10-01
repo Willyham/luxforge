@@ -20,7 +20,8 @@ impl FieldPatch for Perspective {
             .group(Group::new("Perspective",["horizontal","vertical"]))
             .collapsed()
     }
-    fn compile(&self, values: &Values<'_>, stage: Stage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
+        let stage = at.stage;
         Ok(Processing::Warp(super::WarpStep::projective(
             values.number("horizontal") as i64,
             values.number("vertical") as i64,
@@ -115,8 +116,13 @@ mod tests {
             height: 4000,
         };
         assert_eq!(
-            m.compile(PERSPECTIVE_EFFECT, EFFECT_FORMAT, &json!({}), s)
-                .unwrap(),
+            m.compile(
+                PERSPECTIVE_EFFECT,
+                EFFECT_FORMAT,
+                &json!({}),
+                crate::CompileStage::exact(s)
+            )
+            .unwrap(),
             Processing::ExactGeometry(super::super::ExactGeometry::identity(s.width, s.height))
         );
     }

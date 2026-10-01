@@ -1,0 +1,1004 @@
+[
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-green-reduction",
+    "value": 0.7789025944701576,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-green-drift",
+    "value": 0.11102973090277857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.7689969693016346,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-raw-luma-drift",
+    "value": 0.05591286349927316,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.7778564459371132,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.11184353298611072,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.7683834118495865,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.055632329645085576,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-green-reduction",
+    "value": 0.3248956499135005,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-green-drift",
+    "value": 0.4562717013888893,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.3287491299416202,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-raw-luma-drift",
+    "value": 0.23426246744780954,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.3631282669826851,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.2805447048611107,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.36144410255368453,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.01-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.059289659288069174,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-green-reduction",
+    "value": 0.9641829221162268,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-green-drift",
+    "value": 0.13853624131944997,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9604641447392193,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-raw-luma-drift",
+    "value": 0.1328146972660207,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9624976140425766,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.13772243923611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.9586985624534411,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.13202428927993282,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-green-reduction",
+    "value": 0.6630132575116403,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-green-drift",
+    "value": 0.0606282552083357,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.6536988955446905,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-raw-luma-drift",
+    "value": 0.0016024142788140239,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.6616680537792641,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.06342230902777857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.6525399304093049,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.05-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.0032656901035608144,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-green-reduction",
+    "value": 0.8783159039971751,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-green-drift",
+    "value": 0.24818250868055713,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.864742773039566,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-raw-luma-drift",
+    "value": 0.2584598741337203,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.8762882599566324,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.24367947048611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.862263785278966,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.25512371419449664,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-green-reduction",
+    "value": 0.8066267880106044,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-green-drift",
+    "value": 0.05441623263888573,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.7928160903686136,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-raw-luma-drift",
+    "value": 0.08300474175896966,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.8058337008466517,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.05023871527777146,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.7922450013922852,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.18-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.07938237847722007,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-green-reduction",
+    "value": 0.9913816547484634,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-green-drift",
+    "value": 0.13661024305557135,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9917373621080786,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-raw-luma-drift",
+    "value": 0.13814760742380372,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9928535608116953,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.13674587673611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.993156222421411,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.13824842122591008,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-green-reduction",
+    "value": 0.8876241938085869,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-green-drift",
+    "value": 0.088623046875,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.8781547651585198,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-raw-luma-drift",
+    "value": 0.10296007486269332,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.8860629022159422,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.08805338541665719,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.8762776281208071,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "flat-0.45-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.10254819877872023,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-raw-green-reduction",
+    "value": 0.7727557015250262,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-raw-green-drift",
+    "value": 0.11178927951388928,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.7601226918300453,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-raw-luma-drift",
+    "value": 0.05639341362947903,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.7718455096061295,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.112060546875,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.7597774913498919,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.05558525390723901,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-raw-green-reduction",
+    "value": 0.28800900121076867,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-raw-green-drift",
+    "value": 0.35077582465277857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.2700550572616458,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-raw-luma-drift",
+    "value": 0.13642980143217898,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.3257957972610469,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.230712890625,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.30579580520389993,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.01-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.014330897352447636,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-raw-green-reduction",
+    "value": 0.9638139096859903,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-raw-green-drift",
+    "value": 0.13861762152777857,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9598192497394832,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-raw-luma-drift",
+    "value": 0.1328825846358157,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9622620603357094,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.1377766927083357,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.9582505424843597,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.13207081705770918,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-raw-green-reduction",
+    "value": 0.6483630662289767,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-raw-green-drift",
+    "value": 0.06100802951388573,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.6326558203646937,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-raw-luma-drift",
+    "value": 0.0016273491746048308,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.6483447670446889,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.0638020833333357,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.6326106677252868,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.05-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.003628162976696103,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-raw-green-reduction",
+    "value": 0.8783159039971751,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-raw-green-drift",
+    "value": 0.24818250868055713,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.864742773039566,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-raw-luma-drift",
+    "value": 0.2584598741337203,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.8762882599566324,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.24367947048611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.8622446017675038,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.2551179470503939,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-raw-green-reduction",
+    "value": 0.8019653375204299,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-raw-green-drift",
+    "value": 0.05487738715277146,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.7856923763607363,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-raw-luma-drift",
+    "value": 0.08320746528326595,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.8004083830341193,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.05034722222221433,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.7844890023163775,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.18-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.07936727431057022,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-raw-green-reduction",
+    "value": 0.9913816547484634,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-raw-green-drift",
+    "value": 0.13661024305557135,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-raw-luma-reduction",
+    "value": 0.9917373621080786,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-raw-luma-drift",
+    "value": 0.13814760742380372,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-jpeg-green-reduction",
+    "value": 0.9928535608116953,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-jpeg-green-drift",
+    "value": 0.13674587673611427,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-jpeg-luma-reduction",
+    "value": 0.993156222421411,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0004-0.000002-jpeg-luma-drift",
+    "value": 0.13824842122591008,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-raw-green-reduction",
+    "value": 0.8843268528317195,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-raw-green-drift",
+    "value": 0.08824327256942865,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-raw-luma-reduction",
+    "value": 0.8734708959558831,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-raw-luma-drift",
+    "value": 0.10264743922903108,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-jpeg-green-reduction",
+    "value": 0.8838541756701226,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-jpeg-green-drift",
+    "value": 0.08799913194442865,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-jpeg-luma-reduction",
+    "value": 0.8726087870081547,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "combined-flat-0.45-0.0016-0.000008-jpeg-luma-drift",
+    "value": 0.10249166123529108,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "correlated-sigma8-levels4-reduction-terminal-original-relative-diagnostic",
+    "value": 0.24489022949153538,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma16-levels4-reduction-terminal-original-relative-diagnostic",
+    "value": 0.14743706222652764,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma8-levels4-reduction",
+    "value": 0.21203058592234303,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "correlated-sigma16-levels4-reduction",
+    "value": 0.07963041059132081,
+    "minimum": 0.25,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-mtf50-improvement",
+    "value": 0.3071058742151216,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-overshoot",
+    "value": 0.01925776992415617,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.5-undershoot",
+    "value": 0.021696599947810282,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-mtf50-improvement",
+    "value": 0.30630634166961435,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-overshoot",
+    "value": 0.01726537722161506,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.5-high0.78-undershoot",
+    "value": 0.020942129737675095,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-mtf50-improvement",
+    "value": 0.20394915878789943,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-overshoot",
+    "value": 0.005374645619053476,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.5-undershoot",
+    "value": 0.009766125952695557,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-mtf50-improvement",
+    "value": 0.20324916205612276,
+    "minimum": 0.1,
+    "maximum": null
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-overshoot",
+    "value": 0.006902160691634658,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "edge-sigma0.8-high0.78-undershoot",
+    "value": 0.010147860873692105,
+    "minimum": null,
+    "maximum": 0.05
+  },
+  {
+    "name": "production-raw-proxy-1over2-rms",
+    "value": 0.933882637221997,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-raw-proxy-1over2-p99",
+    "value": 4.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-raw-proxy-1over3-rms",
+    "value": 1.039797844986009,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-raw-proxy-1over3-p99",
+    "value": 3.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-raw-proxy-1over4-rms",
+    "value": 1.1065471587706206,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-raw-proxy-1over4-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-raw-proxy-1over6-rms",
+    "value": 0.9017633407390945,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-raw-proxy-1over6-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-raw-proxy-1over8-rms",
+    "value": 1.021258414898012,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-raw-proxy-1over8-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-jpeg-proxy-1over2-rms",
+    "value": 0.8470028516572612,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-jpeg-proxy-1over2-p99",
+    "value": 3.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-jpeg-proxy-1over3-rms",
+    "value": 1.015701952079336,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-jpeg-proxy-1over3-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-jpeg-proxy-1over4-rms",
+    "value": 1.1365390095104033,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-jpeg-proxy-1over4-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-jpeg-proxy-1over6-rms",
+    "value": 0.9202243200403647,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-jpeg-proxy-1over6-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-jpeg-proxy-1over8-rms",
+    "value": 1.0455137293853836,
+    "minimum": null,
+    "maximum": 1.2
+  },
+  {
+    "name": "production-jpeg-proxy-1over8-p99",
+    "value": 2.0,
+    "minimum": null,
+    "maximum": 3.0
+  },
+  {
+    "name": "production-banding-forced-8bit-max-neighbour-code-jump",
+    "value": 15.0,
+    "minimum": null,
+    "maximum": null
+  },
+  {
+    "name": "production-banding-jpeg-16bit-max-neighbour-code-jump",
+    "value": 16.0,
+    "minimum": null,
+    "maximum": 1.0
+  },
+  {
+    "name": "production-banding-raw-float-max-neighbour-code-jump",
+    "value": 16.0,
+    "minimum": null,
+    "maximum": null
+  }
+]

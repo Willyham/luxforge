@@ -1,6 +1,6 @@
-//! The offline profile list, selection, fused geometry and mask outline through real messages.
+//! Offline Lens/Perspective, global and masked Detail, and warped mask gestures through real messages.
 use crate::{
-    scenario::{Checked, Checks, Plan, Run, Step, plan::only},
+    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
 };
 use luxforge_evidence::{
@@ -16,6 +16,9 @@ const LENS_EFFECT: &str = "luxforge.lens.distortion";
 const PERSPECTIVE_EFFECT: &str = "luxforge.perspective";
 const HELD_STROKE: [[f64; 2]; 2] = [[0.375, 0.375], [0.5, 0.375]];
 const FRESH_STROKE: [[f64; 2]; 2] = [[0.5, 0.625], [0.625, 0.625]];
+const CURVE_EFFECT: &str = luxforge_core::CURVE_EFFECT;
+const DETAIL_EFFECT: &str = luxforge_core::DETAIL_EFFECT;
+const GLOBAL_DETAIL: [f64; 3] = [60.0, 40.0, 40.0];
 const QUERY_ERROR: &str = "validation: parameter text must be at most 64 characters";
 
 fn quiet(name: &str, step: impl Into<script::Step>) -> Step {
@@ -28,6 +31,18 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .collapsed(LENS)
             .collapsed(PERSPECTIVE)
             .no_layer(LENS_EFFECT),
+        Step::new("curve-global", crate::scenario::recipe::moderate_curve())
+            .commits(1)
+            .payload(CURVE_EFFECT, global_curve()),
+        Step::new("detail-global", crate::scenario::recipe::moderate_detail())
+            .commits(1)
+            .payload(DETAIL_EFFECT, global_detail()),
+        quiet(
+            "detail-global-current",
+            script::Step::Preview(script::PreviewStep::Current),
+        )
+        .fit()
+        .same_layer(DETAIL_EFFECT, "detail-global"),
         quiet(
             "basic-collapsed",
             script::Step::section("luxforge.basic", false),
@@ -108,6 +123,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new("radial-committed", MaskStep::Apply)
             .commits(1)
             .masks(1),
+        Step::new(
+            "detail-masked",
+            SliderStep::new("set-detail", "sharpening", [25.0]).release(),
+        )
+        .commits(1)
+        .no_draft()
+        .field("set-detail", "sharpening", "25")
+        .same_layer(DETAIL_EFFECT, "detail-global"),
         quiet("pointer", WorkspaceStep::default().mode("pointer")),
         Step::new(
             "straightened",
@@ -178,7 +201,100 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             },
         )
         .same_layer(LENS_EFFECT, "selected-fit"),
+        quiet(
+            "combined-current",
+            script::Step::Preview(script::PreviewStep::Current),
+        )
+        .fit()
+        .payload(DETAIL_EFFECT, global_detail()),
+        Step::new(
+            "detail-neutral",
+            script::Step::call(
+                "edit.set-detail",
+                json!({"sharpening":0.0,"luminance":0.0,"colour":0.0}),
+            ),
+        )
+        .commits(1)
+        .same_layer(DETAIL_EFFECT, "detail-global")
+        .same_layer(LENS_EFFECT, "selected-fit")
+        .same_layer(PERSPECTIVE_EFFECT, "horizontal"),
+        quiet(
+            "combined-neutral-current",
+            script::Step::Preview(script::PreviewStep::Current),
+        )
+        .fit(),
+        Step::new("detail-undo", script::Step::call("history.undo", json!({})))
+            .commits(1)
+            .payload(DETAIL_EFFECT, global_detail())
+            .same_layer(DETAIL_EFFECT, "detail-global"),
+        quiet(
+            "combined-restored-current",
+            script::Step::Preview(script::PreviewStep::Current),
+        )
+        .fit()
+        .payload(DETAIL_EFFECT, global_detail())
+        .same_layer(LENS_EFFECT, "selected-fit")
+        .same_layer(PERSPECTIVE_EFFECT, "horizontal"),
     ])
+}
+
+fn global_curve() -> Value {
+    json!({"luminance":crate::scenario::recipe::MODERATE_CURVE})
+}
+
+fn global_detail() -> Value {
+    json!({"sharpening":GLOBAL_DETAIL[0],"luminance":GLOBAL_DETAIL[1],"colour":GLOBAL_DETAIL[2]})
+}
+
+/// Settlement is an identity claim, not merely the presence of an image file.
+fn settled_current(frame: &Frame) -> Result {
+    frame.visible_photo()?;
+    let gpu = &frame.state()["surface"]["gpu"];
+    ensure(
+        gpu["drawn_photo_blank"] == false
+            && gpu["drawn_stale_photo"] == false
+            && gpu["blank_photo_draws"] == 0
+            && gpu["stale_photo_draws"] == 0,
+        "The combined current GPU capture is blank or stale",
+    )?;
+    let state = frame.state();
+    let proxy = &state["proxy"];
+    ensure(
+        state["requested_generation"] == state["displayed_generation"]
+            && state["stack"]["displayed"]["entry"] == state["stack"]["entry"]
+            && state["surface"]["detail_updating"] == false
+            && state["histogram"]["stale"] == false
+            && state["approximate_white_balance"] == false
+            && (proxy["presented"] == false
+                || (proxy["presented"] == true
+                    && proxy["settled_from_exact"] == true
+                    && proxy["approximate"] == false
+                    && proxy["approximate_reason"].is_null())),
+        "The combined current capture has not settled exact pixels and analysis",
+    )
+}
+
+/// Compare the complete drawn photo in two Fit captures; chrome outside it is irrelevant.
+fn photo_difference(a: &Frame, b: &Frame) -> Result<f64> {
+    let ar = a.photo()?;
+    let br = b.photo()?;
+    let size = |r: [u32; 4]| (r[2] - r[0], r[3] - r[1]);
+    ensure(size(ar) == size(br), "The combined Fit photo sizes differ")?;
+    let (width, height) = size(ar);
+    let (ai, bi) = (a.image()?, b.image()?);
+    let mut sum = 0u64;
+    for y in 0..height {
+        for x in 0..width {
+            let ap = ai.get_pixel(ar[0] + x, ar[1] + y).0;
+            let bp = bi.get_pixel(br[0] + x, br[1] + y).0;
+            sum += ap
+                .into_iter()
+                .zip(bp)
+                .map(|(a, b)| u64::from(a.abs_diff(b)))
+                .sum::<u64>();
+        }
+    }
+    Ok(sum as f64 / (f64::from(width) * f64::from(height) * 3.0))
 }
 
 /// A retry is an explicit new request for the same failed input. Error and recovery frames must
@@ -382,7 +498,7 @@ fn expected_stroke(fields: &Value, path: &[[f64; 2]]) -> Result<luxforge_core::m
 /// Resolve the catalog's actual content-addressed objects after the editor exits. UI rows expose
 /// their references, but only the stored stroke proves which coordinates were durably retained.
 fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -> Result<Value> {
-    let final_frame = launch.at("fresh-stroke-committed")?;
+    let final_frame = launch.at("combined-restored-current")?;
     let service = luxforge_core::EditorService::open(&launch.evidence.join("catalog.sqlite"))?;
     let assets = service.assets(None, 1)?;
     ensure(
@@ -396,6 +512,28 @@ fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -
         "The reopened catalog does not match the final captured entry",
     )?;
     let recipe = &state.current_entry.snapshot.recipe;
+    let curve: Vec<_> = recipe
+        .layers
+        .iter()
+        .filter(|layer| layer.effect_id == CURVE_EFFECT)
+        .collect();
+    ensure(
+        curve.len() == 1 && curve[0].mask.is_none() && curve[0].payload == global_curve(),
+        "The durable combined recipe lost its real global Tone curve payload",
+    )?;
+    let detail: Vec<_> = recipe
+        .layers
+        .iter()
+        .filter(|layer| layer.effect_id == DETAIL_EFFECT)
+        .collect();
+    ensure(
+        detail.len() == 2
+            && detail[0].mask.is_none()
+            && detail[0].payload == global_detail()
+            && detail[1].mask.is_some()
+            && detail[1].payload == json!({"sharpening":25.0}),
+        "The durable combined recipe lost its global or masked Detail payload",
+    )?;
     let mask = recipe.masks.first().ok_or("The final recipe has no mask")?;
     let brush = mask
         .components
@@ -428,7 +566,9 @@ fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -
         )?;
         stored.push(json!({"id":id,"points":stroke.points().collect::<Vec<_>>(),"size":stroke.size(),"feather":stroke.feather(),"flow":stroke.flow()}));
     }
-    Ok(json!({"entry":state.current_entry.id,"mask":mask.id,"component":brush.id,"strokes":stored}))
+    Ok(
+        json!({"entry":state.current_entry.id,"mask":mask.id,"component":brush.id,"strokes":stored,"detail_layers":detail}),
+    )
 }
 
 pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
@@ -479,6 +619,18 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "query-recovered",
     ] {
         let frame = launch.at(name)?;
+        ensure(
+            frame.payload(DETAIL_EFFECT) == Some(&global_detail())
+                && frame.layer_id(DETAIL_EFFECT)
+                    == launch.at("detail-global")?.layer_id(DETAIL_EFFECT),
+            format!("{name} lost or replaced global Detail during combined geometry/mask editing"),
+        )?;
+        ensure(
+            frame.payload(CURVE_EFFECT) == Some(&global_curve())
+                && frame.layer_id(CURVE_EFFECT)
+                    == launch.at("curve-global")?.layer_id(CURVE_EFFECT),
+            format!("{name} lost or replaced the real Tone curve during combined editing"),
+        )?;
         let surface = &frame["state"]["surface"];
         ensure(
             frame["state"]["requested_generation"] == frame["state"]["displayed_generation"],
@@ -494,7 +646,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             frame.image()?.width() > 0,
             format!("{name} has no native renderer capture"),
         )?;
-        checks.note(frame,name,json!({"entry":frame.entry()?,"surface":surface,"lens":frame.payload(LENS_EFFECT),"perspective":frame.payload(PERSPECTIVE_EFFECT)}));
+        checks.note(frame,name,json!({"entry":frame.entry()?,"surface":surface,"lens":frame.payload(LENS_EFFECT),"perspective":frame.payload(PERSPECTIVE_EFFECT),"detail":frame.payload(DETAIL_EFFECT),"curve":frame.payload(CURVE_EFFECT)}));
     }
     ensure(
         launch.at("horizontal")?.payload(PERSPECTIVE_EFFECT) == Some(&json!({"horizontal":40})),
@@ -571,7 +723,55 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "Lens query error and Retry",
         retry,
     );
-    checks.write(&launch.evidence,"lens-perspective",json!({"scope":"Generated grid and descriptor-backed desktop gestures with correlated native captures; mask Reapply preserves stored content coordinates and refreshes the pointer map after another client's Perspective commit; explicit Lens query Retry issues a fresh request with the same rejected input and clearing the search recovers rows without changing history; photographic lens qualification is separate"}))
+    for name in [
+        "detail-global-current",
+        "combined-current",
+        "combined-neutral-current",
+        "combined-restored-current",
+    ] {
+        let frame = launch.at(name)?;
+        settled_current(frame)?;
+        ensure(
+            frame.payload(CURVE_EFFECT) == Some(&global_curve())
+                && frame.layer_id(CURVE_EFFECT)
+                    == launch.at("curve-global")?.layer_id(CURVE_EFFECT),
+            format!("{name} lost or replaced the combined Tone curve"),
+        )?;
+    }
+    let current = launch.at("combined-current")?;
+    let neutral = launch.at("combined-neutral-current")?;
+    let restored = launch.at("combined-restored-current")?;
+    let retained = current["state"]["stack"]["layers"]
+        .as_array()
+        .ok_or("No combined layers")?;
+    let masked = retained
+        .iter()
+        .filter(|layer| layer["effect"] == DETAIL_EFFECT && !layer["mask"].is_null())
+        .collect::<Vec<_>>();
+    ensure(
+        masked.len() == 1
+            && masked[0]["payload"] == json!({"sharpening":25.0})
+            && masked[0]["mask"] == current.only_mask()?["id"],
+        "Combined mask editing did not retain a Detail layer bound to the warped mask",
+    )?;
+    ensure(
+        current["state"]["stack"]["layers"] == restored["state"]["stack"]["layers"],
+        "Undo did not restore the complete combined stack",
+    )?;
+    let changed = photo_difference(current, neutral)?;
+    ensure(
+        changed > 0.0,
+        "Neutralizing global Detail did not change combined geometry/mask pixels",
+    )?;
+    checks.note(neutral,"Detail changes the combined Tone curve/Lens/Perspective/mask/crop photo",json!({"mean_absolute_rgb_codes":changed,"curve":current.payload(CURVE_EFFECT),"global_detail":current.payload(DETAIL_EFFECT),"masked_detail":masked[0],"settled_exact":true}));
+    checks.compare(
+        restored,
+        "Undo restores byte-identical combined native photo pixels",
+        photo_difference(current, restored)?,
+        0.0,
+        Tolerance::Within(0.0),
+    )?;
+    checks.write(&launch.evidence,"lens-perspective",json!({"scope":"Generated grid and descriptor-backed desktop gestures with correlated native captures; a real global Tone curve and global and masked Detail survive Lens/Perspective, crop and mask editing, explicit current captures settle exact and Undo restores byte-identical native photo pixels (a repeat/undo proof, not an independent numerical oracle); mask Reapply preserves stored content coordinates and refreshes the pointer map after another client's Perspective commit; explicit Lens query Retry issues a fresh request with the same rejected input and clearing the search recovers rows without changing history; photographic lens qualification is separate"}))
 }
 
 #[cfg(test)]
@@ -583,30 +783,35 @@ mod tests {
         plan.validate().unwrap();
         let script = script::parse(&plan.script().to_string()).unwrap();
         assert_eq!(script.len(), plan.len() - 1);
-        assert_eq!(plan.len(), 35);
+        assert_eq!(plan.len(), 44);
+        assert_eq!(script[0], crate::scenario::recipe::moderate_curve());
+        assert_eq!(script[1], crate::scenario::recipe::moderate_detail());
         assert!(script.iter().any(|step| matches!(
             step,
             script::Step::Controls(ControlsStep::QueryChoiceSelectFirst { .. })
         )));
         assert_eq!(
-            script[19],
+            script[plan.index("brush-mask-mode").unwrap() - 1],
             script::Step::Workspace(WorkspaceStep::default().mode("mask"))
         );
         assert!(
-            matches!(&script[22],script::Step::Agent {method,..} if method == "edit.set-perspective")
+            matches!(&script[plan.index("brush-conflict").unwrap() - 1],script::Step::Agent {method,..} if method == "edit.set-perspective")
         );
-        assert_eq!(script[24], script::Step::Mask(MaskStep::Reapply));
+        assert_eq!(
+            script[plan.index("brush-reapplied").unwrap() - 1],
+            script::Step::Mask(MaskStep::Reapply)
+        );
         assert!(matches!(
-            &script[27],
+            &script[plan.index("fresh-stroke-held").unwrap() - 1],
             script::Step::Mask(MaskStep::Stroke { release: false, .. })
         ));
         assert!(matches!(
-            &script[31],
+            &script[plan.index("query-error").unwrap() - 1],
             script::Step::Controls(ControlsStep::QueryChoiceSearch { action, text })
                 if action == SELECT && text.chars().count() == 65
         ));
         assert_eq!(
-            script[32],
+            script[plan.index("query-retried").unwrap() - 1],
             script::Step::Controls(ControlsStep::QueryChoiceRetry {
                 action: SELECT.into()
             })

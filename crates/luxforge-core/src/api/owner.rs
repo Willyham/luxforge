@@ -76,6 +76,13 @@ impl ClientId {
 /// asked for and none can read through `job.read`.
 const SYSTEM_CLIENT: ClientId = ClientId(0);
 
+struct ParkedRead {
+    call: OwnerCall,
+    key: crate::editor::pixels::PixelReadKey,
+    rounds: usize,
+    changed: bool,
+}
+
 struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
@@ -126,6 +133,9 @@ enum OwnerMessage {
     /// How many planned samples wait behind the one the point worker is evaluating.
     #[cfg(test)]
     PointsWaiting(SyncSender<usize>),
+    /// Parked reads, queued point calls and the active call's cancellation token.
+    #[cfg(test)]
+    PixelReadState(SyncSender<(usize, usize, Option<crate::Cancel>)>),
     /// Call this where the owner serves a message, or stop calling it.
     #[cfg(test)]
     Fault(Option<Fault>),
@@ -153,6 +163,10 @@ enum OwnerMessage {
         reply: SyncSender<()>,
     },
     Disconnect(ClientId),
+    PixelsRead {
+        ticket: u64,
+        result: Result<crate::editor::pixels::PixelAnswer, Error>,
+    },
     Stop,
 }
 
@@ -1015,6 +1029,15 @@ impl OwnerHandle {
         answer.recv().expect("the owner answered")
     }
 
+    #[cfg(test)]
+    fn pixel_read_state(&self) -> (usize, usize, Option<crate::Cancel>) {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::PixelReadState(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
     /// Wake `client` whenever another client's change reaches the event log: a request of another
     /// client's that recorded an event, or a change no request made — an import committed on the
     /// source worker, a capability job's result. The client's own requests do not wake it, because
@@ -1107,6 +1130,7 @@ fn owner_loop(
     // One analysis worker with one active and one replaceable pending job, globally. The worker
     // wakes this loop when it has an outcome and starts its pending job itself; nothing here waits
     // on it or polls for it.
+    let pixel_completions = completions.clone();
     let mut queue = AnalysisQueue::new(Arc::new(move || {
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
@@ -1126,6 +1150,9 @@ fn owner_loop(
         requests: RequestTable::default(),
         announced: Vec::new(),
         points: PointWorker::new(POINT_QUEUE_CAPACITY),
+        pixel_completions,
+        parked_reads: HashMap::new(),
+        next_pixel_ticket: 0,
         watchers: HashMap::new(),
         notified: 0,
         source_waiters: Vec::new(),
@@ -1154,21 +1181,43 @@ fn owner_loop(
         // The client whose request this message is: the events it records do not wake that client.
         let caller = match &message {
             OwnerMessage::Call(call) => Some(call.client),
+            OwnerMessage::PixelsRead { ticket, .. } => owner
+                .parked_reads
+                .get(ticket)
+                .map(|parked| parked.call.client),
             _ => None,
         };
         // A panic while serving one message is contained: whoever the message owed an answer is
         // answered `internal`, and the owner serves the next message. Every durable write is one
         // transaction and the entry cache moves only after a commit, so nothing is left half done.
-        let owed = Owed::of(&message);
+        let owed = match &message {
+            OwnerMessage::PixelsRead { ticket, .. } => owner
+                .parked_reads
+                .get(ticket)
+                .map(|parked| {
+                    Owed::Call(parked.call.request.id.clone(), parked.call.response.clone())
+                })
+                .unwrap_or(Owed::Nobody),
+            _ => Owed::of(&message),
+        };
         let served = catch_unwind(AssertUnwindSafe(|| {
             match message {
                 OwnerMessage::Stop => return ControlFlow::Break(()),
                 OwnerMessage::Call(call) => owner.call(call),
+                OwnerMessage::PixelsRead { ticket, result } => owner.pixels_read(ticket, result),
                 #[cfg(test)]
                 OwnerMessage::HoldPoints(hold) => owner.points.hold(hold),
                 #[cfg(test)]
                 OwnerMessage::PointsWaiting(reply) => {
                     let _ = reply.send(owner.points.waiting());
+                }
+                #[cfg(test)]
+                OwnerMessage::PixelReadState(reply) => {
+                    let _ = reply.send((
+                        owner.parked_reads.len(),
+                        owner.points.waiting(),
+                        owner.points.active_cancel(),
+                    ));
                 }
                 #[cfg(test)]
                 OwnerMessage::Fault(fault) => owner.fault = fault,
@@ -1247,7 +1296,10 @@ fn owner_loop(
         owner.notify_watchers(caller);
         owner.wake_event_waits();
     }
-    // The sample being evaluated finishes; the ones waiting are dropped with every other call.
+    // Completion workers post into this receiver. Drop it before joining so a completion
+    // cannot wait on a full channel after the owner stops serving messages.
+    drop(receiver);
+    // Cancel the active point read; queued and parked callers are dropped with the owner.
     owner.points.stop();
     let Owner {
         mut jobs, sources, ..
@@ -1256,7 +1308,6 @@ fn owner_loop(
     // left waiting on a full channel while the owner waits for it. Every live job is asked to
     // stop, the source worker's included, and the lanes are joined; a running export stops at its
     // next row or block and removes its temporary file.
-    drop(receiver);
     jobs.shutdown();
     // The source worker sees its stop on the memory gate, and its channel closes behind it.
     sources.gate.wake();
@@ -1365,6 +1416,9 @@ pub(super) struct Owner {
     pub(super) announced: Vec<Origin>,
     /// Evaluates the samples through a spatial layer this owner planned, off its thread.
     points: PointWorker,
+    pixel_completions: SyncSender<OwnerMessage>,
+    parked_reads: HashMap<u64, ParkedRead>,
+    next_pixel_ticket: u64,
     /// The clients that asked to be woken by other clients' changes ([`OwnerHandle::watch_events`]).
     watchers: HashMap<ClientId, EventWake>,
     /// The newest event sequence the watchers have been woken for.
@@ -1394,34 +1448,155 @@ impl Owner {
     /// worker evaluates it and answers on the call's own channel, with the sequence the owner had
     /// now, while the owner moves on.
     fn call(&mut self, call: OwnerCall) {
-        let OwnerCall {
-            client,
-            request,
-            response,
-        } = call;
-        let result = self.answer(client, &request);
+        self.call_round(call, 0, false);
+    }
+
+    fn call_round(&mut self, call: OwnerCall, rounds: usize, changed: bool) {
+        let client = call.client;
+        let mut before = self.sessions.entry(client).or_default().clone();
+        if rounds == 0 && call.request.method == "draft.reapply" {
+            before.pixel_memo.clear();
+        }
+        self.service
+            .begin_pixel_call(before.draft.as_ref(), before.pixel_memo.clone());
+        let result = self.answer(client, &call.request);
+        let deferred = self.service.take_pixel_read();
+        self.service.end_pixel_call();
+        if let Some(read) = deferred {
+            // No draft/session change survives an unanswered pass, and the request table records
+            // only its final answer. The service defers before any catalog write is planned.
+            self.sessions.insert(client, before);
+            self.announced.clear();
+            if rounds >= crate::editor::pixels::MAX_PIXEL_READ_ROUNDS {
+                let error = if changed {
+                    Error::conflict("the stack changed while its pixels were read; retry")
+                } else {
+                    Error::resource_limit("the plan requested too many successive pixel reads")
+                };
+                point::Reply::Caller {
+                    id: call.request.id,
+                    sequence: self.log.sequence,
+                    response: call.response,
+                }
+                .answer(Err(error));
+                return;
+            }
+            if self.parked_reads.len() > POINT_QUEUE_CAPACITY {
+                point::Reply::Caller { id: call.request.id, sequence: self.log.sequence, response: call.response }
+                    .answer(Err(Error::resource_limit("point samples, queries or pixel reads are already waiting; retry after one is answered")));
+                return;
+            }
+            self.next_pixel_ticket = self.next_pixel_ticket.wrapping_add(1);
+            let ticket = self.next_pixel_ticket;
+            let key = read.key.clone();
+            self.parked_reads.insert(
+                ticket,
+                ParkedRead {
+                    call,
+                    key,
+                    rounds: rounds + 1,
+                    changed,
+                },
+            );
+            if let Err(failed) = self.points.try_submit(point::PointCall {
+                client,
+                cancel: crate::Cancel::new(),
+                evaluate: Box::new(move |cancel| {
+                    read.evaluate(cancel)
+                        .map(Box::new)
+                        .map(point::PointAnswer::Pixels)
+                }),
+                reply: point::Reply::Pixels {
+                    ticket,
+                    owner: self.pixel_completions.clone(),
+                },
+            }) {
+                let (_, error) = *failed;
+                let parked = self.parked_reads.remove(&ticket).unwrap();
+                point::Reply::Caller {
+                    id: parked.call.request.id,
+                    sequence: self.log.sequence,
+                    response: parked.call.response,
+                }
+                .answer(Err(error));
+            }
+            return;
+        }
+        if result.is_ok() {
+            let session = self.sessions.entry(client).or_default();
+            if call.request.method == "draft.reapply" {
+                session.pixel_memo = self.service.pixel_reads.borrow().memo.clone();
+            }
+            session.pixel_memo.advance(session.draft.as_ref());
+        }
         self.record_announced();
-        // A wait the handler could not answer yet is held with this call's reply channel.
         if let Some(wait) = self.parking.take()
             && result.is_ok()
         {
-            self.park_event_wait(client, request.id, wait, response);
+            self.park_event_wait(client, call.request.id, wait, call.response);
             return;
         }
-        let reply = point::Reply {
-            id: request.id,
+        let reply = point::Reply::Caller {
+            id: call.request.id,
             sequence: self.log.sequence,
-            response,
+            response: call.response,
         };
         match result {
             Ok(Planned::Sample(plan)) => self.points.submit(point::PointCall {
                 client,
-                evaluate: Box::new(move || Planned::Sample(plan).answer()),
+                cancel: crate::Cancel::new(),
+                evaluate: Box::new(move |cancel| {
+                    methods::sample_value(plan.evaluate_cancelled(cancel)?)
+                        .map(point::PointAnswer::Value)
+                }),
                 reply,
             }),
-            Ok(Planned::Value(value)) => reply.answer(Ok(value)),
+            Ok(Planned::Query(plan)) => self.points.submit(point::PointCall {
+                client,
+                cancel: crate::Cancel::new(),
+                evaluate: Box::new(move |cancel| {
+                    plan.evaluate(cancel).map(point::PointAnswer::Value)
+                }),
+                reply,
+            }),
+            Ok(Planned::Value(value)) => reply.answer(Ok(point::PointAnswer::Value(value))),
             Err(error) => reply.answer(Err(error)),
         }
+    }
+
+    fn pixels_read(
+        &mut self,
+        ticket: u64,
+        result: Result<crate::editor::pixels::PixelAnswer, Error>,
+    ) {
+        let Some(mut parked) = self.parked_reads.remove(&ticket) else {
+            return;
+        };
+        let client = parked.call.client;
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                point::Reply::Caller {
+                    id: parked.call.request.id,
+                    sequence: self.log.sequence,
+                    response: parked.call.response,
+                }
+                .answer(Err(error));
+                return;
+            }
+        };
+        let session = self.sessions.entry(client).or_default();
+        let current = self
+            .service
+            .pixel_key_current(&parked.key, session.draft.as_ref())
+            .unwrap_or(false);
+        if current {
+            session.pixel_memo.insert(answer);
+        } else {
+            session.pixel_memo.clear();
+            parked.changed = true;
+        }
+        self.call_round(parked.call, parked.rounds, parked.changed);
     }
 
     fn answer(&mut self, client: ClientId, request: &ApiRequest) -> Result<Planned, Error> {
@@ -1490,6 +1665,10 @@ impl Owner {
         };
         // A stack whose source or artifacts are not prepared queues exactly what the refusal
         // names and answers with the job to wait for, whichever handler evaluated it.
+        // A deferred pixel read takes precedence, even when a handler swallowed its internal error.
+        if self.service.pixel_reads.borrow().deferred.is_some() {
+            return result;
+        }
         let result = result.map_err(|error| self.prepare(client, error));
         match (result, key) {
             (Ok(Planned::Value(mut value)), Some(key)) => {
@@ -1677,6 +1856,11 @@ impl Owner {
                 .cloned(),
             _ => None,
         };
+        let memo = self
+            .sessions
+            .get(&request.client)
+            .map(|s| s.pixel_memo.clone())
+            .unwrap_or_default();
         let draft = match &request.draft {
             None => None,
             Some(draft_id) => Some(
@@ -1691,6 +1875,7 @@ impl Owner {
                 "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
             ));
         }
+        self.service.begin_pixel_call(draft, memo);
         let job = match (&request.entry_id, &framing) {
             (Some(entry_id), Some(geometry)) => self.service.framed_preview_job(
                 &request.asset_id,
@@ -1706,6 +1891,13 @@ impl Owner {
                 request.proxy,
             ),
         };
+        let deferred = self.service.take_pixel_read();
+        self.service.end_pixel_call();
+        if deferred.is_some() {
+            return Err(Error::conflict(
+                "the draft's pixel inputs changed; set or reapply the draft before previewing it",
+            ));
+        }
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
             job
@@ -1745,6 +1937,8 @@ impl Owner {
         }
         self.latest_import.remove(&client);
         self.points.disconnect(client);
+        self.parked_reads
+            .retain(|_, parked| parked.call.client != client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
@@ -5868,6 +6062,380 @@ mod tests {
         (reaches, release)
     }
 
+    /// Unblock held calls if an assertion panics before a scoped thread is joined.
+    struct ReleasePoints(SyncSender<()>);
+    impl Drop for ReleasePoints {
+        fn drop(&mut self) {
+            for _ in 0..=POINT_QUEUE_CAPACITY + 1 {
+                let _ = self.0.try_send(());
+            }
+        }
+    }
+
+    /// Exercise the delivered Pixel planner at a stored later position. Its declared placement
+    /// is changed only in this test registry: normal Pixel still inserts before restoration.
+    struct TailPixel {
+        pixel: crate::modules::PixelModule,
+        descriptor: crate::ModuleDescriptor,
+    }
+    impl TailPixel {
+        fn registry() -> Arc<ModuleRegistry> {
+            use crate::ToolModule;
+            let pixel = crate::modules::PixelModule::new();
+            let mut descriptor = pixel.descriptor().clone();
+            descriptor.effects[0].stage = crate::EffectStage::Finish;
+            let mut registry = ModuleRegistry::builtin();
+            registry
+                .register(Arc::new(Self { pixel, descriptor }))
+                .unwrap();
+            Arc::new(registry)
+        }
+    }
+    impl crate::ToolModule for TailPixel {
+        fn descriptor(&self) -> &crate::ModuleDescriptor {
+            &self.descriptor
+        }
+        fn parse(
+            &self,
+            id: &str,
+            parameters: &serde_json::Map<String, Value>,
+        ) -> Result<crate::ActionInput, Error> {
+            self.pixel.parse(id, parameters)
+        }
+        fn plan(
+            &self,
+            input: &crate::ActionInput,
+            stage: &crate::StageContext<'_>,
+        ) -> Result<crate::ActionPlan, Error> {
+            self.pixel.plan(input, stage)
+        }
+        fn validate_payload(&self, id: &str, format: u32, value: &Value) -> Result<(), Error> {
+            self.pixel.validate_payload(id, format, value)
+        }
+        fn describe(
+            &self,
+            id: &str,
+            format: u32,
+            value: &Value,
+        ) -> Result<crate::LayerReport, Error> {
+            self.pixel.describe(id, format, value)
+        }
+        fn compile(
+            &self,
+            id: &str,
+            format: u32,
+            value: &Value,
+            at: crate::CompileStage,
+        ) -> Result<crate::Processing, Error> {
+            self.pixel.compile(id, format, value, at)
+        }
+    }
+
+    #[test]
+    fn restoration_pixel_set_plans_off_owner_and_preserves_its_stored_later_position() {
+        let catalog = temp("detail-tail-pixel.sqlite");
+        let (owner, join) = OwnerHandle::start_with(&catalog, TailPixel::registry()).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"sharpening":40.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let owner_tiles = Arc::new(AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let worker_tiles = Arc::new(AtomicU64::new(0));
+        let observed = worker_tiles.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let applied = ok(
+            &owner,
+            client,
+            "tail-pixel",
+            "edit.set-pixel",
+            json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
+            "mutation":crate::editor::mutation_json(1,"tail-pixel")}),
+        );
+        assert_eq!(applied["outcome"], json!("applied"));
+        assert_eq!(owner_tiles.load(Ordering::Relaxed), 0);
+        assert_eq!(worker_tiles.load(Ordering::Relaxed), 1);
+        let state = ok(
+            &owner,
+            client,
+            "state",
+            "asset.state",
+            json!({"asset_id":asset}),
+        );
+        let layers = &state["current_entry"]["snapshot"]["recipe"]["layers"];
+        assert_eq!(layers[0]["effect_id"], crate::DETAIL_EFFECT);
+        assert_eq!(layers[1]["effect_id"], crate::PIXEL_EFFECT);
+        assert_eq!(layers[1]["payload"]["rgb"], json!([1, 2, 3]));
+        let sampled = ok(
+            &owner,
+            client,
+            "sample",
+            "render.sample",
+            json!({"asset_id":asset,"x":10,"y":10}),
+        );
+        assert_eq!(sampled["rgba"], json!([1, 2, 3, 255]));
+        assert_eq!(owner_tiles.load(Ordering::Relaxed), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_point_queue_counts_parked_reads_and_disconnect_cancels_the_running_call() {
+        let catalog = temp("detail-parked-queue.sqlite");
+        let (owner, join) = OwnerHandle::start_with(&catalog, TailPixel::registry()).unwrap();
+        let editor = owner.register();
+        let state = import_asset(&owner, editor, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            editor,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"sharpening":40.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let clients: Vec<_> = (0..=POINT_QUEUE_CAPACITY)
+            .map(|_| owner.register())
+            .collect();
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let call = |client: ClientId| {
+                scope.spawn({
+                    let owner = &owner;
+                    let asset = &asset;
+                    move || {
+                        owner.call(
+                            client,
+                            ApiRequest {
+                                id: format!("pixel-{client:?}"),
+                                method: "edit.set-pixel".into(),
+                                params: json!({"asset_id":asset,"x":10,"y":10,"rgb":[1,2,3],
+                        "mutation":crate::editor::mutation_json(1,&format!("pixel-{client:?}"))}),
+                                token: None,
+                            },
+                        )
+                    }
+                })
+            };
+            let running = call(clients[0]);
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+            let queued: Vec<_> = clients[1..].iter().map(|client| call(*client)).collect();
+            luxforge_testbase::wait_until("parked reads to occupy the shared point queue", || {
+                owner.points_waiting() == POINT_QUEUE_CAPACITY
+            });
+            let (parked, waiting, active) = owner.pixel_read_state();
+            assert_eq!(
+                (parked, waiting),
+                (POINT_QUEUE_CAPACITY + 1, POINT_QUEUE_CAPACITY)
+            );
+            let active = active.unwrap();
+            assert!(!active.is_cancelled());
+            let refused = failure(
+                &owner,
+                editor,
+                "full",
+                "edit.set-pixel",
+                json!({"asset_id":asset,"x":11,"y":10,"rgb":[1,2,3],
+                "mutation":crate::editor::mutation_json(1,"full")}),
+            );
+            assert_eq!(refused.code, "resource-limit");
+            assert!(
+                refused
+                    .message
+                    .contains("point samples, queries or pixel reads")
+            );
+            assert_eq!(
+                owner.pixel_read_state().0,
+                POINT_QUEUE_CAPACITY + 1,
+                "a refused admission retains no parked call"
+            );
+            for client in &clients {
+                owner.disconnect(*client);
+            }
+            let (parked, waiting, _) = owner.pixel_read_state();
+            assert_eq!((parked, waiting), (0, 0));
+            assert!(
+                active.is_cancelled(),
+                "disconnect trips the active read's actual token"
+            );
+            assert!(
+                running.join().unwrap().is_err(),
+                "disconnect drops the parked caller's answer channel"
+            );
+            for waiting in queued {
+                assert!(waiting.join().unwrap().is_err());
+            }
+            release.send(()).unwrap();
+            luxforge_testbase::wait_until("the disconnected active read to stop", || {
+                owner.pixel_read_state().2.is_none()
+            });
+            let state = ok(
+                &owner,
+                editor,
+                "state",
+                "asset.state",
+                json!({"asset_id":asset}),
+            );
+            assert_eq!(state["revision"], json!(1));
+            assert_eq!(
+                state["current_entry"]["snapshot"]["recipe"]["layers"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+        });
+        owner.hold_points(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn point_sample_estimate_miss_behind_restoration_is_cancellable() {
+        let catalog = temp("detail-estimate-cancel.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"sharpening":40.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        presence(&owner, client, &asset, 1, "dehaze", json!({"dehaze":30.0}));
+        let context = owner.render_context();
+        assert_eq!(context.estimates().len(), 0, "the dehaze estimate is cold");
+        let reached = Arc::new(AtomicU64::new(0));
+        let count = reached.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            let count = count.clone();
+            crate::render::spatial::observe_tile_checkpoint(Arc::new(move |cancel| {
+                assert_eq!(std::thread::current().name(), Some("luxforge-point"));
+                count.fetch_add(1, Ordering::Relaxed);
+                cancel.cancel();
+            }));
+        })));
+        let answer = failure(
+            &owner,
+            client,
+            "sample",
+            "render.sample",
+            json!({"asset_id":asset,"x":10,"y":10}),
+        );
+        assert_eq!(answer.code, "cancelled");
+        assert_eq!(
+            reached.load(Ordering::Relaxed),
+            1,
+            "the cold estimate's serial reduction entered its upstream restoration tile"
+        );
+        assert_eq!(
+            context.estimates().len(),
+            0,
+            "a cancelled reduction publishes no estimate"
+        );
+        assert_eq!(context.spatial().in_use(), 0);
+        assert_eq!(context.scratch().in_use(), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_neutral_pick_applied_after_an_intervening_commit_is_refused_with_its_revision() {
+        let catalog = temp("detail-neutral-stale.sqlite");
+        let photo = temp("detail-neutral-stale.jpg");
+        let image = image::RgbImage::from_pixel(64, 48, image::Rgb([128, 128, 128]));
+        image::codecs::jpeg::JpegEncoder::new_with_quality(
+            std::fs::File::create(&photo).unwrap(),
+            100,
+        )
+        .encode_image(&image)
+        .unwrap();
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let picker = owner.register();
+        let other = owner.register();
+        let state = import_asset(&owner, picker, &photo);
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            picker,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"sharpening":40.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let pick = scope.spawn(|| {
+                send(
+                    &owner,
+                    picker,
+                    "pick",
+                    "query.neutral-sample",
+                    json!({"asset_id":asset,"x":32,"y":24}),
+                )
+            });
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+            let committed = ok(
+                &owner,
+                other,
+                "change",
+                "edit.set-basic",
+                json!({"asset_id":asset,"exposure":0.5,
+                "mutation":crate::editor::mutation_json(1,"change")}),
+            );
+            release.send(()).unwrap();
+            let picked = pick.join().unwrap().result.expect("the gray patch solves");
+            let refused = failure(
+                &owner,
+                picker,
+                "apply-stale",
+                "edit.set-basic",
+                json!({"asset_id":asset,
+                "temperature":picked["temperature"],"tint":picked["tint"],
+                "mutation":crate::editor::mutation_json(1,"apply-stale")}),
+            );
+            assert_eq!(refused.code, "conflict");
+            let state = ok(
+                &owner,
+                other,
+                "state",
+                "asset.state",
+                json!({"asset_id":asset}),
+            );
+            assert_eq!(state["revision"], json!(2));
+            assert_eq!(state["current_entry"]["id"], committed["current_entry_id"]);
+            assert_eq!(
+                state["current_entry"]["snapshot"]["recipe"]["layers"][1]["payload"],
+                json!({"exposure":0.5})
+            );
+        });
+        owner.hold_points(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
     fn presence(
         owner: &OwnerHandle,
         client: ClientId,
@@ -6217,6 +6785,1141 @@ mod tests {
                 points.len()
             );
         }
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+    #[test]
+    fn restoration_neutral_sample_runs_off_owner_and_keeps_its_planned_sequence() {
+        let catalog = temp("detail-query-worker.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let picker = owner.register();
+        let editor = owner.register();
+        let state = import_asset(&owner, picker, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            editor,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,
+            "sharpening":40.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let owner_tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let held = scope.spawn(|| {
+                send(
+                    &owner,
+                    picker,
+                    "pick",
+                    "query.neutral-sample",
+                    json!({"asset_id":asset,"x":240,"y":160}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the query reaches the point worker");
+            let state = send(
+                &owner,
+                editor,
+                "other-client",
+                "asset.state",
+                json!({"asset_id":asset}),
+            );
+            assert!(state.error.is_none());
+            let draft = ok(
+                &owner,
+                editor,
+                "other-begin",
+                "draft.begin",
+                json!({"asset_id":asset,"action":"set-basic"}),
+            );
+            let tick = ok(
+                &owner,
+                editor,
+                "other-tick",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":{"exposure":0.5}}),
+            );
+            assert_eq!(tick["draft_revision"], json!(1));
+            assert_eq!(tick["fields"]["exposure"], json!(0.5));
+            ok(
+                &owner,
+                editor,
+                "other-cancel",
+                "draft.cancel",
+                json!({"draft_id":draft["draft_id"]}),
+            );
+            ok(
+                &owner,
+                editor,
+                "basic",
+                "edit.set-basic",
+                json!({"asset_id":asset,"exposure":1.0,
+                "mutation":crate::editor::mutation_json(1,"basic")}),
+            );
+            release.send(()).unwrap();
+            let answer = held.join().unwrap();
+            assert_eq!(answer.sequence, state.sequence);
+            assert!(
+                answer.error.as_ref().is_none_or(|e| e.code != "internal"),
+                "{:?}",
+                answer.error
+            );
+        });
+        assert_eq!(
+            owner_tiles.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the owner only plans; all tiles run on the point worker"
+        );
+        owner.hold_points(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_pixel_read_rounds_are_bounded_even_when_a_module_catches_the_sampler_error() {
+        struct ManyReads(crate::ModuleDescriptor);
+        impl crate::ToolModule for ManyReads {
+            fn descriptor(&self) -> &crate::ModuleDescriptor {
+                &self.0
+            }
+            fn parse(
+                &self,
+                id: &str,
+                p: &serde_json::Map<String, Value>,
+            ) -> Result<crate::ActionInput, Error> {
+                Ok(crate::ActionInput {
+                    action_id: id.into(),
+                    parameters: p.clone(),
+                })
+            }
+            fn plan(
+                &self,
+                _: &crate::ActionInput,
+                c: &crate::StageContext<'_>,
+            ) -> Result<crate::ActionPlan, Error> {
+                for x in 0..=crate::editor::pixels::MAX_PIXEL_READ_ROUNDS as u32 {
+                    let _ = c.sample_before(c.layers.len(), x, 0);
+                }
+                Ok(crate::ActionPlan::NoOp)
+            }
+            fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), Error> {
+                Err(Error::validation("probe has no effects"))
+            }
+            fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+                Err(Error::validation("probe has no effects"))
+            }
+            fn compile(
+                &self,
+                _: &str,
+                _: u32,
+                _: &Value,
+                _: crate::CompileStage,
+            ) -> Result<crate::Processing, Error> {
+                Err(Error::validation("probe has no effects"))
+            }
+        }
+        let mut registry = ModuleRegistry::builtin();
+        registry
+            .register(Arc::new(ManyReads(crate::ModuleDescriptor {
+                id: "luxforge.readprobe".into(),
+                title: "Read probe".into(),
+                actions: vec![crate::ActionDescriptor::new(
+                    "read-five",
+                    "Read five",
+                    "test successive planning reads",
+                )],
+                ..crate::ModuleDescriptor::default()
+            })))
+            .unwrap();
+        let catalog = temp("read-round-bound.sqlite");
+        let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let owner_tiles = tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(owner_tiles.clone())
+        })));
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = calls.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })));
+        let answer = send(
+            &owner,
+            client,
+            "reads",
+            "edit.read-five",
+            json!({"asset_id":asset,"mutation":crate::editor::mutation_json(1,"reads")}),
+        );
+        assert_eq!(answer.error.unwrap().code, "resource-limit");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            crate::editor::pixels::MAX_PIXEL_READ_ROUNDS as u64
+        );
+        assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(
+            ok(
+                &owner,
+                client,
+                "state",
+                "asset.state",
+                json!({"asset_id":asset})
+            )["revision"],
+            json!(1)
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    fn range_input_reference(
+        owner: &OwnerHandle,
+        client: ClientId,
+        asset: crate::AssetId,
+        mask: &crate::MaskId,
+        x: u32,
+        y: u32,
+    ) -> crate::PixelInput {
+        let job = owner
+            .preview_job(PreviewRequest::new(client, asset))
+            .unwrap();
+        let evaluation = &job.evaluation;
+        let recipe = evaluation.recipe();
+        let source = evaluation.source().input();
+        let (width, height) = source.dimensions();
+        let layer = crate::mask::commands::input_layer_index(recipe, mask).unwrap();
+        let prefix = evaluation
+            .registry()
+            .compile_layers(
+                width,
+                height,
+                &recipe.layers[..layer],
+                &recipe.masks,
+                &recipe.strokes,
+                &recipe.artifacts,
+            )
+            .unwrap();
+        let full = evaluation
+            .registry()
+            .compile(width, height, recipe)
+            .unwrap();
+        let wide = full.prefix_spatial_input_wide(&prefix);
+        let stage = prefix.stage();
+        let pixels = crate::render::prefix_pixels(
+            source,
+            prefix,
+            evaluation.context(),
+            &crate::Cancel::never(),
+            wide,
+            crate::render::MaskInputMode::for_layer(evaluation.registry(), recipe, layer),
+        )
+        .unwrap();
+        let [r, g, b] = pixels.linear(x, y).unwrap().unwrap();
+        crate::PixelInput {
+            r,
+            g,
+            b,
+            x,
+            y,
+            width: stage.width,
+            height: stage.height,
+        }
+    }
+
+    #[test]
+    fn restoration_neutral_patch_evaluates_each_tile_once_per_query() {
+        let catalog = temp("detail-neutral-tile-cache.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let worker_tiles = tiles.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            crate::render::spatial::observe_tiles(worker_tiles.clone())
+        })));
+        let answer = send(
+            &owner,
+            client,
+            "pick",
+            "query.neutral-sample",
+            json!({"asset_id":asset,"x":240,"y":160}),
+        );
+        assert!(answer.error.as_ref().is_none_or(|e| e.code != "internal"));
+        assert_eq!(
+            tiles.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "25 points share the single touched tile"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_mask_sample_input_equals_the_direct_range_input() {
+        let catalog = temp("detail-range-input.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let made = ok(
+            &owner,
+            client,
+            "range",
+            "mask.create-luminance-range",
+            json!({"asset_id":asset,"low":10.0,"high":80.0,"low_feather":5.0,"high_feather":5.0,"mutation":crate::editor::mutation_json(1,"range")}),
+        );
+        ok(
+            &owner,
+            client,
+            "masked-detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"mask":made["mask"],"sharpening":35.0,"mutation":crate::editor::mutation_json(2,"masked-detail")}),
+        );
+        let asset_id: crate::AssetId = serde_json::from_value(asset.clone()).unwrap();
+        let mask: crate::MaskId = serde_json::from_value(made["mask"].clone()).unwrap();
+        let input = range_input_reference(&owner, client, asset_id, &mask, 240, 160);
+        let owner_tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let actual = ok(
+            &owner,
+            client,
+            "input",
+            "mask.sample-input",
+            json!({"asset_id":asset,"mask":mask,"x":240,"y":160}),
+        );
+        assert_eq!(actual, serde_json::to_value(input).unwrap());
+        assert_eq!(owner_tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_colour_limited_stroke_and_mask_input_keep_content_coordinates_with_warps() {
+        let catalog = temp("detail-warp-mask-input.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let painter = owner.register();
+        let other = owner.register();
+        let photo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+        let original = std::fs::read(&photo).unwrap();
+        let state = import_asset(&owner, painter, &photo);
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            painter,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let profiles = luxforge_testbase::wait_for("the offline lens index", || {
+            let response = send(
+                &owner,
+                painter,
+                "profiles",
+                "query.lens-profiles",
+                json!({"asset_id":asset,"assume-uncorrected":true}),
+            );
+            match response.error {
+                Some(error) => {
+                    assert_eq!(error.code, "not-ready", "{error:?}");
+                    None
+                }
+                None => response.result,
+            }
+        });
+        let profile = profiles["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["match"] == "lens-model" && row["eligible"] == true)
+            .unwrap()["key"]
+            .clone();
+        ok(
+            &owner,
+            painter,
+            "lens",
+            "edit.select-lens-profile",
+            json!({"asset_id":asset,"profile":profile,"assume-uncorrected":true,
+            "mutation":crate::editor::mutation_json(1,"lens")}),
+        );
+        ok(
+            &owner,
+            painter,
+            "perspective",
+            "edit.set-perspective",
+            json!({"asset_id":asset,"horizontal":40,"vertical":-25,
+            "mutation":crate::editor::mutation_json(2,"perspective")}),
+        );
+        let created = ok(
+            &owner,
+            painter,
+            "brush",
+            "mask.add-stroke",
+            json!({"asset_id":asset,"points":[[0.5,0.5]],"size":0.1,
+            "feather":40.0,"flow":80.0,"erase":false,"limit_to_colour":false,
+            "colour_refine":50.0,"mutation":crate::editor::mutation_json(3,"brush")}),
+        );
+        ok(
+            &owner,
+            painter,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+            "mutation":crate::editor::mutation_json(4,"bind")}),
+        );
+        let asset_id: crate::AssetId = serde_json::from_value(asset.clone()).unwrap();
+        let mask_id = serde_json::from_value(created["mask"].clone()).unwrap();
+        let input = range_input_reference(&owner, painter, asset_id.clone(), &mask_id, 300, 200);
+        let seed =
+            crate::colour::srgb::quantize_pixel([input.r as f32, input.g as f32, input.b as f32]);
+        let owner_tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let sampled = ok(
+            &owner,
+            painter,
+            "input",
+            "mask.sample-input",
+            json!({"asset_id":asset,"mask":mask_id,"x":300,"y":200}),
+        );
+        assert_eq!(sampled, serde_json::to_value(input).unwrap());
+        let mapping = ok(
+            &owner,
+            painter,
+            "mapping",
+            "render.transform",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(mapping["mapping"]["kind"], "warp");
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let held = scope.spawn(|| {
+                send(
+                    &owner,
+                    painter,
+                    "limited-stroke",
+                    "mask.add-stroke",
+                    json!({"asset_id":asset,"mask":created["mask"],
+                    "component":created["component"],"points":[[0.5,0.5],[0.55,0.51]],
+                    "size":0.1,"feather":40.0,"flow":80.0,"erase":false,
+                    "limit_to_colour":true,"colour_refine":50.0,
+                    "mutation":crate::editor::mutation_json(5,"limited-stroke")}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the warp stack's colour seed runs off owner");
+            let draft = ok(
+                &owner,
+                other,
+                "geometry-begin",
+                "draft.begin",
+                json!({"asset_id":asset,"action":"set-perspective"}),
+            );
+            let tick = ok(
+                &owner,
+                other,
+                "geometry-tick",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":{"horizontal":45}}),
+            );
+            assert_eq!(tick["draft_revision"], 1);
+            ok(
+                &owner,
+                other,
+                "geometry-cancel",
+                "draft.cancel",
+                json!({"draft_id":draft["draft_id"]}),
+            );
+            release.send(()).unwrap();
+            let answer = held.join().unwrap();
+            assert!(answer.error.is_none(), "{:?}", answer.error);
+            assert_eq!(answer.result.unwrap()["revision"], 6);
+        });
+        owner.hold_points(None);
+        let masks = ok(
+            &owner,
+            painter,
+            "masks",
+            "mask.list",
+            json!({"asset_id":asset}),
+        );
+        let stroke = &masks["masks"][0]["components"][0]["strokes"][1];
+        assert_eq!(stroke["settings"]["colour"]["seed"], json!(seed));
+        let job = owner
+            .preview_job(PreviewRequest::new(painter, asset_id))
+            .unwrap();
+        let stroke_id = serde_json::from_value(stroke["id"].clone()).unwrap();
+        let stored = job
+            .evaluation
+            .recipe()
+            .strokes
+            .get::<crate::mask::Stroke>(&stroke_id)
+            .unwrap();
+        let captured =
+            crate::mask::Stroke::capture(&[[0.5, 0.5], [0.55, 0.51]], 0.1, 40.0, 80.0, false)
+                .unwrap();
+        assert_eq!(
+            stored.points().collect::<Vec<_>>(),
+            captured.points().collect::<Vec<_>>(),
+            "geometry never rewrites content stroke coordinates"
+        );
+        assert_eq!(
+            ok(
+                &owner,
+                painter,
+                "mapping-after",
+                "render.transform",
+                json!({"asset_id":asset})
+            )["mapping_sha256"],
+            mapping["mapping_sha256"]
+        );
+        assert_eq!(owner_tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(std::fs::read(&photo).unwrap(), original);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_mask_colour_input_matches_actual_float_run_selection_with_and_without_detail() {
+        // A hard range edge separates the true float from its RGB16 rounding. The white case
+        // proves that values above one survive the run, with ordinary UI-representable feathers.
+        for detail in [false, true] {
+            for (code, low, feather, masked_ev, selected) in [
+                (128u8, 58.848279426250556, 0.0, 1.0, true),
+                (255u8, 0.0, 5.0, -1.0, false),
+            ] {
+                let catalog = temp("float-mask-input.sqlite");
+                let image = temp("float-mask-input.jpg");
+                image::codecs::jpeg::JpegEncoder::new_with_quality(
+                    std::fs::File::create(&image).unwrap(),
+                    100,
+                )
+                .encode_image(&image::RgbImage::from_pixel(64, 48, image::Rgb([code; 3])))
+                .unwrap();
+                let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+                let client = owner.register();
+                let state = import_asset(&owner, client, &image);
+                let asset = state["asset"]["id"].clone();
+                let mut revision = 0;
+                if detail {
+                    ok(
+                        &owner,
+                        client,
+                        "detail",
+                        "edit.set-detail",
+                        json!({"asset_id":asset,"sharpening":40.0,
+                            "mutation":crate::editor::mutation_json(revision,"detail")}),
+                    );
+                    revision += 1;
+                }
+                ok(
+                    &owner,
+                    client,
+                    "global",
+                    "edit.set-basic",
+                    json!({"asset_id":asset,"exposure":0.5,
+                        "mutation":crate::editor::mutation_json(revision,"global")}),
+                );
+                revision += 1;
+                let made = ok(
+                    &owner,
+                    client,
+                    "range",
+                    "mask.create-luminance-range",
+                    json!({"asset_id":asset,"low":low,"high":100.0,
+                        "low_feather":feather,"high_feather":feather,
+                        "mutation":crate::editor::mutation_json(revision,"range")}),
+                );
+                revision += 1;
+                ok(
+                    &owner,
+                    client,
+                    "masked",
+                    "edit.set-basic",
+                    json!({"asset_id":asset,"mask":made["mask"],"exposure":masked_ev,
+                        "mutation":crate::editor::mutation_json(revision,"masked")}),
+                );
+                let input: crate::PixelInput = serde_json::from_value(ok(
+                    &owner,
+                    client,
+                    "input",
+                    "mask.sample-input",
+                    json!({"asset_id":asset,"mask":made["mask"],"x":20,"y":17}),
+                ))
+                .unwrap();
+                let decoded = luxforge_reference::srgb::decode(code) as f32;
+                let expected = f64::from(decoded * (0.5_f64.exp2() as f32));
+                assert_eq!([input.r, input.g, input.b], [expected; 3]);
+                if code == 255 {
+                    assert!(input.r > 1.0, "the queried colour input must not clamp");
+                }
+                let job = owner
+                    .preview_job(PreviewRequest::new(
+                        client,
+                        serde_json::from_value(asset).unwrap(),
+                    ))
+                    .unwrap();
+                let evaluation = &job.evaluation;
+                let cancel = crate::Cancel::never();
+                let actual = evaluation
+                    .exact(&cancel)
+                    .unwrap()
+                    .frame(evaluation.entry().snapshot.id.clone())
+                    .unwrap();
+                let registry = evaluation.registry();
+                let source = evaluation.source().input();
+                let (width, height) = source.dimensions();
+                let mut no_mask = evaluation.recipe().clone();
+                no_mask.layers.pop();
+                let render = |recipe: &crate::Recipe| {
+                    crate::Render::compiled(
+                        source,
+                        registry.compile(width, height, recipe).unwrap(),
+                        crate::RenderOptions::default(),
+                        evaluation.context(),
+                    )
+                    .unwrap()
+                    .frame(evaluation.entry().snapshot.id.clone())
+                    .unwrap()
+                };
+                let none_selected = render(&no_mask);
+                no_mask.layers.last_mut().unwrap().payload = json!({"exposure":0.5 + masked_ev});
+                let all_selected = render(&no_mask);
+                assert_ne!(all_selected.rgba, none_selected.rgba);
+                assert_eq!(
+                    actual.rgba,
+                    if selected {
+                        &all_selected
+                    } else {
+                        &none_selected
+                    }
+                    .rgba,
+                    "detail={detail}, code={code}: actual masked rendering chooses this endpoint"
+                );
+                let mask: crate::MaskId = serde_json::from_value(made["mask"].clone()).unwrap();
+                let mut input_cache = crate::InputGridCache::default();
+                for cells in [(3, 2), (64, 48)] {
+                    let grid = evaluation
+                        .mask_coverage_with_cache(&mask, cells, None, &cancel, &mut input_cache)
+                        .unwrap()
+                        .outcome
+                        .unwrap();
+                    assert!(grid.absent.is_none(), "{:?}", grid.absent);
+                    assert!(
+                        grid.grid
+                            .unwrap()
+                            .coverage
+                            .iter()
+                            .all(|coverage| { *coverage == if selected { u8::MAX } else { 0 } })
+                    );
+                    assert_eq!(
+                        input_cache.cells(),
+                        if detail {
+                            cells.0 as usize * cells.1 as usize
+                        } else {
+                            0
+                        }
+                    );
+                }
+                owner.stop();
+                join.join().unwrap();
+                std::fs::remove_file(catalog).unwrap();
+                std::fs::remove_file(image).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn restoration_retried_parked_mutation_is_answered_once_and_preserves_its_originating_event_client()
+     {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let catalog = temp("detail-parked-events.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let spectator = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            client,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let mut fields = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,"erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = fields.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(1, "brush");
+        let created = ok(&owner, client, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            client,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,"mutation":crate::editor::mutation_json(2,"bind")}),
+        );
+        let own = Arc::new(AtomicU64::new(0));
+        let other = Arc::new(AtomicU64::new(0));
+        let own_wakes = own.clone();
+        let other_wakes = other.clone();
+        owner.watch_events(
+            client,
+            Arc::new(move || {
+                own_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        owner.watch_events(
+            spectator,
+            Arc::new(move || {
+                other_wakes.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        fields["limit_to_colour"] = json!(true);
+        fields["asset_id"] = asset;
+        fields["mask"] = created["mask"].clone();
+        fields["component"] = created["component"].clone();
+        fields["mutation"] = crate::editor::mutation_json(3, "limited");
+        let (_, before) = events_after(&owner, client, 0);
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleasePoints(release.clone());
+            let first =
+                scope.spawn(|| send(&owner, client, "limited", "mask.add-stroke", fields.clone()));
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+            let retry = scope.spawn(|| {
+                send(
+                    &owner,
+                    spectator,
+                    "limited-retry",
+                    "mask.add-stroke",
+                    fields.clone(),
+                )
+            });
+            luxforge_testbase::wait_until(
+                "the concurrent retry to park behind the first read",
+                || owner.points_waiting() == 1,
+            );
+            assert_eq!(owner.pixel_read_state().0, 2);
+            assert_eq!(
+                events_after(&owner, client, before).1,
+                before,
+                "no deferred pass publishes an event"
+            );
+            release.send(()).unwrap();
+            let first = first.join().unwrap();
+            reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+            release.send(()).unwrap();
+            let retry = retry.join().unwrap();
+            assert!(first.error.is_none(), "{:?}", first.error);
+            assert!(retry.error.is_none(), "{:?}", retry.error);
+            let first = first.result.unwrap();
+            let retry = retry.result.unwrap();
+            assert_eq!(first["deduplicated"], json!(false));
+            assert_eq!(retry["deduplicated"], json!(true));
+            assert_eq!(retry["current_entry_id"], first["current_entry_id"]);
+            assert_eq!(
+                events_after(&owner, client, before),
+                (
+                    vec![("mask.add-stroke".into(), "limited".into())],
+                    before + 1
+                )
+            );
+        });
+        owner.hold_points(None);
+        let retry = ok(&owner, client, "final-retry", "mask.add-stroke", fields);
+        assert_eq!(retry["deduplicated"], json!(true));
+        assert_eq!(events_after(&owner, client, before).1, before + 1);
+        let state = ok(
+            &owner,
+            client,
+            "state",
+            "asset.state",
+            json!({"asset_id":state["asset"]["id"]}),
+        );
+        assert_eq!(state["revision"], json!(4));
+        let listed = ok(
+            &owner,
+            client,
+            "masks",
+            "mask.list",
+            json!({"asset_id":state["asset"]["id"]}),
+        );
+        assert_eq!(
+            listed["masks"][0]["components"][0]["strokes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "the original stroke and one limited stroke are stored"
+        );
+        ok(&owner, client, "barrier", "session.state", json!({}));
+        assert_eq!(
+            own.load(Ordering::Relaxed),
+            0,
+            "the parked request does not wake its own event subscriber"
+        );
+        assert_eq!(
+            other.load(Ordering::Relaxed),
+            1,
+            "the parked commit wakes the other client once"
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_pointwise_neutral_query_stays_on_the_owner() {
+        let catalog = temp("pointwise-query-owner.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = calls.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })));
+        let answer = send(
+            &owner,
+            client,
+            "pick",
+            "query.neutral-sample",
+            json!({"asset_id":state["asset"]["id"],"x":240,"y":160}),
+        );
+        assert!(answer.error.as_ref().is_none_or(|e| e.code != "internal"));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_parked_read_discards_changed_inputs_and_refuses_after_four_rounds() {
+        let catalog = temp("detail-seed-race.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let painter = owner.register();
+        let other = owner.register();
+        let state = import_asset(&owner, painter, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            painter,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let fields = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,"erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = fields.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(1, "brush");
+        let created = ok(&owner, painter, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            painter,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,"mutation":crate::editor::mutation_json(2,"bind")}),
+        );
+        let draft = ok(
+            &owner,
+            painter,
+            "begin",
+            "draft.begin",
+            json!({"asset_id":asset,"action":"mask.add-stroke","mask":created["mask"],"component":created["component"]}),
+        );
+        let mut limited = fields;
+        limited["limit_to_colour"] = json!(true);
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let pending = scope.spawn(|| {
+                send(
+                    &owner,
+                    painter,
+                    "seed",
+                    "draft.set",
+                    json!({"draft_id":draft["draft_id"],"fields":limited}),
+                )
+            });
+            for round in 0..crate::editor::pixels::MAX_PIXEL_READ_ROUNDS {
+                reached
+                    .recv_timeout(luxforge_testbase::HANG)
+                    .expect("a stale seed is read again");
+                ok(
+                    &owner,
+                    other,
+                    "change",
+                    "edit.set-basic",
+                    json!({"asset_id":asset,"exposure":(round+1) as f64*0.1,"mutation":crate::editor::mutation_json(3+round as u64,&format!("change-{round}"))}),
+                );
+                release.send(()).unwrap();
+            }
+            let answer = pending.join().unwrap();
+            assert_eq!(answer.error.unwrap().code, "conflict");
+        });
+        let held = ok(
+            &owner,
+            painter,
+            "read",
+            "draft.read",
+            json!({"draft_id":draft["draft_id"]}),
+        );
+        assert_eq!(held["draft_revision"], json!(0));
+        assert_eq!(held["fields"], json!({}));
+        owner.hold_points(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    #[test]
+    fn restoration_parked_read_from_a_changed_source_is_never_installed() {
+        let catalog = temp("detail-seed-source.sqlite");
+        let photo = temp("detail-seed-source.jpg");
+        std::fs::copy(fixture(), &photo).unwrap();
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let painter = owner.register();
+        let state = import_asset(&owner, painter, &photo);
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            painter,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,"mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let fields = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,"erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = fields.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(1, "brush");
+        let created = ok(&owner, painter, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            painter,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,"mutation":crate::editor::mutation_json(2,"bind")}),
+        );
+        let draft = ok(
+            &owner,
+            painter,
+            "begin",
+            "draft.begin",
+            json!({"asset_id":asset,"action":"mask.add-stroke","mask":created["mask"],"component":created["component"]}),
+        );
+        let mut limited = fields;
+        limited["limit_to_colour"] = json!(true);
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let pending = scope.spawn(|| {
+                send(
+                    &owner,
+                    painter,
+                    "seed",
+                    "draft.set",
+                    json!({"draft_id":draft["draft_id"],"fields":limited}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the original source's seed is pending");
+            std::fs::write(&photo, b"changed by an external writer").unwrap();
+            release.send(()).unwrap();
+            let answer = pending.join().unwrap();
+            assert_eq!(answer.error.unwrap().code, "source-unavailable");
+        });
+        let held = ok(
+            &owner,
+            painter,
+            "read",
+            "draft.read",
+            json!({"draft_id":draft["draft_id"]}),
+        );
+        assert_eq!(held["draft_revision"], json!(0));
+        assert_eq!(held["fields"], json!({}));
+        owner.hold_points(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+        std::fs::remove_file(photo).unwrap();
+    }
+
+    #[test]
+    fn restoration_colour_limited_stroke_reads_its_seed_once_per_draft() {
+        let catalog = temp("detail-seed-worker.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let painter = owner.register();
+        let other = owner.register();
+        let state = import_asset(&owner, painter, &fixture());
+        let asset = state["asset"]["id"].clone();
+        ok(
+            &owner,
+            painter,
+            "detail",
+            "edit.set-detail",
+            json!({"asset_id":asset,"luminance":30.0,
+            "mutation":crate::editor::mutation_json(0,"detail")}),
+        );
+        let stroke = json!({"points":[[0.5,0.5]],"size":0.1,"feather":40.0,"flow":80.0,
+            "erase":false,"limit_to_colour":false,"colour_refine":50.0});
+        let mut request = stroke.clone();
+        request["asset_id"] = asset.clone();
+        request["mutation"] = crate::editor::mutation_json(1, "brush");
+        let created = ok(&owner, painter, "brush", "mask.add-stroke", request);
+        ok(
+            &owner,
+            painter,
+            "bind",
+            "edit.set-basic",
+            json!({"asset_id":asset,"mask":created["mask"],"exposure":0.5,
+            "mutation":crate::editor::mutation_json(2,"bind")}),
+        );
+        let asset_id: crate::AssetId = serde_json::from_value(asset.clone()).unwrap();
+        let mask_id: crate::MaskId = serde_json::from_value(created["mask"].clone()).unwrap();
+        let input = range_input_reference(&owner, painter, asset_id, &mask_id, 240, 160);
+        let expected_seed =
+            crate::colour::srgb::quantize_pixel([input.r as f32, input.g as f32, input.b as f32]);
+        let draft = ok(
+            &owner,
+            painter,
+            "begin",
+            "draft.begin",
+            json!({"asset_id":asset,"action":"mask.add-stroke",
+            "mask":created["mask"],"component":created["component"]}),
+        );
+        let mut fields = stroke;
+        fields["limit_to_colour"] = json!(true);
+        let owner_tiles = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let observed = owner_tiles.clone();
+        owner.fault(Some(Arc::new(move |_| {
+            crate::render::spatial::observe_tiles(observed.clone())
+        })));
+        let (reached, release) = hold_points(&owner);
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                send(
+                    &owner,
+                    painter,
+                    "tick1",
+                    "draft.set",
+                    json!({"draft_id":draft["draft_id"],"fields":fields}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the first seed is off owner");
+            let state = ok(
+                &owner,
+                other,
+                "while-seeding",
+                "asset.state",
+                json!({"asset_id":asset}),
+            );
+            assert_eq!(state["revision"], json!(3));
+            release.send(()).unwrap();
+            let answer = first.join().unwrap();
+            assert!(answer.error.is_none(), "{:?}", answer.error);
+        });
+        let reads = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let observed = reads.clone();
+        owner.hold_points(Some(Arc::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        })));
+        for tick in 0..99 {
+            ok(
+                &owner,
+                painter,
+                "tick",
+                "draft.set",
+                json!({"draft_id":draft["draft_id"],"fields":{
+                "points":[[0.5,0.5],[0.51+f64::from(tick)*0.001,0.55]],
+                "size":0.08+f64::from(tick)*0.0005,"flow":60.0+f64::from(tick%20)}}),
+            );
+        }
+        let committed = ok(
+            &owner,
+            painter,
+            "commit",
+            "draft.commit",
+            json!({"draft_id":draft["draft_id"],
+            "mutation":crate::editor::mutation_json(3,"commit")}),
+        );
+        assert_eq!(committed["revision"], json!(4));
+        let masks = ok(
+            &owner,
+            painter,
+            "mask-read",
+            "mask.list",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(
+            masks["masks"][0]["components"][0]["strokes"][1]["settings"]["colour"]["seed"],
+            json!(expected_seed),
+            "the stored seed equals the direct prefix input codes"
+        );
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "100 draft.set ticks and commit reuse the first seed"
+        );
+        let retried = ok(
+            &owner,
+            painter,
+            "retry",
+            "draft.commit",
+            json!({"draft_id":draft["draft_id"],
+            "mutation":crate::editor::mutation_json(3,"commit")}),
+        );
+        assert_eq!(retried["deduplicated"], json!(true));
+        assert_eq!(
+            owner_tiles.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the owner only plans; all tiles run on the point worker"
+        );
+        owner.hold_points(None);
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();

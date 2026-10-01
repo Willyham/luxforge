@@ -6,7 +6,7 @@
 //! `docs/design/module-capabilities.md`.
 //!
 //! [`ModuleRegistry::register`]: super::ModuleRegistry::register
-use super::{ModuleDescriptor, Processing, Stage, ToolModule};
+use super::{ModuleDescriptor, Processing, ToolModule};
 use crate::{Error, artifacts::PreparedArtifact, capabilities::context::ModuleContext};
 use serde_json::{Map, Value};
 use std::{path::Path, sync::Arc};
@@ -26,11 +26,11 @@ pub trait CapabilityModule: ToolModule {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        stage: Stage,
+        at: crate::CompileStage,
         artifacts: &[Arc<PreparedArtifact>],
     ) -> Result<Processing, Error> {
         let _ = artifacts;
-        self.compile(effect_id, format, payload, stage)
+        self.compile(effect_id, format, payload, at)
     }
     /// Check that a staged resource's bytes are the format the module declares, before the host
     /// installs it. The bytes already match the pinned length and SHA-256. Called on the transfer

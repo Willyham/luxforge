@@ -815,7 +815,13 @@ impl ToolModule for BoundModule {
     fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
         Ok(crate::LayerReport::new("bound"))
     }
-    fn compile(&self, _: &str, _: u32, _: &Value, _: Stage) -> Result<Processing, Error> {
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::neutral()))
     }
     fn capabilities(&self) -> Option<&dyn CapabilityModule> {
@@ -829,7 +835,7 @@ impl CapabilityModule for BoundModule {
         _: &str,
         _: u32,
         _: &Value,
-        _: Stage,
+        _: crate::CompileStage,
         artifacts: &[Arc<crate::artifacts::PreparedArtifact>],
     ) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::new(

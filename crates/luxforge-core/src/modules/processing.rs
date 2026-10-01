@@ -16,6 +16,45 @@ pub struct Stage {
     pub height: u32,
 }
 
+/// Evaluated pixels per full-resolution content pixel, independently on each axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplingScale {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// The evaluated stage and the full-resolution stage a layer addresses.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompileStage {
+    pub stage: Stage,
+    pub full: Stage,
+    pub scale: SamplingScale,
+}
+
+impl CompileStage {
+    pub fn exact(stage: Stage) -> Self {
+        Self {
+            stage,
+            full: stage,
+            scale: SamplingScale { x: 1.0, y: 1.0 },
+        }
+    }
+
+    pub(crate) fn sampled(stage: Stage, full: Stage) -> Self {
+        if stage == full {
+            return Self::exact(stage);
+        }
+        Self {
+            stage,
+            full,
+            scale: SamplingScale {
+                x: f64::from(stage.width) / f64::from(full.width),
+                y: f64::from(stage.height) / f64::from(full.height),
+            },
+        }
+    }
+}
+
 /// An exact integer coordinate mapping with the stage it produces. Several of these compose into
 /// one mapping, so a stack of transforms still rasterizes in a single pass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

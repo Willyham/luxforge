@@ -26,7 +26,7 @@ mod white_balance;
 
 use super::{
     ActionDescriptor, CanvasInteraction, ColorOperation, Control, EffectStage, ParameterDescriptor,
-    PointwiseColor, Processing, Stage, StageContext,
+    PointwiseColor, Processing, StageContext,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
 };
 use crate::Error;
@@ -234,7 +234,7 @@ impl FieldPatch for Basic {
 
     /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
     /// to no units.
-    fn compile(&self, values: &Values<'_>, _: Stage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
         // The frozen internal order: white balance, then exposure, then the tonal curve, then
         // vibrance and saturation. Each unit is added only when its own field is not neutral, so a
         // layer that moves one slider costs one unit.
@@ -355,6 +355,7 @@ impl FieldPatch for Basic {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Stage;
     use crate::modules::{ActionInput, ActionPlan, ToolModule};
     use crate::{Layer, LayerId};
     use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
@@ -515,7 +516,11 @@ mod tests {
     #[test]
     fn compilation_produces_the_units_a_payload_names_in_the_frozen_order() {
         let module = BasicModule::new();
-        let compiled = |payload: Value| module.compile(BASIC_EFFECT, 1, &payload, STAGE).unwrap();
+        let compiled = |payload: Value| {
+            module
+                .compile(BASIC_EFFECT, 1, &payload, crate::CompileStage::exact(STAGE))
+                .unwrap()
+        };
         match compiled(json!({"exposure": 0.5})) {
             Processing::Color(operation) => {
                 assert_eq!(operation.len(), 1);
@@ -974,7 +979,12 @@ mod tests {
                 "tint": result["tint"],
             });
             let Processing::Color(operation) = module
-                .compile(BASIC_EFFECT, EFFECT_FORMAT, &payload, STAGE)
+                .compile(
+                    BASIC_EFFECT,
+                    EFFECT_FORMAT,
+                    &payload,
+                    crate::CompileStage::exact(STAGE),
+                )
                 .expect("a compiled correction")
             else {
                 panic!("expected a colour operation");

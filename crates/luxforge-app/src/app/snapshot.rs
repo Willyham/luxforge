@@ -316,7 +316,7 @@ impl Editor {
     pub(super) fn proxy_summary(&self) -> Value {
         let bounds = self.proxy_bounds();
         json!({
-            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy_frame.is_some()) {
+            "eligible": match (&self.presentation.proxy_declined, self.presentation.proxy().is_some()) {
                 (Some(_), _) => Some(false),
                 (None, true) => Some(true),
                 (None, false) => None,
@@ -333,6 +333,8 @@ impl Editor {
                 .map(|frame| json!([frame.dimensions.0, frame.dimensions.1])),
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "presented": self.presentation.presented_proxy,
+            "settled_from_exact": self.presentation.presented_settled,
+            "restoration_prefix": self.presentation.restoration_prefix,
         })
     }
 
