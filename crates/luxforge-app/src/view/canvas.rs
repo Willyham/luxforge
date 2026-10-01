@@ -884,7 +884,7 @@ mod tests {
             )
         };
         for panels in [true, false] {
-            let surface = crate::layout::photo_surface((1440.0, 900.0), panels, panels);
+            let surface = crate::layout::photo_surface((1440.0, 900.0), panels, panels, false);
             let inset = crate::layout::FIT_INSET;
             let available = Size::new(surface.0 - inset.0, surface.1 - inset.1);
             let strip_top = surface.1 - theme::CHROME_INSET - theme::STRIP_HEIGHT;

@@ -589,7 +589,17 @@ impl Editor {
                     .layout
                     .clamp_scroll(self.select.scroll, size.height);
             }
-            SelectMessage::Press(press) => self.press(press),
+            SelectMessage::Press(press) => {
+                // A double-click on a photograph of a catalog view opens it in Develop, with the
+                // view's photographs as the development set.
+                let open = (press.double && self.select.state.over_catalog()).then_some(press.item);
+                self.press(press);
+                if let Some(position) = open {
+                    return self.develop_update(
+                        crate::app::message::develop::DevelopMessage::OpenAt(position),
+                    );
+                }
+            }
             SelectMessage::Move { step, extend } => self.move_active(step, extend),
             SelectMessage::SelectAll => {
                 self.select_now(SelectGesture::All);

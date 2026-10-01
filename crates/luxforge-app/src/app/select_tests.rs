@@ -192,7 +192,7 @@ fn held(key: Key, modifiers: Modifiers, repeat: bool) -> Event {
 }
 
 /// Select's keys map to its own messages and none of Develop's reaches it; `G` in Develop shows
-/// Select, and `D` in Select waits for picks.
+/// Select, and `D` in Select develops the active frame.
 #[test]
 fn the_select_keys_are_its_own() {
     let letter = |value: &str| Key::Character(value.into());
@@ -251,7 +251,7 @@ fn the_select_keys_are_its_own() {
             pressed(letter("d"), Modifiers::empty()),
             Status::Ignored,
             &select,
-            None,
+            Some("Develop(Key)"),
         ),
         (
             "right",

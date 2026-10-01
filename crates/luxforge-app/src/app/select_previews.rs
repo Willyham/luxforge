@@ -347,7 +347,8 @@ struct DecodeWorker {
 }
 
 impl DecodeWorker {
-    fn start() -> Self {
+    /// Start the worker; `wake` is called on it each time a decode lands.
+    fn start(wake: fn()) -> Self {
         let (sender, decoded) = mpsc::sync_channel(DECODED_WAITING);
         let worker = Latest::new(
             "luxforge-select-previews",
@@ -363,7 +364,7 @@ impl DecodeWorker {
                     if sender.send(Decoded { decode, result }).is_err() {
                         return None;
                     }
-                    signal().post();
+                    wake();
                 }
                 None
             },
@@ -399,6 +400,9 @@ pub(crate) struct SelectPreviews {
     planned: HashSet<Decode>,
     /// Decoded previews dropped because they could not fit, for evidence.
     dropped: u64,
+    /// What the decode worker calls when a decode lands: this module's signal for the grid, the
+    /// signal of the seam that holds another cache.
+    wake: fn(),
     /// Tests plan decodes without starting the worker, and hand the decodes in themselves.
     #[cfg(test)]
     pub(crate) paused: bool,
@@ -468,8 +472,19 @@ pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> R
     }
 }
 
+/// The grid's decode worker's wake: this module's signal.
+fn post() {
+    signal().post();
+}
+
 impl SelectPreviews {
     pub(crate) fn with_budget(budget: usize) -> Self {
+        Self::waking(budget, post)
+    }
+
+    /// A cache of `budget` bytes whose decodes wake the seam that holds it through `wake`, and that
+    /// the owner's wake reaches through [`Self::owner_woke`]: Develop's filmstrip holds one.
+    pub(crate) fn waking(budget: usize, wake: fn()) -> Self {
         Self {
             entries: HashMap::new(),
             wanted: Wanted::default(),
@@ -486,6 +501,7 @@ impl SelectPreviews {
             decoder: None,
             planned: HashSet::new(),
             dropped: 0,
+            wake,
             #[cfg(test)]
             paused: false,
             #[cfg(test)]
@@ -654,8 +670,15 @@ impl SelectPreviews {
         })
     }
 
-    /// Ask the owner to wake this client when a preview it waits on is written, once.
-    fn watch(&mut self, owner: &OwnerHandle, client: ClientId) {
+    /// The owner woke this client for a preview it waits on: the files still queued are read again
+    /// at the next [`Self::woken`]. For a cache the owner's wake does not reach directly.
+    pub(crate) fn owner_woke(&self) {
+        self.woken.store(true, Ordering::Release);
+    }
+
+    /// Ask the owner to wake this client when a preview it waits on is written, once. The grid
+    /// registers the one wake a client has, and passes it on to the loupe and to Develop.
+    pub(crate) fn watch(&mut self, owner: &OwnerHandle, client: ClientId) {
         if std::mem::replace(&mut self.watching, true) {
             return;
         }
@@ -665,8 +688,9 @@ impl SelectPreviews {
             Arc::new(move || {
                 woken.store(true, Ordering::Release);
                 signal().post();
-                // The loupe waits on the same wake, the one a client has.
+                // The loupe and Develop wait on the same wake, the one a client has.
                 crate::app::loupe::owner_woke();
+                crate::app::develop::owner_woke();
             }),
         );
     }
@@ -1043,7 +1067,10 @@ impl SelectPreviews {
         if self.paused {
             return;
         }
-        let decoder = self.decoder.get_or_insert_with(DecodeWorker::start);
+        let wake = self.wake;
+        let decoder = self
+            .decoder
+            .get_or_insert_with(|| DecodeWorker::start(wake));
         let _ = decoder.worker.request(Plan(plan));
     }
 }

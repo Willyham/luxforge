@@ -94,6 +94,7 @@ mod view_state;
 mod view_state_tests;
 pub(crate) mod waker;
 // ── catalog lane D: views and desktop ──
+pub(crate) mod develop;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
 pub(crate) mod loupe_frames;
@@ -328,6 +329,9 @@ pub(crate) struct Editor {
     pub(crate) select: select::Select,
     /// Long-running work: the watch on the owner's activity board and what it last read.
     pub(crate) long_work: long_work::LongWork,
+    /// Developing picks and the development set: Develop N's confirmation, the set and its
+    /// filmstrip, and the large previews a move draws first.
+    pub(crate) develop: develop::Develop,
     // ── end lane D ──
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
@@ -363,9 +367,9 @@ impl Before {
     }
 }
 
-/// The window, the display scale, the two side panels and the local pan: what, with the zoom,
-/// decides the view's geometry.
-pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, (f32, f32));
+/// The window, the display scale, the two side panels, the filmstrip and the local pan: what, with
+/// the zoom, decides the view's geometry.
+pub(crate) type ViewGeometry = ((f32, f32), f32, bool, bool, bool, (f32, f32));
 
 /// One seam's work after every message, given the state before it.
 type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
@@ -377,7 +381,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 17] = [
+const AFTER_MESSAGE: [AfterMessage; 18] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -395,6 +399,7 @@ const AFTER_MESSAGE: [AfterMessage; 17] = [
     select_missing::after_message,
     select_catalog::after_message,
     loupe::after_message,
+    develop::after_message,
     long_work::after_message,
     // ── end lane D ──
 ];
@@ -406,7 +411,7 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 12] = [
     keymap::subscription,
     mask_panel::subscription,
     preview::subscription,
@@ -418,6 +423,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 11] = [
     // ── catalog lane D: views and desktop ──
     select::subscription,
     loupe::subscription,
+    develop::subscription,
     long_work::subscription,
     // ── end lane D ──
 ];
@@ -485,6 +491,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             select: Default::default(),
             long_work: long_work::LongWork::watching(&owner),
+            develop: Default::default(),
             // ── end lane D ──
             workspace: Default::default(),
         };
@@ -667,6 +674,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             select: &self.select.state,
             long_work: &self.long_work.state,
+            develop: &self.develop.state,
             // ── end lane D ──
         };
         workspace.derive(&inputs);
@@ -713,6 +721,7 @@ impl Editor {
             // ── catalog lane D: views and desktop ──
             Message::Select(message) => self.select_update(message),
             Message::LongWork(message) => self.long_work_update(message),
+            Message::Develop(message) => self.develop_update(message),
             // ── end lane D ──
             Message::Close => self.close(),
         }
@@ -763,6 +772,7 @@ impl Editor {
             self.view_state.window,
             title.state_panel_open,
             title.tools_panel_open,
+            self.filmstrip_shown(),
         );
         let view = &self.session.preview.view;
         view::canvas::drawn_photo(
@@ -794,7 +804,13 @@ impl Editor {
                 },
             ),
             // ── end lane D ──
-            None => view::workspace(&self.workspace, self.surfaces()),
+            // ── catalog lane D: views and desktop ──
+            None => view::workspace(
+                &self.workspace,
+                self.surfaces(),
+                self.develop.strip_images(),
+            ),
+            // ── end lane D ──
         };
         let mut timing = self.log.loop_timing.get();
         timing.views += 1;
@@ -853,6 +869,8 @@ impl Editor {
             select: self.select_shown(),
             select_menu_open: self.select.state.menu.is_some() || self.select.state.catalog.open(),
             loupe_open: self.loupe_open(),
+            develop_confirm: self.develop.state.confirm.is_some(),
+            development_set: self.develop.state.set.is_some(),
             // ── end lane D ──
         }
     }
@@ -866,14 +884,15 @@ impl Editor {
             || luxforge_ui::surface_retirement_pending()
     }
 
-    /// The window, the display scale, the side panels and the local pan, which with the zoom
-    /// decide the view's geometry: a change to any of them is view motion.
+    /// The window, the display scale, the side panels, the filmstrip and the local pan, which with
+    /// the zoom decide the view's geometry: a change to any of them is view motion.
     pub(crate) fn view_geometry(&self) -> ViewGeometry {
         (
             self.view_state.window,
             self.view_state.scale_factor,
             self.session.workspace.state_panel,
             self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
             self.view_state.local_pan,
         )
     }
