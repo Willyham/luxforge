@@ -28,7 +28,10 @@ use serde::{Deserialize, Serialize};
 /// `"remove"` presses the Info panel's Remove from catalog…, `"delete_key"` presses ⌫ through the
 /// key table, `"empty_removed"` the filter bar's Empty Removed… over Removed: each is captured with
 /// its confirmation. `"confirm"` presses the confirmation's own button. `"put_back"` presses the
-/// Info panel's Put back over Removed.
+/// Info panel's Put back over Removed. `"send_back"` presses the Info panel's Send back, failing
+/// with its reason when it is refused. `{"context": 5}` right-clicks the grid cell showing that view
+/// position, opening the selected photographs' menu; `{"context_choice": "Send back"}` chooses from
+/// it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CatalogStep {
@@ -52,6 +55,9 @@ pub enum CatalogStep {
     Confirm,
     PutBack,
     EmptyRemoved,
+    SendBack,
+    Context(u32),
+    ContextChoice(String),
 }
 
 /// A column of the Metadata browser.
@@ -84,13 +90,16 @@ impl CatalogStep {
             Self::AddTo(name) => text(name, "catalog add to"),
             Self::SaveSmart(name) => text(name, "catalog smart collection name"),
             Self::ApplyPreset(name) => text(name, "catalog preset"),
+            Self::ContextChoice(label) => text(label, "catalog context choice"),
             Self::ExportInto(folder) => text(folder, "catalog export folder"),
             Self::Report
             | Self::Remove
             | Self::DeleteKey
             | Self::Confirm
             | Self::PutBack
-            | Self::EmptyRemoved => Ok(()),
+            | Self::EmptyRemoved
+            | Self::SendBack
+            | Self::Context(_) => Ok(()),
         }
     }
 }
@@ -124,13 +133,17 @@ mod tests {
             {"catalog": "confirm"},
             {"catalog": "put_back"},
             {"catalog": "empty_removed"},
+            {"catalog": "send_back"},
+            {"catalog": {"context": 5}},
+            {"catalog": {"context_choice": "Send back"}},
         ]);
         let steps = parse(&script.to_string()).unwrap();
-        assert_eq!(steps.len(), 20);
+        assert_eq!(steps.len(), 23);
         let written = serde_json::Value::Array(steps.iter().map(Step::to_value).collect());
         assert_eq!(written, script);
         assert!(parse(&json!([{"catalog": {"source": " "}}]).to_string()).is_err());
         assert!(parse(&json!([{"catalog": {"rename": {"folder": "a"}}}]).to_string()).is_err());
         assert!(parse(&json!([{"catalog": {"apply_preset": " "}}]).to_string()).is_err());
+        assert!(parse(&json!([{"catalog": {"context_choice": ""}}]).to_string()).is_err());
     }
 }

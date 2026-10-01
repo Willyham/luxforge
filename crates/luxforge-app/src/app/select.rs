@@ -32,7 +32,14 @@
 //! - The sources panel reads the cards and volumes (`card.list`, `volume.list`) and the catalog's
 //!   counts (`catalog.info`) each time Select is shown, the counts again after a library change,
 //!   and a volume's or folder's subfolders (`disk.folders`) when it is opened On disk. A card or a
-//!   folder is read by the index lane (`index.refresh`) before it is viewed.
+//!   folder is read by the index lane (`index.refresh`) before it is viewed. The indexed folders
+//!   (`index.folders`) are read with the cards and volumes, and all three again when a listing of
+//!   the index lane's begins or ends on the activity board, so a card connected meanwhile is
+//!   offered by its notice.
+//! - Add a folder… (the title bar, `Cmd+O`, On disk's `+`, or a folder dropped on the window) sends
+//!   `index.add-folder` in an owner task, since the core resolves its path on the disk, and follows
+//!   its listing through the activity board to its end; Remove from indexed folders… asks first and
+//!   sends `index.remove-folder` synchronously. Both are library changes `Cmd+Z` undoes.
 //!
 //! Which workspace is shown, the panels, the collapsed bursts, the size slider and the selection's
 //! anchor are this desktop's own view state, like the developer gallery page: no other client sees
@@ -58,14 +65,14 @@ use iced::{Size, Task};
 use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        Cards, CatalogCounts, CatalogInfo, DiskFolders, EventList, Facets, LibraryAnswer,
-        LibraryChange, LibraryJournal, RowItem, Targets, ViewQuery, ViewRows, ViewSource,
-        ViewSummary, Volumes,
+        Cards, CatalogCounts, CatalogInfo, DiskFolders, EventList, Facets, IndexFolderAnswer,
+        IndexFolders, LibraryAnswer, LibraryChange, LibraryJournal, RowItem, Targets, ViewQuery,
+        ViewRows, ViewSource, ViewSummary, Volumes,
     },
 };
 use luxforge_ui::{
-    GridBlock, GridDirection, GridHeading, GridLayout, GridMetrics, GridPress, MomentHeader,
-    MomentKind,
+    GridBlock, GridContext, GridDirection, GridHeading, GridLayout, GridMetrics, GridPress,
+    MomentHeader, MomentKind,
 };
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, ops::Range, path::PathBuf};
@@ -99,6 +106,8 @@ pub(crate) struct Select {
     pub(crate) facets_answered: u64,
     /// An evidence step that waits for the view to be evaluated again: the revision it must pass.
     pub(crate) evidence_after: Option<u64>,
+    /// An evidence step records the owner's own `index.folders` when it settles.
+    pub(crate) evidence_indexed: bool,
     /// Why the evaluation in flight was asked for, which the status bar says when it lands.
     pub(crate) reread: Reread,
     /// The card or folder being read before it is viewed: `index.refresh` lists it and reads its
@@ -109,8 +118,11 @@ pub(crate) struct Select {
     /// The view on screen went stale while the card or folder being read waited to replace it: it
     /// is read again, quietly, only if the reading ends without replacing it.
     pub(crate) stale_while_reading: bool,
-    /// `card.list` and `volume.list`: one read in flight, one waiting.
+    /// `card.list`, `volume.list` and `index.folders`: one read in flight, one waiting.
     pub(crate) disks: Coalesce<()>,
+    /// A folder this desktop is adding: its `index.add-folder` in flight, then its first listing
+    /// until it ends.
+    pub(crate) adding: Option<Adding>,
     /// `catalog.info`: one read in flight, one waiting.
     pub(crate) counts: Coalesce<()>,
     /// The volumes and folders On disk whose `disk.folders` is in flight.
@@ -142,6 +154,20 @@ pub(crate) struct Reading {
     pub(crate) source: ReadSource,
     /// The `index.refresh` job, once the owner has answered with it.
     pub(crate) job: Option<String>,
+}
+
+/// A folder this desktop is adding to the indexed folders.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Adding {
+    /// The `index.add-folder` parameters sent, as an agent writes them.
+    pub(crate) request: Value,
+    /// The `index.refresh` job that lists it, once `index.add-folder` has answered with it; none
+    /// while that request is in flight.
+    pub(crate) job: Option<String>,
+    /// The activity board's version the job was last looked for at.
+    pub(crate) seen: Option<u64>,
+    /// A `job.read` of the job is in flight.
+    pub(crate) reading: bool,
 }
 
 /// Why a view is being evaluated, which the status bar says once it is.
@@ -180,11 +206,13 @@ impl Default for Select {
             check_on_show: false,
             facets_answered: 0,
             evidence_after: None,
+            evidence_indexed: false,
             reread: Reread::Asked,
             reading: None,
             read_in_flight: false,
             stale_while_reading: false,
             disks: Coalesce::default(),
+            adding: None,
             counts: Coalesce::default(),
             listing: BTreeSet::new(),
             change: None,
@@ -341,14 +369,25 @@ pub(crate) fn job_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Resul
     Ok(record)
 }
 
-/// `card.list` and `volume.list`, for the sources panel's Cards and On disk.
+/// `card.list`, `volume.list` and `index.folders`, for the sources panel's Cards and On disk.
 pub(crate) fn disks_now(
     owner: &OwnerHandle,
     client: ClientId,
-) -> Result<Box<(Cards, Volumes)>, String> {
+) -> Result<Box<(Cards, Volumes, IndexFolders)>, String> {
     let (cards, _) = call(owner, client, "card.list", json!({}))?;
     let (volumes, _) = call(owner, client, "volume.list", json!({}))?;
-    Ok(Box::new((parse(cards)?, parse(volumes)?)))
+    let (indexed, _) = call(owner, client, "index.folders", json!({}))?;
+    Ok(Box::new((parse(cards)?, parse(volumes)?, parse(indexed)?)))
+}
+
+/// `index.add-folder` of a folder, as this desktop's actor: the body of its owner task. The core
+/// resolves the path on the index lane's query thread, so it is never sent from the update loop.
+pub(crate) fn add_folder_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    params: Value,
+) -> Result<Value, CallError> {
+    call_detailed(owner, client, "index.add-folder", params)
 }
 
 /// `disk.folders` for a volume or folder opened On disk.
@@ -505,9 +544,10 @@ impl Editor {
                 self.select.disks.answered();
                 match result {
                     Ok(answer) => {
-                        let (cards, volumes) = *answer;
-                        self.select.state.cards = Some(cards);
+                        let (cards, volumes, indexed) = *answer;
+                        self.select.state.take_cards(cards);
                         self.select.state.volumes = Some(volumes);
+                        self.select.state.indexed = Some(indexed);
                     }
                     Err(error) => self.status.text = format!("Volumes unavailable: {error}"),
                 }
@@ -521,13 +561,82 @@ impl Editor {
                 }
                 return self.start_counts();
             }
+            SelectMessage::AddFolder => {
+                if self.view_state.picker_open || self.evidence.is_some() {
+                    return Task::none();
+                }
+                self.view_state.picker_open = true;
+                return Task::perform(
+                    async {
+                        rfd::AsyncFileDialog::new()
+                            .set_title("Add a folder to the indexed folders")
+                            .pick_folder()
+                            .await
+                            .map(|folder| folder.path().to_path_buf())
+                    },
+                    |path| Message::Select(SelectMessage::AddFolderPicked(path)),
+                );
+            }
+            SelectMessage::AddFolderPicked(path) => {
+                self.view_state.picker_open = false;
+                if let Some(path) = path {
+                    return self.add_folder(path);
+                }
+            }
+            SelectMessage::FolderAdded { params, result } => {
+                return self.folder_added(params, result);
+            }
+            SelectMessage::AddListed { job, result } => return self.add_listed(&job, result),
+            SelectMessage::Dropped(path) => {
+                if self.select_shown() {
+                    return self.add_folder(path);
+                }
+                // In Develop a dropped file opens, as Open does.
+                if self.view_state.picker_open || self.busy || self.evidence.is_some() {
+                    return Task::none();
+                }
+                return self.open(path);
+            }
+            SelectMessage::IndexedMenu(menu) => {
+                self.select.state.menu = None;
+                self.select.state.catalog.close();
+                self.select.state.forget = None;
+                self.select.state.indexed_menu = menu;
+            }
+            SelectMessage::AskForget(path) => {
+                self.select.state.menu = None;
+                self.select.state.catalog.close();
+                self.select.state.indexed_menu = None;
+                self.select.state.forget = path;
+            }
+            SelectMessage::Forget => {
+                let Some(path) = self.select.state.forget.take() else {
+                    return Task::none();
+                };
+                let params = model::folder_params(&path, &request());
+                return self.library_now(LibraryGesture::RemoveFolder, params);
+            }
+            SelectMessage::DismissCard => self.select.state.card_notice = None,
+            SelectMessage::Context(context) => self.context_menu(context),
             SelectMessage::Pick => return self.pick_selection(),
             SelectMessage::PickAll(number) => return self.pick_all(number),
-            SelectMessage::Undo => {
-                return self.library_now(LibraryGesture::Undo, model::library_params(&request()));
-            }
-            SelectMessage::Redo => {
-                return self.library_now(LibraryGesture::Redo, model::library_params(&request()));
+            SelectMessage::Undo | SelectMessage::Redo => {
+                // The folder being added is the change an undo would name once it is recorded.
+                if self
+                    .select
+                    .adding
+                    .as_ref()
+                    .is_some_and(|adding| adding.job.is_none())
+                {
+                    self.status.text = "Waiting for the folder being added".into();
+                    return Task::none();
+                }
+                let gesture = if matches!(message, SelectMessage::Undo) {
+                    LibraryGesture::Undo
+                } else {
+                    LibraryGesture::Redo
+                };
+                return self.library_now(gesture, model::library_params(&request()));
             }
             SelectMessage::Labelled { sequence, result } => self.labelled(sequence, result),
             SelectMessage::Change(change) => {
@@ -540,6 +649,8 @@ impl Editor {
             SelectMessage::Menu(menu) => {
                 self.select.state.menu = menu;
                 self.select.state.catalog.close();
+                self.select.state.indexed_menu = None;
+                self.select.state.forget = None;
             }
             SelectMessage::Viewed { serial, result } => self.viewed(serial, result),
             SelectMessage::Faceted { serial, result } => {
@@ -661,6 +772,7 @@ impl Editor {
             && select.events.idle()
             && select.check.idle()
             && select.disks.idle()
+            && select.adding.is_none()
             && select.counts.idle()
             && select.listing.is_empty()
             && select.label.is_none()
@@ -734,8 +846,14 @@ impl Editor {
     /// shows its progress sheet (long-running work). The job's progress and end reach the desktop
     /// through the activity board ([`Editor::reading_followed`]): nothing polls it.
     pub(crate) fn read_source(&mut self, source: ReadSource) -> Task<Message> {
-        if let ReadSource::Folder(path) = &source {
-            self.select.state.folder = Some(path.clone());
+        match &source {
+            ReadSource::Folder(path) => self.select.state.folder = Some(path.clone()),
+            // Browsing the card its notice offers answers the notice.
+            ReadSource::Card { volume_id, .. } => {
+                if self.select.state.card_notice.as_ref() == Some(volume_id) {
+                    self.select.state.card_notice = None;
+                }
+            }
         }
         self.select.state.menu = None;
         self.status.text = format!(
@@ -772,8 +890,8 @@ impl Editor {
         )
     }
 
-    /// Ask `card.list` and `volume.list` again.
-    fn read_disks(&mut self) -> Task<Message> {
+    /// Ask `card.list`, `volume.list` and `index.folders` again.
+    pub(crate) fn read_disks(&mut self) -> Task<Message> {
         self.select.disks.offer(());
         self.start_disks()
     }
@@ -1285,6 +1403,7 @@ impl Editor {
         if stale || self.select.state.summary.is_none() {
             tasks.push(self.read_events());
             tasks.push(self.read_counts());
+            tasks.push(self.read_disks());
         }
         if stale
             && !self.select.state.loading
@@ -1353,6 +1472,192 @@ impl Editor {
         let task = self.evaluate(query);
         self.select.reread = Reread::Quiet;
         task
+    }
+
+    // -- Indexed folders ---------------------------------------------------------------------------
+
+    /// Add a folder to the indexed folders: `index.add-folder` as this desktop's actor, in an owner
+    /// task, because the core resolves the path it names on the disk. Its answer is a library
+    /// change, followed as every library change of this desktop's is, and the job that lists the
+    /// folder, followed through the activity board until it ends.
+    pub(crate) fn add_folder(&mut self, path: PathBuf) -> Task<Message> {
+        if self.select.adding.is_some() {
+            self.status.text = "A folder is being added: wait for it to be listed".into();
+            return Task::none();
+        }
+        self.select.state.menu = None;
+        self.select.state.catalog.close();
+        self.status.text = format!(
+            "Adding {}\u{2026}",
+            model::shown_path(&path, self.select.state.home.as_deref())
+        );
+        let params = model::folder_params(&path, &request());
+        self.select.adding = Some(Adding {
+            request: params.clone(),
+            ..Adding::default()
+        });
+        let (owner, client) = (self.owner.clone(), self.client);
+        let sent = params.clone();
+        owner_task(
+            move || add_folder_now(&owner, client, sent),
+            move |result| Message::Select(SelectMessage::FolderAdded { params, result }),
+        )
+    }
+
+    /// `index.add-folder` answered: a change recorded is followed as any library change of this
+    /// desktop's (its label in the status bar, the indexed folders and the view read again), and the
+    /// folder's listing is followed until it ends; a refusal says why.
+    fn folder_added(&mut self, params: Value, result: Result<Value, CallError>) -> Task<Message> {
+        self.select.library = Some(json!({
+            "method": LibraryGesture::AddFolder.method(),
+            "params": params.clone(),
+            "answer": result.as_ref().ok(),
+            "error": result.as_ref().err().map(|error| json!({
+                "code": error.code,
+                "message": error.message,
+                "data": error.data,
+            })),
+        }));
+        let answer = match result {
+            Ok(answer) => answer,
+            Err(error) => {
+                self.select.adding = None;
+                self.library_refused(LibraryGesture::AddFolder, &error);
+                return Task::none();
+            }
+        };
+        let job = answer["job_id"].as_str().map(str::to_owned);
+        let added = match parse::<IndexFolderAnswer>(answer) {
+            Ok(added) => added,
+            Err(error) => {
+                self.select.adding = None;
+                self.status.text = format!("Could not add the folder: {error}");
+                return Task::none();
+            }
+        };
+        match job {
+            Some(job) => {
+                self.select.adding = Some(Adding {
+                    request: params,
+                    job: Some(job),
+                    ..Adding::default()
+                });
+                self.select.state.adding = Some(added.folder.folder.path.clone());
+            }
+            None => self.select.adding = None,
+        }
+        let answered = self.library_answered(LibraryGesture::AddFolder, &added.change);
+        Task::batch([answered, self.read_disks(), self.follow_listing()])
+    }
+
+    /// Follow the added folder's listing through long-running work's reads of the activity board:
+    /// while the board lists its job running nothing is read; otherwise its record is read with
+    /// `job.read` once for each version of the board since it was last looked for, and once as soon
+    /// as it is named. So its end is heard as a board change, and no timer asks after it.
+    pub(crate) fn follow_listing(&mut self) -> Task<Message> {
+        let version = self.long_work.state.version;
+        let running = self
+            .select
+            .adding
+            .as_ref()
+            .and_then(|adding| adding.job.as_deref())
+            .is_some_and(|job| self.long_work.state.job(job).is_some());
+        let Some(adding) = self.select.adding.as_mut() else {
+            return Task::none();
+        };
+        let Some(job) = adding.job.clone() else {
+            return Task::none();
+        };
+        if running {
+            adding.seen = Some(version);
+            return Task::none();
+        }
+        if adding.reading || adding.seen == Some(version) {
+            return Task::none();
+        }
+        adding.seen = Some(version);
+        adding.reading = true;
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || {
+                let result = job_now(&owner, client, &job);
+                (job, result)
+            },
+            |(job, result)| Message::Select(SelectMessage::AddListed { job, result }),
+        )
+    }
+
+    /// The added folder's listing record: still queued or running, it is read again when the board
+    /// next changes; ended, the indexed folders and the events are read again, and a listing that
+    /// did not complete says so.
+    fn add_listed(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
+        let Some(adding) = self
+            .select
+            .adding
+            .as_mut()
+            .filter(|adding| adding.job.as_deref() == Some(job))
+        else {
+            return Task::none();
+        };
+        adding.reading = false;
+        let name = self
+            .select
+            .state
+            .adding
+            .as_deref()
+            .map(|path| model::shown_path(path, self.select.state.home.as_deref()))
+            .unwrap_or_else(|| "the folder".to_owned());
+        match &result {
+            Ok(record) if matches!(record["status"].as_str(), Some("queued" | "running")) => {
+                return Task::none();
+            }
+            Ok(record) if record["status"] == "ready" => {}
+            Ok(record) if record["status"] == "cancelled" => {
+                self.status.text =
+                    format!("Cancelled listing {name}: it is listed again when it changes");
+            }
+            Ok(record) => {
+                let reason = record["error"]["message"]
+                    .as_str()
+                    .unwrap_or("the listing failed");
+                self.status.text = format!("Could not list {name}: {reason}");
+            }
+            Err(error) => self.status.text = format!("Could not list {name}: {error}"),
+        }
+        self.select.adding = None;
+        self.select.state.adding = None;
+        Task::batch([self.read_disks(), self.read_events()])
+    }
+
+    /// Long-running work saw a listing of the index lane's begin or end — a card listed as it is
+    /// mounted, an indexed folder listed again, a card or folder read for this desktop — so the
+    /// cards, the volumes and the indexed folders are read again while Select is shown: a card
+    /// connected meanwhile is offered by its notice, and each folder says what its listing found.
+    pub(crate) fn select_listings_changed(&mut self) -> Task<Message> {
+        if !self.select_shown() {
+            return Task::none();
+        }
+        self.read_disks()
+    }
+
+    /// A right-click on a grid cell. Over the catalog the cell is selected alone unless it is
+    /// selected already, and the photographs' menu opens at the pointer; over files it does
+    /// nothing.
+    fn context_menu(&mut self, context: GridContext) {
+        if !self.select.state.over_catalog() {
+            return;
+        }
+        self.select.state.menu = None;
+        if !self.selection().selected(context.item, context.span) {
+            self.select.anchor = Some(context.item);
+            if !self.select_now(SelectGesture::Only {
+                item: context.item,
+                span: context.span,
+            }) {
+                return;
+            }
+        }
+        self.open_photo_menu(context.at.x, context.at.y);
     }
 
     // -- Picking and library undo ------------------------------------------------------------------
@@ -1497,6 +1802,16 @@ impl Editor {
             self.read_events(),
             self.read_counts(),
         ];
+        // The indexed folders, which adding or removing one, or undoing or redoing that, changes.
+        if matches!(
+            gesture,
+            LibraryGesture::AddFolder
+                | LibraryGesture::RemoveFolder
+                | LibraryGesture::Undo
+                | LibraryGesture::Redo
+        ) {
+            tasks.push(self.read_disks());
+        }
         if let Some(query) = self
             .select
             .state
@@ -1667,12 +1982,14 @@ impl Editor {
                 "indent": row.indent,
                 "open": row.disclosure.as_ref().map(|(open, _)| open),
                 "selected": row.selected,
+                "secondary": row.secondary,
             })
         };
         let panel = &model.sources;
         let sources = json!({
             "cards": panel.cards.iter().map(row).collect::<Vec<_>>(),
             "on_disk": panel.on_disk.iter().map(row).collect::<Vec<_>>(),
+            "indexed": panel.indexed.iter().map(row).collect::<Vec<_>>(),
             "catalog": panel.catalog.iter().map(row).collect::<Vec<_>>(),
         });
         // Each day's and moment's picks as the owner counted them, and as the grid's headings and
@@ -1767,6 +2084,15 @@ impl Editor {
             "groups_picked": groups_picked,
             "headers": headers,
             "library": self.select.library,
+            "adding": self.select.adding.as_ref().map(|adding| json!({"request": adding.request, "job": adding.job})),
+            "forget": model.forget.as_ref().map(|sheet| json!({
+                "title": sheet.title,
+                "confirm": sheet.confirm,
+            })),
+            "card_notice": model.card_notice.as_ref().map(|notice| json!({
+                "title": notice.title,
+                "body": notice.body,
+            })),
             "catalog": self.catalog_summary(),
         })
     }
@@ -1784,10 +2110,12 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
+    // A folder being added is followed to the end of its listing wherever the person is.
+    let listing = editor.follow_listing();
     if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
         editor.outcome(Outcome::SelectSettled);
     }
-    Task::batch([rows, previews, check])
+    Task::batch([rows, previews, check, listing])
 }
 
 fn previews_message(message: SelectPreviewMessage) -> Message {

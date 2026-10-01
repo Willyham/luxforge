@@ -925,6 +925,7 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": {"first_look": "/Volumes/SSD/Pictures"}},
         {"select": "continue_in_background"},
         {"select": "cancel_work"},
+        {"select": {"add_folder": "/Volumes/SSD/Card dumps"}},
     ]));
     assert_eq!(
         steps[12],
@@ -941,6 +942,10 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
     assert_eq!(steps[16], Step::Select(SelectStep::ContinueInBackground));
     assert_eq!(steps[17], Step::Select(SelectStep::CancelWork));
     assert_eq!(
+        steps[18],
+        Step::Select(SelectStep::AddFolder("/Volumes/SSD/Card dumps".into()))
+    );
+    assert_eq!(
         steps[3],
         Step::Select(SelectStep::Arrow {
             direction: ArrowKey::Right,
@@ -956,6 +961,10 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
     );
     refused(json!([{"select": {"source": " "}}]), "select source");
     refused(json!([{"select": {"folder": ""}}]), "select folder");
+    refused(
+        json!([{"select": {"add_folder": " "}}]),
+        "select add_folder",
+    );
     refused(
         json!([{"select": {"first_look": " "}}]),
         "select first_look",

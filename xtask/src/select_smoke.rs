@@ -18,8 +18,12 @@
 //! undoing Pick all, then the desktop's pick, then finding nothing of the desktop's left to undo
 //! while the agent's pick stays; `Shift+Cmd+Z` redoing the desktop's pick; a folder of real
 //! generated JPEGs (`--images 120`, with EXIF and thumbnails and their ground truth in
-//! `images/manifest.json`) browsed on disk, which the index lane reads before it is viewed; and
-//! back to Develop through the switch. Between the agent's pick and that folder, long-running work:
+//! `images/manifest.json`) browsed on disk, which the index lane reads before it is viewed; a
+//! scratch folder of six of those JPEGs copied into the run's output (`add-folder/`) added to the
+//! indexed folders as Add a folder… adds it, its listing followed to its end and the folder then
+//! listed under On disk beside the generated catalog's own indexed folders, each row checked against
+//! the owner's `index.folders`, and the add undone with `Cmd+Z`; and back to Develop through the
+//! switch. Between the agent's pick and that folder, long-running work:
 //! a first look at a folder of 16,000 one-byte `.jpg` files the run writes beside `generated/`
 //! (`first-look/`), captured while the index lane still reads it with the view's progress sheet;
 //! Continue in background, captured with the sheet gone and the job in the status bar and the
@@ -63,8 +67,9 @@ pub const NOTE: &str = "The run first generates its catalog and index into `gene
     `pick.plan`, `pick.develop`, as the actor `setup`) and makes the library preset `Warm` \
     (`preset.create`), asks the core for the \
     answers the frames are checked against over a pristine copy (`select-expected.json`), writes \
-    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, makes the empty \
-    folder `batch-export/` the batch export writes into, and launches \
+    16,000 one-byte `.jpg` files into `first-look/` for the first look it cancels, copies six of the \
+    generated JPEGs of `2026-09-14 Lake` into `add-folder/`, the folder it adds to the indexed \
+    folders, makes the empty folder `batch-export/` the batch export writes into, and launches \
     the editor over that catalog with `--catalog`.";
 /// Where the run writes its catalog and index.
 pub const GENERATED: &str = "generated";
@@ -89,6 +94,11 @@ const FIRST_LOOK: &str = "first-look";
 /// each captured while the job runs.
 const FIRST_LOOK_FILES: u32 = 16_000;
 const FIRST_LOOK_FOLDER: u32 = 250;
+/// The scratch folder the run adds to the indexed folders, written into its output directory, and
+/// the generated folder of JPEGs it copies [`ADD_FOLDER_FILES`] of.
+const ADD_FOLDER: &str = "add-folder";
+const ADD_FOLDER_FROM: &str = "2026-09-14 Lake";
+const ADD_FOLDER_FILES: usize = 6;
 
 /// The picks the run makes, from the core's answers before it: the agent's, a file of the
 /// Day-grouped view the core said was not picked, on the first screen; the desktop's own `P`, an
@@ -112,6 +122,7 @@ pub fn plan(
     folder: &str,
     images: u64,
     first_look: &str,
+    add_folder: &str,
     catalog: Vec<Step>,
 ) -> Plan {
     let select = |name: &str, step: SelectStep| Step::new(name, script::Step::Select(step));
@@ -181,6 +192,12 @@ pub fn plan(
             select("cancelled", SelectStep::CancelWork).status_starts("Cancelled reading "),
             select("folder", SelectStep::Folder(folder.into()))
                 .status(format!("images \u{b7} {images} in view")),
+            select("add-folder", SelectStep::AddFolder(add_folder.into())).status(format!(
+                "Added {ADD_FOLDER} to indexed folders \u{b7} Undo \u{2318}Z"
+            )),
+            select("add-folder-undone", SelectStep::Library(LibraryKey::Undo)).status(format!(
+                "Undid Added {ADD_FOLDER} to indexed folders \u{b7} Redo \u{21e7}\u{2318}Z"
+            )),
         ]
         .into_iter()
         // The catalog: browsed and organized (`select_catalog_smoke`).
@@ -229,6 +246,33 @@ fn write_first_look(dir: &Path) -> Result {
         fs::write(folder.join(format!("IMG_{index:05}.jpg")), b"x")?;
     }
     Ok(())
+}
+
+/// The folder the run adds to the indexed folders: [`ADD_FOLDER_FILES`] of the generated JPEGs of
+/// [`ADD_FOLDER_FROM`], copied afresh into the run's output directory. Answers its canonical path.
+fn write_add_folder(generated: &Path, out: &Path) -> Result<PathBuf> {
+    let folder = out.join(ADD_FOLDER);
+    let _ = fs::remove_dir_all(&folder);
+    fs::create_dir_all(&folder)?;
+    let from = generated.join("images").join(ADD_FOLDER_FROM);
+    let mut names: Vec<std::ffi::OsString> = fs::read_dir(&from)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name())
+        .filter(|name| {
+            name.to_string_lossy()
+                .to_ascii_lowercase()
+                .ends_with(".jpg")
+        })
+        .collect();
+    names.sort();
+    ensure(
+        names.len() >= ADD_FOLDER_FILES,
+        format!("{ADD_FOLDER_FROM} holds {} JPEGs", names.len()),
+    )?;
+    for name in names.into_iter().take(ADD_FOLDER_FILES) {
+        fs::copy(from.join(&name), folder.join(&name))?;
+    }
+    Ok(folder.canonicalize()?)
 }
 
 fn copy_dir(from: &Path, to: &Path) -> Result {
@@ -539,6 +583,8 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
             let first_look = run.out().join(FIRST_LOOK);
             write_first_look(&first_look)?;
             expected["first_look"] = json!({"path": first_look, "files": FIRST_LOOK_FILES});
+            let add_folder = write_add_folder(&generated, run.out())?;
+            expected["add_folder"] = json!({"path": add_folder, "files": ADD_FOLDER_FILES});
             write_json(&expected_file, &expected)?;
         }
         let expected = read_json(&expected_file)?;
@@ -555,8 +601,13 @@ pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> 
         let first_look = expected["first_look"]["path"]
             .as_str()
             .ok_or("The expected answers name no first-look folder")?;
+        let add_folder = expected["add_folder"]["path"]
+            .as_str()
+            .ok_or("The expected answers name no folder to add")?;
         let catalog = select_catalog_smoke::steps(&expected)?;
-        let plan = plan(&picks, count, folder, images, first_look, catalog);
+        let plan = plan(
+            &picks, count, folder, images, first_look, add_folder, catalog,
+        );
         let mut launch = Launch::app()
             .catalog(&generated.join(generate_catalog::CATALOG))
             .script("script.json", plan.script());
@@ -1184,7 +1235,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "browse.view",
             json!({"source": {"kind": "event", "event_id": expected["event"]["id"]}, "grouping": "day"}),
         )?;
-        Ok(json!({"changes": changes, "view": view_record(&view)}))
+        let indexed = ask(owner, client, "index.folders", json!({}))?;
+        ensure(
+            indexed["folders"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .all(|folder| folder["path"] != expected["add_folder"]["path"]),
+            format!("The added folder is still indexed after its undo: {indexed}"),
+        )?;
+        Ok(json!({"changes": changes, "view": view_record(&view), "indexed": indexed}))
     })?;
     let own_label = format!(
         "Picked {}",
@@ -1205,16 +1265,27 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ["desktop", "library.undo", format!("Undo {all_label}")],
         ["desktop", "library.undo", format!("Undo {own_label}")],
         ["desktop", "library.redo", format!("Redo {own_label}")],
+        [
+            "desktop",
+            "index.add-folder",
+            format!("Added {ADD_FOLDER} to indexed folders")
+        ],
+        [
+            "desktop",
+            "library.undo",
+            format!("Undo Added {ADD_FOLDER} to indexed folders")
+        ],
     ]);
+    let shell = journal.as_array().map_or(0, Vec::len);
     // Then the catalog's changes, as its steps made them.
     let catalog: Vec<Value> = after["changes"]
         .as_array()
-        .map(|changes| changes.iter().skip(6).cloned().collect())
+        .map(|changes| changes.iter().skip(shell).cloned().collect())
         .unwrap_or_default();
     ensure(
         after["changes"]
             .as_array()
-            .map(|changes| &changes[..changes.len().min(6)])
+            .map(|changes| &changes[..changes.len().min(shell)])
             == journal.as_array().map(Vec::as_slice)
             && catalog
                 .iter()
@@ -1266,6 +1337,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"view": view, "manifest": manifest, "grid": grid_drawn(folder)?}),
     );
 
+    add_folder(&mut checks, launch, &expected)?;
+
     select_catalog_smoke::verify(&mut checks, launch, &expected, &generated)?;
 
     // Back to Develop: Select keeps its view for when it is shown again.
@@ -1288,6 +1361,112 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"select": block}),
     );
     checks.write(&launch.evidence, "select", json!({"expected": expected}))
+}
+
+/// The indexed folders a frame's sources panel lists, each against the owner's `index.folders` the
+/// step recorded as it settled: the folder's name, what its last listing found, offline when its
+/// volume is not connected.
+fn indexed_as_the_owner_lists(frame: &Frame, name: &str, owner: &Value) -> Result<Value> {
+    let rows = select(frame)["source_rows"]["indexed"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let folders = owner["folders"]
+        .as_array()
+        .ok_or_else(|| format!("{name}: no index.folders recorded: {owner}"))?;
+    let expected: Vec<Value> = folders
+        .iter()
+        .map(|folder| {
+            let path = Path::new(folder["path"].as_str().unwrap_or_default());
+            json!({
+                "name": path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                "count": folder["files"].as_u64().map(thousands),
+                "offline": folder["offline"] == true,
+            })
+        })
+        .collect();
+    let drawn: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "name": row["name"],
+                "count": row["count"],
+                "offline": row["dot"] == "offline",
+            })
+        })
+        .collect();
+    ensure(
+        drawn == expected,
+        format!("{name}: the sources panel lists {drawn:?}, index.folders answers {expected:?}"),
+    )?;
+    Ok(json!({"rows": rows, "owner": folders}))
+}
+
+/// Add a folder…: `index.add-folder` of the scratch folder as an agent writes it, its listing
+/// followed to its end and the folder listed with its files beside the generated indexed folders,
+/// as the owner's `index.folders` lists them; then `Cmd+Z` undoes it and the folder leaves the list.
+fn add_folder(checks: &mut Checks, launch: &Checked, expected: &Value) -> Result {
+    let path = &expected["add_folder"]["path"];
+    let files = expected["add_folder"]["files"].clone();
+    let added = launch.at("add-folder")?;
+    let sent = library_sent(
+        added,
+        "add-folder",
+        "index.add-folder",
+        json!({"path": path}),
+    )?;
+    ensure(
+        sent["answer"]["job_id"].is_string() && sent["answer"]["change"]["change"].is_number(),
+        format!("add-folder: the owner answered {sent}"),
+    )?;
+    let owner = &added["step"]["owner_indexed"];
+    let listed = indexed_as_the_owner_lists(added, "add-folder", owner)?;
+    let ours = owner["folders"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|folder| &folder["path"] == path)
+        .ok_or_else(|| format!("add-folder: index.folders does not list it: {owner}"))?;
+    ensure(
+        ours["files"] == files && ours["offline"] == false,
+        format!("add-folder: its listing found {ours}"),
+    )?;
+    let row = select(added)["source_rows"]["indexed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|row| row["name"] == ADD_FOLDER)
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        row["secondary"].is_null() && select(added)["adding"].is_null(),
+        format!("add-folder: the row still says it is listing: {row}"),
+    )?;
+    checks.note(
+        added,
+        "Add a folder…: index.add-folder, the listing followed to its end, the folder listed as index.folders lists it",
+        json!({"request": sent, "indexed": listed, "status": added.state()["status"]}),
+    );
+    let undone = launch.at("add-folder-undone")?;
+    let sent = library_sent(undone, "add-folder-undone", "library.undo", json!({}))?;
+    let rows = select(undone)["source_rows"]["indexed"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        rows.iter().all(|row| row["name"] != ADD_FOLDER)
+            && rows.len() + 1
+                == select(added)["source_rows"]["indexed"]
+                    .as_array()
+                    .map_or(0, Vec::len),
+        format!("add-folder-undone: the sources panel lists {rows:?}"),
+    )?;
+    checks.note(
+        undone,
+        "Cmd+Z undoes the add: the folder leaves the indexed folders",
+        json!({"request": sent, "indexed": rows, "status": undone.state()["status"]}),
+    );
+    Ok(())
 }
 
 fn long_work_of(frame: &Frame) -> &Value {
@@ -1533,10 +1712,11 @@ mod tests {
             "/generated/images",
             120,
             "/run/first-look",
+            "/run/add-folder",
             catalog,
         );
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 54);
+        assert_eq!(plan.len(), 59);
         assert!(plan.scripted());
     }
 }

@@ -72,12 +72,24 @@ pub struct GridPress {
     pub double: bool,
 }
 
+/// A secondary press (a right-click, or a Control-click on macOS) on a cell: which cell, its first
+/// item and span, and where the pointer was, in the widget's own coordinates, so the caller can open
+/// a menu there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridContext {
+    pub cell: u32,
+    pub item: u32,
+    pub span: u32,
+    pub at: Point,
+}
+
 /// The grid widget; build it with [`thumbnail_grid`].
 pub struct ThumbnailGrid<'a, M> {
     layout: &'a GridLayout,
     scroll: f32,
     cell: Box<dyn Fn(GridCell) -> CellView<'a> + 'a>,
     on_press: Option<Box<dyn Fn(GridPress) -> M + 'a>>,
+    on_context: Option<Box<dyn Fn(GridContext) -> M + 'a>>,
     on_scroll: Option<Box<dyn Fn(f32) -> M + 'a>>,
     on_moment_action: Option<Box<dyn Fn(u32) -> M + 'a>>,
     viewport: Size,
@@ -98,6 +110,7 @@ pub fn thumbnail_grid<'a, M>(
         scroll,
         cell: Box::new(cell),
         on_press: None,
+        on_context: None,
         on_scroll: None,
         on_moment_action: None,
         viewport: Size::ZERO,
@@ -111,6 +124,12 @@ impl<'a, M> ThumbnailGrid<'a, M> {
     /// Publishes a press on a cell.
     pub fn on_press(mut self, on_press: impl Fn(GridPress) -> M + 'a) -> Self {
         self.on_press = Some(Box::new(on_press));
+        self
+    }
+
+    /// Publishes a secondary press on a cell, with where the pointer was.
+    pub fn on_context(mut self, on_context: impl Fn(GridContext) -> M + 'a) -> Self {
+        self.on_context = Some(Box::new(on_context));
         self
     }
 

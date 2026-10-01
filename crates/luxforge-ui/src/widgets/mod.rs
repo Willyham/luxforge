@@ -134,9 +134,9 @@ pub(crate) use thumbnail_grid::LineKind as GridLineKind;
 #[cfg(test)]
 pub(crate) use thumbnail_grid::paint_for_tests;
 pub use thumbnail_grid::{
-    CellAvailability, CellView, GridBlock, GridCell, GridDirection, GridHeading, GridHit,
-    GridLayout, GridMetrics, GridPress, MomentHeader, MomentKind, PressModifiers, ThumbnailGrid,
-    thumbnail_grid,
+    CellAvailability, CellView, GridBlock, GridCell, GridContext, GridDirection, GridHeading,
+    GridHit, GridLayout, GridMetrics, GridPress, MomentHeader, MomentKind, PressModifiers,
+    ThumbnailGrid, thumbnail_grid,
 };
 // -- end Select: the thumbnail grid's exports.
 
