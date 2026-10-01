@@ -364,6 +364,10 @@ impl Editor {
                 state.confirm = None;
                 state.report = false;
                 let presets = menu == Some(CatalogMenu::Presets);
+                // Only a right-click on the grid opens the photographs' menu, where it was.
+                if menu != Some(CatalogMenu::Photos) {
+                    state.context_at = None;
+                }
                 state.menu = menu;
                 // Apply preset… lists the library as it is now.
                 if presets {
@@ -477,6 +481,19 @@ impl Editor {
                 }
                 let params = model::removal_params(&request());
                 return self.catalog_library(CatalogGesture::Restore, params).0;
+            }
+            CatalogAction::SendBack => {
+                self.close_catalog_menus();
+                let state = &self.select.state;
+                if !state.over_catalog()
+                    || model::over_removed(state)
+                    || self.missing_shown()
+                    || self.catalog_selection().count == 0
+                {
+                    return Task::none();
+                }
+                let params = model::removal_params(&request());
+                return self.catalog_library(CatalogGesture::SendBack, params).0;
             }
             CatalogAction::Empty => {
                 self.close_catalog_menus();
@@ -828,6 +845,15 @@ impl Editor {
         self.reread_catalog()
     }
 
+    /// Open the selected photographs' menu at `(x, y)` in the grid's own coordinates, closing every
+    /// other menu.
+    pub(crate) fn open_photo_menu(&mut self, x: f32, y: f32) {
+        self.close_catalog_menus();
+        let state = &mut self.select.state.catalog;
+        state.menu = Some(CatalogMenu::Photos);
+        state.context_at = Some((x, y));
+    }
+
     /// Close the catalog's menu and a name being typed, and the shell's own menu.
     fn close_catalog_menus(&mut self) {
         self.select.state.menu = None;
@@ -1149,7 +1175,17 @@ impl Editor {
                     "presets": info.batch.presets.as_ref().map(|menu| menu.iter().map(|choice| json!([choice.label, choice.action.is_some()])).collect::<Vec<_>>()),
                 },
                 "removal": info.removal.as_ref().map(|button| &button.label),
+                "send_back": info.send_back.as_ref().map(|button| json!({
+                    "label": button.label,
+                    "refused": button.refused,
+                })),
             })),
+            // The selected photographs' menu, while a right-click holds it open.
+            "context": model.context.as_ref().map(|menu| menu.choices.iter().map(|choice| json!({
+                "label": choice.label,
+                "enabled": choice.action.is_some(),
+                "reason": choice.reason,
+            })).collect::<Vec<_>>()),
             "menu": state.menu.as_ref().map(|menu| format!("{menu:?}")),
             "naming": state.naming.as_ref().map(|naming| &naming.text),
             // The batch this desktop started last: the request it sent and the owner's answer,

@@ -86,6 +86,8 @@ mod proof_controls_tests;
 mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+#[cfg(test)]
+mod select_folders_tests;
 pub(crate) mod select_missing;
 #[cfg(test)]
 mod select_missing_tests;
@@ -885,7 +887,10 @@ impl Editor {
                     .mask_shape()
                     .is_none_or(|shape| shape.brush().is_some()),
             select: self.select_shown(),
-            select_menu_open: self.select.state.menu.is_some() || self.select.state.catalog.open(),
+            select_menu_open: self.select.state.menu.is_some()
+                || self.select.state.catalog.open()
+                || self.select.state.indexed_menu.is_some()
+                || self.select.state.forget.is_some(),
             loupe_open: self.loupe_open(),
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),

@@ -1373,3 +1373,75 @@ fn catalog_browse_removal_and_emptying_are_confirmed() {
     ));
     assert_eq!(filter_bar(&state).empty, None);
 }
+
+/// Send back is offered for one photograph or several over every catalog view but Removed: refused
+/// with the core's own reason when a selected row says its photograph is edited, and sent as
+/// `asset.send-back` of the selection, as an agent writes it. A right-click's menu offers it with
+/// Remove from catalog… under it, where the right-click was.
+#[test]
+fn catalog_browse_send_back_is_offered_and_refused_as_the_core_refuses() {
+    let mut state = catalog_state(ViewSource::AllPhotographs);
+    let mut rows: Vec<ViewRow> = (0..6)
+        .map(|position| photo_row(position, "konstanz01", &[], false))
+        .collect();
+    rows[3].edited = true;
+    with_rows(&mut state, rows);
+    let one = info(&state, &selected(1, 1, 1)).unwrap();
+    assert_eq!(
+        one.send_back,
+        Some(SendBackButton {
+            label: "Send back".into(),
+            refused: None
+        })
+    );
+    let edited = info(&state, &selected(3, 1, 3)).unwrap();
+    assert_eq!(
+        edited.send_back.unwrap().refused.as_deref(),
+        Some(
+            "L1000003.DNG has been edited since it was developed: it leaves the catalog only by \
+             being removed"
+        )
+    );
+    let several = info(&state, &selected(0, 5, 0)).unwrap();
+    let button = several.send_back.unwrap();
+    assert_eq!(button.label, "Send back 5");
+    assert!(
+        button
+            .refused
+            .is_some_and(|reason| reason.starts_with("L1000003.DNG has been edited"))
+    );
+    let unedited = info(&state, &selected(4, 2, 4)).unwrap();
+    assert_eq!(unedited.send_back.unwrap().refused, None);
+    assert_eq!(
+        removal_params(&mutation()),
+        json!({"targets": {"kind": "selection"}, "mutation": {"request_id": "request-test", "actor": "desktop"}})
+    );
+    assert_eq!(CatalogGesture::SendBack.method(), "asset.send-back");
+    assert!(CatalogGesture::SendBack.of_selection());
+
+    // The right-click's menu, where it was opened.
+    let selection = selected(1, 1, 1);
+    assert_eq!(derive(&state, &selection, "").context, None);
+    state.catalog.menu = Some(CatalogMenu::Photos);
+    state.catalog.context_at = Some((120.0, 80.0));
+    let menu = derive(&state, &selection, "").context.unwrap();
+    assert_eq!((menu.x, menu.y), (120.0, 80.0));
+    let labels: Vec<(&str, bool)> = menu
+        .choices
+        .iter()
+        .map(|choice| (choice.label.as_str(), choice.action.is_some()))
+        .collect();
+    assert_eq!(
+        labels,
+        [("Send back", true), ("Remove from catalog\u{2026}", true)]
+    );
+    assert_eq!(menu.choices[0].action, Some(CatalogAction::SendBack));
+    let refused = derive(&state, &selected(3, 1, 3), "").context.unwrap();
+    assert!(refused.choices[0].action.is_none() && refused.choices[0].reason.is_some());
+    state.catalog.close();
+    assert_eq!(state.catalog.context_at, None);
+
+    // Over Removed there is no Send back: Put back is the way out.
+    state.query = Some(super::super::select::source_query(ViewSource::Removed));
+    assert_eq!(info(&state, &selection).unwrap().send_back, None);
+}

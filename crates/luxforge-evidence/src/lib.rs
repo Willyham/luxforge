@@ -1869,7 +1869,9 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// "undo"}` presses `Cmd+Z` (`"redo"`: `Shift+Cmd+Z`) through the key table: library undo or redo
 /// of the desktop's own changes. `{"pick_all": {"position": 12}}` presses the Pick all action of
 /// the bracket holding that view position. `P` itself is a `key` step. Each waits until the view
-/// the change made stale has been evaluated again.
+/// the change made stale has been evaluated again. `{"add_folder": "/path"}` adds that folder to the
+/// indexed folders as Add a folder… does, bypassing only the native dialog, and waits until its
+/// listing has ended and the indexed folders have been read again.
 ///
 /// Long-running work: `{"first_look": "/path"}` browses that folder the same way and waits, while
 /// its first look is still being read, until the view shows its progress sheet. `"continue_in_background"`
@@ -1912,6 +1914,7 @@ pub enum SelectStep {
     FirstLook(String),
     ContinueInBackground,
     CancelWork,
+    AddFolder(String),
 }
 
 /// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
@@ -1958,6 +1961,7 @@ impl SelectStep {
             Self::Source(name) => text(name, "select source"),
             Self::Folder(path) => text(path, "select folder"),
             Self::FirstLook(path) => text(path, "select first_look"),
+            Self::AddFolder(path) => text(path, "select add_folder"),
             Self::Choose { item, .. } => text(item, "select choose item"),
             Self::AgentPick { positions, .. } => {
                 if positions.is_empty() || positions.len() > MAX_AGENT_PICKS {

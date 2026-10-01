@@ -6,6 +6,7 @@ use iced::window;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Message {
     Press(GridPress),
+    Context(GridContext),
     Scroll(f32),
     Action(u32),
     Viewport(Size),
@@ -55,6 +56,7 @@ fn layout() -> GridLayout {
 fn grid(layout: &GridLayout, scroll: f32) -> ThumbnailGrid<'_, Message> {
     thumbnail_grid(layout, scroll, |_| CellView::default())
         .on_press(Message::Press)
+        .on_context(Message::Context)
         .on_scroll(Message::Scroll)
         .on_moment_action(Message::Action)
         .viewport(BOUNDS.size())
@@ -150,6 +152,31 @@ fn a_press_on_a_cell_publishes_its_item_modifiers_and_double_click() {
     assert!(messages.is_empty() && !response.capture);
     let (messages, _) = send(&grid, &mut input, press(), Point::new(-20.0, 100.0));
     assert!(messages.is_empty());
+}
+
+/// A right-click on a cell publishes it with where the pointer was, and never a press; on a gap it
+/// publishes nothing.
+#[test]
+fn a_secondary_press_on_a_cell_publishes_it_with_the_pointer() {
+    let layout = layout();
+    let grid = grid(&layout, 0.0);
+    let mut input = Input::default();
+    let right = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right));
+    let at = over(&layout, 3, 0.0);
+    let (messages, response) = send(&grid, &mut input, right.clone(), at);
+    assert_eq!(
+        messages,
+        [Message::Context(GridContext {
+            cell: 3,
+            item: 3,
+            span: 1,
+            at,
+        })]
+    );
+    assert!(response.capture);
+    assert!(input.last_click.is_none(), "a right-click is no click");
+    let (messages, response) = send(&grid, &mut input, right, Point::new(8.0, 100.0));
+    assert!(messages.is_empty() && !response.capture);
 }
 
 #[test]

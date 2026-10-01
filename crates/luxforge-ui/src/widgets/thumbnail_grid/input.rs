@@ -4,7 +4,7 @@
 
 use super::layout::Target;
 use super::paint::{self, Hover, Measure};
-use super::{GridBlock, GridPress, PressModifiers, ThumbnailGrid};
+use super::{GridBlock, GridContext, GridPress, PressModifiers, ThumbnailGrid};
 use iced::advanced::mouse;
 use iced::{Event, Point, Rectangle, Size, keyboard};
 
@@ -65,6 +65,30 @@ impl<M> ThumbnailGrid<'_, M> {
                 let next = self.layout.clamp_scroll(scroll - moved, bounds.height);
                 if next != scroll {
                     self.publish_scroll(input, publish, next);
+                    response.capture = true;
+                }
+            }
+            Event::Mouse(mouse::Event::ButtonPressed(button))
+                if *button == mouse::Button::Right
+                    || (cfg!(target_os = "macos")
+                        && *button == mouse::Button::Left
+                        && input.modifiers.control()) =>
+            {
+                // A secondary press on a cell: a right-click, or a Control-click on macOS.
+                let (Some(position), Some(on_context)) =
+                    (cursor.position_in(bounds), &self.on_context)
+                else {
+                    return response;
+                };
+                let content = Point::new(position.x, position.y + scroll);
+                if let Some(Target::Cell(cell)) = self.layout.hit_detail(content) {
+                    let grid = self.layout.cell(cell);
+                    publish(on_context(GridContext {
+                        cell,
+                        item: grid.item,
+                        span: grid.span,
+                        at: position,
+                    }));
                     response.capture = true;
                 }
             }

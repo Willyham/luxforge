@@ -164,6 +164,31 @@ impl Editor {
                 }
             }
             CatalogStep::DeleteKey => self.delete_key(),
+            CatalogStep::SendBack => match self
+                .workspace
+                .select
+                .catalog
+                .info
+                .as_ref()
+                .and_then(|info| info.send_back.as_ref())
+            {
+                Some(button) => match &button.refused {
+                    None => Ok(vec![act(CatalogAction::SendBack)]),
+                    Some(reason) => Err(format!("Send back is refused: {reason}")),
+                },
+                None => Err("the Info panel offers no Send back".to_owned()),
+            },
+            CatalogStep::Context(position) => self.context_press(position),
+            CatalogStep::ContextChoice(label) => {
+                let menu = self
+                    .workspace
+                    .select
+                    .catalog
+                    .context
+                    .as_ref()
+                    .map(|menu| menu.choices.clone());
+                choice(menu.as_deref(), &label).map(|action| vec![act(action)])
+            }
             CatalogStep::Confirm => match &self.workspace.select.catalog.sheet {
                 Some(sheet) if sheet.confirm.is_some() => Ok(vec![act(CatalogAction::Confirmed)]),
                 _ => Err("no confirmation is shown".to_owned()),
@@ -209,6 +234,27 @@ impl Editor {
             self.await_step(Settle::Select);
         }
         Task::batch(tasks)
+    }
+
+    /// A right-click on the grid cell showing view position `position`, at its centre, as the grid
+    /// publishes it.
+    fn context_press(&self, position: u32) -> Result<Vec<Message>, String> {
+        let layout = &self.select.layout;
+        let cell = layout
+            .cell_of_item(position)
+            .map(|cell| layout.cell(cell))
+            .ok_or_else(|| format!("no grid cell shows position {position}"))?;
+        let rect = layout
+            .item_rect(position)
+            .ok_or_else(|| format!("position {position} has no cell rectangle"))?;
+        Ok(vec![Message::Select(SelectMessage::Context(
+            luxforge_ui::GridContext {
+                cell: cell.cell,
+                item: cell.item,
+                span: cell.span,
+                at: iced::Point::new(rect.center_x(), rect.center_y() - self.select.scroll),
+            },
+        ))])
     }
 
     /// Why the Develop band's Apply preset… and Export… are refused, as it draws them.
