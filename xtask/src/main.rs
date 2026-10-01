@@ -723,6 +723,9 @@ fn main_result() -> Result {
             let card = a
                 .value("--card")?
                 .map(|path| absolute(&root, Path::new(&path)));
+            let only = a
+                .value("--only")?
+                .map(|step| step.to_string_lossy().into_owned());
             a.done()?;
             // Timing runs never overlap, whether they were started by `verify` or by hand.
             let _gate = launch::TimingGate::acquire()?;
@@ -735,6 +738,7 @@ fn main_result() -> Result {
                     binary,
                     corpus,
                     card,
+                    only,
                 },
             )?;
         }

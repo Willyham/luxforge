@@ -740,8 +740,14 @@ pub(super) fn want_view_items(
         owner.catalog.previews.end_view(client, &mut owner.jobs);
     }
     region::release_development();
-    let mut files = Vec::new();
-    let mut rows = Vec::new();
+    // Each list at its size, allocated once (a view of 100,000 photographs would otherwise free
+    // every smaller one on the way).
+    let photos = items
+        .iter()
+        .filter(|item| matches!(item, ViewItem::Photo(_)))
+        .count();
+    let mut files = Vec::with_capacity(items.len() - photos);
+    let mut rows = Vec::with_capacity(photos);
     for item in items {
         match item {
             ViewItem::File(file) => files.push(*file),
