@@ -744,6 +744,12 @@ impl Jobs {
             .ok_or_else(|| unknown(job_id))
     }
 
+    /// One job as any client reads it, whoever requested it: for a cancel that may stop a shared
+    /// job its caller never requested. One the table does not keep is `validation`.
+    pub(crate) fn read_any(&self, job_id: &JobId) -> Result<JobRecord, Error> {
+        self.read(job_id).ok_or_else(|| unknown(job_id))
+    }
+
     /// The kind of a job `client` may read.
     pub(crate) fn kind_for(&self, job_id: &JobId, client: ClientId) -> Result<JobKind, Error> {
         self.entries
@@ -873,8 +879,8 @@ impl Jobs {
     /// joins it by its id ([`Self::join_catalog`]). It belongs to the clients that want it, as a
     /// source job does: its requesters read it, a cancel or disconnect releases the caller's
     /// interest ([`Self::release`], [`Self::disconnect`]), and only the last release stops it,
-    /// after which the owner tells the lane. `None` for work nobody requested, such as a commit's
-    /// background re-render, which no client reads until one joins it.
+    /// after which the owner tells the lane. `None` for work no client has requested yet, which no
+    /// client reads until one joins it.
     pub(crate) fn open_catalog_shared(&mut self, opened: CatalogOpened, client: Option<ClientId>) {
         let interest = Interest {
             requesters: client.into_iter().collect(),

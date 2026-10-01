@@ -551,8 +551,9 @@ fn preview_cache_owner_cancels_waiting_and_running_tasks() {
 /// Two clients wait on one tier's job, which belongs to the clients that want it: one's
 /// `job.cancel` releases its own interest only. The other's wait is intact — the same job, still
 /// running, then `ready`, and it is woken for both of the grid tier's stages — while the client
-/// that left reads the same outcome and is woken for nothing more. A client that never asked
-/// neither reads nor cancels the job.
+/// that left reads the same outcome and is woken for nothing more. A client that never asked does
+/// not read the job, and its cancel is refused `conflict`, naming the job, while another client
+/// waits for it; once the job has ended, its cancel is answered with the job as it ended.
 #[test]
 fn preview_cache_owner_a_cancel_leaves_only_the_callers_interest() {
     let mut setup = Setup::new("preview-owner-interest");
@@ -580,10 +581,23 @@ fn preview_cache_owner_a_cancel_leaves_only_the_callers_interest() {
         "the client that left still reads it"
     );
     let stranger = setup.owner.register();
-    for method in ["job.read", "job.cancel"] {
-        let refused = setup.call(stranger, method, json!({"job_id": job}));
-        assert_eq!(refused.error.expect(method).code, "validation", "{method}");
-    }
+    let refused = setup.call(stranger, "job.read", json!({"job_id": job}));
+    assert_eq!(refused.error.expect("job.read").code, "validation");
+    let refused = setup
+        .call(stranger, "job.cancel", json!({"job_id": job}))
+        .error
+        .expect("job.cancel");
+    assert_eq!(refused.code, "conflict");
+    assert_eq!(
+        refused.message,
+        "another client is waiting for this preview"
+    );
+    assert_eq!(refused.data, Some(json!({"job_id": job})));
+    assert_eq!(
+        setup.status_for(staying, &job),
+        "running",
+        "nothing changed"
+    );
 
     gate.open();
     let record = setup.settled_for(staying, &job);
@@ -593,6 +607,11 @@ fn preview_cache_owner_a_cancel_leaves_only_the_callers_interest() {
         setup.settled_for(leaving, &job),
         record,
         "both read the one outcome"
+    );
+    assert_eq!(
+        setup.ok_for(stranger, "job.cancel", json!({"job_id": job})),
+        record,
+        "an ended job is answered as it ended"
     );
     assert_eq!(
         stayed_woken.load(Ordering::SeqCst),

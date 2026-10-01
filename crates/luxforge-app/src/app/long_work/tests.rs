@@ -262,6 +262,110 @@ fn cancel_sends_job_cancel_for_the_job_and_the_board_says_it_was_cancelled() {
     finish(editor, catalog);
 }
 
+/// A row's Cancel the owner refuses says why in the status line: a preview read another client waits
+/// for, which this desktop never asked for, is refused `conflict`, and the other client's wait
+/// completes. Two named pipes, which an extraction worker blocks on as it opens them, hold both
+/// workers, so the read waits in the queue while the desktop cancels it.
+#[cfg(unix)]
+#[test]
+fn a_refused_cancel_says_why_in_the_status_line() {
+    use luxforge_core::{
+        EditorService, SourceTag,
+        catalog_types::{FileRecord, FileSignature, HeaderState, VolumeId},
+        seed::IndexSeeder,
+    };
+    let root = luxforge_testbase::paths::temp_dir("long-work-refused-cancel");
+    let catalog = root.join("catalog.sqlite");
+    let catalog_id = EditorService::open(&catalog)
+        .unwrap()
+        .catalog_id()
+        .to_owned();
+    let pipes = ["held-1.jpg", "held-2.jpg"].map(|name| root.join(name));
+    for pipe in &pipes {
+        let made = std::process::Command::new("mkfifo").arg(pipe).status();
+        assert!(made.unwrap().success(), "mkfifo {}", pipe.display());
+    }
+    let photo = root.join("A.JPG");
+    std::fs::copy(luxforge_testbase::paths::jpeg(), &photo).unwrap();
+    let record = |path: &Path| FileRecord {
+        path: path.to_path_buf(),
+        folder: root.clone(),
+        name: path.file_name().unwrap().to_string_lossy().into_owned(),
+        volume_id: VolumeId::parse("volume-0123456789").unwrap(),
+        signature: FileSignature::of(&std::fs::metadata(path).unwrap()),
+        kind: SourceTag::Jpeg,
+        header: HeaderState::Ok(Box::default()),
+        last_seen_ms: 0,
+    };
+    let mut seeder = IndexSeeder::create(&catalog, &catalog_id).unwrap();
+    let files = seeder
+        .files(&[record(&pipes[0]), record(&pipes[1]), record(&photo)])
+        .unwrap();
+    seeder.finish().unwrap();
+    let (owner, join) = luxforge_core::OwnerHandle::start(&catalog).unwrap();
+    let (mut editor, _) = Editor::new(crate::app::Boot {
+        owner,
+        join,
+        live_server: None,
+        config: crate::Config::default(),
+        client: None,
+        initial_import: None,
+        window: (1440.0, 900.0),
+    });
+
+    // An agent reads the pipes, which take both workers, then the photograph, which waits.
+    let agent = editor.owner.register();
+    let read = |file| {
+        let params = json!({"item": {"kind": "file", "file_id": file}, "tier": "grid"});
+        call(&editor.owner, agent, "preview.read", params)
+            .unwrap()
+            .0
+    };
+    read(files[0]);
+    read(files[1]);
+    let waiting = read(files[2]);
+    assert_eq!(waiting["state"], "queued", "{waiting}");
+    let job = waiting["job_id"].as_str().unwrap().to_owned();
+
+    // The row's Cancel, as its owner task sends it and hands back the answer.
+    let _ = editor.update(Message::LongWork(LongWorkMessage::Cancel {
+        job_id: job.clone(),
+    }));
+    let result = cancel_now(&editor.owner, editor.client, &job);
+    let refusal = "conflict: another client is waiting for this preview";
+    assert_eq!(result, Err(refusal.to_owned()));
+    let _ = editor.update(Message::LongWork(LongWorkMessage::Cancelled {
+        job_id: job.clone(),
+        result,
+    }));
+    assert_eq!(editor.status.text, format!("Could not cancel: {refusal}"));
+
+    // Each pipe opened for writing and closed is an empty file to its worker, which moves on.
+    let (opened, pipes_opened) = std::sync::mpsc::channel();
+    for pipe in pipes {
+        let opened = opened.clone();
+        std::thread::spawn(move || {
+            let _ = std::fs::OpenOptions::new().write(true).open(&pipe);
+            let _ = opened.send(());
+        });
+    }
+    for _ in 0..2 {
+        pipes_opened
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a worker opened its pipe");
+    }
+    let record = luxforge_testbase::wait_for("the agent's read to end", || {
+        let record = job_now(&editor.owner, agent, &job).unwrap();
+        (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+    });
+    assert_eq!(
+        record["status"], "ready",
+        "the agent's wait completes: {record}"
+    );
+    finish(editor, catalog);
+    let _ = std::fs::remove_dir_all(root);
+}
+
 /// A finished job's sentence reaches the status bar when its record answers.
 #[test]
 fn a_finished_job_leaves_its_sentence_in_the_status_bar() {
