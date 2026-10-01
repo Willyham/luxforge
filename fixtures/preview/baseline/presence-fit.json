@@ -1,0 +1,20 @@
+[
+  {"slider": {"action": "set-detail", "parameter": "colour", "values": [1.0]}},
+  {"slider": {"action": "set-detail", "parameter": "colour", "values": [1.0], "release": true}},
+  {"slider": {"action": "set-presence", "parameter": "texture", "values": [100.0]}},
+  {"slider": {"action": "set-presence", "parameter": "texture", "values": [100.0], "release": true}},
+  {"wait": {"ms": 1500}},
+  {"api": {"method": "edit.reset-presence", "params": {}}},
+  {"slider": {"action": "set-presence", "parameter": "clarity", "values": [100.0]}},
+  {"slider": {"action": "set-presence", "parameter": "clarity", "values": [100.0], "release": true}},
+  {"wait": {"ms": 1500}},
+  {"api": {"method": "edit.reset-presence", "params": {}}},
+  {"slider": {"action": "set-presence", "parameter": "dehaze", "values": [100.0]}},
+  {"slider": {"action": "set-presence", "parameter": "dehaze", "values": [100.0], "release": true}},
+  {"wait": {"ms": 1500}},
+  {"api": {"method": "edit.reset-presence", "params": {}}},
+  {"api": {"method": "edit.set-presence", "params": {"texture": 100.0, "clarity": 100.0}}},
+  {"slider": {"action": "set-presence", "parameter": "dehaze", "values": [100.0]}},
+  {"slider": {"action": "set-presence", "parameter": "dehaze", "values": [100.0], "release": true}},
+  {"wait": {"ms": 1500}}
+]

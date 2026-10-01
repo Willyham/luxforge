@@ -9,9 +9,9 @@ use crate::{
     gallery_smoke as gallery, histogram_smoke as histogram, lens_smoke as lens,
     mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
-    mask_range_smoke as mask_range, mask_smoke as mask, mixer_smoke as mixer,
-    performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
-    raw_panel_smoke as raw_panel,
+    mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
+    mixer_smoke as mixer, performance_smoke as performance, presence_smoke as presence,
+    presets_smoke as presets, raw_panel_smoke as raw_panel,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
     viewport_smoke as viewport, vignette_smoke as vignette, workspace_smoke as workspace,
     zoom_smoke as zoom, *,
@@ -326,6 +326,32 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: None,
         own: Some(zoom::run),
+    },
+    Scenario {
+        name: minify::SCENARIO,
+        about: "Before/After at Fit over the generated zone plate: After's exact raster drawn below its size shows no replica rings, and its mip levels are in the photo slots",
+        launches: &[LaunchSpec {
+            plan: minify::plan,
+            ..APP
+        }],
+        verify: minify::verify,
+        source: Source::Fixtures(&[minify::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
+        name: minify::TILED,
+        about: "Before/After at Fit over the generated 60 MP JPEG, held in tiles that cannot have mip levels: After draws the display reduction, as the photograph was drawn before the comparison",
+        launches: &[LaunchSpec {
+            plan: minify::tiled_plan,
+            ..APP
+        }],
+        verify: minify::verify_tiled,
+        source: Source::Fixtures(&[minify::TILED_FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
     },
     Scenario {
         name: viewport::REGION,
