@@ -757,7 +757,8 @@ impl PickerStep {
     }
 }
 
-/// One curve editor gesture: a point dragged, added or removed, or a channel selected.
+/// One curve editor gesture: a point dragged, added or removed, a channel selected, the Points list
+/// opened or closed, or one coordinate typed into that list and committed with Enter.
 ///
 /// On the wire the event is a field of the step, `"event": "move"`, beside the fields that event
 /// takes; only a move is a drag, so only a move takes `finish`.
@@ -772,10 +773,22 @@ pub struct CurveStep {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CurveStepEvent {
-    Move { index: usize, points: Vec<[f32; 2]> },
+    Move {
+        index: usize,
+        points: Vec<[f32; 2]>,
+    },
     Add([f32; 2]),
     Remove(usize),
     Channel(usize),
+    /// The Points disclosure opened (`true`) or closed: view state, which sends no request.
+    Points(bool),
+    /// `text` typed into point `index`'s field for `axis` (0 is the input, 1 the output) and
+    /// Enter pressed in it, which commits that one coordinate.
+    Type {
+        index: usize,
+        axis: usize,
+        text: String,
+    },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -803,6 +816,18 @@ enum CurveWire {
         action: String,
         parameter: String,
         index: usize,
+    },
+    Points {
+        action: String,
+        parameter: String,
+        open: bool,
+    },
+    Type {
+        action: String,
+        parameter: String,
+        index: usize,
+        axis: usize,
+        text: String,
     },
 }
 
@@ -851,6 +876,28 @@ impl From<CurveWire> for CurveStep {
                 CurveStepEvent::Channel(index),
                 SliderEnd::Open,
             ),
+            CurveWire::Points {
+                action,
+                parameter,
+                open,
+            } => (
+                action,
+                parameter,
+                CurveStepEvent::Points(open),
+                SliderEnd::Open,
+            ),
+            CurveWire::Type {
+                action,
+                parameter,
+                index,
+                axis,
+                text,
+            } => (
+                action,
+                parameter,
+                CurveStepEvent::Type { index, axis, text },
+                SliderEnd::Open,
+            ),
         };
         Self {
             action,
@@ -892,6 +939,18 @@ impl From<CurveStep> for CurveWire {
                 parameter,
                 index,
             },
+            CurveStepEvent::Points(open) => Self::Points {
+                action,
+                parameter,
+                open,
+            },
+            CurveStepEvent::Type { index, axis, text } => Self::Type {
+                action,
+                parameter,
+                index,
+                axis,
+                text,
+            },
         }
     }
 }
@@ -910,7 +969,13 @@ impl CurveStep {
                     .try_for_each(|value| point(*value, "curve point"))
             }
             CurveStepEvent::Add(value) => point(*value, "curve point"),
-            CurveStepEvent::Remove(_) | CurveStepEvent::Channel(_) => Ok(()),
+            CurveStepEvent::Type { axis, .. } if *axis > 1 => {
+                Err("curve type axis is 0 (input) or 1 (output)".into())
+            }
+            CurveStepEvent::Remove(_)
+            | CurveStepEvent::Channel(_)
+            | CurveStepEvent::Points(_)
+            | CurveStepEvent::Type { .. } => Ok(()),
         }
     }
 }

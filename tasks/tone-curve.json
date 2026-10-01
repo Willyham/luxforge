@@ -3,12 +3,12 @@
   "plan_id": "tone-curve",
   "title": "Tone curve module",
   "objective": "Deliver the Tone curve module: one composite point curve over encoded luminance with the floor-subtracted reconstruction, frozen against an independent reference, drawn by the shared curve editor with its double-click and Points-list changes, programmable through edit.set-curve and query.sample-curve, maskable, presettable, and verified numerically, through the method table and on the M4 Mac.",
-  "context_summary": "Planned from docs/design/tone-curve.md, which is the contract every task follows by name; implementation is not yet authorized. The owner decided the reconstruction below black on 2026-09-30 (the floor-subtracted ratio for the curve unit; Basic unchanged, follow-up separate); the plan runs on the design's recorded proposal defaults, including the snapping double-click add, end points the desktop does not remove, the delivered point rows and a mapped Lightroom identity curve. The module needs two shared core additions (`Values::curve` in modules/field_patch.rs and `colour::luma::reconstruct_over_floor` in colour.rs), a real change to the shared curve editor and desktop, and harness changes (presets smoke patches, latency harness, evidence curve steps, a generated fixture and a smoke scenario); no new control kind, parameter kind, stage, limit or timer. Three planned modules share files: panel order is Presets, Pixel, RAW, Basic, Tone curve, Detail, Presence, Colour mixer, Transforms, Lens correction, Perspective, Crop, Vignette, Controls, inserted relative to the others when registered; modules/field_patch.rs, compile signatures, the descriptor snapshot, the conformance KNOWN list, smoke SCENARIOS, the fixture TABLE and the reference crate's module lists are regenerated or re-added after each rebase, never hand-merged. Tone curve can land at any time relative to Detail and Lens. Measurements run only in the last task, after all feature work, sequentially on a quiet host. Decisions: docs/decisions.md.",
+  "context_summary": "Planned from docs/design/tone-curve.md, which is the contract every task follows by name; the owner authorized implementation on 2026-09-30. The owner decided the reconstruction below black on 2026-09-30 (the floor-subtracted ratio for the curve unit; Basic unchanged, follow-up separate); the plan runs on the design's recorded proposal defaults, including the snapping double-click add, end points the desktop does not remove, the delivered point rows and a mapped Lightroom identity curve. The module needs two shared core additions (`Values::curve` in modules/field_patch.rs and `colour::luma::reconstruct_over_floor` in colour.rs), a real change to the shared curve editor and desktop, and harness changes (presets smoke patches, latency harness, evidence curve steps, a generated fixture and a smoke scenario); no new control kind, parameter kind, stage, limit or timer. Three planned modules share files: panel order is Presets, Pixel, RAW, Basic, Tone curve, Detail, Presence, Colour mixer, Transforms, Lens correction, Perspective, Crop, Vignette, Controls, inserted relative to the others when registered; modules/field_patch.rs, compile signatures, the descriptor snapshot, the conformance KNOWN list, smoke SCENARIOS, the fixture TABLE and the reference crate's module lists are regenerated or re-added after each rebase, never hand-merged. Tone curve can land at any time relative to Detail and Lens. Measurements run only in the last task, after all feature work, sequentially on a quiet host. Decisions: docs/decisions.md.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Freeze the curve numerics: the f64 reference with the floor-subtracted reconstruction, its study, the oracle fixture and the design's measured figures.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Owner decision, 2026-09-30: the curve unit reconstructs with the floor-subtracted ratio. With L_floor = decode(C(0)) = decode(y_0): for |L| >= 1e-6, rgb_out = L_floor + rgb * ((L_out - L_floor) / L); for |L| < 1e-6, the additive rule rgb_out = rgb + (L_out - L). Both branches are the frozen rule applied to L_out - L_floor with L_floor added back, so the unit is the frozen luminance-ratio reconstruction exactly when y_0 = 0. Basic's Blacks is unchanged in this work; whether Basic adopts the rule is a separate follow-up, not part of this plan.",
@@ -87,7 +87,7 @@
     {
       "id": "TASK-002",
       "description": "Change the shared curve editor and its desktop mapping: click classification, drag slop, the snapping add, end-point and limit refusals with status text, selection after add and remove, the hint, the Points disclosure and the headerless label rule.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner asked on 2026-09-30 that a double-click on a point removes it and that the point list starts closed; the rest of this task is what makes that reliable. Every curve control receives it, the developer controls proof's included, so the tests run on the proof's curve; no core or descriptor change.",
@@ -165,7 +165,7 @@
     {
       "id": "TASK-003",
       "description": "Build the luxforge.curve field-patch module: Values::curve, the floor-subtracted reconstruction in colour.rs, the unit, the sample query, registration after Basic, conformance enrolment and exactness against the frozen fixture on both paths.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -260,7 +260,7 @@
     {
       "id": "TASK-004",
       "description": "Prove the module through the method table in release: the conformance suite inside editor-acceptance and a Tone curve acceptance chapter for placement, masked order and the sample query.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -319,7 +319,7 @@
     {
       "id": "TASK-005",
       "description": "Show the section in the desktop and capture native rendered evidence: the tone-ramp fixture, the evidence curve steps for the Points list and typed coordinates, and the curve smoke scenario.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003"
@@ -394,7 +394,7 @@
     {
       "id": "TASK-006",
       "description": "Carry the curve through presets: capture and apply of set-curve, the Lightroom ToneCurvePV2012 transfer with the sibling rows re-worded, and the presets smoke's patch model over curve fields.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Verify the masked tone curve: the masking acceptance chapter's curve binding, reorder and duplicate, the Masks panel's scope chip and coverage input, and the masking design's maskable list.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -530,7 +530,7 @@
     {
       "id": "TASK-008",
       "description": "Prepare the measurement harnesses without timing: editor-latency drives a named module's curve from a seeded mid-tone point, and editor-performance gains a Tone curve row.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -584,7 +584,7 @@
     {
       "id": "TASK-009",
       "description": "Measure the module on photo-sized inputs after all feature work, record the figures, update the documentation and hand off with the rendered tier.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004",
         "TASK-005",

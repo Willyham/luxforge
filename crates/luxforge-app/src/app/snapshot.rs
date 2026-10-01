@@ -28,7 +28,11 @@ impl Editor {
                             "sample_source":sampled.map(|sample| &sample.source),
                             "sample_source_entry":sampled.map(|sample| &sample.entry),
                             "sample_asset":sampled.map(|sample| &sample.asset),
-                            "display_entry":entry,"dragging":curve.dragging}));
+                            "display_entry":entry,"dragging":curve.dragging,
+                            "points":curve.points,"identity":curve.identity,
+                            "background":curve.background,"points_open":curve.points_open,
+                            "points_max":curve.points_max,"hint":curve.hint,
+                            "label_shown":curve.label_shown}));
                     }
                     tools::ControlModel::Color(color) => {
                         pickers.push(json!({"action":color.action,"parameter":color.parameter,

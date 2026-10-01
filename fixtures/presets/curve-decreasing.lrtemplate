@@ -1,0 +1,18 @@
+s = {
+	id = "3C9E1A74-5B2D-4F80-9E16-7A0C4D2B8F13",
+	internalName = "Synthetic Solarize",
+	title = "Solarize",
+	type = "Develop",
+	-- A synthetic preset written for Luxforge's importer tests, not exported from Lightroom.
+	value = {
+		settings = {
+			Exposure2012 = -0.2,
+			ProcessVersion = "10.0",
+			ToneCurveName2012 = "Custom",
+			-- The third point's output falls below the second's: an inversion.
+			ToneCurvePV2012 = { 0, 0, 96, 140, 176, 110, 255, 255, },
+		},
+		uuid = "E4B7C2D1-9A3F-4E6B-8C50-1D2F3A4B5C6D",
+	},
+	version = 0,
+}

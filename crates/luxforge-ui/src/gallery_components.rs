@@ -249,6 +249,9 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
         dragging: false,
         enabled: true,
         version: 0,
+        points_open: false,
+        points_max: 8,
+        hint: Some("Double-click to add a point, or on one to remove it".into()),
     };
     states.push(curve_editor(&curve, |_| ()));
     states.push(curve_editor(
@@ -256,6 +259,7 @@ pub(crate) fn gallery_components() -> Vec<Element<'static, ()>> {
             selected: Some(1),
             dragging: true,
             version: 1,
+            points_open: true,
             ..curve.clone()
         },
         |_| (),

@@ -811,8 +811,9 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
     let (mut editor, catalog) = opened_with_modules(descriptors(), 4);
     let modules = editor.modules.clone();
     let mut groups = 0usize;
-    // The product modules' groups hold number controls only; the controls proof's one group holds
-    // every control kind, and `proof_controls_tests` proves its reset.
+    // The product modules' groups hold number controls and, for the Tone curve, one curve control
+    // whose channels are its fields; the controls proof's one group holds every control kind, and
+    // `proof_controls_tests` proves its reset.
     for module in modules.iter().filter(|module| !module.developer) {
         for (index, control) in module.controls.iter().enumerate() {
             let luxforge_core::Control::Group(luxforge_core::GroupControl {
@@ -835,12 +836,18 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
             named.sort_unstable();
             let mut own: Vec<&str> = controls
                 .iter()
-                .filter_map(|control| match control {
+                .flat_map(|control| match control {
                     luxforge_core::Control::Number(luxforge_core::NumberControl {
                         parameter,
                         ..
-                    }) => Some(parameter.as_str()),
-                    _ => None,
+                    }) => vec![parameter.as_str()],
+                    luxforge_core::Control::Curve(luxforge_core::CurveControl {
+                        channels, ..
+                    }) => channels
+                        .iter()
+                        .map(|channel| channel.parameter.as_str())
+                        .collect(),
+                    _ => Vec::new(),
                 })
                 .collect();
             own.sort_unstable();
