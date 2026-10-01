@@ -136,11 +136,15 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
             .style(theme::panel_surface),
         );
     }
-    let status = container(status_bar(&select.status, &model.long_work))
-        .height(Length::Fixed(STATUS_BAR_HEIGHT))
-        .padding([0.0, theme::TITLE_BAR_INSET])
-        .align_y(Vertical::Center)
-        .style(theme::panel_surface);
+    let status = container(status_bar(
+        &select.status,
+        &model.long_work,
+        select.catalog.status_report,
+    ))
+    .height(Length::Fixed(STATUS_BAR_HEIGHT))
+    .padding([0.0, theme::TITLE_BAR_INSET])
+    .align_y(Vertical::Center)
+    .style(theme::panel_surface);
     column![
         title,
         horizontal_divider(),
@@ -464,6 +468,10 @@ fn centre<'a>(
             .align_bottom(Length::Fill)
             .padding(Padding::default().bottom(theme::SPACING * 1.75)),
     );
+    // A catalog confirmation or a batch's report, over the grid.
+    if let Some(sheet) = &model.catalog.sheet {
+        layers = layers.push(crate::view::select_catalog::sheet(sheet));
+    }
     // Over the catalog: its own filter bar, and the Metadata browser under it while open.
     let mut regions = match &model.catalog.filter {
         Some(catalog) => column![crate::view::select_catalog::filter_bar(
@@ -759,27 +767,33 @@ pub(crate) fn band<'a>(title: &str, rows: &'a [(String, String)]) -> Element<'a,
 
 // -- Status bar ------------------------------------------------------------------------------------
 
-/// What last happened with Copy, then the connected agents and the Select line.
-fn status_bar<'a>(model: &'a SelectStatus, work: &'a LongWorkModel) -> Element<'a, Message> {
-    let message = row![
-        truncated_text(
-            model.message.clone(),
-            theme::SIZE_CAPTION,
-            theme::FONT,
-            theme::TEXT_SECONDARY,
-        ),
-        header_icon_button(
-            &IconButtonModel {
-                icon: Icon::Copy,
-                tooltip: "Copy the status".into(),
-                enabled: true,
-                selected: false,
-            },
-            Some(Message::View(ViewMessage::CopyStatus)),
-        ),
-    ]
+/// What last happened with Copy — and the batch's Report when it is the batch's sentence — then
+/// the connected agents and the Select line.
+fn status_bar<'a>(
+    model: &'a SelectStatus,
+    work: &'a LongWorkModel,
+    report: bool,
+) -> Element<'a, Message> {
+    let mut message = row![truncated_text(
+        model.message.clone(),
+        theme::SIZE_CAPTION,
+        theme::FONT,
+        theme::TEXT_SECONDARY,
+    )]
     .spacing(theme::STATUS_SPACING)
     .align_y(Alignment::Center);
+    if report {
+        message = message.push(crate::view::select_catalog::status_report());
+    }
+    let message = message.push(header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Copy,
+            tooltip: "Copy the status".into(),
+            enabled: true,
+            selected: false,
+        },
+        Some(Message::View(ViewMessage::CopyStatus)),
+    ));
     let connected = model.agents_connected;
     let dot = container(Space::new())
         .width(Length::Fixed(theme::STATUS_DOT_SIZE))

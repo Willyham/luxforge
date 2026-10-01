@@ -170,8 +170,9 @@ pub use resolve::{
 
 // -- Select: the catalog's exports.
 pub use catalog::{
-    FacetColumnModel, FacetRowModel, OrganizeChipModel, OrganizeTone, facet_column,
-    metadata_browser, organize_chip, organize_chips,
+    CatalogSheetModel, FacetColumnModel, FacetRowModel, OrganizeChipModel, OrganizeTone,
+    SheetSectionModel, catalog_sheet, facet_column, metadata_browser, organize_chip,
+    organize_chips,
 };
 // -- end Select: the catalog's exports.
 
