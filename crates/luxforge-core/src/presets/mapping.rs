@@ -1277,8 +1277,9 @@ fn curve_transfer_value(
         ));
     }
     if count < *points_min {
+        let points = if count == 1 { "point" } else { "points" };
         return Err(format!(
-            "has {count} points; Luxforge's tone curve needs at least {points_min}"
+            "has {count} {points}; Luxforge's tone curve needs at least {points_min}"
         ));
     }
     let pair = |item: &RawValue| -> Option<[f64; 2]> {
