@@ -1,14 +1,12 @@
 //! The desktop's frame-time probes: **lane B's module**, which `catalog-measure` calls once with
-//! the data it prepared. Until lane B fills it, every probe is a `not_measured` row naming it, so
-//! the report lists each desktop target and never leaves one out.
-//!
-//! To fill a probe: launch the editor in the background through the scenario library
-//! (`scenario::Run::tool` over a directory under `context.scratch`, `scenario::Launch`), take the
-//! figure from its evidence, and return it as `Row::measured(metric, unit, samples)` (one
-//! [`stats::row`](crate::stats::row) over the one `Distribution`) with its `scope`, `cache` and
-//! `target`, keeping the metric names below. `context.samples` is the run's `--samples`; a figure
-//! that is one observation is a one-sample row.
+//! the data it prepared. The probes themselves are `xtask/src/catalog_probes/`: each launches the
+//! editor in the background through the scenario library over a directory under
+//! `context.scratch`, takes its figures from the editor's own evidence, and answers them under the
+//! metric names below, with extra figures beside them (the same timings in ms, a held arrow, a
+//! second focus region, the RAW trip's loupe stepping). `context.samples` is the run's `--samples`;
+//! a figure that is one observation is a one-sample row.
 use super::report::Row;
+use crate::catalog_probes::{self, Figure, Outcome, ProbeContext};
 use crate::*;
 
 /// What the desktop probes run over.
@@ -24,10 +22,6 @@ pub struct DesktopContext {
     /// The RAW trip's folder, absent when the corpus is.
     pub raw_trip: Option<PathBuf>,
 }
-
-/// Lane B's reason, until each probe is built.
-const PENDING: &str =
-    "lane B's desktop frame-time probe (xtask/src/catalog_measure/desktop.rs) is not built yet";
 
 /// Each desktop probe: its metric, unit and the design's provisional target.
 pub const PROBES: [(&str, &str, &str); 6] = [
@@ -78,12 +72,74 @@ impl DesktopContext {
 
 /// Every desktop probe's rows.
 pub fn desktop_probes(context: &DesktopContext) -> Result<Vec<Row>> {
-    Ok(PROBES
-        .iter()
-        .map(|(metric, unit, target)| {
-            Row::not_measured(metric, unit, PENDING)
-                .target(target)
-                .detail(context.record())
-        })
-        .collect())
+    let figures = catalog_probes::desktop_probes(&ProbeContext {
+        binary: context.binary.clone(),
+        scratch: context.scratch.clone(),
+        samples: context.samples,
+        folder_10k: context.folder_10k.clone(),
+        raw_trip: context.raw_trip.clone(),
+    })?;
+    Ok(figures.into_iter().map(row).collect())
+}
+
+/// One probe's figure as a row of the report.
+fn row(figure: Figure) -> Row {
+    let row = match figure.outcome {
+        Outcome::Measured(samples) => Row::measured(&figure.metric, figure.unit, samples),
+        Outcome::NotMeasured(reason) => Row::not_measured(&figure.metric, figure.unit, &reason),
+        Outcome::Skipped(reason) => Row::skipped(&figure.metric, figure.unit, &reason),
+    };
+    let row = row
+        .scope(figure.scope)
+        .cache(&figure.cache)
+        .detail(figure.detail);
+    match figure.target {
+        Some(target) => row.target(target),
+        None => row,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog_measure::report;
+
+    fn figure(outcome: Outcome) -> Figure {
+        Figure {
+            metric: PROBES[1].0.into(),
+            unit: "frames",
+            outcome,
+            scope: "what was timed".into(),
+            cache: "what was warm".into(),
+            target: Some(PROBES[1].2),
+            detail: json!({"samples": 3}),
+        }
+    }
+
+    /// A figure keeps its metric, unit, samples, scope, cache, target and detail as a row, and a
+    /// figure without samples says why with the status the report gives it.
+    #[test]
+    fn a_probes_figure_becomes_a_row_of_the_report() {
+        let measured = row(figure(Outcome::Measured(vec![1.0, 2.0, 1.0]))).value();
+        assert_eq!(measured["metric"], PROBES[1].0);
+        assert_eq!(measured["unit"], "frames");
+        assert_eq!(measured["status"], report::MEASURED);
+        assert_eq!(measured["distribution"]["count"], 3);
+        assert_eq!(measured["scope"], "what was timed");
+        assert_eq!(measured["cache"], "what was warm");
+        assert_eq!(measured["target"], PROBES[1].2);
+        assert_eq!(measured["detail"]["samples"], 3);
+        let skipped = row(figure(Outcome::Skipped("no corpus".into()))).value();
+        assert_eq!(
+            (skipped["status"].as_str(), skipped["reason"].as_str()),
+            (Some(report::SKIPPED), Some("no corpus"))
+        );
+        let unmeasured = row(figure(Outcome::NotMeasured("no frame".into()))).value();
+        assert_eq!(unmeasured["status"], report::NOT_MEASURED);
+        assert_eq!(
+            row(figure(Outcome::Measured(Vec::new()))).value()["status"],
+            report::NOT_MEASURED,
+            "a figure that reached no sample"
+        );
+    }
 }
