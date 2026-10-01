@@ -629,7 +629,7 @@ kinds in the three modes, a second stroke on a brush, an amount, an inversion, a
 rename, a masked Basic layer, a masked Presence layer, a masked mixer layer and a masked Tone curve
 layer beside the mixer on the radial mask, and two duplicates that copy the bound layers. On the way
 it proves the masked curve's placement: `mask.list` lists it once, before the mixer; it changes the
-pixels the inverted radial covers and not the centre it excludes; the radial mask's duplicate holds
+pixels the inverted radial covers and not the core it excludes; the radial mask's duplicate holds
 the same layers in the same order, its curve layer placed after its source's; and `mask.reorder`
 moving the copy first re-sorts the masked curve layers in `asset.state` into the new mask order.
 `render.sample` equals the rendered byte at every probe after the curve and after the reorder. It

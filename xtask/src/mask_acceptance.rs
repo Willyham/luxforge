@@ -51,9 +51,10 @@ const MASKED_EV: f64 = 1.0;
 /// The Tone curve the chapter binds to the radial mask beside the mixer: a mid-tone lift.
 const MASKED_CURVE: [[f64; 2]; 3] = [[0.0, 0.0], [0.5, 0.6], [1.0, 1.0]];
 
-/// Positions for the radial mask, in content pixels: its centre, which the inverted radial
-/// excludes, and three corners it covers.
-const RADIAL_PROBES: [(u32, u32); 4] = [(240, 160), (20, 20), (460, 20), (20, 300)];
+/// Positions for the radial mask, in content pixels: a red pixel beside its centre, deep in the core
+/// the inverted radial excludes (the centre itself is the fixture's white cross, which a curve
+/// through `(1, 1)` leaves white anyway), and three corners it covers.
+const RADIAL_PROBES: [(u32, u32); 4] = [(225, 150), (20, 20), (460, 20), (20, 300)];
 
 /// What the writing owner leaves for the reopen to answer: the asset, its current entry and
 /// revision, the masks by identity and the sampled pixels, and what the masked curve showed.
@@ -346,7 +347,7 @@ fn write_catalog(owner: &OwnerHandle, fixture: &Path, source: &SourceImage) -> R
     ensure(
         after_curve[0] == before_curve[0],
         format!(
-            "The masked curve moved the radial's centre, which the inverted radial excludes, from \
+            "The masked curve moved the radial's core, which the inverted radial excludes, from \
              {:?} to {:?}",
             before_curve[0], after_curve[0]
         ),
@@ -470,7 +471,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             "sampled_positions": written.samples.len()}),
     );
     record(
-        "edit.set-curve binds a Tone curve layer to the radial mask beside the mixer: mask.list lists it once, before the mixer, in placement order; it changes the pixels the inverted radial covers and not the centre it excludes; render.sample equals the rendered byte of the owner's bound stack at every probe; mask.duplicate copies it to the copy in the same order, placed after its source's curve layer; mask.reorder moving the copy first re-sorts the masked curve layers into the new mask order, and render.sample still equals the rendered byte",
+        "edit.set-curve binds a Tone curve layer to the radial mask beside the mixer: mask.list lists it once, before the mixer, in placement order; it changes the pixels the inverted radial covers and not the core it excludes; render.sample equals the rendered byte of the owner's bound stack at every probe; mask.duplicate copies it to the copy in the same order, placed after its source's curve layer; mask.reorder moving the copy first re-sorts the masked curve layers into the new mask order, and render.sample still equals the rendered byte",
         written.curve.clone(),
     );
 
