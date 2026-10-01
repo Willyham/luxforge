@@ -714,10 +714,10 @@ pub fn verify(
         format!("catalog-renamed: the title says {}", select(frame)["title"]),
     )?;
     checks.note(frame, "the folder renamed", json!({"request": sent}));
-    let frame = launch.at(LAST)?;
+    let frame = launch.at("catalog-nested")?;
     let sent = library_sent(
         frame,
-        LAST,
+        "catalog-nested",
         "folder.move",
         json!({"folder_id": expected["folder"]["id"], "parent_id": expected["nest_in"]["id"]}),
     )?;
@@ -843,7 +843,7 @@ pub fn verify(
             && sheet["confirm"] == "Remove"
             && sheet["note"]
                 .as_str()
-                .is_some_and(|note| note.contains("The files stay on disk")),
+                .is_some_and(|note| note.contains("stays on disk")),
         format!("catalog-remove-asked: the confirmation shows {sheet}"),
     )?;
     checks.note(

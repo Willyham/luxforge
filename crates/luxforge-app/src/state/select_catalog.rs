@@ -171,7 +171,7 @@ impl BatchRun {
                     BatchKind::Export { folder } if done > 0 => format!(
                         "Exported {} to {}",
                         photographs(done),
-                        shown_path(folder, home)
+                        super::long_work::place(&folder.to_string_lossy(), home)
                     ),
                     BatchKind::Export { .. } => "Exported no photographs".to_owned(),
                 };
@@ -194,7 +194,7 @@ impl BatchRun {
             }
             (BatchEnd::Cancelled, BatchKind::Export { folder }) => format!(
                 "Cancelled exporting: the files it wrote stay in {}",
-                shown_path(folder, home)
+                super::long_work::place(&folder.to_string_lossy(), home)
             ),
             (BatchEnd::Failed(reason), BatchKind::Preset { name }) => {
                 format!("Applying {name} failed: {reason}")
@@ -1161,12 +1161,16 @@ fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet
             return Some(CatalogSheet {
                 kind: SheetKind::Remove,
                 title,
-                note: format!(
-                    "{} to Removed with {} edits, history and collections. The files stay on \
-                     disk, and the edits are kept until Removed is emptied. Undo with \u{2318}Z.",
-                    if count == 1 { "It moves" } else { "They move" },
-                    if count == 1 { "its" } else { "their" },
-                ),
+                note: if count == 1 {
+                    "It moves to Removed with its edits, history and collections. The file stays \
+                     on disk, and the edits are kept until Removed is emptied. Undo with \u{2318}Z."
+                        .to_owned()
+                } else {
+                    "They move to Removed with their edits, history and collections. The files \
+                     stay on disk, and the edits are kept until Removed is emptied. Undo with \
+                     \u{2318}Z."
+                        .to_owned()
+                },
                 sections: Vec::new(),
                 confirm: Some(if count == 1 {
                     "Remove".to_owned()
