@@ -100,7 +100,7 @@ pub const PIPELINE_CACHE: usize = 8;
 const MAP_WORDS: usize = 4;
 
 /// Each step's header words: its program's two base indices and its position map.
-const STEP_WORDS: usize = 8;
+const STEP_WORDS: usize = 2 + PositionMap::WORDS;
 
 /// A words or blocks buffer is never smaller than this, so a plan's first few ticks do not each
 /// outgrow the last one's buffer.
@@ -175,37 +175,6 @@ impl GpuProgram {
             words: Vec::new(),
             block: Arc::from([]),
         }
-    }
-}
-
-/// An exact integer map from the pixel `(x, y)` of the pass a step runs in to the `pos` its program
-/// receives: `(a·x + b·y + tx, c·x + d·y + ty)`. The linear part is a signed permutation, so every
-/// coefficient and every coordinate of an admissible stage is an integer an `f32` holds exactly and
-/// `pos` is the integer the CPU unit is handed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PositionMap {
-    pub a: i32,
-    pub b: i32,
-    pub tx: i32,
-    pub c: i32,
-    pub d: i32,
-    pub ty: i32,
-}
-
-impl PositionMap {
-    /// `pos` is the pass's own pixel.
-    pub const IDENTITY: Self = Self {
-        a: 1,
-        b: 0,
-        tx: 0,
-        c: 0,
-        d: 1,
-        ty: 0,
-    };
-
-    /// The six coefficients as the `f32` words a step's header holds.
-    fn words(self) -> [u32; 6] {
-        [self.a, self.b, self.tx, self.c, self.d, self.ty].map(|value| (value as f32).to_bits())
     }
 }
 
@@ -788,22 +757,11 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     );
     for (index, step) in steps.iter().enumerate() {
         let base = MAP_WORDS + STEP_WORDS * index;
-        // The step's `pos`: its position map over the stage pixel, every term an integer.
-        let map = |row: usize| {
-            let word = |k: usize| format!("lf_f32({}u)", base + 2 + 3 * row + k);
-            format!(
-                "{} * stage.x + {} * stage.y + {}",
-                word(0),
-                word(1),
-                word(2)
-            )
-        };
         match step {
             GpuStep::Colour { program, .. } => source.push_str(&format!(
-                "    rgb = {}(rgb, vec2<f32>({}, {}), lf_words[{base}u], lf_words[{}u]);\n",
+                "    rgb = {}(rgb, {}, lf_words[{base}u], lf_words[{}u]);\n",
                 program.entry,
-                map(0),
-                map(1),
+                PositionMap::wgsl(base + 2, "stage"),
                 base + 1
             )),
         }
@@ -1453,6 +1411,9 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
         row += rows;
     }
 }
+
+mod position;
+pub use position::PositionMap;
 
 #[cfg(feature = "qualification")]
 pub mod qualification;
