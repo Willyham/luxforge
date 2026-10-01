@@ -153,7 +153,9 @@ impl Fixture {
         crate::index::index_dir(&self.catalog)
     }
 
-    /// Every row of the index: its path, id and header state, in path order.
+    /// Every row of the index under the fixture's directory: its path, id and header state, in
+    /// path order. A card the host mounts meanwhile (another test's disk image with a `DCIM`
+    /// folder, in another process) is listed by the lane too, and is not the test's.
     fn rows(&self) -> Vec<(PathBuf, i64, String)> {
         let connection = database::connect_at(&self.index_dir()).unwrap();
         let mut statement = connection
@@ -169,6 +171,7 @@ impl Fixture {
             })
             .unwrap()
             .map(Result::unwrap)
+            .filter(|(path, ..)| path.starts_with(&self.dir))
             .collect()
     }
 
@@ -471,6 +474,12 @@ fn every_batch_advances_the_revision_and_records_one_event() {
     let fixture = Fixture::new("revision");
     let owner = fixture.owner();
     let client = owner.register();
+    // A mount table of nothing, so a card the host mounts meanwhile (another process's disk image)
+    // is not listed, and its batches are not counted among the job's.
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::default())),
+    );
     let root = fixture.dir.join("photos");
     for index in 0..(crate::index::lane::INDEX_BATCH + 10) {
         put(
@@ -542,7 +551,7 @@ fn job_cancel_stops_a_listing_mid_walk() {
         put(&root.join(folder).join("x.jpg"), &camera_jpeg());
     }
     let gate = Arc::new(Gate::new());
-    tell(owner, FilesMessage::Hold(gate.clone()));
+    tell(owner, FilesMessage::Hold(gate.clone(), root.clone()));
     gate.shut();
     let started = ok(
         owner,

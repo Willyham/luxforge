@@ -10,10 +10,12 @@ use crate::index::lane::{VolumeEvent, WatchEvent};
 use luxforge_watch::RescanReason;
 use std::sync::mpsc::sync_channel;
 
-/// How many header reads the lane has taken in.
-fn reads(owner: &OwnerHandle) -> usize {
+/// How many header reads of files under `root` the lane has taken in. Only the test's own: the lane
+/// also lists any card the host mounts meanwhile, such as another test's disk image with a `DCIM`
+/// folder.
+fn reads(owner: &OwnerHandle, root: &Path) -> usize {
     let (reply, answer) = sync_channel(1);
-    tell(owner, FilesMessage::HeaderReads(reply));
+    tell(owner, FilesMessage::HeaderReads(root.to_path_buf(), reply));
     answer.recv().unwrap()
 }
 
@@ -100,7 +102,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), 5);
     let start = sequence(owner, client);
-    let before = reads(owner);
+    let before = reads(owner, &photos);
 
     arrive(&staging, &photos.join("new.jpg"), &camera);
     arrive(
@@ -146,7 +148,7 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     .unwrap();
     assert_eq!(edited.signature.len, camera.len() as u64 + 6);
     assert_eq!(
-        reads(owner) - before,
+        reads(owner, &photos) - before,
         3,
         "new.jpg, a.jpg and e.jpg are read; renamed.jpg is carried unread"
     );
@@ -188,7 +190,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     add_watched(owner, client, &photos, "add");
     let ids = read_rows(&fixture, &photos);
     assert_eq!(ids.len(), LINKS);
-    let before = reads(owner);
+    let before = reads(owner, &photos);
 
     let renamed = photos.join("renamed.jpg");
     std::fs::rename(link(5), &renamed).unwrap();
@@ -228,7 +230,7 @@ fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
     assert_eq!(added.len(), LINKS, "each new link its own row");
     assert!(ids.values().all(|id| !added.contains(id)), "none moved");
     assert_eq!(
-        reads(owner) - before,
+        reads(owner, &photos) - before,
         LINKS,
         "each new link is read; the renamed one is carried unread"
     );
@@ -412,7 +414,7 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         let owner = fixture.owner();
         let client = owner.register();
         // Every listing is held at each folder while the gate is shut, from the lane's start.
-        tell(owner, FilesMessage::Hold(gate.clone()));
+        tell(owner, FilesMessage::Hold(gate.clone(), photos.clone()));
         add_watched(owner, client, &photos, "add");
         // A last change, so every earlier one the watcher delivers late has been applied first.
         arrive(&staging, &photos.join("sentinel.jpg"), &camera_jpeg());
@@ -443,7 +445,9 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
         );
         ok(owner, client, "job.cancel", json!({"job_id": job_id}));
         let job = finished(owner, client, &job_id);
-        gate.open();
+        // The gate stays shut while the folder is looked at: FSEvents may still deliver a change
+        // of the setup's, again or late, and a change to a stale folder lists it, which would make
+        // it current under the test. Held at the gate, that listing completes only once it opens.
         assert_eq!(job["status"], "cancelled", "{job}");
         assert_eq!(folder(owner, client, &photos)["stale"], true);
         let connection = database::connect_at(&fixture.index_dir()).unwrap();
@@ -451,7 +455,11 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
             database::root_stale(&connection, &photos).unwrap(),
             "on its row"
         );
-        let events = events_after(owner, client, start);
+        // The job's own events: a card the host mounts meanwhile is listed by a job of its own.
+        let events: Vec<Value> = events_after(owner, client, start)
+            .into_iter()
+            .filter(|event| event["job_id"] == job_id)
+            .collect();
         let last = events.last().expect("the job's end");
         assert_eq!(
             (&last["method"], &last["request_id"], &last["job_id"]),
@@ -462,6 +470,7 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
 
         // Its next change is applied after a listing of the whole folder, which makes it current.
         let before = listed_ms(&fixture, &photos);
+        gate.open();
         arrive(&staging, &photos.join("new.jpg"), &camera_jpeg());
         wait_for("the stale folder to be listed on its next change", || {
             let current = folder(owner, client, &photos).get("stale").is_none();
@@ -483,11 +492,13 @@ fn a_rescan_is_a_job_and_a_cancelled_one_leaves_its_folder_stale_until_it_is_lis
             finished(owner, client, &entry["job_id"])["status"],
             "cancelled"
         );
-        gate.open();
+        // Shut until the catalog has closed: a listing a late change starts is held, and the
+        // close cancels it, so the folder is still stale.
         assert_eq!(folder(owner, client, &photos)["stale"], true);
     }
     let before = listed_ms(&fixture, &photos);
     fixture.stop();
+    gate.open();
     fixture.start();
     let owner = fixture.owner();
     let client = owner.register();
@@ -536,14 +547,13 @@ fn a_card_mounted_as_the_catalog_opens_is_listed() {
         listing(&fixture, files);
         let owner = fixture.owner();
         let client = owner.register();
-        let events = events_after(owner, client, 0);
-        let ended = events
-            .iter()
-            .rev()
-            .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
-            .unwrap_or_else(|| {
-                panic!("{request}: the listing is work no request made: {events:?}")
-            });
+        // The listing's rows commit before the owner records its end.
+        let ended = wait_for("the listing's end, as work no request made", || {
+            events_after(owner, client, 0)
+                .into_iter()
+                .rev()
+                .find(|event| event["method"] == "index-watch" && event["job_id"].is_string())
+        });
         assert_eq!(ended["request_id"], "", "{ended}");
         let job = finished(owner, client, &ended["job_id"]);
         assert_eq!(
@@ -650,7 +660,7 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
             .cloned()
             .collect::<Vec<_>>()
             == paths(&photos, &["a.jpg", "b.jpg", "new.jpg"])
-            && reads(owner) == 2;
+            && reads(owner, &photos) == 2;
         caught_up.then_some(())
     });
     assert_eq!(root(&fixture).0.listed_ms, listed, "replayed, not listed");
@@ -673,6 +683,94 @@ fn changes_made_while_luxforge_was_closed_are_caught_up_as_it_opens() {
             .then_some(())
     });
     assert!(root(&fixture).0.listed_ms > listed, "listed again");
+}
+
+/// A change whose header read the catalog's close interrupts records no cursor past it: the read is
+/// dropped unwritten, so the cursor the change came with is not kept, and the change is caught up
+/// from the cursor kept before it as the catalog next opens.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_change_the_close_interrupts_keeps_no_cursor_past_it_and_is_caught_up_as_it_opens() {
+    let mut fixture = Fixture::new("watch-stop-mid-unit");
+    let photos = fixture.dir.join("photos");
+    let staging = fixture.dir.join("staging");
+    let camera = camera_jpeg();
+    for name in ["a.jpg", "sub/b.jpg"] {
+        put(&photos.join(name), &camera);
+    }
+    let cursor = |fixture: &Fixture| {
+        database::root_cursor(
+            &database::connect_at(&fixture.index_dir()).unwrap(),
+            &photos,
+        )
+        .unwrap()
+    };
+    // Every listing waits at each folder while `listings` is shut, and every header read before
+    // it is read while `headers` is shut, until the close cancels it.
+    let (listings, headers) = (Arc::new(Gate::new()), Arc::new(Gate::new()));
+    let beyond = {
+        let owner = fixture.owner();
+        let client = owner.register();
+        tell(owner, FilesMessage::Hold(listings.clone(), photos.clone()));
+        tell(
+            owner,
+            FilesMessage::HoldReads(headers.clone(), photos.clone()),
+        );
+        add_watched(owner, client, &photos, "add");
+        let kept = wait_for("the root's cursor to be kept", || cursor(&fixture));
+        // A cursor past every event there is, so a cursor recorded from the unit is told apart.
+        let beyond = luxforge_watch::Resume {
+            event_id: u64::MAX / 2,
+            ..kept
+        };
+        // The unit begins with a listing of a subtree, held, so the change joins it.
+        listings.shut();
+        let reached = listings.reached();
+        tell(
+            owner,
+            FilesMessage::Inject(WatchEvent::Rescan {
+                root: 1,
+                subtree: photos.join("sub"),
+                reason: RescanReason::Dropped,
+            }),
+        );
+        listings.wait_reached(reached + 1, "the subtree's listing");
+        headers.shut();
+        let reached = headers.reached();
+        arrive(&staging, &photos.join("new.jpg"), &camera);
+        tell(
+            owner,
+            FilesMessage::Inject(WatchEvent::Changed {
+                root: 1,
+                paths: vec![photos.join("new.jpg")],
+                cursor: Some(beyond),
+            }),
+        );
+        // The owner hands the lane an injected event as it takes the message, so once it has
+        // answered a later one the change waits in the lane's channel behind the held listing.
+        reads(owner, &photos);
+        listings.open();
+        headers.wait_reached(reached + 1, "the new file's header read");
+        beyond
+    };
+    // The catalog closes with the read unwritten.
+    fixture.stop();
+    headers.open();
+    let kept = cursor(&fixture).expect("the cursor kept before the change");
+    assert_ne!(kept, beyond, "no cursor past the read the close dropped");
+    assert!(
+        !read_rows(&fixture, &photos).contains_key(&photos.join("new.jpg")),
+        "its header was never written"
+    );
+    fixture.start();
+    wait_for(
+        "the interrupted change to be caught up as the catalog opens",
+        || {
+            read_rows(&fixture, &photos)
+                .contains_key(&photos.join("new.jpg"))
+                .then_some(())
+        },
+    );
 }
 
 /// A volume the watcher reports mounted is surveyed, and listed when it is a card; one taken out
@@ -750,6 +848,12 @@ fn every_listing_records_one_event_as_it_ends() {
     let fixture = Fixture::new("watch-ended");
     let owner = fixture.owner();
     let client = owner.register();
+    // A mount table of nothing, so a card the host mounts meanwhile (another process's disk image)
+    // is not listed among the events counted here.
+    tell(
+        owner,
+        FilesMessage::Mounts(MountSource::Fixed(Arc::default())),
+    );
     tell(
         owner,
         FilesMessage::Limits(WalkLimits {
