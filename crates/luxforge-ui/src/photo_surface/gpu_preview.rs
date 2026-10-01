@@ -109,6 +109,9 @@ const MIN_BUFFER: u64 = 1024;
 /// The upload chunk, as the photograph's: the surface stages no copy of its own.
 const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
 
+/// The words the blocks are compared and written in, 1 KiB: a tick writes the chunks that changed.
+const BLOCK_CHUNK: usize = 256;
+
 /// The format the programs' output is written in and sampled from: the sRGB-typed format the
 /// surface's photograph textures have when the renderer gamma corrects.
 const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -189,6 +192,10 @@ pub enum GpuStep {
         program: GpuProgram,
         position: PositionMap,
     },
+    /// A pointwise colour operation blended by its mask's coverage against its own input
+    /// ([`MaskedColour`]): its units are colour programs, its components coverage programs,
+    /// `fn <entry>(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
+    Masked(MaskedColour),
 }
 
 impl GpuStep {
@@ -200,28 +207,69 @@ impl GpuStep {
         }
     }
 
-    fn kind(&self) -> StepKind {
+    /// Every program the step runs, with the signature its role gives it.
+    fn programs(&self) -> Box<dyn Iterator<Item = (mask::Role, &GpuProgram)> + '_> {
         match self {
-            Self::Colour { .. } => StepKind::Colour,
+            Self::Colour { program, .. } => {
+                Box::new(std::iter::once((mask::Role::Colour, program)))
+            }
+            Self::Masked(masked) => Box::new(masked.programs()),
         }
     }
 
-    pub(super) fn program(&self) -> &GpuProgram {
-        match self {
-            Self::Colour { program, .. } => program,
-        }
+    /// What decides the step's pipeline: the shape of a masked step, then each program's role,
+    /// entry and source in order. Its words are data and are not part of it.
+    fn signature(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
+        let shape = match self {
+            Self::Colour { .. } => None,
+            Self::Masked(masked) => Some((
+                StepKind::Masked {
+                    units: masked.units.len(),
+                    components: masked.mask.components.len(),
+                },
+                "",
+                "",
+            )),
+        };
+        shape
+            .into_iter()
+            .chain(self.programs().map(|(role, program)| {
+                (
+                    StepKind::Program(role),
+                    program.entry.as_ref(),
+                    program.source.as_ref(),
+                )
+            }))
     }
 
     fn position(&self) -> PositionMap {
         match self {
             Self::Colour { position, .. } => *position,
+            Self::Masked(masked) => masked.position,
+        }
+    }
+
+    /// The words the step packs after the header.
+    fn word_count(&self) -> usize {
+        match self {
+            Self::Colour { program, .. } => program.words.len(),
+            Self::Masked(masked) => masked.word_count(),
+        }
+    }
+
+    /// The block words the step packs.
+    fn block_count(&self) -> usize {
+        match self {
+            Self::Colour { program, .. } => program.block.len(),
+            Self::Masked(masked) => masked.block_count(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StepKind {
-    Colour,
+    Program(mask::Role),
+    Masked { units: usize, components: usize },
 }
 
 /// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
@@ -392,6 +440,8 @@ pub(super) struct Figures {
     peak: AtomicU64,
     passes: AtomicU64,
     compiles: AtomicU64,
+    /// Words written to the blocks buffers, for the tests of what a tick writes.
+    block_words: AtomicU64,
 }
 
 impl Figures {
@@ -508,7 +558,7 @@ impl GpuSlot {
 
 /// One compiled — or failed — program sequence.
 struct Cached {
-    signature: Vec<(StepKind, Cow<'static, str>, Cow<'static, str>)>,
+    signature: Vec<(StepKind, String, String)>,
     pipeline: Result<wgpu::RenderPipeline, Arc<str>>,
     id: u64,
     used: u64,
@@ -516,16 +566,10 @@ struct Cached {
 
 impl Cached {
     fn matches(&self, steps: &[GpuStep]) -> bool {
-        self.signature.len() == steps.len()
-            && self
-                .signature
-                .iter()
-                .zip(steps)
-                .all(|((kind, entry, source), step)| {
-                    *kind == step.kind()
-                        && *entry == step.program().entry
-                        && *source == step.program().source
-                })
+        self.signature
+            .iter()
+            .map(|(kind, entry, source)| (*kind, entry.as_str(), source.as_str()))
+            .eq(steps.iter().flat_map(GpuStep::signature))
     }
 }
 
@@ -663,10 +707,8 @@ impl GpuStage {
         self.cache.push(Cached {
             signature: steps
                 .iter()
-                .map(|step| {
-                    let program = step.program();
-                    (step.kind(), program.entry.clone(), program.source.clone())
-                })
+                .flat_map(GpuStep::signature)
+                .map(|(kind, entry, source)| (kind, entry.to_owned(), source.to_owned()))
                 .collect(),
             pipeline,
             id: clock,
@@ -713,7 +755,7 @@ fn entry_name(name: &str) -> Result<(), String> {
     {
         return Err(format!("{name:?} is not a WGSL identifier"));
     }
-    if SURFACE_NAMES.contains(&name) {
+    if SURFACE_NAMES.contains(&name) || name.starts_with(mask::GENERATED) {
         return Err(format!("{name:?} is one of the surface's own names"));
     }
     Ok(())
@@ -723,8 +765,7 @@ fn entry_name(name: &str) -> Result<(), String> {
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
     let mut source = String::from(PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for step in steps {
-        let program = step.program();
+    for (_, program) in steps.iter().flat_map(GpuStep::programs) {
         entry_name(&program.entry)?;
         match included.iter().find(|seen| seen.entry == program.entry) {
             Some(seen) if seen.source != program.source => {
@@ -744,6 +785,19 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
             }
         }
     }
+    // Each masked step's coverage, composed by a function of its own.
+    let mut masked = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        if let GpuStep::Masked(step) = step {
+            if masked.is_empty() {
+                source.push_str(mask::COMPOSE);
+            }
+            let (function, fragment) = step.assemble(index, MAP_WORDS + STEP_WORDS * index);
+            source.push_str(&function);
+            masked.push(fragment);
+        }
+    }
+    let mut masked = masked.into_iter();
     source.push_str(BOUNDARY_BINDING);
     source.push_str(
         "
@@ -764,6 +818,7 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
                 PositionMap::wgsl(base + 2, "stage"),
                 base + 1
             )),
+            GpuStep::Masked(_) => source.push_str(&masked.next().expect("its statements")),
         }
     }
     source.push_str("    return vec4<f32>(rgb, 1.0);\n}\n");
@@ -791,7 +846,14 @@ fn validate(source: &str) -> Result<naga::Module, String> {
 /// point — each named starting with its entry's name, and its entry function has the signature
 /// its step needs. A caller's tests can check every program it hands the surface with this.
 pub fn validate_step(step: &GpuStep) -> Result<(), String> {
-    let program = step.program();
+    for (role, program) in step.programs() {
+        validate_program(role, program)?;
+    }
+    Ok(())
+}
+
+/// One program of a step against the convention, with its role's signature.
+fn validate_program(role: mask::Role, program: &GpuProgram) -> Result<(), String> {
     let entry = &program.entry;
     entry_name(entry)?;
     let module = validate(&format!("{PRELUDE}\n{}", program.source))?;
@@ -844,8 +906,8 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
         scalar: naga::Scalar::F32,
     };
     let unsigned = naga::TypeInner::Scalar(naga::Scalar::U32);
-    let (arguments, result, signature) = match step {
-        GpuStep::Colour { .. } => (
+    let (arguments, result, signature) = match role {
+        mask::Role::Colour => (
             [
                 vector(naga::VectorSize::Tri),
                 vector(naga::VectorSize::Bi),
@@ -854,6 +916,16 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
             ],
             vector(naga::VectorSize::Tri),
             "(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>",
+        ),
+        mask::Role::Coverage => (
+            [
+                vector(naga::VectorSize::Bi),
+                vector(naga::VectorSize::Tri),
+                unsigned.clone(),
+                unsigned,
+            ],
+            naga::TypeInner::Scalar(naga::Scalar::F32),
+            "(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32",
         ),
     };
     let declared: Vec<&naga::TypeInner> = function
@@ -952,16 +1024,19 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
     let header = MAP_WORDS + STEP_WORDS * plan.steps.len();
     let (mut word, mut block) = (header, 0);
     for step in &plan.steps {
-        let program = step.program();
         words.extend([word as u32, block as u32]);
         words.extend(step.position().words());
-        word += program.words.len();
-        block += program.block.len();
+        word += step.word_count();
+        block += step.block_count();
     }
     for step in &plan.steps {
-        let program = step.program();
-        words.extend_from_slice(&program.words);
-        blocks.extend_from_slice(&program.block);
+        match step {
+            GpuStep::Colour { program, .. } => {
+                words.extend_from_slice(&program.words);
+                blocks.extend_from_slice(&program.block);
+            }
+            GpuStep::Masked(masked) => masked.pack(words, blocks),
+        }
     }
     if blocks.is_empty() {
         blocks.push(0);
@@ -1127,8 +1202,21 @@ impl PhotoPipeline {
             slot.written_words.extend_from_slice(words);
             changed = true;
         }
-        if slot.written_blocks != blocks {
-            queue.write_buffer(&slot.blocks.buffer, 0, &le_bytes(blocks));
+        // Only the chunks of the blocks that changed: a painted stroke's tick writes its new
+        // segments and the index after them, not the segments its block already holds.
+        let ranges = mask::changed_ranges(&slot.written_blocks, blocks, BLOCK_CHUNK);
+        for range in &ranges {
+            self.figures
+                .preview
+                .block_words
+                .fetch_add(range.len() as u64, Ordering::Relaxed);
+            queue.write_buffer(
+                &slot.blocks.buffer,
+                (range.start * 4) as u64,
+                &le_bytes(&blocks[range.clone()]),
+            );
+        }
+        if !ranges.is_empty() || slot.written_blocks.len() != blocks.len() {
             slot.written_blocks.clear();
             slot.written_blocks.extend_from_slice(blocks);
             changed = true;
@@ -1412,10 +1500,12 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
     }
 }
 
+mod mask;
 mod position;
+pub use mask::{Coverage, CoverageComponent, CoverageMode, MaskedColour};
 pub use position::PositionMap;
 
-#[cfg(feature = "qualification")]
+#[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
 
 #[cfg(test)]

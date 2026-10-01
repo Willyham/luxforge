@@ -109,8 +109,9 @@ use std::sync::{
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    DrawingPath, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram, GpuStep,
-    PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, validate_step,
+    Coverage, CoverageComponent, CoverageMode, DrawingPath, GPU_PREVIEW_BUDGET, GpuBoundary,
+    GpuFallback, GpuPlan, GpuProgram, GpuStep, MaskedColour, PIPELINE_CACHE, PRELUDE, PositionMap,
+    TexelMap, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
