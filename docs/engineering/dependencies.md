@@ -29,6 +29,10 @@ The ttf-parser exception was re-reviewed on 2026-09-29:
 
 License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is GPL-compatible). `cargo xtask inventory` records resolved packages and copies top-level license files; it is not a notice audit. Before any distribution: inspect embedded fonts and assets, native linking and license-file declarations, assemble corresponding source and sanitize local manifest paths from dependency metadata. The manual license, native and asset review is deferred by the owner and remains incomplete.
 
+## Native trackpad input
+
+Trackpad input uses the existing `objc2` 0.6.4, `objc2-app-kit` 0.3.2, `block2` 0.6.2 and `raw-window-handle` 0.6.2 packages through `luxforge-input` on macOS, with event, window, view and callback bindings only. Their versions remain pinned. The borrowed window handle binds the monitor to the editor's own window, excluding native dialogs. This introduces no new external package or separate GUI stack; the manual native and notice review remains deferred.
+
 ## Bundled UI font
 
 The workspace's text is set in Inter 4.1 (SIL Open Font License 1.1), vendored as two unmodified static TTF instances in `crates/luxforge-ui/assets/fonts/inter-4.1/` with the upstream licence beside them and compiled in with `include_bytes!`. `crates/luxforge-ui/THIRD_PARTY.md` records the release, archive and file hashes; `cargo xtask inventory` copies it and the licence into the notices under `fonts/` and lists the font in `dependencies.json`. Changing a font file is a dependency update. The embedded-font review above still applies and is not complete.

@@ -93,6 +93,7 @@ pub(crate) mod thumbnails;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
+mod view_zoom;
 pub(crate) mod waker;
 
 pub(crate) use lifecycle::{Boot, run};
@@ -379,8 +380,9 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 2] =
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 8] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 9] = [
     keymap::subscription,
+    view_state::subscription,
     mask_panel::subscription,
     preview::subscription,
     sync::subscription,
@@ -481,6 +483,7 @@ impl Editor {
         let scale = iced::window::oldest()
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
+        let trackpad = view_state::install_trackpad();
         let backend = iced::system::information()
             .map(|value| Message::Evidence(EvidenceMessage::Info(value)));
         // Tool controls are discovered once, through the same API every other client uses, and the
@@ -502,7 +505,7 @@ impl Editor {
         editor.rederive();
         (
             editor,
-            Task::batch([scale, backend, modules, presets, first]),
+            Task::batch([scale, trackpad, backend, modules, presets, first]),
         )
     }
 

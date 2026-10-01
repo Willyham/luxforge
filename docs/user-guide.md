@@ -34,6 +34,8 @@ The window has five regions: a title bar with the file name, its size and format
 
 Cmd+K opens the command palette: type to filter every module action, reset and canvas mode plus Fit, 100%, Undo, Redo, Return to current, Restore, Pointer, Thirds, the panel toggles and Show or Hide performance, then Enter or click runs the entry through the same path the control uses. Right-click any generated control and choose Copy as JSON request to put the exact `edit.<action>` request for its current values, with the current expected revision, on the clipboard; the crop draft's Apply offers its `edit.crop` request the same way.
 
+On macOS, pinch with two fingers on the trackpad while the pointer is over the canvas to zoom in or out. Zoom follows the point under the pointer, starting from the displayed size at Fit and staying between 10% and 1600%; the image stays centred on an axis where it fits, and pan stops at its edges. Two-finger scrolling pans at a percentage zoom. Press F for Fit or 1 for 100%. Pinch changes only your view and creates no history entry. Native trackpad pinch on Windows and Linux remains outstanding.
+
 ### Performance
 
 The last block of the state panel, pinned under History, is **Performance**, open when the editor starts; click its heading to close or open it. It shows the editor's own memory, CPU and GPU use, each with its value and a sparkline of the last minute, and the long-running work in progress: preparing an original, developing a RAW, rendering a preview or measuring a histogram, once it has run for half a second, with how long it has been running. When nothing long is running it shows the last long piece of work for ten seconds after it finished, then No background work.

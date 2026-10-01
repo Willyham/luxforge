@@ -28,6 +28,7 @@ step_from! {
     PickStep => Pick,
     SliderDraftStep => SliderDraft,
     ViewStep => View,
+    PinchStep => Pinch,
     ViewIdleStep => ViewIdle,
     WorkspaceStep => Workspace,
     PreviewStep => Preview,

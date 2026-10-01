@@ -23,6 +23,8 @@
 //! worker still holds a finished result, and one `events.since` reads every event since the last,
 //! so coalescing loses nothing. A waker only posts the signal: the preview one runs on a worker
 //! thread, and the events one on the catalog owner thread, which waits for it.
+#[cfg(target_os = "macos")]
+use crate::app::message::view::ViewMessage;
 use crate::app::message::{Message, preview::PreviewMessage, sync::SyncMessage};
 use iced::futures::{
     Stream,
@@ -72,6 +74,45 @@ impl Signal {
 
 static PREVIEW: OnceLock<Signal> = OnceLock::new();
 static EVENTS: OnceLock<Signal> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static PINCH: OnceLock<Signal> = OnceLock::new();
+#[cfg(target_os = "macos")]
+static PENDING_PINCH: Mutex<Option<luxforge_input::Pinch>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn pinch() -> &'static Signal {
+    PINCH.get_or_init(|| Signal::new(|| Message::View(ViewMessage::PinchPending)))
+}
+
+/// Sum magnification increments and retain the newest pointer in one slot. No native event queue
+/// grows during a slow draw, and dropping a redundant wake never drops magnification.
+#[cfg(target_os = "macos")]
+pub(crate) fn post_pinch(input: luxforge_input::Pinch) {
+    if !input.delta.is_finite()
+        || !input.x.is_finite()
+        || !input.y.is_finite()
+        || input.delta == 0.0
+    {
+        return;
+    }
+    if let Ok(mut pending) = PENDING_PINCH.lock() {
+        let delta =
+            (pending.as_ref().map_or(0.0, |old| old.delta) + input.delta).clamp(-32.0, 32.0);
+        *pending = Some(luxforge_input::Pinch { delta, ..input });
+    }
+    pinch().post();
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn take_pinch() -> Option<luxforge_input::Pinch> {
+    PENDING_PINCH.lock().ok()?.take()
+}
+
+/// Event-driven native input; this blocked stream has no timer and remains installed on macOS.
+#[cfg(target_os = "macos")]
+pub(crate) fn pinch_subscription() -> iced::Subscription<Message> {
+    iced::Subscription::run(|| pinch().stream())
+}
 
 fn preview() -> &'static Signal {
     PREVIEW.get_or_init(|| Signal::new(|| Message::Preview(PreviewMessage::Poll)))
@@ -141,6 +182,34 @@ pub(crate) fn events_subscription() -> iced::Subscription<Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn pinch_input_is_bounded_without_dropping_magnification() {
+        take_pinch();
+        for _ in 0..100 {
+            post_pinch(luxforge_input::Pinch {
+                delta: 0.001,
+                x: 100.0,
+                y: 200.0,
+            });
+        }
+        post_pinch(luxforge_input::Pinch {
+            delta: 0.05,
+            x: 300.0,
+            y: 400.0,
+        });
+        let input = take_pinch().unwrap();
+        assert!((input.delta - 0.15).abs() < 1e-10);
+        assert_eq!((input.x, input.y), (300.0, 400.0));
+        assert!(take_pinch().is_none());
+        post_pinch(luxforge_input::Pinch {
+            delta: f64::NAN,
+            x: 1.0,
+            y: 2.0,
+        });
+        assert!(take_pinch().is_none());
+    }
 
     /// The whole point of the persistent channel: a signal posted while no subscription exists is
     /// buffered and delivered to the next stream, so a worker that finishes between a request and

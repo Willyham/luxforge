@@ -940,6 +940,24 @@ impl Editor {
             Step::Pick(pick) => self.pick_step(pick),
             Step::SliderDraft(decision) => self.slider_draft_step(decision),
             Step::View(view) => self.view_step(view),
+            Step::Pinch(step) => {
+                let [left, top, right, bottom] = crate::layout::canvas_logical(
+                    self.view_state.window,
+                    self.session.workspace.state_panel,
+                    self.session.workspace.tools_panel,
+                );
+                let revision = self.session.revision;
+                self.await_step(Settle::Session);
+                let task = self.update(Message::View(ViewMessage::Pinch(luxforge_input::Pinch {
+                    delta: step.delta,
+                    x: f64::from(left) + f64::from(right - left) * step.x,
+                    y: f64::from(top) + f64::from(bottom - top) * step.y,
+                })));
+                if self.session.revision == revision {
+                    return self.fail_step("pinch changed no view");
+                }
+                task
+            }
             Step::ViewIdle(step) => self.view_idle_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
