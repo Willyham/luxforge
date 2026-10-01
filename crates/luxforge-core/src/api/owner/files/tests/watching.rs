@@ -162,6 +162,78 @@ fn an_indexed_folder_keeps_up_with_its_files_without_a_refresh() {
     }
 }
 
+/// Hard links added to an indexed folder of links to a few files, reported in one change, are each
+/// their own row, read once, and a link renamed keeps its row unread: nothing else moves. (The new
+/// links are of other files than the renamed one: a new link of a file one of whose links is gone
+/// is that link moved, as a rename is.)
+#[cfg(unix)]
+#[test]
+fn an_indexed_folder_of_hard_links_keeps_up_with_links_added_and_renamed() {
+    const LINKS: usize = 300;
+    let fixture = Fixture::new("watch-links");
+    let owner = fixture.owner();
+    let client = owner.register();
+    let photos = fixture.dir.join("photos");
+    let sources: Vec<PathBuf> = (0..3)
+        .map(|index| fixture.dir.join(format!("sources/source-{index}.jpg")))
+        .collect();
+    for source in &sources {
+        put(source, &camera_jpeg());
+    }
+    std::fs::create_dir_all(&photos).unwrap();
+    let link = |number: usize| photos.join(format!("IMG_{number:04}.jpg"));
+    for number in 0..LINKS {
+        std::fs::hard_link(&sources[number % 3], link(number)).unwrap();
+    }
+    add_watched(owner, client, &photos, "add");
+    let ids = read_rows(&fixture, &photos);
+    assert_eq!(ids.len(), LINKS);
+    let before = reads(owner);
+
+    let renamed = photos.join("renamed.jpg");
+    std::fs::rename(link(5), &renamed).unwrap();
+    // The renamed link is of the third file; the new links are of the other two.
+    for number in LINKS..2 * LINKS {
+        std::fs::hard_link(&sources[number % 2], link(number)).unwrap();
+    }
+    // Every path in one change, as the watcher may report them, whatever it reports itself.
+    let mut changed: Vec<PathBuf> = (LINKS..2 * LINKS).map(link).collect();
+    changed.extend([link(5), renamed.clone()]);
+    tell(
+        owner,
+        FilesMessage::Inject(WatchEvent::Changed {
+            root: 1,
+            paths: changed,
+            cursor: None,
+        }),
+    );
+    let rows = wait_for("the index to follow the links", || {
+        let rows = read_rows(&fixture, &photos);
+        (rows.len() == 2 * LINKS && rows.contains_key(&renamed)).then_some(rows)
+    });
+    assert_eq!(
+        rows[&renamed],
+        ids[&link(5)],
+        "the renamed link keeps its row"
+    );
+    assert!(
+        ids.iter()
+            .filter(|(path, _)| **path != link(5))
+            .all(|(path, id)| rows.get(path) == Some(id)),
+        "every other link keeps its row"
+    );
+    let added: std::collections::HashSet<i64> = (LINKS..2 * LINKS)
+        .map(|number| rows[&link(number)])
+        .collect();
+    assert_eq!(added.len(), LINKS, "each new link its own row");
+    assert!(ids.values().all(|id| !added.contains(id)), "none moved");
+    assert_eq!(
+        reads(owner) - before,
+        LINKS,
+        "each new link is read; the renamed one is carried unread"
+    );
+}
+
 /// What indexing skips stays out as it changes: hidden files and folders, packages, other
 /// applications' caches, links and unsupported files; a skipped folder renamed to one that is
 /// listed is listed, and one renamed to a package is dropped.

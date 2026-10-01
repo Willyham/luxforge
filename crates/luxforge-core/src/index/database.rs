@@ -689,17 +689,34 @@ pub(crate) fn files_in_folder(
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// The rows of the files with this file identity, wherever the index last saw them.
+/// At most `limit` rows of the files with this file identity, wherever the index last saw them,
+/// after the row `after` and up to the row `through`, in row order: one page of what may be many
+/// rows, since every hard link of a file shares its identity. One search of the identity index.
 pub(crate) fn files_with_identity(
     connection: &Connection,
     identity: FileIdentity,
+    after: FileId,
+    through: FileId,
+    limit: usize,
 ) -> Result<Vec<KnownFile>, Error> {
     let (device, inode) = identity.to_columns();
     let mut statement = connection.prepare_cached(&format!(
-        "SELECT {KNOWN_COLUMNS} FROM files WHERE device = ?1 AND inode = ?2"
+        "SELECT {KNOWN_COLUMNS} FROM files
+         WHERE device = ?1 AND inode = ?2 AND id > ?3 AND id <= ?4 ORDER BY id LIMIT ?5"
     ))?;
-    let rows = statement.query_map(params![device, inode], known)?;
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let rows = statement.query_map(params![device, inode, after.0, through.0, limit], known)?;
     Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The highest row id of a file the index holds, `FileId(0)` when it holds none: every row it
+/// holds now is at or below it.
+pub(crate) fn last_file_id(connection: &Connection) -> Result<FileId, Error> {
+    Ok(FileId(
+        connection
+            .prepare_cached("SELECT coalesce(max(id), 0) FROM files")?
+            .query_row([], |row| row.get(0))?,
+    ))
 }
 
 /// The text bounds of the paths strictly under `root`: every path that starts with the root and a

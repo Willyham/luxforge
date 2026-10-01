@@ -3,7 +3,7 @@
 //! release binary, through the scenario library and `editor-latency`.
 use super::{
     client::{Core, job_id, ms, timed},
-    data::{DataSet, Trip},
+    data::{DataSet, Tree, Trip},
     report::Row,
 };
 use crate::{
@@ -433,9 +433,77 @@ pub fn develop(core: &Core, trip: &Trip, picks: usize) -> Result<Vec<Row>> {
 
 // ── The first index of a large tree ────────────────────────────────────────────────────────────
 
+/// A first index's target, of the tree of copies and of the tree of hard links alike.
+const FIRST_INDEX_TARGET: &str = "First index of a 200,000-file folder: reported, in the background, with the editor responsive throughout";
+
+/// A first index's two rows, its duration and the owner round trips sampled while it ran, with
+/// their target and their scope over the tree `what` names.
+fn first_index_rows(what: &str, duration: Row, round_trips: Row) -> [Row; 2] {
+    [
+        duration.target(FIRST_INDEX_TARGET).scope(format!(
+            "index.add-folder of {what}, from the request to its listing job's end on the activity board, into a new catalog"
+        )),
+        round_trips.target(FIRST_INDEX_TARGET).scope(format!(
+            "a session.state round trip of a second client through the owner every {} ms while the first index of {what} ran: how long any client, the desktop included, waited on the owner",
+            ROUND_TRIP_EVERY.as_millis()
+        )),
+    ]
+}
+
+/// The first index of the tree of copies, each file its own file identity.
 pub fn first_index(cx: &Context) -> Result<Vec<Row>> {
     let tree = &cx.data.tree;
-    let core = Core::open(&cx.catalog("first-index")?)?;
+    index_tree(
+        cx,
+        "first_index",
+        tree,
+        &format!(
+            "a tree of {} copies of the generated JPEGs in {} folders, each file its own file identity",
+            tree.files, tree.folders
+        ),
+    )
+}
+
+/// The metric prefix of the first index of the tree of hard links.
+const HARD_LINKS: &str = "first_index_hard_links";
+
+/// The first index of the tree of hard links' rows, skipped for `reason`.
+pub fn first_index_hard_links_skipped(reason: &str) -> Vec<Row> {
+    first_index_rows(
+        "a tree of hard links to the generated JPEGs, each JPEG's links sharing its file identity",
+        Row::skipped(&format!("{HARD_LINKS}.duration"), "s", reason),
+        Row::skipped(&format!("{HARD_LINKS}.owner_round_trip"), "ms", reason),
+    )
+    .into()
+}
+
+/// The first index of the tree of hard links: every generated JPEG's links share its file
+/// identity, which the index looks up for every new file to tell a moved file from a new one.
+/// Skipped, with the reason, when the file system refused the links.
+pub fn first_index_hard_links(cx: &Context) -> Result<Vec<Row>> {
+    let tree = match &cx.data.links {
+        Ok(tree) => tree,
+        Err(reason) => return Ok(first_index_hard_links_skipped(reason)),
+    };
+    index_tree(
+        cx,
+        HARD_LINKS,
+        tree,
+        &format!(
+            "a tree of {} hard links to the {} generated JPEGs in turn in {} folders, the {} links of each JPEG sharing its file identity",
+            tree.files,
+            tree.sources,
+            tree.folders,
+            tree.files.div_ceil(tree.sources)
+        ),
+    )
+}
+
+/// Index `tree`, described by `what`, for the first time into a new catalog, sampling an owner
+/// round trip every [`ROUND_TRIP_EVERY`] until its listing job ends: its two rows as
+/// `<prefix>.duration` and `<prefix>.owner_round_trip`.
+fn index_tree(cx: &Context, prefix: &str, tree: &Tree, what: &str) -> Result<Vec<Row>> {
+    let core = Core::open(&cx.catalog(&prefix.replace('_', "-"))?)?;
     let other = core.register();
     let started = Instant::now();
     let job = job_id(&core.ask(
@@ -470,24 +538,14 @@ pub fn first_index(cx: &Context) -> Result<Vec<Row>> {
         "folders": tree.folders,
         "listing": ended.record["result"],
     });
-    let target = "First index of a 200,000-file folder: reported, in the background, with the editor responsive throughout";
-    Ok(vec![
-        Row::measured("first_index.duration", "s", [seconds])
-            .target(target)
-            .scope(format!(
-                "index.add-folder of a tree of {} copies of the generated JPEGs in {} folders, from the request to its listing job's end on the activity board, into a new catalog",
-                tree.files, tree.folders
-            ))
+    Ok(first_index_rows(
+        what,
+        Row::measured(&format!("{prefix}.duration"), "s", [seconds])
             .cache("the tree was written by the set-up (the OS file cache is never purged)")
             .detail(detail.clone()),
-        Row::measured("first_index.owner_round_trip", "ms", trips)
-            .target(target)
-            .scope(format!(
-                "a session.state round trip of a second client through the owner every {} ms while the first index ran: how long any client, the desktop included, waited on the owner",
-                ROUND_TRIP_EVERY.as_millis()
-            ))
-            .detail(detail),
-    ])
+        Row::measured(&format!("{prefix}.owner_round_trip"), "ms", trips).detail(detail),
+    )
+    .into())
 }
 
 // ── Browse views at the design's scale ─────────────────────────────────────────────────────────

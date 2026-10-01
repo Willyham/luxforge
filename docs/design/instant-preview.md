@@ -67,7 +67,7 @@ A crop draft shows the crop layer's input stage under its frame: the layers befo
 - The preview and overlay workers wake the desktop when a result is ready, through one channel subscription that yields the same `Poll` message the timer used to. The 16 ms preview poll is removed; nothing wakes when nothing has finished, which is also the idle rule.
 - Each worker is one persistent thread, the latest-job primitive in `luxforge_core::latest` that the histogram analysis also runs on. It sleeps until a job is requested and takes the pending job itself the moment the active one has handed over its last result, so the next proxy render never waits for the desktop to poll, nor behind the crop draft's input stage while the toolkit uploads it. At most two finished results wait for the desktop; a worker with a third to hand over waits for the desktop to take one.
 - The `draft.set` round trip is not changed. Its measured cost is CPU contention with the full-resolution render, which deferring exact Fit work during motion removes.
-- The shared quiet policy uses one 25 ms timer while a draft/view is unsettled and starts exact settlement after 120 ms without newer accepted input; no viewport-specific timer is added. The timer is disarmed once settlement finishes.
+- The shared quiet policy uses one 25 ms timer while a draft/view is unsettled and starts exact settlement after 120 ms without newer accepted input; no viewport-specific timer is added. The timer is disarmed once settlement finishes, and a view change before any photograph has been presented (a launch's first window size and display scale) arms none, because there is no view to settle.
 
 ### One frame per hop
 
