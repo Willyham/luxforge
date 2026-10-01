@@ -397,6 +397,41 @@ fn encode_tone_ramp(path: &Path) -> Result {
     Ok(())
 }
 
+/// The `compare-zone-plate` smoke scenario's own fixture: a 24 MP zone plate, a radial chirp whose
+/// spatial frequency grows linearly with the distance from the centre and reaches 0.5 cycles per
+/// pixel (the Nyquist limit) in the corners. Every code is a full-contrast sinusoid of the encoded
+/// value, `127.5 + 127.5 cos(pi k r^2)` with `k` = [`zone_plate_rate`] and `r` the pixel centre's
+/// distance from the image centre, so any reduction of it shows what it does to detail above its
+/// own Nyquist limit: a box filter averages it away, and a sampler that skips texels replicates
+/// the centre's rings across the frame. Grey, and encoded at quality 95 without chroma
+/// subsampling like every fixture here.
+pub const ZONE_PLATE: (u32, u32) = (6000, 4000);
+
+/// The chirp's rate in cycles per pixel per pixel: the frequency at distance `r` pixels from the
+/// centre is `rate * r`, and the corners, at the image's half-diagonal, reach 0.5.
+pub fn zone_plate_rate((width, height): (u32, u32)) -> f64 {
+    0.5 / (f64::from(width) / 2.0).hypot(f64::from(height) / 2.0)
+}
+
+fn zone_plate(w: u32, h: u32) -> RgbImage {
+    let rate = zone_plate_rate((w, h));
+    let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+    RgbImage::from_fn(w, h, |x, y| {
+        let (dx, dy) = (f64::from(x) + 0.5 - cx, f64::from(y) + 0.5 - cy);
+        let phase = std::f64::consts::PI * rate * (dx * dx + dy * dy);
+        let code = (127.5 + 127.5 * phase.cos()).round() as u8;
+        Rgb([code; 3])
+    })
+}
+
+fn encode_zone_plate(path: &Path) -> Result {
+    let (w, h) = ZONE_PLATE;
+    let img = zone_plate(w, h);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(path)?, 95)
+        .encode_image(&img)?;
+    Ok(())
+}
+
 /// One JPEG the rendered and timing tiers need before they can run: its file name inside a
 /// fixtures directory, the function that writes it, and the manifest fields it needs beyond `file`
 /// and `sha256` (both of which `generate` fills in from what it actually wrote, once it has hashed
@@ -408,7 +443,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 9] = [
+pub const TABLE: [Fixture; 10] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -466,6 +501,17 @@ pub const TABLE: [Fixture; 9] = [
         file: "detail.jpg",
         write: encode_detail,
         manifest: || json!({"width":2400,"height":1600,"scope":"Detail functional synthetic probe; timing uses separate 24/60 MP fixtures"}),
+    },
+    Fixture {
+        file: "zone-plate.jpg",
+        write: encode_zone_plate,
+        manifest: || {
+            let (w, h) = ZONE_PLATE;
+            json!({
+                "width":w,"height":h,
+                "chirp":{"code":"round(127.5 + 127.5 * cos(pi * rate * r^2))","rate":zone_plate_rate(ZONE_PLATE),"corner_frequency":0.5},
+            })
+        },
     },
     Fixture {
         file: "tone-ramp.jpg",
