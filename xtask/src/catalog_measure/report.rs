@@ -107,6 +107,8 @@ impl Row {
 pub struct Report {
     out: PathBuf,
     value: Value,
+    /// The one step `--only` names: every other is left out of the report.
+    pub only: Option<String>,
 }
 
 impl Report {
@@ -118,6 +120,7 @@ impl Report {
         Self {
             out: out.into(),
             value,
+            only: None,
         }
     }
 
@@ -132,6 +135,9 @@ impl Report {
     /// Run one step and add its rows, each with the load at the step's start and end; a step that
     /// fails adds one `failed` row naming it and why, and the run goes on to the next step.
     pub fn step(&mut self, root: &Path, name: &str, body: impl FnOnce() -> Result<Vec<Row>>) {
+        if self.only.as_deref().is_some_and(|only| only != name) {
+            return;
+        }
         println!("catalog-measure: {name}");
         let start = launch::load_average(root);
         let rows = body().unwrap_or_else(|error| {

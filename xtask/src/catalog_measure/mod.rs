@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! cargo run --release --locked --package xtask -- catalog-measure --output NEW_DIR \
-//!     [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]
+//!     [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR] [--only STEP]
 //! ```
 //!
 //! The run makes its data under `<output>/scratch` ([`data`]), then takes each step's figures in
@@ -99,6 +99,9 @@ pub struct Options {
     pub corpus: Option<PathBuf>,
     /// A folder on a mounted card to browse for the first time, if any. Only read.
     pub card: Option<PathBuf>,
+    /// One step to take, leaving every other out of the report (`--only`): for checking one
+    /// figure while working on it, never a report of the targets.
+    pub only: Option<String>,
 }
 
 /// The commit the run measured, and whether the tree had uncommitted changes.
@@ -216,6 +219,7 @@ pub fn run(root: &Path, out: &Path, options: &Options) -> Result {
     let sizes = options.scale.sizes();
     let journeys = options.samples.min(MAX_JOURNEYS);
     let mut report = Report::new(out, header(root, options, journeys));
+    report.only = options.only.clone();
     report.write()?;
 
     // Set-up, none of it timed: the drags' fixture, the bench built before anything measures, and

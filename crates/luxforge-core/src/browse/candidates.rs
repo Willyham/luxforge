@@ -772,14 +772,25 @@ fn read_photos(
          FROM assets a LEFT JOIN capture c ON c.asset_row = a.row_id
          WHERE {condition} ORDER BY a.row_id"
     );
-    let mut statement = reader.service.connection.prepare_cached(&sql)?;
     let parameters: Vec<&dyn ToSql> = parameter.iter().map(|value| value.as_ref()).collect();
+    // Counted first, so each list is allocated once at its size: a list grown by doubling frees
+    // every smaller one on the way, and an evaluation of 100,000 photographs would leave tens of
+    // megabytes of freed blocks for the allocator to keep each time.
+    let count: i64 = reader
+        .service
+        .connection
+        .prepare_cached(&format!(
+            "{with}SELECT count(*) FROM assets a WHERE {condition}"
+        ))?
+        .query_row(parameters.as_slice(), |row| row.get(0))?;
+    let capacity = usize::try_from(count).unwrap_or(0).min(reader.limit);
+    let mut statement = reader.service.connection.prepare_cached(&sql)?;
     let mut rows = statement.query(parameters.as_slice())?;
     let mut candidates = Candidates {
         over_files: false,
-        keys: Vec::new(),
-        extras: Vec::new(),
-        facts: Vec::new(),
+        keys: Vec::with_capacity(capacity),
+        extras: Vec::with_capacity(capacity),
+        facts: Vec::with_capacity(capacity),
         names: Names::default(),
     };
     while let Some(row) = rows.next()? {
