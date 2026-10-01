@@ -6,12 +6,13 @@
 //! window's own frame clock, as a steady trackpad scroll does. Presented is the update in which the
 //! grid adopts a new offset (`select_scrolled`), whose redraw draws the grid there: the figure is
 //! the interval between consecutive presented updates during the scroll, beside the interval
-//! between the frames the scroll rode (`grid_scroll_frame`), whose median is the refresh the scope
-//! reports as observed. Each frame's cells are counted by what they draw — a decoded preview, the
-//! placeholder while one loads, or nothing ever — and summed in the scope.
+//! between the frames the scroll rode (`grid_scroll_frame`), whose median is the display frame
+//! interval observed, which the loupe's stepping is counted in. Each frame's cells are counted by
+//! what they draw — a decoded preview, the placeholder while one loads, or nothing ever — and the
+//! grid's decoded bytes at each frame and each captured frame go to the memory figure.
 use super::{
-    Launched, Prepared, ProbeContext, Source, launch, launch_scope, measured, prepare, start,
-    stepped,
+    Figure, GRID_FRAME_TIME, Launched, Memory, Prepared, ProbeContext, Source, launch,
+    launch_detail, merge, mib, prepare, start, stepped,
 };
 use crate::*;
 use luxforge_evidence::{self as script, GridScrollStep, MAX_GRID_SCROLL_FRAMES};
@@ -22,12 +23,18 @@ const PX_PER_FRAME: f32 = 60.0;
 /// The fewest frames one scroll runs for: a second at 120 Hz.
 const MIN_FRAMES: u32 = 120;
 
-pub(super) fn probe(root: &Path, context: &ProbeContext) -> Result<Vec<Value>> {
+/// The grid's figures, and the display frame interval its scroll observed (the median interval of
+/// the window's frame clock), in ms.
+pub(super) fn probe(
+    root: &Path,
+    context: &ProbeContext,
+    memory: &mut Memory,
+) -> Result<(Vec<Figure>, Option<f64>)> {
     let source = Source {
         label: "the generated folder".into(),
         folder: context.folder_10k.clone(),
     };
-    measure(root, context, &source).map_err(|error| {
+    measure(root, context, &source, memory).map_err(|error| {
         format!(
             "The grid probe ({}): {error}",
             context.scratch.join("grid").display()
@@ -36,20 +43,39 @@ pub(super) fn probe(root: &Path, context: &ProbeContext) -> Result<Vec<Value>> {
     })
 }
 
-fn measure(root: &Path, context: &ProbeContext, source: &Source) -> Result<Vec<Value>> {
+fn measure(
+    root: &Path,
+    context: &ProbeContext,
+    source: &Source,
+    memory: &mut Memory,
+) -> Result<(Vec<Figure>, Option<f64>)> {
     let prepared = prepare(&context.scratch.join("grid-catalog"), &source.folder)?;
     let frames = u32::try_from(context.samples + 1)
         .unwrap_or(MAX_GRID_SCROLL_FRAMES)
         .clamp(MIN_FRAMES, MAX_GRID_SCROLL_FRAMES);
     let steps = script(&prepared, frames);
     let run = start(root, &context.scratch.join("grid"), &context.binary)?;
-    let mut rows = Vec::new();
+    let mut answer = (Vec::new(), None);
     run.check(|run| {
         let launched = launch(run, "launch-1", &prepared.catalog, &steps)?;
-        rows = launched.read(report(source, &prepared, frames, &launched))?;
+        let scroll = launched.read(scroll(&launched.events))?;
+        memory.grid.extend(scroll.decoded_mib.iter().copied());
+        memory.grid.extend(
+            launched
+                .frames
+                .iter()
+                .filter_map(|frame| mib(&frame["state"]["select"]["previews"]["bytes"])),
+        );
+        memory.grid_budget = memory.grid_budget.or(scroll.budget_mib).or_else(|| {
+            launched
+                .frames
+                .iter()
+                .find_map(|frame| mib(&frame["state"]["select"]["previews"]["budget"]))
+        });
+        answer = report(source, &prepared, frames, &launched, scroll);
         Ok(())
     })?;
-    Ok(rows)
+    Ok(answer)
 }
 
 /// `G`, the folder browsed, and the scroll.
@@ -78,6 +104,9 @@ struct Scroll {
     cached: u64,
     pending: u64,
     unreadable: u64,
+    /// The grid's decoded bytes at each frame, in MiB, and its budget.
+    decoded_mib: Vec<f64>,
+    budget_mib: Option<f64>,
 }
 
 fn scroll(events: &[Value]) -> Result<Scroll> {
@@ -119,18 +148,28 @@ fn scroll(events: &[Value]) -> Result<Scroll> {
         cached: sum("cached"),
         pending: sum("pending"),
         unreadable: sum("unreadable"),
+        decoded_mib: frames
+            .iter()
+            .filter_map(|frame| mib(&frame["decoded_bytes"]))
+            .collect(),
+        budget_mib: frames
+            .iter()
+            .find_map(|frame| mib(&frame["decoded_budget"])),
     })
 }
 
+/// The figures, and the frame clock's median interval.
 fn report(
     source: &Source,
     prepared: &Prepared,
     frames: u32,
     launched: &Launched,
-) -> Result<Vec<Value>> {
-    let scroll = scroll(&launched.events)?;
-    let frame_p50 = stats::Distribution::of(scroll.frame_interval.clone()).map(|d| d.p50);
-    let mut scope = json!({
+    scroll: Scroll,
+) -> (Vec<Figure>, Option<f64>) {
+    let frame_ms = stats::Distribution::of(scroll.frame_interval.clone())
+        .map(|distribution| distribution.p50)
+        .filter(|ms| *ms > 0.0);
+    let mut detail = json!({
         "source": source.label,
         "files": prepared.count,
         "px_per_frame": PX_PER_FRAME,
@@ -138,31 +177,46 @@ fn report(
         "frames_ridden": scroll.frames,
         "frames_moved": scroll.moved,
         "reached_end": scroll.reached_end,
-        "refresh_observed_hz": frame_p50.filter(|ms| *ms > 0.0).map(|ms| 1000.0 / ms),
+        "frame_interval_p50_ms": frame_ms,
+        "refresh_observed_hz": frame_ms.map(|ms| 1000.0 / ms),
         "cells_drawn": scroll.cells,
         "cells_cached": scroll.cached,
         "cells_pending": scroll.pending,
         "cells_unreadable": scroll.unreadable,
-        "target": "presented frames p95 within 16 ms at 120 Hz (provisional)",
-        "presented": "the update in which the grid adopts a new offset (select_scrolled), drawn by the redraw it requests; not scanout",
     });
-    for (key, value) in launch_scope(launched).as_object().into_iter().flatten() {
-        scope[key] = value.clone();
-    }
-    Ok(vec![
-        measured(
-            "grid_scroll_presented_interval",
-            "ms",
-            scroll.presented_interval,
-            scope.clone(),
-        ),
-        measured(
-            "grid_scroll_frame_interval",
-            "ms",
-            scroll.frame_interval,
-            scope,
-        ),
-    ])
+    merge(&mut detail, &launch_detail(launched));
+    let scope = format!(
+        "Intervals between the updates that adopt each new grid offset (select_scrolled), each drawn \
+         by the redraw it requests, not scanout, while one grid_scroll step scrolls the Select grid \
+         down {PX_PER_FRAME} logical px on each of {frames} frames of the window's own frame clock, \
+         over {} of {} files read into a new catalog first",
+        source.label, prepared.count
+    );
+    let cache = "the folder indexed into a new catalog before the launch; grid previews read and \
+                 decoded as the grid asked for them, the first screen's before the scroll; the file \
+                 cache warm from making and indexing the folder";
+    (
+        vec![
+            Figure::measured(GRID_FRAME_TIME, "ms", scroll.presented_interval)
+                .scope(scope)
+                .cache(cache)
+                .target(GRID_FRAME_TIME)
+                .detail(detail.clone()),
+            Figure::measured(
+                "desktop.grid_scroll_10k.frame_clock_interval",
+                "ms",
+                scroll.frame_interval,
+            )
+            .scope(
+                "Intervals between the frames of the window's own frame clock the same scroll rode \
+                 (grid_scroll_frame), whose median is the display frame interval observed",
+            )
+            .cache(cache)
+            .target(GRID_FRAME_TIME)
+            .detail(detail),
+        ],
+        frame_ms,
+    )
 }
 
 #[cfg(test)]
@@ -178,7 +232,8 @@ mod tests {
             "grid_scroll_frame",
             frame_ms + 1.0,
             json!({"frame_ms": frame_ms, "moved": moved, "cells": cached + pending,
-                "cached": cached, "pending": pending, "unreadable": 0}),
+                "cached": cached, "pending": pending, "unreadable": 0,
+                "decoded_bytes": cached * 1024 * 1024, "decoded_budget": 192 * 1024 * 1024}),
         )
     }
 
@@ -218,6 +273,8 @@ mod tests {
         );
         assert_eq!((scroll.cells, scroll.cached, scroll.pending), (96, 86, 10));
         assert_eq!(scroll.frame_interval.len(), 3);
+        assert_eq!(scroll.decoded_mib, vec![20.0, 18.0, 24.0, 24.0]);
+        assert_eq!(scroll.budget_mib, Some(192.0));
     }
 
     #[test]

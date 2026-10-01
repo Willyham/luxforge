@@ -17,8 +17,8 @@
 //!   loupe opened on it, which includes the frame's development; a pointer move then asks for
 //!   another rectangle of the same frame, its second region, timed on its own.
 use super::{
-    Launched, Prepared, ProbeContext, Source, launch, launch_scope, measured, not_measured,
-    prepare, start,
+    FOCUS_DEVELOPMENT, FOCUS_EMBEDDED, Figure, Launched, Memory, Prepared, ProbeContext, Source,
+    launch, launch_detail, merge, prepare, start,
 };
 use crate::*;
 use luxforge_evidence::{self as script, ArrowKey, LoupeStep, SelectStep};
@@ -33,21 +33,23 @@ const DEVELOPED_PER_LAUNCH: usize = 8;
 /// was asked at.
 const POINTERS: [[f32; 2]; 2] = [[0.3, 0.3], [0.7, 0.7]];
 
-/// The metrics the RAW trip's developed regions would have been recorded under.
+/// The figures a frame's developed regions are recorded under: the design's, then the second
+/// region beside it.
 const DEVELOPED: [&str; 2] = [
-    "focus_check_developed_first_region",
-    "focus_check_developed_second_region",
+    FOCUS_DEVELOPMENT,
+    "desktop.focus_check.development_second_region",
 ];
 
-/// The focus check's rows over the generated JPEGs and, when there is one, per camera over the
-/// RAW trip; without one, the developed rows are not measured.
+/// The focus check's figures over the generated JPEGs and, when there is one, per camera over the
+/// RAW trip; without one, the developed figures are skipped, their data absent.
 pub(super) fn probe(
     root: &Path,
     context: &ProbeContext,
     images: &Source,
     raw: Option<&Source>,
-) -> Result<Vec<Value>> {
-    let named = |name: &str, result: Result<Vec<Value>>| -> Result<Vec<Value>> {
+    memory: &mut Memory,
+) -> Result<Vec<Figure>> {
+    let named = |name: &str, result: Result<Vec<Figure>>| -> Result<Vec<Figure>> {
         result.map_err(|error| {
             format!(
                 "The {name} probe ({}): {error}",
@@ -56,20 +58,25 @@ pub(super) fn probe(
             .into()
         })
     };
-    let mut rows = named("focus", measure(root, context, "focus", images, false))?;
+    let mut figures = named(
+        "focus",
+        measure(root, context, "focus", images, false, memory),
+    )?;
     match raw {
-        Some(raw) => rows.extend(named(
+        Some(raw) => figures.extend(named(
             "focus-raw",
-            measure(root, context, "focus-raw", raw, true),
+            measure(root, context, "focus-raw", raw, true, memory),
         )?),
-        None => rows.extend(DEVELOPED.map(|metric| {
-            not_measured(
+        None => figures.extend(DEVELOPED.map(|metric| {
+            Figure::skipped(
                 metric,
-                "no RAW trip was given, so no frame's region needs a development",
+                "ms",
+                "no RAW trip: the RAW corpus is absent, so no frame's region needs a development",
             )
+            .target(FOCUS_DEVELOPMENT)
         })),
     }
-    Ok(rows)
+    Ok(figures)
 }
 
 /// One sample: the frame the loupe is on, how the loupe gets there from the sample before, and
@@ -86,7 +93,8 @@ fn measure(
     name: &str,
     source: &Source,
     per_camera: bool,
-) -> Result<Vec<Value>> {
+    memory: &mut Memory,
+) -> Result<Vec<Figure>> {
     let prepared = prepare(
         &context.scratch.join(format!("{name}-catalog")),
         &source.folder,
@@ -109,34 +117,38 @@ fn measure(
         )
     };
     let run = start(root, &context.scratch.join(name), &context.binary)?;
-    let mut rows = Vec::new();
+    let mut figures = Vec::new();
     run.check(|run| {
         let mut launched = Vec::new();
         for (index, samples) in launches.iter().enumerate() {
             let steps = script(&prepared, samples);
-            launched.push(launch(
+            let one = launch(
                 run,
                 &format!("launch-{}", index + 1),
                 &prepared.catalog,
                 &steps,
-            )?);
+            )?;
+            memory.loupe_run(name, &one, None);
+            launched.push(one);
         }
-        rows = report(source, &prepared, &launched, per_camera)?;
+        figures = report(source, &prepared, &launched, per_camera)?;
         Ok(())
     })?;
     if per_camera
-        && !rows
+        && !figures
             .iter()
-            .any(|row| DEVELOPED.contains(&row["metric"].as_str().unwrap_or("")))
+            .any(|figure| DEVELOPED.contains(&figure.metric.as_str()))
     {
-        rows.extend(DEVELOPED.map(|metric| {
-            not_measured(
+        figures.extend(DEVELOPED.map(|metric| {
+            Figure::not_measured(
                 metric,
+                "ms",
                 "every RAW frame's region was cut from a full-size embedded preview",
             )
+            .target(FOCUS_DEVELOPMENT)
         }));
     }
-    Ok(rows)
+    Ok(figures)
 }
 
 /// Up to `samples` RAW frames of each camera of the trip, the first in the view's order, each with
@@ -305,13 +317,13 @@ fn size(value: &Value) -> Value {
     json!([value["width"], value["height"]])
 }
 
-/// The rows: one per origin and region of its frame, and over the trip per camera as well.
+/// The figures: one per origin and region of its frame, and over the trip per camera as well.
 fn report(
     source: &Source,
     prepared: &Prepared,
     launched: &[Launched],
     per_camera: bool,
-) -> Result<Vec<Value>> {
+) -> Result<Vec<Figure>> {
     let camera_of = |position: Option<u64>| {
         position
             .and_then(|position| prepared.rows.get(position as usize))
@@ -335,50 +347,81 @@ fn report(
             }
         }
     }
-    let base = launch_scope(&launched[0]);
-    let mut rows = Vec::new();
+    let base = launch_detail(&launched[0]);
+    let mut figures = Vec::new();
     for ((camera, origin, which), regions) in groups {
-        let (metric, from, region) = match which {
+        let (metric, target) = figure_of(&origin, which);
+        let (from, region) = match which {
             Which::First => (
-                format!("focus_check_{origin}_first_region"),
                 "Z's handling in the editor's update (loupe_focus pressed_ms)",
-                "the frame's first region since the loupe opened on it, under the pointer",
+                "the frame's first region since the loupe opened on it, under the pointer, which \
+                 includes the frame's development when it needs one",
             ),
             Which::Second => (
-                format!("focus_check_{origin}_second_region"),
                 "the pointer move sent to the loupe (loupe_pointer_sent)",
                 "a second rectangle of the same frame after a pointer move, the check still on",
             ),
         };
-        let mut scope = json!({
+        let mut detail = json!({
             "source": source.label,
             "files": prepared.count,
             "camera": camera,
             "origin": origin,
-            "region": region,
             "rect": size(&regions[0].rect),
             "frame": size(&regions[0].frame),
             "samples": regions.len(),
             "unanswered_in_run": unanswered.get(&which).copied().unwrap_or(0),
-            "from": from,
-            "presented": "the update whose derived model draws the region in the inset (loupe_region_presented), not scanout",
             "launches": launched.len(),
         });
-        if origin == "embedded" && which == Which::First {
-            scope["target"] =
-                json!("within 50 ms of Z from a full-size embedded preview (provisional)");
-        }
-        for (key, value) in base.as_object().into_iter().flatten() {
-            scope[key] = value.clone();
-        }
+        merge(&mut detail, &base);
+        let scope = format!(
+            "{region}: from {from} to the update whose derived model draws the region in the inset \
+             (loupe_region_presented), not scanout; {} regions cut from {} over {}{}",
+            regions.len(),
+            if origin == "developed" {
+                "a Luxforge development made on demand"
+            } else {
+                "a full-size embedded preview (a JPEG is its own)"
+            },
+            source.label,
+            camera
+                .as_ref()
+                .map(|camera| format!(", camera {camera}"))
+                .unwrap_or_default(),
+        );
         let samples = regions
             .iter()
             .filter_map(|region| Some(region.at_ms? - region.from_ms))
             .collect();
-        rows.push(measured(&metric, "ms", samples, scope));
+        figures.push(
+            Figure::measured(metric, "ms", samples)
+                .scope(scope)
+                .cache(
+                    "each frame opened in the loupe just before its Z, its loupe tier read then; \
+                     the file cache warm from indexing the folder into a new catalog",
+                )
+                .target(target)
+                .detail(detail),
+        );
     }
-    ensure(!rows.is_empty(), "No region was presented")?;
-    Ok(rows)
+    ensure(!figures.is_empty(), "No region was presented")?;
+    Ok(figures)
+}
+
+/// The figure a region of `origin` is recorded under, and the design's figure whose target it
+/// answers: `Z`'s region from a full-size embedded preview, or a development's, per camera; a
+/// second region beside each.
+fn figure_of(origin: &str, which: Which) -> (String, &'static str) {
+    match (origin, which) {
+        ("embedded", Which::First) => (FOCUS_EMBEDDED.into(), FOCUS_EMBEDDED),
+        ("developed", Which::First) => (FOCUS_DEVELOPMENT.into(), FOCUS_DEVELOPMENT),
+        ("developed", Which::Second) => (DEVELOPED[1].into(), FOCUS_DEVELOPMENT),
+        (origin, Which::First) => (format!("desktop.focus_check.{origin}"), FOCUS_EMBEDDED),
+        (origin, Which::Second) => (
+            format!("desktop.focus_check.{origin}_second_region"),
+            FOCUS_EMBEDDED,
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -524,6 +567,29 @@ mod tests {
             })
             .collect();
         assert!(script(&prepared, &embedded).len() <= script::MAX_SCRIPT_STEPS);
+    }
+
+    #[test]
+    fn a_region_is_recorded_under_the_designs_figure_for_its_origin() {
+        assert_eq!(
+            figure_of("embedded", Which::First),
+            (FOCUS_EMBEDDED.to_owned(), FOCUS_EMBEDDED)
+        );
+        assert_eq!(
+            figure_of("developed", Which::First),
+            (FOCUS_DEVELOPMENT.to_owned(), FOCUS_DEVELOPMENT)
+        );
+        assert_eq!(
+            figure_of("developed", Which::Second),
+            (
+                "desktop.focus_check.development_second_region".to_owned(),
+                FOCUS_DEVELOPMENT
+            )
+        );
+        assert_eq!(
+            figure_of("embedded", Which::Second).0,
+            "desktop.focus_check.embedded_second_region"
+        );
     }
 
     #[test]
