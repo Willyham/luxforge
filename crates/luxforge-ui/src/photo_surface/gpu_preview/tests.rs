@@ -64,7 +64,7 @@ fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan {
     GpuPlan {
         boundary: boundary.clone(),
         texels: TexelMap::IDENTITY,
-        steps: programs.into_iter().map(GpuStep::Colour).collect(),
+        steps: programs.into_iter().map(GpuStep::colour).collect(),
     }
 }
 
@@ -91,11 +91,11 @@ fn a_step_is_checked_against_the_convention_on_its_own() {
         stripe(0.5, 4),
         core_named,
     ] {
-        validate_step(&GpuStep::Colour(program.clone()))
+        validate_step(&GpuStep::colour(program.clone()))
             .unwrap_or_else(|error| panic!("{}: {error}", program.entry));
     }
     let colour = |entry: &'static str, source: &'static str| {
-        validate_step(&GpuStep::Colour(GpuProgram::new(entry, source))).unwrap_err()
+        validate_step(&GpuStep::colour(GpuProgram::new(entry, source))).unwrap_err()
     };
     let signature = "fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32)";
     for (what, error, expected) in [
@@ -203,20 +203,35 @@ fn a_step_is_checked_against_the_convention_on_its_own() {
 
 #[test]
 fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() {
-    // Two layers of one unit: one source, two calls, each with its own base indices.
+    // Two layers of one unit: one source, two calls, each with its own base indices and its own
+    // position map.
     let steps: Vec<GpuStep> = [scale(0.5), swap(true), scale(2.0)]
         .into_iter()
-        .map(GpuStep::Colour)
+        .map(GpuStep::colour)
         .collect();
     let source = assemble(&steps).expect("an assembled shader");
     assert_eq!(source.matches("fn scale(").count(), 1);
-    assert!(source.contains("rgb = scale(rgb, pos, lf_words[4u], lf_words[5u]);"));
-    assert!(source.contains("rgb = swap(rgb, pos, lf_words[6u], lf_words[7u]);"));
-    assert!(source.contains("rgb = scale(rgb, pos, lf_words[8u], lf_words[9u]);"));
+    let call = |entry: &str, base: usize| {
+        let word = |k: usize| format!("lf_f32({}u)", base + 2 + k);
+        format!(
+            "rgb = {entry}(rgb, vec2<f32>({} * stage.x + {} * stage.y + {}, \
+             {} * stage.x + {} * stage.y + {}), lf_words[{base}u], lf_words[{}u]);",
+            word(0),
+            word(1),
+            word(2),
+            word(3),
+            word(4),
+            word(5),
+            base + 1
+        )
+    };
+    for (entry, base) in [("scale", 4), ("swap", 12), ("scale", 20)] {
+        assert!(source.contains(&call(entry, base)), "{entry} at {base}:\n{source}");
+    }
     validate(&source).expect("the chain validates");
     validate(&assemble(&[]).expect("no steps")).expect("an empty chain is the identity");
 
-    let refused = |program: GpuProgram| assemble(&[GpuStep::Colour(program)]);
+    let refused = |program: GpuProgram| assemble(&[GpuStep::colour(program)]);
     for (entry, why) in [
         ("lf_boundary", "surface's own"),
         ("lf_word", "surface's own"),
@@ -230,41 +245,52 @@ fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() 
     }
     let mut other = scale(0.5);
     other.source = Cow::Borrowed("fn scale(rgb: vec3<f32>) -> vec3<f32> { return rgb; }\n");
-    let error = assemble(&[GpuStep::Colour(scale(0.5)), GpuStep::Colour(other)]).unwrap_err();
+    let error = assemble(&[GpuStep::colour(scale(0.5)), GpuStep::colour(other)]).unwrap_err();
     assert!(error.contains("different sources"), "{error}");
 }
 
 #[test]
-fn the_words_are_the_map_then_each_programs_bases_then_their_words() {
+fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
     let boundary = GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]]).unwrap();
     let mut chain = plan(&boundary, vec![scale(0.5), stripe(0.25, 3), swap(true)]);
     chain.texels = TexelMap {
         origin: [2.0, 5.0],
         step: [1.0, 0.5],
     };
+    // The stripe's pos is the stage turned a quarter, 40 rows down.
+    let turned = PositionMap {
+        a: 0,
+        b: -1,
+        tx: 40,
+        c: 1,
+        d: 0,
+        ty: 0,
+    };
+    chain.steps[1] = GpuStep::Colour {
+        program: stripe(0.25, 3),
+        position: turned,
+    };
     let (mut words, mut blocks) = (Vec::new(), Vec::new());
     pack(&chain, &mut words, &mut blocks);
-    let header = MAP_WORDS + 2 * 3;
-    assert_eq!(
-        words,
-        [
-            2f32.to_bits(),
-            5f32.to_bits(),
-            1f32.to_bits(),
-            0.5f32.to_bits(),
-            // scale: its word after the header, no block.
-            header as u32,
-            0,
-            // stripe: no words, the first two block words.
-            header as u32 + 1,
-            0,
-            // swap: one word, after the stripe's block.
-            header as u32 + 1,
-            2,
-            0.5f32.to_bits(),
-            1,
-        ]
-    );
+    let header = (MAP_WORDS + STEP_WORDS * 3) as u32;
+    let unmoved = [1f32, 0.0, 0.0, 0.0, 1.0, 0.0].map(f32::to_bits);
+    let mut expected = vec![
+        2f32.to_bits(),
+        5f32.to_bits(),
+        1f32.to_bits(),
+        0.5f32.to_bits(),
+    ];
+    // scale: its word after the header, no block.
+    expected.extend([header, 0]);
+    expected.extend(unmoved);
+    // stripe: no words, the first two block words, its own map.
+    expected.extend([header + 1, 0]);
+    expected.extend([0f32, -1.0, 40.0, 1.0, 0.0, 0.0].map(f32::to_bits));
+    // swap: one word, after the stripe's block.
+    expected.extend([header + 1, 2]);
+    expected.extend(unmoved);
+    expected.extend([0.5f32.to_bits(), 1]);
+    assert_eq!(words, expected);
     assert_eq!(blocks, [0.25f32.to_bits(), 3]);
     // Every block empty still binds one word.
     pack(&plan(&boundary, vec![identity()]), &mut words, &mut blocks);
@@ -705,7 +731,7 @@ fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
 
 /// The calling convention end to end: two layers of one unit sharing its function with their own
 /// words, a program reading its words, one reading its block and the stage position through the
-/// texel map, chained in order.
+/// texel map and its own position map, chained in order.
 #[test]
 fn a_chain_passes_each_program_its_words_block_and_stage_position() {
     let test = "a_chain_passes_each_program_its_words_block_and_stage_position";
@@ -727,6 +753,18 @@ fn a_chain_passes_each_program_its_words_block_and_stage_position() {
         origin: [2.0, 5.0],
         step: [1.0, 1.0],
     };
+    // The stripes' own position map mirrors the stage: pos = (100 - x, y).
+    chain.steps[3] = GpuStep::Colour {
+        program: stripe(srgb::decode(200) as f32, 4),
+        position: PositionMap {
+            a: -1,
+            b: 0,
+            tx: 100,
+            c: 0,
+            d: 1,
+            ty: 0,
+        },
+    };
     let drawn = paint(&device, &queue, &mut pipeline, &primitive(ID, Some(chain)));
     // Halving and doubling are exact, so the chain is the swap and the stripes.
     let expected: Vec<[u8; 3]> = codes
@@ -734,7 +772,7 @@ fn a_chain_passes_each_program_its_words_block_and_stage_position() {
         .enumerate()
         .map(|(index, [r, g, b])| {
             let (x, y) = (index as u32 % SIDE, index as u32 / SIDE);
-            if (x + 2 + y + 5) % 4 == 0 {
+            if (100 - (x + 2) + y + 5) % 4 == 0 {
                 [200; 3]
             } else {
                 [*b, *g, *r]

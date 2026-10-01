@@ -18,6 +18,14 @@ wgpu.workspace = true
 # that version, so it adds no package; no feature is asked for.
 half = { version = "=2.7.1", default-features = false }
 
+[features]
+# Qualification only: `photo_surface::gpu_preview::qualification`, which evaluates a GPU plan on a
+# headless device and reads its output back, for the desktop's per-program readback tests and the
+# GPU preview corpus harness. Only a `[dev-dependencies]` table may turn it on (`cargo xtask
+# check-repository`'s `gpu-qualification-only-in-tests` rule), so no build of the desktop reads a
+# GPU pixel back.
+qualification = []
+
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }

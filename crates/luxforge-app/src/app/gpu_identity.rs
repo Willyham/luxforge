@@ -65,7 +65,7 @@ impl GpuIdentity {
         self.plan = Some(GpuPlan {
             boundary,
             texels: TexelMap::IDENTITY,
-            steps: vec![GpuStep::Colour(GpuProgram::new(
+            steps: vec![GpuStep::colour(GpuProgram::new(
                 "evidence_identity",
                 IDENTITY,
             ))],
