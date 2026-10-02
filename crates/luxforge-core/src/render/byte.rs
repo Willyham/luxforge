@@ -120,6 +120,18 @@ fn encoded(rgb: [f32; 3], wide: bool) -> [u16; 3] {
         quantize_pixel(rgb).map(|v| u16::from(v) * 257)
     }
 }
+/// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
+/// estimates are keyed by, and a proxy not yet built is named by
+/// (`render::gpu::EstimateSource::Proxy`).
+pub(crate) fn estimate_prefix(
+    prefix_hash: &str,
+    width: u32,
+    height: u32,
+    orientation: u8,
+) -> String {
+    format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
+}
+
 fn decoded(rgb: [u16; 3]) -> [f32; 3] {
     let table = decode16_table();
     rgb.map(|code| table[usize::from(code)])
@@ -134,9 +146,11 @@ impl PixelDomain for Byte<'_> {
         &self.0.fingerprint
     }
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(format!(
-            "{prefix_hash}+byte:{}x{}:orientation:{}",
-            self.0.width, self.0.height, self.0.orientation
+        Cow::Owned(estimate_prefix(
+            prefix_hash,
+            self.0.width,
+            self.0.height,
+            self.0.orientation,
         ))
     }
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {

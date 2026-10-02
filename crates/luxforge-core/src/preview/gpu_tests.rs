@@ -84,6 +84,25 @@ fn draft_job_over(
     drafted: Vec<Layer>,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_in(
+        RenderContext::new(),
+        source,
+        action,
+        entry,
+        drafted,
+        revision,
+    )
+}
+
+/// [`draft_job_over`] in `context`, whose estimate store its frames fill and its plans read.
+fn draft_job_in(
+    context: RenderContext,
+    source: PreviewSource,
+    action: &str,
+    entry: Vec<Layer>,
+    drafted: Vec<Layer>,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -109,7 +128,7 @@ fn draft_job_over(
     draft.draft_revision = revision;
     let evaluation = Evaluation::new(
         Arc::new(ModuleRegistry::builtin()),
-        RenderContext::new(),
+        context,
         source,
         entry,
         recipe(drafted),
@@ -430,4 +449,77 @@ fn a_boundary_of_another_stage_is_answered_with_its_reason() {
     );
     let error = boundary.boundary().unwrap().result.as_ref().unwrap_err();
     assert!(error.detail.contains("another stage"), "{error}");
+}
+
+/// A Presence drag reads Dehaze's light from the estimate store the committed stack's Fit frame
+/// filled, under the name of the proxy that frame was rendered from, which planning never builds:
+/// once that frame is rendered, the drag's plan holds the CPU's light and is not approximate, on a
+/// JPEG and on a RAW. Before it, and for a drag of a layer under Presence, which changes the input
+/// the light is estimated from, the light is taken on the GPU and the plan says so.
+#[test]
+fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
+    let raw = PreviewSource::Raw {
+        image: crate::render::tests::varied(WIDTH, HEIGHT),
+        settings: crate::LinearSettings::default(),
+    };
+    for (name, source) in [("JPEG", source()), ("RAW", raw)] {
+        let context = RenderContext::new();
+        let presence = |clarity: i32| {
+            Layer::new(
+                crate::PRESENCE_EFFECT,
+                json!({"dehaze": 40, "clarity": clarity}),
+            )
+        };
+        let entry = vec![presence(30)];
+        let plan_of = |action: &str, drafted: Vec<Layer>| {
+            let (job, draft) = draft_job_in(
+                context.clone(),
+                source.clone(),
+                action,
+                entry.clone(),
+                drafted,
+                1,
+            );
+            plan_preview(&job.evaluation, &draft, bounds()).unwrap()
+        };
+        let clarity = || plan_of("set-presence", vec![presence(60)]);
+        let first = clarity();
+        assert!(
+            first.boundary.as_ref().unwrap().key.plan().is_some(),
+            "{name}: a proxy"
+        );
+        assert!(
+            planned(&first).approximate(),
+            "{name}: nothing is stored yet"
+        );
+        // The committed stack's Fit frame, through the preview worker in the same context.
+        let (mut job, _) = draft_job_in(
+            context.clone(),
+            source.clone(),
+            "set-presence",
+            entry.clone(),
+            entry.clone(),
+            0,
+        );
+        job.proxy = Some(bounds());
+        job.intent = PreviewIntent::Interactive;
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let frame = wait_for("the Fit frame", || queue.poll());
+        assert_eq!(frame.phase(), PreviewPhase::Proxy, "{name}");
+        let stored = clarity();
+        assert!(
+            !planned(&stored).approximate(),
+            "{name}: the stored light is read"
+        );
+        let under = plan_of(
+            "set-basic",
+            vec![basic(json!({"exposure": 0.3})), presence(30)],
+        );
+        assert_eq!(planned(&under).boundary.layer, 0, "{name}");
+        assert!(
+            planned(&under).approximate(),
+            "{name}: a drag under Presence changes the light's input"
+        );
+    }
 }
