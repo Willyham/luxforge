@@ -255,15 +255,9 @@ fn restated_constants_are_the_cpus_f32_values() {
         |name: &str| wgsl_constant(luminance, &format!("lf_mask_luminance_range_{name}"));
     use crate::colour::luma::{LUMA_B, LUMA_G, LUMA_R};
     assert_eq!(bits(&constant("luma")), bits(&[LUMA_R, LUMA_G, LUMA_B]));
-    // The f32 instance of the transfer function's literals, which the axis's f64 ones narrow to.
-    for (name, value) in [
-        ("linear_end", 0.003_130_8_f64),
-        ("slope", 12.92),
-        ("scale", 1.055),
-        ("offset", 0.055),
-        ("exponent", 1.0 / 2.4),
-    ] {
-        assert_eq!(bits(&constant(name)), bits(&[value as f32]), "{name}");
+    // The f32 encode's constants, which the axis's f64 ones narrow to.
+    for (name, value) in crate::colour::srgb::ENCODE_F32 {
+        assert_eq!(bits(&constant(name)), bits(&[value]), "{name}");
     }
     let matrices: std::collections::HashMap<&str, [[f32; 3]; 3]> =
         crate::colour::oklab::MATRICES.into_iter().collect();
