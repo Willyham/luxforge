@@ -914,6 +914,63 @@ fn a_spatial_drag_across_zero_keeps_one_program_sequence_and_one_boundary() {
     }
 }
 
+/// At a percentage zoom a restoration or spatial layer's drag is planned in its GPU shape, with
+/// the plan of its CPU shape beside it, from the same boundary, for the desktop to draw when only
+/// that one fits the budget; the CPU shape holds less. A layer every unit of which is moved has
+/// no smaller shape, and at Fit there is no choice to make.
+#[test]
+fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
+    let region = crate::GpuView::Region {
+        rect: crate::modules::Region {
+            x0: 40,
+            y0: 30,
+            width: 120,
+            height: 90,
+        },
+        magnification: 1.0,
+    };
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"texture": 10}));
+    let drag = |payload: Value, view| {
+        let dragged = vec![Layer {
+            payload,
+            ..presence.clone()
+        }];
+        let (job, draft) = draft_job("set-presence", vec![presence.clone()], dragged, 1);
+        plan_preview(&job.evaluation, &draft, view).unwrap()
+    };
+    let applies = |plan: &GpuPlan| plan.spatial.as_ref().map_or(0, |s| s.applies.len());
+    let zoomed = drag(json!({"texture": 10, "clarity": 20}), region);
+    assert_eq!(applies(planned(&zoomed)), 3, "every unit");
+    let cpu = zoomed
+        .cpu_shape
+        .as_deref()
+        .expect("the CPU's shape beside it");
+    assert_eq!(applies(cpu), 2, "Texture and Clarity");
+    assert_eq!(cpu.boundary, planned(&zoomed).boundary, "the same boundary");
+    let window = zoomed.boundary.as_ref().unwrap().window.unwrap();
+    let bytes = |plan: &GpuPlan| {
+        plan.spatial
+            .as_ref()
+            .unwrap()
+            .plane_bytes((window.x0, window.y0), (window.width, window.height))
+    };
+    assert!(bytes(cpu) < bytes(planned(&zoomed)));
+    // Detail with both strengths and Colour moved: both units and every level either way.
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
+    let moved = vec![Layer {
+        payload: json!({"sharpening": 40, "luminance": 20, "colour": 30}),
+        ..detail.clone()
+    }];
+    let (job, draft) = draft_job("set-detail", vec![detail], moved, 1);
+    let every = plan_preview(&job.evaluation, &draft, region).unwrap();
+    assert!(planned(&every).spatial.is_some() && every.cpu_shape.is_none());
+    let fit = drag(
+        json!({"texture": 10, "clarity": 20}),
+        crate::GpuView::Fit(bounds()),
+    );
+    assert!(fit.cpu_shape.is_none(), "no choice at Fit");
+}
+
 /// At a percentage zoom a Dehaze drag reads the light the exact visible region's render stored over
 /// the whole stage, as the CPU frame that settles it does: before that render the store holds none
 /// and the drag keeps the CPU path (`region-estimate`); after it the region plan holds the CPU's
