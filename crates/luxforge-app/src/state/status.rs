@@ -24,22 +24,33 @@ pub(crate) struct RenderTime {
 impl RenderTime {
     /// "Exact render · 85 ms" for the exact full-resolution render, and "Approximate render · 12
     /// ms" for anything else on screen: the display-size proxy, or a drafted RAW white balance
-    /// approximated on the developed planes. A frame faster than half a millisecond says so rather
-    /// than claiming zero, and one of a second or more is given in seconds to a tenth (`1.2 s`).
+    /// approximated on the developed planes.
     pub(crate) fn text(self) -> String {
-        let figure = if self.ms < 0.5 {
-            "<1 ms".to_owned()
-        } else if self.ms.round() >= 1000.0 {
-            format!("{:.1} s", self.ms / 1000.0)
-        } else {
-            format!("{} ms", self.ms.round() as i64)
-        };
         let kind = if self.proxy || self.approximate {
             "Approximate"
         } else {
             "Exact"
         };
-        format!("{kind} render \u{b7} {figure}")
+        format!("{kind} render \u{b7} {}", figure(self.ms))
+    }
+}
+
+/// "GPU preview · 2 ms" while the photograph on screen is the GPU stage's output, beside the CPU
+/// frames' "Approximate render" and "Exact render", with the interface thread's time to prepare
+/// that frame (the desktop's `gpu_settle` says why it is that time).
+pub(crate) fn gpu_text(ms: f64) -> String {
+    format!("GPU preview \u{b7} {}", figure(ms))
+}
+
+/// A time as the render slot gives it. A frame faster than half a millisecond says so rather than
+/// claiming zero, and one of a second or more is given in seconds to a tenth (`1.2 s`).
+fn figure(ms: f64) -> String {
+    if ms < 0.5 {
+        "<1 ms".to_owned()
+    } else if ms.round() >= 1000.0 {
+        format!("{:.1} s", ms / 1000.0)
+    } else {
+        format!("{} ms", ms.round() as i64)
     }
 }
 
@@ -202,6 +213,8 @@ pub(crate) struct StatusBarModel {
     pub(crate) agents_connected: bool,
     /// What the renderer is doing, or what kind of frame is on screen and how long it took.
     pub(crate) render: String,
+    /// The GPU frame's figure `render` gives, in microseconds, while it names one.
+    pub(crate) gpu_us: Option<u64>,
     /// The zoom mode, its effective percentage and the display scale: `Fit · 18% · 2×`.
     pub(crate) view: String,
 }
@@ -250,7 +263,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         readout: inputs.hover.readout.as_ref().map(histogram::readout_text),
         clients: clients_text(inputs.clients),
         agents_connected: inputs.clients.is_some_and(|count| count > 0),
-        render: if let Some(bar) = inputs.render_bar {
+        // A GPU frame on screen names itself first: the CPU frame behind it, and any render still
+        // running, are not what is shown.
+        render: if let Some(us) = inputs.gpu_frame_us {
+            gpu_text(us as f64 / 1000.0)
+        } else if let Some(bar) = inputs.render_bar {
             format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
         } else if inputs.rendering {
             "Rendering…".into()
@@ -260,6 +277,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
                 None => "Idle".into(),
             }
         },
+        gpu_us: inputs.gpu_frame_us,
         view: view_text(
             &inputs.session.preview.view.zoom,
             title::effective_percent(inputs),
@@ -346,6 +364,14 @@ mod tests {
             time(140.0, false, true).text(),
             "Approximate render \u{b7} 140 ms"
         );
+    }
+
+    /// A GPU frame on screen names itself in the same wording, beside the CPU frames' kinds.
+    #[test]
+    fn the_gpu_frame_names_itself_with_its_time() {
+        assert_eq!(gpu_text(2.4), "GPU preview \u{b7} 2 ms");
+        assert_eq!(gpu_text(0.3), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(1500.0), "GPU preview \u{b7} 1.5 s");
     }
 
     #[test]

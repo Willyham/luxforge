@@ -41,6 +41,8 @@ pub(crate) enum ViewMessage {
     TogglePanel(Panel),
     /// Show or hide the thirds overlay.
     ToggleThirds,
+    /// Turn the GPU preview off or on; the owner holds the preference.
+    ToggleGpuPreview,
     /// Enter the pointer mode or a module's canvas mode.
     SetMode(String),
     /// A workspace change returned the owner's session.

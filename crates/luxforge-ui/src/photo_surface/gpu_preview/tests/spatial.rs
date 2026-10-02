@@ -101,6 +101,7 @@ fn test_spatial() -> GpuSpatial {
             words: 1,
         }],
         clamps: true,
+        mask: None,
     }
 }
 

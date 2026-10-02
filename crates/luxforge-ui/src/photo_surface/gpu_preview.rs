@@ -112,6 +112,9 @@ const MIN_BUFFER: u64 = 1024;
 /// The upload chunk, as the photograph's: the surface stages no copy of its own.
 const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
 
+/// The words the blocks are compared and written in, 1 KiB: a tick writes the chunks that changed.
+const BLOCK_CHUNK: usize = 256;
+
 /// The format the programs' output is written in and sampled from: the sRGB-typed format the
 /// surface's photograph textures have when the renderer gamma corrects.
 const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -192,6 +195,10 @@ pub enum GpuStep {
         program: GpuProgram,
         position: PositionMap,
     },
+    /// A pointwise colour operation blended by its mask's coverage against its own input
+    /// ([`MaskedColour`]): its units are colour programs, its components coverage programs,
+    /// `fn <entry>(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
+    Masked(MaskedColour),
     /// A spatial operation: its passes before the frame's pass, its applies in it, over the
     /// boundary's texels.
     Spatial(Box<GpuSpatial>),
@@ -206,35 +213,84 @@ impl GpuStep {
         }
     }
 
-    pub(super) fn program(&self) -> &GpuProgram {
+    /// Every program the step runs, with the signature its role gives it.
+    fn programs(&self) -> Box<dyn Iterator<Item = (mask::Role, &GpuProgram)> + '_> {
         match self {
-            Self::Colour { program, .. } => program,
-            Self::Spatial(spatial) => &spatial.program,
+            Self::Colour { program, .. } => {
+                Box::new(std::iter::once((mask::Role::Colour, program)))
+            }
+            Self::Masked(masked) => Box::new(masked.programs()),
+            Self::Spatial(spatial) => Box::new(spatial.programs()),
         }
+    }
+
+    /// What decides the step's pipeline: the shape of a masked step, or a spatial step's planes,
+    /// passes and applies, then each program's role, entry and source in order. Its words are
+    /// data and are not part of it.
+    fn signature(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
+        let shape: Box<dyn Iterator<Item = (StepKind, &str, &str)> + '_> = match self {
+            Self::Colour { .. } => Box::new(std::iter::empty()),
+            Self::Masked(masked) => Box::new(std::iter::once((
+                StepKind::Masked {
+                    units: masked.units.len(),
+                    components: masked.mask.components.len(),
+                },
+                "",
+                "",
+            ))),
+            Self::Spatial(spatial) => Box::new(spatial.shape()),
+        };
+        shape.chain(self.programs().map(|(role, program)| {
+            (
+                StepKind::Program(role),
+                program.entry.as_ref(),
+                program.source.as_ref(),
+            )
+        }))
     }
 
     fn position(&self) -> PositionMap {
         match self {
             Self::Colour { position, .. } => *position,
+            Self::Masked(masked) => masked.position,
             Self::Spatial(_) => PositionMap::IDENTITY,
         }
     }
 
-    /// Whether `other` compiles to the same pipelines: the same kind of step running the same
-    /// program, and for a spatial step the same planes, passes and applies. Words, blocks and
-    /// positions are data the pipelines read, not part of them.
-    fn same_pipelines(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Colour { program, .. },
-                Self::Colour {
-                    program: theirs, ..
-                },
-            ) => program.entry == theirs.entry && program.source == theirs.source,
-            (Self::Spatial(spatial), Self::Spatial(theirs)) => spatial.same_pipelines(theirs),
-            _ => false,
+    /// The words the step packs after the header.
+    fn word_count(&self) -> usize {
+        match self {
+            Self::Colour { program, .. } => program.words.len(),
+            Self::Masked(masked) => masked.word_count(),
+            Self::Spatial(spatial) => spatial.word_count(),
         }
     }
+
+    /// The block words the step packs.
+    fn block_count(&self) -> usize {
+        match self {
+            Self::Colour { program, .. } => program.block.len(),
+            Self::Masked(masked) => masked.block_count(),
+            Self::Spatial(spatial) => spatial.block_count(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StepKind {
+    Program(mask::Role),
+    Masked {
+        units: usize,
+        components: usize,
+    },
+    /// A spatial step's clamp and the words its mask takes before its program's.
+    Spatial {
+        clamps: bool,
+        mask_words: Option<usize>,
+    },
+    Plane(spatial::GpuPlane),
+    Pass(spatial::PassKey),
+    Apply(spatial::ApplyKey),
 }
 
 /// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
@@ -405,6 +461,8 @@ pub(super) struct Figures {
     peak: AtomicU64,
     passes: AtomicU64,
     compiles: AtomicU64,
+    /// Words written to the blocks buffers, for the tests of what a tick writes.
+    block_words: AtomicU64,
 }
 
 impl Figures {
@@ -508,6 +566,10 @@ pub(super) struct GpuSlot {
     written_blocks: Vec<u32>,
     /// The cached pipeline last run into `output`.
     evaluated: Option<u64>,
+    /// The interface thread's time, in microseconds, to prepare what `output` holds: fitting the
+    /// slot, writing the words and blocks, uploading a new boundary, encoding and submitting the
+    /// pass. The device Iced creates has no timestamp queries, so the GPU's own time is not read.
+    frame_us: u64,
     /// A spatial plan's planes and the groups that bind them, for the pipeline they were made for.
     spatial: Option<Box<SpatialSlot>>,
 }
@@ -532,12 +594,15 @@ impl GpuSlot {
     pub(super) fn output(&self) -> &Picture {
         &self.output
     }
+
+    pub(super) fn frame_us(&self) -> u64 {
+        self.frame_us
+    }
 }
 
 /// One compiled — or failed — program sequence.
 struct Cached {
-    /// The steps it was compiled for, compared by [`GpuStep::same_pipelines`].
-    signature: Vec<GpuStep>,
+    signature: Vec<(StepKind, String, String)>,
     pipeline: Result<Compiled, Arc<str>>,
     id: u64,
     used: u64,
@@ -545,12 +610,10 @@ struct Cached {
 
 impl Cached {
     fn matches(&self, steps: &[GpuStep]) -> bool {
-        self.signature.len() == steps.len()
-            && self
-                .signature
-                .iter()
-                .zip(steps)
-                .all(|(compiled, step)| compiled.same_pipelines(step))
+        self.signature
+            .iter()
+            .map(|(kind, entry, source)| (*kind, entry.as_str(), source.as_str()))
+            .eq(steps.iter().flat_map(GpuStep::signature))
     }
 }
 
@@ -694,7 +757,11 @@ impl GpuStage {
             Err(_) => Err(GpuFallback::PipelineFailed),
         };
         self.cache.push(Cached {
-            signature: steps.to_vec(),
+            signature: steps
+                .iter()
+                .flat_map(GpuStep::signature)
+                .map(|(kind, entry, source)| (kind, entry.to_owned(), source.to_owned()))
+                .collect(),
             pipeline,
             id: clock,
             used: clock,
@@ -754,6 +821,7 @@ fn entry_name(name: &str) -> Result<(), String> {
     if SURFACE_NAMES
         .iter()
         .any(|surface| surface.starts_with(name))
+        || name.starts_with(mask::GENERATED)
     {
         return Err(format!("{name:?} is one of the surface's own names"));
     }
@@ -764,8 +832,7 @@ fn entry_name(name: &str) -> Result<(), String> {
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
     let mut source = String::from(PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for step in steps {
-        let program = step.program();
+    for (_, program) in steps.iter().flat_map(GpuStep::programs) {
         entry_name(&program.entry)?;
         match included.iter().find(|seen| seen.entry == program.entry) {
             Some(seen) if seen.source != program.source => {
@@ -785,6 +852,9 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
             }
         }
     }
+    // Each masked step's coverage, composed by a function of its own.
+    let (functions, masked) = spatial::masks(steps, steps.len());
+    source.push_str(&functions);
     source.push_str(BOUNDARY_BINDING);
     let spatial = steps.iter().any(|step| matches!(step, GpuStep::Spatial(_)));
     let (declarations, slots) = if spatial {
@@ -804,7 +874,7 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
 ",
     );
     for index in 0..steps.len() {
-        source.push_str(&spatial::step_statements(steps, index, &slots));
+        source.push_str(&spatial::statements(steps, index, &slots, &masked));
     }
     source.push_str("    return vec4<f32>(rgb, 1.0);\n}\n");
     Ok(source)
@@ -834,8 +904,20 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
     if let GpuStep::Spatial(spatial) = step {
         return spatial::validate_spatial(spatial);
     }
-    let program = step.program();
+    for (role, program) in step.programs() {
+        validate_program(role, program)?;
+    }
+    Ok(())
+}
+
+/// One program of a step against the convention, with its role's signature.
+fn validate_program(role: mask::Role, program: &GpuProgram) -> Result<(), String> {
     let entry = &program.entry;
+    if role == mask::Role::Spatial {
+        return Err(format!(
+            "{entry:?} is a spatial program, which only its step checks"
+        ));
+    }
     entry_name(entry)?;
     let module = validate(&format!("{PRELUDE}\n{}", program.source))?;
     let only = "a program has only functions and constants";
@@ -887,9 +969,8 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
         scalar: naga::Scalar::F32,
     };
     let unsigned = naga::TypeInner::Scalar(naga::Scalar::U32);
-    let (arguments, result, signature) = match step {
-        GpuStep::Spatial(_) => unreachable!("a spatial step is checked above"),
-        GpuStep::Colour { .. } => (
+    let (arguments, result, signature) = match role {
+        mask::Role::Colour => (
             [
                 vector(naga::VectorSize::Tri),
                 vector(naga::VectorSize::Bi),
@@ -899,6 +980,17 @@ pub fn validate_step(step: &GpuStep) -> Result<(), String> {
             vector(naga::VectorSize::Tri),
             "(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>",
         ),
+        mask::Role::Coverage => (
+            [
+                vector(naga::VectorSize::Bi),
+                vector(naga::VectorSize::Tri),
+                unsigned.clone(),
+                unsigned,
+            ],
+            naga::TypeInner::Scalar(naga::Scalar::F32),
+            "(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32",
+        ),
+        mask::Role::Spatial => unreachable!("a spatial program is refused above"),
     };
     let declared: Vec<&naga::TypeInner> = function
         .arguments
@@ -1020,16 +1112,20 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
     let header = MAP_WORDS + STEP_WORDS * plan.steps.len();
     let (mut word, mut block) = (header, 0);
     for step in &plan.steps {
-        let program = step.program();
         words.extend([word as u32, block as u32]);
         words.extend(step.position().words());
-        word += program.words.len();
-        block += program.block.len();
+        word += step.word_count();
+        block += step.block_count();
     }
     for step in &plan.steps {
-        let program = step.program();
-        words.extend_from_slice(&program.words);
-        blocks.extend_from_slice(&program.block);
+        match step {
+            GpuStep::Colour { program, .. } => {
+                words.extend_from_slice(&program.words);
+                blocks.extend_from_slice(&program.block);
+            }
+            GpuStep::Masked(masked) => masked.pack(words, blocks),
+            GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
+        }
     }
     if blocks.is_empty() {
         blocks.push(0);
@@ -1058,18 +1154,26 @@ fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffe
 
 impl PhotoPipeline {
     /// Make `surface`'s GPU-preview slot hold what `plan` draws and record how this frame is drawn:
-    /// with no plan, the slot is released and the frame is the CPU's; with one, the slot evaluates
-    /// it, or the frame is the CPU's and names why. `surface` is out of the map.
+    /// with no plan, the slot is released and the frame is the CPU's, unless `dissolve` runs from
+    /// the GPU frame the last draw showed, which the slot then keeps ([`dissolve`]); with one, the
+    /// slot evaluates it, or the frame is the CPU's and names why. `surface` is out of the map.
     pub(super) fn prepare_gpu(
         &mut self,
         surface: &mut SurfaceSlots,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: Option<&GpuPlan>,
+        dissolve: Option<DissolveFrame>,
     ) {
+        // The GPU frame the last draw showed, which is all a dissolve may start from.
+        let shown = surface.gpu_output().is_some() || surface.dissolving.is_some();
         surface.gpu_outcome = None;
+        surface.dissolving = None;
         let Some(plan) = plan else {
-            self.release_gpu(surface);
+            match dissolve {
+                Some(frame) if shown && surface.gpu.is_some() => surface.dissolving = Some(frame),
+                _ => self.release_gpu(surface),
+            }
             return;
         };
         let outcome = self.evaluate(surface, device, queue, plan);
@@ -1153,6 +1257,7 @@ impl PhotoPipeline {
         words: &[u32],
         blocks: &[u32],
     ) -> Result<u64, GpuFallback> {
+        let started = std::time::Instant::now();
         let size = plan.boundary.size();
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
@@ -1218,8 +1323,21 @@ impl PhotoPipeline {
             slot.written_words.extend_from_slice(words);
             changed = true;
         }
-        if slot.written_blocks != blocks {
-            queue.write_buffer(&slot.blocks.buffer, 0, &le_bytes(blocks));
+        // Only the chunks of the blocks that changed: a painted stroke's tick writes its new
+        // segments and the index after them, not the segments its block already holds.
+        let ranges = mask::changed_ranges(&slot.written_blocks, blocks, BLOCK_CHUNK);
+        for range in &ranges {
+            self.figures
+                .preview
+                .block_words
+                .fetch_add(range.len() as u64, Ordering::Relaxed);
+            queue.write_buffer(
+                &slot.blocks.buffer,
+                (range.start * 4) as u64,
+                &le_bytes(&blocks[range.clone()]),
+            );
+        }
+        if !ranges.is_empty() || slot.written_blocks.len() != blocks.len() {
             slot.written_blocks.clear();
             slot.written_blocks.extend_from_slice(blocks);
             changed = true;
@@ -1277,6 +1395,7 @@ impl PhotoPipeline {
             queue.submit([encoder.finish()]);
             slot.evaluated = Some(pipeline_id);
             slot.output.version = plan.boundary.version;
+            slot.frame_us = started.elapsed().as_micros() as u64;
             self.figures.preview.passes.fetch_add(1, Ordering::Relaxed);
         }
         Ok(plan.boundary.version)
@@ -1411,6 +1530,7 @@ impl PhotoPipeline {
             written_blocks: Vec::new(),
             evaluated: None,
             spatial: None,
+            frame_us: 0,
         })
     }
 
@@ -1574,7 +1694,9 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
     }
 }
 
+mod mask;
 mod position;
+pub use mask::{Coverage, CoverageComponent, CoverageMode, MaskedColour};
 pub use position::PositionMap;
 
 pub mod spatial;
@@ -1583,7 +1705,11 @@ pub use spatial::{
     SPATIAL_PRELUDE,
 };
 
-#[cfg(feature = "qualification")]
+mod dissolve;
+pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
+pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
+
+#[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
 
 #[cfg(test)]

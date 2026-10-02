@@ -14,7 +14,7 @@
 //!
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
-use super::gpu_plan::{Unrunnable, surface_plan};
+use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{Stream, codes, corpus_at_fit, figures, worst};
 use luxforge_core::{
     Cancel, GPU_PROGRAMS, GpuAnswer, GpuEstimates, GpuPlanRequest, GpuProgramKind, Layer,
@@ -98,30 +98,44 @@ fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
     }
     // Presence is enabled: it met the spatial limits on the corpus at Fit.
     assert!(presence().enabled);
-    // A masked operation waits for the surface's coverage step.
-    let mut masked = recipe(json!({"texture": 40}));
-    let mut mask = luxforge_core::Mask::new("Mask 1");
-    mask.components.push(luxforge_core::Component::new(
-        "Linear 1",
-        luxforge_core::ComponentMode::Add,
-        "linear",
-        json!({"x0": 0.2, "y0": 0.1, "x1": 0.8, "y1": 0.9}),
-    ));
-    masked.layers[0].mask = Some(mask.id.clone());
-    masked.masks.push(mask);
-    if let GpuAnswer::Plan(plan) = gpu_plan(
-        &registry,
-        &masked,
-        GpuPlanRequest::exact(0, stage(64, 48)).qualifying(),
-    )
-    .unwrap()
+    // A masked operation is one spatial step carrying its mask's coverage, which the surface's
+    // convention accepts with the coverage programs'.
+    let masked = masked(recipe(json!({"texture": 40})), &radial());
+    let plan = match gpu_plan(&registry, &masked, GpuPlanRequest::exact(0, stage(64, 48))).unwrap()
     {
-        let held = boundary(64, 48, 1, &vec![[0.25; 3]; 64 * 48]).unwrap();
-        assert_eq!(
-            surface_plan(&plan, held).unwrap_err(),
-            Unrunnable::Mask { layer: 0 }
-        );
-    }
+        GpuAnswer::Plan(plan) => *plan,
+        GpuAnswer::Fallback(reason) => panic!("{reason}"),
+    };
+    let held = boundary(64, 48, 1, &vec![[0.25; 3]; 64 * 48]).unwrap();
+    let converted = surface_plan(&plan, held).expect("a runnable plan");
+    let GpuStep::Spatial(step) = &converted.steps[0] else {
+        panic!("a spatial step");
+    };
+    assert_eq!(
+        step.mask.as_ref().map(|mask| mask.components.len()),
+        Some(1)
+    );
+    validate_step(&converted.steps[0]).expect("the masked step");
+}
+
+/// A radial component: an ellipse a little off centre, tilted, with a broad feather.
+fn radial() -> luxforge_core::Component {
+    luxforge_core::Component::new(
+        "Radial 1",
+        luxforge_core::ComponentMode::Add,
+        "radial",
+        json!({"x": 0.45, "y": 0.55, "radius_x": 0.3, "radius_y": 0.22, "angle": 18.0,
+               "feather": 45.0}),
+    )
+}
+
+/// `recipe` with its Presence layer masked by one mask of `component`.
+fn masked(mut recipe: Recipe, component: &luxforge_core::Component) -> Recipe {
+    let mut mask = luxforge_core::Mask::new("Mask 1");
+    mask.components.push(component.clone());
+    recipe.layers[0].mask = Some(mask.id.clone());
+    recipe.masks.push(mask);
+    recipe
 }
 
 // ---- Per filter -------------------------------------------------------------------------------
@@ -226,6 +240,7 @@ fn run_step(
         passes,
         applies: vec![apply],
         clamps: false,
+        mask: None,
     };
     let plan = GpuPlan {
         boundary: boundary(width, height, 1, values).expect("a boundary"),
@@ -799,12 +814,12 @@ struct Measured {
     planes: u64,
 }
 
-/// `payload` over `pixels` on the linear path: the CPU frame against the GPU plan's, its
-/// atmospheric light stored by the CPU frame's render when `stored`, else taken on the GPU.
+/// `stack` over `pixels` on the linear path: the CPU frame against the GPU plan's, its atmospheric
+/// light stored by the CPU frame's render when `stored`, else taken on the GPU.
 fn measure_unit(
     qualifier: &Qualifier,
     registry: &ModuleRegistry,
-    payload: &Value,
+    stack: &Recipe,
     (width, height): (u32, u32),
     pixels: &[[f32; 3]],
     stored: bool,
@@ -822,12 +837,11 @@ fn measure_unit(
         image: &image,
         settings: LinearSettings::default(),
     };
-    let stack = recipe(payload.clone());
     let context = RenderContext::new();
     let cpu = render(
         registry,
         source,
-        &stack,
+        stack,
         RenderOptions::exact(&Cancel::never()),
         &context,
     )
@@ -840,7 +854,7 @@ fn measure_unit(
     };
     let plan = match gpu_plan_with(
         registry,
-        &stack,
+        stack,
         GpuPlanRequest::exact(0, stage(width, height))
             .qualifying()
             .linear(),
@@ -849,7 +863,7 @@ fn measure_unit(
     .expect("the stack compiles")
     {
         GpuAnswer::Plan(plan) => *plan,
-        GpuAnswer::Fallback(reason) => panic!("{payload}: {reason}"),
+        GpuAnswer::Fallback(reason) => panic!("{reason}"),
     };
     let approximate = plan.approximate();
     let planes = plan
@@ -891,11 +905,11 @@ fn measure_unit(
     }
 }
 
-/// Every Presence combination at both ends, over a synthetic photograph at two sizes, against the
-/// CPU frame of the same stack: the program's `f32` output through the reference quantizer held to
-/// the spatial limits and the finiteness rule, the drawn codes reported beside it. Dehaze is run
-/// with the light the CPU stored and with the one the GPU takes from the stage it holds, which on
-/// a whole stage is the same selection.
+/// Every Presence combination at both ends, unmasked and masked by a feathered radial, over a
+/// synthetic photograph at two sizes, against the CPU frame of the same stack: the program's `f32`
+/// output through the reference quantizer held to the spatial limits and the finiteness rule, the
+/// drawn codes reported beside it. Dehaze is run with the light the CPU stored and with the one
+/// the GPU takes from the stage it holds, which on a whole stage is the same selection.
 #[test]
 fn gpu_presence_units_meet_the_spatial_limits() {
     let test = "gpu_presence_units_meet_the_spatial_limits";
@@ -916,8 +930,16 @@ fn gpu_presence_units_meet_the_spatial_limits() {
     let (mut programs, mut drawn, mut missed) = (Vec::new(), Vec::new(), Vec::new());
     for (width, height) in [(480, 320), (1536, 1024)] {
         let pixels = photograph(width, height, u64::from(width));
-        for payload in &cases {
+        for (payload, masking) in cases
+            .iter()
+            .flat_map(|payload| [(payload, false), (payload, true)])
+        {
             let dehaze = payload.get("dehaze").is_some();
+            let stack = if masking {
+                masked(recipe(payload.clone()), &radial())
+            } else {
+                recipe(payload.clone())
+            };
             for stored in if dehaze {
                 vec![true, false]
             } else {
@@ -926,13 +948,14 @@ fn gpu_presence_units_meet_the_spatial_limits() {
                 let measured = measure_unit(
                     &qualifier,
                     &registry,
-                    payload,
+                    &stack,
                     (width, height),
                     &pixels,
                     stored,
                 );
                 let name = format!(
-                    "{payload} at {width}x{height}{}",
+                    "{payload}{} at {width}x{height}{}",
+                    if masking { " masked" } else { "" },
                     match (dehaze, stored) {
                         (true, true) => ", light stored",
                         (true, false) => ", light taken on the GPU",
