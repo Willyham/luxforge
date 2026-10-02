@@ -19,8 +19,8 @@ pub mod theme;
 mod widgets;
 
 pub use photo_surface::{
-    Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics, SurfaceId,
-    Turn, mips_admissible, photo_surface, region_texture_admissible, set_surface_waker,
+    FirstDrawn, Frame, Placement, RegionFrame, RegionOverlay, RegionQuality, SurfaceDiagnostics,
+    SurfaceId, Turn, mips_admissible, photo_surface, region_texture_admissible, set_surface_waker,
     stage_surface, surface_diagnostics, surface_retirement_pending, viewport_surface,
 };
 pub use widgets::*;

@@ -1168,9 +1168,10 @@ fn gpu_detail_pass_pipelines_are_shared() {
 }
 
 /// What the photo surface's slot drawing both Detail units charges the GPU-preview budget at Fit:
-/// the 60 MP JPEG's Fit stage and the evidence window's whole Fit bounds fit it; a stage past about
-/// 3 MP does not, so the surface refuses it before creating anything and draws the CPU's frame,
-/// naming the budget (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
+/// the 60 MP JPEG's Fit stage, the evidence window's whole Fit bounds and a 3026 × 1826 region (the
+/// largest 100% window measured) fit it; a stage past about 8 MP does not, so the surface refuses it
+/// before creating anything and draws the CPU's frame, naming the budget
+/// (`spatial_planes_are_charged_released_and_refused_past_the_budget`).
 #[test]
 fn gpu_detail_planes_are_charged_to_the_budget() {
     let test = "gpu_detail_planes_are_charged_to_the_budget";
@@ -1182,8 +1183,10 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
     for ((width, height), full, fits) in [
         ((1716, 1030), (10000, 6000), true),
         ((1716, 1508), (4024, 3537), true),
-        ((2400, 1600), (6000, 4000), false),
-        ((3464, 2309), (10000, 6667), false),
+        ((2400, 1600), (6000, 4000), true),
+        ((3026, 1826), (10000, 6000), true),
+        ((3464, 2309), (10000, 6667), true),
+        ((4000, 2667), (10000, 6667), false),
     ] {
         let plan = planned(
             gpu_plan(
