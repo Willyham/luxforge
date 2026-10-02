@@ -3033,6 +3033,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         draft_id,
         fields,
         Some((masking.asset.clone(), None)),
+        crate::app::gpu_preview::GpuAsk::Off,
     );
     assert!(late_set.is_ok(), "the owner accepts the geometry");
 
@@ -3502,6 +3503,7 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
             held.draft_id,
             Value::Object(held.fields),
             Some((masking.asset.clone(), None)),
+            crate::app::gpu_preview::GpuAsk::Off,
         );
         assert!(
             late_set.is_ok(),
@@ -5905,4 +5907,34 @@ fn the_coverage_overlay_of_a_curve_only_mask_reads_the_curve_layers_input() {
         "the global curve ahead of the masked one moves the input the mask reads, so the input is \
          the masked curve layer's and not the Basic layer's"
     );
+}
+
+/// At a percentage zoom the mask overlay is drawn with the CPU's region frames, which a GPU frame
+/// drawn alone does not carry: a mask gesture with its overlay shown keeps the CPU path, names why
+/// and asks for no boundary.
+#[test]
+fn a_percentage_mask_gesture_with_its_overlay_shown_keeps_the_cpu_path() {
+    let mut masking = Masking::opened();
+    luxforge_testbase::wait_until("the first frame", || {
+        let _ = masking
+            .editor
+            .update(Message::Preview(PreviewMessage::Poll));
+        masking.editor.presentation.dimensions.is_some()
+    });
+    masking.enter_mask_mode();
+    masking.editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+    masking.message(MaskMessage::New(LINEAR.to_owned()));
+    masking.open_gesture();
+    masking.sweep((0.5, 0.2), (0.5, 0.8));
+    assert!(
+        masking.editor.mask_coverage_target().is_some(),
+        "the overlay is shown"
+    );
+    assert_eq!(
+        masking.editor.gpu_plan_fallback(),
+        Some("overlay-shown".into())
+    );
+    assert_eq!(masking.editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert!(masking.editor.surfaces().gpu.is_none());
+    masking.draft(DraftMessage::Cancel);
 }

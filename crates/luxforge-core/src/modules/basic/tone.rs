@@ -18,6 +18,16 @@ use crate::{
         srgb::{decode_f32, encode_f32},
     },
     modules::PointwiseColor,
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
+};
+
+/// The Tone unit's GPU program (`tone.wgsl`): Contrast's branch and the eight coefficients below.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_basic_tone",
+    source: include_str!("tone.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 9,
+    enabled: true,
 };
 
 /// The curve domain's pivot: encoded mid-grey. See "Contrast" in the design doc.
@@ -236,6 +246,34 @@ impl PointwiseColor for Tone {
             self.contrast, self.highlights, self.shadows, self.whites, self.blacks
         )
     }
+
+    /// Contrast's branch, decided by the stored value's sign as `contrast_stage` decides it, then
+    /// the eight `f32` coefficients the CPU unit holds: all pure functions of the five values the
+    /// description writes.
+    fn gpu(&self) -> Option<GpuDescription> {
+        let branch: u32 = if self.contrast == 0.0 {
+            0
+        } else if self.contrast > 0.0 {
+            1
+        } else {
+            2
+        };
+        let mut words = vec![branch];
+        words.extend(
+            [
+                self.alpha,
+                self.contrast_g0,
+                self.contrast_inv_gap,
+                self.contrast_kappa,
+                self.shadows_exp_neg_k,
+                self.highlights_exp_neg_k,
+                self.blacks_bp,
+                self.whites_blacks_inv_gap,
+            ]
+            .map(f32::to_bits),
+        );
+        Some(GpuDescription::new(&PROGRAM, words))
+    }
 }
 
 #[cfg(test)]
@@ -382,6 +420,54 @@ mod tests {
                 (pixel[0] - pixel[1]).abs() < 1e-5 && (pixel[1] - pixel[2]).abs() < 1e-5,
                 "{pixel:?}"
             );
+        }
+    }
+
+    /// The GPU program's words are Contrast's branch and the coefficients the CPU unit holds, and
+    /// two separately built units that describe themselves identically carry identical uniforms,
+    /// at each slider's extremes, at zero of either sign and in combination.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let mut values = Vec::new();
+        for field in 0..5 {
+            for value in [-100.0, -37.5, -0.0, 0.0, 1.0 / 3.0, 64.0, 100.0] {
+                let mut set = [0.0; 5];
+                set[field] = value;
+                values.push(set);
+            }
+        }
+        values.push([25.0, -30.0, 30.0, -15.0, 15.0]);
+        values.push([-100.0, 100.0, -100.0, 100.0, -100.0]);
+        let build = || -> Vec<Tone> {
+            values
+                .iter()
+                .map(|[c, h, s, w, b]| Tone::new(*c, *h, *s, *w, *b))
+                .collect()
+        };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for unit in &first {
+            let description = unit.gpu().expect("Tone has a program");
+            let branch = if unit.contrast == 0.0 {
+                0
+            } else if unit.contrast > 0.0 {
+                1
+            } else {
+                2
+            };
+            assert_eq!(description.words[0], branch);
+            assert_eq!(f32::from_bits(description.words[1]), unit.alpha);
+            assert_eq!(f32::from_bits(description.words[7]), unit.blacks_bp);
+            assert_eq!(
+                f32::from_bits(description.words[8]),
+                unit.whites_blacks_inv_gap
+            );
+            assert_eq!(description.program.entry, "lf_basic_tone");
         }
     }
 }

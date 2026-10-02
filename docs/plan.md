@@ -4,13 +4,13 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Engineering
 
-**GPU previews** (planned, [design](design/gpu-preview.md), [plan](../tasks/gpu-preview.json)). Draw what a gesture changes on the GPU in the same frame as the input, then dissolve to the CPU's result on settle; the CPU stays the reference for everything measured or exported.
-- Owner review of the proposed error limits, dissolve, label, preference and GPU-preview budget
-- A perceptual preview-difference measure and corpus, with today's accepted approximations as a baseline
-- The GPU stage in the photo surface; colour and mask programs owned by their modules
-- Fit drags over a held input boundary, then full-scale 100% drags
-- Presence and Detail as GPU preview programs
-- Mipmapped minification for full-resolution textures drawn below their size
+**GPU previews** ([design](design/gpu-preview.md), [qualification](specs/performance.md#gpu-previews-qualified-on-the-m4)). Implemented and qualified on the M4; outstanding:
+- Owner review of the proposed error limits, the 150 ms dissolve, the "GPU preview" label and the `gpu_preview` preference
+- Windows and Linux functional checks of the fallback and of correctness within the limits, not run
+- A drag while queued exports hold the shared pool misses 16 ms p95 (18.7 ms at 60 MP) and 32 ms at 24 MP; the reduced-pool proposal in [instant previews](design/instant-preview.md#proposals-and-later-work) is unmeasured
+- A straightened crop's Fit drag on a RAW whose exact-stage boundary passes 256 MiB keeps the CPU path; a boundary windowed to what the crop reads is proposed
+- At 100%, Detail beside Presence (Dehaze's estimate behind Detail) and the stacks past the 640 MiB budget keep the CPU path
+- Later work in the [design](design/gpu-preview.md#later): view changes without a draft, the RAW white-balance draft on the GPU, region padding
 
 **GPU memory accounting** ([plan](../tasks/rendering.json)). Measure and bound the GPU resources outside the provisional 1088 MiB photo-texture ceiling (crop textures, overlays and backend staging) before any total-memory guarantee.
 

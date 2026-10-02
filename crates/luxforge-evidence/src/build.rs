@@ -30,6 +30,7 @@ step_from! {
     ViewStep => View,
     PinchStep => Pinch,
     ViewIdleStep => ViewIdle,
+    IdleStep => Idle,
     WorkspaceStep => Workspace,
     PreviewStep => Preview,
     CompareStep => Compare,

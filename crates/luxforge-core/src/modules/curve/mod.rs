@@ -10,6 +10,9 @@
 //! compilation into that unit and the curve control's sample query.
 mod unit;
 
+/// The Tone curve unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use unit::PROGRAM as TONE_CURVE_PROGRAM;
+
 use super::{
     ActionDescriptor, ColorOperation, CompileStage, Control, CurveBackground, CurveChannel,
     EffectStage, ParameterDescriptor, PointwiseColor, Processing, StageContext,
@@ -95,9 +98,11 @@ impl FieldPatch for Curve {
     /// Only a layer whose points differ from the default reaches here. Points exactly on the
     /// diagonal are still the identity map, which compiles to no units so the layer keeps the
     /// identity byte path; every other curve is one unit.
-    fn compile(&self, values: &Values<'_>, _: CompileStage) -> Result<Processing, Error> {
+    fn compile(&self, values: &Values<'_>, at: CompileStage) -> Result<Processing, Error> {
         let points = values.curve(LUMINANCE);
-        if Interpolant::is_identity(&points) {
+        // In the GPU shape an identity curve is still its unit, so a drag that starts from the
+        // straight line keeps one program sequence (`CompileStage::gpu_shape`).
+        if !at.gpu_shape && Interpolant::is_identity(&points) {
             return Ok(Processing::Color(ColorOperation::neutral()));
         }
         let curve: Arc<dyn PointwiseColor> = Arc::new(ToneCurve::new(&Interpolant::new(&points)));

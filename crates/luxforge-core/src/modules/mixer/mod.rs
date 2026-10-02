@@ -11,6 +11,9 @@
 //! table, the controls' rails and the compilation into that unit.
 mod unit;
 
+/// The mixer unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+pub(crate) use unit::PROGRAM as MIXER_PROGRAM;
+
 use super::{
     ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration,
     field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},

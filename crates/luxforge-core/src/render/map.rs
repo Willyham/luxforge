@@ -667,6 +667,33 @@ impl WarpStep {
             }
         }
     }
+    /// [`Self::input_at`] as a homography `[a, b, c, d, e, f, g, h, i]`, row by row: `(x, y)` to
+    /// `((a·x + b·y + c) / w, (d·x + e·y + f) / w)` for `w = g·x + h·y + i`. `None` for a lens
+    /// distortion, which no homography is.
+    pub(crate) fn homography(self) -> Option<[f64; 9]> {
+        match self {
+            Self::Affine(m) => Some([m[0], m[1], m[2], m[3], m[4], m[5], 0.0, 0.0, 1.0]),
+            Self::Radial(_) => None,
+            Self::Projective(p) => {
+                // With X = x − cx and Y = y − cy, `input_at` is c + unit·(X, Y) / w for
+                // w = unit·cover − h·X − v·Y: the translation by c of [[unit, 0, 0],
+                // [0, unit, 0], [−h, −v, unit·cover]] at (X, Y, 1).
+                let (cx, cy) = p.centre;
+                let w = p.unit * p.cover + p.h * cx + p.v * cy;
+                Some([
+                    p.unit - cx * p.h,
+                    -cx * p.v,
+                    cx * (w - p.unit),
+                    -cy * p.h,
+                    p.unit - cy * p.v,
+                    cy * (w - p.unit),
+                    -p.h,
+                    -p.v,
+                    w,
+                ])
+            }
+        }
+    }
     fn output_at(self, x: f64, y: f64) -> Result<(f64, f64), MapError> {
         let point = match self {
             Self::Affine(m) => Affine(m)
@@ -994,6 +1021,21 @@ impl GeometryMap {
                 } else {
                     Err(MapError::Outside)
                 }
+            }
+        }
+    }
+    /// [`Self::to_content`] without its domain check, by the same steps: the content coordinate
+    /// any output coordinate maps to, which may be non-finite far outside the output stage. What a
+    /// GPU coordinate grid's nodes read, the last of which may lie a cell past the output's edge so
+    /// that every pixel centre falls inside a cell.
+    pub(crate) fn content_at(&self, mut x: f64, mut y: f64) -> (f64, f64) {
+        match &self.mapping {
+            MappingShape::Affine { inverse, .. } => Affine(*inverse).at(x, y),
+            MappingShape::Warp { steps, .. } => {
+                for step in steps.iter().rev() {
+                    (x, y) = step.input_at(x, y);
+                }
+                (x, y)
             }
         }
     }

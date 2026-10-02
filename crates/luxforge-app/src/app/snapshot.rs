@@ -84,7 +84,7 @@ impl Editor {
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
+        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":self.workspace.pickers(),"section_controls":self.workspace.section_controls(),"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(),"histogram":self.histogram_summary(),"readout":self.readout_summary(),"status_bar":self.status_bar_summary(),"proxy":self.proxy_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"export":self.export_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section
@@ -283,6 +283,8 @@ impl Editor {
                 "upload_bytes":gpu.upload_bytes,
                 "full_resident_bytes":gpu.full_resident_bytes,
                 "region_resident_bytes":gpu.region_resident_bytes,
+                "mip_resident_bytes":gpu.mip_resident_bytes,
+                "mip_generations":gpu.mip_generations,
                 "stage_resident_bytes":gpu.stage_resident_bytes,
                 "retiring_bytes":gpu.retiring_bytes,
                 "deferred_uploads":gpu.deferred_uploads,
@@ -313,6 +315,54 @@ impl Editor {
                     },
                 }))),
                 "drawn_clipping_version":gpu.drawn_clipping_version,
+                // The GPU stage, beside the photo-texture figures: which path drew the photograph,
+                // why a frame handed a GPU plan drew the CPU frame instead, the boundary the GPU
+                // output was drawn from, and the GPU-preview budget's own figures.
+                "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
+                "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
+                // Why the desktop hands the surface no plan, or why the open gesture's newest
+                // tick took the CPU path: this client's `gpu_preview` preference is off, the
+                // plan's own reason, a boundary not held yet, the converter's reason or the
+                // surface's fallback.
+                "plan_fallback":self.gpu_plan_fallback().map(|reason| json!({"reason":reason})),
+                "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
+                // The draft revision of the plan whose output was drawn, and the boundary a plan
+                // last evaluated, drawn or held behind the CPU frame.
+                "drawn_gpu_revision":gpu.drawn_gpu_tag,
+                "gpu_ready_boundary":gpu.gpu_ready_boundary,
+                "gpu_preview_compiles":gpu.gpu_preview_compiles,
+                "gpu_preview_compiled":gpu.gpu_preview_compiled,
+                "gpu_preview_compile_max_us":gpu.gpu_preview_compile_max_us,
+                "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
+                "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
+                "gpu_preview_done_us":gpu.gpu_preview_done_us,
+                // The clipping marks the GPU frame drawn carried, which stand for the overlay over it:
+                // approximate, per pixel of the stage the plan draws.
+                "clipping_marks":gpu.drawn_clipping_marks.map(|[shadows, highlights]| json!({"shadows":shadows,"highlights":highlights,"approximate":true})),
+                // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
+                "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
+                    "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,
+                    "progress":dissolve.progress()})),
+                "gpu_preview_budget_bytes":gpu.gpu_preview_budget_bytes,
+                "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
+                "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
+                "gpu_preview_passes":gpu.gpu_preview_passes,
+                "gpu_preview_spatial_passes":gpu.gpu_preview_spatial_passes,
+                "gpu_identity":self.evidence.as_ref().is_some_and(|evidence| evidence.gpu_identity.is_some()),
+                // The open gesture's GPU preview: its held boundary, the plan's revision, why the
+                // latest tick took the CPU path, and its tick counts; and the warm list's version.
+                "gpu_preview":self.gpu.summary(),
+                // At a percentage zoom of 100% or more: the region of the output stage the view
+                // shows now, and the region the plan handed to the surface draws, which holds it;
+                // both `[x0, y0, x1, y1]`.
+                "visible_region":self.presentation.dimensions
+                    .and_then(|stage| self.desired_view_for(stage))
+                    .map(|rect| [rect.x0, rect.y0, rect.x1(), rect.y1()]),
+                "plan_region":self.gesture_gpu_plan()
+                    .and_then(|(plan, _)| plan.region)
+                    .map(|region| region.rect),
+                // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
+                "settle":self.gpu_settle.summary(),
             },
             "views": self.log.loop_timing.get().views,
         })
@@ -364,7 +414,7 @@ impl Editor {
     /// and the renderer's figure for the picture on screen.
     pub(super) fn status_bar_summary(&self) -> Value {
         let model = &self.workspace.status;
-        json!({"message":model.message,"readout":model.readout,"render":model.render,"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
+        json!({"message":model.message,"readout":model.readout,"render":model.render,"gpu_ms":model.gpu_us.map(|us| us as f64 / 1000.0),"render_ms":self.activity.render.map(|time| time.ms),"render_proxy":self.activity.render.map(|time| time.proxy),"render_approximate":self.activity.render.map(|time| time.approximate)})
     }
 
     /// The notices the captured frame drew, by title, so a frame's chrome is observable.
@@ -491,5 +541,35 @@ impl Editor {
                     "guide": model.guide,
                 })
             })
+    }
+}
+
+/// A GPU-stage fallback as evidence records it: its reason, and for the budget or the texture
+/// limit the figures that refused it.
+fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
+    use luxforge_ui::photo_surface::GpuFallback;
+    match fallback {
+        GpuFallback::BudgetExceeded {
+            requested,
+            in_use,
+            budget,
+        } => json!({"reason":fallback.as_str(),"requested_bytes":requested,
+            "in_use_bytes":in_use,"budget_bytes":budget}),
+        GpuFallback::TextureLimit {
+            width,
+            height,
+            limit,
+        } => json!({"reason":fallback.as_str(),"width":width,"height":height,"limit":limit}),
+        GpuFallback::BufferLimit { bytes, limit } => {
+            json!({"reason":fallback.as_str(),"bytes":bytes,"limit_bytes":limit})
+        }
+        GpuFallback::BoundaryUploading { uploaded, bytes } => {
+            json!({"reason":fallback.as_str(),"uploaded_bytes":uploaded,"bytes":bytes})
+        }
+        GpuFallback::NoAdapter
+        | GpuFallback::DeviceLost
+        | GpuFallback::PipelineFailed
+        | GpuFallback::Compiling
+        | GpuFallback::BoundaryReleased => json!({"reason":fallback.as_str()}),
     }
 }

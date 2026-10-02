@@ -531,7 +531,10 @@ fn preview_wait(error: &luxforge_core::Error) -> Result<PreviewWait, String> {
 /// desktop decides that when the answer arrives, from the session generation and the asset
 /// revision the answer carries beside the job ([`super::Editor`]'s `superseded`), and the preview
 /// queue's own generation keeps an older frame from following a newer one on screen.
-fn ready_preview_job(owner: &OwnerHandle, request: PreviewRequest) -> Result<PreviewJob, String> {
+pub(crate) fn ready_preview_job(
+    owner: &OwnerHandle,
+    request: PreviewRequest,
+) -> Result<PreviewJob, String> {
     let client = request.client;
     loop {
         let error = match plan_preview(owner, request.clone()) {
@@ -638,12 +641,15 @@ pub(crate) fn refresh(
     // the histogram needs no second render and an `analysis.request` for this identity is a
     // cache hit. A truncated crop-draft job is the one exception; the core refuses to analyse
     // it, because its identity describes the whole stack rather than the prefix it renders.
+    // The committed stack's job carries the plans its gestures are likely to draw, which the
+    // surface compiles before a drag begins ([`super::gpu_preview`]).
     let job = ready_preview_job(
         owner,
         proxied(
             PreviewRequest::new(client, asset_id)
                 .entry(Some(displayed))
-                .analyse(),
+                .analyse()
+                .gpu(),
             proxy,
         ),
     )?;
@@ -1032,12 +1038,18 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &Draft
 /// mask overlay's coverage grid is not asked for here, because
 /// [`crate::app::Editor::request_preview`] attaches it to every job it queues, this one included —
 /// one rule for every preview path, so the grid is requested once.
+///
+/// As `gpu` asks, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the
+/// plan a tick is drawn from, or its reason, and the boundary it starts from, in the same answer,
+/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit it is planned at the
+/// job's display bounds, and at a percentage zoom of 100% or more over the region it names.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
     fields: Value,
     preview: Option<(AssetId, Option<ProxyBounds>)>,
+    gpu: super::gpu_preview::GpuAsk,
 ) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
     let queued = Instant::now();
     let started = queued;
@@ -1051,15 +1063,17 @@ pub(crate) fn draft_set_now(
     let draft = parse::<Draft>(draft)?;
     let job = preview
         .map(|(asset_id, proxy)| {
-            plan_preview(
-                owner,
-                proxied(
-                    PreviewRequest::new(client, asset_id)
-                        .draft(draft_id)
-                        .analyse(),
-                    proxy,
-                ),
-            )
+            let request = PreviewRequest::new(client, asset_id)
+                .draft(draft_id)
+                .analyse();
+            let request = match gpu {
+                super::gpu_preview::GpuAsk::Off => request,
+                super::gpu_preview::GpuAsk::Fit => request.gpu(),
+                super::gpu_preview::GpuAsk::Region(rect, magnification) => {
+                    request.gpu_region(rect, magnification)
+                }
+            };
+            plan_preview(owner, proxied(request, proxy))
         })
         .transpose()
         .map_err(|error| error.to_string())?;

@@ -49,6 +49,8 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 `modules/builtin-descriptors.json` is the one committed snapshot of what `ModuleRegistry::builtin()` publishes: `module.list` with its `host` array, and every method `schema.list` generates from those descriptors, with its parameters, source kinds and superseded fields. `crates/luxforge-core/tests/modules/descriptors.rs` compares a fresh listing with it byte for byte; after an intended descriptor change, regenerate it with `cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot` and review the diff.
 
+[`preview/corpus.json`](preview/corpus.json) lists what the [GPU preview error limits](../docs/design/gpu-preview.md#the-preview-error-limit) are judged on: seven sources (the generated 24 MP and 60 MP JPEGs, a zone plate, the Presence fixture and the Z6, X100VI and Air 2S RAWs) and 25 recipes (full Basic, the Tone curve, the mixer, the vignette, each mask kind and their algebra, a straightened crop, a Perspective and lens warp, Presence combinations and Detail's parameter sets), each over the sources it applies to and at Fit and 100%. A source carries its SHA-256 or an explicit gap; a RAW is named by its id in the private RAW manifest. The zone plate is a gap: it was generated ad hoc and no generator or file was kept. `cargo xtask preview-corpus [--manifest FILE]` checks the file and re-hashes each source on the host; it records no measurement.
+
 ## RAW preparation fixtures
 
 The optional [extended corpus](../docs/design/sample-corpus.md) retains originals

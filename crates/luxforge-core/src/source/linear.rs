@@ -186,6 +186,14 @@ impl LinearImage {
         })
     }
 
+    /// This image as development `development`: a proxy's, which is derived from the development
+    /// and view it was downscaled from and from its plan ([`crate::proxy`]), so two proxies of the
+    /// same pixels share it.
+    pub(crate) fn with_development(mut self, development: u64) -> Self {
+        self.development = development;
+        self
+    }
+
     /// Return a cropped/oriented view without copying the source planes.
     ///
     /// `crop` is `[x, y, width, height]` in the base source-plane coordinates. EXIF orientation
@@ -256,11 +264,13 @@ impl LinearImage {
         self.with_view([x0, y0, x1 - x0 + 1, y1 - y0 + 1], self.view.orientation)
     }
 
-    pub(crate) fn width(&self) -> u32 {
+    /// The viewed width: the content stage a recipe over this development is compiled against.
+    pub fn width(&self) -> u32 {
         self.view.output_dimensions().0
     }
 
-    pub(crate) fn height(&self) -> u32 {
+    /// The viewed height.
+    pub fn height(&self) -> u32 {
         self.view.output_dimensions().1
     }
 
@@ -348,11 +358,12 @@ impl LinearImage {
         Ok(image)
     }
 
-    /// Read one view pixel without allocating. This is also useful to a source-stage picker. A
-    /// caller that reads many pixels takes [`Self::reader`] once instead.
-    #[cfg(test)]
+    /// Read one view pixel, in unbounded linear sRGB, without allocating, or `None` outside the
+    /// view. A caller in the core that reads many pixels takes [`Self::reader`] once instead. The
+    /// desktop's GPU-preview qualification harness reads a developed proxy through this, off any
+    /// owner or UI thread, to hold it as a GPU boundary.
     #[inline]
-    pub(crate) fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
+    pub fn pixel(&self, x: u32, y: u32) -> Option<[f32; 3]> {
         self.reader().pixel(x, y)
     }
 }
