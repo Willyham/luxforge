@@ -85,6 +85,7 @@ fn boundary(frame: &Frame) -> Option<GpuBoundary> {
     let table = luxforge_core::colour::srgb::decode_table();
     let (width, height) = frame.size();
     GpuBoundary::from_linear(
+        luxforge_ui::photo_surface::BoundaryFormat::Half,
         width,
         height,
         frame.version(),

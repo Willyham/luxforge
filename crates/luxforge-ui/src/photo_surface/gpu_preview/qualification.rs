@@ -4,19 +4,20 @@
 //!
 //! It runs the stage's own shader: each step checked by [`validate_step`], the plan assembled and
 //! its words packed exactly as `prepare` assembles and packs them, a spatial step's planes created
-//! and its passes encoded before the frame's as the slot encodes them, and the boundary uploaded
-//! as the slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
+//! and its passes encoded before the frame's as the slot encodes them, a geometry tail's second
+//! pass over the content pass's intermediate, and the boundary uploaded in its own format as the
+//! slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
 //! program's `f32` output is read before any encoding, which is where a non-finite value would be
-//! hidden; [`Qualifier::evaluate_codes`] writes the stage's own sRGB-typed output format and reads
-//! the codes the surface draws.
+//! hidden; [`Qualifier::evaluate_codes`] writes the stage's own output format and reads the codes
+//! its last pass computes as the CPU's quantizer does.
 //!
 //! Built only with the crate's `qualification` feature, which only a `[dev-dependencies]` table
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
-    Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, OUTPUT_FORMAT, Support, answered,
-    assemble, compile, le_bytes, pack, slot_charge, spatial, upload_boundary, validate,
-    validate_step,
+    BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuStep, GpuTail, OUTPUT_FORMAT,
+    Support, answered, assemble_passes, compile, encode_pass, le_bytes, pack, slot_charge, spatial,
+    upload_boundary, validate, validate_step,
 };
 use std::sync::mpsc;
 
@@ -65,6 +66,15 @@ impl Qualifier {
         )
     }
 
+    /// How long the stage's own compile of `steps` takes on this device, from the programs' `naga`
+    /// checks to the backend's pipelines, as the compile thread runs it
+    /// ([`super::compile`](mod@super::compile)): wall-clock time on the calling thread.
+    pub fn compile_time(&self, steps: &[GpuStep]) -> Result<std::time::Duration, String> {
+        let started = std::time::Instant::now();
+        compile(&self.device, &self.support, steps, OUTPUT_FORMAT)?;
+        Ok(started.elapsed())
+    }
+
     /// How many spatial pass pipelines this qualifier has created: a pass whose module another
     /// pass or an earlier plan already compiled reuses that pipeline and adds nothing.
     pub fn pass_pipelines_created(&self) -> u64 {
@@ -104,7 +114,7 @@ impl Qualifier {
     }
 
     /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
-    /// the hardware's encoding of the same values, row by row, RGBA.
+    /// the codes its last pass computes as the CPU's quantizer does, row by row, RGBA.
     pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
         let (bytes, _) = self.run(None, plan, None, OUTPUT_FORMAT, 4)?;
         Ok(codes(&bytes))
@@ -139,7 +149,9 @@ impl Qualifier {
         for step in &plan.steps {
             validate_step(step)?;
         }
-        validate(&assemble(&plan.steps)?)?;
+        for source in assemble_passes(&plan.steps, true)? {
+            validate(&source)?;
+        }
         let spatial_steps = plan
             .steps
             .iter()
@@ -153,8 +165,8 @@ impl Qualifier {
         compile(&self.device, &self.support, &plan.steps, format)
     }
 
-    /// `plan`'s boundary uploaded, or `float`'s pixels as `rgba32float` in its place, and its words
-    /// and blocks packed and written, bound as group 0.
+    /// `plan`'s boundary uploaded in its own format, or `float`'s pixels as `rgba32float` in its
+    /// place, and its words and blocks packed and written, bound as group 0.
     fn inputs(&self, plan: &GpuPlan, float: Option<&[[f32; 3]]>) -> Result<Inputs, String> {
         let device = &self.device;
         let (width, height) = plan.boundary.size();
@@ -163,7 +175,7 @@ impl Qualifier {
                 return Err("an rgba32float boundary holds the boundary's pixels".into());
             }
             Some(_) => wgpu::TextureFormat::Rgba32Float,
-            None => wgpu::TextureFormat::Rgba16Float,
+            None => plan.boundary.format().texture(),
         };
         let boundary = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("luxforge.qualification.boundary"),
@@ -252,13 +264,16 @@ impl Qualifier {
             bindings,
             words,
             blocks,
-            _held: (boundary, words_buffer, blocks_buffer),
+            words_buffer,
+            blocks_buffer,
+            _boundary: boundary,
         })
     }
 
     /// `plan` drawn into a target of `format`, `texel_bytes` a texel, read back unpadded, after
     /// `first`'s passes when it is given and over `float`'s boundary when that is; with how many
-    /// of `plan`'s passes ran.
+    /// of `plan`'s passes ran. A plan with a geometry tail draws its output stage; one without, the
+    /// boundary's size.
     fn run(
         &self,
         first: Option<&GpuPlan>,
@@ -269,7 +284,12 @@ impl Qualifier {
     ) -> Result<(Vec<u8>, u64), String> {
         let device = &self.device;
         let compiled = self.compiled(plan, format)?;
-        let (width, height) = plan.boundary.size();
+        let boundary_size = plan.boundary.size();
+        let (width, height) = boundary_size;
+        let tail = plan.steps.iter().find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
         let origin_of = |plan: &GpuPlan| {
             (
                 plan.texels.origin[0].max(0.0) as u32,
@@ -311,7 +331,9 @@ impl Qualifier {
         }
         let inputs = self.inputs(plan, float)?;
         let bindings = &inputs.bindings;
-        let texture = |label, format, usage| {
+        // The output is the tail's output stage when the plan has a tail.
+        let (width, height) = tail.map_or(boundary_size, GpuTail::output);
+        let texture = |label, (width, height): (u32, u32), format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
                 size: wgpu::Extent3d {
@@ -329,9 +351,40 @@ impl Qualifier {
         };
         let target = texture(
             "luxforge.qualification.target",
+            (width, height),
             format,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );
+        // A tail's content pass writes the intermediate the boundary's size, which the tail reads
+        // through bindings of its own over the same words and blocks.
+        let intermediate = tail.map(|tail| {
+            let texture = texture(
+                "luxforge.qualification.intermediate",
+                boundary_size,
+                tail.intermediate(),
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("luxforge.qualification.intermediate_bindings"),
+                layout: &self.support.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inputs.words_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: inputs.blocks_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                ],
+            });
+            (texture, bindings)
+        });
         let row = width * texel_bytes;
         let padded =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -360,29 +413,35 @@ impl Qualifier {
             );
             ran = groups.encode(&mut encoder, &compiled.spatial, bindings, &run);
         }
-        {
-            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("luxforge.qualification.pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-            });
-            pass.set_pipeline(&compiled.render);
-            pass.set_bind_group(0, bindings, &[]);
-            if let Some(fragment) = groups.as_ref().and_then(|groups| groups.fragment.as_ref()) {
-                pass.set_bind_group(1, fragment, &[]);
+        let planes_group = groups.as_ref().and_then(|groups| groups.fragment.as_ref());
+        let size = |(width, height): (u32, u32)| (width as f32, height as f32);
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        match (&intermediate, &compiled.tail) {
+            (Some((texture, tail_bindings)), Some(tail)) => {
+                let content = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                encode_pass(
+                    &mut encoder,
+                    &content,
+                    &compiled.render,
+                    (bindings, planes_group),
+                    size(boundary_size),
+                );
+                encode_pass(
+                    &mut encoder,
+                    &view,
+                    tail,
+                    (tail_bindings, None),
+                    size((width, height)),
+                );
             }
-            pass.draw(0..3, 0..1);
+            (None, None) => encode_pass(
+                &mut encoder,
+                &view,
+                &compiled.render,
+                (bindings, planes_group),
+                size((width, height)),
+            ),
+            _ => return Err("a plan's passes do not match its tail".into()),
         }
         encoder.copy_texture_to_buffer(
             target.as_image_copy(),
@@ -433,7 +492,9 @@ struct Inputs {
     bindings: wgpu::BindGroup,
     words: Vec<u32>,
     blocks: Vec<u32>,
-    _held: (wgpu::Texture, wgpu::Buffer, wgpu::Buffer),
+    words_buffer: wgpu::Buffer,
+    blocks_buffer: wgpu::Buffer,
+    _boundary: wgpu::Texture,
 }
 
 /// `rgba8` texels as codes.
@@ -461,7 +522,19 @@ fn floats(bytes: &[u8]) -> Vec<[f32; 4]> {
 /// half float, alpha one: what a qualification test hands [`Qualifier::evaluate`], and the values a
 /// CPU reference must then read, which [`held`] gives.
 pub fn boundary(width: u32, height: u32, version: u64, pixels: &[[f32; 3]]) -> Option<GpuBoundary> {
+    boundary_as(BoundaryFormat::Half, width, height, version, pixels)
+}
+
+/// [`boundary`] in `format`: an `rgba32float` one holds each value as it is, as a RAW's does.
+pub fn boundary_as(
+    format: BoundaryFormat,
+    width: u32,
+    height: u32,
+    version: u64,
+    pixels: &[[f32; 3]],
+) -> Option<GpuBoundary> {
     GpuBoundary::from_linear(
+        format,
         width,
         height,
         version,

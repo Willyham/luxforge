@@ -319,7 +319,7 @@ fn largest(gpu: &[f32], cpu: &[f32]) -> f64 {
 #[test]
 fn gpu_detail_oklab_matches_the_cpu() {
     let test = "gpu_detail_oklab_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -377,7 +377,7 @@ fn gpu_detail_oklab_matches_the_cpu() {
 #[test]
 fn gpu_detail_smoothing_matches_the_cpu_kernels() {
     let test = "gpu_detail_smoothing_matches_the_cpu_kernels";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -443,7 +443,7 @@ fn gpu_detail_smoothing_matches_the_cpu_kernels() {
 #[test]
 fn gpu_detail_blur_and_guide_match_the_cpu_kernels() {
     let test = "gpu_detail_blur_and_guide_match_the_cpu_kernels";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (200, 136);
@@ -506,7 +506,7 @@ fn gpu_detail_blur_and_guide_match_the_cpu_kernels() {
 #[test]
 fn gpu_detail_shrinkage_matches_the_cpu() {
     let test = "gpu_detail_shrinkage_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (192, 128);
@@ -593,7 +593,7 @@ fn gpu_detail_shrinkage_matches_the_cpu() {
 #[test]
 fn gpu_detail_sharpening_matches_the_cpu() {
     let test = "gpu_detail_sharpening_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (208, 144);
@@ -669,7 +669,7 @@ fn gpu_detail_sharpening_matches_the_cpu() {
 #[test]
 fn gpu_detail_reconstruction_matches_the_cpu() {
     let test = "gpu_detail_reconstruction_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (256, 256);
@@ -775,7 +775,7 @@ fn gpu_detail_reconstruction_matches_the_cpu() {
 #[test]
 fn gpu_detail_tanh_precision_is_measured() {
     let test = "gpu_detail_tanh_precision_is_measured";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -978,7 +978,7 @@ fn measure_unit(
 #[test]
 fn gpu_detail_units_meet_the_spatial_limits() {
     let test = "gpu_detail_units_meet_the_spatial_limits";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -1048,7 +1048,7 @@ fn gpu_detail_units_meet_the_spatial_limits() {
 #[test]
 fn gpu_detail_on_the_byte_path_meets_the_spatial_limits() {
     let test = "gpu_detail_on_the_byte_path_meets_the_spatial_limits";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();
@@ -1123,7 +1123,7 @@ fn gpu_detail_on_the_byte_path_meets_the_spatial_limits() {
 #[test]
 fn gpu_detail_pass_pipelines_are_shared() {
     let test = "gpu_detail_pass_pipelines_are_shared";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();
@@ -1179,7 +1179,7 @@ fn gpu_detail_pass_pipelines_are_shared() {
 #[test]
 fn gpu_detail_planes_are_charged_to_the_budget() {
     let test = "gpu_detail_planes_are_charged_to_the_budget";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();

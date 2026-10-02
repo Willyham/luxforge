@@ -113,9 +113,10 @@ use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION, Dissolve, DrawingPath,
-    DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram, GpuStep,
-    MaskedColour, PIPELINE_CACHE, PRELUDE, PositionMap, TexelMap, validate_step,
+    BoundaryFormat, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION, Dissolve,
+    DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram,
+    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
+    TexelMap, install_output_encoding, output_encoding, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -174,6 +175,8 @@ impl SurfaceFigures {
         overall.drawn_path = drawn.drawn_path;
         overall.gpu_fallback = drawn.gpu_fallback;
         overall.drawn_gpu_boundary = drawn.drawn_gpu_boundary;
+        overall.drawn_gpu_tag = drawn.drawn_gpu_tag;
+        overall.gpu_ready_boundary = drawn.gpu_ready_boundary;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
         // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
@@ -189,6 +192,12 @@ impl SurfaceFigures {
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
         overall.gpu_preview_peak_bytes = self.preview.peak();
         overall.gpu_preview_passes = self.preview.passes();
+        overall.gpu_preview_compiles = self.preview.compiles();
+        (
+            overall.gpu_preview_compiled,
+            overall.gpu_preview_compile_max_us,
+            overall.gpu_preview_compile_last_us,
+        ) = self.preview.compile_us();
         overall
     }
 }
@@ -329,6 +338,13 @@ pub struct SurfaceDiagnostics {
     /// The boundary version whose GPU-stage output the last draw drew, in place of the CPU frame
     /// or under a dissolve.
     pub drawn_gpu_boundary: Option<u64>,
+    /// The tag of the plan whose output the last draw drew ([`PhotoSurface::gpu_tag`]): the draft
+    /// revision a gesture's plan was drawn for.
+    pub drawn_gpu_tag: Option<u64>,
+    /// The boundary version of the plan the last prepare evaluated, whether the draw then drew its
+    /// output or held it behind the CPU frame ([`PhotoSurface::gpu_hold`]): the plan's pipeline is
+    /// ready and its slot holds that boundary, so the next tick can be drawn from it.
+    pub gpu_ready_boundary: Option<u64>,
     /// The interface thread's time, in microseconds, to prepare the GPU frame the last draw drew:
     /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
     /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
@@ -349,6 +365,12 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_peak_bytes: u64,
     /// How many passes the GPU stage has encoded: a redraw of an unchanged plan encodes none.
     pub gpu_preview_passes: u64,
+    /// Program sequences handed to the compile thread, and how many have finished compiling.
+    pub gpu_preview_compiles: u64,
+    pub gpu_preview_compiled: u64,
+    /// The longest and the last compile's wall-clock time on the compile thread, in microseconds.
+    pub gpu_preview_compile_max_us: u64,
+    pub gpu_preview_compile_last_us: u64,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -667,6 +689,9 @@ pub struct PhotoSurface {
     /// What the GPU stage evaluates in place of the photograph's frame; see
     /// [`PhotoSurface::gpu_preview`].
     gpu: Option<GpuPlan>,
+    /// What the GPU stage is asked beside the plan: [`PhotoSurface::gpu_hold`],
+    /// [`PhotoSurface::gpu_tag`] and [`PhotoSurface::gpu_warm`].
+    gpu_options: gpu_preview::GpuOptions,
     /// A settle's dissolve from the GPU frame to this frame; see [`PhotoSurface::dissolve`].
     dissolve: Option<Dissolve>,
     /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
@@ -700,6 +725,7 @@ pub fn photo_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        gpu_options: Default::default(),
         dissolve: None,
         clock: None,
         width,
@@ -737,6 +763,7 @@ pub fn viewport_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        gpu_options: Default::default(),
         dissolve: None,
         clock: None,
         width,
@@ -763,6 +790,7 @@ pub fn stage_surface(
         exact_stage: None,
         reveal_from: 0.0,
         gpu: None,
+        gpu_options: Default::default(),
         dissolve: None,
         clock: None,
         width,
@@ -819,6 +847,27 @@ impl PhotoSurface {
     /// ([`photo_surface`]) runs the stage; a percentage view or a crop stage ignores the plan.
     pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
         self.gpu = plan.cloned();
+        self
+    }
+
+    /// Keep the GPU stage's slot for the plan, but draw the photograph's frame: the CPU frame of
+    /// the content the plan draws has arrived, and it is the reference. The next plan of a new
+    /// value draws again with no upload, because the boundary stays held.
+    pub fn gpu_hold(mut self, hold: bool) -> Self {
+        self.gpu_options.hold = hold;
+        self
+    }
+
+    /// Report the plan's output under `tag` ([`SurfaceDiagnostics::drawn_gpu_tag`]), so evidence
+    /// correlates each GPU frame with the input that produced it.
+    pub fn gpu_tag(mut self, tag: Option<u64>) -> Self {
+        self.gpu_options.tag = tag;
+        self
+    }
+
+    /// Compile `warm`'s sequences ahead of the gesture that needs them, on the compile thread.
+    pub fn gpu_warm(mut self, warm: Option<&GpuWarm>) -> Self {
+        self.gpu_options.warm = warm.cloned();
         self
     }
 
@@ -1034,6 +1083,7 @@ where
                     Base::Photo(_) if self.viewport.is_none() => self.gpu.clone(),
                     _ => None,
                 },
+                gpu_options: self.gpu_options.clone(),
                 dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
                 offset: visible.offset,
                 size: visible.size,
@@ -1093,6 +1143,7 @@ pub struct PhotoPrimitive {
     region_overlays: [Option<RegionOverlay>; 2],
     /// A whole-frame photograph's GPU plan, drawn in place of its frame when the stage can.
     gpu: Option<GpuPlan>,
+    gpu_options: gpu_preview::GpuOptions,
     /// A whole-frame photograph's dissolve from the GPU frame last drawn, at this frame's share.
     dissolve: Option<gpu_preview::DissolveFrame>,
     offset: Vector,
@@ -1419,8 +1470,11 @@ impl shader::Primitive for PhotoPrimitive {
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
         // texture keeps it for the GPU frame it dissolves from.
+        pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
         let dissolve = self.dissolve.filter(|_| self.photo_ready(&surface));
         pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
+        surface.gpu_hold = self.gpu_options.hold;
+        surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
@@ -1740,6 +1794,8 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_path = drawn_path;
         diagnostic.gpu_fallback = gpu_fallback;
         diagnostic.drawn_gpu_boundary = drawn_gpu_boundary;
+        diagnostic.drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
+        diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_content = drawn_content;
@@ -2010,6 +2066,10 @@ struct SurfaceSlots {
     /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
     /// `None` when the frame was handed no plan.
     gpu_outcome: Option<Result<u64, GpuFallback>>,
+    /// The frame holds the GPU stage's slot but draws its CPU frame ([`PhotoSurface::gpu_hold`]).
+    gpu_hold: bool,
+    /// The tag of the plan this frame was handed ([`PhotoSurface::gpu_tag`]).
+    gpu_tag: Option<u64>,
     /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
     dissolving: Option<gpu_preview::DissolveFrame>,
 }
@@ -2017,7 +2077,7 @@ struct SurfaceSlots {
 impl SurfaceSlots {
     /// The GPU stage's output, when this frame draws it in place of the photograph's frame.
     fn gpu_output(&self) -> Option<&Picture> {
-        if matches!(self.gpu_outcome, Some(Ok(_))) {
+        if matches!(self.gpu_outcome, Some(Ok(_))) && !self.gpu_hold {
             self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
         } else {
             None
@@ -2189,6 +2249,8 @@ impl PhotoPipeline {
             drawn_status: AtomicU8::new(status),
             gpu: None,
             gpu_outcome: None,
+            gpu_hold: false,
+            gpu_tag: None,
             dissolving: None,
         }
     }
@@ -4236,6 +4298,7 @@ mod gpu_surface_tests {
             viewport: None,
             region_overlays: [None, None],
             gpu: None,
+            gpu_options: Default::default(),
             dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
@@ -4263,6 +4326,7 @@ mod gpu_surface_tests {
             }),
             region_overlays: [None, None],
             gpu: None,
+            gpu_options: Default::default(),
             dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),

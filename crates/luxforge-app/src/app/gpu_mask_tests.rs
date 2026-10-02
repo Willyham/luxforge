@@ -514,7 +514,7 @@ fn phases() -> [Phase; 2] {
 
 /// Every case of one kind at every phase: each held to the contour rule, the figures printed.
 fn qualify(test: &str, cases: Vec<(&str, Mask, StrokeTable)>) {
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: {}", qualifier.adapter());
@@ -884,7 +884,7 @@ fn gpu_mask_composition_meets_the_contour_rule() {
 #[test]
 fn gpu_mask_value_based_coverage_is_finite_over_extreme_inputs() {
     let test = "gpu_mask_value_based_coverage_is_finite_over_extreme_inputs";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let side = 256;
@@ -951,7 +951,7 @@ fn gpu_mask_value_based_coverage_is_finite_over_extreme_inputs() {
 #[test]
 fn gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits() {
     let test = "gpu_mask_a_painted_stroke_over_200_ticks_stays_within_the_limits";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (1716u32, 1144u32);

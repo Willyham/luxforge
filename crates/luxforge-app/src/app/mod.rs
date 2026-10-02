@@ -53,6 +53,9 @@ pub(crate) mod gpu_identity;
 mod gpu_mask_tests;
 #[cfg(test)]
 mod gpu_presence_tests;
+pub(crate) mod gpu_preview;
+#[cfg(test)]
+mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
@@ -337,6 +340,9 @@ pub(crate) struct Editor {
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
+    /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
+    /// list of the committed stack.
+    pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -385,13 +391,14 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 12] = [
+const AFTER_MESSAGE: [AfterMessage; 13] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
+    gpu_preview::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
@@ -482,6 +489,7 @@ impl Editor {
             capability_started: Vec::new(),
             performance: performance::Sampler::open(),
             export: Default::default(),
+            gpu: Default::default(),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -492,6 +500,9 @@ impl Editor {
         editor.thumbnailer.queue.set_waker(waker::waker());
         editor.coverage_worker.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
+        // The GPU preview encodes its output with the core's quantizer, which the widget crate
+        // cannot reach.
+        gpu_plan::install_output_encoding();
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor
@@ -763,6 +774,15 @@ impl Editor {
             surfaces.region_coverage = None;
         }
         surfaces.gpu = self.gpu_plan(surfaces.photo);
+        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
+        // presented, and tagged with the revision it draws.
+        if surfaces.gpu.is_some()
+            && let Some((_, revision)) = self.gesture_gpu_plan()
+        {
+            surfaces.gpu_hold = self.gpu_held();
+            surfaces.gpu_tag = Some(revision);
+        }
+        surfaces.gpu_warm = self.gpu.warm();
         surfaces
     }
 

@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod coverage;
+#[cfg(test)]
+mod gpu_tests;
 mod job;
 mod queue;
 mod result;
@@ -26,7 +28,8 @@ pub use coverage::{MaskCoverage, MaskCoverageTarget, MaskOverlayOutcome};
 pub use job::{PreviewIntent, PreviewJob, PreviewSource};
 pub use queue::{PreviewProgress, PreviewQueue, Queued};
 pub use result::{
-    ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome, RegionOutcome,
+    BoundaryOutcome, ExactOutcome, PhaseOutcome, PreviewPhase, PreviewResult, ProxyOutcome,
+    RegionOutcome,
 };
 pub use worker::PROGRESS_QUIET as PREVIEW_PROGRESS_QUIET;
 

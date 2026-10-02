@@ -255,6 +255,7 @@ fn solid(version: u64, rgba: [u8; 4]) -> Frame {
 /// A boundary whose every texel is linear black but for a full blue channel.
 fn black_boundary(version: u64) -> GpuBoundary {
     GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         version,
@@ -276,6 +277,7 @@ fn primitive(plan: Option<GpuPlan>, dissolve: Option<(u64, f32)>) -> PhotoPrimit
         viewport: None,
         region_overlays: [None, None],
         gpu: plan,
+        gpu_options: Default::default(),
         dissolve: dissolve.map(|(from, share)| DissolveFrame {
             dissolve: Dissolve::start(from, CPU_VERSION),
             share,

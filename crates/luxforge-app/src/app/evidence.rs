@@ -499,6 +499,11 @@ enum ExpectedPhotoDraw {
     Gpu {
         boundary: u64,
     },
+    /// A gesture's GPU frame: the plan of this draft revision over the boundary of this version.
+    GpuTick {
+        boundary: u64,
+        revision: u64,
+    },
 }
 
 fn photo_drawn(
@@ -509,6 +514,11 @@ fn photo_drawn(
         ExpectedPhotoDraw::Gpu { boundary } => {
             gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
                 && gpu.drawn_gpu_boundary == Some(boundary)
+        }
+        ExpectedPhotoDraw::GpuTick { boundary, revision } => {
+            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+                && gpu.drawn_gpu_boundary == Some(boundary)
+                && gpu.drawn_gpu_tag == Some(revision)
         }
         ExpectedPhotoDraw::Full { version, content } => {
             gpu.drawn_full_version == Some(version)
@@ -584,6 +594,28 @@ impl Editor {
         {
             return true;
         }
+        // The status bar names the frame the surface drew last, which only that draw can say: a
+        // change of drawing path wakes the desktop, whose next update derives the label again.
+        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
+        // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
+        // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
+        // the CPU frame of its revision, the CPU frame is the one drawn.
+        let surfaces = self.surfaces();
+        if let (Some(_), Some(revision), false, Some(boundary)) = (
+            surfaces.gpu,
+            surfaces.gpu_tag,
+            surfaces.gpu_hold,
+            self.gpu.held_version(),
+        ) && luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+            .gpu_ready_boundary
+            == Some(boundary)
+        {
+            return label_current
+                && photo_drawn(
+                    ExpectedPhotoDraw::GpuTick { boundary, revision },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                );
+        }
         let full = self
             .presentation
             .presenter
@@ -635,9 +667,6 @@ impl Editor {
                 }
             })
         });
-        // The status bar names the frame the surface drew last, which only that draw can say: a
-        // change of drawing path wakes the desktop, whose next update derives the label again.
-        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         label_current
             && expected.is_some_and(|expected| {
                 photo_drawn(
@@ -2801,16 +2830,22 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                let drained = self
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.drained());
                 // A value whose preview job was refused has already drained with no frame of its
                 // own to wait for, so the frame on screen is the step's evidence.
-                if self
-                    .core_gesture()
-                    .is_some_and(|gesture| gesture.draft.drained())
+                if drained
                     && self
                         .slider_gesture()
                         .is_some_and(|slider| slider.unpreviewed)
                 {
                     self.settle_step(Settle::SliderDraft, "draft_refused");
+                } else if drained && self.gpu_draws_newest_tick() {
+                    // The newest value was drawn on the GPU as its set answered, before this step
+                    // waited: no CPU frame of its own is coming, and the capture waits for the
+                    // surface's draw of it.
+                    self.settle_step(Settle::SliderDraft, "gpu_tick");
                 }
             }
             // The committed pixels are the evidence, so this waits for the render the commit

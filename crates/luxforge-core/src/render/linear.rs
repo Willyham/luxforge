@@ -489,7 +489,7 @@ pub(super) fn rasterize(
             index,
             segment,
             reader,
-            quantizer: srgb::quantizer(),
+            output: LinearOutput::Terminal(srgb::quantizer()),
             #[cfg(test)]
             context,
         },
@@ -527,10 +527,47 @@ pub(super) struct LinearRows<'e, 'x, 's> {
     segment: &'e Segment,
     /// The source's rows, when the segment reads the source through the identity.
     reader: Option<ViewReader<'e>>,
-    /// The terminal boundary's quantizer, taken once for the pass rather than once per channel.
-    quantizer: &'static srgb::Quantizer,
+    /// What each finished pixel is written as.
+    output: LinearOutput,
     #[cfg(test)]
     context: &'e RenderContext,
+}
+
+/// What a pass of [`LinearRows`] writes: terminal bytes through the output quantizer, taken once
+/// for the pass rather than once per channel, or the `f32` texels a GPU preview's boundary holds
+/// ([`super::boundary`]), unquantized.
+#[derive(Clone, Copy)]
+pub(super) enum LinearOutput {
+    Terminal(&'static srgb::Quantizer),
+    Boundary,
+}
+
+impl LinearOutput {
+    /// Bytes per pixel of the frame the pass writes.
+    fn bytes(self) -> usize {
+        match self {
+            Self::Terminal(_) => 4,
+            Self::Boundary => super::boundary::BoundaryFormat::Float.texel_bytes(),
+        }
+    }
+
+    /// Write one finished pixel at the start of `bytes`.
+    #[inline]
+    fn write(self, bytes: &mut [u8], pixel: [f64; 3]) -> Result<(), Error> {
+        match self {
+            Self::Terminal(quantizer) => {
+                bytes[..4].copy_from_slice(&terminal_pixel_in(quantizer, pixel)?);
+            }
+            Self::Boundary => {
+                super::boundary::write_texel(
+                    super::boundary::BoundaryFormat::Float,
+                    bytes,
+                    pixel.map(|value| value as f32),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What one worker reuses for every chunk of linear rows it takes.
@@ -575,8 +612,9 @@ impl LinearRows<'_, '_, '_> {
         if self.segment.has_color {
             rows[offset] = pixel.map(|value| value as f32);
         } else {
-            chunk[offset * 4..offset * 4 + 4]
-                .copy_from_slice(&terminal_pixel_in(self.quantizer, pixel)?);
+            let bytes = self.output.bytes();
+            self.output
+                .write(&mut chunk[offset * bytes..(offset + 1) * bytes], pixel)?;
         }
         Ok(())
     }
@@ -592,7 +630,8 @@ impl LinearRows<'_, '_, '_> {
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
         let domain = &self.evaluation.domain;
-        for (row, bytes) in chunk.chunks_exact_mut(width * 4).enumerate() {
+        let pixel_bytes = self.output.bytes();
+        for (row, bytes) in chunk.chunks_exact_mut(width * pixel_bytes).enumerate() {
             let y = y0 + row as u32;
             let values = &mut scratch.rows;
             // Immutable source planes were checked finite on construction. A source row widens at
@@ -607,10 +646,11 @@ impl LinearRows<'_, '_, '_> {
                     }
                 }
                 (Some(reader), false) => {
-                    for (pixel, rgba) in Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(4))
+                    for (pixel, rgba) in
+                        Self::source_row(reader, y)?.zip(bytes.chunks_exact_mut(pixel_bytes))
                     {
                         let pixel = domain.adjust_source_pixel(pixel.map(f64::from))?;
-                        rgba.copy_from_slice(&terminal_pixel_in(self.quantizer, pixel)?);
+                        self.output.write(rgba, pixel)?;
                     }
                 }
                 (None, true) => {
@@ -622,11 +662,8 @@ impl LinearRows<'_, '_, '_> {
                     }
                 }
                 (None, false) => {
-                    for (x, rgba) in bytes.chunks_exact_mut(4).enumerate() {
-                        rgba.copy_from_slice(&terminal_pixel_in(
-                            self.quantizer,
-                            self.entry(x as u32, y)?,
-                        )?);
+                    for (x, rgba) in bytes.chunks_exact_mut(pixel_bytes).enumerate() {
+                        self.output.write(rgba, self.entry(x as u32, y)?)?;
                     }
                 }
             }
@@ -649,7 +686,7 @@ impl LinearRows<'_, '_, '_> {
         chunk: &mut [u8],
     ) -> Result<(), Error> {
         let width = self.segment.width;
-        let rows = (chunk.len() / (width as usize * 4)) as u32;
+        let rows = (chunk.len() / (width as usize * self.output.bytes())) as u32;
         let stage = self.evaluation.compiled.segments[self.index - 1].stage();
         let outside = || Error::render("a resample tap was outside its stage");
         let LinearScratch {
@@ -712,6 +749,10 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
     type Sample = u8;
     type Scratch = LinearScratch;
 
+    fn samples_per_pixel(&self) -> usize {
+        self.output.bytes()
+    }
+
     fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
         let colour = if self.segment.has_color {
             rows * width * std::mem::size_of::<[f32; 3]>()
@@ -726,7 +767,9 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
         if self.segment.has_color {
             // Every value is written below, by the rows or the resample's blocks, before anything
             // reads it, so a worker's buffer is resized and never cleared.
-            scratch.rows.resize(chunk.len() / 4, [0.0; 3]);
+            scratch
+                .rows
+                .resize(chunk.len() / self.output.bytes(), [0.0; 3]);
         }
         match &self.segment.entry {
             Some(entry) => entry.load_linear(self, scratch, y0, chunk),
@@ -767,12 +810,70 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 
     fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [u8]) -> Result<(), Error> {
         if self.segment.has_color {
-            for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.rows.iter()) {
-                rgba.copy_from_slice(&terminal_pixel_in(self.quantizer, pixel.map(f64::from))?);
+            match self.output {
+                LinearOutput::Terminal(quantizer) => {
+                    for (rgba, pixel) in chunk.chunks_exact_mut(4).zip(scratch.rows.iter()) {
+                        rgba.copy_from_slice(&terminal_pixel_in(quantizer, pixel.map(f64::from))?);
+                    }
+                }
+                LinearOutput::Boundary => {
+                    let format = super::boundary::BoundaryFormat::Float;
+                    for (texel, pixel) in chunk
+                        .chunks_exact_mut(format.texel_bytes())
+                        .zip(scratch.rows.iter())
+                    {
+                        super::boundary::write_texel(format, texel, *pixel);
+                    }
+                }
             }
         }
         Ok(())
     }
+}
+
+/// One segment's pass into the GPU preview's boundary ([`super::boundary`]): `segment`, which
+/// stands in for segment `index` of `evaluation`'s compilation and reads what that segment's entry
+/// reads, written as `f32` texels without quantizing, so a boundary inside a colour run holds the
+/// value the run hands the next layer, exactly.
+pub(super) fn boundary_pass(
+    evaluation: &Evaluation<'_, Linear<'_>>,
+    index: usize,
+    segment: &Segment,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    let source = evaluation.domain.source;
+    let reader = (index == 0
+        && segment.entry.is_none()
+        && segment
+            .geometry
+            .is_identity(source.width(), source.height()))
+    .then_some(evaluation.domain.reader);
+    let mut texels = vec![
+        0u8;
+        super::boundary::frame_len(
+            segment.width,
+            segment.height,
+            super::boundary::BoundaryFormat::Float,
+        )?
+    ];
+    segment_pass(
+        &LinearRows {
+            evaluation,
+            index,
+            segment,
+            reader,
+            output: LinearOutput::Boundary,
+            #[cfg(test)]
+            context,
+        },
+        segment,
+        &mut texels,
+        0..segment.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
+    Ok(texels)
 }
 
 #[cfg(test)]

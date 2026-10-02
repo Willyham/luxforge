@@ -676,13 +676,16 @@ pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots
     text
 }
 
-/// The coverage functions of the masked steps of `steps[..until]`, after the one fold they share,
-/// and each masked colour step's frame statements, by step: what a module holding those steps
-/// declares and runs.
-pub(super) fn masks(steps: &[GpuStep], until: usize) -> (String, Vec<Option<String>>) {
+/// The coverage functions of the masked steps of `steps[range]`, after the one fold they share,
+/// and each masked colour step's frame statements, by step index: what a module holding those
+/// steps declares and runs.
+pub(super) fn masks(
+    steps: &[GpuStep],
+    range: std::ops::Range<usize>,
+) -> (String, Vec<Option<String>>) {
     let mut functions = String::new();
-    let mut statements = Vec::with_capacity(until);
-    for (index, step) in steps.iter().enumerate().take(until) {
+    let mut statements = vec![None; range.start];
+    for (index, step) in steps.iter().enumerate().take(range.end).skip(range.start) {
         let base = MAP_WORDS + STEP_WORDS * index;
         let (function, statement) = match step {
             GpuStep::Masked(masked) => {
@@ -690,7 +693,7 @@ pub(super) fn masks(steps: &[GpuStep], until: usize) -> (String, Vec<Option<Stri
                 (Some(function), Some(statement))
             }
             GpuStep::Spatial(spatial) => (spatial.coverage_function(index, base), None),
-            GpuStep::Colour { .. } => (None, None),
+            GpuStep::Colour { .. } | GpuStep::Geometry(_) => (None, None),
         };
         if let Some(function) = function {
             if functions.is_empty() {
@@ -720,6 +723,7 @@ pub(super) fn statements(
         ),
         GpuStep::Masked(_) => masked[index].clone().expect("a masked step's statements"),
         GpuStep::Spatial(spatial) => frame_statements(index, spatial, slots),
+        GpuStep::Geometry(_) => unreachable!("a geometry tail splits the passes"),
     }
 }
 
@@ -771,7 +775,7 @@ pub(super) fn pass_module(
             included.push(program);
         }
     }
-    let (functions, masked) = masks(steps, index);
+    let (functions, masked) = masks(steps, 0..index);
     source.push_str(&functions);
     source.push_str("\n@group(0) @binding(2) var lf_boundary: texture_2d<f32>;\n");
     source.push_str(&declarations(&slots));
@@ -866,7 +870,7 @@ fn pass_count(steps: &[GpuStep]) -> usize {
         .iter()
         .map(|step| match step {
             GpuStep::Spatial(spatial) => spatial.passes.len(),
-            GpuStep::Colour { .. } | GpuStep::Masked(_) => 0,
+            GpuStep::Colour { .. } | GpuStep::Masked(_) | GpuStep::Geometry(_) => 0,
         })
         .sum()
 }
@@ -1132,7 +1136,7 @@ impl PlanesKey {
             .enumerate()
             .filter_map(|(index, step)| match step {
                 GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
-                GpuStep::Colour { .. } | GpuStep::Masked(_) => None,
+                GpuStep::Colour { .. } | GpuStep::Masked(_) | GpuStep::Geometry(_) => None,
             })
             .collect();
         (!planes.is_empty()).then_some(Self {

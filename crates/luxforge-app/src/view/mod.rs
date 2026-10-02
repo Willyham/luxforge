@@ -69,9 +69,16 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
     pub(crate) draft: Option<&'a CropDraft>,
     /// A GPU plan the photograph at Fit is drawn from in place of its frame, which stays the
-    /// surface's fallback. Only an evidence run's GPU identity hook gives one, and none is given
-    /// while this client's `gpu_preview` preference is off (`Editor::gpu_plan`).
+    /// surface's fallback: an open gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU
+    /// identity hook's. None is given while this client's `gpu_preview` preference is off
+    /// (`Editor::gpu_plan`).
     pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
+    /// Keep the plan's slot but draw the frame: the CPU frame of the plan's revision is presented.
+    pub(crate) gpu_hold: bool,
+    /// The draft revision the plan's output is reported under.
+    pub(crate) gpu_tag: Option<u64>,
+    /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
+    pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
 }
 
 pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {

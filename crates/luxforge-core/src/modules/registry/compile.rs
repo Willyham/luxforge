@@ -249,6 +249,32 @@ impl ModuleRegistry {
         recipe: &Recipe,
         sampling: MaskSampling,
     ) -> Result<Compiled, Error> {
+        self.compile_shaped(
+            source_width,
+            source_height,
+            exact_width,
+            exact_height,
+            recipe,
+            sampling,
+            None,
+        )
+    }
+
+    /// [`Self::compile_sampled`] with layer `shaped`, when one is named, compiled in its GPU shape
+    /// (`crate::CompileStage::gpu_shape`): what a GPU plan asks for its drafted layer, so the
+    /// program sequence a gesture draws does not change as a value leaves or returns to neutral.
+    /// Every other layer, and every CPU compile, is compiled exactly as before.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn compile_shaped(
+        &self,
+        source_width: u32,
+        source_height: u32,
+        exact_width: u32,
+        exact_height: u32,
+        recipe: &Recipe,
+        sampling: MaskSampling,
+        shaped: Option<usize>,
+    ) -> Result<Compiled, Error> {
         // The layer checks every evaluation path shares: the format marker, the layers' structure
         // and each layer's mask reference, and a mask only where a stage can carry one. They cost
         // `O(layers)` and read no pixels, so compiling here is what makes a stack that names a mask
@@ -274,6 +300,7 @@ impl ModuleRegistry {
             &recipe.artifacts,
             sampling,
             Some(&self.stages(exact_width, exact_height, recipe)),
+            shaped,
         )
     }
 
@@ -300,10 +327,12 @@ impl ModuleRegistry {
             artifacts,
             MaskSampling::Point,
             None,
+            None,
         )
     }
 
-    /// [`Self::compile_layers`] with the mask sampling of the render being compiled.
+    /// [`Self::compile_layers`] with the mask sampling of the render being compiled, and the one
+    /// layer, if any, compiled in its GPU shape ([`Self::compile_shaped`]).
     #[allow(clippy::too_many_arguments)]
     fn compile_layers_sampled(
         &self,
@@ -315,6 +344,7 @@ impl ModuleRegistry {
         artifacts: &ArtifactTable,
         sampling: MaskSampling,
         full_stages: Option<&[Stage]>,
+        shaped: Option<usize>,
     ) -> Result<Compiled, Error> {
         #[cfg(test)]
         stack_compiles::count();
@@ -407,7 +437,7 @@ impl ModuleRegistry {
             let processing = self.compile_layer(
                 module,
                 layer,
-                crate::CompileStage::sampled(stage, full),
+                crate::CompileStage::sampled(stage, full).shaped(shaped == Some(index)),
                 artifacts,
             )?;
             // The stage this layer hands the next one, checked before anything is evaluated.

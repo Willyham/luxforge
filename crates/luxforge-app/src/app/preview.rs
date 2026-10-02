@@ -462,6 +462,9 @@ impl Presentation {
             render_ms,
         };
         match outcome {
+            // A GPU preview boundary is taken up before any result reaches here
+            // ([`super::Editor::poll_preview`]); it is never a frame to present.
+            PhaseOutcome::Boundary(_) => Presented::Stale,
             PhaseOutcome::Region(region) => Presented::Region(Box::new((delivery, region))),
             PhaseOutcome::Proxy(outcome) => {
                 let frame = ProxyFrame {
@@ -736,6 +739,9 @@ impl Presentation {
             mask_map: None,
             draft: None,
             gpu: None,
+            gpu_hold: false,
+            gpu_tag: None,
+            gpu_warm: None,
         }
     }
 
@@ -1042,6 +1048,7 @@ impl Editor {
     }
 
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        self.gpu_queue_cancelled();
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
@@ -1390,6 +1397,11 @@ impl Editor {
     pub(super) fn poll_preview(&mut self) -> Option<PreviewResult> {
         loop {
             let result = self.presentation.queue.poll()?;
+            // A draft's GPU preview boundary is no frame: it is held for the gesture, or let go.
+            if result.boundary().is_some() {
+                self.gpu_boundary_ready(result);
+                continue;
+            }
             if !result.cancelled() {
                 return Some(result);
             }
@@ -1488,6 +1500,7 @@ impl Editor {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Region => "region",
                 PreviewPhase::Exact => "exact",
+                PreviewPhase::Boundary => "boundary",
             };
             self.event("preview_result_received", || {
                 json!({
@@ -1639,7 +1652,7 @@ impl Editor {
             "exact"
         };
         let (frame, proxy, bounded) = match result.outcome {
-            PhaseOutcome::Region(_) => return (Task::none(), false),
+            PhaseOutcome::Region(_) | PhaseOutcome::Boundary(_) => return (Task::none(), false),
             PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
             // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {
@@ -2135,6 +2148,7 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
+        self.gpu_warm_from(job.gpu_warm.as_deref());
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact
@@ -2156,8 +2170,11 @@ impl Editor {
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
-        // mask edits have a different pixel key and still use the ordinary rendering path.
+        // mask edits have a different pixel key and still use the ordinary rendering path. A job
+        // carrying a GPU preview's boundary request goes to the worker, which renders the
+        // boundary after its frame; reused pixels would answer the frame and drop the request.
         let reusable = job.layer_count.is_none()
+            && job.boundary.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()

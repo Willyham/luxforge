@@ -227,7 +227,14 @@ fn a_masked_step_assembles_its_coverage_once_and_validates() {
 /// unit's bases, then the programs' own words; its block is the components' blocks then the units'.
 #[test]
 fn a_masked_steps_words_are_its_mask_then_its_programs() {
-    let boundary = GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]]).unwrap();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        1,
+        1,
+        1,
+        [[0.0; 4]],
+    )
+    .unwrap();
     let mask = Coverage {
         position: PositionMap {
             a: 0,

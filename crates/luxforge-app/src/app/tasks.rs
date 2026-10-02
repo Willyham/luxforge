@@ -641,12 +641,15 @@ pub(crate) fn refresh(
     // the histogram needs no second render and an `analysis.request` for this identity is a
     // cache hit. A truncated crop-draft job is the one exception; the core refuses to analyse
     // it, because its identity describes the whole stack rather than the prefix it renders.
+    // The committed stack's job carries the plans its gestures are likely to draw, which the
+    // surface compiles before a drag begins ([`super::gpu_preview`]).
     let job = ready_preview_job(
         owner,
         proxied(
             PreviewRequest::new(client, asset_id)
                 .entry(Some(displayed))
-                .analyse(),
+                .analyse()
+                .gpu(),
             proxy,
         ),
     )?;
@@ -1035,12 +1038,17 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &Draft
 /// mask overlay's coverage grid is not asked for here, because
 /// [`crate::app::Editor::request_preview`] attaches it to every job it queues, this one included —
 /// one rule for every preview path, so the grid is requested once.
+///
+/// With `gpu`, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the plan
+/// a tick is drawn from, or its reason, and the boundary it starts from, in the same answer, so a
+/// tick drawn on the GPU adds no hop ([`super::gpu_preview`]).
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
     fields: Value,
     preview: Option<(AssetId, Option<ProxyBounds>)>,
+    gpu: bool,
 ) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
     let queued = Instant::now();
     let started = queued;
@@ -1054,14 +1062,12 @@ pub(crate) fn draft_set_now(
     let draft = parse::<Draft>(draft)?;
     let job = preview
         .map(|(asset_id, proxy)| {
+            let request = PreviewRequest::new(client, asset_id)
+                .draft(draft_id)
+                .analyse();
             plan_preview(
                 owner,
-                proxied(
-                    PreviewRequest::new(client, asset_id)
-                        .draft(draft_id)
-                        .analyse(),
-                    proxy,
-                ),
+                proxied(if gpu { request.gpu() } else { request }, proxy),
             )
         })
         .transpose()

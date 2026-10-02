@@ -14,13 +14,17 @@ use luxforge_testbase::{Distribution, wait_until};
 use std::time::Duration;
 
 /// `primitive`'s `prepare`, as Iced runs it for one frame, and nothing else: no draw, no submit of
-/// the frame's own and no poll.
+/// the frame's own and no poll. The plan's sequence is compiled first, as a frame after its compile
+/// finds it.
 fn prepare(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &mut PhotoPipeline,
     primitive: &PhotoPrimitive,
 ) {
+    if let Some(plan) = &primitive.gpu {
+        pipeline.compile_now(device, &plan.steps);
+    }
     let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(SIDE as f32, SIDE as f32));
     let viewport = Viewport::with_physical_size(Size::new(SIDE, SIDE), 1.0);
     primitive.prepare(pipeline, device, queue, &bounds, &viewport);
@@ -47,6 +51,7 @@ fn a_pass_is_reported_complete_by_a_later_submit_without_a_poll() {
     };
     let mut pipeline = own_pipeline(&device, &queue);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -95,6 +100,7 @@ fn the_drawn_gpu_frame_reports_its_completion_figure() {
     };
     let mut pipeline = own_pipeline(&device, &queue);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -150,6 +156,7 @@ fn gpu_frame_completion_is_measured() {
     };
     let (width, height) = (2400, 1600);
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         width,
         height,
         1,

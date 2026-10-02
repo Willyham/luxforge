@@ -720,7 +720,9 @@ impl Editor {
             return self.draft_set(result);
         }
         let preview = previews.then(|| (asset, self.proxy_bounds()));
-        let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview);
+        // The GPU preview is planned with the tick's job only at Fit, where the surface draws it.
+        let gpu = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+        let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview, gpu);
         self.draft_set(result)
     }
 
@@ -745,20 +747,49 @@ impl Editor {
         match result {
             Ok((set, job, round_trip)) => {
                 self.session.draft = Some(set.clone());
-                if let Some(job) = job {
+                let mut drawn_on_gpu = false;
+                if let Some(mut job) = job {
                     if self.view_plan.released_draft.as_ref() != Some(&set.draft_id) {
                         self.note_view_motion();
                     }
-                    let (generation, requested_at) =
-                        if self.log.diagnostics.is_some() && self.mask_gesture().is_some() {
-                            self.request_mask_preview_timed(job)
-                        } else {
-                            (self.request_preview(job), None)
-                        };
-                    self.presentation.preview_generation = generation;
-                    self.set_previewed(set.draft_revision, round_trip, requested_at);
+                    // A tick the surface draws from the GPU plan the answer carries makes no
+                    // preview job and no upload ([`super::gpu_preview`]); any other takes the
+                    // CPU path as before.
+                    let (tick, boundary) = self.gpu_tick(&set, job.gpu.take());
+                    match tick {
+                        super::gpu_preview::Tick::Gpu => {
+                            // The mask overlay's coverage follows the tick through its own
+                            // worker, as on the CPU path, over the frame on screen, whose
+                            // geometry a colour or mask draft does not change.
+                            let content = self.presentation.presented_content;
+                            self.request_mask_coverage(&job, content);
+                            self.gpu_ticked(&set);
+                            drawn_on_gpu = true;
+                        }
+                        super::gpu_preview::Tick::Cpu => {
+                            job.boundary = boundary;
+                            let boundary = job.boundary.is_some();
+                            let (generation, requested_at) = if self.log.diagnostics.is_some()
+                                && self.mask_gesture().is_some()
+                            {
+                                self.request_mask_preview_timed(job)
+                            } else {
+                                (self.request_preview(job), None)
+                            };
+                            if boundary {
+                                self.gpu_boundary_requested(generation);
+                            }
+                            self.gpu_cpu_tick(&set, generation);
+                            self.presentation.preview_generation = generation;
+                            self.set_previewed(set.draft_revision, round_trip, requested_at);
+                        }
+                    }
                 }
-                self.drive(Event::Set(Ok(set)))
+                let task = self.drive(Event::Set(Ok(set)));
+                if drawn_on_gpu {
+                    self.gpu_tick_presented();
+                }
+                task
             }
             Err(error) => {
                 self.set_unpreviewed(&error);

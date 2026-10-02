@@ -55,6 +55,11 @@ pub struct GpuPlanRequest {
     /// Plan disabled programs as if they were enabled: what the qualification corpus asks, to judge
     /// a program against its limits before it is enabled. Never for a frame a person sees.
     pub qualifying: bool,
+    /// The layer a gesture drafts, compiled in its GPU shape: every unit its module can hold, a
+    /// neutral one as its own identity (`CompileStage::gpu_shape`). A field-patch module compiles
+    /// only its non-neutral units, so without this a drag that leaves or returns to neutral would
+    /// meet a new program sequence mid-gesture. `None` compiles every layer as the CPU does.
+    pub drafted: Option<usize>,
     /// The frame previews a RAW photograph's linear path, which holds every stage boundary's frame
     /// unclamped in float, where the byte path clamps and quantizes it: a spatial operation's input
     /// and output, and a resample's input, are then not clamped.
@@ -70,6 +75,7 @@ impl GpuPlanRequest {
             full,
             proxy: true,
             qualifying: false,
+            drafted: None,
             linear: false,
         }
     }
@@ -82,6 +88,7 @@ impl GpuPlanRequest {
             full: stage,
             proxy: false,
             qualifying: false,
+            drafted: None,
             linear: false,
         }
     }
@@ -89,6 +96,13 @@ impl GpuPlanRequest {
     /// The same request with disabled programs planned, for the qualification corpus.
     pub fn qualifying(mut self) -> Self {
         self.qualifying = true;
+        self
+    }
+
+    /// The same request with layer `layer`, the one a gesture drafts, in its GPU shape
+    /// ([`Self::drafted`]).
+    pub fn drafted(mut self, layer: usize) -> Self {
+        self.drafted = Some(layer);
         self
     }
 
@@ -194,6 +208,12 @@ pub enum GpuFallback {
     NoProgram { layer: usize, unit: String },
     /// A program that ships disabled, because it has not met its error limits.
     DisabledProgram { layer: usize, program: &'static str },
+    /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
+    /// nothing for a plan to start from, and its frame is the entry's.
+    Unchanged,
+    /// Planning a draft's GPU preview failed for this reason, which the CPU path answers in its
+    /// own way.
+    Unplannable(String),
 }
 
 impl GpuFallback {
@@ -206,18 +226,21 @@ impl GpuFallback {
             Self::BetweenResamples { .. } => "between-resamples",
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
+            Self::Unchanged => "unchanged",
+            Self::Unplannable(_) => "unplannable",
         }
     }
 
-    /// The layer the reason names.
-    pub fn layer(&self) -> usize {
+    /// The layer the reason names; `None` for [`Self::Unchanged`], which names none.
+    pub fn layer(&self) -> Option<usize> {
         match self {
             Self::PixelStage { layer }
             | Self::BoundaryStage { layer, .. }
             | Self::SpatialUnit { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
-            | Self::DisabledProgram { layer, .. } => *layer,
+            | Self::DisabledProgram { layer, .. } => Some(*layer),
+            Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
 }
@@ -245,6 +268,10 @@ impl std::fmt::Display for GpuFallback {
             }
             Self::DisabledProgram { layer, program } => {
                 write!(f, "layer {layer} needs the disabled GPU program {program}")
+            }
+            Self::Unchanged => write!(f, "the draft changes no layer yet"),
+            Self::Unplannable(reason) => {
+                write!(f, "the GPU preview could not be planned: {reason}")
             }
         }
     }
@@ -546,13 +573,14 @@ pub fn gpu_plan_with(
     } else {
         MaskSampling::Point
     };
-    let compiled = registry.compile_sampled(
+    let compiled = registry.compile_shaped(
         request.stage.width,
         request.stage.height,
         request.full.width,
         request.full.height,
         recipe,
         sampling,
+        request.drafted,
     )?;
     compiled.gpu_plan(
         request.boundary,

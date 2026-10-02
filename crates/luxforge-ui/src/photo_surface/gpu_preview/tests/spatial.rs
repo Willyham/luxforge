@@ -201,7 +201,14 @@ fn a_spatial_step_is_checked_against_the_spatial_convention() {
 /// validates with the naga wgpu uses.
 #[test]
 fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
-    let boundary = GpuBoundary::from_linear(1, 1, 1, [[0.0; 4]]).unwrap();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        1,
+        1,
+        1,
+        [[0.0; 4]],
+    )
+    .unwrap();
     let plan = spatial_plan(&boundary);
     let frame = assemble(&plan.steps).expect("the frame's module");
     validate(&frame).expect("the frame's module validates");
@@ -310,6 +317,7 @@ fn boundary_values() -> (GpuBoundary, Vec<[f32; 3]>) {
         });
     }
     let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         1,
@@ -555,6 +563,7 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
             .dispatched
     };
     let other = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
         SIDE,
         SIDE,
         boundary.version() + 1,
