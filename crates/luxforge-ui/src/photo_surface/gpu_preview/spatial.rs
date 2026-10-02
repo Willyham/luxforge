@@ -37,7 +37,9 @@
 //! pipeline, which the stage keeps across sequences ([`PassCache`]). Its planes
 //! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
 //! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
-//! ([`GpuPlane::extent`]). The passes run in order before the frame's pass, which binds the
+//! ([`GpuPlane::extent`]). A pass or an apply reads the step's words from its offset up to the next
+//! offset any pass or apply of its step names; a tick runs only the passes whose words, upstream or
+//! inputs changed since the planes the applies read were last written ([`Schedule`]). The passes run in order before the frame's pass, which binds the
 //! applies' planes as a second bind group, so the operation holds no colour plane of its own: its
 //! memory is its planes, charged to the GPU-preview budget with the slot. Nothing is read back.
 use super::{
@@ -1016,6 +1018,7 @@ impl PassCache {
     }
 
     /// How many pass pipelines have been created.
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn created(&self) -> u64 {
         self.created.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1324,25 +1327,254 @@ impl Groups {
         Self { passes, fragment }
     }
 
-    /// Encode every pass in order, group 0 the plan's words, blocks and boundary.
+    /// Encode the passes `run` marks, in order, group 0 the plan's words, blocks and boundary, and
+    /// answer how many.
     pub(super) fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         compiled: &CompiledSpatial,
         programs: &wgpu::BindGroup,
-    ) {
-        if compiled.passes.is_empty() {
-            return;
+        run: &[bool],
+    ) -> u64 {
+        let count = run.iter().filter(|run| **run).count() as u64;
+        if count == 0 {
+            return 0;
         }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("luxforge.gpu_preview.spatial"),
             timestamp_writes: None,
         });
         pass.set_bind_group(0, programs, &[]);
-        for (compiled, (group, dispatch)) in compiled.passes.iter().zip(&self.passes) {
+        for ((compiled, (group, dispatch)), run) in
+            compiled.passes.iter().zip(&self.passes).zip(run)
+        {
+            if !run {
+                continue;
+            }
             pass.set_pipeline(&compiled.pipeline);
             pass.set_bind_group(1, group, &[]);
             pass.dispatch_workgroups(dispatch[0], dispatch[1], dispatch[2]);
         }
+        count
+    }
+}
+
+/// Which passes a tick runs: only those the applies' planes need because something a pass reads
+/// changed since the planes were last written.
+///
+/// A pass's content key hashes what its output depends on: its own words, the step's upstream (the
+/// boundary's version, the texel map and every step before it, words and blocks), the words of the
+/// applies its source runs and the keys of the planes they read, and the keys of its inputs as the
+/// passes before it in the tick leave them. Each plane keeps the key of what it holds. An apply's
+/// plane whose key differs from the one its last writer would give it is stale, and walking the
+/// passes backwards, a pass whose output is stale or needed runs and needs its inputs in turn,
+/// unless an input's only writer before it is its first in the tick and the plane already holds
+/// what that writer would write. A pass that writes an apply's plane on the way to its last writer
+/// runs that last writer too, so an apply never reads a plane a scratch use left behind. A new
+/// sequence or new planes start from nothing kept, which runs every pass the applies need.
+#[derive(Default)]
+pub(super) struct Schedule {
+    /// The key of what each plane holds, by step and plane.
+    kept: Vec<((usize, u32), u64)>,
+}
+
+fn hash_of(parts: impl std::hash::Hash) -> u64 {
+    use std::hash::Hasher;
+    let mut hasher = std::hash::DefaultHasher::new();
+    parts.hash(&mut hasher);
+    hasher.finish()
+}
+
+impl Schedule {
+    /// Forget every plane's content: a new sequence's groups or new planes.
+    pub(super) fn reset(&mut self) {
+        self.kept.clear();
+    }
+
+    fn kept(&self, step: usize, plane: u32) -> Option<u64> {
+        self.kept
+            .iter()
+            .find(|(at, _)| *at == (step, plane))
+            .map(|(_, key)| *key)
+    }
+
+    fn keep(&mut self, step: usize, plane: u32, key: u64) {
+        match self.kept.iter_mut().find(|(at, _)| *at == (step, plane)) {
+            Some((_, kept)) => *kept = key,
+            None => self.kept.push(((step, plane), key)),
+        }
+    }
+
+    /// The passes of `steps` this tick runs, in [`CompiledSpatial`]'s order, given the tick's
+    /// packed `words` and `blocks` and the boundary's `version`; the planes they write are then
+    /// taken as written.
+    pub(super) fn run(
+        &mut self,
+        steps: &[GpuStep],
+        words: &[u32],
+        blocks: &[u32],
+        version: u64,
+    ) -> Vec<bool> {
+        let mut run = Vec::new();
+        // The upstream of each step: the boundary, the texel map, every step before it, by
+        // content, not by where the packing put it.
+        let mut upstream = hash_of((version, words.get(..MAP_WORDS)));
+        for (index, step) in steps.iter().enumerate() {
+            let header = MAP_WORDS + STEP_WORDS * index;
+            let base = words.get(header).copied().unwrap_or(0) as usize;
+            let block = words.get(header + 1).copied().unwrap_or(0) as usize;
+            let position = words.get(header + 2..header + STEP_WORDS).unwrap_or(&[]);
+            let own = words.get(base..base + step.word_count()).unwrap_or(&[]);
+            let own_blocks = blocks.get(block..block + step.block_count()).unwrap_or(&[]);
+            if let GpuStep::Spatial(spatial) = step {
+                // Its passes read its program's words and blocks, not its mask's.
+                let program = own.get(spatial.mask_words()..).unwrap_or(&[]);
+                let program_blocks = own_blocks.get(..spatial.program.block.len()).unwrap_or(&[]);
+                let inward = hash_of((upstream, position, program_blocks));
+                let keys = self.step(index, spatial, program, inward, &mut run);
+                // A later step's source runs this one's applies over its planes.
+                upstream = hash_of((upstream, position, own, own_blocks, keys));
+            } else {
+                upstream = hash_of((upstream, position, own, own_blocks));
+            }
+        }
+        run
+    }
+
+    /// One spatial step's passes, appended to `run`; answers its apply planes' keys.
+    fn step(
+        &mut self,
+        index: usize,
+        spatial: &GpuSpatial,
+        program: &[u32],
+        upstream: u64,
+        run: &mut Vec<bool>,
+    ) -> Vec<u64> {
+        // A pass or apply reads from its offset up to the next one its step names.
+        let mut offsets: Vec<u32> = spatial
+            .passes
+            .iter()
+            .map(|pass| pass.words)
+            .chain(spatial.applies.iter().map(|apply| apply.words))
+            .chain(std::iter::once(program.len() as u32))
+            .collect();
+        offsets.sort_unstable();
+        offsets.dedup();
+        let slice = |start: u32| -> &[u32] {
+            let end = offsets
+                .iter()
+                .copied()
+                .find(|offset| *offset > start)
+                .unwrap_or(program.len() as u32);
+            program.get(start as usize..end as usize).unwrap_or(&[])
+        };
+        // Forward: the key each pass writes, and what each plane holds after the whole tick.
+        let mut held: Vec<u64> = vec![0; spatial.planes.len()];
+        let holds = |held: &[u64], plane: &u32| held.get(*plane as usize).copied().unwrap_or(0);
+        let mut keys = Vec::with_capacity(spatial.passes.len());
+        for (number, pass) in spatial.passes.iter().enumerate() {
+            // The applies its source runs, by their words and the planes they read.
+            let applies: Vec<(&[u32], Vec<u64>)> = spatial
+                .applies
+                .iter()
+                .take(pass.source as usize)
+                .map(|apply| {
+                    let planes = apply.planes.iter().map(|plane| holds(&held, plane));
+                    (slice(apply.words), planes.collect())
+                })
+                .collect();
+            let inputs: Vec<u64> = pass
+                .inputs
+                .iter()
+                .map(|plane| holds(&held, plane))
+                .collect();
+            let key = hash_of((number, upstream, slice(pass.words), applies, inputs));
+            if let Some(plane) = held.get_mut(pass.output as usize) {
+                *plane = key;
+            }
+            keys.push(key);
+        }
+        let read: Vec<u32> = {
+            let mut read: Vec<u32> = spatial
+                .applies
+                .iter()
+                .flat_map(|apply| apply.planes.iter().copied())
+                .collect();
+            read.sort_unstable();
+            read.dedup();
+            read
+        };
+        let writers = |plane: u32| {
+            spatial
+                .passes
+                .iter()
+                .enumerate()
+                .filter(move |(_, pass)| pass.output == plane)
+                .map(|(number, _)| number)
+        };
+        // An input `plane` of the pass `reader` needs its writer run, unless that writer is the
+        // plane's first and the plane already holds what it writes.
+        let needs = |plane: u32, reader: usize| {
+            let mut before = writers(plane).filter(|writer| *writer < reader);
+            match before.next_back() {
+                None => false,
+                Some(writer) => {
+                    writers(plane).next() != Some(writer)
+                        || self.kept(index, plane) != Some(keys[writer])
+                }
+            }
+        };
+        // What `plane` holds once the passes `runs` marks have run.
+        let after = |plane: u32, runs: &[bool]| {
+            writers(plane)
+                .rfind(|writer| runs[*writer])
+                .map(|writer| keys[writer])
+                .or(self.kept(index, plane))
+        };
+        let mut stale: Vec<u32> = read
+            .iter()
+            .copied()
+            .filter(|&plane| writers(plane).next().is_some())
+            .filter(|&plane| self.kept(index, plane) != Some(holds(&held, &plane)))
+            .collect();
+        // Backward from the stale apply planes, until no apply plane is left half written.
+        let runs = loop {
+            let mut needed = stale.clone();
+            let mut runs = vec![false; spatial.passes.len()];
+            for (number, pass) in spatial.passes.iter().enumerate().rev() {
+                if needed.contains(&pass.output) {
+                    runs[number] = true;
+                    needed.retain(|plane| *plane != pass.output);
+                    for &input in &pass.inputs {
+                        if !needed.contains(&input) && needs(input, number) {
+                            needed.push(input);
+                        }
+                    }
+                }
+            }
+            let left: Vec<u32> = read
+                .iter()
+                .copied()
+                .filter(|&plane| writers(plane).next().is_some())
+                .filter(|&plane| after(plane, &runs) != Some(holds(&held, &plane)))
+                .filter(|plane| !stale.contains(plane))
+                .collect();
+            if left.is_empty() {
+                break runs;
+            }
+            stale.extend(left);
+        };
+        // Each plane a pass wrote now holds what its last writer to run wrote.
+        let written: Vec<(u32, u64)> = (0..spatial.planes.len() as u32)
+            .filter_map(|plane| {
+                let last = writers(plane).rfind(|writer| runs[*writer])?;
+                Some((plane, keys[last]))
+            })
+            .collect();
+        for (plane, key) in written {
+            self.keep(index, plane, key);
+        }
+        run.extend_from_slice(&runs);
+        read.iter().map(|plane| holds(&held, plane)).collect()
     }
 }
