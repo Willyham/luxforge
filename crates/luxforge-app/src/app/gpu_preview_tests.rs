@@ -4,7 +4,7 @@
 //! at commit, cancel and a key change; and an ineligible stack's reason.
 use super::{
     gpu_preview::SurfaceReport,
-    message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
+    message::{draft::DraftMessage, preview::PreviewMessage, sync::SyncMessage, view::ViewMessage},
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
@@ -288,6 +288,86 @@ fn gpu_preview_a_drag_with_clipping_shown_keeps_the_cpu_path() {
     );
     assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
     assert_eq!(editor.gpu_plan_fallback(), Some("clipping-shown".into()));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// Another client's commit during a GPU-drawn drag conflicts the draft, and the photograph is then
+/// the new entry's CPU frame: the plans the drag drew were planned over the entry before, so none
+/// is handed to the surface until a tick plans over the current entry, as Reapply's does.
+#[test]
+fn gpu_preview_a_commit_elsewhere_withdraws_the_drags_plan_until_it_plans_again() {
+    use luxforge_testkit::client::{call, mutation, request_id};
+    let catalog = catalog("elsewhere");
+    let (mut editor, asset, client) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.5);
+    assert!(
+        editor.surfaces().gpu.is_some(),
+        "the drag is drawn on the GPU"
+    );
+
+    // Another client turns the photograph, which this desktop's poll reads back.
+    let agent = editor.owner.register();
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    call(
+        &editor.owner,
+        agent,
+        "edit.transform",
+        json!({
+            "asset_id": asset,
+            "transform": "rotate-right",
+            "mutation": mutation(revision, &request_id("agent"), "agent"),
+        }),
+    )
+    .expect("the agent's commit");
+    let own = editor.sync.own_requests.iter().cloned().collect::<Vec<_>>();
+    let polled = tasks::sync_now(
+        &editor.owner,
+        client,
+        (asset.clone(), revision),
+        editor.sync.sequence,
+        &own,
+        editor.proxy_bounds(),
+    )
+    .expect("the poll answers");
+    let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(polled))));
+    assert!(
+        editor
+            .core_gesture()
+            .expect("the draft is kept")
+            .draft
+            .conflicted,
+        "the commit conflicts the draft"
+    );
+    assert!(
+        editor.surfaces().gpu.is_none(),
+        "a plan made over the entry before is not drawn over the new one"
+    );
+
+    // Reapply plans over the new entry, and its tick is drawn on the GPU again.
+    let _ = editor.update(Message::Draft(DraftMessage::Reapply));
+    let draft = &editor.core_gesture().expect("the rebased draft").draft;
+    assert!(!draft.conflicted);
+    deliver_until(&mut editor, "the reapplied tick's plan", |editor| {
+        editor.surfaces().gpu.is_some() || !editor.presentation.queue.is_busy()
+    });
+    if !editor.gpu.holds_boundary() {
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        surface_ready(&mut editor);
+        let _ = slide(&mut editor, ACTION, FIELD, 0.6);
+    }
+    let surfaces = editor.surfaces();
+    let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+    assert!(surfaces.gpu.is_some(), "the rebased draft is drawn again");
+    assert_eq!(surfaces.gpu_tag, Some(revision));
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
