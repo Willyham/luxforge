@@ -33,6 +33,8 @@ luxforge-testbase = { path = "../luxforge-testbase" }
 # GPU stage's identity readback through. It depends on no workspace crate, so the widget crate stays
 # core-free.
 luxforge-reference = { path = "../luxforge-reference" }
+# The process's memory figures, core-free, which the measurement of a boundary's arrival reads.
+luxforge-process = { path = "../luxforge-process" }
 
 [lints]
 workspace = true
