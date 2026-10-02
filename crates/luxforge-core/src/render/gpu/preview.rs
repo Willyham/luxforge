@@ -16,10 +16,16 @@
 //!   its value is still neutral, is planned as the neutral layer its first commit would insert.
 //!   A drag that leaves or returns to neutral therefore keeps one program sequence. The CPU
 //!   compile is untouched: only this plan asks for the shape.
+//! - **Stored estimates.** A spatial operation's global estimate, Dehaze's atmospheric light, is
+//!   read from the estimate store the job's CPU frames fill, under the key a Fit frame of the same
+//!   content asks with: the proxy is named by its source and plan, never built. A plan whose key
+//!   the store does not hold yet takes the estimate on the GPU and says it is approximate.
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the proxy plan with its window. Equal keys hold equal texels.
-use super::{GpuAnswer, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan};
+use super::{
+    EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
+};
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
@@ -227,6 +233,21 @@ impl FitStage {
         }
     }
 
+    /// Where `evaluation`'s CPU frames at this stage keep their global estimates: its context's
+    /// store, under its proxy at this plan, or under its source at the exact stage.
+    fn estimates<'a>(&self, evaluation: &'a Evaluation) -> GpuEstimates<'a> {
+        GpuEstimates {
+            context: evaluation.context(),
+            source: match self.plan {
+                Some(plan) => EstimateSource::Proxy {
+                    source: evaluation.source(),
+                    plan,
+                },
+                None => EstimateSource::Render(evaluation.source().into()),
+            },
+        }
+    }
+
     /// The masks a proxy compiles take the thin-feature supersample; the exact stage's do not.
     fn sampling(&self) -> MaskSampling {
         if self.plan.is_some() {
@@ -258,7 +279,8 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn in `bounds`:
 /// the plan from the earliest layer the draft changes, at the stage the job's Fit frame is drawn
 /// at, and the boundary it starts from. `O(layers)` on the catalog owner: one compile at the proxy
-/// stage for the window, one for the plan, and no pixel read.
+/// stage for the window, one for the plan, a lookup in the estimate store for each global
+/// estimate, and no pixel read.
 pub(crate) fn plan_preview(
     evaluation: &Evaluation,
     draft: &Draft,
@@ -303,7 +325,7 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let answer = gpu_plan(registry, &planned, request)?;
+    let answer = gpu_plan_with(registry, &planned, request, Some(fit.estimates(evaluation)))?;
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
         GpuAnswer::Plan(plan) => Some(BoundaryRequest {
@@ -381,7 +403,7 @@ pub(crate) fn plan_warm(
     let mut seen: Vec<Vec<&'static str>> = Vec::new();
     for (planned, index) in candidates {
         let request = fit.request(index).drafted(index);
-        let answer = gpu_plan(registry, &planned, request)?;
+        let answer = gpu_plan_with(registry, &planned, request, Some(fit.estimates(evaluation)))?;
         if let GpuAnswer::Plan(plan) = answer {
             let sequence: Vec<&'static str> = plan
                 .operations()

@@ -193,6 +193,7 @@ impl SurfaceFigures {
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
         overall.gpu_preview_peak_bytes = self.preview.peak();
         overall.gpu_preview_passes = self.preview.passes();
+        overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
         overall.gpu_preview_compiles = self.preview.compiles();
         (
             overall.gpu_preview_compiled,
@@ -370,6 +371,9 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_peak_bytes: u64,
     /// How many passes the GPU stage has encoded: a redraw of an unchanged plan encodes none.
     pub gpu_preview_passes: u64,
+    /// How many compute passes the GPU stage's spatial steps have dispatched: a pass runs only when
+    /// what its plane holds changed, so a tick that moves only an apply's word dispatches none.
+    pub gpu_preview_spatial_passes: u64,
     /// Program sequences handed to the compile thread, and how many have finished compiling.
     pub gpu_preview_compiles: u64,
     pub gpu_preview_compiled: u64,
