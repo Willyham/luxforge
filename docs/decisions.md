@@ -299,7 +299,7 @@ Decided by the owner on 2026-10-01, after the Lens correction panel listed every
 
 ## GPU previews
 
-Decided by the owner on 2026-10-01, after a review of where the CPU spends its time ([design](design/gpu-preview.md), [plan](../tasks/gpu-preview.json)):
+Decided by the owner on 2026-10-01, after a review of where the CPU spends its time ([design](design/gpu-preview.md)):
 
 - **Speed comes first for interactive previews**, provided settling causes no large, noticeable jump in the image. Generous preview error limits are acceptable, especially with interface affordances that soften the hand-off.
 - **GPU arithmetic is for previews only.** The CPU stays the reference for settled frames, the histogram and clipping counts, point samples, mask grids, export and history; no GPU pixel reaches them.
@@ -308,7 +308,7 @@ Decided by the owner on 2026-10-01, after a review of where the CPU spends its t
 - **A held GPU-preview boundary may be up to 256 MiB** (owner, 2026-10-02), up from 128 MiB, so RAW drags at 100% whose spatial margins need a larger full-precision boundary draw on the GPU. The desktop releases its CPU copy once the surface holds the boundary, and the upload is spread so the arrival's overlap of render buffer, staging and texture stays near twice the boundary rather than three times.
 - **A stack that settles from the exact render is judged against the CPU preview it stands in for** (owner, 2026-10-02). For an effect that declares `FitSettle::Exact` (Detail), the GPU frame is held to its class's limits against the CPU's moving proxy, the frame the gesture would otherwise show, not against the exact reduction that replaces it on settle. The proxy's own jump to the exact reduction is unchanged by the GPU and stays as Detail defines it ([design](design/gpu-preview.md#the-preview-error-limit)).
 
-The specific limits (CIEDE2000, in a pointwise and a spatial class), the 150 ms settle dissolve, the "GPU preview" label, the `workspace.set` preference and the GPU-preview budget's size are proposals with recorded defaults in the [design](design/gpu-preview.md#proposals-with-recorded-defaults); the plan runs on them until the owner revises them.
+The specific limits (CIEDE2000, in a pointwise and a spatial class), the 150 ms settle dissolve, the "GPU preview" label, and the `workspace.set` preference are proposals with recorded defaults in the [design](design/gpu-preview.md#proposals-with-recorded-defaults); the editor runs on them until the owner revises them.
 
 ## Open product questions
 
