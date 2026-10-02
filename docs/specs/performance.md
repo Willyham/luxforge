@@ -3827,7 +3827,7 @@ LUXFORGE_ARRIVAL=whole cargo test -p luxforge-ui --lib a_boundary_arrival_measur
 
 ## GPU previews qualified on the M4
 
-The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%, the latency of each gesture with the preview on and off, memory, idle after a dissolve, the Windows and Linux checks and the performance-rules checklist. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal.
+The native qualification of GPU previews ([design](../design/gpu-preview.md)): the corpus error report at Fit and at 100%, the latency of each gesture with the preview on and off, memory, idle after a dissolve, the Windows and Linux checks, the performance-rules checklist and the verify tiers. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal.
 
 ### The corpus error report
 
@@ -3935,6 +3935,20 @@ For GPU previews as a whole ([rules](../engineering/performance-rules.md#review-
 - **Repeated work.** The boundary is rendered once per draft and held (key: the source, the layers before it, its layer and the proxy plan); compiled program sequences are cached, eight per pipeline, and warmed when the stack changes; a spatial pass runs only when what it reads changed (5 compute passes for a Texture tick at 100%, none for Clarity).
 - **editor-performance.** GPU previews change no core render; the `timing` tier's `editor-performance` run is the before-and-after for the CPU path, and the same build's GPU-on and GPU-off drags above are the gesture's.
 - **Exactness.** Each program is qualified against its CPU unit on dense synthetic grids and on the corpus, within its class's limits, and the CPU's frames, samples, analysis and API answers keep their exact bytes, which the core's exact-buffer tests hold.
+
+### Verification
+
+`verify --tier quick` and `--tier rendered` (with the private RAW manifest, 48 components) passed on the release editor above. `verify --tier timing` ran every component, but each timing component started above the 8.0 load threshold (10.0 to 10.6, raised by the tier's own `check` just before them), so it reports every timing verdict as unreliable rather than as a pass or a miss. `measure` was therefore run again on its own at a load of 4.3, and then, to attribute what it missed, over the editor built from `46a85159` (the base before GPU previews) and the current editor back to back, at loads of 3.0 to 4.3, with the same harness:
+
+| `measure` target | Before GPU previews | Now | Now, alone | Verdict |
+| --- | ---: | ---: | ---: | --- |
+| Launch to usable empty shell, p95 < 1 s warm | 1378 / 1476 ms | 1436 / 1472 ms | 1430 / 1489 ms | **Missed**, before GPU previews too |
+| Uncached 24 MP JPEG to Fit preview, p95 < 750 ms | 779 / 826 ms | 783 / 827 ms | 784 / 824 ms | **Missed**, before GPU previews too |
+| 24 MP working set ≤ 600 MiB, sampled RSS | 279 / 313 MiB | 276 / 312 MiB | 284 / 317 MiB | Met |
+| 60 MP peak ≤ 1 GiB, sampled RSS, one open | 429 / 434 MiB | 419 / 452 MiB | 418 / 453 MiB | Met |
+| Idle CPU < 1% of one core over 30 s | 1.5% | 1.6% | 0.49% | **Missed** in the back-to-back pass, before GPU previews too; met alone |
+
+p50 / p95 over five launches (ten opens of the 24 MP JPEG). The launch figure is an upper bound: it runs from the spawn of a fresh background bundle with its copied 35 MB executable to the first captured frame, of which the editor's own startup to that frame is 0.2 s; the open figure runs from the request to the decoded raster. Neither changed with GPU previews beyond the run-to-run spread. The idle window includes the open Performance section's sampler and moved between 0.5% and 1.6% of one core across runs of either build.
 
 ## Method
 
