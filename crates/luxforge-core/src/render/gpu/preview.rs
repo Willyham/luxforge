@@ -501,19 +501,56 @@ pub(crate) fn plan_preview(
 /// takes the CPU path counts against none.
 const WARM_SPATIAL_PLANS: usize = 4;
 
-/// What a warmed plan's program sequence is told apart by: its colour units' entries, then its
-/// spatial operation's passes and applies.
-fn warm_sequence(plan: &GpuPlan) -> Vec<&'static str> {
-    plan.operations()
-        .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
-        .chain(plan.spatial.iter().flat_map(|spatial| {
-            spatial
-                .passes
+/// What a warmed plan's program sequence is told apart by, as the surface keys a sequence or
+/// finer: each colour operation's programs and its mask's components; the spatial operation's
+/// program, clamp, mask, planes, passes but for their words, and applies; and the geometry tail's
+/// kind. Two plans of one key compile to one sequence, so a warm list holds one of them.
+pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
+    let mask = |mask: &Option<super::GpuMask>| {
+        mask.as_ref().map(|mask| {
+            let components: Vec<&str> = mask
+                .components
                 .iter()
-                .map(|pass| pass.kernel)
-                .chain(spatial.applies.iter().map(|apply| apply.function))
-        }))
-        .collect()
+                .map(|component| component.program.program.entry)
+                .collect();
+            format!("masked by {components:?}")
+        })
+    };
+    let colour = |operations: &[super::GpuOperation]| -> Vec<String> {
+        operations
+            .iter()
+            .flat_map(|operation| {
+                operation
+                    .units
+                    .iter()
+                    .map(|unit| unit.program.entry.to_owned())
+                    .chain(mask(&operation.mask))
+            })
+            .collect()
+    };
+    let mut keys = colour(&plan.content);
+    if let Some(spatial) = &plan.spatial {
+        keys.push(format!(
+            "{}, clamps {}",
+            spatial.program.entry, spatial.clamps
+        ));
+        keys.extend(mask(&spatial.mask));
+        keys.extend(spatial.planes.iter().map(|plane| format!("{plane:?}")));
+        keys.extend(spatial.passes.iter().map(|pass| {
+            format!(
+                "{} {:?} -> {}, source {}, {:?}",
+                pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
+            )
+        }));
+        keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+    }
+    keys.push(format!(
+        "geometry affine {}, clamps {}",
+        plan.geometry.affine().is_some(),
+        plan.geometry.clamps
+    ));
+    keys.extend(colour(&plan.output));
+    keys
 }
 
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
@@ -579,7 +616,7 @@ pub(crate) fn plan_warm(
             .map(|(index, _)| (recipe.clone(), index, true)),
     );
     let mut plans: Vec<GpuPlan> = Vec::new();
-    let mut seen: Vec<Vec<&'static str>> = Vec::new();
+    let mut seen: Vec<Vec<String>> = Vec::new();
     let mut spatial = 0;
     for (planned, index, own) in candidates {
         if own && spatial == WARM_SPATIAL_PLANS {
