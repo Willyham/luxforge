@@ -423,6 +423,79 @@ impl<'a> Render<'a> {
         }))
     }
 
+    /// The input of the layer that begins at `position` — a segment and an operation index of this
+    /// render's compilation — held over the window of its received stage that the output stage's
+    /// `rect` reads at full scale: the visible region and every margin its boundaries need,
+    /// through the windowed planner ([`WindowPlan::of_rect`]), with the same whole-stage spatial
+    /// estimates the exact region uses. A stack the planner cannot cut answers its reason as an
+    /// error, as a region the boundary cannot hold is no frame of it.
+    pub(crate) fn region_boundary(
+        &self,
+        rect: Region,
+        position: (usize, usize),
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let (width, height) = self.stage();
+        let Some(rect) = clipped(rect, StageSize { width, height }) else {
+            return Err(Error::validation(
+                "the GPU preview's region lies outside the output stage",
+            ));
+        };
+        let source_size = self.source.dimensions();
+        let windows = WindowPlan::of_rect(&self.compiled, source_size, rect).map_err(|reason| {
+            Error::validation(format!(
+                "the GPU preview's region boundary: {}",
+                reason.reason()
+            ))
+        })?;
+        self.options.cancel.check()?;
+        let source = match self.source {
+            RenderSource::Byte(image) => RegionSource::Byte(
+                if windows.source
+                    == Region::whole(Stage {
+                        width: image.width,
+                        height: image.height,
+                    })
+                {
+                    image.clone()
+                } else {
+                    image.window(windows.source, &self.options.cancel)?
+                },
+            ),
+            RenderSource::Linear { image, settings } => RegionSource::Linear {
+                image: image.window(windows.source)?,
+                settings,
+            },
+        };
+        let cut = windows.apply(Compiled::clone(&self.compiled), source_size, |index| {
+            self.spatial_globals(index)
+        })?;
+        Render::compiled(source.input(), cut, self.options.clone(), self.context)?.boundary(
+            &self.compiled,
+            Stage {
+                width: source_size.0,
+                height: source_size.1,
+            },
+            windows.source,
+            position,
+            format,
+        )
+    }
+
+    /// [`Self::region_boundary`] of layer `layer`, wherever it begins in this render's
+    /// compilation: the boundary a percentage zoom's GPU preview of a drag from that layer holds.
+    #[cfg(feature = "qualification")]
+    pub(crate) fn layer_region_boundary(
+        &self,
+        rect: Region,
+        layer: usize,
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let position = super::gpu::position(&self.compiled, layer)
+            .ok_or_else(|| Error::validation(format!("layer {layer} is past the stack")))?;
+        self.region_boundary(rect, position, format)
+    }
+
     /// Plan the first moving viewport phase against a source stage roughly half the exact size on
     /// each side. The returned source window participates in the existing one-entry proxy key.
     pub(crate) fn plan_proxy_region(

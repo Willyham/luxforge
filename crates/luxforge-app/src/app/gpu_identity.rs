@@ -69,6 +69,7 @@ impl GpuIdentity {
                 "evidence_identity",
                 IDENTITY,
             ))],
+            region: None,
         });
     }
 

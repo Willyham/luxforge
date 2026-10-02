@@ -352,6 +352,15 @@ impl Editor {
                 // The open gesture's GPU preview: its held boundary, the plan's revision, why the
                 // latest tick took the CPU path, and its tick counts; and the warm list's version.
                 "gpu_preview":self.gpu.summary(),
+                // At a percentage zoom of 100% or more: the region of the output stage the view
+                // shows now, and the region the plan handed to the surface draws, which holds it;
+                // both `[x0, y0, x1, y1]`.
+                "visible_region":self.presentation.dimensions
+                    .and_then(|stage| self.desired_view_for(stage))
+                    .map(|rect| [rect.x0, rect.y0, rect.x1(), rect.y1()]),
+                "plan_region":self.gesture_gpu_plan()
+                    .and_then(|(plan, _)| plan.region)
+                    .map(|region| region.rect),
                 // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
                 "settle":self.gpu_settle.summary(),
             },

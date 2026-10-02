@@ -1039,16 +1039,17 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &Draft
 /// [`crate::app::Editor::request_preview`] attaches it to every job it queues, this one included —
 /// one rule for every preview path, so the grid is requested once.
 ///
-/// With `gpu`, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the plan
-/// a tick is drawn from, or its reason, and the boundary it starts from, in the same answer, so a
-/// tick drawn on the GPU adds no hop ([`super::gpu_preview`]).
+/// As `gpu` asks, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the
+/// plan a tick is drawn from, or its reason, and the boundary it starts from, in the same answer,
+/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit it is planned at the
+/// job's display bounds, and at a percentage zoom of 100% or more over the region it names.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
     draft_id: DraftId,
     fields: Value,
     preview: Option<(AssetId, Option<ProxyBounds>)>,
-    gpu: bool,
+    gpu: super::gpu_preview::GpuAsk,
 ) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
     let queued = Instant::now();
     let started = queued;
@@ -1065,10 +1066,14 @@ pub(crate) fn draft_set_now(
             let request = PreviewRequest::new(client, asset_id)
                 .draft(draft_id)
                 .analyse();
-            plan_preview(
-                owner,
-                proxied(if gpu { request.gpu() } else { request }, proxy),
-            )
+            let request = match gpu {
+                super::gpu_preview::GpuAsk::Off => request,
+                super::gpu_preview::GpuAsk::Fit => request.gpu(),
+                super::gpu_preview::GpuAsk::Region(rect, magnification) => {
+                    request.gpu_region(rect, magnification)
+                }
+            };
+            plan_preview(owner, proxied(request, proxy))
         })
         .transpose()
         .map_err(|error| error.to_string())?;
