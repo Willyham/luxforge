@@ -355,7 +355,7 @@
     {
       "id": "TASK-007",
       "description": "Hand off from GPU frames to CPU frames on settle with a dissolve, and add the label, the motion overlays and the gpu_preview preference with its API equivalent.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
