@@ -58,6 +58,8 @@ pub(crate) mod gpu_preview;
 mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
+#[cfg(test)]
+mod gpu_window_tests;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
 // not draw a gesture on the GPU yet, so only its tests reach it.
 mod drawn_frames;
