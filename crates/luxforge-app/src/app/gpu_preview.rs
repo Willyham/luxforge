@@ -362,6 +362,20 @@ impl Editor {
         });
     }
 
+    /// A tick drawn on the GPU puts the gesture's frame on screen as a CPU frame of it would, for
+    /// whoever waits on one: its newest once nothing the gesture asked for is still to bring a
+    /// frame of its own. The surface draws it at the next render.
+    pub(crate) fn gpu_tick_presented(&mut self) {
+        let Some(gesture) = self.core_gesture() else {
+            return;
+        };
+        let presented = super::outcome::Presented::Draft {
+            slider: gesture.slider().is_some(),
+            newest: !gesture.draft.frame_pending(),
+        };
+        self.outcome(super::outcome::Outcome::Presented(presented));
+    }
+
     /// A tick of the open draft that took the CPU path, and why.
     pub(crate) fn gpu_cpu_tick(&self, set: &Draft, generation: u64) {
         let Some(drag) = &self.gpu.drag else {
