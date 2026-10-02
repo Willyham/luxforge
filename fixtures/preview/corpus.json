@@ -305,6 +305,28 @@
         {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
         {"api": {"method": "edit.set-detail", "params": {"mask": {"name": "Mask 1"}, "luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
       ]
+    },
+    {
+      "id": "detail-noise-stress-masked",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the noise-stress parameter set through a radial mask.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-detail", "params": {"mask": {"name": "Mask 1"}, "luminance": 100, "colour": 100, "luminance-detail": 0, "colour-detail": 0}}}
+      ]
+    },
+    {
+      "id": "detail-sharpen-stress-masked",
+      "family": "detail",
+      "class": "spatial",
+      "description": "Detail at the sharpen-stress parameter set through a radial mask.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-detail", "params": {"mask": {"name": "Mask 1"}, "sharpening": 150, "radius": 3, "sharpen-detail": 100, "sharpen-masking": 0}}}
+      ]
     }
   ]
 }
