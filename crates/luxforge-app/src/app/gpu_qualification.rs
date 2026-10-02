@@ -517,7 +517,6 @@ pub(crate) fn corpus_cell(
             PreviewSource::Raw { .. } => BoundaryFormat::Float,
             PreviewSource::Jpeg(_) => BoundaryFormat::Half,
         };
-        let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
         // The frame is the plan's output stage: the boundary's, or its geometry tail's.
         let output_stage = plan.geometry.output();
         let (out_width, out_height) = (output_stage.width, output_stage.height);
@@ -527,6 +526,60 @@ pub(crate) fn corpus_cell(
                 cpu.width, cpu.height
             )));
         }
+        // At the exact stage a Fit drag's boundary holds the window of its stage the whole output
+        // reads, as the worker renders it, unless the plan takes a global estimate on the GPU,
+        // which keeps the whole stage; a proxy's is the window the proxy source holds. One past
+        // the bound on a boundary is the CPU path, as the desktop finds before it asks.
+        let core_format = match format {
+            BoundaryFormat::Float => luxforge_core::BoundaryFormat::Float,
+            BoundaryFormat::Half => luxforge_core::BoundaryFormat::Half,
+        };
+        let (held, origin) = if !is_proxy && !plan.spatial.iter().any(|spatial| spatial.estimated) {
+            let context = RenderContext::new();
+            let exact = render(
+                &registry,
+                evaluation.source(),
+                evaluation.recipe(),
+                RenderOptions::exact(&Cancel::never()),
+                &context,
+            )
+            .map_err(|error| error.to_string())?;
+            let frame = match luxforge_core::qualification::region_boundary(
+                &exact,
+                boundary_layer,
+                [0, 0, out_width, out_height],
+                core_format,
+            ) {
+                Ok(frame) => frame,
+                Err(error) if error.kind == luxforge_core::ErrorKind::ResourceLimit => {
+                    return Ok(Cell::Gap(format!(
+                        "budget-exceeded: {}, so the drag takes the CPU path",
+                        error.detail
+                    )));
+                }
+                Err(error) => return Err(error.to_string()),
+            };
+            let held = luxforge_ui::photo_surface::GpuBoundary::new(
+                frame.texels.clone(),
+                frame.width,
+                frame.height,
+                1,
+                format,
+            )
+            .ok_or("a boundary")?;
+            (held, frame.origin)
+        } else {
+            let bytes = u64::from(width) * u64::from(height) * core_format.texel_bytes() as u64;
+            if bytes > luxforge_core::BOUNDARY_MAX_BYTES {
+                return Ok(Cell::Gap(format!(
+                    "budget-exceeded: a {width}x{height} boundary of {bytes} B passes the {} B \
+                     bound on one, so the drag takes the CPU path",
+                    luxforge_core::BOUNDARY_MAX_BYTES
+                )));
+            }
+            let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
+            (held, origin)
+        };
         // A lens warp's coordinate grid over the whole output stage, as the boundary's job
         // computes it; none for an affine or perspective tail, which the surface evaluates exactly.
         let grid = plan
@@ -563,6 +616,22 @@ pub(crate) fn corpus_cell(
         let charged = qualifier
             .charged_bytes(&converted)
             .map_err(|reason| format!("{reason:?}"))?;
+        let (held_width, held_height) = converted.boundary.size();
+        eprintln!(
+            "{name}: boundary {held_width}x{held_height} at {origin:?} of {}x{}, {} B",
+            plan.boundary.stage.width,
+            plan.boundary.stage.height,
+            u64::from(held_width) * u64::from(held_height) * core_format.texel_bytes() as u64
+        );
+        let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+        if charged > budget {
+            return Ok(Cell::Gap(format!(
+                "budget-exceeded: the slot over a {}x{} boundary would charge {charged} B of the \
+                 {budget} B GPU-preview budget, so the drag takes the CPU path",
+                converted.boundary.size().0,
+                converted.boundary.size().1
+            )));
+        }
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()

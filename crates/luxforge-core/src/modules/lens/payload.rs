@@ -95,6 +95,62 @@ fn name(value: &str) -> bool {
     !value.is_empty() && value.len() <= 512 && !value.chars().any(char::is_control)
 }
 
+/// A frozen Poly3 profile of `k1` resolved for a `stage`, built without the index: the payload a
+/// detected profile's Apply would commit, for the qualification tests that draw a lens warp.
+#[cfg(feature = "qualification")]
+pub(crate) fn qualification(k1: f64, stage: (u32, u32)) -> Value {
+    let (long, short) = (stage.0.max(stage.1), stage.0.min(stage.1));
+    let record = "0123456789abcdef".repeat(4);
+    let aspect = (f64::from(long) - 1.0) / (f64::from(short) - 1.0);
+    let lens_aspect = 1.5_f64;
+    let unit_scale = (lens_aspect * lens_aspect + 1.0).sqrt() / (aspect * aspect + 1.0).sqrt()
+        * f64::from(short)
+        / (f64::from(short) - 1.0);
+    let profile = Profile {
+        key: format!("lf1-{}", &record[..16]),
+        interpretation: INTERPRETATION.into(),
+        database: Database {
+            release: pinned::RELEASE.into(),
+            commit: pinned::COMMIT.into(),
+            index_sha256: pinned::INDEX_SHA256.into(),
+            record_sha256: record,
+        },
+        camera: Camera {
+            maker: "Luxforge".into(),
+            model: "Qualification".into(),
+            crop_factor: 1.0,
+            fixed_mount: true,
+        },
+        lens: Lens {
+            maker: "Luxforge".into(),
+            model: "Qualification lens".into(),
+            crop_factor: 1.0,
+            aspect_ratio: lens_aspect,
+        },
+        focal: Focal {
+            mm: 24.0,
+            source: FocalSource::Exif,
+        },
+        model: DistortionModel::Poly3,
+        terms: [k1, 0.0, 0.0],
+        normalization: Normalization {
+            unit_scale,
+            resolved_long: long,
+            resolved_short: short,
+        },
+        optics: Optics {
+            source_interpretation: "qualification".into(),
+            distortion: OpticalStatus::KnownUnapplied,
+            acknowledged: None,
+        },
+    };
+    profile.validate().expect("a valid frozen profile");
+    serde_json::to_value(Payload {
+        profile: Some(profile),
+    })
+    .expect("a payload")
+}
+
 pub(crate) fn parse(value: &Value) -> Result<Payload, Error> {
     let bytes = serde_json::to_vec(value)
         .map_err(|e| Error::validation(format!("Invalid lens payload: {e}")))?;
