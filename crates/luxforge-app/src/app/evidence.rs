@@ -78,6 +78,8 @@ pub(crate) struct Evidence {
     pub(crate) capture_pending: bool,
     /// A native view-change probe whose own tick and capture streams are suspended until due.
     pub(crate) view_idle: Option<ViewIdleObservation>,
+    /// A native idle check, with the same streams suspended until its window ends.
+    pub(crate) idle: Option<IdleObservation>,
     /// Permit a diagnostic capture of a blank/stale result after a failed view-idle check.
     pub(crate) allow_unready_capture: bool,
     /// This capture was armed by the mask overlay, so it must show one.
@@ -175,6 +177,7 @@ impl Evidence {
             frames: Vec::new(),
             capture_pending: false,
             view_idle: None,
+            idle: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
@@ -191,6 +194,24 @@ impl Evidence {
             recorded: Recorded::default(),
             gpu_identity: None,
         }
+    }
+}
+
+/// A native idle check in progress ([`luxforge_evidence::IdleStep`]): the settle, then the
+/// window, and what the window started from.
+pub(crate) struct IdleObservation {
+    pub(crate) settle_until: Instant,
+    pub(crate) settle_ms: u64,
+    pub(crate) ms: u64,
+    /// When the window ends, the surface's drawn frames and the views built when it began: `None`
+    /// while settling.
+    pub(crate) window: Option<(Instant, u64, u64)>,
+}
+
+impl Evidence {
+    /// Whether evidence's own tick and capture streams are suspended for a native idle probe.
+    pub(crate) fn suspended(&self) -> bool {
+        self.view_idle.is_some() || self.idle.is_some()
     }
 }
 
@@ -371,10 +392,10 @@ pub(crate) struct PacedStroke {
 /// xtask writes them, so a step has one spelling on both ends.
 pub(crate) use luxforge_evidence::{
     CapabilityAction, CapabilityStep, ControlsStep, CurveStep, CurveStepEvent, DoubleClickStep,
-    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, KindMenuStep, MaskRow, MaskStep,
-    PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick, PreviewStep,
-    Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd, SliderStep, Step,
-    TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
+    DraftStep, DragHandle, ExportStep, FieldStep, GroupStep, IdleStep, KindMenuStep, MaskRow,
+    MaskStep, PaintStep, PaletteStep, PickStep, PickerStep, PresetCreateStep, PresetPick,
+    PreviewStep, Reference, ResetStep, RowStep, SectionStep, SliderDraftStep, SliderEnd,
+    SliderStep, Step, TabStep, ViewIdleStep, ViewStep, WorkspaceStep,
 };
 
 #[derive(Clone, Copy)]
@@ -741,11 +762,7 @@ impl Editor {
                 });
             }
             EvidenceMessage::Tick => {
-                if self
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.view_idle.is_some())
-                {
+                if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let expired = self.evidence.as_ref().is_some_and(|evidence| {
@@ -763,15 +780,12 @@ impl Editor {
                 self.wait_elapsed();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
+            EvidenceMessage::IdleDeadline => return self.idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
-                if self
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.view_idle.is_some())
-                {
+                if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let rows_shown = self.recipe_rows_shown();
@@ -1041,6 +1055,7 @@ impl Editor {
                 task
             }
             Step::ViewIdle(step) => self.view_idle_step(step),
+            Step::Idle(step) => self.idle_check_step(step),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Compare(compare) => {
@@ -3187,6 +3202,75 @@ impl Editor {
         }
     }
 
+    /// Leave the editor alone, with evidence's own tick and capture streams suspended, for the
+    /// step's settle and then its window ([`luxforge_evidence::IdleStep`]).
+    fn idle_check_step(&mut self, step: IdleStep) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.capture_pending = false;
+            evidence.awaiting = None;
+            evidence.idle = Some(IdleObservation {
+                settle_until: Instant::now() + Duration::from_millis(step.settle_ms),
+                settle_ms: step.settle_ms,
+                ms: step.ms,
+                window: None,
+            });
+        }
+        Task::none()
+    }
+
+    /// The idle check's phase ends: the settle opens the window, counting from the surface's drawn
+    /// frames and the views built so far, and the window's end checks that nothing was drawn or
+    /// updated in it but the one frame and view of its own start. A dissolve asks for frames only
+    /// while it runs, so one that ended in the settle draws nothing in the window.
+    fn idle_deadline(&mut self) -> Task<Message> {
+        let Some(observation) = self.evidence.as_ref().and_then(|e| e.idle.as_ref()) else {
+            return Task::none();
+        };
+        let now = Instant::now();
+        let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        let views = self.log.loop_timing.get().views;
+        let Some((until, drawn_before, views_before)) = observation.window else {
+            if now >= observation.settle_until {
+                let until = now + Duration::from_millis(observation.ms);
+                if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
+                    idle.window = Some((until, gpu.drawn_frames, views));
+                }
+            }
+            return Task::none();
+        };
+        if now < until {
+            return Task::none();
+        }
+        let drawn_delta = gpu.drawn_frames.saturating_sub(drawn_before);
+        let views_delta = views.saturating_sub(views_before);
+        // The window's start was an update of its own, whose view and frame it may count.
+        let passed = drawn_delta <= 1
+            && views_delta <= 1
+            && gpu.drawn_dissolve.is_none()
+            && self.gpu_settle.dissolve().is_none();
+        let detail = json!({
+            "passed": passed,
+            "settle_ms": observation.settle_ms,
+            "window_ms": observation.ms,
+            "drawn_frames_delta": drawn_delta,
+            "views_delta": views_delta,
+            "dissolve_drawn": gpu.drawn_dissolve.is_some(),
+            "dissolve_running": self.gpu_settle.dissolve().is_some(),
+            "drawn_frames": gpu.drawn_frames,
+        });
+        self.event("idle_check", || detail.clone());
+        self.note_step(json!({"idle_check": detail}));
+        if let Some(evidence) = &mut self.evidence {
+            evidence.idle = None;
+        }
+        if passed {
+            self.capture_next_frame();
+            Task::none()
+        } else {
+            self.fail_step("the editor drew or updated while it should have been idle")
+        }
+    }
+
     /// This gated timer is removed after its first due message. Reading diagnostics precedes the
     /// capture request and any redraw caused by this evidence message.
     fn view_idle_deadline(&mut self) -> Task<Message> {
@@ -4432,13 +4516,24 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                 iced::time::every(Duration::from_millis(idle.ms))
                     .map(|_| Message::Evidence(EvidenceMessage::ViewIdleDeadline)),
             );
+        } else if let Some(idle) = &evidence.idle {
+            // One timer per phase, due at its end: nothing else of evidence's wakes the editor.
+            let phase = if idle.window.is_none() {
+                idle.settle_ms
+            } else {
+                idle.ms
+            };
+            subscriptions.push(
+                iced::time::every(Duration::from_millis(phase))
+                    .map(|_| Message::Evidence(EvidenceMessage::IdleDeadline)),
+            );
         } else {
             subscriptions.push(
                 iced::time::every(Duration::from_millis(250))
                     .map(|_| Message::Evidence(EvidenceMessage::Tick)),
             );
         }
-        if evidence.capture_pending && evidence.view_idle.is_none() {
+        if evidence.capture_pending && !evidence.suspended() {
             subscriptions
                 .push(iced::window::frames().map(|_| Message::Evidence(EvidenceMessage::Capture)));
         }
@@ -4686,6 +4781,47 @@ mod tests {
         assert!(editor.evidence.as_ref().unwrap().view_idle.is_none());
         assert!(editor.evidence.as_ref().unwrap().capture_pending);
         assert!(editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["view_idle_check"]["passed"].is_boolean());
+        crate::app::testing::finish(editor, catalog);
+    }
+
+    /// An idle check suspends evidence's own ticks and captures, opens its window once its settle
+    /// has passed, and at the window's end records what was drawn in it and captures the frame.
+    #[test]
+    fn an_idle_check_suspends_evidence_and_records_its_window() {
+        let (mut editor, catalog, _, _) =
+            crate::app::testing::scripted(r#"[{"idle":{"settle_ms":500,"ms":1000}}]"#);
+        let _ = editor.next_step();
+        let idle = |editor: &Editor| editor.evidence.as_ref().unwrap().idle.is_some();
+        assert!(idle(&editor));
+        let _ = editor.evidence_update(EvidenceMessage::Tick);
+        let _ = editor.evidence_update(EvidenceMessage::Capture);
+        assert!(!editor.evidence.as_ref().unwrap().capture_pending);
+        // Early: nothing moves on.
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        assert!(
+            editor
+                .evidence
+                .as_ref()
+                .unwrap()
+                .idle
+                .as_ref()
+                .unwrap()
+                .window
+                .is_none()
+        );
+        let observation = editor.evidence.as_mut().unwrap().idle.as_mut().unwrap();
+        observation.settle_until = Instant::now() - Duration::from_millis(1);
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        let observation = editor.evidence.as_mut().unwrap().idle.as_mut().unwrap();
+        let (until, drawn, views) = observation.window.expect("the window opened");
+        observation.window = Some((Instant::now() - Duration::from_millis(1), drawn, views));
+        assert!(until > Instant::now());
+        let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
+        assert!(!idle(&editor));
+        let check = &editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["idle_check"];
+        assert_eq!(check["passed"], json!(true), "{check}");
+        assert_eq!(check["drawn_frames_delta"], json!(0));
+        assert!(editor.evidence.as_ref().unwrap().capture_pending);
         crate::app::testing::finish(editor, catalog);
     }
 
@@ -4948,6 +5084,7 @@ mod tests {
             frames: Vec::new(),
             capture_pending: false,
             view_idle: None,
+            idle: None,
             allow_unready_capture: false,
             capture_overlay: false,
             saving: false,
