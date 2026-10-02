@@ -300,8 +300,36 @@ fn encode_lens_grid(
             [240; 3]
         })
     });
+    encode_with_identity(path, &image, make, model, lens)
+}
+
+/// The zone plate ([`zone_plate`]) at a Nikon Z 6's 6048 × 4024, with the Z 6 and NIKKOR Z
+/// 24-70mm f/4 S identity at 24 mm that [`encode_lens_grid`] gives `lens-24mp.jpg`: a
+/// high-frequency probe a lens profile applies to, for the GPU preview's lens warp.
+pub const LENS_ZONE_PLATE: (u32, u32) = (6048, 4024);
+
+fn encode_lens_zone_plate(path: &Path) -> Result {
+    let (w, h) = LENS_ZONE_PLATE;
+    encode_with_identity(
+        path,
+        &zone_plate(w, h),
+        "NIKON CORPORATION",
+        "NIKON Z 6",
+        "NIKKOR Z 24-70mm f/4 S",
+    )
+}
+
+/// `image` at quality 95 with an EXIF block naming its camera's `make` and `model`, its `lens`
+/// and a 24 mm focal length, which is all the profile resolver reads.
+fn encode_with_identity(
+    path: &Path,
+    image: &RgbImage,
+    make: &str,
+    model: &str,
+    lens: &str,
+) -> Result {
     let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(&image)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 95).encode_image(image)?;
     let (make, model, lens) = (
         format!("{make}\0").into_bytes(),
         format!("{model}\0").into_bytes(),
@@ -443,7 +471,7 @@ pub struct Fixture {
     manifest: fn() -> Value,
 }
 
-pub const TABLE: [Fixture; 10] = [
+pub const TABLE: [Fixture; 11] = [
     Fixture {
         file: "24mp.jpg",
         write: |p| encode(p, 6000, 4000),
@@ -510,6 +538,18 @@ pub const TABLE: [Fixture; 10] = [
             json!({
                 "width":w,"height":h,
                 "chirp":{"code":"round(127.5 + 127.5 * cos(pi * rate * r^2))","rate":zone_plate_rate(ZONE_PLATE),"corner_frequency":0.5},
+            })
+        },
+    },
+    Fixture {
+        file: "lens-zone-plate.jpg",
+        write: encode_lens_zone_plate,
+        manifest: || {
+            let (w, h) = LENS_ZONE_PLATE;
+            json!({
+                "width":w,"height":h,
+                "chirp":{"code":"round(127.5 + 127.5 * cos(pi * rate * r^2))","rate":zone_plate_rate(LENS_ZONE_PLATE),"corner_frequency":0.5},
+                "identity":{"make":"NIKON CORPORATION","model":"NIKON Z 6","lens":"NIKKOR Z 24-70mm f/4 S","focal_mm":24},
             })
         },
     },

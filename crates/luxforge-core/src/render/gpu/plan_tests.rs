@@ -133,12 +133,14 @@ fn largest_difference(left: &[u8], right: &[u8]) -> u8 {
 /// units over an exact tail, whose arithmetic is the same `f32` in the same order; one code where
 /// the CPU quantizes a frame the plan carries in float (a resample's input and output, a boundary
 /// inside a colour run), holds a stage boundary's frame at 16 bits that these tests read back at 8
-/// (`staged`), quantizes a spatial operation's output, or folds a mask in `f64`; two through a
-/// warp's grid.
+/// (`staged`), quantizes a spatial operation's output, or folds a mask in `f64`, and where a
+/// perspective warp's homography is evaluated in `f32`, as the CPU's map is in `f64`; two through a
+/// lens warp's grid.
 fn tolerance(plan: &GpuPlan, staged: bool) -> u8 {
-    if plan.geometry.affine().is_none() {
+    if plan.geometry.needs_grid() {
         2
     } else if plan.geometry.clamps
+        || plan.geometry.projective().is_some()
         || plan.boundary.continues_run
         || staged
         || !plan.spatial.is_empty()
@@ -822,10 +824,10 @@ fn smooth(width: u32, height: u32) -> SourceImage {
     }
 }
 
-/// A lens or perspective warp joins the tail as a warp map, which the executor reads through its
-/// coordinate grid and which draws the CPU frame.
+/// A perspective warp with a straightened crop after it joins the tail as one homography, which
+/// the executor evaluates at every pixel with no grid and which draws the CPU frame.
 #[test]
-fn a_warp_tail_is_drawn_through_its_grid() {
+fn a_perspective_tail_is_drawn_through_its_homography() {
     let registry = colour_registry();
     let source = smooth(157, 101);
     let recipe = colour_recipe(vec![
@@ -842,6 +844,45 @@ fn a_warp_tail_is_drawn_through_its_grid() {
         GpuPlanRequest::exact(0, stage(157, 101)),
     ));
     assert!(plan.geometry.affine().is_none(), "a warp has no matrix");
+    assert!(plan.geometry.projective().is_some(), "{:?}", plan.geometry);
+    assert!(!plan.geometry.needs_grid());
+    let output = plan.geometry.output();
+    let whole = Region {
+        x0: 0,
+        y0: 0,
+        width: output.width,
+        height: output.height,
+    };
+    assert_eq!(plan.geometry.grid(whole, 1.0).unwrap(), None);
+    assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, "a perspective warp");
+}
+
+/// A lens warp joins the tail as a warp map no homography states, which the executor reads through
+/// its coordinate grid and which draws the CPU frame.
+#[test]
+fn a_lens_tail_is_drawn_through_its_grid() {
+    let registry = colour_registry();
+    let source = smooth(180, 120);
+    let recipe = colour_recipe(vec![
+        exposure_layer(&[0.4]),
+        crate::render::testing::frozen_lens(180, 120, 24.0),
+        Layer::new(
+            crate::PERSPECTIVE_EFFECT,
+            json!({"horizontal": 60, "vertical": -45}),
+        ),
+        crop(180, 120, 3.0),
+    ]);
+    let plan = planned(answer(
+        &registry,
+        &recipe,
+        GpuPlanRequest::exact(0, stage(180, 120)),
+    ));
+    assert!(plan.geometry.affine().is_none(), "a warp has no matrix");
+    assert!(
+        plan.geometry.projective().is_none(),
+        "a lens has no homography"
+    );
+    assert!(plan.geometry.needs_grid());
     let output = plan.geometry.output();
     let grid = plan
         .geometry
@@ -857,7 +898,127 @@ fn a_warp_tail_is_drawn_through_its_grid() {
         .unwrap()
         .expect("a warp has a grid");
     assert!(grid.nodes.len() <= super::GRID_MAX_NODES);
-    assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, "a perspective warp");
+    assert_draws_the_cpu_frame(&registry, &source, &recipe, &plan, "a lens warp");
+}
+
+/// A perspective tail's homography is the map's own steps multiplied together: evaluated in `f32`
+/// as the surface evaluates it, it lands within `f32` precision of the CPU's `GeometryMap` at every
+/// pixel centre checked, on photo-sized stages with the corpus's and the strongest perspective,
+/// alone, under a straightened crop and under a downscale. A lens step leaves the tail no
+/// homography.
+#[test]
+fn a_perspective_homography_is_the_cpu_map_in_f32() {
+    use crate::render::map::{GeometryMap, StageSize, WarpStep};
+    use std::f64::consts::PI;
+    let size = |width, height| StageSize { width, height };
+    let perspective = |h, v, width, height| {
+        WarpStep::projective(h, v, stage(width, height)).expect("a perspective within limits")
+    };
+    // A straightened crop's output-to-input matrix: a turn by `degrees` about the output's centre,
+    // which lands on `centre` of the stage it reads.
+    let straightened = |degrees: f64, output: (f64, f64), centre: (f64, f64)| {
+        let (sin, cos) = (degrees * PI / 180.0).sin_cos();
+        let (ox, oy) = (output.0 / 2.0, output.1 / 2.0);
+        WarpStep::Affine([
+            cos,
+            -sin,
+            centre.0 - cos * ox + sin * oy,
+            sin,
+            cos,
+            centre.1 - sin * ox - cos * oy,
+        ])
+    };
+    let cases: Vec<(&str, StageSize, StageSize, Vec<WarpStep>)> = vec![
+        (
+            "the corpus's perspective on 24 MP",
+            size(6000, 4000),
+            size(6000, 4000),
+            vec![perspective(20, -10, 6000, 4000)],
+        ),
+        (
+            "the corpus's perspective at Fit",
+            size(1716, 1144),
+            size(1716, 1144),
+            vec![perspective(20, -10, 1716, 1144)],
+        ),
+        (
+            "a strong perspective on 60 MP",
+            size(10000, 6000),
+            size(10000, 6000),
+            vec![perspective(-100, 60, 10000, 6000)],
+        ),
+        (
+            "a perspective under a straightened crop",
+            size(6000, 4000),
+            size(5000, 2812),
+            vec![
+                perspective(35, 25, 6000, 4000),
+                straightened(7.0, (5000.0, 2812.0), (3000.0, 2000.0)),
+            ],
+        ),
+        (
+            "a perspective under a downscale",
+            size(6000, 4000),
+            size(1716, 1144),
+            vec![
+                perspective(-40, -70, 6000, 4000),
+                WarpStep::Affine([6000.0 / 1716.0, 0.0, 0.0, 0.0, 4000.0 / 1144.0, 0.0]),
+            ],
+        ),
+    ];
+    for (what, content, output, steps) in cases {
+        let map = GeometryMap::from_steps(content, output, steps).unwrap();
+        let geometry = super::GpuGeometry {
+            map: map.clone(),
+            reads: Region::whole(stage(content.width, content.height)),
+            clamps: false,
+        };
+        assert!(
+            geometry.affine().is_none() && !geometry.needs_grid(),
+            "{what}"
+        );
+        let m = geometry.projective().expect(what).map(|value| value as f32);
+        let columns = (0..output.width).step_by(5).chain([output.width - 1]);
+        let mut worst = 0.0f64;
+        for y in (0..output.height).step_by(5).chain([output.height - 1]) {
+            for x in columns.clone() {
+                // The surface's arithmetic: the pixel's centre and the nine coefficients in f32.
+                let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                let w = m[6] * px + m[7] * py + m[8];
+                let u = (m[0] * px + m[1] * py + m[2]) / w;
+                let v = (m[3] * px + m[4] * py + m[5]) / w;
+                let (eu, ev) = map.content_at(f64::from(x) + 0.5, f64::from(y) + 0.5);
+                worst = worst
+                    .max((f64::from(u) - eu).abs())
+                    .max((f64::from(v) - ev).abs());
+            }
+        }
+        // A few ulps of the largest coordinate the boundary stage holds.
+        let ulp = f64::from(f32::EPSILON) * f64::from(content.width.max(content.height));
+        eprintln!("{what}: worst {worst:.6} px, {:.2} ulps", worst / ulp);
+        assert!(worst <= 4.0 * ulp, "{what}: {worst} px from the CPU's map");
+    }
+    // A lens step makes the map no homography: its tail keeps the grid.
+    let content = size(6048, 4024);
+    let lens = WarpStep::radial(
+        crate::render::map::RadialModel::Poly3,
+        [-0.02, 0.0, 0.0],
+        1.0,
+        stage(6048, 4024),
+    )
+    .unwrap();
+    let map = GeometryMap::from_steps(
+        content,
+        content,
+        vec![lens, perspective(20, -10, 6048, 4024)],
+    )
+    .unwrap();
+    let geometry = super::GpuGeometry {
+        map,
+        reads: Region::whole(stage(6048, 4024)),
+        clamps: false,
+    };
+    assert!(geometry.projective().is_none() && geometry.needs_grid());
 }
 
 /// The proxy phase plans against the proxy stage, the stage its frame is drawn at.

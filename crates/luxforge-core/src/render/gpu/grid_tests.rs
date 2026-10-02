@@ -1,10 +1,11 @@
 //! A warp's coordinate grid against the exact map it samples, on the strongest lens and
 //! perspective fixtures (`fixtures/geometry/lens-perspective.json`): at Fit and at full size, over
 //! a whole output stage and over a 100% region, the content the grid's interpolated coordinate reads
-//! lies within [`GRID_TOLERANCE_PX`] output pixels of where the exact map puts it. The displacement
-//! is measured through the map's own exact inverse, `to_output`, not the Jacobian estimate the grid
-//! chooses its density with.
-use super::{CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX};
+//! lies within [`GRID_SAMPLE_TOLERANCE_PX`] output pixels of where the exact map puts it, and a
+//! stage drawn magnified within [`GRID_TOLERANCE_PX`] display pixels. The displacement is measured
+//! through the map's own exact inverse, `to_output`, not the Jacobian estimate the grid chooses its
+//! density with.
+use super::{CoordinateGrid, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX};
 use crate::{
     ErrorKind,
     modules::{Region, Stage},
@@ -108,7 +109,7 @@ fn assert_within_tolerance(what: &str, map: &GeometryMap, region: Region, stride
         grid.bytes() / 1024
     );
     assert!(
-        error <= GRID_TOLERANCE_PX,
+        error <= GRID_SAMPLE_TOLERANCE_PX,
         "{what}: the grid's content lies {error} px from the map's"
     );
     assert!(grid.nodes.len() <= GRID_MAX_NODES);
@@ -117,7 +118,7 @@ fn assert_within_tolerance(what: &str, map: &GeometryMap, region: Region, stride
 /// The two strongest lens profiles of the fixture — the largest cover and local scale — at the
 /// fixture's full 6048 × 4024 stage, at a Fit proxy of it and at a small window's Fit.
 #[test]
-fn a_grid_holds_the_strongest_lens_profiles_within_a_tenth_of_a_pixel() {
+fn a_grid_holds_the_strongest_lens_profiles_within_its_tolerance() {
     for name in [
         "Sigma 17-50 EX DC HSM at 17",
         "Sony E 10-18 at 10 (full-frame calibration)",
@@ -137,7 +138,7 @@ fn a_grid_holds_the_strongest_lens_profiles_within_a_tenth_of_a_pixel() {
 /// The fixture's strongest perspective, 100 on both axes, on its widest and its squarest stage
 /// (cover 1.5), at full size and at Fit.
 #[test]
-fn a_grid_holds_the_strongest_perspective_within_a_tenth_of_a_pixel() {
+fn a_grid_holds_the_strongest_perspective_within_its_tolerance() {
     for (width, height, stride) in [
         (6048, 4024, 13),
         (4000, 4000, 11),
@@ -204,8 +205,10 @@ fn a_grid_holds_a_composed_tail_and_a_region() {
     assert_within_tolerance("a 100% region of the Sigma lens", &map_full, region, 3);
 }
 
-/// A stage drawn larger than one display pixel per output pixel takes a denser grid; a request the
-/// node cap cannot meet, a region outside the stage and an inadmissible magnification are refused.
+/// Up to a fourfold zoom the output-pixel bound is the tighter, so a stage drawn larger keeps the
+/// grid it has at one display pixel per output pixel; past it the display bound divided by the
+/// magnification is, and the grid grows denser. A request the node cap cannot meet, a region outside
+/// the stage and an inadmissible magnification are refused.
 #[test]
 fn a_grid_follows_magnification_and_refuses_what_it_cannot_hold() {
     let (width, height) = (1024, 681);
@@ -217,9 +220,12 @@ fn a_grid_follows_magnification_and_refuses_what_it_cannot_hold() {
     let region = whole(width, height);
     let plain = CoordinateGrid::new(&map, region, 1.0).unwrap();
     let doubled = CoordinateGrid::new(&map, region, 2.0).unwrap();
-    assert!(doubled.spacing < plain.spacing);
-    let error = worst(&map, &doubled, region, 3);
-    assert!(error <= GRID_TOLERANCE_PX / 2.0, "{error}");
+    assert_eq!(doubled, plain, "the output-pixel bound holds at 200%");
+    let magnified = CoordinateGrid::new(&map, region, 8.0).unwrap();
+    assert!(magnified.spacing < plain.spacing);
+    let error = worst(&map, &magnified, region, 3);
+    assert!(error <= GRID_TOLERANCE_PX / 8.0, "{error}");
+    assert!(magnified.nodes.len() <= GRID_MAX_NODES);
     let refused = CoordinateGrid::new(&map, region, 64.0).unwrap_err();
     assert_eq!(refused.kind, ErrorKind::ResourceLimit);
     assert!(

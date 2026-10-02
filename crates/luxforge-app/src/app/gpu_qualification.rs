@@ -246,9 +246,71 @@ fn resolve_names(
     Ok(())
 }
 
+/// A query choice's Apply, as the section's suggestion card sends it (`query_choice.rs`): the
+/// action's declared query asked over the photograph's current entry, waiting while the module's
+/// index loads, then the action called with the suggestion's key and its own parameters.
+fn apply_suggestion(
+    owner: &luxforge_core::OwnerHandle,
+    client: luxforge_core::ClientId,
+    asset: &Value,
+    controls: &Value,
+) -> Result<(), String> {
+    use luxforge_testkit::client::{call, mutation, request_id, revision, state};
+    if controls["gesture"] != "query-choice-apply" {
+        return Err(format!("{controls} is not a gesture the corpus applies"));
+    }
+    let action = controls["action"]
+        .as_str()
+        .ok_or("a query choice names its action")?;
+    let mut listed = call(owner, client, "module.list", json!({}))?;
+    let modules: Vec<luxforge_core::ModuleDescriptor> =
+        serde_json::from_value(listed["modules"].take()).map_err(|error| error.to_string())?;
+    let control = super::query_choice::declaration(&modules, action)
+        .ok_or_else(|| format!("no module declares a query choice for {action}"))?;
+    let entry = state(owner, client, asset)?["current_entry"]["id"].clone();
+    let mut query = serde_json::Map::new();
+    query.insert("asset_id".into(), asset.clone());
+    query.insert("entry_id".into(), entry);
+    query.insert(control.text.clone(), json!(""));
+    query.insert(control.page.clone(), json!(0));
+    let method = format!("query.{}", control.query);
+    let answer = luxforge_testbase::try_wait_for(&format!("{method} to answer"), || {
+        match call(owner, client, &method, Value::Object(query.clone())) {
+            Err(error) if error.contains("not-ready") => None,
+            answer => Some(answer),
+        }
+    })??;
+    let suggestion = &answer["status"]["suggestion"];
+    if suggestion["eligible"] != true {
+        return Err(format!("{method} suggests nothing eligible: {answer}"));
+    }
+    let mut params = suggestion["parameters"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    params.insert(control.key.clone(), suggestion["key"].clone());
+    params.insert("asset_id".into(), asset.clone());
+    params.insert(
+        "mutation".into(),
+        mutation(
+            revision(owner, client, asset)?,
+            &request_id("corpus"),
+            "agent",
+        ),
+    );
+    call(
+        owner,
+        client,
+        &format!("edit.{action}"),
+        Value::Object(params),
+    )?;
+    Ok(())
+}
+
 /// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`, a mask
 /// or component named by name resolved to its identity. A `section` step only opens a panel and
-/// changes no recipe, so it is passed over.
+/// changes no recipe, so it is passed over; a query choice's Apply selects the suggestion its query
+/// offers ([`apply_suggestion`]).
 pub(crate) fn apply_steps(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
@@ -259,6 +321,10 @@ pub(crate) fn apply_steps(
     let id = json!(asset.as_str());
     for step in steps {
         if step.get("section").is_some() {
+            continue;
+        }
+        if let Some(controls) = step.get("controls") {
+            apply_suggestion(owner, client, &id, controls)?;
             continue;
         }
         let Some(api) = step.get("api") else {
@@ -461,22 +527,20 @@ pub(crate) fn corpus_cell(
                 cpu.width, cpu.height
             )));
         }
-        // A warp's coordinate grid over the whole output stage, as the boundary's job computes it.
-        let grid = match plan.geometry.affine() {
-            Some(_) => None,
-            None => plan
-                .geometry
-                .grid(
-                    luxforge_core::Region {
-                        x0: 0,
-                        y0: 0,
-                        width: out_width,
-                        height: out_height,
-                    },
-                    1.0,
-                )
-                .map_err(|error| error.to_string())?,
-        };
+        // A lens warp's coordinate grid over the whole output stage, as the boundary's job
+        // computes it; none for an affine or perspective tail, which the surface evaluates exactly.
+        let grid = plan
+            .geometry
+            .grid(
+                luxforge_core::Region {
+                    x0: 0,
+                    y0: 0,
+                    width: out_width,
+                    height: out_height,
+                },
+                1.0,
+            )
+            .map_err(|error| error.to_string())?;
         let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
@@ -835,15 +899,12 @@ pub(crate) fn region_cell(
                 super::gpu_plan::boundary_format(frame.format),
             )
             .ok_or("a boundary")?;
-            // A warp's coordinate grid over the region at the zoom, as the boundary's job
-            // computes it.
-            let grid = match plan.geometry.affine() {
-                Some(_) => None,
-                None => plan
-                    .geometry
-                    .grid(rect, f64::from(zoom) / 100.0)
-                    .map_err(|error| error.to_string())?,
-            };
+            // A lens warp's coordinate grid over the region at the zoom, as the boundary's job
+            // computes it; none for an affine or perspective tail.
+            let grid = plan
+                .geometry
+                .grid(rect, f64::from(zoom) / 100.0)
+                .map_err(|error| error.to_string())?;
             let converted = match super::gpu_plan::surface_plan_over(
                 &plan,
                 held,

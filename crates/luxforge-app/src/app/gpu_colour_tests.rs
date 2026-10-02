@@ -240,6 +240,46 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
     assert_eq!(window.texels.origin, [16.0, 8.0]);
 }
 
+/// A perspective warp's tail converts to the surface's projective tail, the plan's homography in
+/// `f32`, with no coordinate grid held for it: the boundary's job computes none.
+#[test]
+fn gpu_colour_a_perspective_tail_needs_no_grid() {
+    let registry = registry();
+    let plan = planned(
+        &registry,
+        &recipe(vec![
+            Layer::new(BASIC_EFFECT, json!({"exposure": 0.5})),
+            Layer::new(
+                luxforge_core::PERSPECTIVE_EFFECT,
+                json!({"horizontal": 20, "vertical": -10}),
+            ),
+        ]),
+        GpuPlanRequest::fit(0, stage(64, 48), stage(640, 480)).qualifying(),
+    );
+    let geometry = &plan.geometry;
+    let matrix = geometry
+        .projective()
+        .expect("a perspective is a homography");
+    assert!(geometry.affine().is_none() && !geometry.needs_grid());
+    let converted = surface_plan(&plan, flat_boundary(64, 48)).expect("no grid is needed");
+    let output = geometry.output();
+    let reads = geometry.reads;
+    let expected = luxforge_ui::photo_surface::GpuTail::projective(
+        (output.width, output.height),
+        [reads.x0, reads.y0, reads.x1(), reads.y1()],
+        geometry.clamps,
+        matrix.map(|value| value as f32),
+    );
+    assert!(
+        converted
+            .steps
+            .iter()
+            .any(|step| *step == GpuStep::Geometry(expected.clone())),
+        "{:?}",
+        converted.steps
+    );
+}
+
 /// The CPU units `layer` compiles to over `stage`, as the host compiles them.
 fn cpu_units(
     registry: &ModuleRegistry,
