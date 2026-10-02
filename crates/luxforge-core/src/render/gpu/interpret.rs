@@ -337,15 +337,26 @@ pub(super) fn execute_with(
     };
     let grid = plan.geometry.grid(whole, 1.0)?;
     let matrix = plan.geometry.affine().map(|m| m.map(|value| value as f32));
+    let homography = plan
+        .geometry
+        .projective()
+        .map(|m| m.map(|value| value as f32));
     let quantizer = srgb::quantizer();
     let mut rgba = Vec::with_capacity((output.width * output.height * 4) as usize);
     for y in 0..output.height {
         for x in 0..output.width {
             let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let [u, v] = match (&matrix, &grid) {
-                (Some(m), _) => [m[0] * cx + m[1] * cy + m[2], m[3] * cx + m[4] * cy + m[5]],
-                (None, Some(grid)) => grid.sample(cx, cy),
-                (None, None) => unreachable!("a warp has a grid"),
+            let [u, v] = match (&matrix, &homography, &grid) {
+                (Some(m), _, _) => [m[0] * cx + m[1] * cy + m[2], m[3] * cx + m[4] * cy + m[5]],
+                (None, Some(m), _) => {
+                    let w = m[6] * cx + m[7] * cy + m[8];
+                    [
+                        (m[0] * cx + m[1] * cy + m[2]) / w,
+                        (m[3] * cx + m[4] * cy + m[5]) / w,
+                    ]
+                }
+                (None, None, Some(grid)) => grid.sample(cx, cy),
+                (None, None, None) => unreachable!("a lens warp has a grid"),
             };
             let rgb = bilinear(&texels, stage.width, plan.geometry.reads, u, v);
             let rgb = plan.output.iter().fold(rgb, |value, step| {

@@ -9,10 +9,13 @@
 //! stage. For each output pixel `(x, y)` it takes the boundary-stage coordinate `(u, v)` of the
 //! pixel's centre `(x + ½, y + ½)`:
 //!
-//! - through an **affine** matrix, `u = a·x + b·y + c`, `v = d·x + e·y + f`, in `f32`; or
-//! - through a lens or perspective warp's **coordinate grid**, interpolated bilinearly between its
-//!   four nodes in `f32` exactly as the core's `CoordinateGrid::sample` defines it. A sampler's
-//!   linear filtering would not do: its weights carry too few bits for the grid's 0.1 px contract.
+//! - through an **affine** matrix, `u = a·x + b·y + c`, `v = d·x + e·y + f`, in `f32`;
+//! - through a perspective warp's **homography**, alone or composed with the crop and straightening
+//!   around it, `u = (a·x + b·y + c) / w`, `v = (d·x + e·y + f) / w` for `w = g·x + h·y + i`, in
+//!   `f32`: the warp's own map at every pixel, with no grid; or
+//! - through a lens warp's **coordinate grid**, interpolated bilinearly between its four nodes in
+//!   `f32` exactly as the core's `CoordinateGrid::sample` defines it. A sampler's linear filtering
+//!   would not do: its weights carry too few bits for the grid's 0.1 px contract.
 //!
 //! Then it blends the four texels at `floor(u − ½)`, `floor(v − ½)` and the ones after them by the
 //! fractions, in linear light, each tap clamped to the rectangle of the boundary stage the CPU's
@@ -49,6 +52,8 @@ use std::sync::{Arc, OnceLock};
 
 /// The entry of the affine tail's mapping.
 const AFFINE_ENTRY: &str = "lf_tail_affine";
+/// The entry of the projective tail's mapping.
+const PROJECTIVE_ENTRY: &str = "lf_tail_projective";
 /// The entry of the coordinate grid's mapping.
 const GRID_ENTRY: &str = "lf_tail_grid";
 
@@ -64,6 +69,18 @@ fn lf_tail_affine(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
         lf_f32(words + 6u) * pixel.x + lf_f32(words + 7u) * pixel.y + lf_f32(words + 8u),
         lf_f32(words + 9u) * pixel.x + lf_f32(words + 10u) * pixel.y + lf_f32(words + 11u),
     );
+}
+";
+
+/// `u = (a·x + b·y + c) / w`, `v = (d·x + e·y + f) / w` for `w = g·x + h·y + i` of the pixel-edge
+/// coordinate `pixel`, with the nine coefficients after the tail's header.
+const PROJECTIVE_SOURCE: &str = "
+fn lf_tail_projective(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
+    let w = lf_f32(words + 12u) * pixel.x + lf_f32(words + 13u) * pixel.y + lf_f32(words + 14u);
+    return vec2<f32>(
+        lf_f32(words + 6u) * pixel.x + lf_f32(words + 7u) * pixel.y + lf_f32(words + 8u),
+        lf_f32(words + 9u) * pixel.x + lf_f32(words + 10u) * pixel.y + lf_f32(words + 11u),
+    ) / w;
 }
 ";
 
@@ -128,6 +145,27 @@ impl GpuTail {
         }
     }
 
+    /// A projective tail onto an output stage of `output`: `matrix` is `[a, b, c, d, e, f, g, h, i]`
+    /// of `u = (a·x + b·y + c) / w`, `v = (d·x + e·y + f) / w`, `w = g·x + h·y + i` at a pixel's
+    /// centre; `reads` as for [`Self::affine`].
+    pub fn projective(
+        output: (u32, u32),
+        reads: [u32; 4],
+        quantize: bool,
+        matrix: [f32; 9],
+    ) -> Self {
+        let mut words = header(output, reads);
+        words.extend(matrix.map(f32::to_bits));
+        Self {
+            output,
+            quantize,
+            program: GpuProgram {
+                words,
+                ..GpuProgram::new(PROJECTIVE_ENTRY, PROJECTIVE_SOURCE)
+            },
+        }
+    }
+
     /// A coordinate grid's tail onto an output stage of `output`: node `(i, j)` at the pixel-edge
     /// coordinate `origin + (i, j)·spacing`, `columns` × `rows` of them, `nodes` their `(u, v)`
     /// `f32` bits row by row, shared.
@@ -185,7 +223,7 @@ impl GpuTail {
 }
 
 fn header(output: (u32, u32), reads: [u32; 4]) -> Vec<u32> {
-    let mut words = Vec::with_capacity(HEADER_WORDS + 6);
+    let mut words = Vec::with_capacity(HEADER_WORDS + 9);
     words.extend([output.0, output.1]);
     words.extend(reads);
     words

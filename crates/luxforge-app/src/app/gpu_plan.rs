@@ -66,8 +66,8 @@ pub(crate) fn boundary_format(
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unrunnable {
-    /// A lens or perspective warp's tail with no coordinate grid held for it: the grid is computed
-    /// with the boundary, and a warp that needs more nodes than a grid holds has none.
+    /// A lens warp's tail with no coordinate grid held for it: the grid is computed with the
+    /// boundary, and a warp that needs more nodes than a grid holds has none.
     Grid,
     /// The boundary held does not lie inside the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },
@@ -371,8 +371,9 @@ pub(crate) fn coverage(mask: &GpuMask) -> Option<Coverage> {
 
 /// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the
 /// whole boundary stage with nothing clamped, which leaves the output stage the boundary's and no
-/// output operation after it; otherwise the tail ([`GpuTail`]), through the plan's affine matrix
-/// or a warp's coordinate `grid`, quantizing where the CPU's segment boundary does, then each
+/// output operation after it; otherwise the tail ([`GpuTail`]), through the plan's affine matrix,
+/// a perspective warp's homography or a lens warp's coordinate `grid`, quantizing where the CPU's
+/// segment boundary does, then each
 /// output operation's steps at the output pixel ([`operation_steps`]). The tail draws `output`
 /// pixels when given — a percentage zoom's region, offset by the surface — and the whole output
 /// stage otherwise.
@@ -395,14 +396,20 @@ pub(crate) fn geometry_steps(
         reads.x0 + reads.width,
         reads.y0 + reads.height,
     ];
-    let tail = match (geometry.affine(), grid) {
-        (Some(matrix), _) => GpuTail::affine(
+    let tail = match (geometry.affine(), geometry.projective(), grid) {
+        (Some(matrix), _, _) => GpuTail::affine(
             output,
             reads,
             geometry.clamps,
             matrix.map(|value| value as f32),
         ),
-        (None, Grid::Held(Some(grid))) => GpuTail::grid(
+        (None, Some(matrix), _) => GpuTail::projective(
+            output,
+            reads,
+            geometry.clamps,
+            matrix.map(|value| value as f32),
+        ),
+        (None, None, Grid::Held(Some(grid))) => GpuTail::grid(
             output,
             reads,
             geometry.clamps,
@@ -414,8 +421,8 @@ pub(crate) fn geometry_steps(
                 .flat_map(|node| node.map(f32::to_bits))
                 .collect(),
         ),
-        (None, Grid::Held(None)) => return Err(Unrunnable::Grid),
-        (None, Grid::Sequence) => GpuTail::grid(
+        (None, None, Grid::Held(None)) => return Err(Unrunnable::Grid),
+        (None, None, Grid::Sequence) => GpuTail::grid(
             output,
             reads,
             geometry.clamps,
