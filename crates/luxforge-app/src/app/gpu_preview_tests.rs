@@ -317,60 +317,81 @@ fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
     commit(&mut editor, PRESENCE, "dehaze", 40.0);
-    let drags: [(&str, &str, [f64; 5], bool); 2] = [
-        (PRESENCE, "clarity", [20.0, 30.0, 45.0, 60.0, 75.0], false),
-        (ACTION, FIELD, [0.1, 0.2, 0.3, 0.45, 0.6], true),
-    ];
-    for (action, field, values, approximate) in drags {
-        editor.gpu.surface = Some(SurfaceReport::default());
-        let log = attach_log(&mut editor);
-        let _ = slide(&mut editor, action, field, values[0]);
-        deliver_until(&mut editor, "the boundary", |editor| {
-            editor.gpu.holds_boundary()
-        });
-        let records = logged(&mut editor, &log);
-        assert_eq!(
-            jobs(&records),
-            1,
-            "{field}: the first tick's job asks for the boundary"
-        );
-        surface_ready(&mut editor);
-        let log = attach_log(&mut editor);
-        for value in &values[1..] {
-            let _ = slide(&mut editor, action, field, *value);
-            let revision = editor.session.draft.as_ref().unwrap().draft_revision;
-            let surfaces = editor.surfaces();
-            assert!(surfaces.gpu.is_some(), "{field}: the plan is drawn");
-            assert_eq!(
-                surfaces.gpu_tag,
-                Some(revision),
-                "{field}: tagged with its tick"
-            );
-        }
-        let records = logged(&mut editor, &log);
-        assert_eq!(jobs(&records), 0, "{field}: no preview job per tick");
-        let ticks = events(&records, "gpu_preview_tick");
-        assert_eq!(ticks.len(), values.len() - 1, "{field}");
-        assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{field}");
-        let (plan, _) = editor.gpu.surface_plan().expect("a plan");
-        assert!(
-            plan.steps
-                .iter()
-                .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_))),
-            "{field}: Presence is in the plan"
-        );
-        assert_eq!(
-            editor.gpu.summary()["drag"]["approximate"],
-            json!(approximate),
-            "{field}: where the light comes from"
-        );
-        let _ = let_go(&mut editor, action, field);
-        assert!(run_commit(&mut editor));
-        deliver_until(&mut editor, "the committed frame", |editor| {
-            !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
-        });
-    }
+    gpu_drag(
+        &mut editor,
+        PRESENCE,
+        "clarity",
+        &[20.0, 30.0, 45.0, 60.0, 75.0],
+        false,
+    );
+    gpu_drag(
+        &mut editor,
+        ACTION,
+        FIELD,
+        &[0.1, 0.2, 0.3, 0.45, 0.6],
+        true,
+    );
     finish(editor, catalog);
+}
+
+/// One drag drawn on the GPU through a plan holding Presence's spatial step, then committed: its
+/// first tick's job asks for the boundary, and once the boundary is held and the surface has
+/// evaluated it every later tick is drawn on the GPU with no preview job, the plan's light stored
+/// or taken on the GPU as `approximate` says. Answers the last tick's plan.
+fn gpu_drag(
+    editor: &mut Editor,
+    action: &str,
+    field: &str,
+    values: &[f64],
+    approximate: bool,
+) -> luxforge_ui::photo_surface::GpuPlan {
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let log = attach_log(editor);
+    let _ = slide(editor, action, field, values[0]);
+    deliver_until(editor, "the boundary", |editor| editor.gpu.holds_boundary());
+    let records = logged(editor, &log);
+    assert_eq!(
+        jobs(&records),
+        1,
+        "{field}: the first tick's job asks for the boundary"
+    );
+    surface_ready(editor);
+    let log = attach_log(editor);
+    for value in &values[1..] {
+        let _ = slide(editor, action, field, *value);
+        let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+        let surfaces = editor.surfaces();
+        assert!(surfaces.gpu.is_some(), "{field}: the plan is drawn");
+        assert_eq!(
+            surfaces.gpu_tag,
+            Some(revision),
+            "{field}: tagged with its tick"
+        );
+    }
+    let records = logged(editor, &log);
+    assert_eq!(jobs(&records), 0, "{field}: no preview job per tick");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks.len(), values.len() - 1, "{field}");
+    assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{field}");
+    let (plan, _) = editor.gpu.surface_plan().expect("a plan");
+    let plan = plan.clone();
+    assert!(
+        plan.steps
+            .iter()
+            .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_))),
+        "{field}: Presence is in the plan"
+    );
+    assert_eq!(
+        editor.gpu.summary()["drag"]["approximate"],
+        json!(approximate),
+        "{field}: where the light comes from"
+    );
+    let _ = let_go(editor, action, field);
+    assert!(run_commit(editor));
+    deliver_until(editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+    plan
 }
 
 /// While a clipping overlay is shown, which is derived from the CPU's frames, a drag is still drawn
@@ -816,6 +837,66 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
     let ticks = events(&records, "gpu_preview_tick");
     assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{ticks:?}");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// At 100% a Presence drag over a committed Dehaze reads the light the exact frames stored, so it
+/// is drawn on the GPU over the visible region with no preview job per tick. A Basic drag under
+/// that Presence changes the light's input, which the region alone cannot give, so it keeps the CPU
+/// path and names `region-estimate`, asking for no boundary; with Dehaze back at neutral, a Basic
+/// drag under Presence is drawn on the GPU too.
+#[test]
+fn gpu_preview_presence_drags_at_100_percent() {
+    let catalog = catalog("presence-100");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    deliver_until(&mut editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    // The view the owner answers with is the session's: a commit's refresh answers it again, so
+    // each gesture sets it, as the zoom control does.
+    let at_100 = |editor: &mut Editor| {
+        editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+        let stage = editor
+            .presentation
+            .dimensions
+            .expect("the photograph's stage");
+        editor.desired_view_for(stage).expect("a visible region")
+    };
+    at_100(&mut editor);
+    commit(&mut editor, PRESENCE, "dehaze", 40.0);
+    let wanted = at_100(&mut editor);
+    let plan = gpu_drag(&mut editor, PRESENCE, "clarity", &[20.0, 30.0, 45.0], false);
+    assert_eq!(
+        plan.region.map(|region| region.rect),
+        Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]),
+        "the visible region"
+    );
+    // Under Presence with Dehaze: the CPU path, named, and no boundary asked for.
+    at_100(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 2, "each tick has its region job");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert!(
+        ticks
+            .iter()
+            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "region-estimate"),
+        "{ticks:?}"
+    );
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    deliver_until(&mut editor, "the cancelled drag's frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+    // Dehaze at neutral: Presence holds no global estimate.
+    at_100(&mut editor);
+    commit(&mut editor, PRESENCE, "dehaze", 0.0);
+    at_100(&mut editor);
+    let plan = gpu_drag(&mut editor, ACTION, FIELD, &[0.1, 0.2, 0.3], false);
+    assert!(plan.region.is_some(), "a region plan");
     finish(editor, catalog);
 }
 
