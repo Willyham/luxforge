@@ -9,13 +9,19 @@
 //! region holding the view, their pixels against the CPU frame the release commits. At 800%, where
 //! the view shows a corner of the photograph, the drag is panned across it while it ticks: the pan
 //! past the held region lets that boundary go and a later tick asks for the new region's, and every
-//! frame drawn on the GPU draws a region that holds the view it was captured with. Each release's
-//! committed frame dissolves in from the drag's last GPU frame: the dissolve's start and its
-//! identities are checked, and the release's capture either shows it running or follows its end,
-//! which a capture after 150 ms allows.
+//! frame drawn on the GPU draws a region that holds the view it was captured with. Before that, back
+//! at 100%, Presence is committed with Dehaze and Clarity: a Texture and a Clarity drag read Dehaze's
+//! light from the store the exact frames filled and run at most five compute passes a tick; a Basic
+//! drag under it, whose light the region alone cannot give, keeps the CPU path and names
+//! `region-estimate`; and with Dehaze back at neutral a Basic drag under Presence is drawn on the GPU,
+//! running every pass a tick. Each Basic release's committed frame dissolves in from the drag's last
+//! GPU frame: the dissolve's start and its identities are checked, and the release's capture either
+//! shows it running or follows its end, which a capture after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, EXPOSURE, dissolve_from, gpu_drawn, named, quiet, same_pixels, step_events, ticks,
+        BASIC, CLARITY, CLARITY_DRAG, DEHAZE, EXPOSURE, PRESENCE, PRESENCE_QUIET_MS, TEXTURE_DRAG,
+        UNDER_DRAG, dissolve_from, drag_steps, gpu_drawn, named, presence_drag_checks, quiet,
+        quiet_for, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -106,7 +112,59 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             quiet(settled_name).no_draft(),
         ]);
     }
-    // 13-17: at 800%, a drag panned past its region as it ticks, then ticked over the new region,
+    // 13-38: back at 100%, Presence committed, its drags drawn on the GPU, a Basic drag under it
+    // refused while Dehaze's light would come from the region alone, and drawn once Dehaze is
+    // neutral. Each drag's first tick changes Presence's shape, which a percentage zoom does not
+    // warm, so its boundary wait also covers a compile.
+    let release = |name: &str, field: &str, value: f64| {
+        Step::new(name, SliderStep::new(PRESENCE, field, [value]).release())
+            .commits(1)
+            .no_draft()
+    };
+    steps.extend([
+        Step::new("presence-100", ViewStep::Percent(100.0))
+            .commits(0)
+            .no_draft(),
+        release("dehaze-100", "dehaze", DEHAZE),
+        release("clarity-commit-100", "clarity", CLARITY),
+        quiet_for("presence-settled-100", PRESENCE_QUIET_MS).no_draft(),
+    ]);
+    steps.extend(drag_steps(
+        "texture-100",
+        PRESENCE,
+        "texture",
+        TEXTURE_DRAG,
+        PRESENCE_QUIET_MS,
+    ));
+    steps.extend(drag_steps(
+        "clarity-100",
+        PRESENCE,
+        "clarity",
+        CLARITY_DRAG,
+        PRESENCE_QUIET_MS,
+    ));
+    steps.extend([
+        Step::new(
+            "under-refused-100",
+            SliderStep::new(BASIC, EXPOSURE, [UNDER_DRAG[0]]),
+        )
+        .commits(0),
+        Step::new(
+            "under-refused-release-100",
+            SliderStep::new(BASIC, EXPOSURE, [UNDER_DRAG[0]]).release(),
+        )
+        .commits(1)
+        .no_draft(),
+        release("dehaze-off-100", "dehaze", 0.0),
+    ]);
+    steps.extend(drag_steps(
+        "under-100",
+        BASIC,
+        EXPOSURE,
+        UNDER_DRAG,
+        PRESENCE_QUIET_MS,
+    ));
+    // 39-43: at 800%, a drag panned past its region as it ticks, then ticked over the new region,
     // then released.
     steps.extend([
         Step::new("zoom-800", ViewStep::Percent(PANNED_ZOOM))
@@ -318,6 +376,45 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"drawn": drawn, "released_for_a_new_key": changed,
             "boundary_requests": summary["boundary_requests"], "views": views,
             "settled": settled}),
+    );
+
+    // At 100%: the Presence drags over the stored light, the Basic drag under Presence refused
+    // while Dehaze's light would come from the region alone, then drawn once it is neutral.
+    for (name, approximate, gain_only) in [
+        ("texture-100", false, true),
+        ("clarity-100", false, true),
+        ("under-100", false, false),
+    ] {
+        presence_drag_checks(launch, &mut checks, name, approximate, gain_only, false)?;
+    }
+    let refused = launch.at("under-refused-100")?;
+    let events = step_events(launch, "under-refused-100")?;
+    let (gpu_ticks, cpu_ticks, jobs) = ticks(events);
+    let reasons: Vec<&Value> = named(events, "gpu_preview_tick")
+        .iter()
+        .map(|tick| &tick["detail"]["reason"])
+        .collect();
+    let summary = &refused.state()["surface"]["gpu"]["gpu_preview"]["drag"];
+    ensure(
+        gpu_ticks == 0
+            && cpu_ticks >= 1
+            && jobs >= 1
+            && reasons
+                .iter()
+                .all(|reason| **reason == json!("region-estimate"))
+            && summary["boundary_requests"] == json!(0),
+        format!(
+            "The Basic drag under Presence with Dehaze at 100% was {gpu_ticks} GPU and \
+             {cpu_ticks} CPU ticks for {reasons:?}, asking for {} boundaries",
+            summary["boundary_requests"]
+        ),
+    )?;
+    checks.note(
+        refused,
+        "a Basic drag under Presence with Dehaze at 100% keeps the CPU path: the region alone \
+         cannot give the light",
+        json!({"cpu_ticks": cpu_ticks, "jobs": jobs, "reasons": reasons,
+            "plan_fallback": refused.state()["surface"]["gpu"]["plan_fallback"]}),
     );
 
     checks.write(&launch.evidence, run.scenario(), json!({}))

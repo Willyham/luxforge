@@ -361,9 +361,11 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview_zoom::SCENARIO,
-        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, and a drag at 800% panned past its region",
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, and Presence drags and Basic drags under Presence at 100%",
         launches: &[LaunchSpec {
             plan: gpu_preview_zoom::plan,
+            // Its Presence drags at 100% wait for their boundaries and sequences.
+            deadline: Some(Duration::from_secs(150)),
             ..APP
         }],
         verify: gpu_preview_zoom::verify,
