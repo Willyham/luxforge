@@ -1076,6 +1076,92 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
     assert!(missed.is_empty(), "{missed:?}");
 }
 
+/// Presence's pass pipelines are their kernels and shapes: all three units compile fewer pipelines
+/// than they run passes, a drag that changes only amounts compiles none, and the plan whose light
+/// is taken on the GPU adds only the light's own two passes to the plan whose light was stored.
+#[test]
+fn gpu_presence_pass_pipelines_are_shared_across_plans() {
+    let test = "gpu_presence_pass_pipelines_are_shared_across_plans";
+    let Some(qualifier) = Qualifier::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let (width, height) = (480, 320);
+    let pixels = photograph(width, height, 3);
+    let len = pixels.len();
+    let mut planes = vec![0.0_f32; 3 * len];
+    for (index, pixel) in pixels.iter().enumerate() {
+        for channel in 0..3 {
+            planes[channel * len + index] = pixel[channel];
+        }
+    }
+    let image = LinearImage::with_fingerprint(width, height, planes, "sha256:gpu-presence-passes")
+        .expect("a linear image");
+    let source = RenderSource::Linear {
+        image: &image,
+        settings: LinearSettings::default(),
+    };
+    let stack = recipe(json!({"texture": 40, "clarity": 30, "dehaze": 25}));
+    let stored = RenderContext::new();
+    render(
+        &registry,
+        source,
+        &stack,
+        RenderOptions::exact(&Cancel::never()),
+        &stored,
+    )
+    .and_then(|render| render.frame(SnapshotId::new()))
+    .expect("the CPU frame, which stores the light");
+    let fresh = RenderContext::new();
+    let converted = |stack: &Recipe, context: &RenderContext| {
+        let plan = match gpu_plan_with(
+            &registry,
+            stack,
+            GpuPlanRequest::exact(0, stage(width, height))
+                .qualifying()
+                .linear(),
+            Some(GpuEstimates { context, source }),
+        )
+        .expect("the stack compiles")
+        {
+            GpuAnswer::Plan(plan) => *plan,
+            GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        };
+        let passes = plan
+            .spatial
+            .as_ref()
+            .map_or(0, |spatial| spatial.passes.len());
+        let held = boundary(width, height, 1, &pixels).expect("a boundary");
+        (surface_plan(&plan, held).expect("a runnable plan"), passes)
+    };
+    let (plan, passes) = converted(&stack, &stored);
+    qualifier.evaluate(&plan).expect("a readback");
+    let first = qualifier.pass_pipelines_created();
+    eprintln!("{test}: all three, light stored: {passes} passes, {first} pipelines");
+    assert!(first < passes as u64);
+    // A drag moves amounts: its words change, its modules do not.
+    let mut dragged = stack.clone();
+    dragged.layers[0].payload = json!({"texture": 75, "clarity": -10, "dehaze": 60});
+    qualifier
+        .evaluate(&converted(&dragged, &stored).0)
+        .expect("a readback");
+    assert_eq!(
+        qualifier.pass_pipelines_created(),
+        first,
+        "a drag compiles nothing"
+    );
+    // The light taken on the GPU: its reduction and its workgroup are new, every other pass is
+    // one already compiled, though the words after Dehaze's sit at other offsets.
+    let (plan, passes) = converted(&stack, &fresh);
+    qualifier.evaluate(&plan).expect("a readback");
+    let second = qualifier.pass_pipelines_created();
+    eprintln!(
+        "{test}: all three, light taken on the GPU: {passes} passes, {} more pipelines",
+        second - first
+    );
+    assert_eq!(second - first, 2);
+}
+
 // ---- The corpus at Fit ------------------------------------------------------------------------
 
 /// The qualification corpus's Presence recipes at Fit through the shared harness

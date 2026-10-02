@@ -30,7 +30,11 @@
 //! # Execution
 //!
 //! A pass is a compute pipeline of its own module: the prelude, the programs the steps before it
-//! run, the spatial program, the declarations above and an entry the surface generates. Its planes
+//! run, the spatial program, the declarations above and an entry the surface generates. Every
+//! number that places a pass in its plan — its step's header, its words, its span, the words of the
+//! applies its source runs — is data, read from the pass's slice of the planes' parameter buffer,
+//! so a module is its kernel and its shape alone: passes and plans that differ only there share one
+//! pipeline, which the stage keeps across sequences ([`PassCache`]). Its planes
 //! are textures: `rgba16float`, `r32float`, `rg32float` or `rgba32float` by the plane's
 //! [`PlaneFormat`], each sized to the boundary or to the stage's blocks it reaches
 //! ([`GpuPlane::extent`]). The passes run in order before the frame's pass, which binds the
@@ -57,6 +61,26 @@ const GROUP_SIDE: u32 = 8;
 
 /// The binding of a pass's output plane in its second group, after every plane it reads.
 const OUTPUT_BINDING: u32 = 64;
+
+/// The binding of a pass's parameters in its second group.
+const PARAMS_BINDING: u32 = 65;
+
+/// One pass's slice of the parameter buffer, in bytes and in words: the largest storage-binding
+/// offset alignment a device may ask for.
+const PARAMS_STRIDE: u64 = 256;
+const PARAMS_WORDS: usize = (PARAMS_STRIDE / 4) as usize;
+
+/// A pass's parameters: its step's header index, its words' offset in the step's words, its span,
+/// then the offsets of the applies its source runs.
+const PARAM_STEP: usize = 0;
+const PARAM_WORDS: usize = 1;
+const PARAM_SPAN: usize = 2;
+const PARAM_APPLIES: usize = 4;
+
+/// How many compiled pass modules the stage keeps across sequences, the least recently used
+/// evicted first: every pass of the eight sequences [`super::PIPELINE_CACHE`] keeps holds its
+/// pipeline itself, so this bounds only what an evicted sequence can reuse.
+pub(super) const PASS_CACHE: usize = 64;
 
 /// What a plane's texels hold, as the texture format it is kept in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -197,7 +221,6 @@ pub(super) struct PassKey {
     inputs: [u32; PASS_INPUTS],
     count: usize,
     output: u32,
-    words: u32,
     source: u32,
     shape: PassShape,
 }
@@ -281,7 +304,6 @@ impl GpuSpatial {
                     inputs: first(&pass.inputs),
                     count: pass.inputs.len(),
                     output: pass.output,
-                    words: pass.words,
                     source: pass.source,
                     shape: pass.shape,
                 }),
@@ -576,9 +598,24 @@ fn declarations(slots: &Slots) -> String {
     text
 }
 
+/// Where the statements of a spatial step's applies read their offsets: written into the text, as
+/// the frame's module does, whose pipeline is its sequence's own; or from the pass's parameters, so
+/// a pass's module carries none.
+#[derive(Clone, Copy)]
+enum Offsets {
+    Written,
+    Parameters,
+}
+
 /// The statements that take `rgb` through spatial step `index`'s clamp and its first `count`
 /// applies, reading each apply's planes from the slot `slots` binds them at, at boundary `texel`.
-fn applies(index: usize, spatial: &GpuSpatial, count: usize, slots: &Slots) -> String {
+fn applies(
+    index: usize,
+    spatial: &GpuSpatial,
+    count: usize,
+    slots: &Slots,
+    offsets: Offsets,
+) -> String {
     let base = MAP_WORDS + STEP_WORDS * index;
     let mask_words = spatial.mask_words();
     let mut text = String::new();
@@ -589,11 +626,22 @@ fn applies(index: usize, spatial: &GpuSpatial, count: usize, slots: &Slots) -> S
         text.push_str("    let lf_spatial_input = rgb;\n");
     }
     for (number, apply) in spatial.applies.iter().enumerate().take(count) {
+        let (words, block) = match offsets {
+            Offsets::Written => (
+                format!("lf_words[{base}u] + {}u", mask_words + apply.words as usize),
+                format!("lf_words[{}u]", base + 1),
+            ),
+            Offsets::Parameters => (
+                format!(
+                    "lf_words[lf_param({PARAM_STEP}u)] + lf_param({}u)",
+                    PARAM_APPLIES + number
+                ),
+                format!("lf_words[lf_param({PARAM_STEP}u) + 1u]"),
+            ),
+        };
         text.push_str(&format!(
-            "    rgb = {}(rgb, vec2<i32>(texel), lf_words[{base}u] + {}u, lf_words[{}u], {}u);\n",
+            "    rgb = {}(rgb, vec2<i32>(texel), {words}, {block}, {}u);\n",
             apply.function,
-            mask_words + apply.words as usize,
-            base + 1,
             slots.apply(index, number)
         ));
     }
@@ -604,7 +652,13 @@ fn applies(index: usize, spatial: &GpuSpatial, count: usize, slots: &Slots) -> S
 /// against the operation's input and its clamp, in a block of their own.
 pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots) -> String {
     let mut text = String::from("    {\n");
-    text.push_str(&applies(index, spatial, spatial.applies.len(), slots));
+    text.push_str(&applies(
+        index,
+        spatial,
+        spatial.applies.len(),
+        slots,
+        Offsets::Written,
+    ));
     if spatial.mask.is_some() {
         text.push_str(&format!(
             "    let lf_spatial_coverage = lf_surface_mask_{index}(stage, lf_spatial_input);\n    \
@@ -702,7 +756,14 @@ pub(super) fn pass_module(
     slots.bind_applies(steps, index, pass.source as usize);
     let mut source = String::from(super::PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for (_, program) in steps[..=index].iter().flat_map(GpuStep::programs) {
+    // The steps before, whose statements its source runs, and its own step's spatial program: not
+    // the step's own mask, which only the frame's pass blends by.
+    let programs = steps[..index]
+        .iter()
+        .flat_map(GpuStep::programs)
+        .map(|(_, program)| program)
+        .chain(std::iter::once(&spatial.program));
+    for program in programs {
         if !included.iter().any(|seen| seen.entry == program.entry) {
             source.push_str(&format!("\n// {}\n{}\n", program.entry, program.source));
             included.push(program);
@@ -714,7 +775,9 @@ pub(super) fn pass_module(
     source.push_str(&declarations(&slots));
     source.push_str(&format!(
         "@group(1) @binding({OUTPUT_BINDING}) var lf_out: texture_storage_2d<{}, write>;\n\
-         fn lf_store(at: vec2<i32>, value: vec4<f32>) {{\n    textureStore(lf_out, at, value);\n}}\n",
+         fn lf_store(at: vec2<i32>, value: vec4<f32>) {{\n    textureStore(lf_out, at, value);\n}}\n\
+         @group(1) @binding({PARAMS_BINDING}) var<storage, read> lf_params: array<u32>;\n\
+         fn lf_param(i: u32) -> u32 {{\n    return lf_params[i];\n}}\n",
         format.wgsl()
     ));
     source.push_str(
@@ -727,24 +790,29 @@ pub(super) fn pass_module(
     for earlier in 0..index {
         source.push_str(&statements(steps, earlier, &slots, &masked));
     }
-    source.push_str(&applies(index, spatial, pass.source as usize, &slots));
+    source.push_str(&applies(
+        index,
+        spatial,
+        pass.source as usize,
+        &slots,
+        Offsets::Parameters,
+    ));
     source.push_str("    return rgb;\n}\n");
-    let base = MAP_WORDS + STEP_WORDS * index;
     let call = format!(
-        "{}(at, lf_words[{base}u] + {}u, lf_words[{}u]);",
+        "{}(at, lf_words[lf_param({PARAM_STEP}u)] + lf_param({PARAM_WORDS}u), \
+         lf_words[lf_param({PARAM_STEP}u) + 1u]);",
         pass.kernel,
-        spatial.mask_words() + pass.words as usize,
-        base + 1
     );
     match pass.shape {
-        PassShape::Texels { span } => source.push_str(&format!(
+        PassShape::Texels { .. } => source.push_str(&format!(
             "\n@compute @workgroup_size({GROUP_SIDE}, {GROUP_SIDE})\n\
              fn lf_pass(@builtin(global_invocation_id) id: vec3<u32>) {{\n    \
-             let at = vec2<i32>(id.xy) * vec2<i32>({}, {});\n    \
+             let span = vec2<i32>(i32(lf_param({PARAM_SPAN}u)), i32(lf_param({}u)));\n    \
+             let at = vec2<i32>(id.xy) * span;\n    \
              let size = vec2<i32>(textureDimensions(lf_out));\n    \
              if at.x >= size.x || at.y >= size.y {{\n        return;\n    }}\n    \
              {call}\n}}\n",
-            span[0], span[1]
+            PARAM_SPAN + 1
         )),
         PassShape::Workgroup => source.push_str(&format!(
             "\n@compute @workgroup_size({WORKGROUP_LANES})\n\
@@ -754,6 +822,51 @@ pub(super) fn pass_module(
         )),
     }
     Ok((source, slots))
+}
+
+/// Every pass's parameters in plan order, each in a slice of [`PARAMS_WORDS`] words: what the
+/// planes' parameter buffer holds for `steps`.
+pub(super) fn parameters(steps: &[GpuStep]) -> Vec<u32> {
+    let mut words = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        let GpuStep::Spatial(spatial) = step else {
+            continue;
+        };
+        let mask_words = spatial.mask_words() as u32;
+        for pass in &spatial.passes {
+            let mut slice = [0u32; PARAMS_WORDS];
+            slice[PARAM_STEP] = (MAP_WORDS + STEP_WORDS * index) as u32;
+            slice[PARAM_WORDS] = mask_words + pass.words;
+            let [x, y] = match pass.shape {
+                PassShape::Texels { span } => span,
+                PassShape::Workgroup => [1, 1],
+            };
+            slice[PARAM_SPAN] = x;
+            slice[PARAM_SPAN + 1] = y;
+            for (number, apply) in spatial
+                .applies
+                .iter()
+                .take(pass.source as usize)
+                .take(PARAMS_WORDS - PARAM_APPLIES)
+                .enumerate()
+            {
+                slice[PARAM_APPLIES + number] = mask_words + apply.words;
+            }
+            words.extend_from_slice(&slice);
+        }
+    }
+    words
+}
+
+/// How many passes `steps` run.
+fn pass_count(steps: &[GpuStep]) -> usize {
+    steps
+        .iter()
+        .map(|step| match step {
+            GpuStep::Spatial(spatial) => spatial.passes.len(),
+            GpuStep::Colour { .. } | GpuStep::Masked(_) => 0,
+        })
+        .sum()
 }
 
 /// The bind group layout of a module's second group: `planes` sampled planes and, for a pass, its
@@ -787,6 +900,16 @@ pub(super) fn plane_layout(
             },
             count: None,
         });
+        entries.push(wgpu::BindGroupLayoutEntry {
+            binding: PARAMS_BINDING,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        });
     }
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("luxforge.gpu_preview.planes"),
@@ -813,25 +936,115 @@ pub(super) struct CompiledSpatial {
 }
 
 /// Whether a device can run spatial steps: compute shaders with a 256-lane workgroup, its shared
-/// scratch, and a storage texture beside the planes a pass reads.
+/// scratch, a storage texture beside the planes a pass reads, and a pass's parameters at a
+/// 256-byte offset.
 pub(super) fn supported(limits: &wgpu::Limits) -> bool {
     limits.max_compute_invocations_per_workgroup >= WORKGROUP_LANES
         && limits.max_compute_workgroup_size_x >= WORKGROUP_LANES
         && limits.max_compute_workgroup_storage_size >= SHARED_VALUES * 4
         && limits.max_storage_textures_per_shader_stage >= 1
+        && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_sampled_textures_per_shader_stage >= 16
-        && limits.max_bindings_per_bind_group > OUTPUT_BINDING
+        && limits.max_bindings_per_bind_group > PARAMS_BINDING
+        && u64::from(limits.min_storage_buffer_offset_alignment) <= PARAMS_STRIDE
 }
 
+/// One compiled pass module: its text, its pipeline and its second group's layout.
+struct CachedPass {
+    source: String,
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    used: u64,
+}
+
+/// The pass pipelines the stage keeps across sequences, keyed by their module's text, at most
+/// [`PASS_CACHE`], the least recently used evicted first. A module is its kernel and its shape, so a
+/// sequence that differs from another in a unit or an estimate compiles only the passes that
+/// differ. Only a pipeline whose sequence compiled cleanly joins it.
+#[derive(Default)]
+pub(super) struct PassCache {
+    entries: std::sync::Mutex<(Vec<CachedPass>, u64)>,
+    /// How many pass pipelines were created, for the tests that prove the reuse.
+    created: std::sync::atomic::AtomicU64,
+}
+
+impl PassCache {
+    fn lookup(&self, source: &str) -> Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)> {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.1 += 1;
+        let clock = entries.1;
+        let found = entries
+            .0
+            .iter_mut()
+            .find(|cached| cached.source == source)?;
+        found.used = clock;
+        Some((found.pipeline.clone(), found.layout.clone()))
+    }
+
+    /// Keep the passes a sequence compiled cleanly.
+    pub(super) fn keep(&self, made: Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>) {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (source, pipeline, layout) in made {
+            entries.1 += 1;
+            let used = entries.1;
+            if entries.0.iter().any(|cached| cached.source == source) {
+                continue;
+            }
+            if entries.0.len() >= PASS_CACHE
+                && let Some(oldest) = entries
+                    .0
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, cached)| cached.used)
+                    .map(|(index, _)| index)
+            {
+                entries.0.swap_remove(oldest);
+            }
+            entries.0.push(CachedPass {
+                source,
+                pipeline,
+                layout,
+                used,
+            });
+        }
+    }
+
+    /// How many pass pipelines have been created.
+    pub(super) fn created(&self) -> u64 {
+        self.created.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How many pass pipelines are kept.
+    #[cfg(test)]
+    pub(super) fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+            .len()
+    }
+}
+
+/// What [`compile_passes`] made that the stage's [`PassCache`] did not hold, to keep once the
+/// sequence's error scopes report it clean.
+pub(super) type MadePasses = Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>;
+
 /// Compile every spatial step's passes of `steps`, each module validated as the surface
-/// validates, inside the caller's error scopes. One module serves every pass with the same text.
+/// validates, inside the caller's error scopes. One module serves every pass with the same text,
+/// within the sequence and, through the stage's [`PassCache`], across sequences.
 pub(super) fn compile_passes(
     device: &wgpu::Device,
     support: &Support,
     steps: &[GpuStep],
-) -> Result<CompiledSpatial, String> {
+) -> Result<(CompiledSpatial, MadePasses), String> {
     let mut compiled = CompiledSpatial::default();
-    let mut modules: Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)> = Vec::new();
+    let mut modules: MadePasses = Vec::new();
     for (index, step) in steps.iter().enumerate() {
         let GpuStep::Spatial(spatial) = step else {
             continue;
@@ -839,8 +1052,12 @@ pub(super) fn compile_passes(
         for pass in &spatial.passes {
             let (source, slots) = pass_module(steps, index, pass)?;
             let format = spatial.planes[pass.output as usize].format.texture();
-            let (pipeline, layout) = match modules.iter().find(|(text, ..)| *text == source) {
-                Some((_, pipeline, layout)) => (pipeline.clone(), layout.clone()),
+            let made = modules
+                .iter()
+                .find(|(text, ..)| *text == source)
+                .map(|(_, pipeline, layout)| (pipeline.clone(), layout.clone()));
+            let (pipeline, layout) = match made.or_else(|| support.passes.lookup(&source)) {
+                Some((pipeline, layout)) => (pipeline, layout),
                 None => {
                     validate(&source)?;
                     let layout = plane_layout(
@@ -868,6 +1085,10 @@ pub(super) fn compile_passes(
                             compilation_options: wgpu::PipelineCompilationOptions::default(),
                             cache: None,
                         });
+                    support
+                        .passes
+                        .created
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     modules.push((source, pipeline.clone(), layout.clone()));
                     (pipeline, layout)
                 }
@@ -887,7 +1108,7 @@ pub(super) fn compile_passes(
         let layout = plane_layout(device, slots.len(), None, wgpu::ShaderStages::FRAGMENT);
         compiled.fragment = Some((layout, slots));
     }
-    Ok(compiled)
+    Ok((compiled, modules))
 }
 
 /// What a spatial plan's planes are keyed by: each spatial step's planes, the boundary's size and
@@ -895,6 +1116,8 @@ pub(super) fn compile_passes(
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PlanesKey {
     planes: Vec<(usize, Vec<GpuPlane>)>,
+    /// How many passes the parameter buffer holds a slice for.
+    passes: usize,
     size: (u32, u32),
     origin: (u32, u32),
 }
@@ -911,18 +1134,24 @@ impl PlanesKey {
             .collect();
         (!planes.is_empty()).then_some(Self {
             planes,
+            passes: pass_count(steps),
             size,
             origin,
         })
     }
 
-    /// The bytes every plane takes.
+    /// The bytes every plane takes, and the passes' parameter buffer.
     pub(super) fn bytes(&self) -> u64 {
         self.planes
             .iter()
             .flat_map(|(_, planes)| planes)
             .map(|plane| plane.bytes(self.origin, self.size))
-            .sum()
+            .sum::<u64>()
+            + self.parameter_bytes()
+    }
+
+    fn parameter_bytes(&self) -> u64 {
+        PARAMS_STRIDE * self.passes.max(1) as u64
     }
 }
 
@@ -931,6 +1160,10 @@ pub(super) struct Planes {
     pub(super) key: PlanesKey,
     /// By step, then plane.
     textures: Vec<(usize, Vec<(wgpu::Texture, wgpu::TextureView)>)>,
+    /// Every pass's parameters, a [`PARAMS_STRIDE`] slice each, in plan order.
+    parameters: wgpu::Buffer,
+    /// What `parameters` holds, so a tick whose passes keep their places writes nothing.
+    written: Vec<u32>,
     pub(super) bytes: u64,
 }
 
@@ -967,12 +1200,31 @@ impl Planes {
                 (*step, made)
             })
             .collect();
+        let parameters = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.gpu_preview.pass_parameters"),
+            size: key.parameter_bytes(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let bytes = key.bytes();
         Self {
             key,
             textures,
+            parameters,
+            written: Vec::new(),
             bytes,
         }
+    }
+
+    /// Write every pass's parameters for `steps` when they changed, and say whether they did.
+    pub(super) fn write_parameters(&mut self, queue: &wgpu::Queue, steps: &[GpuStep]) -> bool {
+        let parameters = parameters(steps);
+        if parameters == self.written {
+            return false;
+        }
+        queue.write_buffer(&self.parameters, 0, &super::le_bytes(&parameters));
+        self.written = parameters;
+        true
     }
 
     fn view(&self, step: usize, plane: u32) -> &wgpu::TextureView {
@@ -994,13 +1246,14 @@ impl Planes {
         planes[plane as usize].extent(self.key.origin, self.key.size)
     }
 
-    /// A second group binding `slots` and, for a pass, its output.
+    /// A second group binding `slots` and, for a pass, its output and its slice `number` of the
+    /// parameters.
     fn group(
         &self,
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         slots: &Slots,
-        output: Option<(usize, u32)>,
+        output: Option<(usize, u32, usize)>,
     ) -> wgpu::BindGroup {
         let mut entries: Vec<wgpu::BindGroupEntry<'_>> = slots
             .planes()
@@ -1011,10 +1264,18 @@ impl Planes {
                 resource: wgpu::BindingResource::TextureView(self.view(*step, *plane)),
             })
             .collect();
-        if let Some((step, plane)) = output {
+        if let Some((step, plane, number)) = output {
             entries.push(wgpu::BindGroupEntry {
                 binding: OUTPUT_BINDING,
                 resource: wgpu::BindingResource::TextureView(self.view(step, plane)),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: PARAMS_BINDING,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &self.parameters,
+                    offset: PARAMS_STRIDE * number as u64,
+                    size: std::num::NonZeroU64::new(PARAMS_STRIDE),
+                }),
             });
         }
         device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1036,12 +1297,13 @@ impl Groups {
         let passes = compiled
             .passes
             .iter()
-            .map(|pass| {
+            .enumerate()
+            .map(|(number, pass)| {
                 let group = planes.group(
                     device,
                     &pass.layout,
                     &pass.slots,
-                    Some((pass.step, pass.output)),
+                    Some((pass.step, pass.output, number)),
                 );
                 let (width, height) = planes.extent(pass.step, pass.output);
                 let dispatch = match pass.shape {

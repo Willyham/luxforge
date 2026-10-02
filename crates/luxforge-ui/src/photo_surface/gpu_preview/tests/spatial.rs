@@ -367,7 +367,8 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     let mut pipeline = own_pipeline(&device, &queue);
     let (boundary, _) = boundary_values();
     let plan = spatial_plan(&boundary);
-    let planes = 64 * 64 * 8 + 64 * 64 * 16 + 16;
+    // The three planes, and each of the three passes' 256-byte slice of the parameters.
+    let planes = 64 * 64 * 8 + 64 * 64 * 16 + 16 + 3 * 256;
     paint(
         &device,
         &queue,
@@ -404,4 +405,113 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
     );
     settle(&pipeline);
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, 0);
+}
+
+/// A pass's pipeline is its kernel and its shape: two passes of one kernel at different word
+/// offsets share one, and a second plan whose words sit at other offsets compiles none, yet draws
+/// what its own words ask.
+#[test]
+fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
+    let test = "pass_pipelines_depend_on_their_kernel_and_shape_alone";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, values) = boundary_values();
+    // Two means of plane 0, each at its own words, then the lanes; the apply shows the first.
+    let shaped = |lead: usize| {
+        let mut spatial = test_spatial();
+        let mut words = vec![0u32; lead];
+        words.extend([RADIUS, RADIUS + 2, SCALE.to_bits()]);
+        spatial.program.words = words;
+        spatial.planes.insert(
+            2,
+            GpuPlane {
+                format: PlaneFormat::Quad,
+                size: PlaneSize::Reduced(1),
+            },
+        );
+        let lead = lead as u32;
+        spatial.passes = vec![
+            GpuPass {
+                kernel: Cow::Borrowed("lf_test_copy"),
+                inputs: vec![],
+                output: 0,
+                words: lead,
+                source: 0,
+                shape: PassShape::Texels { span: [1, 1] },
+            },
+            GpuPass {
+                kernel: Cow::Borrowed("lf_test_mean_x"),
+                inputs: vec![0],
+                output: 1,
+                words: lead,
+                source: 0,
+                shape: PassShape::Texels { span: [1, 1] },
+            },
+            GpuPass {
+                kernel: Cow::Borrowed("lf_test_mean_x"),
+                inputs: vec![0],
+                output: 2,
+                words: lead + 1,
+                source: 0,
+                shape: PassShape::Texels { span: [1, 1] },
+            },
+            GpuPass {
+                kernel: Cow::Borrowed("lf_test_lanes"),
+                inputs: vec![],
+                output: 3,
+                words: lead,
+                source: 0,
+                shape: PassShape::Workgroup,
+            },
+        ];
+        spatial.applies[0].planes = vec![1, 3];
+        spatial.applies[0].words = lead + 2;
+        GpuPlan {
+            boundary: boundary.clone(),
+            texels: TexelMap::IDENTITY,
+            steps: vec![
+                GpuStep::colour(scale(0.5)),
+                GpuStep::Spatial(Box::new(spatial)),
+            ],
+        }
+    };
+    let created = |pipeline: &PhotoPipeline| {
+        pipeline
+            .gpu
+            .support
+            .as_ref()
+            .expect("a supported stage")
+            .passes
+            .created()
+    };
+    let expected = expected_codes(&values);
+    for (lead, wanted) in [(0, 3), (5, 3)] {
+        let drawn = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(shaped(lead))),
+        );
+        assert_eq!(
+            diagnostics(&pipeline, ID).drawn_path,
+            Some(DrawingPath::Gpu),
+            "words from {lead}"
+        );
+        // Four passes, three modules: the copy, the mean and the lanes.
+        assert_eq!(created(&pipeline), wanted, "words from {lead}");
+        for (pixel, [r, g, b]) in drawn.chunks_exact(4).zip(&expected) {
+            for (drawn, wanted) in [(pixel[2], *r), (pixel[1], *g), (pixel[0], *b)] {
+                assert!(drawn.abs_diff(wanted) <= 1, "words from {lead}");
+            }
+        }
+    }
+    // The two plans are two sequences, each its own frame pipeline over the shared passes.
+    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        pipeline.gpu.support.as_ref().unwrap().passes.len(),
+        3,
+        "the stage keeps each module once"
+    );
 }

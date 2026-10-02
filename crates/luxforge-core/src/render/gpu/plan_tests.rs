@@ -1057,12 +1057,19 @@ fn a_presence_plan_holds_nothing_that_scales_with_the_image() {
     };
     let small = shape(stage(40, 30));
     assert_eq!(small, shape(stage(16384, 12288)));
-    // Dehaze, then Texture, then Clarity, each unit's passes before the next's.
+    // Dehaze, then Texture, then Clarity, each unit's passes before the next's: a pass that reads
+    // its unit's input runs the applies before it, and one that reads only planes runs none, so it
+    // is the same module whatever unit runs it.
     let (planes, passes, _, applies) = small;
     assert_eq!(applies, 3);
-    let sources: Vec<usize> = passes.iter().map(|pass| pass.3).collect();
+    let sources: Vec<usize> = passes
+        .iter()
+        .map(|pass| pass.3)
+        .filter(|source| *source > 0)
+        .collect();
     assert!(sources.windows(2).all(|pair| pair[0] <= pair[1]));
-    assert_eq!((sources[0], *sources.last().unwrap()), (0, 2));
+    assert_eq!((sources[0], *sources.last().unwrap()), (1, 2));
+    assert!(passes.iter().filter(|pass| pass.3 == 0).count() > 8);
     // A later unit's scratch reuses an earlier unit's of the same format and size.
     assert!(planes.len() < 9 + 4 + 4, "{} planes", planes.len());
 }
