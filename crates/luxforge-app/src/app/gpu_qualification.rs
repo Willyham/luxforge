@@ -765,10 +765,18 @@ pub(crate) fn region_cell(
             }
             Err(error) => return Err(error.to_string()),
         };
-        // The plan from that layer at the exact stage, over the whole stage the layer receives.
+        // The plan from that layer at the exact stage, over the whole stage the layer receives,
+        // reading the global estimates the exact visible region stored, as a drag's plan reads
+        // them once the view has settled.
         let request = GpuPlanRequest::exact(boundary_layer, frame.stage).qualifying();
         let request = if linear { request.linear() } else { request };
-        let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
+        let estimates = luxforge_core::GpuEstimates {
+            context: evaluation.context(),
+            source: luxforge_core::EstimateSource::Render(evaluation.source().into()),
+        };
+        let plan = match luxforge_core::gpu_plan_with(&registry, &recipe, request, Some(estimates))
+            .map_err(|e| e.to_string())?
+        {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
@@ -858,8 +866,9 @@ pub(crate) fn region_cell(
         let rect_px = [0, 0, width, height];
         let statistics = preview_error::compare(frame(&gpu)?, frame(&reference)?, rect_px)?;
         let program = preview_error::compare(frame(&program)?, frame(&reference)?, rect_px)?;
-        // A spatial estimate the GPU takes from the region alone is the CPU's path at a
-        // percentage zoom (`region-estimate`): measured, so the reason stands on figures.
+        // A spatial estimate the store does not hold, which the GPU would take from the region
+        // alone, is the CPU's path at a percentage zoom (`region-estimate`): measured, so the
+        // reason stands on figures.
         if plan.approximate() {
             return Ok(Cell::Gap(format!(
                 "region-estimate: the GPU takes the global estimate from the region alone, so the \
