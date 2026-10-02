@@ -192,6 +192,26 @@ impl WindowPlan {
         }
     }
 
+    /// [`Self::received`], when it is less than the whole stage segment `segment` of `compiled`
+    /// receives from a source of `source` dimensions; `None` when the segment reads all of it.
+    pub(crate) fn received_cut(
+        &self,
+        compiled: &Compiled,
+        source: (u32, u32),
+        segment: usize,
+    ) -> Option<Region> {
+        let whole = input_stage(
+            compiled.segments.get(..=segment)?,
+            segment,
+            Stage {
+                width: source.0,
+                height: source.1,
+            },
+        );
+        let received = self.received(segment);
+        (received != Region::whole(whole)).then_some(received)
+    }
+
     /// Rewrite `compiled`, the stack this plan was made from, to read a source of the window's
     /// dimensions and keep only each segment's window. `globals(index)` answers the estimates the
     /// spatial operation entering segment `index` is handed when its stage is cut and it prepares

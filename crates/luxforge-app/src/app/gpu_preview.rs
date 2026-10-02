@@ -178,10 +178,25 @@ pub(crate) enum GpuAsk {
 /// drawing it takes on the GPU: the boundary over the window its request names, at its format's
 /// bytes a texel; a geometry tail's intermediate of the same size, at eight at least; the frame,
 /// at four bytes a pixel of the region; and a spatial step's planes over the window. The surface
-/// charges the rest — the frame's size bucket, its uniform and its buffers — once it is held.
-/// `None` at Fit.
+/// charges the rest — the frame's size bucket, its uniform and its buffers — once it is held. At
+/// Fit at the exact stage the frame is the whole output stage and the boundary the window it
+/// reads, or the whole boundary stage. `None` at a Fit proxy, which the display bounds bound.
 pub(crate) fn region_charge(plan: &CorePlan, request: &BoundaryRequest) -> Option<(u64, u64)> {
-    let (rect, window) = (request.key.region()?, request.window?);
+    let whole = |width, height| Region {
+        x0: 0,
+        y0: 0,
+        width,
+        height,
+    };
+    let (rect, window) = match (request.key.region(), request.key.plan()) {
+        (Some(rect), _) => (rect, request.window?),
+        (None, None) => {
+            let (output, stage) = (plan.geometry.output(), plan.boundary.stage);
+            let window = request.window.unwrap_or(whole(stage.width, stage.height));
+            (whole(output.width, output.height), window)
+        }
+        (None, Some(_)) => return None,
+    };
     let texels = u64::from(window.width) * u64::from(window.height);
     let boundary = texels
         * match request.format {
@@ -360,8 +375,9 @@ impl Editor {
         };
         let overlay = zoom.is_some() && self.mask_coverage_target().is_some();
         let budget = self.gpu_budget();
-        // A region whose boundary would pass the bound on a boundary, or whose slot the
-        // GPU-preview budget, is never rendered: the figure, and the bound or budget it passes.
+        // A region's boundary, or one at the exact stage at Fit, that would pass the bound on a
+        // boundary, or whose slot the GPU-preview budget, is never rendered: the figure, and the
+        // bound or budget it passes.
         let over_budget = |plan: &CorePlan, request: &BoundaryRequest| {
             let (boundary, slot) = region_charge(plan, request)?;
             if boundary > luxforge_core::BOUNDARY_MAX_BYTES {
