@@ -77,6 +77,8 @@ const PAN_PATH: [[f32; 2]; 6] = [
 const PAN_INTERVAL_MS: u64 = 150;
 /// The panned drag's later ticks, over the new region.
 const PANNED: [f64; 2] = [1.3, 1.4];
+/// The drag back at 100% after the pan: its first tick, then its GPU ticks.
+const BACK: [f64; 3] = [1.0, 0.8, 0.6];
 
 /// Every frame, in order: the open, then one per step.
 pub fn plan(_: &[PathBuf]) -> Plan {
@@ -185,6 +187,28 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new(
             "pan-release",
             SliderStep::new(BASIC, EXPOSURE, [PANNED[1]]).release(),
+        )
+        .commits(1)
+        .no_draft(),
+        // 44-48: back to 100%, where the whole photograph fits the surface and the scrollable
+        // reports no offset: the view is the whole stage, not the corner the pan left, and a drag
+        // there is drawn on the GPU over it.
+        Step::new("back-100", ViewStep::Percent(100.0))
+            .commits(0)
+            .no_draft(),
+        Step::new("back-first", SliderStep::new(BASIC, EXPOSURE, [BACK[0]]))
+            .commits(0)
+            .draft(BASIC, json!({ EXPOSURE: BACK[0] })),
+        quiet("back-held").draft(BASIC, json!({ EXPOSURE: BACK[0] })),
+        Step::new(
+            "back-gpu",
+            SliderStep::new(BASIC, EXPOSURE, [BACK[1], BACK[2]]),
+        )
+        .commits(0)
+        .draft(BASIC, json!({ EXPOSURE: BACK[2] })),
+        Step::new(
+            "back-release",
+            SliderStep::new(BASIC, EXPOSURE, [BACK[2]]).release(),
         )
         .commits(1)
         .no_draft(),
@@ -370,6 +394,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .map(never_mixed)
         .collect::<Result<Vec<Value>>>()?;
     let settled = settled_through_a_dissolve(launch, "pan-release", moved)?;
+    // Back at 100%: the view is the whole stage, whatever offset the pan at 800% left, and the
+    // drag there is drawn on the GPU over it.
+    let back = launch.at("back-100")?;
+    let (visible, _) = regions(back);
+    ensure(
+        visible == Some([0, 0, 480, 320]),
+        format!("Back at 100% the view is {visible:?}, not the whole 480 × 320 stage"),
+    )?;
+    let again = launch.at("back-gpu")?;
+    let drawn_back = gpu_drawn(again)?;
+    let view_back = never_mixed(again)?;
+    let (gpu_ticks_back, cpu_ticks_back, jobs_back) = ticks(step_events(launch, "back-gpu")?);
+    ensure(
+        gpu_ticks_back >= 1 && cpu_ticks_back == 0 && jobs_back == 0,
+        format!(
+            "Back at 100% the ticks were {gpu_ticks_back} on the GPU and {cpu_ticks_back} on the \
+             CPU, with {jobs_back} preview jobs"
+        ),
+    )?;
+    checks.note(
+        again,
+        "back at 100% after the pan: the whole stage in view, its drag drawn on the GPU",
+        json!({"visible_region": visible, "drawn": drawn_back, "view": view_back}),
+    );
     checks.note(
         moved,
         "the drag at 800% panned past its region, then drawn over the new one",
