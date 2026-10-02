@@ -112,6 +112,7 @@ pub(crate) fn surface_plan_at(
         boundary,
         texels,
         steps,
+        region: None,
     })
 }
 

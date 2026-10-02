@@ -27,6 +27,7 @@ fn plan_of(boundary: &GpuBoundary, program: GpuProgram) -> GpuPlan {
         boundary: boundary.clone(),
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::colour(program)],
+        region: None,
     }
 }
 
