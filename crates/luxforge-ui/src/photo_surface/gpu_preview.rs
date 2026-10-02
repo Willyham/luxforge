@@ -98,8 +98,10 @@ use wgpu::naga;
 /// output 32 MiB, so one replacement may overlap the slot it replaces.
 pub const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
 
-/// The words before any step's: the texel map's origin and step.
-const MAP_WORDS: usize = 4;
+/// The words before any step's: the texel map's origin and step, then the offset of the output's
+/// first pixel ([`GpuRegion`]): in boundary texels for the content pass of a plan with no tail, in
+/// output-stage pixels for a tail's pass; zero for a whole-frame plan.
+const MAP_WORDS: usize = 6;
 
 /// Each step's header words: its program's two base indices and its position map.
 const STEP_WORDS: usize = 2 + PositionMap::WORDS;
@@ -465,6 +467,37 @@ pub struct GpuPlan {
     pub boundary: GpuBoundary,
     pub texels: TexelMap,
     pub steps: Vec<GpuStep>,
+    /// At a percentage zoom, the rectangle of the output stage the plan's frame holds, drawn as a
+    /// region of the photograph; `None` for a whole frame, at Fit.
+    pub region: Option<GpuRegion>,
+}
+
+/// The rectangle of a plan's output stage its frame holds at a percentage zoom: the visible region
+/// at full scale. The last pass draws only these pixels, and the draw places them at the rectangle
+/// in the whole stage, as a region of the photograph is placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GpuRegion {
+    /// `[x0, y0, x1, y1]` of the output stage, half-open.
+    pub rect: [u32; 4],
+    /// The whole output stage.
+    pub stage: (u32, u32),
+}
+
+impl GpuRegion {
+    /// The frame's size: the rectangle's.
+    pub fn size(&self) -> (u32, u32) {
+        (
+            self.rect[2].saturating_sub(self.rect[0]),
+            self.rect[3].saturating_sub(self.rect[1]),
+        )
+    }
+
+    fn valid(&self) -> bool {
+        self.rect[0] < self.rect[2]
+            && self.rect[1] < self.rect[3]
+            && self.rect[2] <= self.stage.0
+            && self.rect[3] <= self.stage.1
+    }
 }
 
 /// Which path drew a surface's photograph.
@@ -712,7 +745,10 @@ impl Shape {
         Self {
             boundary,
             format: plan.boundary.format(),
-            output: tail.map_or(boundary, GpuTail::output),
+            output: tail.map_or_else(
+                || plan.region.map_or(boundary, |region| region.size()),
+                GpuTail::output,
+            ),
             intermediate: tail.map(GpuTail::intermediate),
         }
     }
@@ -1009,8 +1045,9 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
 
 /// What a pass's fragment stage starts from.
 enum Head<'a> {
-    /// The boundary texel and its stage pixel.
-    Boundary,
+    /// The boundary texel and its stage pixel; `offset` when the pass is the plan's last, whose
+    /// first output pixel is the header's offset into the boundary.
+    Boundary { offset: bool },
     /// The geometry tail, step `index`: the output pixel and the tail's blend there.
     Tail(&'a GpuTail, usize),
 }
@@ -1037,7 +1074,7 @@ fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, Strin
         [] => Ok(vec![pass_source(
             steps,
             0..steps.len(),
-            Head::Boundary,
+            Head::Boundary { offset: true },
             last,
         )?]),
         [index] => {
@@ -1057,7 +1094,7 @@ fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, Strin
                 End::Linear
             };
             Ok(vec![
-                pass_source(steps, 0..*index, Head::Boundary, content)?,
+                pass_source(steps, 0..*index, Head::Boundary { offset: false }, content)?,
                 pass_source(
                     steps,
                     index + 1..steps.len(),
@@ -1118,7 +1155,20 @@ fn pass_source(
     };
     source.push_str(&declarations);
     match head {
-        Head::Boundary => source.push_str(
+        Head::Boundary { offset: true } => source.push_str(
+            "
+@fragment
+fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    // The output's first pixel is the header's offset into the boundary: zero for a whole frame,
+    // a region's origin in a percentage view. The border column and row past the boundary repeat
+    // its edge texels.
+    let lf_offset = vec2<u32>(lf_word(4u), lf_word(5u));
+    let texel = min(vec2<u32>(position.xy) + lf_offset, textureDimensions(lf_boundary) - vec2<u32>(1u));
+    var rgb = textureLoad(lf_boundary, texel, 0).rgb;
+    let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
+",
+        ),
+        Head::Boundary { offset: false } => source.push_str(
             "
 @fragment
 fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
@@ -1404,6 +1454,8 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
     blocks.clear();
     let map = plan.texels;
     words.extend([map.origin[0], map.origin[1], map.step[0], map.step[1]].map(f32::to_bits));
+    let offset = output_offset(plan);
+    words.extend([offset.0, offset.1]);
     let header = MAP_WORDS + STEP_WORDS * plan.steps.len();
     let (mut word, mut block) = (header, 0);
     for step in &plan.steps {
@@ -1429,6 +1481,55 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
     if blocks.is_empty() {
         blocks.push(0);
     }
+}
+
+/// The offset of `plan`'s first output pixel: zero for a whole frame; for a region, its origin in
+/// the output stage when a tail's pass draws it, and in the boundary's texels when the content pass
+/// does, whose texel map then has a step of one.
+fn output_offset(plan: &GpuPlan) -> (u32, u32) {
+    let Some(region) = plan.region else {
+        return (0, 0);
+    };
+    if plan
+        .steps
+        .iter()
+        .any(|step| matches!(step, GpuStep::Geometry(_)))
+    {
+        (region.rect[0], region.rect[1])
+    } else {
+        let origin = plan.texels.origin.map(|value| value.max(0.0) as u32);
+        (
+            region.rect[0].saturating_sub(origin[0]),
+            region.rect[1].saturating_sub(origin[1]),
+        )
+    }
+}
+
+/// Whether a region plan's frame lies inside what the plan can draw: a rectangle of its stage
+/// and, without a tail, of the boundary's texels at one texel a stage pixel.
+fn region_drawable(plan: &GpuPlan) -> bool {
+    let Some(region) = plan.region else {
+        return true;
+    };
+    if !region.valid() {
+        return false;
+    }
+    if plan
+        .steps
+        .iter()
+        .any(|step| matches!(step, GpuStep::Geometry(_)))
+    {
+        return true;
+    }
+    let origin = plan.texels.origin;
+    let (width, height) = plan.boundary.size();
+    plan.texels.step == [1.0, 1.0]
+        && origin[0] >= 0.0
+        && origin[1] >= 0.0
+        && origin[0] <= region.rect[0] as f32
+        && origin[1] <= region.rect[1] as f32
+        && region.rect[2] as f32 <= origin[0] + width as f32
+        && region.rect[3] as f32 <= origin[1] + height as f32
 }
 
 /// A storage buffer able to hold `bytes`, rounded up so a few more words do not each reallocate,
@@ -1535,6 +1636,9 @@ impl PhotoPipeline {
                 limit,
             });
         }
+        if !region_drawable(plan) {
+            return Err(GpuFallback::PipelineFailed);
+        }
         if plan
             .steps
             .iter()
@@ -1595,6 +1699,16 @@ impl PhotoPipeline {
             surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes)?);
         }
         let slot = surface.gpu.as_mut().expect("an admitted slot");
+        // A region plan's frame is placed at its rectangle of the whole stage, as a region of the
+        // photograph is; a whole frame stretches over the photograph.
+        slot.output.region_key = plan.region.map(|region| super::RegionKey {
+            rect: region.rect,
+            stage: region.stage,
+            full_stage: region.stage,
+            quality: crate::RegionQuality::Interactive,
+            content_id: 0,
+            generation: 0,
+        });
         let mut rebind = false;
         for (charged, bytes, label) in [
             (&mut slot.words, word_bytes, "luxforge.gpu_preview.words"),

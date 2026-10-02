@@ -135,6 +135,7 @@ fn plan_of(boundary: GpuBoundary, steps: Vec<GpuStep>) -> GpuPlan {
         boundary,
         texels: TexelMap::IDENTITY,
         steps,
+        region: None,
     }
 }
 
@@ -265,6 +266,7 @@ fn a_masked_steps_words_are_its_mask_then_its_programs() {
         boundary,
         texels: TexelMap::IDENTITY,
         steps: vec![GpuStep::colour(scale(0.5)), step],
+        region: None,
     };
     let (mut words, mut blocks) = (Vec::new(), Vec::new());
     pack(&chain, &mut words, &mut blocks);

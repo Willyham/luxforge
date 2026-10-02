@@ -625,6 +625,7 @@ fn selects_nothing(
             units: vec![add_one],
             ..masked.clone()
         })],
+        region: None,
     };
     let input = GpuPlan {
         steps: Vec::new(),

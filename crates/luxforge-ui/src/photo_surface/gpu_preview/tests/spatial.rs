@@ -114,6 +114,7 @@ fn spatial_plan(boundary: &GpuBoundary) -> GpuPlan {
             GpuStep::colour(scale(0.5)),
             GpuStep::Spatial(Box::new(test_spatial())),
         ],
+        region: None,
     }
 }
 
@@ -489,6 +490,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
                 GpuStep::colour(scale(0.5)),
                 GpuStep::Spatial(Box::new(spatial)),
             ],
+            region: None,
         }
     };
     let created = |pipeline: &PhotoPipeline| {
@@ -552,6 +554,7 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
                 GpuStep::colour(scale(factor)),
                 GpuStep::Spatial(Box::new(spatial)),
             ],
+            region: None,
         }
     };
     let dispatched = |pipeline: &PhotoPipeline| {
