@@ -190,7 +190,7 @@ fn pipelines(plan: &GpuPlan) -> Vec<String> {
         .flat_map(|operation| operation.units.iter())
         .map(|unit| unit.program.entry.to_owned())
         .collect();
-    if let Some(spatial) = &plan.spatial {
+    for spatial in &plan.spatial {
         keys.push(format!(
             "{}: clamps {}, masked {}",
             spatial.program.entry,
@@ -507,12 +507,12 @@ fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
         let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
         plans
             .into_iter()
-            .find(|plan| plan.content.is_empty() && plan.spatial.is_some())
+            .find(|plan| plan.content.is_empty() && !plan.spatial.is_empty())
             .expect("the Presence layer's drag")
     };
     let (unmasked, masked) = (warm(false), warm(true));
     assert!(
-        masked.spatial.as_ref().unwrap().mask.is_some(),
+        masked.spatial.first().unwrap().mask.is_some(),
         "warmed with its mask"
     );
     assert_eq!(sequence(&masked), sequence(&unmasked), "the same programs");
@@ -843,7 +843,7 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
         // The plans that start at the layer itself; the colour candidates before it hold it too.
         let own: Vec<&GpuPlan> = plans
             .iter()
-            .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
+            .filter(|plan| !plan.spatial.is_empty() && plan.content.is_empty())
             .collect();
         assert_eq!(
             own.len(),
@@ -1004,7 +1004,7 @@ fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
         let (job, draft) = draft_job("set-presence", vec![presence.clone()], dragged, 1);
         plan_preview(&job.evaluation, &draft, view).unwrap()
     };
-    let applies = |plan: &GpuPlan| plan.spatial.as_ref().map_or(0, |s| s.applies.len());
+    let applies = |plan: &GpuPlan| plan.spatial.iter().map(|s| s.applies.len()).sum::<usize>();
     let zoomed = drag(json!({"texture": 10, "clarity": 20}), region);
     assert_eq!(applies(planned(&zoomed)), 3, "every unit");
     let cpu = zoomed
@@ -1016,7 +1016,7 @@ fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
     let window = zoomed.boundary.as_ref().unwrap().window.unwrap();
     let bytes = |plan: &GpuPlan| {
         plan.spatial
-            .as_ref()
+            .first()
             .unwrap()
             .plane_bytes((window.x0, window.y0), (window.width, window.height))
     };
@@ -1029,7 +1029,7 @@ fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
     }];
     let (job, draft) = draft_job("set-detail", vec![detail], moved, 1);
     let every = plan_preview(&job.evaluation, &draft, region).unwrap();
-    assert!(planned(&every).spatial.is_some() && every.cpu_shape.is_none());
+    assert!(!planned(&every).spatial.is_empty() && every.cpu_shape.is_none());
     let fit = drag(
         json!({"texture": 10, "clarity": 20}),
         crate::GpuView::Fit(bounds()),
@@ -1093,4 +1093,52 @@ fn a_region_drag_reads_the_light_its_exact_region_stored() {
     let stored = plan_of();
     assert!(!planned(&stored).approximate(), "the stored light is read");
     assert!(stored.boundary.unwrap().window.is_some());
+}
+
+/// With Detail and Presence both in the stack, the warm list holds a Detail drag's sequence, which
+/// chains Presence's operation after Detail's, and a Presence drag's.
+#[test]
+fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30, "dehaze": 20}));
+    let entry = vec![detail.clone(), presence.clone()];
+    let (job, _) = draft_job("set-detail", entry.clone(), entry.clone(), 0);
+    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
+        .unwrap()
+        .iter()
+        .map(sequence)
+        .collect();
+    let drags = [
+        (
+            "set-detail",
+            vec![
+                Layer {
+                    payload: json!({"sharpening": 70, "luminance": 20}),
+                    ..detail.clone()
+                },
+                presence.clone(),
+            ],
+            2,
+        ),
+        (
+            "set-presence",
+            vec![
+                detail,
+                Layer {
+                    payload: json!({"clarity": 50, "dehaze": 20}),
+                    ..presence
+                },
+            ],
+            1,
+        ),
+    ];
+    for (action, drafted, chained) in drags {
+        let (job, draft) = draft_job(action, entry.clone(), drafted, 1);
+        let drag = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+        assert_eq!(planned(&drag).spatial.len(), chained, "{action}");
+        assert!(
+            warmed.contains(&sequence(planned(&drag))),
+            "{action}'s sequence is warmed"
+        );
+    }
 }

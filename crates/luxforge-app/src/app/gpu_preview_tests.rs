@@ -840,6 +840,32 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
     finish(editor, catalog);
 }
 
+/// A Detail drag with Presence in the stack, at Fit: the plan chains Detail's operation and
+/// Presence's from the Detail layer, and once the boundary is held every tick is drawn on the GPU
+/// with no preview job.
+#[test]
+fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
+    let catalog = catalog("detail-presence");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    commit(&mut editor, PRESENCE, "clarity", 30.0);
+    commit(&mut editor, PRESENCE, "dehaze", 20.0);
+    let plan = gpu_drag(
+        &mut editor,
+        "set-detail",
+        "sharpening",
+        &[20.0, 35.0, 50.0, 65.0],
+        true,
+    );
+    let spatial = plan
+        .steps
+        .iter()
+        .filter(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_)))
+        .count();
+    assert_eq!(spatial, 2, "Detail's operation, then Presence's");
+    finish(editor, catalog);
+}
+
 /// At 100% a Presence drag over a committed Dehaze reads the light the exact frames stored, so it
 /// is drawn on the GPU over the visible region with no preview job per tick. A Basic drag under
 /// that Presence changes the light's input, which the region alone cannot give, so it keeps the CPU

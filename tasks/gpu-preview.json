@@ -419,7 +419,7 @@
     {
       "id": "TASK-008",
       "description": "Draw 100% drags on the GPU at full scale over a held region boundary, replacing the half-scale CPU motion region where eligible.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
@@ -524,7 +524,7 @@
     {
       "id": "TASK-010",
       "description": "Write the GPU programs for Detail (noise reduction and capture sharpening) and qualify them under the spatial limits.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
