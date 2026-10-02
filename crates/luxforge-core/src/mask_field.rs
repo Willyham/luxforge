@@ -268,6 +268,15 @@ impl MaskField {
         })
     }
 
+    /// Component `index`'s falloff, before its inversion, at pixel `(x, y)` of the stage its GPU
+    /// programs were compiled against ([`Self::gpu`]): the doubled stage when the thin-feature rule
+    /// fired. What the plan's reference executor runs for a shipped coverage program.
+    #[cfg(test)]
+    pub(crate) fn gpu_component_falloff(&self, index: usize, x: u32, y: u32, rgb: [f64; 3]) -> f64 {
+        let field = self.fine.as_deref().unwrap_or(&self.mask);
+        field.component_falloff(index, x, y, rgb)
+    }
+
     /// A point-sampled field over a mask a test bound itself ([`CompiledMask::from_fields`]).
     #[cfg(test)]
     pub(crate) fn point(mask: CompiledMask) -> Self {
