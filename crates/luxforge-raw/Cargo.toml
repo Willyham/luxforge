@@ -11,6 +11,8 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 rayon.workspace = true
+jxl-oxide = { version = "=0.12.6", default-features = false }
+jxl-image = "=0.13.0"
 
 [build-dependencies]
 serde.workspace = true

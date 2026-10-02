@@ -3868,6 +3868,9 @@ impl Editor {
             }
             Outcome::NoNewFrame => self.settle_step(Settle::Preview, by),
             Outcome::RequestEnded { failed } => {
+                if failed {
+                    self.refuse_step(&self.status.text.clone());
+                }
                 if let Some(evidence) = &mut self.evidence {
                     evidence.had_errors |= failed;
                     evidence.capture_pending = true;

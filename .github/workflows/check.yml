@@ -22,6 +22,8 @@ jobs:
         run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
       - name: Headless checks, slow tests and doctests included
         run: cargo xtask check
+      - name: Offline sample corpus tooling
+        run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
       - name: Editor acceptance in release
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
       - name: Optimized native build

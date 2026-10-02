@@ -410,7 +410,7 @@ impl Workspace {
                     let controls = control_tree::walk(&section.controls)
                         .filter_map(|control| match control {
                             tools::ControlModel::Group(group) => {
-                                Some(json!({"kind": "group", "label": group.label}))
+                                Some(json!({"kind": "group", "label": group.label, "enabled": group.enabled, "unavailable": group.unavailable}))
                             }
                             tools::ControlModel::Slider(slider) => Some(json!({
                                 "kind": "number", "label": slider.label,
@@ -1634,6 +1634,36 @@ mod tests {
     }
 
     /// Every RAW recipe holds its development layer from the Original on, and on a RAW photo
+    #[test]
+    fn monochrome_disables_the_entire_white_balance_group_and_its_keyboard_picker() {
+        let payload = luxforge_core::RawPayload::for_as_shot([1.0; 3], [[0.0; 3]; 4]).unwrap();
+        let mut scene =
+            Scene::new(descriptors()).opened(vec![payload.layer(luxforge_core::LayerId::new())]);
+        let mut source = serde_json::to_value(testing::raw_source()).unwrap();
+        source["metadata"]["layout"] = serde_json::json!("monochrome");
+        source["metadata"]["cam_xyz"] = serde_json::to_value([[0.0; 3]; 4]).unwrap();
+        scene.document.state.as_mut().unwrap().asset.source =
+            serde_json::from_value(source).unwrap();
+        let workspace = scene.derive();
+        let basic = section(&workspace, "luxforge.basic");
+        assert!(basic.enabled);
+        let group = basic
+            .controls
+            .iter()
+            .find_map(|c| match c {
+                tools::ControlModel::Group(group) if group.label == "White balance" => Some(group),
+                _ => None,
+            })
+            .unwrap();
+        assert!(!group.enabled);
+        assert_eq!(group.unavailable.as_deref(), Some("Monochrome original"));
+        assert!(basic.pickers().iter().all(|picker| !picker.enabled));
+        assert!(
+            !tools::pick_modes(&scene.modules, scene.document.state.as_ref(), None)
+                .contains(&"luxforge.raw")
+        );
+    }
+
     /// Basic's White balance controls edit it, so Basic's dot and its White balance caption ask the
     /// core whether that layer does anything: an untouched RAW, at As shot, has neither; a custom
     /// temperature and tint and a neutral pick each light both. No RAW section is drawn at all.

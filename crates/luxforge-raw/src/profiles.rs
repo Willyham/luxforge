@@ -26,6 +26,8 @@ pub(crate) struct Camera {
     pub model: Text,
     pub sensor_size: [u32; 2],
     pub cfa_size: [u32; 2],
+    #[serde(default = "one_channel")]
+    pub channels: u32,
     pub crop: Crop,
     pub dng: Option<Dng>,
     pub calibration: Option<Calibration>,
@@ -48,18 +50,40 @@ pub(crate) struct Mode {
     pub dng_version: Option<u32>,
     pub validation: ModeValidation,
     pub compression: Option<Compression>,
-    /// The decoder's stored frame, `[width, height]`, when this mode stores the sensor in a
-    /// larger padded frame (such as tiled lossless compression); omitted when the frame is the
-    /// camera's `sensor_size`. Never smaller than the sensor in either dimension.
+    /// The exact observed stored frame, including cropped capture modes and compression padding.
+    /// Omitted when it equals the camera's nominal frame; every shape retains the image bounds.
     #[serde(default)]
     pub frame_size: Option<[u32; 2]>,
     /// The decoder that fills the mosaic; LibRaw's own when omitted. RawSpeed is allowed only
     /// on a decoder in the code-owned replaceable table.
     #[serde(default)]
     pub unpacker: Unpacker,
+    #[serde(default)]
+    pub processing: Option<Processing>,
+}
+
+fn one_channel() -> u32 {
+    1
+}
+
+/// Source-format interpretation for a recording mode that differs from its camera's native format.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Processing {
+    pub crop: Crop,
+    pub dng: Option<Dng>,
 }
 
 impl Mode {
+    pub fn processing(&self, camera: &Camera) -> Camera {
+        let mut profile = camera.clone();
+        if let Some(processing) = &self.processing {
+            profile.crop = processing.crop;
+            profile.dng = processing.dng.clone();
+        }
+        profile
+    }
+
     /// The frame this mode's decoder stores: its padded frame, or the camera's sensor.
     pub fn frame(&self, camera: &Camera) -> [u32; 2] {
         self.frame_size.unwrap_or(camera.sensor_size)
@@ -97,11 +121,17 @@ pub(crate) enum Crop {
 pub(crate) enum DngContainer {
     UncompressedU16SingleStrip,
     IntegerCfaSingleSegment,
+    IntegerLinearSingleSegment,
+    /// Source ActiveArea and bounded strips/tiles, independently of decoder camera masks.
+    IntegerCfaSegments,
+    IntegerLinearSegments,
 }
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DngCalibration {
     RootFixedMatrix,
+    SourceReferenceMatrix,
+    Monochrome,
 }
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -168,7 +198,7 @@ impl Catalog {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.cameras.is_empty() || self.cameras.len() > 256 {
+        if self.version != 1 || self.cameras.is_empty() || self.cameras.len() > 512 {
             return Err("unsupported camera catalog version or camera count".into());
         }
         let mut identities = HashSet::new();
@@ -200,7 +230,10 @@ impl Catalog {
             if !within_limits(camera.sensor_size) {
                 return fail("sensor size exceeds decode/development limits");
             }
-            if !matches!(camera.cfa_size, [2, 2] | [6, 6]) {
+            if !matches!(
+                (camera.cfa_size, camera.channels),
+                ([2, 2] | [6, 6], 1) | ([0, 0], 1 | 3)
+            ) {
                 return fail("unsupported CFA dimensions");
             }
             if (camera.crop == Crop::DngTags) != camera.dng.is_some() {
@@ -242,6 +275,17 @@ impl Catalog {
                 }
             }
             if let Some(dng) = &camera.dng {
+                let monochrome = camera.cfa_size == [0, 0] && camera.channels == 1;
+                if (dng.calibration == DngCalibration::Monochrome) != monochrome
+                    || (monochrome && !dng.required_opcodes.is_empty())
+                    || (camera.cfa_size == [0, 0]
+                        && dng
+                            .required_opcodes
+                            .iter()
+                            .any(|op| op.list != opcodes::OPCODE_LIST3))
+                {
+                    return fail("DNG layout and calibration/correction capabilities disagree");
+                }
                 if let Some(optics) = dng.optics {
                     for (id, role, allowed) in [
                         (9, optics.gain_map, &[DngOpticalRole::Shading][..]),
@@ -258,10 +302,10 @@ impl Catalog {
                     ] {
                         if let Some(role) = role
                             && (!allowed.contains(&role)
-                                || !dng
-                                    .required_opcodes
-                                    .iter()
-                                    .any(|op| op.list == opcodes::OPCODE_LIST3 && op.id == id))
+                                || !dng.required_opcodes.iter().any(|op| {
+                                    op.id == id
+                                        && opcodes::Opcode::implemented(op.list, op.id).is_some()
+                                }))
                         {
                             return fail("invalid DNG optical role");
                         }
@@ -271,14 +315,24 @@ impl Catalog {
                     dng.container,
                     DngContainer::UncompressedU16SingleStrip
                         | DngContainer::IntegerCfaSingleSegment
-                ) || dng.calibration != DngCalibration::RootFixedMatrix
-                    || !matches!(
-                        dng.corrections,
-                        DngCorrections::Stage3GainMapThenWarp | DngCorrections::StageOrdered
-                    )
-                    || camera.cfa_size != [2, 2]
+                        | DngContainer::IntegerLinearSingleSegment
+                        | DngContainer::IntegerCfaSegments
+                        | DngContainer::IntegerLinearSegments
+                ) || !matches!(
+                    dng.calibration,
+                    DngCalibration::RootFixedMatrix
+                        | DngCalibration::SourceReferenceMatrix
+                        | DngCalibration::Monochrome
+                ) || !matches!(
+                    dng.corrections,
+                    DngCorrections::Stage3GainMapThenWarp | DngCorrections::StageOrdered
+                ) || matches!(
+                    dng.container,
+                    DngContainer::IntegerLinearSingleSegment | DngContainer::IntegerLinearSegments
+                ) != (camera.cfa_size == [0, 0])
                     || !matches!(dng.selected_matrix, 1 | 2)
-                    || dng.illuminants.contains(&0)
+                    || (dng.calibration != DngCalibration::Monochrome
+                        && dng.illuminants.contains(&0))
                     || !name(&dng.calibration_identity, 128)
                     || !name(&dng.interpretation, 128)
                 {
@@ -338,14 +392,8 @@ impl Catalog {
                     return fail("invalid or duplicate mode identifier, decoder or bit depth");
                 }
                 if let Some(frame) = mode.frame_size {
-                    // A padded frame holds the whole sensor: it is never smaller, never merely
-                    // restates the sensor size, and DNG geometry stays the container's own.
-                    if !within_limits(frame)
-                        || frame == camera.sensor_size
-                        || frame[0] < camera.sensor_size[0]
-                        || frame[1] < camera.sensor_size[1]
-                        || camera.dng.is_some()
-                    {
+                    // Each exact recording shape retains the same pixel and developed-buffer bounds.
+                    if !within_limits(frame) || frame == camera.sensor_size {
                         return fail("invalid padded mode frame size");
                     }
                 }
@@ -354,7 +402,31 @@ impl Catalog {
                 {
                     return fail("RawSpeed unpacker requires a replaceable LibRaw decoder");
                 }
-                if let Some(dng) = &camera.dng {
+                if mode.unpacker == Unpacker::JxlOxide
+                    && (mode.decoder != "jxl_dng_load_raw_placeholder()"
+                        || camera.channels != 3
+                        || mode.bits != 16
+                        || mode.dng_version.is_none())
+                {
+                    return fail("JPEG XL unpacker requires a 16-bit three-channel DNG mode");
+                }
+                if let Some(processing) = &mode.processing {
+                    let mut interpreted = mode.processing(camera);
+                    let mut single = mode.clone();
+                    single.processing = None;
+                    interpreted.modes = Cow::Owned(vec![single]);
+                    // Reuse exactly the same validation for the alternate source format.
+                    Catalog {
+                        version: self.version,
+                        cameras: Cow::Owned(vec![interpreted]),
+                    }
+                    .validate()?;
+                    if (processing.crop == Crop::DngTags) != processing.dng.is_some() {
+                        return fail("mode DNG crop and processing must be enabled together");
+                    }
+                }
+                let interpreted = mode.processing(camera);
+                if let Some(dng) = &interpreted.dng {
                     if (dng.container == DngContainer::UncompressedU16SingleStrip
                         && mode.bits != 16)
                         || mode.dng_version.is_none_or(|v| v == 0)
@@ -382,7 +454,7 @@ impl Catalog {
                     {
                         return fail("NEF compression value exceeds maker-note field");
                     }
-                    if (camera.crop == Crop::RafTags)
+                    if (interpreted.crop == Crop::RafTags)
                         != (compression.probe == CompressionProbe::RafHeader)
                     {
                         return fail("crop and container probe disagree");
@@ -421,7 +493,18 @@ mod tests {
     #[test]
     fn static_catalog_is_the_validated_json() {
         let parsed = Catalog::parse(include_str!("../data/cameras.json")).unwrap();
-        assert_eq!(*crate::camera_catalog(), parsed);
+        assert_eq!(crate::camera_catalog().cameras.len(), parsed.cameras.len());
+        for (static_camera, json_camera) in crate::camera_catalog()
+            .cameras
+            .iter()
+            .zip(parsed.cameras.iter())
+        {
+            assert_eq!(
+                static_camera, json_camera,
+                "{} {}",
+                json_camera.make, json_camera.model
+            );
+        }
         assert!(matches!(crate::camera_catalog().cameras, Cow::Borrowed(_)));
         assert!(
             crate::camera_catalog()
@@ -559,8 +642,43 @@ mod tests {
         assert!(Catalog::parse("{broken").is_err());
     }
 
-    /// A mode's `unpacker` is LibRaw when omitted, parses only as `libraw` or `rawspeed`, and is
-    /// `rawspeed` only on a decoder in the replaceable table.
+    #[test]
+    fn linear_and_monochrome_profiles_refuse_unimplemented_sensor_corrections() {
+        let data = catalog();
+        let linear = data["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|camera| camera["channels"] == 3 && camera["cfa_size"] == json!([0, 0]))
+            .unwrap();
+        let mono = data["cameras"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|camera| camera["dng"]["calibration"] == "monochrome")
+            .unwrap();
+        let mut wrong_calibration = data.clone();
+        wrong_calibration["cameras"][linear]["dng"]["calibration"] = json!("monochrome");
+        assert!(
+            parse(&wrong_calibration)
+                .unwrap_err()
+                .contains("capabilities disagree")
+        );
+        for (camera, list, id) in [(linear, 51008, 3), (mono, 51022, 9)] {
+            let mut changed = data.clone();
+            changed["cameras"][camera]["dng"]["required_opcodes"] = json!([
+                {"id":id,"list":list,"version":16973824,"flags":0}
+            ]);
+            assert!(
+                parse(&changed)
+                    .unwrap_err()
+                    .contains("capabilities disagree")
+            );
+        }
+    }
+
+    /// A mode's `unpacker` is LibRaw when omitted; RawSpeed requires a replaceable decoder,
+    /// and external JPEG XL requires a 16-bit three-channel DNG.
     #[test]
     fn mode_unpacker_is_strict_and_rawspeed_needs_a_replaceable_decoder() {
         let data = catalog();
@@ -674,6 +792,7 @@ mod tests {
         data["cameras"][1]["modes"][0]["compression"]["value"] = json!(7);
         let profiles = parse(&data).unwrap();
         let mut native = crate::NativeIdentity::blank();
+        native.channels = 1;
         native.width = 600;
         native.height = 400;
         native.cfa_width = 6;
@@ -718,6 +837,7 @@ mod tests {
         data["cameras"][1]["modes"][0]["raw_count"] = json!(2);
         let profiles = parse(&data).unwrap();
         let mut native = crate::NativeIdentity::blank();
+        native.channels = 1;
         native.width = 7872;
         native.height = 5196;
         native.cfa_width = 6;
@@ -751,11 +871,9 @@ mod tests {
         );
     }
 
-    /// A mode may store the sensor in a larger padded frame, such as tiled lossless compression:
-    /// it is selected at that frame alone, the camera's other modes keep the sensor size, and a
-    /// frame smaller than the sensor, equal to it, over the limits or on a DNG profile is refused.
+    /// Recorded cropped and padded frames select exactly; unrecorded or unbounded frames refuse.
     #[test]
-    fn padded_frame_size_is_a_mode_selector_never_smaller_than_the_sensor() {
+    fn recorded_frame_size_selects_bounded_cropped_and_padded_modes() {
         let padded = |frame: Value| {
             let mut data = catalog();
             let mut mode = data["cameras"][0]["modes"][2].clone();
@@ -769,6 +887,7 @@ mod tests {
         };
         let profiles = parse(&padded(json!([6144, 4096]))).unwrap();
         let mut native = crate::NativeIdentity::blank();
+        native.channels = 1;
         (native.width, native.height) = (6144, 4096);
         (native.cfa_width, native.cfa_height) = (2, 2);
         native.raw_count = 1;
@@ -791,8 +910,6 @@ mod tests {
         assert!(classify(&native).is_err());
         for invalid in [
             json!([6064, 4040]),
-            json!([6000, 4096]),
-            json!([6144, 4000]),
             json!([0, 4096]),
             json!([16_385, 4096]),
             json!([16_000, 16_000]),
@@ -805,7 +922,10 @@ mod tests {
         }
         let mut dng = catalog();
         dng["cameras"][2]["modes"][0]["frame_size"] = json!([5632, 3712]);
-        assert!(parse(&dng).is_err(), "accepted a padded DNG frame");
+        assert!(parse(&dng).is_ok());
+        for frame in [json!([6000, 4096]), json!([6144, 4000])] {
+            assert!(parse(&padded(frame)).is_ok());
+        }
     }
 
     /// Modes that differ only in raw-frame count or stored frame are distinct selectors, as the
@@ -912,6 +1032,7 @@ mod tests {
         ];
         for (make, model, width, height, cfa, bits, version, decoder, bytes, id) in cases {
             let mut n = crate::NativeIdentity::blank();
+            n.channels = 1;
             n.width = width;
             n.height = height;
             n.cfa_width = cfa;
@@ -954,7 +1075,10 @@ mod tests {
                 let public: crate::RawMode = serde_json::from_value(json!(mode.id)).unwrap();
                 assert_eq!(public.id(), mode.id);
                 assert_eq!(crate::RawMode::from_id(&mode.id), Some(public));
-                assert_eq!(public.requires_dng_corrections(), camera.dng.is_some());
+                assert_eq!(
+                    public.requires_dng_corrections(),
+                    mode.processing(camera).dng.is_some()
+                );
                 assert_eq!(serde_json::to_value(public).unwrap(), json!(mode.id));
             }
         }

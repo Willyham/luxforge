@@ -1,0 +1,6219 @@
+{
+  "format": "luxforge-native-corpus-evidence-v1",
+  "scope": "Independent uncatalogued native identity/unpack, before production qualification; JXL integers additionally match djxl 0.11.2 16-bit RGB exactly. Hashes are little-endian u16; linear RGB is interleaved RGB, monochrome is one channel.",
+  "sources": [
+    {
+      "id": "pixls-1028",
+      "source_sha256": "a919c8535eed68577f1745fb9674ccf333962628ccdec6d48a6f635208467f6c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3656,
+        "make": "Sony",
+        "model": "ILCE-5000",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "fd9f82fdf42b57c40888a19694501a52a67a21756cdf5736cc6ac4b10eb53bbd",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1035",
+      "source_sha256": "f390e0ba566f0be9af2d8e7f955b815996630c0c3cb13fcfb95d98baec1890f6",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3516,
+        "make": "Canon",
+        "model": "EOS 550D",
+        "raw_count": 1,
+        "width": 5344
+      },
+      "decoded_samples_sha256": "b343e958d2bcfa7f98a633a1729d0ecb484b6334c6f6c187e3387e82b6e76d01",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1051",
+      "source_sha256": "19ba17e778ae802d4039f0e88bb1cd68825780788b8058c479067e32b9a63eda",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M1",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "f66855309d3a6b19598952649c382dfbaaf92eea1581142d8a693f1988b17433",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1058",
+      "source_sha256": "2e372710d546c9b8903a343696af4e7fd245794571f64258ab607a89dfa6aa97",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3708,
+        "make": "Canon",
+        "model": "EOS-1D X Mark II",
+        "raw_count": 1,
+        "width": 5568
+      },
+      "decoded_samples_sha256": "db9a976531d63401b51d265e748a19dcb1018a5541f14e9a2941a0402e18d5e5",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1074",
+      "source_sha256": "23adc89df282c3b09d6721cb4a6330b0c6ac8b2cb93e66526be2b2f86e01039d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16908288,
+        "height": 4032,
+        "make": "Pentax",
+        "model": "K-3",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "d4d44ace8a23fac1cba089489c3b34f8794252310517a73cce989fee293a0ead",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1080",
+      "source_sha256": "46044fb6a9c805f2b4915cd4970316b4d04b0566bcf5287afaad3ef648d7a3db",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 2848,
+        "make": "Sony",
+        "model": "ILCE-7SM2",
+        "raw_count": 1,
+        "width": 4288
+      },
+      "decoded_samples_sha256": "9caf3f06cc259bd2afd5a86a0c2e2419fa887ae4b3075b66b3cd307c0ab09928",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1084",
+      "source_sha256": "b2221977cbc6eba0d3b363351072092e5647eaa0d02a5d8432b5d985b29f669f",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M5",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "70bacb72d5afc198efa2f7fd1230812b5b6ff0eaf3b2ebb7d8fe599afd014611",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1087",
+      "source_sha256": "3fb74d1fc402daaa48a9c3f1d6279d7e85fb58dfdaf816f036927d49ab228977",
+      "identity": {
+        "bits": 12,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 1,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16973824,
+        "height": 4000,
+        "make": "Leica",
+        "model": "M MONOCHROM (Typ 246)",
+        "raw_count": 1,
+        "width": 5984
+      },
+      "decoded_samples_sha256": "72dc6c8a6f38d6481ad3905e0c10d936c2a264ba89dcf02f9ba671acfcaf6583",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1090",
+      "source_sha256": "a1345ebe8d8722e791cbd52778e73257c5ff457ee13988fd78eac61eec841c21",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-P5",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "1125e4ca5b7c07bd6053f5613659a3e26bd50f9c768700b6ed80c2988e8d1225",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1118",
+      "source_sha256": "26ccd896f09df29036552ab46f6ef504dce2730e116eb5cfd7c20402f9ff088a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX10M3",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "c2d80e7586cd4a256e814c39990081acf1a77d4638baaf95432ac397458dd2ec",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1119",
+      "source_sha256": "ac639874f2dcc613beb797a7b8f31a7bc695e8daa36d7b70089ef17c30e277d8",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3016,
+        "make": "Panasonic",
+        "model": "DMC-FZ300",
+        "raw_count": 1,
+        "width": 4144
+      },
+      "decoded_samples_sha256": "4347ded009ec1983f7c749e342bec76fd51501616a783ef21d3406feeb924146",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1120",
+      "source_sha256": "dedcaf3ca1933ab0e8884884cd36cc91f243d37e8a7c086eeab8557a1eebbe13",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3016,
+        "make": "Panasonic",
+        "model": "DMC-FZ300",
+        "raw_count": 1,
+        "width": 4144
+      },
+      "decoded_samples_sha256": "02e909c5d4137d5a6b25ccabe6db35e7261cb8462b7e6eeff024eff8d1369549",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1184",
+      "source_sha256": "e7c150aa0cbb621f5c81805fa685ca034fb10ed6e2c350aa46973b42ce130ae5",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3284,
+        "make": "Pentax",
+        "model": "K-5 II s",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "1e9eaa53294a22b5f8e3e18c50bc1495af66daf9a842f4fd5fd2eb5804ebd6e8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1192",
+      "source_sha256": "4c09401975cc6f95b1284693aac39fef85498f70b55e35bf458a133c6e61885d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 3296,
+        "make": "Fujifilm",
+        "model": "X-T10",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "b28f6f26103c3fdd4e7557666611a58b9f20debc26910d694983b0fa7b5d0bc3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1204",
+      "source_sha256": "a084890fd9d7995ceb746c18ecf5be48c95baf14286d5c0c480cc3daa25f3e37",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 2780,
+        "make": "Samsung",
+        "model": "EX1",
+        "raw_count": 1,
+        "width": 3688
+      },
+      "decoded_samples_sha256": "35788e589a45036d733a6df4790b087bab6fee6e9d40285995c9a828a7e65b5c",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1253",
+      "source_sha256": "c9e6ae6f77c8fbc5f4bd68dd1f7dfdcb47905a7655402a17d9bca4a1900f6ff7",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Panasonic",
+        "model": "DMC-FZ1000",
+        "raw_count": 1,
+        "width": 3696
+      },
+      "decoded_samples_sha256": "0e2c2d07de93eb48f0c5b77aefcd2d24e1d2b298223be6bb4d0ecf8a6ddece5d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1254",
+      "source_sha256": "a07cd3dd47fc7bddd0ab42af5352d6242967518cc7fa7f4ba00885ac0b66b860",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Panasonic",
+        "model": "DMC-FZ1000",
+        "raw_count": 1,
+        "width": 5488
+      },
+      "decoded_samples_sha256": "83f64be092ade4bc187a0a0e668affb2ac4daae18bb256f6a9bd1f3f0668a5ee",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-131",
+      "source_sha256": "b5e47c5fcf7332ac03e0134926f17a338a42e68c1fd7f83e16f45f4b767544e8",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3516,
+        "make": "Canon",
+        "model": "EOS 7D",
+        "raw_count": 1,
+        "width": 5360
+      },
+      "decoded_samples_sha256": "021193290ebe4ce067fdec35a697704c89bca4addd0c414c72398a08c309f75e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1324",
+      "source_sha256": "82a4c49ca797eb67732021be9fb2ed19b4dc1f6d90286167b1fc80f688f21bce",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M5",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "ba7bbdb919030a18fbf84c9e9bc9cd4b173f04f9dec946fa76febfafafbc5413",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1325",
+      "source_sha256": "9eb3daa4e3d1c1614bccc4c6d136c4166960f936f17c437cc4d11a5786b2df06",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 2868,
+        "make": "Nikon",
+        "model": "D90",
+        "raw_count": 1,
+        "width": 4352
+      },
+      "decoded_samples_sha256": "75a83a841b6dabc831d5b81263e3f0803f90ad03ad3636d91da269f39b41e56d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1331",
+      "source_sha256": "d7f6ac99ee1f824e81ec0e71599f0f87f9b2e2675f7ddfdb21202281b8bdc5e0",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M10",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "1b4e3774d9a8bde3b419aa086d8eb3de501413ba94c78b74dcaf9a9376a6dfd5",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1332",
+      "source_sha256": "811df582d97918987312fa0fceae3ad19a20532a64ebda9782764ac7e629c265",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 77D",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "42f22a8c38081338c06c63b97be17f7b612bfd18370c33e7aeecea35b3310cc6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1363",
+      "source_sha256": "f43b9dc35e4d1b43918d2d4bd0973bc202af48ed24c924e4aff61250c971b171",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16908288,
+        "height": 4032,
+        "make": "Pentax",
+        "model": "K-3 II",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "35947ffa78c83a076d4628c832edebc79257acb46739cefd6e04e7717cc1ee64",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1385",
+      "source_sha256": "38ea7aba6b7e0cdbd338fe6703d3c98291f4a9a28b0d1a81bfb1f77b21712c63",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3292,
+        "make": "Nikon",
+        "model": "Df",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "97b49a2c74c2d958d6ffaec56f4918f6a4269bd6ded6d6dc40ad6cfc27d48faf",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1386",
+      "source_sha256": "902483437706df59bed669ebb4eb7d9ecaf95b23a70d6c79e319316ce50ee884",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3292,
+        "make": "Nikon",
+        "model": "Df",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "e893d1943be0617b4637e71fabe76bb43898a1600b982173a829b31ef4e333a5",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1391",
+      "source_sha256": "affa754f5d56f471f1c53c698798b99d1cf171bacca259d1adb6e41d81dbe9d4",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3688,
+        "make": "Panasonic",
+        "model": "DC-FZ82",
+        "raw_count": 1,
+        "width": 5040
+      },
+      "decoded_samples_sha256": "33f3ca62b00a4335c61894f587e9766c4f73984d309bf684002b4bd1ee22ea4a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1392",
+      "source_sha256": "986ece20f7126a95fec179f229d91031642073c0c2082c2d7bc701fd7ea893c8",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3688,
+        "make": "Panasonic",
+        "model": "DC-FZ82",
+        "raw_count": 1,
+        "width": 5040
+      },
+      "decoded_samples_sha256": "8c2344aa37083ae78bc96473638ef69f3156669e5b515e5ff92cc3e16f728db0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1427",
+      "source_sha256": "08c7e7f32af01c4501a5f32ccecb7f35b8692e72566d60607e391e9f1053f4a5",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3708,
+        "make": "Canon",
+        "model": "EOS 6D",
+        "raw_count": 1,
+        "width": 5568
+      },
+      "decoded_samples_sha256": "8b5c825d432462ecc1c4ec8be6f27bdbed947c0acffabe269e4c6ee228e1ade6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1431",
+      "source_sha256": "e0e138e9d33b0d2a16c0a9378582ddaac71d0b2cf07bc9ed459df275aa025c60",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-PL7",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "ecab62e4a1e15bc08e739bbf187dbbc6190bbee44120231d8abbcad8fa6431b6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1435",
+      "source_sha256": "a7124d13910e0241a6b035154bc1fcdb7be4439371d043b1e1950a0251feb51e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 6210,
+        "make": "Fujifilm",
+        "model": "GFX 50S",
+        "raw_count": 1,
+        "width": 9216
+      },
+      "decoded_samples_sha256": "41ecdff6d760afde67a9195b68a6970275e6f2f0f8e4482781676e9ed5cd76af",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1436",
+      "source_sha256": "bb7c832430549029ddfc61224b97cc40a5149ec363e11c566a57de65d9582ec9",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 6210,
+        "make": "Fujifilm",
+        "model": "GFX 50S",
+        "raw_count": 1,
+        "width": 9216
+      },
+      "decoded_samples_sha256": "311f0c3ea3278705282003e5df2150878f82564286ce92ab65db249dafdcb7d4",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1469",
+      "source_sha256": "96d5b85dae24e190691c504781d8e7ee58cb9b63ea715760de9af3d345dc4c13",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D5500",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "a9f03865596a0880368f820ef8b0dd1c57c05c84d6fcd76e71543c5c83383607",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1470",
+      "source_sha256": "6e0681b54ef808913a31530e0e320751dbb910f53fbca1b4bd65329f8f129b01",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D5500",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "edb106759285abb018241794c4c09fffa0e4aacd0a1b9827509aef92b2883cd6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1474",
+      "source_sha256": "aaedb31e6df5372716afa5fe28ffda82826063a7c53a34f352c9424d1021b1f6",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3528,
+        "make": "Canon",
+        "model": "EOS 700D",
+        "raw_count": 1,
+        "width": 5280
+      },
+      "decoded_samples_sha256": "207ea122de4a6cb6fd7dbef628db6d27d347e5724b577ca0031f2d0c8d20db4d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1479",
+      "source_sha256": "6f6419209340d07d597ccca66dc367d64cff3308ef2694c8f90c6259f3a5c431",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3284,
+        "make": "Pentax",
+        "model": "K-5",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "194225418ff2f54f9cd441270224c2deda39e0a618a80b452e2374f0b2c25f5f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1536",
+      "source_sha256": "c242df04d4a0e246130600e102371d4aea2e7eeac35c1e65c4757191dcb7cd33",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-7",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "5569731387aec1619193804d526b9b6a423cde42d282d956a378ff6823af993a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1555",
+      "source_sha256": "e064327405b3a736b1cc89d499bc5a049cfb2800bcb06a5072e6d0a82cd296d7",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3516,
+        "make": "Canon",
+        "model": "EOS 1300D",
+        "raw_count": 1,
+        "width": 5344
+      },
+      "decoded_samples_sha256": "e7ec50a1461c22c2bff4318a928dcc71b4eb52ca8970eafeccc3f2a3e289359e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1561",
+      "source_sha256": "eced190786231f0081261b6c6b425fe23e42a53ade21dec3def5ae8551be71a5",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D3400",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "70c8b6b638130959a52c953a7b604008d237d54389d7ec0b08a65e6171d9eeb8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1581",
+      "source_sha256": "7cc338a0abc8fdad32d61006f1f8f412297b93e040c7efba572eb2bd8f8e8be2",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 2848,
+        "make": "Sony",
+        "model": "ILCE-7S",
+        "raw_count": 1,
+        "width": 4288
+      },
+      "decoded_samples_sha256": "ed15fd391560700f3980649542fac74d58488a32e98c8717415d5a1d8bb5bf05",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1586",
+      "source_sha256": "1b0892df5ba5fa418e945f0519d490aeecaaf7e74860a08b5dc47e3e9976a288",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3516,
+        "make": "Canon",
+        "model": "EOS 600D",
+        "raw_count": 1,
+        "width": 5344
+      },
+      "decoded_samples_sha256": "bc2b558e1c2c1822007b0de1421d85c9483afb1ec2f1b5e4c2f2eff74ed8d3b2",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1596",
+      "source_sha256": "3686f6063ca1c05273c7c1021d47ed57ef50194656e3cfe30d9cae70781b98ef",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3280,
+        "make": "Nikon",
+        "model": "D5100",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "5f30a6a0bf2581ff635b4e6cc190e69d751725facd8f6f8a9260dfbde4195fb9",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1597",
+      "source_sha256": "3ce328830942381648be26b372a54b317fdb27b63c1aa9c2ee1fce076a2e1b4f",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3280,
+        "make": "Nikon",
+        "model": "D5100",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "f016b5744a558e9996c19462b688ee66467180341a7349c5ed0ae6328bcb5b35",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1599",
+      "source_sha256": "b87a0d727fa61b7da012e3ea738be6c05a24561656cba9265f5e1e6463f6478e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 800D",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "c495922add52367f8e79d7d6535a2088777f7e9951c45d3dace2d2ba4d4f4fdf",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1680",
+      "source_sha256": "8cc12566e5c0fc676b713bb1612ce0510d47b1dc691e9a5a0bcf3799ad9b8af1",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4032,
+        "make": "Fujifilm",
+        "model": "X-Pro2",
+        "raw_count": 1,
+        "width": 6160
+      },
+      "decoded_samples_sha256": "8b2f49998221ea248d326a70834d3c5f97ecb5bf8ed15c14e013e3d7f591a06f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1681",
+      "source_sha256": "9502fddca2d32341999e52c9aa7f5f47b32a03468b26b8fe54880c72a496cf5a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4038,
+        "make": "Fujifilm",
+        "model": "X-Pro2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "750981ce6ea4e8eeea53731df6e2ecf937ca130779781cd321e434a642c370cd",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1682",
+      "source_sha256": "b81acebf5ac49b0389c354942d128d9423fdd59ff92217554f232f94e3e87ef5",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3710,
+        "make": "Canon",
+        "model": "PowerShot G7 X Mark II",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "7df5dbe2c3a5114fb3cbb377a69072b9076d5b3d385318d88ba885826f39ec3b",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1691",
+      "source_sha256": "6c49ca47d189f9d6766f94be7c9d7d779ce45c79c0c6e48a0eba7d92f320fe0e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4020,
+        "make": "Nikon",
+        "model": "D5200",
+        "raw_count": 1,
+        "width": 6036
+      },
+      "decoded_samples_sha256": "8517639b370d75fe1f222c38b1e7687d0acde0d84f60e82331ff27bc7fe65db1",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1723",
+      "source_sha256": "1fd6d09b8c93a9bb629e1871859c18a6763397301396844c34217330de094453",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3016,
+        "make": "Olympus",
+        "model": "TG-5",
+        "raw_count": 1,
+        "width": 4040
+      },
+      "decoded_samples_sha256": "0584ef2e0beb97bbadd3208e3aecce64dfcb32f574b3b066aa4ed62d19f373ac",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1734",
+      "source_sha256": "97dfc95aecc00383d6da6197cb759bacb1e43c86071b4ca2d94748e498620f2f",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D3300",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "bf108a9883ab1d26c84d0283c72ce5e759b5868fed54445d444c4e29b7c18290",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1747",
+      "source_sha256": "14973b1c663a5857e16f63cc56ebc6a0ebe7e1c1d4457b9b7790d2910044be99",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M4",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "81e1834ca614770568825b941e5a5549a2be61a298bb5c51612e9a9db77e1ced",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1760",
+      "source_sha256": "577eac8d03419bb82714169dd532d58efc82a0abf928d28e4641f1ed5d56c350",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3000,
+        "make": "Pentax",
+        "model": "Q7",
+        "raw_count": 1,
+        "width": 4064
+      },
+      "decoded_samples_sha256": "6dbbb396f865c57b3aa057e762dd036567f34c6bfec45c8672ff092e2283c628",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1787",
+      "source_sha256": "11d90cbb564ad2c660c7a8d5d81d99c2c018aa27fdec45ed6c461fa5d24f942b",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M10 Mark III",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "431e3081ea9bc354f93e809c413b6a0232ae8ffd13073fbb3235a787680f150a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1797",
+      "source_sha256": "f7b2a6b6d7684536511cf2db2e2bfa46fae1ad7e52214093714f35e7ca60acbf",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17039360,
+        "height": 4016,
+        "make": "Leica",
+        "model": "Q (Typ 116)",
+        "raw_count": 1,
+        "width": 6120
+      },
+      "decoded_samples_sha256": "4c595950c69c167a000634daedd7953c82dd044c2ddd76653b76eeffa119ac66",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1832",
+      "source_sha256": "2087d4b351134e307c1c5e7a4fbf5691998a4c7b20451ba46f8f577d87b38052",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "samsung_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3714,
+        "make": "Samsung",
+        "model": "NX300",
+        "raw_count": 1,
+        "width": 5546
+      },
+      "decoded_samples_sha256": "171030c9e3939deb3b991d1abb0e0d44047a03ce5d9fe99688ee4fd24539edbb",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1855",
+      "source_sha256": "b241cb95b1008f25b8ed7d1443354e8cc7dee9c4d4e1edd0a5856d92063a48d0",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4020,
+        "make": "Nikon",
+        "model": "D7100",
+        "raw_count": 1,
+        "width": 6036
+      },
+      "decoded_samples_sha256": "db1c516ff07fd6547441e5a86e2fedec398d3aebd692dc2189b1e4d2da0b39dc",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1856",
+      "source_sha256": "9c6ec61079c3511fed302e9ccf1da31439fb7d4402b555ec6f14404cb67db742",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4020,
+        "make": "Nikon",
+        "model": "D7100",
+        "raw_count": 1,
+        "width": 6036
+      },
+      "decoded_samples_sha256": "b058995848a6f0283e76c8d3de8b312d6fbabec4bbfc7b1f01576af656d3e7bf",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1864",
+      "source_sha256": "b2aeb7fd72a9ea116b1dcc2c8a8cf5462b15757ba3aca33bad8ce36339a1642f",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4032,
+        "make": "Fujifilm",
+        "model": "X-E3",
+        "raw_count": 1,
+        "width": 6160
+      },
+      "decoded_samples_sha256": "7e49a05169d1f5bd6c395d64d6e6bf8ca512a7741b4bad3c2b6410a221139bd2",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1865",
+      "source_sha256": "03d6e79ae79107c51d0e1c1c9e488a0ab20268cd9fe43f47d8ea3ea310df35c6",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4038,
+        "make": "Fujifilm",
+        "model": "X-E3",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "8a66f2f3285d3910bef71d3851903a50ef848c30ce2b28beef29958f49590182",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1951",
+      "source_sha256": "aa9fd9ef937ed34467d6f91bfa2603be00cb47542b7fffd7258b79652d3b7bef",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17039360,
+        "height": 4016,
+        "make": "Leica",
+        "model": "SL (Typ 601)",
+        "raw_count": 1,
+        "width": 6120
+      },
+      "decoded_samples_sha256": "e56a8d02e7ed1e0daf873b7119290dc595db38cc281c56287e6eac8b6c31de42",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1955",
+      "source_sha256": "bc8e00ccfd8e4753e8ee0735255bff4dcca5fb8d1a1352adfa59b86806d03f44",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16973824,
+        "height": 3280,
+        "make": "Ricoh",
+        "model": "GR II",
+        "raw_count": 1,
+        "width": 4960
+      },
+      "decoded_samples_sha256": "2252e42c74c9336cc9da41e7ffe3562dcca25b2732e97ae3aa0ea48129d5df95",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1982",
+      "source_sha256": "38cdb173fe1ea083f4d475285d3080db49d7f3c7cdcb49bf1968fceeed66c85c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 750D",
+        "raw_count": 1,
+        "width": 6096
+      },
+      "decoded_samples_sha256": "62cbc6e95adf4cdb86963b9e299100d55499444502c32df3219d77bfb1b1d3e7",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1989",
+      "source_sha256": "d8cbfd1d14f4f4df20046cbed6ebbd92dff583fe0201f16ece21d95153d6b9e7",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-6500",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "0a8529856d3598eb22acb55e18d00994f63a0b8c3d05ae0d5fcc72ed34e0ffda",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1990",
+      "source_sha256": "b064d4b12be940db32ca780ee75db433aa7c1e4f6b61a67cc13ca57dd5d9296c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-6500",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "4db276c11d3f9670b296c81f719fe0c1dca42b435d66bf8659e1daf6d0fc876a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-1993",
+      "source_sha256": "0b433019e5fa61548d7eb0eb7bb90894251542c056da72355202382696d0ceb8",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3912,
+        "make": "Olympus",
+        "model": "E-M1MarkII",
+        "raw_count": 1,
+        "width": 5240
+      },
+      "decoded_samples_sha256": "09630ade7c0b48dccb11bfb4c092580eac4d9423c380b975129ef700dcadf419",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2029",
+      "source_sha256": "40a9df99865ad25a68b1131014cf954fb72da8bc32991b6a5e19d14937e21bc9",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4928,
+        "make": "Nikon",
+        "model": "D810",
+        "raw_count": 1,
+        "width": 7380
+      },
+      "decoded_samples_sha256": "82b7b86e8d982dc33916d6783be0dd3462a2d7e7c8621f0fa63db3aacd86a0b8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2031",
+      "source_sha256": "ea612ad3a01aaa76f6e9064eadb5c1746771875bd2ec81984667b28359b5c78d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4928,
+        "make": "Nikon",
+        "model": "D810",
+        "raw_count": 1,
+        "width": 7380
+      },
+      "decoded_samples_sha256": "4bd370ac8f318152147b0968a20c69a7f0ba34821fc116de50f1098663c152d3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2094",
+      "source_sha256": "f98108c5efd57eef483009cdb490ada2071d1c1b58a82df3de997b4d86d849c2",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 760D",
+        "raw_count": 1,
+        "width": 6096
+      },
+      "decoded_samples_sha256": "2189a7a7dd2dd6d901b49e180186eb156d9acb71779c19ef86636830dafa0954",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2115",
+      "source_sha256": "9cea5b0d4dd3682f8850dc34e93f0045e0e28fa69f9715576d40c5a8a59e8ae9",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 3296,
+        "make": "Fujifilm",
+        "model": "X100S",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "4c9b915b6d90ce43ad9bf23d4993c312ffdd63f7b991f6c50dbb5d083255f556",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2137",
+      "source_sha256": "a12bb7fa3585b636b7fa487d767ba0ba1ae10fe6aaa74db4147dc0ec2b180a0a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 3296,
+        "make": "Fujifilm",
+        "model": "X100T",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "158ac2344b94620bd769566d411ce1d608ed9378bf5d45998fadd02fc7d64991",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2156",
+      "source_sha256": "cb81392e3a8810231ce341fb45de3e4d1b9e2f87bc47f3c314d084041ccfd138",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M3",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "bf3ad3d0d403a5bdb65e3a3ba9e0a263524615722ce95cf29b0854e20d85c8c4",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2168",
+      "source_sha256": "93f8b6e7eaf5948198621aaf766e77a9ff61e8b1ea68c5cf351cfc0500f55a8a",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Panasonic",
+        "model": "DMC-FZ2000",
+        "raw_count": 1,
+        "width": 5488
+      },
+      "decoded_samples_sha256": "a2c95481afb8c6741c9abcaaf653082df60829f79ffd778374de8efa08f4939d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2169",
+      "source_sha256": "685be3c861cf886e3389e232328d1d929d2f7c301048db7dbad43e03abffbc98",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Panasonic",
+        "model": "DMC-FZ2000",
+        "raw_count": 1,
+        "width": 5488
+      },
+      "decoded_samples_sha256": "17e3d113dbf33388250469acff507c061def0aed00414c92e2ef0945997d6537",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2191",
+      "source_sha256": "69cb156c8bab4b1952ae4cb0a3cad038c4ddfea0db3176afd05bae741e685c73",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-5100",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "7f2f7793309b80ffe702ad330a6b676e1f91b1f48288d481dbce13b0adf80b7e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2235",
+      "source_sha256": "9ea1dc1f92df19699aa8b620670c64a84d4ead0172a49cbbd47dea9257d14e67",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3300,
+        "make": "Pentax",
+        "model": "K-50",
+        "raw_count": 1,
+        "width": 4960
+      },
+      "decoded_samples_sha256": "d92c0f9892333a70f3ae381afcab0dd39e27b4f5ab72d38a97e96a741364e5e6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2247",
+      "source_sha256": "1825b615a472962bbef13a6717e754e2aeb53d353de10d3503767932c420070c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX10M4",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "d86805fa678d7338f715fe67675e0d7954c10bfe03639342a964740d0ea8dfe1",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2249",
+      "source_sha256": "00c3314f2ccf92aff17644943e6149e8793b517c24bb2c38a15ec41f3af109cb",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 2844,
+        "make": "Nikon",
+        "model": "D700",
+        "raw_count": 1,
+        "width": 4288
+      },
+      "decoded_samples_sha256": "fcfc7d1f091be68c816e5122f19f4f85a74b6c7f75d567b518bf6b81fb3a2a08",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2250",
+      "source_sha256": "0f279ad4a3e92859109ce78440e562a8d25b91b8704a79e1245c8e98d9b27cf1",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 2844,
+        "make": "Nikon",
+        "model": "D700",
+        "raw_count": 1,
+        "width": 4288
+      },
+      "decoded_samples_sha256": "45714d5ab1384862a473ff273ef6bf3ffce4c7a2a3642d4564d54c76d620a11e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2317",
+      "source_sha256": "bf35a4da121f853cb644253b69515b441748f95fcbd6fdea2de025a76e6c24cd",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16973824,
+        "height": 4000,
+        "make": "Leica",
+        "model": "M (Typ 240)",
+        "raw_count": 1,
+        "width": 5984
+      },
+      "decoded_samples_sha256": "d421af580ff100f32f4e6ff91efba979329bd4995018e4fae23a73563b30465e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2318",
+      "source_sha256": "300dd5983924eb4a91866bec7f766512b0aad1385bd257dcb2e318ea196087b4",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16973824,
+        "height": 4000,
+        "make": "Leica",
+        "model": "M (Typ 240)",
+        "raw_count": 1,
+        "width": 5984
+      },
+      "decoded_samples_sha256": "ba1f9ce5c9f5eb30c33142a8c7c549b8661a0f9f456802673073c8b83c1784c9",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2348",
+      "source_sha256": "16282357ce0143ff7d36737f82074662db7aa0790ecd309196f406baf0f586a7",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3912,
+        "make": "Panasonic",
+        "model": "DC-G9",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "5ca1d852b232ad1373ee467b6b1a32120d19a774f0b959f0543541b6477f7900",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2421",
+      "source_sha256": "e994a1fd6e87e392432fe146a35b0b88584dc2bd50bee2c8c7e886ac2b59fcde",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 3296,
+        "make": "Fujifilm",
+        "model": "X-T1",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "782b59f46cf8134e19624cb81c97fc47283118138ee8e08fb0e4e0c033607f7f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2444",
+      "source_sha256": "15b17fb6f767164efbda1d40751f49566dc2090a1968fd464070c063f932f721",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-GX9",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "eeded45dd94edd3d6a9a6726d62a9e37594e602e258e606e1049df15dca65039",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2445",
+      "source_sha256": "696303d9029099be41a451fce878e4de0a6a7b70a3b01e1c3f0f9848efe975c6",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-GX9",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "9ff6d222c14601b9b92581eb18a46c4159b40e29de7eafece8dea4d76106c1c4",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2469",
+      "source_sha256": "068c902e7b38ac31c7c6eca5c55f69ca395ec6aa7170489281b692a893d0fee9",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "pentax_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 4950,
+        "make": "Pentax",
+        "model": "K-1",
+        "raw_count": 1,
+        "width": 7392
+      },
+      "decoded_samples_sha256": "65fde08d57d44bd8b696100726ac8e1da7b790f6318a8f253cb078cdf84144e6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2533",
+      "source_sha256": "22525e54442f52281d007b5e8a75a2c61f768856699cf5ed697d85e055f2cc4f",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-PL9",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "a0f25ccac3be5f77d7f90ba6ae1649abcd45343199dfa0b4c4e8c72746235330",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2537",
+      "source_sha256": "5210bf896d2757cecda88bab0a87ef0b534d4b36c31dc08d5db7cd8f5bbf9b4e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4038,
+        "make": "Fujifilm",
+        "model": "X-H1",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "bd660cf42e5b6a9130d2176c2cc90d821a5f69dd16d5c38bf6d40b1edb154814",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2538",
+      "source_sha256": "e45d6da859a614537588ea7d9a2f8d16141719b6545dac1f994b832787750e3c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4032,
+        "make": "Fujifilm",
+        "model": "X-H1",
+        "raw_count": 1,
+        "width": 6160
+      },
+      "decoded_samples_sha256": "7dab544be4f06a55cbadc3a26af537b53b81b3fa67d4ee1e8da5819b32965a36",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2588",
+      "source_sha256": "beef4d1e6f25ff28fb20bb3ad00ffadb62ab57d7041237e295b0b62f7de5309c",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3720,
+        "make": "Samsung",
+        "model": "NX1000",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "f8d04451eade7136fb51af4b5a612f8bd39a2d1b28fccad4e7dfc8dc45989bc6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2603",
+      "source_sha256": "b617151876e62b492641cef14b8c98ee3797e5014d24c6af1c780715a501fa53",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 2776,
+        "make": "Panasonic",
+        "model": "DC-GH5S",
+        "raw_count": 1,
+        "width": 3744
+      },
+      "decoded_samples_sha256": "33ca8a74fc9834ae2462d1b15a5d5707fb0b66f7e7773a20a2d489f6abcba002",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2604",
+      "source_sha256": "4b40c2d6cb2afa9a982d2463a16fdcda1a97e0170c947f130373ca8134cf4d1c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 2576,
+        "make": "Panasonic",
+        "model": "DC-GH5S",
+        "raw_count": 1,
+        "width": 3888
+      },
+      "decoded_samples_sha256": "2922c61fb79decc57da8a933f55a29141077ab8713e5ddc0e4a31e754b5ce6b0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2612",
+      "source_sha256": "84015493df96c877c0387071a627d6940187d75695b0598694901ac0ff83876a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4051,
+        "make": "Canon",
+        "model": "EOS 1500D",
+        "raw_count": 1,
+        "width": 6096
+      },
+      "decoded_samples_sha256": "5686cb43cc0ebc4531d7bf270066006c4ba0e70a4b36557886921d30c6f42612",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2644",
+      "source_sha256": "7adec564bbf74858c70b5a01a2b744000f8057303169fc70d91bde7cb435530f",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          0,
+          2,
+          1,
+          2,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          2,
+          1,
+          2,
+          0,
+          1,
+          0,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "channels": 1,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17039360,
+        "height": 3296,
+        "make": "Fujifilm",
+        "model": "X100S",
+        "raw_count": 1,
+        "width": 4936
+      },
+      "decoded_samples_sha256": "e819ba370c8e9bc9f12de24486a3edeeccc59a9c85c22c61d56c0bfe2f3b0f42",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2663",
+      "source_sha256": "15384b775867ec4c42b11882837f1e368cedc0561832ffab271221e6bb80be4c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS M50",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "e48cdf7adbfb0afd8c1f040e13dfd9e10de0f8fc0695ab38aaf26e90d6bdc5ea",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2671",
+      "source_sha256": "5d826ccdde8f31569c4f147f97610e423107cba3cbb26edcb89df86055824d97",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17039360,
+        "height": 540,
+        "make": "Canon",
+        "model": "EOS 60D",
+        "raw_count": 1,
+        "width": 960
+      },
+      "decoded_samples_sha256": "7e54842b04c39a59fa6df4e8ac3774d2b6d2a3ffb8a69a58aa60c9c7c9bcb2f3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2857",
+      "source_sha256": "f2c7a1dfbfcc6093b28373a1616569b8bd9c2d91cb708480b8312d510c57fbd6",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M5MarkII",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "036fcd4de8f14b1b084919f528d1203f71c87569b24810751b45da5a0dc99967",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2902",
+      "source_sha256": "b53395f74674588a63f6b667325c5a2b400f26cba72ff402a65ddd02c5f841d5",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D3500",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "4733a5003b7fb268699c8ca82a7d925b13fd1fcd21bc1d6e049be1d21deee89f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2903",
+      "source_sha256": "91471867ddd8d4ce8ca72a09bcba888dd09d9777fac73d7dc4cf1125d54b653e",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3568,
+        "make": "Panasonic",
+        "model": "DC-LX100M2",
+        "raw_count": 1,
+        "width": 4816
+      },
+      "decoded_samples_sha256": "0375261adc350529797720c2694a87074d3cee1acde1043866047cb4a77f82fd",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2904",
+      "source_sha256": "2defd25d0edae3f599913dbdce27ee2706a88044192bb8157a0416c6447c73e6",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3568,
+        "make": "Panasonic",
+        "model": "DC-LX100M2",
+        "raw_count": 1,
+        "width": 3696
+      },
+      "decoded_samples_sha256": "24574a9384ac4dcf531827cbc420badb4179fc85dc19fd368e3927281a2b47ae",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2977",
+      "source_sha256": "f87a5f3295aeb4d6ab27bb5b41c5e0f3a211ec9b4e3b1d9f105a650bee1a2f13",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 7796,
+        "make": "Olympus",
+        "model": "PEN-F",
+        "raw_count": 1,
+        "width": 10400
+      },
+      "decoded_samples_sha256": "32c3bc92092bc11e7d854d08dc9c151bd5525262072a3dc32f88b4b941ad80c6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2979",
+      "source_sha256": "35109fc20a849026c43c47674902431ef5a2d54b09b616995263dc75df17912f",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 6210,
+        "make": "Fujifilm",
+        "model": "GFX 50R",
+        "raw_count": 1,
+        "width": 9216
+      },
+      "decoded_samples_sha256": "b5f9bf1b3f43b76d2ad6d4980a57c2e3b026631384cc89771641fb0009c55b86",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-2980",
+      "source_sha256": "9d0570010a36fda60823de10837c47b39d7693ad8a87e531c859cfe411e41172",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 6210,
+        "make": "Fujifilm",
+        "model": "GFX 50R",
+        "raw_count": 1,
+        "width": 9216
+      },
+      "decoded_samples_sha256": "9aa7cf9fd179e997701cbe3acd2cbe0dc2de8d34ff80411c1330b9a27afbeba8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3012",
+      "source_sha256": "53c5abad853f17d2c46d9f96f8ff4e0af0ea095193fecf61222a8bf9d8beb00b",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M6",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "ef52f8bce384013bc381c7e89cdb23fecf90abfd9511471d7e31cba44eac5d62",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3013",
+      "source_sha256": "3015022b00ce219bf2713d9de21608e631566d111c4468402748b794e312d94c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M6",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "c67226de88029338da6ab32874612953adac1971ddc2dc281c6e747309921d80",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3038",
+      "source_sha256": "45309a096d6010281e2fa310e6ec2fe1bcc02947fa37b1a2414cfc7377ce4ac6",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC6_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Panasonic",
+        "model": "DC-S1",
+        "raw_count": 1,
+        "width": 6072
+      },
+      "decoded_samples_sha256": "35479403cc54a997da32e57a857f3af303ef596a2108cf7064fbce8d0252e9e8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3094",
+      "source_sha256": "63eaa1ff93ad7c89947017332b10f78f17cd3853a5b495adf25410edaefbe618",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3300,
+        "make": "Pentax",
+        "model": "K-30",
+        "raw_count": 1,
+        "width": 4960
+      },
+      "decoded_samples_sha256": "48e59f255b492c843ea619d351b478208f122bbb3f2b93b6f38fac9009ad5184",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3118",
+      "source_sha256": "7a5fd52fe776c74ca9ed216092e5cd8c1e11d4169a473a08a14b4af694ceea12",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Leica",
+        "model": "V-LUX (Typ 114)",
+        "raw_count": 1,
+        "width": 3696
+      },
+      "decoded_samples_sha256": "e84caec72723a87e369a2e831352b37e7be8d2dd03d6b4f29ca6fe0ffbe0de29",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3119",
+      "source_sha256": "71e9fe7c8f7d150dfa65736899655187cfea1fda9a72689b52aad9cc1cf66a8e",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3664,
+        "make": "Leica",
+        "model": "V-LUX (Typ 114)",
+        "raw_count": 1,
+        "width": 5488
+      },
+      "decoded_samples_sha256": "13a5b3122cf36292f2fb9e19733052705ab7e610de286a5158ca5d35176a3a7f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3210",
+      "source_sha256": "edd6f928bc790c79852a17fce56718d26563c7a593894d22970ef0fdb86ba45f",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3016,
+        "make": "Olympus",
+        "model": "TG-6",
+        "raw_count": 1,
+        "width": 4040
+      },
+      "decoded_samples_sha256": "8cd1c2249e6910e8680c8028401cf32efda47c11e489bcb7c2797a2fc342fb03",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3216",
+      "source_sha256": "fc2d9cc7f821a8e7bd332ae99251b3aec4778c99fe468f00539d56cf8b1c8dd8",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-G9",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "dc30ba4739df59712cd79c33d0e3cd5df9bce25934b09fd52060ab7a459fef02",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3223",
+      "source_sha256": "0183b3d50ad11146df28014ea24c381d9f45bb3df94c6e72e71a41dc1c2973d7",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-G95",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "33a4281803f7ed596d63784d6a7fc9cd3a35c9aa1da27761a6cfca6809e9026f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3224",
+      "source_sha256": "62aea7bb260fd30d2319492b03de02827e0ff6a43f9f3aa90bd56f67424ebb5f",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-G95",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "b928a471d0f979d0556a7b7b8e1d893df9517ea3b55b3a262748433349a4dc3d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3381",
+      "source_sha256": "1d9470ee083f914e51aa0be782161b432f27f87dbef551a59ec435f5dbc289dd",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3470,
+        "make": "Nikon",
+        "model": "COOLPIX P1000",
+        "raw_count": 1,
+        "width": 4624
+      },
+      "decoded_samples_sha256": "29467859dfbf39837d9e4d417cfcf83042519a3e079815bc68926f702aadb77f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3382",
+      "source_sha256": "7ece52df8b7ed868e6c6096e6a28f807694768cc045383c541e9707f1a669a5d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 250D",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "29f09688fd867b2681270fd99a421d42c5cef2a37404bc205dc291a6d607eb2a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3383",
+      "source_sha256": "69bdd267defb3d676f41f62a5e5ea65651669a04191cf4e89740917c59cedbcc",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 250D",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "9606df5746efcc0cc02ccd9e4b364431187d43546ab57dc54b87202a7f8c41e5",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3463",
+      "source_sha256": "815532f017b94e31990e8111791131647c95f6953aa28c571783c5e17eb36523",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100M7",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "fc706ee526600d908211c2ce9062bc2850d3dc8eb956b17d7878a8aaf01951d6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3505",
+      "source_sha256": "7d1160f4c7159dd30daae7a99a575d0c37dc11493aa6c796e1ff9e504c2bdd8f",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 3710,
+        "make": "Canon",
+        "model": "PowerShot G5 X Mark II",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "c3c68d8a69d395cb17d21d08f651c01d86e3ee18f32218824b4e2e93153427fa",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3506",
+      "source_sha256": "16d7b944344004c866bf2f84c5673969e76adfe16e5fb4388da48c72bdd58058",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 3710,
+        "make": "Canon",
+        "model": "PowerShot G5 X Mark II",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "2db993430d67ea4bec0c65d6dd04d1746e269910efb03cc7afa8af4570db13b0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3573",
+      "source_sha256": "391f2f6ba712a517212cae53bfc9a313fc4d106d0b04d3b9af68a4ed2d5d944e",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 7792,
+        "make": "Olympus",
+        "model": "E-M5MarkIII",
+        "raw_count": 1,
+        "width": 10400
+      },
+      "decoded_samples_sha256": "5a19cf3a01e13ae5fd7ef238d735cc89f8907fd620f106c1c3a82140a806def9",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3652",
+      "source_sha256": "8b8a969617705d9997ee0461354c99905b964ae08b820cd24c6d4e440461e24c",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC6_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 5632,
+        "make": "Panasonic",
+        "model": "DC-S1R",
+        "raw_count": 1,
+        "width": 8448
+      },
+      "decoded_samples_sha256": "46fae10dbe19118bcb44e9892159f3a9abdfa2113b3ef58b8bfc7e1d19908981",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3668",
+      "source_sha256": "156e43118811bcecb6fcc600b5f41ee1773c4f00b6a5b2dd72e177e35f6596ab",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "samsung3_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4336,
+        "make": "Samsung",
+        "model": "NX500",
+        "raw_count": 1,
+        "width": 6496
+      },
+      "decoded_samples_sha256": "216b1e8ef31db4060c05963640201746a1d7fa4971c2fab229dcdd43007866ae",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3669",
+      "source_sha256": "77ed2a18ca6923a0c1f3a9ad41ade3676136a3272dfe6bf0d8f53d03b0c8db3d",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "samsung3_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4336,
+        "make": "Samsung",
+        "model": "NX500",
+        "raw_count": 1,
+        "width": 6496
+      },
+      "decoded_samples_sha256": "03ae5b4254526f364df5307a235eaa44d3a0d208402f80dc689b65d7ed5e296b",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3711",
+      "source_sha256": "0ccbb6c447d0fab996291be9a5c2728cd7367bcc2f640e2a30eae112e13e6c0e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4732,
+        "make": "Canon",
+        "model": "EOS M6 Mark II",
+        "raw_count": 1,
+        "width": 7128
+      },
+      "decoded_samples_sha256": "89a90a35658b5627f003819faf8e7ebe2eed3f982895c6fd14053760177dcd7f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3713",
+      "source_sha256": "48be4fbcc36e4f9bf31dd63ba7f97aa906a39b29f6b2caa679506c4cdb20f5a7",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4732,
+        "make": "Canon",
+        "model": "EOS M6 Mark II",
+        "raw_count": 1,
+        "width": 7128
+      },
+      "decoded_samples_sha256": "643e61dfc5cf07b9952f664eb76af694662a1e1f458990fc39c1e71fbdaf6624",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3772",
+      "source_sha256": "1ffdc1b8e9bbd5bd2a465a0e7a417ed96dd267340f295299b4b1c0831f2a1f29",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX 100",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "cda8f445d4ef7f0a89366da5cbbb77b780c507a58f144df705dc986da3f46ab5",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3773",
+      "source_sha256": "018781e126842596fcf3876b3fb6cd8973dc3936ccc753ee8648618be8889287",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX 100",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "9340b1efa17dd1f07dcf32cdeda124b886ae1aeb927eec824ee10d6ce1e9d3a9",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3806",
+      "source_sha256": "fc6136b9e5a7e133d7dc30fe65baa04c09ff8c18ca3c7ad82b4ffdbb71ce5bef",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3470,
+        "make": "Nikon",
+        "model": "COOLPIX P950",
+        "raw_count": 1,
+        "width": 4624
+      },
+      "decoded_samples_sha256": "a351be5bbf416290d3a899a87ce2b7b8486eb3d8efe95283e63f7b883fec9f76",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3970",
+      "source_sha256": "6911f11810545cc2c55882ef6fa6aa2f25d34674865f8ade15e47990865e37ed",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-PL10",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "70b952e286b23115ba2db8db119cd58f4996df320a578305c0437e02eca71315",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3989",
+      "source_sha256": "161c2a9da2b5f1e50be6117a0b4da0ce249660b5d7de13568d301c4034716b97",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-9M2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "e9c4bd83b89d3426571324b383849b367144942eab2cb154e113fda75281e230",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3990",
+      "source_sha256": "a4d81172dad07fb0973f28bb1f5c22a9aae045aea40100aadfad1f56eb8a3903",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-9M2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "888699e2bf476ba85c6082a3918dc49dca9febabdacccbfb189a135bdb2c6ace",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-3994",
+      "source_sha256": "a366e2cde27977c527ad3c4b42b7ecc13740c8f53a032d802961b14f5bfe2e69",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC6_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Panasonic",
+        "model": "DC-S1H",
+        "raw_count": 1,
+        "width": 6072
+      },
+      "decoded_samples_sha256": "9500519b98d0e2dee3de067579c5cf2e17de7c4ae6503a8f7b5ce78a80702aac",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-4430",
+      "source_sha256": "1a3c11d85f48b8c644664b505f69fbdd75eb51270bb8ab556dbc660f0487e957",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS M50 Mark II",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "c009d7391ba5c100a87a8101afea1bc2210a32f923a7c66cbe94d2c5095b6bec",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-4656",
+      "source_sha256": "27a88fdae82516ba136e12c2cc9b934f25dbaaac24d64ab4e5517f8524463594",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS M50",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "94182070598aa7c84cab9ce21b44379480c8a882365843979913a5534347d150",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-4867",
+      "source_sha256": "47f7747b74073515bdbd65015738bc31947504d68255c5377baa21f179df2486",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS 850D",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "e020b59915ce3f732720f3c3ed2d6ae9b95e7d5ea7214ca3cf03f2dd7e53c021",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-4927",
+      "source_sha256": "8bc0009eaacdbeacc72606581665702a1242bc6d4b405d1f0b3f149fe6c85e55",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M10MarkIIIS",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "a3c1c81783e92cb80f57803f3d9e7db744cfb2980bc749a6e6657a2cf688c477",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5064",
+      "source_sha256": "5e2678038377cc7f146ceb7693c08535fa1af162cec705d06b0446c3d3017d47",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4182,
+        "make": "Fujifilm",
+        "model": "X-T30 II",
+        "raw_count": 1,
+        "width": 6384
+      },
+      "decoded_samples_sha256": "4fedb1f380dfd11e3e9253425c4ea57a6e3306aa2f5727822ca700b5c56cfa81",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5066",
+      "source_sha256": "af195f31365d69f428a8ea35d7c33eeab4a8bbb6236cd1e2b790a28613b50942",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4182,
+        "make": "Fujifilm",
+        "model": "X-T30 II",
+        "raw_count": 1,
+        "width": 6384
+      },
+      "decoded_samples_sha256": "d10843fe34df212a1e57c2f433d36b28af82bde7f9ebd337f30ed5cb25556279",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5082",
+      "source_sha256": "0ea0efd2a9442d8c68508e4196e29f1da4577407dc3df5add4cf360f70493c7b",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC6_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-GH5M2",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "6e5161f1cd534b3afbaccd60dac99bf653e77fca9e28ff4578216860468e41c0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5083",
+      "source_sha256": "8a96ddaccd700b8de1e2361f64383d4096025374bc5c6741cce59955b0655852",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC6_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-GH5M2",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "6202bbca1739306753d13623495a80fd45083eb196b4333263ecb67cc6908061",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5811",
+      "source_sha256": "579a485b5126a25cbd55cbd5dadfa7d09cf021c99cc7d4869f9e56e3f759390b",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 3672,
+        "make": "Sony",
+        "model": "DSC-RX100",
+        "raw_count": 1,
+        "width": 5504
+      },
+      "decoded_samples_sha256": "b76a185f8261511ed0fdb2e98c76a51d34a8f75053b5e4cb41cd820ffe29c0c7",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5915",
+      "source_sha256": "1a95224502963c892aa69ceb58767e58730f223c4b60b62119261d45eeba8bd9",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3472,
+        "make": "Olympus",
+        "model": "E-M10MarkII",
+        "raw_count": 1,
+        "width": 4640
+      },
+      "decoded_samples_sha256": "6dcf32acb310ce99d2bdff4b2c19b264b4cedc61d7c550651c407e8f74d24852",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-5980",
+      "source_sha256": "391b7a28d088f093a93d05c43b82bc8e9403579dea8cdc066d28af53a773d9c5",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Olympus",
+        "model": "E-P7",
+        "raw_count": 1,
+        "width": 5200
+      },
+      "decoded_samples_sha256": "b6dd128dd6b6b17b2ff25bd323d0ef8e09cbf26117e2e6a97fa7714281cfe688",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6053",
+      "source_sha256": "63ce623055dd2ac7374e0b1c645a4eabc7e181cd12c2039625f64b4e63a5ee86",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 3710,
+        "make": "Canon",
+        "model": "PowerShot G7 X Mark III",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "716782492af60a1de802bdc198e660c6c34183873406b71a891b44bd190a0e2e",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6168",
+      "source_sha256": "6b921558944db5fdb4f1c63dc64919b6666ef700857a187e18500099c6e7c6c6",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17039360,
+        "height": 2924,
+        "make": "Google",
+        "model": "Pixel 7 Pro",
+        "raw_count": 1,
+        "width": 3882
+      },
+      "decoded_samples_sha256": "eb6d1a0159c5fe1a72669d5b200de83d196b38a65962cb491abeec5a7f8907e7",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6261",
+      "source_sha256": "53e7f83a94c965495ba32d3ea6021ef08ed02244ce64d111d1329bbd01fd5581",
+      "identity": {
+        "bits": 16,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 3000,
+        "make": "Samsung",
+        "model": "SM-S908U1",
+        "raw_count": 1,
+        "width": 4000
+      },
+      "decoded_samples_sha256": "e03deae3839f951e2a6901103e96d075e773792a8caed45ced4de26c722ba124",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6625",
+      "source_sha256": "13ddd4b117299d16d47b6404ad1981258a00b6bce60382524a51cab15a41334d",
+      "identity": {
+        "bits": 12,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 2736,
+        "make": "Samsung",
+        "model": "SM-S901U",
+        "raw_count": 1,
+        "width": 3648
+      },
+      "decoded_samples_sha256": "bc5ab49a58d3d079e2bce647ad7fcce53037eb4fdc4ee6ef890ff07c2a6e8de6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6697",
+      "source_sha256": "1c04574f32b5a139922f075291c52018b89d9981ee155a16958a231c1fdbb067",
+      "identity": {
+        "bits": 14,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 6120,
+        "make": "Samsung",
+        "model": "Galaxy S23",
+        "raw_count": 1,
+        "width": 8160
+      },
+      "decoded_samples_sha256": "f3b5ac04c1a5b4087b49795c5816b48dd3f0748cd6144ee22ca9a88ddc161ab3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6734",
+      "source_sha256": "873184113210f9c4f684ad1eccea587a973b2c4d4ca88036b6962a1f6ca513bb",
+      "identity": {
+        "bits": 12,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 2252,
+        "make": "Samsung",
+        "model": "Galaxy S23",
+        "raw_count": 1,
+        "width": 4000
+      },
+      "decoded_samples_sha256": "e8ffe3c32ec014b7aacc0795d9af1ecbff385763c58dcb7e672ee5021fdbc2dd",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6758",
+      "source_sha256": "4f9d1b085b328b6c7ae21437c4106889cb38d52fab604a786091bf5fe5ef3da4",
+      "identity": {
+        "bits": 12,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 2736,
+        "make": "Samsung",
+        "model": "Galaxy S23 Ultra",
+        "raw_count": 1,
+        "width": 3648
+      },
+      "decoded_samples_sha256": "d281bbe57705394e04978783c4565699b88c568c8d1b6f8415b90d7cbb0d765f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-6810",
+      "source_sha256": "4a52f1706a69d5d37587bfba70f9e6bf554399ac2123f0be9b30a156b513d446",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC8_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4008,
+        "make": "Panasonic",
+        "model": "DC-S5M2X",
+        "raw_count": 1,
+        "width": 6008
+      },
+      "decoded_samples_sha256": "bcb61d289892f0c35cee1a9cdfc81a6cd147ddd17a0b7127dfa67dbcf66844af",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7081",
+      "source_sha256": "1afc1071451a3a3737c29ae319e1411551b6893d0e6a34db29903318266b0066",
+      "identity": {
+        "bits": 14,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 1,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16908288,
+        "height": 4224,
+        "make": "Pentax",
+        "model": "K-3 Mark III Monochrome",
+        "raw_count": 1,
+        "width": 6304
+      },
+      "decoded_samples_sha256": "32885422276864cc157b67bca091b7d996ce690fb7358b5c407a448e07cce081",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7104",
+      "source_sha256": "e53a7b2afd6f2e298ca9343c2e7411f321e4329ae0132c4f615aa22b72d09986",
+      "identity": {
+        "bits": 14,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 6120,
+        "make": "Samsung",
+        "model": "Galaxy S23 Ultra",
+        "raw_count": 1,
+        "width": 8160
+      },
+      "decoded_samples_sha256": "2334a14473416dc86ddaa0c39868a6a621ee5aa0d666c9bca696b6be796e6c38",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7150",
+      "source_sha256": "3c0436a269b7182079aead2d6eaf207efc95a35c3dd613a19a6d6514ab6bb012",
+      "identity": {
+        "bits": 14,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 6120,
+        "make": "Samsung",
+        "model": "Galaxy S23+",
+        "raw_count": 1,
+        "width": 8160
+      },
+      "decoded_samples_sha256": "cf31f84d0b41acb2355891fbc57253f0e1586969cc0cbde5636a22e5bc4905da",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7360",
+      "source_sha256": "6645e8038b9f2c92ab8e27c8fc2258b23d2f99b397ea2e256ce35bddfa9a2078",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4020,
+        "make": "Sony",
+        "model": "ILCE-9M3",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "cdd97923435f6ba818459a531bee22a7d87bf2bf5aba2e85e65e45311665d47b",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7361",
+      "source_sha256": "81b0b140f34356964fdb4adf5e202eb01d5e5e5a1b61b861954a183fc30d4bf0",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4020,
+        "make": "Sony",
+        "model": "ILCE-9M3",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "7c3053b46b9edeecbd2781fd8e9f44e710b38ee8464c737388c80830dead094d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-750",
+      "source_sha256": "26d58c21ed3019af5a22ef6bc02f017b863aad9eafcf84252ed375cd495c0efb",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4924,
+        "make": "Nikon",
+        "model": "D800",
+        "raw_count": 1,
+        "width": 7424
+      },
+      "decoded_samples_sha256": "62c988c1261d2ca6226a7b03a2d9c22c79d7fb87041fb2212a965016b824313a",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-751",
+      "source_sha256": "f5b7906869da3e48cb85ec08c5fa97c4c3ff8ab491825a89ac5ed0fff11fef5d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4924,
+        "make": "Nikon",
+        "model": "D800",
+        "raw_count": 1,
+        "width": 7424
+      },
+      "decoded_samples_sha256": "1b5acfcd78f2493a492a3bedf3353ac0f050fecfb27e747f8c4e388d10b8bf8f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7699",
+      "source_sha256": "da47b85fa4a011be0ebbb5185453224fe2ab05733d46efb65f5bae120fcdf281",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC8_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 8008,
+        "make": "Panasonic",
+        "model": "DC-S9",
+        "raw_count": 1,
+        "width": 12008
+      },
+      "decoded_samples_sha256": "1aa1e1048373035a5782e1e9add02be419192cc6f97db7632c52763af55dcf51",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7716",
+      "source_sha256": "42b74f5375f58bcf69d8dda5adb0607b4c104e4f72e07f807f8ca7f5e1f26e97",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC8_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 5432,
+        "make": "Panasonic",
+        "model": "DC-S1RM2",
+        "raw_count": 1,
+        "width": 8152
+      },
+      "decoded_samples_sha256": "d8c1d320dc0c0061f57b96c520350c6296f932023fb7a8b5b0908ff8b29f749b",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7718",
+      "source_sha256": "88a0feee2c8454b3e1dccf28d9b7f9330a25ed35ab60c28ffe6e33de01b0c490",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC8_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 5432,
+        "make": "Panasonic",
+        "model": "DC-S1RM2",
+        "raw_count": 1,
+        "width": 8152
+      },
+      "decoded_samples_sha256": "2b3cea30f31a48a96c94c8a5ade335d891a614e7ec1e86276f419d72de6926d3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7751",
+      "source_sha256": "45420c595401547cca950ae58d552bc82b32d31ce1d58c082df33004016197f5",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 17170432,
+        "height": 6144,
+        "make": "Google",
+        "model": "Pixel 8 Pro",
+        "raw_count": 1,
+        "width": 8160
+      },
+      "decoded_samples_sha256": "7dfed0fc9eda58ffe30b4d52aaa78f8cae3dbdb33fef169ed7763ad32c9e507d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7772",
+      "source_sha256": "10e007f3d1aef2ac9bf4da063ea1983e44515af818bf0ab63e3703cd67803810",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX100S II",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "f79cf7bf41ccfad76a7167bcc366d17c74fe731498347899ce56cd803e37b9f0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7773",
+      "source_sha256": "63527912c729242e7fd7b325c915de5d80ca19d1d33a72271a397a6cb1d2c400",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX100S II",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "2131e6b6d71953818b52f681fa0409eccd0d454fade184d8ee5b45e65d65cb60",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7783",
+      "source_sha256": "8f0ddc0a672503a840995a6901b16d3650f4c41b8c775e66a553b30222a69864",
+      "identity": {
+        "bits": 16,
+        "cfa": [],
+        "cfa_size": [
+          0,
+          0
+        ],
+        "channels": 3,
+        "decoder": "jxl_dng_load_raw_placeholder()",
+        "decoder_flags": 16384,
+        "dng_version": 17235968,
+        "height": 3000,
+        "make": "Samsung",
+        "model": "SM-S901E",
+        "raw_count": 1,
+        "width": 4000
+      },
+      "decoded_samples_sha256": "58cd5a2fb508844b69cada01180bfdea03c4a14036a0281df7d3556fb2916c4d",
+      "reference": "libjxl-0.11.2"
+    },
+    {
+      "id": "pixls-7826",
+      "source_sha256": "a8a45e9b6c437eba6724fcda24c3efd084c05389711b955d84b2af67635e241b",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-6400A",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "995d2cbbb37369acf868dbf0415d1fbea0fb8575d38210e1eacaa63755ac21c2",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7827",
+      "source_sha256": "7def3c8d80537f79af199052c6e13d86750203122dcb94888ada65291dabb793",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 5784,
+        "make": "Sony",
+        "model": "ILCE-1M2",
+        "raw_count": 1,
+        "width": 8672
+      },
+      "decoded_samples_sha256": "d61e0d660ba790ee95e631c0ce3453aade24739d8cb2248cb464b364dfb7ed47",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7828",
+      "source_sha256": "33ec5187659f8af4589113afbd138ec8d1cd14f6999d36a12de87ad5d8c7d439",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_ljpeg_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 6144,
+        "make": "Sony",
+        "model": "ILCE-1M2",
+        "raw_count": 1,
+        "width": 8704
+      },
+      "decoded_samples_sha256": "0e4d3c22ec35b8acd20d94e68ac93edd732a13a5182cafc5581b6560e18e2427",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-783",
+      "source_sha256": "cb4d97c2691762545e6c9f7cbe3f7ecd8fffb7cebe9e8a5add5dd58ab2c86f6a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-6300",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "1c3ab2e64ce4d141d4358967120564282f0a94c85e7adf25ed7c6836bf7fc9cb",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-784",
+      "source_sha256": "00e42517013bd043b7145001399bbc320a8ff235a6dcd16033580d8a130bee1e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3708,
+        "make": "Canon",
+        "model": "EOS 70D",
+        "raw_count": 1,
+        "width": 5568
+      },
+      "decoded_samples_sha256": "6bf21527878aadfe9ff2464d3ddf9be5d204a9ea58264dd7e9706c601f0bbb83",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7896",
+      "source_sha256": "6d83217d58a5e6d2dabcf470430e91a16676b60531c025b81fa7453fc74b0521",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS R100",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "6a85157fa03d7482faf2189a4a4f1052ae38c7cff66fd86798e7473f42cfe763",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7897",
+      "source_sha256": "0b66842b2fe00329ebc05fe8ab9357ddbbe1a0a2d2e69a2893102de7fdf5c942",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4056,
+        "make": "Canon",
+        "model": "EOS R100",
+        "raw_count": 1,
+        "width": 6288
+      },
+      "decoded_samples_sha256": "b8fd36520aac5cdb6f5a0ad2b0f3fcdf4c2d890a83ec299aae8354e5a5b45dfb",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7971",
+      "source_sha256": "f3a04fb066aeeef461a1b83da4cac5925a9a1b87996439c5ce3a4f513e69407e",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-G97",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "2bb0cc56bc06ef34a2c4634c4f17eff4dfce3fa50d2c54848dee94426091680c",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-799",
+      "source_sha256": "360842779d08fe4805b4a2fe4979f06fdc6da982c85c3acb181f25bcf4c9f536",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3708,
+        "make": "Canon",
+        "model": "EOS 6D",
+        "raw_count": 1,
+        "width": 5568
+      },
+      "decoded_samples_sha256": "e263df6796a91f1f75479e1bcd6a550bb37a2291a1ce0860636df816e0ea3706",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-7999",
+      "source_sha256": "bc0a304c5f2d483747767d4a71b0f136a6104e293917ad2bad6467007f07cdab",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonic_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3904,
+        "make": "Panasonic",
+        "model": "DC-G100D",
+        "raw_count": 1,
+        "width": 5264
+      },
+      "decoded_samples_sha256": "98ba82cc7f482c0531eab8bb5930e046fd0c985603fb394c20c215c56d649fc3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8090",
+      "source_sha256": "dad07d5635a5ad6ffd169657a333de7258a87ab18689945540832e28bff85586",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX100RF",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "c24e9f9c82642532c1f3fadbf758cd250150043e21ed2101a3c8876b051515d1",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8091",
+      "source_sha256": "14bed5ac8191d6f2a7c82984e3bf6470ad4740df329293eac42b8018cc6a668a",
+      "identity": {
+        "bits": 16,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 8754,
+        "make": "Fujifilm",
+        "model": "GFX100RF",
+        "raw_count": 1,
+        "width": 11808
+      },
+      "decoded_samples_sha256": "762f5e1c4e080e69274bd6eabda43fa57b176cff641525d5c5ed6cca9e61a581",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-827",
+      "source_sha256": "f441c36678dfca4f38e25a580f4f8485d78d8067a054153bc36be71e56c92386",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3136,
+        "make": "Pentax",
+        "model": "K-7",
+        "raw_count": 1,
+        "width": 4736
+      },
+      "decoded_samples_sha256": "7a9a98996213643f13e1ea2857d0e61eb5d676f067d04e345b267f9eea6091f0",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-832",
+      "source_sha256": "5dea8ff6f95f372e4eb0852f75e728f182d7aa4057b2b76631f0fd3066c6a4b5",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D7200",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "67564befd5ff4a07befb09b6ec234455ddb7ff56af154c4d65403d1901fdfaf6",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-833",
+      "source_sha256": "60f6a525322124949fd3b99e884b78b1ad95d80d8a9e03b897b881a6f50ae2ff",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D7200",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "35f16d21f1b575b9618436a39c06e836e079b1cece4c018fdce8f939b026110b",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8365",
+      "source_sha256": "0ae88fc81f082929d76dd1b932aacf7815cd6bc670b96ef55a81928e11084a6c",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D5300",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "4239d38e11ecb962ff0b9bf0d06bc81848c1f6dc6c480d3d64646acf596426a8",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8366",
+      "source_sha256": "8751a0a3bc491bb5c79ed6b32f83b3923b119ae9d950b851ad26db2a0fbb3b91",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4016,
+        "make": "Nikon",
+        "model": "D5300",
+        "raw_count": 1,
+        "width": 6016
+      },
+      "decoded_samples_sha256": "f1a7c3407c58f1ce3a88e2fcd5311e65efe2cb568525444c15ae99f2733afc9f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-837",
+      "source_sha256": "ec57f83c23094766b723ba9446cdf79388c527934d6689c1ac5b1b6ab3ea8378",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "samsung3_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4336,
+        "make": "Samsung",
+        "model": "NX1",
+        "raw_count": 1,
+        "width": 6496
+      },
+      "decoded_samples_sha256": "9e5281dfcd34c3adb8a2628509de622209471f1d765328c286758b97c93955c1",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-839",
+      "source_sha256": "03563eadfe4ef32b5bf2a2850abb40b29fcc1f8d56b3b2ed92ef307b90d7d9dc",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "packed_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3720,
+        "make": "Samsung",
+        "model": "NX200",
+        "raw_count": 1,
+        "width": 5632
+      },
+      "decoded_samples_sha256": "cd632e12159cb25384bcb4217ca222db8871052fe521788099b09639cf3ce200",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8403",
+      "source_sha256": "955ff98710505498ce7f98cbcc5875793ef2d6941b3b5692ed3baf2817ee7c9f",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4060,
+        "make": "Canon",
+        "model": "EOS R50 V",
+        "raw_count": 1,
+        "width": 6192
+      },
+      "decoded_samples_sha256": "c5b1c35089e5f75a1d6ea743f26fee2cb6209c36942b10aaa6ea3061d1e35cd1",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-846",
+      "source_sha256": "12240fdb6d03ef3fbfeae7898f374976ae2221418942fc28f0b2aa933ba058ba",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4920,
+        "make": "Sony",
+        "model": "ILCE-7R",
+        "raw_count": 1,
+        "width": 7392
+      },
+      "decoded_samples_sha256": "8d66b0491daaa4ee8291b8fc28ade95a44240f022a61b045549d95ce04ca8c21",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8507",
+      "source_sha256": "7595cf39268d2b026773fe5648f0d96c93a3781d0c73c90604e16866ae9fbf0e",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 5196,
+        "make": "Fujifilm",
+        "model": "X-E5",
+        "raw_count": 1,
+        "width": 7872
+      },
+      "decoded_samples_sha256": "607be6214db5a4ce36527c8bb4a5c8bf17a307fd50cf0ec27e0405c134973a1f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8508",
+      "source_sha256": "ff94e2e0d90ba29cacfacceab150a666e329945bd9e281cfced9564d06fc4070",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 5196,
+        "make": "Fujifilm",
+        "model": "X-E5",
+        "raw_count": 1,
+        "width": 7872
+      },
+      "decoded_samples_sha256": "7ba267c1f6507753e5ce37fc3dc282aab2ae2b429183e4af7415ee9ce306db2d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-851",
+      "source_sha256": "a37752f65c1fabb48178bfbe2a81f1e7dc705a3363652e984792527b43700ada",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-7M2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "4882b5178d0b5647eb61dcf444557da3618c1fb930cda9e3eba8f4f5f27bb75d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8549",
+      "source_sha256": "c6fe861982ddc18464cf6858d2700f6813cc3a17956bcb12d1179212c999c76a",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "olympus_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3912,
+        "make": "OM Digital",
+        "model": "OM-5MarkII",
+        "raw_count": 1,
+        "width": 5240
+      },
+      "decoded_samples_sha256": "ff3224ce2d75a8cabd07dfcc8522e95462fd4f22b0ce2452a5e469a8e43fcc8f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-862",
+      "source_sha256": "8a0038f8bc0506bf2543dda0b05422e359b6e11e802e789e345ba2339b2f37e1",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3528,
+        "make": "Canon",
+        "model": "EOS 650D",
+        "raw_count": 1,
+        "width": 5280
+      },
+      "decoded_samples_sha256": "a7cb047c5f9e57060827ed8c6e0b8042fbe27828f962cea7de1ffb2f911cc448",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-864",
+      "source_sha256": "aaa648429eeee8e1bea05fccfeeb2ea54ee7052e23db0ee02f049e5b23cecaef",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          2,
+          1,
+          2,
+          0,
+          1,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4032,
+        "make": "Fujifilm",
+        "model": "X-T2",
+        "raw_count": 1,
+        "width": 6160
+      },
+      "decoded_samples_sha256": "737874b5fbaa5b7750cfaeec0ef214a0c604a320ad6ee23703eb1e9bbb033d79",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-865",
+      "source_sha256": "f756ad5be551a8b3e1b503a8a6f7e8e637fba519c0b0f8c79dd58e94b0287602",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4038,
+        "make": "Fujifilm",
+        "model": "X-T2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "a1c28e3a77d228bd2965dfb5473fdff3850707b47264a2bb877b747d9dc47690",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-873",
+      "source_sha256": "aa41f0d9ab8d3e21e468b4c61d4d1ddae6a4fbe37f629b78159246cbb94dd56b",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          2,
+          1,
+          1,
+          0
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_dng_load_raw()",
+        "decoder_flags": 66128,
+        "dng_version": 16842752,
+        "height": 3284,
+        "make": "Pentax",
+        "model": "K-5 II",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "4ef9a19d0b87214f82f3cb174559e44e62a5ae4dbe3768e17cc14d5703a1457d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8769",
+      "source_sha256": "49f77d6162abfa5c94d2d8b90e4e926b7386c42bcf7e84a152c9ffe1ebd584da",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "fuji_compressed_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4182,
+        "make": "Fujifilm",
+        "model": "X-T30 III",
+        "raw_count": 1,
+        "width": 6336
+      },
+      "decoded_samples_sha256": "e912d458e0a512f1ddfb127bffb1a2430a618d755f0da13ae424b82bea981d40",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8770",
+      "source_sha256": "0c62b3534abe6e491358ea78eda0a4d775ab50679464c0dadb18e70cbc703c24",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          2,
+          0,
+          1,
+          0,
+          2,
+          1,
+          1,
+          1,
+          2,
+          1,
+          1,
+          0,
+          1,
+          1,
+          0,
+          1,
+          1,
+          2,
+          0,
+          2,
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          6,
+          6
+        ],
+        "decoder": "unpacked_load_raw()",
+        "decoder_flags": 4096,
+        "dng_version": 0,
+        "height": 4182,
+        "make": "Fujifilm",
+        "model": "X-T30 III",
+        "raw_count": 1,
+        "width": 6336
+      },
+      "decoded_samples_sha256": "06618a444f383c76c6178501938f8f5283c1e5fa00fcfea97ee116f45739446f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8790",
+      "source_sha256": "e50ae28ab990a7997b1f2142e976619d072969186ed4f0095bef0724d2c70563",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "panasonicC8_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4008,
+        "make": "Panasonic",
+        "model": "DC-S1M2",
+        "raw_count": 1,
+        "width": 6008
+      },
+      "decoded_samples_sha256": "3a94fcc114c88050a6a2b60cf8cc5c19a6bf56372461d14557f3de721ffe6a26",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-881",
+      "source_sha256": "691438acdecd54ab96d326b96f83daa02fa68f7d66a38ff2fee4e8dd00c79d24",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          1,
+          0,
+          2,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "samsung_load_raw()",
+        "decoder_flags": 65600,
+        "dng_version": 0,
+        "height": 3714,
+        "make": "Samsung",
+        "model": "NX30",
+        "raw_count": 1,
+        "width": 5546
+      },
+      "decoded_samples_sha256": "ee1ff23879966f71fc075d2db551aa4ebc7dc10482ca2ea3da5731c5cff76b3f",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8845",
+      "source_sha256": "8c35cd1ab0ca36b487ae50ae5e0333a8e967122700fce5678e1e5b97561896a4",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_ljpeg_load_raw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 5120,
+        "make": "Sony",
+        "model": "ILCE-7M5",
+        "raw_count": 1,
+        "width": 7168
+      },
+      "decoded_samples_sha256": "d5380cffa8037d60de884a422d73e2aeb8ed6af71dc43236a8a38aec91d3df7d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8846",
+      "source_sha256": "4e3a99cbcf2a348decaf3ca68c5de22b7a05eaa590f4e9184735c1f9c45213a7",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "channels": 1,
+        "decoder": "sony_arw6_load_raw()",
+        "decoder_flags": 272,
+        "dng_version": 0,
+        "height": 4688,
+        "make": "Sony",
+        "model": "ILCE-7M5",
+        "raw_count": 1,
+        "width": 7040
+      },
+      "decoded_samples_sha256": "8808a8ee1f63bd9e04dcfaa974c2ecf079648cdc0fbd97970dce37b1bca08bfc",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-888",
+      "source_sha256": "11f0a71bb4141a8ed44c7e1c64f9a12571f5f67a11571f2bde8516aa95a7bea3",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4028,
+        "make": "Nikon",
+        "model": "D610",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "aa6ed126fc969779a9aa5cfd54d0f624c53632cae052995e9780d2b7d79f8073",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-889",
+      "source_sha256": "a6de67362a7ae053f36115e639a806f3f5a1c10b89f0a4ed21e95cdc27b7b8cc",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4028,
+        "make": "Nikon",
+        "model": "D610",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "dc9aeb42e3c7f826ec5c8dfb5263022391bfa212c8470f3b0a9f77562fee8305",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8961",
+      "source_sha256": "e491e4bb960961b5fa299361bf698310a80cbe7b15d30d8dad3bb21bc5457dab",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4760,
+        "make": "Canon",
+        "model": "EOS R6 Mark III",
+        "raw_count": 1,
+        "width": 7144
+      },
+      "decoded_samples_sha256": "f09a4e138f775a0da68a3e2faced42038dfb1cce4297a0447f0030c6d46d7c23",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-8962",
+      "source_sha256": "1395adbae77aaf0ea344fbe2eb2eb7ff825ccae815177cc499fb65e55eaaa495",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "crxLoadRaw()",
+        "decoder_flags": 0,
+        "dng_version": 0,
+        "height": 4760,
+        "make": "Canon",
+        "model": "EOS R6 Mark III",
+        "raw_count": 1,
+        "width": 7144
+      },
+      "decoded_samples_sha256": "a064ac72d371b1756410401b586a0e069d662a19dd801ccb4826d329d3729de3",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-916",
+      "source_sha256": "a70c3e54501efa7e4391ec4cf5705912a10c356a029e984ee13be5f68bc7482d",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4028,
+        "make": "Nikon",
+        "model": "D600",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "1f013998cbf66fef8c652d4b7911bbf1786881759e6d71fe19e62a16f27f84e7",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-917",
+      "source_sha256": "6dd9470e0ab44ecf6d1a5341a5314edfbeaf091ecda414f6881c37ea5b0179c0",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 4028,
+        "make": "Nikon",
+        "model": "D600",
+        "raw_count": 1,
+        "width": 6080
+      },
+      "decoded_samples_sha256": "4abfe1081956852888fb9e1fc66165692428a7fdb00b53e63e1309246515c4d2",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-958",
+      "source_sha256": "639945753240005d80488c0462c01e73a7ab82c96d3d1cdb6661f02e1b3c1319",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3280,
+        "make": "Nikon",
+        "model": "D7000",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "36b45c753fdffa1cd5b5dfd17714f9b3caf0f1074e984a6879280984c2f60b8d",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-959",
+      "source_sha256": "65d8d063de99befa2f8463c3b1114cb5bf71e35aed6466d36fca39e83d0353bc",
+      "identity": {
+        "bits": 12,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "nikon_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3280,
+        "make": "Nikon",
+        "model": "D7000",
+        "raw_count": 1,
+        "width": 4992
+      },
+      "decoded_samples_sha256": "735980c44e5afb89a11fa0dd17b5338c49b910a868ab63300f03ee48224fb235",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-967",
+      "source_sha256": "891b098c6cad16f01af4cbbe229d89652008b0108ad343079a4fc688b320fa14",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-7M2",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "c0b58392f73a7f8189d03db0035f02355ab76d0446831c54b3a8eeb4b55f5385",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-979",
+      "source_sha256": "d96dc154ed8811d52548dab52d32f9e25a654b574ce702325fae47c86e2a624a",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          0,
+          1,
+          1,
+          2
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "sony_arw2_load_raw()",
+        "decoder_flags": 65648,
+        "dng_version": 0,
+        "height": 4024,
+        "make": "Sony",
+        "model": "ILCE-6300",
+        "raw_count": 1,
+        "width": 6048
+      },
+      "decoded_samples_sha256": "6b47423555fa91536a73ad3f9ab0eb50bcb4517b967a8db3bbcdac8eb87ace29",
+      "reference": "uncatalogued-LibRaw-unpack"
+    },
+    {
+      "id": "pixls-993",
+      "source_sha256": "865236ece3bf1f2f19a15001a8f0f99badf71e34b9eed1fead04d15daf87a154",
+      "identity": {
+        "bits": 14,
+        "cfa": [
+          1,
+          2,
+          0,
+          1
+        ],
+        "cfa_size": [
+          2,
+          2
+        ],
+        "decoder": "lossless_jpeg_load_raw()",
+        "decoder_flags": 65616,
+        "dng_version": 0,
+        "height": 3516,
+        "make": "Canon",
+        "model": "EOS 60D",
+        "raw_count": 1,
+        "width": 5344
+      },
+      "decoded_samples_sha256": "ac71921e08bf8d77a207a0f60292429e00e5a1e3d184fd75f495345c0300d390",
+      "reference": "uncatalogued-LibRaw-unpack"
+    }
+  ]
+}

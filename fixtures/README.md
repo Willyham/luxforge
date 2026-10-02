@@ -51,6 +51,24 @@ Private originals for local diagnostics go in ignored `fixtures/jpg/`, `fixtures
 
 ## RAW preparation fixtures
 
+The optional [extended corpus](../docs/design/sample-corpus.md) retains originals
+in private Cloudflare R2 rather than Git. Its [reviewed target list](sample-corpus-targets.json)
+contains 250 cameras and 46 recent flagship phone variants; its
+[source manifest](sample-corpus.json) pins 341 CC0 samples from
+[raw.pixls.us](https://raw.pixls.us/) by URL, SHA-256, exact size and immutable
+object key. Every retained sample has qualified source, unpacked-integer, metadata and
+development references; [independent unpack evidence](corpus-camera-evidence.json)
+backs the added sources.
+Missing devices are recorded alongside the available samples. Samples for a
+device do not establish editor support. The owner's Air 2S original is local-only
+and is not mirrored.
+
+[Developer commands](../docs/engineering/development.md#extended-camera-corpus)
+select manufacturers or deterministic shards, sync a verified local cache and
+run the authentic RAW adapter in bounded chunks, optionally cleaning downloads.
+Ordinary checks run only the offline tooling tests; the weekly/manual workflow
+uses a separate read-only credential. No photograph bytes are checked in.
+
 [Public provenance](raw-public.json) identifies four CC0 files from raw.pixls.us covering Z6 12/14-bit lossless and X100VI uncompressed/lossless capture: the provenance record of those files, which no command reads. No photograph bytes are checked in. `cargo xtask raw-camera-metadata --index FILE --ids 3582,3585,7300,7301 --output NEW_DIR` downloads them from the repository index, verifies their hashes and reads each with the RAW adapter. The owner originals have a separate ignored local manifest with explicit permission for local testing only.
 
 [Coverage](raw-coverage.json) distinguishes editor support from a decoder experiment. `untested` means not qualified in the editor, even when a probe can unpack the file. Real-file provenance, missing scenes, unknown metadata and unqualified modes remain visible.
