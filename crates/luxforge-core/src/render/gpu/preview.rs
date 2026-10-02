@@ -19,7 +19,7 @@
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the proxy plan with its window. Equal keys hold equal texels.
-use super::{GpuAnswer, GpuFallback, GpuPlanRequest, gpu_plan};
+use super::{GpuAnswer, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan};
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
@@ -151,6 +151,92 @@ fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usize)> {
     }
 }
 
+/// The stage a job's Fit frame is drawn at, planned exactly as the preview worker plans the job's
+/// proxy phase: from the output stage of the stack's one compilation, with the window of the proxy
+/// stage a crop reads. A stack that fits the bounds, or has no proxy, is drawn at its exact stage.
+struct FitStage {
+    /// The proxy plan, with its window; `None` at the exact stage.
+    plan: Option<ProxyPlan>,
+    /// The stack compiled at that stage, uncut.
+    compiled: Compiled,
+    /// The stage the plan addresses, and the source's full content stage.
+    stage: Stage,
+    full: Stage,
+}
+
+impl FitStage {
+    fn of(evaluation: &Evaluation, bounds: ProxyBounds) -> Result<Self, Error> {
+        let registry = evaluation.registry();
+        let recipe = evaluation.recipe();
+        let exact = evaluation.exact(&crate::Cancel::never())?;
+        let full = evaluation.source().dimensions();
+        let full = Stage {
+            width: full.0,
+            height: full.1,
+        };
+        let proxy = registry
+            .proxy_eligible(recipe)
+            .ok()
+            .and_then(|()| exact.proxy_plan(bounds))
+            .map(|plan| exact.proxy_window(registry, recipe, plan));
+        Ok(match proxy {
+            Some(stage) => {
+                let plan = stage.plan();
+                Self {
+                    plan: Some(plan),
+                    compiled: stage.compiled()?.clone(),
+                    stage: Stage {
+                        width: plan.width,
+                        height: plan.height,
+                    },
+                    full,
+                }
+            }
+            None => Self {
+                plan: None,
+                compiled: evaluation.compiled()?.clone(),
+                stage: full,
+                full,
+            },
+        })
+    }
+
+    /// A plan request from `boundary` at this stage.
+    fn request(&self, boundary: usize) -> GpuPlanRequest {
+        match self.plan {
+            Some(_) => GpuPlanRequest::fit(boundary, self.stage, self.full),
+            None => GpuPlanRequest::exact(boundary, self.full),
+        }
+    }
+
+    /// The masks a proxy compiles take the thin-feature supersample; the exact stage's do not.
+    fn sampling(&self) -> MaskSampling {
+        if self.plan.is_some() {
+            MaskSampling::ThinFeature
+        } else {
+            MaskSampling::Point
+        }
+    }
+}
+
+/// `recipe` with a neutral layer of `effect` for `mask` inserted at `index`: what a drafted layer
+/// the stack does not hold yet is planned as, the neutral layer its first commit would insert.
+fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId>) -> Recipe {
+    let mut planned = recipe.clone();
+    planned.layers.insert(
+        index,
+        Layer {
+            id: LayerId::new(),
+            effect_id: effect.to_owned(),
+            effect_format: EFFECT_FORMAT,
+            payload: json!({}),
+            mask,
+            artifacts: Vec::new(),
+        },
+    );
+    planned
+}
+
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn in `bounds`:
 /// the plan from the earliest layer the draft changes, at the stage the job's Fit frame is drawn
 /// at, and the boundary it starts from. `O(layers)` on the catalog owner: one compile at the proxy
@@ -187,86 +273,100 @@ pub(crate) fn plan_preview(
             boundary: None,
         });
     };
-    // The stage the Fit frame is drawn at, planned exactly as the preview worker plans the job's
-    // proxy phase: from the output stage of the stack's one compilation, with the window of the
-    // proxy stage a crop reads.
-    let exact = evaluation.exact(&crate::Cancel::never())?;
-    let full = evaluation.source().dimensions();
-    let full = Stage {
-        width: full.0,
-        height: full.1,
-    };
-    let proxy = registry
-        .proxy_eligible(recipe)
-        .ok()
-        .and_then(|()| exact.proxy_plan(bounds))
-        .map(|plan| exact.proxy_window(registry, recipe, plan));
-    let (plan, compiled, request) = match proxy {
-        Some(stage) => {
-            let plan = stage.plan();
-            let request = GpuPlanRequest::fit(
-                boundary,
-                Stage {
-                    width: plan.width,
-                    height: plan.height,
-                },
-                full,
-            );
-            (Some(plan), stage.compiled()?.clone(), request)
-        }
-        None => (
-            None,
-            evaluation.compiled()?.clone(),
-            GpuPlanRequest::exact(boundary, full),
-        ),
-    };
+    let fit = FitStage::of(evaluation, bounds)?;
     // The drafted layer in its GPU shape, inserted as the neutral layer its first commit would
     // add when the stack does not hold it yet.
-    let mut planned = Recipe::clone(recipe);
-    let request = match &drafted_layer {
-        Some(drafted) if !drafted.held && drafted.index == boundary => {
-            planned.layers.insert(
-                drafted.index,
-                Layer {
-                    id: LayerId::new(),
-                    effect_id: drafted.effect.clone(),
-                    effect_format: EFFECT_FORMAT,
-                    payload: json!({}),
-                    mask: drafted.mask.clone(),
-                    artifacts: Vec::new(),
-                },
-            );
-            request.drafted(drafted.index)
-        }
-        Some(drafted) if drafted.held => request.drafted(drafted.index),
-        _ => request,
+    let request = fit.request(boundary);
+    let (planned, request) = match &drafted_layer {
+        Some(drafted) if !drafted.held && drafted.index == boundary => (
+            with_neutral(recipe, drafted.index, &drafted.effect, drafted.mask.clone()),
+            request.drafted(drafted.index),
+        ),
+        Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
+        _ => (recipe.clone(), request),
     };
     let answer = gpu_plan(registry, &planned, request)?;
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
-        GpuAnswer::Plan(_) => {
-            let sampling = if plan.is_some() {
-                MaskSampling::ThinFeature
-            } else {
-                MaskSampling::Point
-            };
-            Some(BoundaryRequest {
-                key: BoundaryKey {
-                    source: evaluation.source().identity(),
-                    prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, sampling)?,
-                    layer: boundary,
-                    plan,
-                },
-                position: position(&compiled, boundary).ok_or_else(|| {
-                    Error::internal(format!(
-                        "the GPU preview's boundary layer {boundary} is past the stack"
-                    ))
-                })?,
-            })
-        }
+        GpuAnswer::Plan(_) => Some(BoundaryRequest {
+            key: BoundaryKey {
+                source: evaluation.source().identity(),
+                prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
+                layer: boundary,
+                plan: fit.plan,
+            },
+            position: position(&fit.compiled, boundary).ok_or_else(|| {
+                Error::internal(format!(
+                    "the GPU preview's boundary layer {boundary} is past the stack"
+                ))
+            })?,
+        }),
     };
     Ok(GpuPreview {
         answer,
         boundary: boundary_request,
     })
+}
+
+/// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
+/// warm their program sequences before a drag begins: a drag of each colour or finish layer the
+/// stack holds, and the first drag of each field-patch colour or finish module it does not hold
+/// yet, each from that layer with the layer in its GPU shape, as a draft of it is planned
+/// ([`plan_preview`]). One plan per program sequence, in stack order. `O(layers × modules)`
+/// compiles on the catalog owner, with no pixel read.
+pub(crate) fn plan_warm(
+    evaluation: &Evaluation,
+    bounds: ProxyBounds,
+) -> Result<Vec<GpuPlan>, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
+    let fit = FitStage::of(evaluation, bounds)?;
+    let colour = |effect: &str| {
+        matches!(
+            registry.effect_stage(effect),
+            Some(EffectStage::Color | EffectStage::Finish)
+        )
+    };
+    let mut candidates: Vec<(Recipe, usize)> = recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| colour(&layer.effect_id))
+        .map(|(index, _)| (recipe.clone(), index))
+        .collect();
+    for provider in registry.providers() {
+        let descriptor = provider.descriptor();
+        let [effect] = descriptor.effects.as_slice() else {
+            continue;
+        };
+        if descriptor.developer
+            || !colour(&effect.id)
+            || !descriptor.actions.iter().any(|action| action.patch)
+            || recipe
+                .layers
+                .iter()
+                .any(|layer| layer.effect_id == effect.id && layer.mask.is_none())
+        {
+            continue;
+        }
+        let index =
+            registry.insertion_index_for_target(&recipe.layers, &effect.id, None, &recipe.masks);
+        candidates.push((with_neutral(recipe, index, &effect.id, None), index));
+    }
+    let mut plans: Vec<GpuPlan> = Vec::new();
+    let mut seen: Vec<Vec<&'static str>> = Vec::new();
+    for (planned, index) in candidates {
+        let request = fit.request(index).drafted(index);
+        if let GpuAnswer::Plan(plan) = gpu_plan(registry, &planned, request)? {
+            let sequence: Vec<&'static str> = plan
+                .operations()
+                .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
+                .collect();
+            if !seen.contains(&sequence) {
+                seen.push(sequence);
+                plans.push(*plan);
+            }
+        }
+    }
+    Ok(plans)
 }

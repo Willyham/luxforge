@@ -128,6 +128,10 @@ pub struct PreviewJob {
     /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
     /// path, and the boundary it starts from. Preview state, never an API result.
     pub gpu: Option<Box<crate::GpuPreview>>,
+    /// The plans a gesture on this job's stack is likely to draw, planned with a committed stack's
+    /// job when its request asked (`PreviewRequest::gpu`), so the desktop can compile their
+    /// program sequences before a drag begins. Preview state, never an API result.
+    pub gpu_warm: Option<std::sync::Arc<[crate::GpuPlan]>>,
     /// Render this GPU preview boundary after the job's Fit frame, as one more result of the job
     /// ([`super::BoundaryOutcome`]). The desktop asks for it once per draft, on a job of that
     /// draft; nothing else does.
@@ -150,6 +154,7 @@ impl PreviewJob {
             intent: PreviewIntent::Immediate,
             viewport_declined: None,
             gpu: None,
+            gpu_warm: None,
             boundary: None,
         })
     }

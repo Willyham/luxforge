@@ -221,6 +221,9 @@ pub(super) fn run(
     // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
     // The proxy phase's own clock: the plan, the build when this job builds, then the render.
     let started = Instant::now();
+    // A job that asks for a GPU preview boundary always answers it, once: rendered at the stage
+    // its Fit frame was drawn at, or refused when that is not the stage the boundary names.
+    let mut boundary_answered = false;
     let declined = match plan_proxy(&job, recipe, &exact) {
         ProxyStep::Skipped => None,
         ProxyStep::Declined(reason) => Some(reason),
@@ -247,11 +250,11 @@ pub(super) fn run(
                     // A GPU preview boundary asked of this proxy reads the proxy stage's own uncut
                     // compilation for where its layer begins, kept before the cut consumes it.
                     let plan = stage.plan();
-                    let boundary = job
+                    let uncut = job
                         .boundary
                         .as_ref()
                         .filter(|request| request.key.plan() == Some(plan))
-                        .and_then(|request| Some((request, stage.compiled().ok()?.clone())));
+                        .and_then(|_| stage.compiled().ok().cloned());
                     // The proxy stage's one compilation, the one the plan made: the frame and the
                     // reason it is approximate both come from it, so what is reported and what is
                     // drawn cannot disagree. A windowed one is cut from it, and asks the job's
@@ -313,7 +316,7 @@ pub(super) fn run(
                             }
                             // The draft's GPU preview boundary, at the stage this frame was drawn
                             // at, over the same source and cut: one more result of this job.
-                            if let (Some((request, uncut)), Ok(proxy)) = (boundary, &proxied) {
+                            if let Some(request) = &job.boundary {
                                 let started = Instant::now();
                                 let whole = Stage {
                                     width: plan.width,
@@ -326,8 +329,13 @@ pub(super) fn run(
                                         width: window.width,
                                         height: window.height,
                                     });
-                                let result =
-                                    proxy.boundary(&uncut, whole, window, request.position);
+                                let result = match (uncut, &proxied) {
+                                    (Some(uncut), Ok(proxy)) => {
+                                        proxy.boundary(&uncut, whole, window, request.position)
+                                    }
+                                    _ => Err(drawn_elsewhere()),
+                                };
+                                boundary_answered = true;
                                 let boundary = boundary_result(
                                     &job,
                                     generation,
@@ -398,22 +406,26 @@ pub(super) fn run(
     let boundary = job
         .boundary
         .as_ref()
-        .filter(|request| request.key.plan().is_none() && job.layer_count.is_none())
+        .filter(|_| !boundary_answered)
         .map(|request| {
             let started = Instant::now();
-            let result = exact.as_ref().map_err(Clone::clone).and_then(|exact| {
-                let source = evaluation.source().dimensions();
-                let whole = Stage {
-                    width: source.0,
-                    height: source.1,
-                };
-                exact.boundary(
-                    evaluation.compiled()?,
-                    whole,
-                    Region::whole(whole),
-                    request.position,
-                )
-            });
+            let result = if request.key.plan().is_some() || job.layer_count.is_some() {
+                Err(drawn_elsewhere())
+            } else {
+                exact.as_ref().map_err(Clone::clone).and_then(|exact| {
+                    let source = evaluation.source().dimensions();
+                    let whole = Stage {
+                        width: source.0,
+                        height: source.1,
+                    };
+                    exact.boundary(
+                        evaluation.compiled()?,
+                        whole,
+                        Region::whole(whole),
+                        request.position,
+                    )
+                })
+            };
             boundary_result(
                 &job,
                 generation,
@@ -712,6 +724,15 @@ fn run_viewport(
 
 /// A completed phase may be abandoned while waiting for room in the bounded delivery queue.
 /// Its processed prefix is released with that refused delivery; normal delivery keeps it reusable.
+/// Why a job answers a boundary request without texels: its frame was drawn at another stage than
+/// the boundary names — another proxy plan, the exact stage, or a layer prefix — so the boundary's
+/// stage is not the one the job evaluated.
+fn drawn_elsewhere() -> crate::Error {
+    crate::Error::validation(
+        "the job's frame was drawn at another stage than the GPU preview boundary names",
+    )
+}
+
 /// One job's boundary phase: `result`, the boundary `request` asked for, as a result of the job's
 /// `generation`. Its time is the boundary's own render.
 fn boundary_result(

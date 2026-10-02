@@ -739,6 +739,9 @@ impl Presentation {
             mask_map: None,
             draft: None,
             gpu: None,
+            gpu_hold: false,
+            gpu_tag: None,
+            gpu_warm: None,
         }
     }
 
@@ -1045,6 +1048,7 @@ impl Editor {
     }
 
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        self.gpu_queue_cancelled();
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
@@ -1393,6 +1397,11 @@ impl Editor {
     pub(super) fn poll_preview(&mut self) -> Option<PreviewResult> {
         loop {
             let result = self.presentation.queue.poll()?;
+            // A draft's GPU preview boundary is no frame: it is held for the gesture, or let go.
+            if result.boundary().is_some() {
+                self.gpu_boundary_ready(result);
+                continue;
+            }
             if !result.cancelled() {
                 return Some(result);
             }
@@ -2139,6 +2148,7 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
+        self.gpu_warm_from(&job);
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact

@@ -252,8 +252,9 @@ pub struct PreviewRequest {
     /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
     pub proxy: Option<ProxyBounds>,
     /// Plan the draft's GPU preview with the job ([`PreviewJob::gpu`]): the plan a gesture's tick
-    /// is drawn from at these bounds, and the boundary it starts from. Only a draft with bounds
-    /// has one; planning is `O(layers)` here and reads no pixel.
+    /// is drawn from at these bounds, and the boundary it starts from; or, for a committed stack,
+    /// the plans its gestures are likely to draw ([`PreviewJob::gpu_warm`]). Only a job with bounds
+    /// has either; planning is `O(layers)` here and reads no pixel.
     pub gpu: bool,
 }
 
@@ -1916,6 +1917,15 @@ impl Owner {
         // error the job's own frame would fail with.
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
+            // A committed stack's job carries the plans its gestures are likely to draw, so the
+            // desktop warms their pipelines when the stack changes rather than when a drag begins.
+            if let (true, None, Some(bounds), None) =
+                (request.gpu, draft, request.proxy, request.layer_count)
+            {
+                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, bounds)
+                    .ok()
+                    .map(Into::into);
+            }
             if let (true, Some(draft), Some(bounds), None) =
                 (request.gpu, draft, request.proxy, request.layer_count)
             {
