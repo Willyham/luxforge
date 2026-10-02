@@ -2830,16 +2830,22 @@ impl Editor {
             // drained, so the pixels belong to the newest value it sent.
             SliderEnd::Open => {
                 self.await_step(Settle::SliderDraft);
+                let drained = self
+                    .core_gesture()
+                    .is_some_and(|gesture| gesture.draft.drained());
                 // A value whose preview job was refused has already drained with no frame of its
                 // own to wait for, so the frame on screen is the step's evidence.
-                if self
-                    .core_gesture()
-                    .is_some_and(|gesture| gesture.draft.drained())
+                if drained
                     && self
                         .slider_gesture()
                         .is_some_and(|slider| slider.unpreviewed)
                 {
                     self.settle_step(Settle::SliderDraft, "draft_refused");
+                } else if drained && self.gpu_draws_newest_tick() {
+                    // The newest value was drawn on the GPU as its set answered, before this step
+                    // waited: no CPU frame of its own is coming, and the capture waits for the
+                    // surface's draw of it.
+                    self.settle_step(Settle::SliderDraft, "gpu_tick");
                 }
             }
             // The committed pixels are the evidence, so this waits for the render the commit
