@@ -1022,7 +1022,7 @@ mod tests {
     /// A module that declares no queries says so rather than answering one.
     #[test]
     fn a_module_without_queries_refuses_the_call() {
-        let module = crate::modules::TransformModule::new();
+        let module = crate::modules::CropModule::new();
         assert!(module.descriptor().queries.is_empty());
         let error = module
             .query(

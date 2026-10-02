@@ -1394,6 +1394,8 @@ pub enum CanvasInteraction {
     /// `action` and derives its ratio presets from the `aspect` enum of `fit_action`. Only Apply
     /// calls an action.
     CropFrame {
+        /// The geometry effect whose layer this frame edits, within the module's owned effects.
+        effect: String,
         action: String,
         angle: String,
         x: String,

@@ -69,11 +69,6 @@ pub fn plan(base: &str, key: &str, wrong: &str) -> Plan {
         )
         .collapsed("luxforge.basic"),
         layout(
-            "transform-collapsed",
-            script::Step::section("luxforge.transform", false),
-        )
-        .collapsed("luxforge.transform"),
-        layout(
             "crop-collapsed",
             script::Step::section("luxforge.crop", false),
         )
