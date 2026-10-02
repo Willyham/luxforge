@@ -288,7 +288,7 @@
     {
       "id": "TASK-006",
       "description": "Draw Fit drags and mask gestures on the GPU over a held input boundary, with no preview job per tick.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-003"
@@ -419,14 +419,15 @@
     {
       "id": "TASK-008",
       "description": "Draw 100% drags on the GPU at full scale over a held region boundary, replacing the half-scale CPU motion region where eligible.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-007"
+        "TASK-006"
       ],
       "extra_context": [
         "At draft begin at 100% and above, the boundary is the visible region plus the plan's summed halo at full scale, through the existing windowed planner, bounded by the GPU-preview budget. Ticks evaluate the full-scale region on the GPU.",
         "A pan during an open draft shows CPU motion for the area the boundary does not cover until a new boundary for the new region is ready. Settle dissolves to the exact visible region.",
-        "The accepted 100% contract (approximate motion, exact visible refinement under the shared quiet policy, an updating histogram) is unchanged; only the motion frame's source changes."
+        "The accepted 100% contract (approximate motion, exact visible refinement under the shared quiet policy, an updating histogram) is unchanged; only the motion frame's source changes.",
+        "The region boundary and region ticks build on the Fit drag path; settling to the exact visible region through the dissolve needs the settle hand-off, so the task completes after it."
       ],
       "context_links": [
         {
@@ -532,7 +533,8 @@
       "extra_context": [
         "Separable Gaussians, the a-trous B3 wavelet levels in Oklab with soft shrinkage, coring, gradient-energy gating, 3 x 3 extrema and the tanh limiter, reusing the separable-pass infrastructure from Presence.",
         "Detail is a restoration-stage layer. Its own drags become GPU-eligible; drags of later layers already reuse the restoration-prefix proxy cache as their boundary. Fit settlement still presents the reduction of the exact CPU render, which is the frame the dissolve ends on.",
-        "The kernels reuse the compute step, planes and separable passes that Presence's programs introduced, which are on the integration branch; its drags at Fit and 100% need the Fit and 100% drag paths, so the task completes after them."
+        "The kernels reuse the compute step, planes and separable passes that Presence's programs introduced, which are on the integration branch; its drags at Fit and 100% need the Fit and 100% drag paths, so the task completes after them.",
+        "The owner decided on 2026-10-02 that a stack settling from the exact render is judged against the CPU's moving proxy the GPU frame stands in for, not against the exact reduction; the proxy's own settle jump is unchanged by the GPU."
       ],
       "context_links": [
         {
