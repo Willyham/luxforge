@@ -8,17 +8,21 @@
 //!
 //! It is not a second renderer: it reads nothing a plan does not carry but the CPU units of its
 //! operations' layers.
-use super::{GpuComponent, GpuDescription, GpuMask, GpuOperation, GpuPlan};
+use super::{GpuComponent, GpuDescription, GpuMask, GpuOperation, GpuPlan, GpuSpatial};
 use crate::{
     ComponentMode, Error,
     colour::srgb,
-    modules::{ColorOperation, Region},
+    modules::{ColorOperation, Parallelism, Planes, PlanesMut, Region, SpatialOperation, Stage},
 };
 use std::collections::BTreeMap;
 
 /// The colour operations of the compilation a plan was made from, by layer: the CPU units a
 /// shipped program's twin runs.
 pub(super) type Units = BTreeMap<usize, ColorOperation>;
+
+/// The spatial operations of the same compilation, by layer: a spatial step's twin is its CPU
+/// units, run over the whole boundary as one tile.
+pub(super) type Spatials = BTreeMap<usize, SpatialOperation>;
 
 /// Unit `index` of `layer`'s operation over `rgb` at `pos`: a test program's Rust twin, or a
 /// shipped program's CPU unit.
@@ -156,6 +160,92 @@ fn operation(units: &Units, operation: &GpuOperation, rgb: [f32; 3], x: i64, y: 
     std::array::from_fn(|channel| (1.0 - m) * rgb[channel] + m * output[channel])
 }
 
+/// A spatial step over the content operations' frame of a `stage`, in place: its input clamped
+/// where the step says the CPU quantizes, its CPU units over the whole frame as one tile (each
+/// global estimate prepared from the reduction of its own input, which is what the CPU stores and
+/// the GPU takes), its mask's blend against the input, and its output clamped likewise. The
+/// desktop's readback tests qualify the program's passes against the same units on a device.
+fn spatial(
+    spatials: &Spatials,
+    step: &GpuSpatial,
+    stage: Stage,
+    texels: &mut [[f32; 3]],
+) -> Result<(), Error> {
+    let operation = spatials
+        .get(&step.layer)
+        .unwrap_or_else(|| panic!("layer {} compiled no spatial operation", step.layer));
+    assert_eq!(
+        operation.len(),
+        step.applies.len(),
+        "the step applies one function per unit"
+    );
+    if step.clamps {
+        for texel in texels.iter_mut() {
+            *texel = texel.map(|channel| channel.clamp(0.0, 1.0));
+        }
+    }
+    let input = texels.to_vec();
+    let len = texels.len();
+    let mut planes = vec![0.0_f32; 3 * len];
+    for (index, texel) in texels.iter().enumerate() {
+        for channel in 0..3 {
+            planes[channel * len + index] = texel[channel];
+        }
+    }
+    let region = Region::whole(stage);
+    for unit in operation.units() {
+        let global = match unit.estimate_key() {
+            Some(_) => {
+                let reduction = crate::render::spatial::build_reduction(stage, |x, y| {
+                    let index = (y * stage.width + x) as usize;
+                    Ok([0, 1, 2].map(|channel| planes[channel * len + index]))
+                })?;
+                unit.prepare(&reduction)
+            }
+            None => None,
+        };
+        let mut scratch = vec![0.0_f32; (unit.scratch_bytes(stage) / 4) as usize];
+        let mut next = vec![0.0_f32; 3 * len];
+        {
+            let source = Planes::new(stage, region, &planes)?;
+            let mut output = PlanesMut::new(stage, region, &mut next)?;
+            unit.apply(
+                &source,
+                &mut output,
+                global.as_ref(),
+                &mut scratch,
+                Parallelism::Serial,
+            )?;
+        }
+        planes = next;
+    }
+    for (index, texel) in texels.iter_mut().enumerate() {
+        let applied: [f32; 3] = std::array::from_fn(|channel| planes[channel * len + index]);
+        let rgb = input[index];
+        // A mask's twin is the operation's own field, evaluated where the CPU's blend evaluates
+        // it: at the stage pixel, on the operation's input.
+        let value = match (&step.mask, operation.mask()) {
+            (None, _) => applied,
+            (Some(_), None) => panic!("layer {} compiled no mask", step.layer),
+            (Some(_), Some(field)) => {
+                let (x, y) = (index as u32 % stage.width, index as u32 / stage.width);
+                let m = field.evaluate(x, y, rgb);
+                if m == 0.0 {
+                    rgb
+                } else {
+                    std::array::from_fn(|channel| (1.0 - m) * rgb[channel] + m * applied[channel])
+                }
+            }
+        };
+        *texel = if step.clamps {
+            value.map(|channel| channel.clamp(0.0, 1.0))
+        } else {
+            value
+        };
+    }
+    Ok(())
+}
+
 /// The bilinear blend the tail takes at the boundary coordinate `(u, v)`, its taps clamped to
 /// `reads`.
 fn bilinear(texels: &[[f32; 3]], width: u32, reads: Region, u: f32, v: f32) -> [f32; 3] {
@@ -192,6 +282,16 @@ pub(super) fn execute(
     boundary: &[[f32; 3]],
     units: &Units,
 ) -> Result<Vec<u8>, Error> {
+    execute_with(plan, boundary, units, &Spatials::new())
+}
+
+/// [`execute`] of a plan that may hold a spatial step, whose layer's CPU units `spatials` holds.
+pub(super) fn execute_with(
+    plan: &GpuPlan,
+    boundary: &[[f32; 3]],
+    units: &Units,
+    spatials: &Spatials,
+) -> Result<Vec<u8>, Error> {
     let stage = plan.boundary.stage;
     assert_eq!(
         boundary.len(),
@@ -208,7 +308,12 @@ pub(super) fn execute(
             .content
             .iter()
             .fold(*texel, |value, step| operation(units, step, value, x, y));
-        if plan.geometry.clamps {
+    }
+    if let Some(step) = &plan.spatial {
+        spatial(spatials, step, stage, &mut texels)?;
+    }
+    if plan.geometry.clamps {
+        for texel in texels.iter_mut() {
             *texel = texel.map(|channel| channel.clamp(0.0, 1.0));
         }
     }

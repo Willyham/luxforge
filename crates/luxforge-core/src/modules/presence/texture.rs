@@ -24,6 +24,7 @@ use crate::{
     Error,
     colour::{luma, srgb},
     modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
+    render::gpu::GpuSpatialUnit,
 };
 
 /// Texture: the fine and coarse guided-filter radii in pixels at the reference long side.
@@ -31,9 +32,9 @@ const R_FINE_6000: f64 = 1.0;
 const R_COARSE_6000: f64 = 4.0;
 /// The guided filter's regularization in squared encoded units: `a = 0.5` at a window standard
 /// deviation of `sqrt(EPS_TEXTURE) = 0.05` encoded, about 13 of 255 codes.
-const EPS_TEXTURE: f32 = 2.5e-3;
+pub(super) const EPS_TEXTURE: f32 = 2.5e-3;
 /// The soft-clip limit on the encoded excursion, in encoded units.
-const LIMIT_TEXTURE: f32 = 0.10;
+pub(super) const LIMIT_TEXTURE: f32 = 0.10;
 /// The band is amplified to `1 + GAIN_POS` times its own amplitude at `+100` and removed at `-100`.
 const GAIN_POS: f64 = 3.0;
 const GAIN_NEG: f64 = 1.0;
@@ -92,6 +93,20 @@ impl Texture {
             r_fine: fine_radius(long_side),
             r_coarse: coarse_radius(long_side),
         }
+    }
+
+    /// The fine smoother's radius, the coarse one's and the band's gain, which the GPU
+    /// description writes as its words.
+    pub(super) fn fine(&self) -> i64 {
+        self.r_fine
+    }
+
+    pub(super) fn coarse(&self) -> i64 {
+        self.r_coarse
+    }
+
+    pub(super) fn gain(&self) -> f32 {
+        self.gain
     }
 }
 
@@ -178,6 +193,10 @@ impl SpatialUnit for Texture {
             }
         });
         Ok(())
+    }
+
+    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+        Some(super::gpu::texture(self))
     }
 
     fn is_finite(&self) -> bool {

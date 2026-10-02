@@ -23,6 +23,7 @@ use crate::{
     Error,
     colour::{luma, srgb},
     modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
+    render::gpu::GpuSpatialUnit,
 };
 
 /// The integer reduction factor per axis the base is computed on.
@@ -32,9 +33,9 @@ pub(super) const REDUCTION: i64 = 4;
 const R_CLARITY_6000: f64 = 96.0;
 /// The guided filter's regularization in squared encoded units: `a = 0.5` at a window standard
 /// deviation of `0.1` encoded, about 26 of 255 codes.
-const EPS_CLARITY: f32 = 1.0e-2;
+pub(super) const EPS_CLARITY: f32 = 1.0e-2;
 /// The soft-clip limit on the encoded excursion, in encoded units.
-const LIMIT_CLARITY: f32 = 0.15;
+pub(super) const LIMIT_CLARITY: f32 = 0.15;
 /// `+100` doubles the broad residual; `-100` removes three quarters of it. The negative gain is
 /// deliberately not 1: removing the residual entirely replaces the image with its own base, which
 /// is a blur rather than the soft rendering a negative Clarity is reached for.
@@ -78,6 +79,16 @@ impl Clarity {
             gain: gain(amount),
             r_red: reduced_radius(long_side),
         }
+    }
+
+    /// The base smoother's radius on the reduced grid and the residual's gain, which the GPU
+    /// description writes as its words.
+    pub(super) fn reduced_radius(&self) -> i64 {
+        self.r_red
+    }
+
+    pub(super) fn gain(&self) -> f32 {
+        self.gain
     }
 }
 
@@ -173,6 +184,10 @@ impl SpatialUnit for Clarity {
             }
         });
         Ok(())
+    }
+
+    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+        Some(super::gpu::clarity(self))
     }
 
     fn is_finite(&self) -> bool {
