@@ -695,6 +695,7 @@ pub(crate) fn region_cell(
         let registry = evaluation.registry().clone();
         let mut queue = PreviewQueue::default();
         let generation = queue.request(job);
+        // `None` when the worker declines the region and renders the whole exact frame instead.
         let cpu = luxforge_testbase::wait_for("the exact visible region", || {
             let result = queue.poll()?;
             if result.generation != generation {
@@ -702,16 +703,20 @@ pub(crate) fn region_cell(
             }
             match result.outcome {
                 PhaseOutcome::Region(region) if region.frame.stage == region.frame.full_stage => {
-                    Some(Ok(region.frame))
+                    Some(Ok(Some(region.frame)))
                 }
-                PhaseOutcome::Exact(exact) => Some(Err(exact.result.err().map_or(
-                    "no exact region before the exact frame".to_owned(),
-                    |error| error.to_string(),
-                ))),
+                PhaseOutcome::Exact(exact) => Some(
+                    exact
+                        .result
+                        .map(|_| None)
+                        .map_err(|error| error.to_string()),
+                ),
                 _ => None,
             }
         })?;
-        if cpu.full_rect != rect {
+        if let Some(cpu) = &cpu
+            && cpu.full_rect != rect
+        {
             return Ok(Cell::Gap(format!(
                 "the exact region is {:?}, not the view's {rect:?}",
                 cpu.full_rect
@@ -753,12 +758,27 @@ pub(crate) fn region_cell(
         } else {
             luxforge_core::BoundaryFormat::Half
         };
-        let frame = match luxforge_core::qualification::region_boundary(
+        let boundary = luxforge_core::qualification::region_boundary(
             &exact,
             boundary_layer,
             [rect.x0, rect.y0, rect.width, rect.height],
             format,
-        ) {
+        );
+        // A stack the worker renders whole at a percentage zoom: the GPU's region plan cannot hold
+        // the region either, and the drag is the CPU's.
+        let Some(cpu) = cpu else {
+            return Ok(Cell::Gap(match boundary {
+                Err(error) => format!(
+                    "region-declined: the worker renders this stack's whole exact frame at a \
+                     percentage zoom, and the region's boundary cannot be planned: {}",
+                    error.detail
+                ),
+                Ok(_) => "region-declined: the worker renders this stack's whole exact frame at \
+                          a percentage zoom"
+                    .to_owned(),
+            }));
+        };
+        let frame = match boundary {
             Ok(frame) => frame,
             // A boundary past the bound on one, which the desktop's tick finds before it asks.
             Err(error) if error.kind == luxforge_core::ErrorKind::ResourceLimit => {
