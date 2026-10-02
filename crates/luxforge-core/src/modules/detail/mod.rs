@@ -3,7 +3,14 @@
 
 mod denoise;
 mod filters;
+mod gpu;
+#[cfg(feature = "qualification")]
+pub mod qualification;
 mod sharpen;
+
+pub(crate) use gpu::DETAIL_PROGRAM;
+#[cfg(test)]
+pub(crate) use gpu::functions as gpu_functions;
 
 #[cfg(test)]
 mod oracle;
@@ -18,6 +25,8 @@ use std::sync::Arc;
 pub const DETAIL_EFFECT: &str = "luxforge.detail.adjust";
 const SHARPENING: &str = "sharpening";
 const RADIUS: &str = "radius";
+/// The Radius field's largest value: the largest full-resolution sigma sharpening's blur takes.
+const RADIUS_MAX: f64 = 3.0;
 const SHARPEN_DETAIL: &str = "sharpen-detail";
 const SHARPEN_MASKING: &str = "sharpen-masking";
 const LUMINANCE: &str = "luminance";
@@ -52,7 +61,7 @@ impl FieldPatch for Detail {
             .fields([
                 field(SHARPENING,"Amount","Sharpening",0.0,150.0,"capture-sharpening gain; zero is off"),
                 Field::slider(RADIUS,"Radius","Takes effect when Amount is above 0")
-                    .range(0.5,3.0).default(1.0).step(0.1).precision(1).unit("px").history("Sharpen radius"),
+                    .range(0.5,RADIUS_MAX).default(1.0).step(0.1).precision(1).unit("px").history("Sharpen radius"),
                 field(SHARPEN_DETAIL,"Detail","Sharpen detail",25.0,100.0,"Takes effect when Amount is above 0"),
                 field(SHARPEN_MASKING,"Masking","Sharpen masking",0.0,100.0,"Takes effect when Amount is above 0"),
                 field(LUMINANCE,"Luminance","Luminance noise",0.0,100.0,"lightness-noise suppression; zero is off"),
