@@ -5,9 +5,12 @@
 //! carries the one boundary request; once the boundary is held and the drag's program sequence
 //! compiled, its ticks are drawn on the GPU, each frame tagged with its tick's draft revision; its
 //! release commits, and the boundary and the slot are let go once the committed frame has settled.
-//! Then, in Mask mode, a linear gradient bound to a masked exposure is moved by its middle handle
-//! in two drags, the second drawn on the GPU with the coverage overlay following it, and a brush
-//! stroke is painted through the same mask, its later positions drawn on the GPU. Last, back in
+//! A Detail Amount drag follows the same course from the Detail layer's own input, its ticks
+//! Detail's spatial step; the photograph fits the window at its own size, so its Fit frame is the
+//! exact render and its release settles to exact pixels. Then, in Mask mode, a linear gradient
+//! bound to a masked exposure is moved by its middle handle in two drags, the second drawn on the
+//! GPU with the coverage overlay following it, and a brush stroke is painted through the same
+//! mask, its later positions drawn on the GPU. Last, back in
 //! the pointer mode, Presence is committed with Dehaze and Clarity, and a Texture drag, a Clarity
 //! drag and a Basic drag under Presence are each drawn on the GPU after their first tick: the two
 //! Presence drags read Dehaze's light from the store and run at most five of Presence's compute
@@ -16,7 +19,7 @@
 //!
 //! **Correlated readbacks.** Every frame drawn on the GPU is checked against the state the editor
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
-//! drew — and its pixels against the CPU's frame of the same settings: the drag's last value
+//! drew — and its pixels against the CPU's frame of the same settings: each drag's last value
 //! against the frame its release commits, and the moved gradient, under the coverage tint, against
 //! the frame its Apply commits, patch by patch.//!
 //! **The settle hand-off.** Each commit that replaces a GPU frame dissolves to it from that
@@ -31,7 +34,7 @@ use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
 };
-use luxforge_core::BASIC_EFFECT;
+use luxforge_core::{BASIC_EFFECT, DETAIL_EFFECT};
 use luxforge_evidence::{
     self as script, DragHandle, MaskStep, PaintStep, PaletteStep, Reference, SliderStep,
     WorkspaceStep,
@@ -59,13 +62,20 @@ const GAIN_PASSES: u64 = 5;
 const FIRST: f64 = 0.25;
 const DRAGGED: [f64; 2] = [0.5, 0.75];
 const MASKED: f64 = 1.0;
+const DETAIL: &str = "set-detail";
+const AMOUNT: &str = "sharpening";
+/// The Detail drag's values: its first tick, then its GPU ticks.
+const DETAIL_FIRST: f64 = 40.0;
+const DETAIL_DRAGGED: [f64; 2] = [70.0, 100.0];
+/// Patches across the white centre cross, where sharpening acts, beside the flat quadrants'.
+const EDGES: [[f64; 2]; 2] = [[0.5, 0.25], [0.25, 0.5]];
 /// How long the scenario leaves the editor alone for the boundary to arrive and the sequence to
 /// compile, and for a committed frame to settle. Generous: a 320 × 480 boundary renders in a few
 /// milliseconds and a sequence compiles in tens.
 const QUIET_MS: u64 = 1500;
-/// The same for a stack holding Presence, whose sequences compile in a few hundred milliseconds
-/// each on one compile thread: a committed stack's warm list is compiled first, then the drag's own
-/// sequence when its layer was not warmed.
+/// How long the scenario leaves the editor alone once Presence is committed: the committed stack's
+/// warm list, each Presence drag's shapes among it, compiles meanwhile with no frame drawn, a
+/// Presence sequence taking up to two seconds cold, so every drag after it starts warmed.
 const PRESENCE_QUIET_MS: u64 = 4000;
 
 /// The gradient as the sweep draws it, its middle at the centre, then where each drag leaves it.
@@ -212,7 +222,31 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             )
             .commits(1)
             .no_draft(),
-            // 6-10: Mask mode, a linear gradient swept and applied.
+            // 6-10: a Detail Amount drag. Its first tick takes the CPU path and asks for the
+            // boundary, the restoration layer's input; its later ticks are Detail's spatial step
+            // drawn on the GPU; its release commits; and once settled nothing is held.
+            Step::new(
+                "detail-first",
+                SliderStep::new(DETAIL, AMOUNT, [DETAIL_FIRST]),
+            )
+            .commits(0)
+            .draft(DETAIL, json!({ AMOUNT: DETAIL_FIRST })),
+            quiet("detail-held").draft(DETAIL, json!({ AMOUNT: DETAIL_FIRST })),
+            Step::new(
+                "detail-gpu",
+                SliderStep::new(DETAIL, AMOUNT, DETAIL_DRAGGED),
+            )
+            .commits(0)
+            .draft(DETAIL, json!({ AMOUNT: DETAIL_DRAGGED[1] })),
+            Step::new(
+                "detail-release",
+                SliderStep::new(DETAIL, AMOUNT, [DETAIL_DRAGGED[1]]).release(),
+            )
+            .commits(1)
+            .no_draft()
+            .payload(DETAIL_EFFECT, json!({ AMOUNT: DETAIL_DRAGGED[1] })),
+            quiet("detail-settled").no_draft(),
+            // Mask mode, a linear gradient swept and applied.
             Step::new(
                 "mask-mode",
                 script::Step::Workspace(WorkspaceStep::default().mode("mask")),
@@ -322,7 +356,7 @@ fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<St
     let slider = |value: f64| SliderStep::new(action, field, [value]);
     vec![
         Step::new(format!("{name}-first"), slider(values[0])).commits(0),
-        quiet_for(&format!("{name}-held"), PRESENCE_QUIET_MS),
+        quiet(&format!("{name}-held")),
         Step::new(format!("{name}-gpu-1"), slider(values[1])).commits(0),
         Step::new(format!("{name}-gpu-2"), slider(values[2])).commits(0),
         Step::new(format!("{name}-release"), slider(values[2]).release())
@@ -435,8 +469,13 @@ fn gpu_drawn(frame: &Frame) -> Result<Value> {
 /// Each patch's mean colour in `gpu` against the same patch of `cpu`, the CPU's frame of the same
 /// settings: within [`SAME_CODES`] on every channel.
 fn same_pixels(gpu: &Frame, cpu: &Frame) -> Result<Value> {
+    same_pixels_at(gpu, cpu, &PATCHES)
+}
+
+/// [`same_pixels`] at `patches`.
+fn same_pixels_at(gpu: &Frame, cpu: &Frame, patches: &[[f64; 2]]) -> Result<Value> {
     let mut readings = Vec::new();
-    for at in PATCHES {
+    for &at in patches {
         let (drawn, reference) = (gpu.rgb_at(at, PATCH_HALF)?, cpu.rgb_at(at, PATCH_HALF)?);
         let worst = (0..3)
             .map(|channel| (drawn[channel] - reference[channel]).abs())
@@ -558,6 +597,65 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ),
     )?;
 
+    // The Detail drag: its first tick a CPU frame asking for the boundary, the Detail layer's own
+    // input; its later ticks drawn on the GPU with no preview job, the pixels its release
+    // commits; and nothing held once settled.
+    let events = step_events(launch, "detail-first")?;
+    let (gpu_ticks, cpu_ticks, _) = ticks(events);
+    let asked = named(events, "gpu_preview_tick")
+        .iter()
+        .filter(|tick| tick["detail"]["boundary_requested"] == json!(true))
+        .count();
+    ensure(
+        gpu_ticks == 0 && cpu_ticks >= 1 && asked == 1,
+        format!(
+            "The Detail drag's first tick was {gpu_ticks} GPU and {cpu_ticks} CPU ticks, {asked} \
+             asking for the boundary"
+        ),
+    )?;
+    let held = launch.at("detail-held")?;
+    let summary = &held.state()["surface"]["gpu"]["gpu_preview"]["drag"];
+    ensure(
+        summary["boundary"]["layer"] == json!(0) && summary["boundary_requests"] == json!(1),
+        format!("The Detail drag holds no boundary at the Detail layer's input: {summary}"),
+    )?;
+    let detailed = launch.at("detail-gpu")?;
+    let drawn = gpu_drawn(detailed)?;
+    let (gpu_ticks, cpu_ticks, jobs) = ticks(step_events(launch, "detail-gpu")?);
+    ensure(
+        gpu_ticks >= 1 && cpu_ticks == 0 && jobs == 0,
+        format!(
+            "The Detail drag's later ticks were {gpu_ticks} on the GPU and {cpu_ticks} on the \
+             CPU, with {jobs} preview jobs"
+        ),
+    )?;
+    ensure(
+        detailed.state()["surface"]["gpu"]["gpu_preview"]["drag"]["boundary"]["layer"] == json!(0),
+        "The Detail drag's GPU frame was not drawn from the Detail layer's input",
+    )?;
+    let committed = launch.at("detail-release")?;
+    let patches: Vec<[f64; 2]> = PATCHES.iter().chain(&EDGES).copied().collect();
+    let compared = same_pixels_at(detailed, committed, &patches)?;
+    let after = launch.at("detail-settled")?;
+    let gpu = &after.state()["surface"]["gpu"];
+    ensure(
+        gpu["drawing_path"] == json!("cpu")
+            && gpu["gpu_preview_in_use_bytes"] == json!(0)
+            && gpu["gpu_preview"]["drag"].is_null(),
+        format!(
+            "After the Detail drag settled the GPU preview still holds something: path {}, {} \
+             bytes in use, drag {}",
+            gpu["drawing_path"], gpu["gpu_preview_in_use_bytes"], gpu["gpu_preview"]["drag"]
+        ),
+    )?;
+    checks.note(
+        detailed,
+        "a Detail drag drawn on the GPU from the Detail layer's input, against the CPU frame its \
+         release commits",
+        json!({"drawn": drawn, "gpu_ticks": gpu_ticks, "jobs": jobs,
+            "against_release": compared, "settled_in_use": gpu["gpu_preview_in_use_bytes"]}),
+    );
+
     // The gradient's second drag: drawn on the GPU, the overlay's coverage following it.
     let moved = launch.at("move-gpu")?;
     let drawn = gpu_drawn(moved)?;
@@ -617,6 +715,21 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         ("clarity", false, true),
         ("under", true, false),
     ] {
+        // Its sequence was warmed: no frame of the drag waits for it to compile.
+        for step in ["first", "held", "gpu-1", "gpu-2"].map(|step| format!("{name}-{step}")) {
+            let gpu = &launch.at(&step)?.state()["surface"]["gpu"];
+            let compiling = json!({"reason": "compiling"});
+            let ticked = named(step_events(launch, &step)?, "gpu_preview_tick")
+                .iter()
+                .any(|tick| tick["detail"]["reason"] == json!("compiling"));
+            ensure(
+                gpu["gpu_fallback"] != compiling && gpu["plan_fallback"] != compiling && !ticked,
+                format!(
+                    "{step} waited for its sequence to compile: fallback {}, plan fallback {}",
+                    gpu["gpu_fallback"], gpu["plan_fallback"]
+                ),
+            )?;
+        }
         let mut counted = Vec::new();
         let mut before = launch.at(&format!("{name}-held"))?;
         for tick in ["gpu-1", "gpu-2"] {
