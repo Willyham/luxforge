@@ -3489,7 +3489,7 @@ The Presence program ([GPU previews](../design/gpu-preview.md#spatial-programs))
 
 ### Scope
 
-- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `618d02eb`. One run each; the pixels are deterministic.
+- **Host and build.** Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal (`wgpu-hal` 27.0.4, Metal's default fast math). The `test` profile build of `luxforge-app` at `618d02eb`, and at `04066690` for the masked rows, which need the masked step; the unmasked rows are the same at both. One run each; the pixels are deterministic.
 - **The readback.** Every GPU figure is the photo surface's own spatial step: its generated pass modules and frame module, run headlessly by the surface's qualification readback ([qualifying a program](../design/gpu-preview.md#qualifying-a-program)).
 - **The CPU.** Per filter, the production filters of `modules/presence/filters.rs` over a whole frame (`luxforge_core::qualification`, test builds only). Per unit and on the corpus, the CPU frame of the same stack.
 
@@ -3514,19 +3514,19 @@ The run length of the box means' running sums does not change their precision me
 
 ### Per unit
 
-Every Presence combination at ±100 (each field alone, Texture and Clarity, all three) and one mixed case, over a synthetic photograph (a hazy sky over darker ground, a hard horizon, fine texture and noise) at 480 × 320 and 1536 × 1024 on the linear path, against the CPU frame of the same stack; Dehaze both with the light the CPU frame stored and with the one the GPU takes from the stage it holds. 32 cases. Worst of each statistic:
+Every Presence combination at ±100 (each field alone, Texture and Clarity, all three) and one mixed case, unmasked and masked by a feathered radial, over a synthetic photograph (a hazy sky over darker ground, a hard horizon, fine texture and noise) at 480 × 320 and 1536 × 1024 on the linear path, against the CPU frame of the same stack; Dehaze both with the light the CPU frame stored and with the one the GPU takes from the stage it holds. 64 cases, 32 masked. Worst of each statistic:
 
 | Measured | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Program output through the reference quantizer | 0.0007 | 0.009 | 0.00 | +0.0000 | 1.22 |
-| Codes the hardware encoder draws | 0.030 | 0.18 | 0.76 | +0.0013 | 1.71 |
+| Codes the hardware encoder draws | 0.030 | 0.18 | 0.76 | −0.0030 | 1.71 |
 | Byte path, 960 × 640, all three at +100 and −100, light stored | 0.093 | 0.69 | 0.76 | −0.0008 | 34.9 |
 
 No output is non-finite. The light taken on the GPU gives the same frame as the stored one at every size here. On the byte path the boundary holds each 8-bit code's value as a half float where the CPU reads it in `f32`, and Dehaze's recovery and Texture's gain amplify that rounding; the one large maximum is a near-black pixel ([below](#isolated-near-black-pixels)).
 
 ### The corpus at Fit
 
-`gpu_presence_corpus_at_fit`, the shared harness the colour programs were qualified with ([GPU colour programs at Fit](#gpu-colour-programs-at-fit)): the desktop's Fit job for the CPU frame, the same stack planned from the Presence layer over the same proxy source for the GPU frame, the RAW cells planned for the linear path. The light is taken on the GPU (the harness holds no store of the worker's), which over a whole Fit stage selects the CPU's blocks. Each pair judged by `cargo xtask preview-error --class spatial`: all 42 measured pairs exit 0. Bounds 1716 × 1508.
+`gpu_presence_corpus_at_fit`, the shared harness the colour programs were qualified with ([GPU colour programs at Fit](#gpu-colour-programs-at-fit)): the desktop's Fit job for the CPU frame, the same stack planned from the Presence layer over the same proxy source for the GPU frame, the RAW cells planned for the linear path. The light is taken on the GPU (the harness holds no store of the worker's), which over a whole Fit stage selects the CPU's blocks. Each pair judged by `cargo xtask preview-error --class spatial`: all 49 measured pairs pass. Bounds 1716 × 1508.
 
 | Recipe | Mean ΔE00 | Worst block | p99 | Signed ΔL\* | Max | Charged |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -3548,8 +3548,11 @@ No output is non-finite. The light taken on the GPU gives the same frame as the 
 | All three at −100, 24 MP / 60 MP JPEG | 0.002 / 0.003 | 0.06 / 0.09 | 0.00 / 0.00 | +0.000 / +0.001 | 0.77 / 0.81 | 80.2 / 73.9 MB |
 | All three at −100, Presence fixture (exact) | 0.001 | 0.02 | 0.00 | +0.001 | 0.26 | 61.4 MB |
 | All three at −100, Z6 / X100VI / Air 2S | 0.033 / 0.017 / 0.025 | 0.16 / 0.11 / 0.10 | 0.90 / 0.56 / 0.78 | −0.000 / +0.001 / +0.001 | 1.42 / 1.16 / 1.47 | 65.7 / 80.2 / 80.2 MB |
+| All three masked by a radial, 24 MP / 60 MP JPEG | 0.002 / 0.002 | 0.08 / 0.06 | 0.05 / 0.04 | +0.000 / +0.000 | 1.02 / 0.55 | 80.2 / 73.9 MB |
+| All three masked, Presence fixture (exact) | 0.005 | 0.49 | 0.26 | −0.001 | 1.31 | 61.4 MB |
+| All three masked, Z6 / X100VI / Air 2S | 0.085 / 0.057 / 0.086 | 0.33 / 0.34 / 0.31 | 1.07 / 0.91 / 1.02 | −0.004 / −0.003 / −0.005 | 4.95 / 2.26 / 2.73 | 65.7 / 80.2 / 80.2 MB |
 
-The Z6 and Air 2S rows are their `lens reset` cells: as the corpus states them their first open commits a lens profile, a warp the surface does not draw yet (`surface-geometry`), so those cells are gaps. The X100VI commits none, so its two cells are the same. The masked recipe was not measured: the harness then sent the mask by name, which the API refuses, and the surface had no coverage step for a spatial operation. The zone plate has no file.
+The Z6 and Air 2S rows are their `lens reset` cells: as the corpus states them their first open commits a lens profile, a warp the surface does not draw yet (`surface-geometry`), so those cells are gaps. The X100VI commits none, so its two cells are the same. The masked recipe's radial selects part of each frame: its masked CPU frame equals the unmasked one on 5 to 10% of the pixels, where coverage is whole, and the GPU's masked frame is within one code of the CPU's on the JPEGs and the X100VI, seven on the Air 2S's near-black pixels. The zone plate has no file.
 
 **Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, the figure its `gpu_preview_in_use_bytes` reports (a surface test holds the two equal): the boundary, the output in the photograph's size bucket and its uniform, the words and blocks buffers, and the planes. With all three fields on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 73.9 MB (70.5 MiB) of the 256 MiB budget, of which the planes are 43 MB: about 24 bytes a pixel, Texture's three full-resolution planes 20 of them. One slot is held at a time, so this is its peak; a replacement overlaps the slot it replaces until that retires. The 100% figure waits for the region boundary.
 
