@@ -320,10 +320,20 @@ impl Editor {
                 // output was drawn from, and the GPU-preview budget's own figures.
                 "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
                 "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
-                // Why the desktop hands the surface no plan whatever the gesture: this client's
-                // `gpu_preview` preference is off.
-                "plan_fallback":self.gpu_preview_allowed().err().map(|reason| json!({"reason":reason})),
+                // Why the desktop hands the surface no plan, or why the open gesture's newest
+                // tick took the CPU path: this client's `gpu_preview` preference is off, the
+                // plan's own reason, a boundary not held yet, the converter's reason or the
+                // surface's fallback.
+                "plan_fallback":self.gpu_plan_fallback().map(|reason| json!({"reason":reason})),
                 "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
+                // The draft revision of the plan whose output was drawn, and the boundary a plan
+                // last evaluated, drawn or held behind the CPU frame.
+                "drawn_gpu_revision":gpu.drawn_gpu_tag,
+                "gpu_ready_boundary":gpu.gpu_ready_boundary,
+                "gpu_preview_compiles":gpu.gpu_preview_compiles,
+                "gpu_preview_compiled":gpu.gpu_preview_compiled,
+                "gpu_preview_compile_max_us":gpu.gpu_preview_compile_max_us,
+                "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
                 "gpu_preview_done_us":gpu.gpu_preview_done_us,
                 // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
@@ -335,6 +345,9 @@ impl Editor {
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
                 "gpu_preview_passes":gpu.gpu_preview_passes,
                 "gpu_identity":self.evidence.as_ref().is_some_and(|evidence| evidence.gpu_identity.is_some()),
+                // The open gesture's GPU preview: its held boundary, the plan's revision, why the
+                // latest tick took the CPU path, and its tick counts; and the warm list's version.
+                "gpu_preview":self.gpu.summary(),
             },
             "views": self.log.loop_timing.get().views,
         })
@@ -535,8 +548,9 @@ fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
         GpuFallback::BufferLimit { bytes, limit } => {
             json!({"reason":fallback.as_str(),"bytes":bytes,"limit_bytes":limit})
         }
-        GpuFallback::NoAdapter | GpuFallback::DeviceLost | GpuFallback::PipelineFailed => {
-            json!({"reason":fallback.as_str()})
-        }
+        GpuFallback::NoAdapter
+        | GpuFallback::DeviceLost
+        | GpuFallback::PipelineFailed
+        | GpuFallback::Compiling => json!({"reason":fallback.as_str()}),
     }
 }

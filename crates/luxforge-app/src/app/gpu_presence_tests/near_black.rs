@@ -453,7 +453,7 @@ fn gpu_presence_near_black_variants() {
         "{} exists: use a new directory",
         output.display()
     );
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     std::fs::create_dir_all(&output).unwrap();
@@ -622,7 +622,7 @@ fn gpu_presence_near_black_pixels() {
     );
     let cell = std::env::var("LUXFORGE_NEAR_BLACK_CELL").expect("LUXFORGE_NEAR_BLACK_CELL");
     let (recipe_id, source_id) = cell.split_once('/').expect("<recipe>/<source>");
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     std::fs::create_dir_all(&output).unwrap();

@@ -55,7 +55,9 @@
 //! One render pipeline is kept per program sequence (each step's kind, entry and source), at most
 //! [`PIPELINE_CACHE`] of them, the least recently used evicted first; a sequence that failed is kept
 //! as failed, so it is not compiled again every frame. The words and the boundary's contents are not
-//! part of the key, so a tick never compiles.
+//! part of the key, so a tick never compiles. Pipelines compile on a thread of their own, never the
+//! UI thread ([`compile`](mod@compile)): a frame whose sequence is first seen or still compiling draws
+//! the CPU frame and names why, and the desktop warms the sequences a gesture is likely to need.
 //!
 //! Every GPU-preview texture and buffer is charged to one budget, [`GPU_PREVIEW_BUDGET`] by
 //! default, shared by every surface of the pipeline and reported beside the photo-texture figures:
@@ -76,7 +78,7 @@
 //! Shader compilation is checked without waiting: the assembled WGSL is validated with the `naga`
 //! that `wgpu` itself uses before a module is created, and pipeline creation runs inside error
 //! scopes whose answers wgpu's native backends give immediately; they are polled once and never
-//! awaited. A first sequence's pipeline is still compiled on the UI thread inside `prepare`.
+//! awaited. All of it runs on the compile thread.
 
 use super::{
     PhotoPipeline, Picture, SurfaceFigures, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE,
@@ -96,9 +98,6 @@ use wgpu::naga;
 /// output 32 MiB, so one replacement may overlap the slot it replaces.
 pub const GPU_PREVIEW_BUDGET: u64 = 256 * 1024 * 1024;
 
-/// How many compiled program sequences, failed ones included, a pipeline keeps.
-pub const PIPELINE_CACHE: usize = 8;
-
 /// The words before any step's: the texel map's origin and step.
 const MAP_WORDS: usize = 4;
 
@@ -115,9 +114,13 @@ const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
 /// The words the blocks are compared and written in, 1 KiB: a tick writes the chunks that changed.
 const BLOCK_CHUNK: usize = 256;
 
-/// The format the programs' output is written in and sampled from: the sRGB-typed format the
-/// surface's photograph textures have when the renderer gamma corrects.
-const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// The format the last pass writes the output's 8-bit codes through, which the shader computes as
+/// the CPU's quantizer does ([`tail`]).
+const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The format the draw samples the output through: the sRGB-typed format the surface's photograph
+/// textures have when the renderer gamma corrects, so the codes draw as the CPU frame's do.
+const SAMPLED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The WGSL every assembled GPU-preview shader starts with; see the [module documentation](self).
 /// A program's own WGSL, appended to this, must validate on its own.
@@ -199,6 +202,9 @@ pub enum GpuStep {
     /// ([`MaskedColour`]): its units are colour programs, its components coverage programs,
     /// `fn <entry>(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
     Masked(MaskedColour),
+    /// The geometry tail ([`GpuTail`]): the content steps before it write the boundary's window,
+    /// and it draws the output stage from them; the steps after it run at the output pixel.
+    Geometry(GpuTail),
     /// A spatial operation: its passes before the frame's pass, its applies in it, over the
     /// boundary's texels.
     Spatial(Box<GpuSpatial>),
@@ -220,6 +226,8 @@ impl GpuStep {
                 Box::new(std::iter::once((mask::Role::Colour, program)))
             }
             Self::Masked(masked) => Box::new(masked.programs()),
+            // The tail's mapping is the surface's own text, never a module's program.
+            Self::Geometry(_) => Box::new(std::iter::empty()),
             Self::Spatial(spatial) => Box::new(spatial.programs()),
         }
     }
@@ -230,6 +238,13 @@ impl GpuStep {
     fn signature(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
         let shape: Box<dyn Iterator<Item = (StepKind, &str, &str)> + '_> = match self {
             Self::Colour { .. } => Box::new(std::iter::empty()),
+            Self::Geometry(tail) => Box::new(std::iter::once((
+                StepKind::Geometry {
+                    quantize: tail.quantizes(),
+                },
+                tail.program().entry.as_ref(),
+                tail.program().source.as_ref(),
+            ))),
             Self::Masked(masked) => Box::new(std::iter::once((
                 StepKind::Masked {
                     units: masked.units.len(),
@@ -253,6 +268,7 @@ impl GpuStep {
         match self {
             Self::Colour { position, .. } => *position,
             Self::Masked(masked) => masked.position,
+            Self::Geometry(_) => PositionMap::IDENTITY,
             Self::Spatial(_) => PositionMap::IDENTITY,
         }
     }
@@ -262,6 +278,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.words.len(),
             Self::Masked(masked) => masked.word_count(),
+            Self::Geometry(tail) => tail.program().words.len(),
             Self::Spatial(spatial) => spatial.word_count(),
         }
     }
@@ -271,6 +288,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.block.len(),
             Self::Masked(masked) => masked.block_count(),
+            Self::Geometry(tail) => tail.program().block.len(),
             Self::Spatial(spatial) => spatial.block_count(),
         }
     }
@@ -291,18 +309,49 @@ enum StepKind {
     Plane(spatial::GpuPlane),
     Pass(spatial::PassKey),
     Apply(spatial::ApplyKey),
+    Geometry {
+        quantize: bool,
+    },
 }
 
-/// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
-/// top to bottom, every half float little-endian. The version decides whether it is uploaded
-/// again, as a [`Frame`](super::Frame)'s does: it changes whenever the texels do and never
-/// otherwise.
+/// How the held boundary's texels are stored: four little-endian half floats (`rgba16float`), as a
+/// JPEG's byte path holds them, or four little-endian `f32` (`rgba32float`), as a developed RAW's
+/// linear path does, where half rounding of a near-black value can flip the sign a spatial
+/// operation divides by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BoundaryFormat {
+    Half,
+    Float,
+}
+
+impl BoundaryFormat {
+    /// Bytes per texel.
+    pub const fn texel_bytes(self) -> usize {
+        match self {
+            Self::Half => 8,
+            Self::Float => 16,
+        }
+    }
+
+    /// The texture the boundary is uploaded to.
+    pub(super) fn texture(self) -> wgpu::TextureFormat {
+        match self {
+            Self::Half => wgpu::TextureFormat::Rgba16Float,
+            Self::Float => wgpu::TextureFormat::Rgba32Float,
+        }
+    }
+}
+
+/// The held input boundary: texels of scene-linear sRGB in `format`, rows top to bottom. The
+/// version decides whether it is uploaded again, as a [`Frame`](super::Frame)'s does: it changes
+/// whenever the texels do and never otherwise.
 #[derive(Clone)]
 pub struct GpuBoundary {
     texels: Arc<dyn AsRef<[u8]> + Send + Sync>,
     width: u32,
     height: u32,
     version: u64,
+    format: BoundaryFormat,
 }
 
 impl std::fmt::Debug for GpuBoundary {
@@ -312,60 +361,80 @@ impl std::fmt::Debug for GpuBoundary {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("version", &self.version)
+            .field("format", &self.format)
             .finish()
     }
 }
 
 impl GpuBoundary {
-    /// Bytes per texel: four half floats.
-    pub const TEXEL_BYTES: usize = 8;
-
-    /// A boundary of `width` × `height` texels held in `texels` as they are, or `None` when the
-    /// buffer does not hold exactly that many. Nothing is copied.
+    /// A boundary of `width` × `height` texels of `format` held in `texels` as they are, or `None`
+    /// when the buffer does not hold exactly that many. Nothing is copied.
     pub fn new<P: AsRef<[u8]> + Send + Sync + 'static>(
         texels: Arc<P>,
         width: u32,
         height: u32,
         version: u64,
+        format: BoundaryFormat,
     ) -> Option<Self> {
         let expected = (width as usize)
             .checked_mul(height as usize)?
-            .checked_mul(Self::TEXEL_BYTES)?;
+            .checked_mul(format.texel_bytes())?;
         (width > 0 && height > 0 && (*texels).as_ref().len() == expected).then(|| Self {
             texels,
             width,
             height,
             version,
+            format,
         })
     }
 
-    /// A boundary of `width` × `height` texels from linear RGBA values in row order, each rounded
-    /// to the nearest half float, or `None` when `pixels` does not yield exactly that many. This is
-    /// frame work: a caller runs it on a worker, never the UI thread.
+    /// A boundary of `width` × `height` texels of `format` from linear RGBA values in row order,
+    /// each rounded to the nearest half float or held as the `f32` it is, or `None` when `pixels`
+    /// does not yield exactly that many. This is frame work: a caller runs it on a worker, never
+    /// the UI thread.
     pub fn from_linear(
+        format: BoundaryFormat,
         width: u32,
         height: u32,
         version: u64,
         pixels: impl IntoIterator<Item = [f32; 4]>,
     ) -> Option<Self> {
         let count = (width as usize).checked_mul(height as usize)?;
+        let bytes = format.texel_bytes();
         // Zeroed, so its pages are faulted in by the pass that writes them.
-        let mut texels = vec![0u8; count.checked_mul(Self::TEXEL_BYTES)?];
+        let mut texels = vec![0u8; count.checked_mul(bytes)?];
         let mut written = 0;
         for pixel in pixels {
-            let texel =
-                texels.get_mut(written * Self::TEXEL_BYTES..(written + 1) * Self::TEXEL_BYTES)?;
-            for (bytes, value) in texel.chunks_exact_mut(2).zip(pixel) {
-                bytes.copy_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes());
+            let texel = texels.get_mut(written * bytes..(written + 1) * bytes)?;
+            match format {
+                BoundaryFormat::Half => {
+                    for (bytes, value) in texel.chunks_exact_mut(2).zip(pixel) {
+                        bytes.copy_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes());
+                    }
+                }
+                BoundaryFormat::Float => {
+                    for (bytes, value) in texel.chunks_exact_mut(4).zip(pixel) {
+                        bytes.copy_from_slice(&value.to_le_bytes());
+                    }
+                }
             }
             written += 1;
         }
         (written == count).then_some(())?;
-        Self::new(Arc::new(texels), width, height, version)
+        Self::new(Arc::new(texels), width, height, version, format)
     }
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    pub fn format(&self) -> BoundaryFormat {
+        self.format
+    }
+
+    /// The bytes the boundary's texels take, as uploaded.
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * self.format.texel_bytes() as u64
     }
 
     pub fn version(&self) -> u64 {
@@ -428,6 +497,9 @@ pub enum GpuFallback {
     /// The assembled shader or its pipeline failed: a program's WGSL did not validate, an entry
     /// name was refused, or wgpu refused the pipeline.
     PipelineFailed,
+    /// The plan's program sequence is first seen, or still compiling on the compile thread: the
+    /// UI thread never compiles one.
+    Compiling,
     /// Allocating what the plan needs would pass the GPU-preview budget.
     BudgetExceeded {
         requested: u64,
@@ -446,6 +518,7 @@ impl GpuFallback {
             Self::NoAdapter => "no-adapter",
             Self::DeviceLost => "device-lost",
             Self::PipelineFailed => "pipeline-failed",
+            Self::Compiling => "compiling",
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
@@ -460,7 +533,12 @@ pub(super) struct Figures {
     in_use: AtomicU64,
     peak: AtomicU64,
     passes: AtomicU64,
+    /// Sequences handed to the compile thread.
     compiles: AtomicU64,
+    /// Compiles finished, and the longest and the last one's wall-clock time, in microseconds.
+    compiled: AtomicU64,
+    compile_max_us: AtomicU64,
+    compile_last_us: AtomicU64,
     /// Words written to the blocks buffers, for the tests of what a tick writes.
     block_words: AtomicU64,
 }
@@ -480,6 +558,26 @@ impl Figures {
 
     pub(super) fn passes(&self) -> u64 {
         self.passes.load(Ordering::Acquire)
+    }
+
+    pub(super) fn compiles(&self) -> u64 {
+        self.compiles.load(Ordering::Acquire)
+    }
+
+    pub(super) fn compile_us(&self) -> (u64, u64, u64) {
+        (
+            self.compiled.load(Ordering::Acquire),
+            self.compile_max_us.load(Ordering::Acquire),
+            self.compile_last_us.load(Ordering::Acquire),
+        )
+    }
+
+    /// One compile finished after `elapsed`.
+    fn compiled(&self, elapsed: std::time::Duration) {
+        let micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        self.compiled.fetch_add(1, Ordering::AcqRel);
+        self.compile_max_us.fetch_max(micros, Ordering::AcqRel);
+        self.compile_last_us.store(micros, Ordering::Release);
     }
 
     /// Charge `bytes` if they fit the budget beside everything charged already.
@@ -550,8 +648,12 @@ pub(super) fn finish_retirement(figures: &SurfaceFigures, retired: RetiredPrevie
 /// One surface's GPU-preview slot: the boundary, the output the programs write and the photograph's
 /// draw samples, and the words and blocks the programs read.
 pub(super) struct GpuSlot {
-    size: (u32, u32),
+    /// The boundary's size, the output's and the intermediate's format, which a plan's slot is
+    /// allocated for.
+    shape: Shape,
     boundary: wgpu::Texture,
+    /// A geometry tail's intermediate: the content pass's result, which the tail reads.
+    intermediate: Option<Intermediate>,
     boundary_version: Option<u64>,
     output: Picture,
     target: wgpu::TextureView,
@@ -588,6 +690,96 @@ pub(super) struct SpatialSlot {
     dispatched: u64,
 }
 
+/// What a slot is allocated for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shape {
+    boundary: (u32, u32),
+    /// How the boundary's texels are stored, which its texture's format follows.
+    format: BoundaryFormat,
+    output: (u32, u32),
+    /// The tail's intermediate format, when the plan has a tail.
+    intermediate: Option<wgpu::TextureFormat>,
+}
+
+impl Shape {
+    /// The slot `plan` draws into: its boundary's size, and its tail's output and intermediate.
+    fn of(plan: &GpuPlan) -> Self {
+        let boundary = plan.boundary.size();
+        let tail = plan.steps.iter().find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
+        Self {
+            boundary,
+            format: plan.boundary.format(),
+            output: tail.map_or(boundary, GpuTail::output),
+            intermediate: tail.map(GpuTail::intermediate),
+        }
+    }
+
+    /// The output's texture: the photograph's own size bucket on a device whose largest texture
+    /// is `limit`, so the draw samples it over the same extent, and with the same filter weights,
+    /// as the CPU frame it stands in for.
+    fn capacity(&self, limit: u32) -> (u32, u32) {
+        super::full_capacity(self.output, limit)
+    }
+
+    /// The boundary, a tail's intermediate, the output and its placement uniform. The boundary is
+    /// only loaded, never sampled, so it is exactly its size, and so is the intermediate.
+    fn texture_bytes(&self, limit: u32) -> u64 {
+        let texels = u64::from(self.boundary.0) * u64::from(self.boundary.1);
+        let capacity = self.capacity(limit);
+        let intermediate = self.intermediate.map_or(0, |format| {
+            texels * u64::from(format.block_copy_size(None).unwrap_or(8))
+        });
+        texels * self.format.texel_bytes() as u64
+            + intermediate
+            + u64::from(capacity.0) * u64::from(capacity.1) * 4
+            + UNIFORM_SIZE as u64
+    }
+}
+
+/// A geometry tail's intermediate texture, the boundary's size, with the view the content pass
+/// writes and the bindings the tail pass reads it through.
+struct Intermediate {
+    texture: wgpu::Texture,
+    target: wgpu::TextureView,
+    bindings: wgpu::BindGroup,
+}
+
+/// One render pass of `pipeline` into `target` over a viewport of `size`, binding the programs'
+/// `bindings` and, for a spatial plan's content pass, its applies' planes.
+fn encode_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    pipeline: &wgpu::RenderPipeline,
+    (bindings, planes): (&wgpu::BindGroup, Option<&wgpu::BindGroup>),
+    size: (f32, f32),
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("luxforge.gpu_preview.pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_viewport(0.0, 0.0, size.0, size.1, 0.0, 1.0);
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bindings, &[]);
+    if let Some(planes) = planes {
+        pass.set_bind_group(1, planes, &[]);
+    }
+    pass.draw(0..3, 0..1);
+}
+
 impl GpuSlot {
     fn bytes(&self) -> u64 {
         self.texture_bytes
@@ -613,27 +805,14 @@ impl GpuSlot {
     }
 }
 
-/// One compiled — or failed — program sequence.
-struct Cached {
-    signature: Vec<(StepKind, String, String)>,
-    pipeline: Result<Compiled, Arc<str>>,
-    id: u64,
-    used: u64,
-}
-
-impl Cached {
-    fn matches(&self, steps: &[GpuStep]) -> bool {
-        self.signature
-            .iter()
-            .map(|(kind, entry, source)| (*kind, entry.as_str(), source.as_str()))
-            .eq(steps.iter().flat_map(GpuStep::signature))
-    }
-}
-
-/// A compiled sequence: the frame's render pipeline and every spatial step's passes.
+/// A compiled sequence: the content steps' pass, a geometry tail's pass after it, and every spatial
+/// step's compute passes before them.
 #[derive(Clone)]
 struct Compiled {
+    /// The content steps' pass: into the output, or into a tail's intermediate.
     render: wgpu::RenderPipeline,
+    /// The tail's pass, from the intermediate into the output.
+    tail: Option<wgpu::RenderPipeline>,
     spatial: spatial::CompiledSpatial,
 }
 
@@ -694,10 +873,13 @@ impl Support {
 /// The stage's state for one pipeline: whether the device can run it, its lost flag, its compiled
 /// sequences and the tick's scratch words.
 pub(super) struct GpuStage {
-    support: Option<Support>,
+    /// Shared with the compile thread, which compiles through it.
+    support: Option<Arc<Support>>,
     lost: Arc<AtomicBool>,
-    cache: Vec<Cached>,
-    clock: u64,
+    /// The compiled sequences and the thread that compiles them ([`compile`]).
+    pipelines: compile::Pipelines,
+    /// The version of the warm list last handed to the compile thread.
+    warmed: Option<u64>,
     words: Vec<u32>,
     blocks: Vec<u32>,
 }
@@ -728,69 +910,40 @@ impl GpuStage {
         let lost = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&lost);
         device.set_device_lost_callback(move |_reason, _message| device_lost(&signal));
-        let support = supported(&device.limits(), format).then(|| Support::new(device));
+        let support = supported(&device.limits(), format).then(|| Arc::new(Support::new(device)));
         Self {
             support,
             lost,
-            cache: Vec::new(),
-            clock: 0,
+            pipelines: compile::Pipelines::default(),
+            warmed: None,
             words: Vec::new(),
             blocks: Vec::new(),
         }
     }
 
-    /// The cached pipeline for `steps`, compiled on first use. A failed sequence stays failed.
+    /// The ready pipeline for `steps`, or why the frame draws the CPU's: never compiled here, on
+    /// the UI thread. A first-seen sequence goes to the compile thread and answers
+    /// [`GpuFallback::Compiling`] until it is ready; a failed one stays failed.
     fn pipeline(
         &mut self,
         device: &wgpu::Device,
         steps: &[GpuStep],
         figures: &Figures,
     ) -> Result<(Compiled, u64), GpuFallback> {
-        self.clock += 1;
-        let clock = self.clock;
-        if let Some(cached) = self.cache.iter_mut().find(|cached| cached.matches(steps)) {
-            cached.used = clock;
-            return match &cached.pipeline {
-                Ok(pipeline) => Ok((pipeline.clone(), cached.id)),
-                Err(_) => Err(GpuFallback::PipelineFailed),
-            };
-        }
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
-        figures.compiles.fetch_add(1, Ordering::Relaxed);
-        let pipeline = compile(device, support, steps, OUTPUT_FORMAT).map_err(Arc::<str>::from);
-        if self.cache.len() >= PIPELINE_CACHE
-            && let Some(oldest) = self
-                .cache
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, cached)| cached.used)
-                .map(|(index, _)| index)
-        {
-            self.cache.swap_remove(oldest);
+        self.pipelines.get(device, support, steps, figures)
+    }
+
+    /// Hand `sequences` the stage does not hold yet to the compile thread.
+    fn warm(&mut self, device: &wgpu::Device, sequences: &[Vec<GpuStep>], figures: &Figures) {
+        if let Some(support) = &self.support {
+            self.pipelines.warm(device, support, sequences, figures);
         }
-        let answer = match &pipeline {
-            Ok(pipeline) => Ok((pipeline.clone(), clock)),
-            Err(_) => Err(GpuFallback::PipelineFailed),
-        };
-        self.cache.push(Cached {
-            signature: steps
-                .iter()
-                .flat_map(GpuStep::signature)
-                .map(|(kind, entry, source)| (kind, entry.to_owned(), source.to_owned()))
-                .collect(),
-            pipeline,
-            id: clock,
-            used: clock,
-        });
-        answer
     }
 
     #[cfg(test)]
     fn failure(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
-        self.cache
-            .iter()
-            .find(|cached| cached.matches(steps))
-            .and_then(|cached| cached.pipeline.as_ref().err().cloned())
+        self.pipelines.failure(steps)
     }
 }
 
@@ -838,17 +991,95 @@ fn entry_name(name: &str) -> Result<(), String> {
         .iter()
         .any(|surface| surface.starts_with(name))
         || name.starts_with(mask::GENERATED)
+        || tail::GENERATED
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
     {
         return Err(format!("{name:?} is one of the surface's own names"));
     }
     Ok(())
 }
 
-/// The whole shader for `steps`: the prelude, each program once, then the entry points.
+/// The whole shader for `steps` with no geometry tail: the prelude, each program once, then the
+/// entry points, writing the output's codes. The first pass's shader of a plan with a tail.
+#[cfg(test)]
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
+    Ok(assemble_passes(steps, true)?.swap_remove(0))
+}
+
+/// What a pass's fragment stage starts from.
+enum Head<'a> {
+    /// The boundary texel and its stage pixel.
+    Boundary,
+    /// The geometry tail, step `index`: the output pixel and the tail's blend there.
+    Tail(&'a GpuTail, usize),
+}
+
+/// What a pass's fragment stage writes.
+enum End {
+    /// The linear value: an `rgba16float` intermediate, or a qualification's `rgba32float` target.
+    Linear,
+    /// The CPU quantizer's 8-bit codes, through a Unorm view.
+    Codes,
+}
+
+/// The shaders of `steps`, one per pass: the content steps, then, when a geometry tail splits them,
+/// the tail and the steps after it. The last pass writes the output's codes when `encode`, and its
+/// linear values otherwise; a quantizing tail's content pass writes codes.
+fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, String> {
+    let last = if encode { End::Codes } else { End::Linear };
+    let tails: Vec<usize> = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| matches!(step, GpuStep::Geometry(_)).then_some(index))
+        .collect();
+    match tails.as_slice() {
+        [] => Ok(vec![pass_source(
+            steps,
+            0..steps.len(),
+            Head::Boundary,
+            last,
+        )?]),
+        [index] => {
+            let GpuStep::Geometry(tail) = &steps[*index] else {
+                unreachable!("the step found")
+            };
+            // A spatial step reads the boundary's own texels, which only the content pass holds.
+            if steps[index + 1..]
+                .iter()
+                .any(|step| matches!(step, GpuStep::Spatial(_)))
+            {
+                return Err("a spatial step runs before the geometry tail".into());
+            }
+            let content = if tail.quantizes() {
+                End::Codes
+            } else {
+                End::Linear
+            };
+            Ok(vec![
+                pass_source(steps, 0..*index, Head::Boundary, content)?,
+                pass_source(
+                    steps,
+                    index + 1..steps.len(),
+                    Head::Tail(tail, *index),
+                    last,
+                )?,
+            ])
+        }
+        _ => Err("a plan has one geometry tail at most".into()),
+    }
+}
+
+/// One pass's shader: the steps of `range` after `head`, writing `end`.
+fn pass_source(
+    steps: &[GpuStep],
+    range: std::ops::Range<usize>,
+    head: Head<'_>,
+    end: End,
+) -> Result<String, String> {
     let mut source = String::from(PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for (_, program) in steps.iter().flat_map(GpuStep::programs) {
+    for (_, program) in steps[range.clone()].iter().flat_map(GpuStep::programs) {
         entry_name(&program.entry)?;
         match included.iter().find(|seen| seen.entry == program.entry) {
             Some(seen) if seen.source != program.source => {
@@ -869,18 +1100,26 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
         }
     }
     // Each masked step's coverage, composed by a function of its own.
-    let (functions, masked) = spatial::masks(steps, steps.len());
+    let (functions, masked) = spatial::masks(steps, range.clone());
     source.push_str(&functions);
+    let quantizing = matches!(head, Head::Tail(tail, _) if tail.quantizes());
+    if quantizing || matches!(end, End::Codes) {
+        source.push_str(tail::encoding()?);
+    }
     source.push_str(BOUNDARY_BINDING);
-    let spatial = steps.iter().any(|step| matches!(step, GpuStep::Spatial(_)));
+    // A spatial step's applies read its planes in the content pass, the one it precedes.
+    let spatial = steps[range.clone()]
+        .iter()
+        .any(|step| matches!(step, GpuStep::Spatial(_)));
     let (declarations, slots) = if spatial {
         spatial::fragment_declarations(steps)
     } else {
         (String::new(), spatial::Slots::default())
     };
     source.push_str(&declarations);
-    source.push_str(
-        "
+    match head {
+        Head::Boundary => source.push_str(
+            "
 @fragment
 fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The border column and row past the boundary repeat its edge texels.
@@ -888,11 +1127,20 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     var rgb = textureLoad(lf_boundary, texel, 0).rgb;
     let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
 ",
-    );
-    for index in 0..steps.len() {
+        ),
+        Head::Tail(tail, index) => {
+            source.push_str(&tail.program().source);
+            source.push_str(&tail::sampling(tail.quantizes()));
+            source.push_str(&tail::fragment(tail, MAP_WORDS + STEP_WORDS * index));
+        }
+    }
+    for index in range {
         source.push_str(&spatial::statements(steps, index, &slots, &masked));
     }
-    source.push_str("    return vec4<f32>(rgb, 1.0);\n}\n");
+    source.push_str(match end {
+        End::Linear => "    return vec4<f32>(rgb, 1.0);\n}\n",
+        End::Codes => "    return vec4<f32>(lf_output_encode(rgb), 1.0);\n}\n",
+    });
     Ok(source)
 }
 
@@ -1041,8 +1289,10 @@ fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
     }
 }
 
-/// Assemble, validate and compile `steps` into a pipeline that writes `format`, naming why it
-/// failed. The stage writes [`OUTPUT_FORMAT`]; only qualification asks for another.
+/// Assemble, validate and compile `steps` into one pipeline per pass, the last writing `format`,
+/// naming why it failed. The stage writes [`OUTPUT_FORMAT`], whose codes the last pass computes;
+/// only qualification asks for a float format, which takes the linear values. A plan with a
+/// geometry tail has a second pass, whose first writes the tail's intermediate format.
 fn compile(
     device: &wgpu::Device,
     support: &Support,
@@ -1052,12 +1302,22 @@ fn compile(
     for step in steps {
         validate_step(step)?;
     }
-    let source = assemble(steps)?;
-    validate(&source)?;
+    let encode = !matches!(
+        format,
+        wgpu::TextureFormat::Rgba32Float | wgpu::TextureFormat::Rgba16Float
+    );
+    let sources = assemble_passes(steps, encode)?;
+    for source in &sources {
+        validate(source)?;
+    }
+    let intermediate = steps.iter().find_map(|step| match step {
+        GpuStep::Geometry(tail) => Some(tail.intermediate()),
+        _ => None,
+    });
     device.push_error_scope(wgpu::ErrorFilter::Internal);
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let spatial = spatial::compile_passes(device, support, steps);
-    // A spatial plan's frame binds its applies' planes as a second group.
+    // A spatial plan's content pass binds its applies' planes as a second group.
     let planes_layout;
     let spatial_layout;
     let layout = match spatial
@@ -1076,11 +1336,41 @@ fn compile(
         }
         None => &support.pipeline_layout,
     };
+    let mut sources = sources.into_iter();
+    let content = sources.next().ok_or("a plan has a pass")?;
+    let render = render_pipeline(device, layout, content, intermediate.unwrap_or(format));
+    let tail = sources
+        .next()
+        .map(|source| render_pipeline(device, &support.pipeline_layout, source, format));
+    let validation = answered(device.pop_error_scope());
+    let internal = answered(device.pop_error_scope());
+    let (spatial, made) = spatial?;
+    match (validation, internal) {
+        (Some(None), Some(None)) => {
+            support.passes.keep(made);
+            Ok(Compiled {
+                render,
+                tail,
+                spatial,
+            })
+        }
+        (Some(Some(error)), _) | (_, Some(Some(error))) => Err(error.to_string()),
+        _ => Err("the pipeline's error scopes were not answered without waiting".into()),
+    }
+}
+
+/// One pass's render pipeline over `layout`, writing `format`, inside the caller's error scopes.
+fn render_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    source: String,
+    format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("luxforge.gpu_preview.shader"),
         source: wgpu::ShaderSource::Wgsl(Cow::Owned(source)),
     });
-    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("luxforge.gpu_preview.pipeline"),
         layout: Some(layout),
         vertex: wgpu::VertexState {
@@ -1104,21 +1394,7 @@ fn compile(
         multisample: wgpu::MultisampleState::default(),
         multiview: None,
         cache: None,
-    });
-    let validation = answered(device.pop_error_scope());
-    let internal = answered(device.pop_error_scope());
-    let (spatial, made) = spatial?;
-    match (validation, internal) {
-        (Some(None), Some(None)) => {
-            support.passes.keep(made);
-            Ok(Compiled {
-                render: pipeline,
-                spatial,
-            })
-        }
-        (Some(Some(error)), _) | (_, Some(Some(error))) => Err(error.to_string()),
-        _ => Err("the pipeline's error scopes were not answered without waiting".into()),
-    }
+    })
 }
 
 /// The tick's words — the texel map, each step's base indices and position map, then every
@@ -1143,6 +1419,10 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
                 blocks.extend_from_slice(&program.block);
             }
             GpuStep::Masked(masked) => masked.pack(words, blocks),
+            GpuStep::Geometry(tail) => {
+                words.extend_from_slice(&tail.program().words);
+                blocks.extend_from_slice(&tail.program().block);
+            }
             GpuStep::Spatial(spatial) => spatial.pack(words, blocks),
         }
     }
@@ -1202,6 +1482,17 @@ impl PhotoPipeline {
         surface.gpu_outcome = Some(outcome);
     }
 
+    /// Hand `warm`'s sequences to the compile thread, once per version.
+    pub(super) fn warm_gpu(&mut self, device: &wgpu::Device, warm: Option<&GpuWarm>) {
+        if let Some(warm) = warm
+            && self.gpu.warmed != Some(warm.version())
+        {
+            self.gpu.warmed = Some(warm.version());
+            self.gpu
+                .warm(device, warm.sequences(), &self.figures.preview);
+        }
+    }
+
     /// Retire `surface`'s GPU-preview slot, if it holds one.
     pub(super) fn release_gpu(&self, surface: &mut SurfaceSlots) {
         if let Some(slot) = surface.gpu.take() {
@@ -1231,6 +1522,19 @@ impl PhotoPipeline {
                 limit,
             });
         }
+        let tail = plan.steps.iter().find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
+        if let Some((width, height)) = tail.map(GpuTail::output)
+            && (width > limit || height > limit || width == 0 || height == 0)
+        {
+            return Err(GpuFallback::TextureLimit {
+                width,
+                height,
+                limit,
+            });
+        }
         if plan
             .steps
             .iter()
@@ -1250,11 +1554,13 @@ impl PhotoPipeline {
         let mut words = std::mem::take(&mut self.gpu.words);
         let mut blocks = std::mem::take(&mut self.gpu.blocks);
         pack(plan, &mut words, &mut blocks);
+        let shape = Shape::of(plan);
         let result = self.run(
             surface,
             device,
             queue,
             plan,
+            shape,
             (&pipeline, pipeline_id),
             &words,
             &blocks,
@@ -1272,21 +1578,21 @@ impl PhotoPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &GpuPlan,
+        shape: Shape,
         (pipeline, pipeline_id): (&Compiled, u64),
         words: &[u32],
         blocks: &[u32],
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
-        let size = plan.boundary.size();
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
-        if surface.gpu.as_ref().is_some_and(|slot| slot.size != size)
+        if surface.gpu.as_ref().is_some_and(|slot| slot.shape != shape)
             && let Some(slot) = surface.gpu.take()
         {
             self.retire_slot(slot);
         }
         if surface.gpu.is_none() {
-            surface.gpu = Some(self.allocate(device, size, word_bytes, block_bytes)?);
+            surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes)?);
         }
         let slot = surface.gpu.as_mut().expect("an admitted slot");
         let mut rebind = false;
@@ -1315,6 +1621,14 @@ impl PhotoPipeline {
                 &slot.words.buffer,
                 &slot.blocks.buffer,
             );
+            if let Some(intermediate) = &mut slot.intermediate {
+                intermediate.bindings = self.program_bindings(
+                    device,
+                    &intermediate.texture,
+                    &slot.words.buffer,
+                    &slot.blocks.buffer,
+                );
+            }
             slot.written_words.clear();
             slot.written_blocks.clear();
             slot.evaluated = None;
@@ -1369,6 +1683,8 @@ impl PhotoPipeline {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_preview.encoder"),
             });
+            // A spatial step's compute passes fill its planes first, from the boundary: only
+            // the passes this tick changes.
             if let Some(spatial) = slot.spatial.as_mut()
                 && let Some((_, groups)) = spatial.groups.as_ref()
             {
@@ -1383,41 +1699,44 @@ impl PhotoPipeline {
                 .as_ref()
                 .and_then(|spatial| spatial.groups.as_ref())
                 .map(|(_, groups)| groups);
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("luxforge.gpu_preview.pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &slot.target,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                // The frame and, where the bucket has room, one more column and row: the edge
-                // texels again, which the linear filter reads across the frame's edge as it reads
-                // the photograph's.
-                let (width, height) = slot.size;
-                let (columns, rows) = slot.output.capacity;
-                pass.set_viewport(
-                    0.0,
-                    0.0,
-                    (width + 1).min(columns) as f32,
-                    (height + 1).min(rows) as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_pipeline(&pipeline.render);
-                pass.set_bind_group(0, &slot.bindings, &[]);
-                if let Some(fragment) = groups.and_then(|groups| groups.fragment.as_ref()) {
-                    pass.set_bind_group(1, fragment, &[]);
+            let planes = groups.and_then(|groups| groups.fragment.as_ref());
+            // The frame and, where the bucket has room, one more column and row: the edge
+            // texels again, which the linear filter reads across the frame's edge as it reads the
+            // photograph's.
+            let (width, height) = shape.output;
+            let (columns, rows) = slot.output.capacity;
+            let frame = (
+                (width + 1).min(columns) as f32,
+                (height + 1).min(rows) as f32,
+            );
+            match (&slot.intermediate, &pipeline.tail) {
+                // A plan with a geometry tail runs its content steps into the intermediate first,
+                // over exactly the boundary's texels, and its tail reads them.
+                (Some(intermediate), Some(tail)) => {
+                    let (width, height) = shape.boundary;
+                    encode_pass(
+                        &mut encoder,
+                        &intermediate.target,
+                        &pipeline.render,
+                        (&slot.bindings, planes),
+                        (width as f32, height as f32),
+                    );
+                    encode_pass(
+                        &mut encoder,
+                        &slot.target,
+                        tail,
+                        (&intermediate.bindings, None),
+                        frame,
+                    );
                 }
-                pass.draw(0..3, 0..1);
+                (None, None) => encode_pass(
+                    &mut encoder,
+                    &slot.target,
+                    &pipeline.render,
+                    (&slot.bindings, planes),
+                    frame,
+                ),
+                _ => return Err(GpuFallback::PipelineFailed),
             }
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
             // the queue's writes above are flushed with it. Nothing waits for it.
@@ -1432,24 +1751,22 @@ impl PhotoPipeline {
         Ok(plan.boundary.version)
     }
 
-    /// A slot for a boundary of `size`, charged before anything is created.
+    /// A slot of `shape`, charged before anything is created.
     fn allocate(
         &self,
         device: &wgpu::Device,
-        (width, height): (u32, u32),
+        shape: Shape,
         word_bytes: u64,
         block_bytes: u64,
     ) -> Result<GpuSlot, GpuFallback> {
         let limit = device.limits().max_texture_dimension_2d;
-        // The output is reserved in the photograph's own size bucket, so the draw samples it over
-        // the same texture extent, and with the same filter weights, as the CPU frame it stands
-        // in for; the pass writes its edge column and row into the border as an upload copies
-        // them. The boundary is only loaded, never sampled, so it is exactly its size.
-        let capacity = super::full_capacity((width, height), limit);
-        let texels = u64::from(width) * u64::from(height);
+        let (width, height) = shape.boundary;
+        let (output_width, output_height) = shape.output;
+        // The output is reserved in the photograph's own size bucket; the last pass writes its
+        // edge column and row into the border as an upload copies them.
+        let capacity = shape.capacity(limit);
         let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
-        let texture_bytes =
-            texels * GpuBoundary::TEXEL_BYTES as u64 + output_bytes + UNIFORM_SIZE as u64;
+        let texture_bytes = shape.texture_bytes(limit);
         let (words, blocks) = (
             buffer_capacity(device, word_bytes)?,
             buffer_capacity(device, block_bytes)?,
@@ -1457,35 +1774,44 @@ impl PhotoPipeline {
         self.figures
             .preview
             .charge(texture_bytes + words + blocks)?;
-        let texture = |label, (width, height), format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
+        let texture =
+            |label, (width, height), format, usage, view_formats: &[wgpu::TextureFormat]| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats,
+                })
+            };
         let boundary = texture(
             "luxforge.gpu_preview.boundary",
             (width, height),
-            wgpu::TextureFormat::Rgba16Float,
+            shape.format.texture(),
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            &[],
         );
+        // Written through a Unorm view as the codes the last pass computes, and sampled through an
+        // sRGB-typed view, as the photograph's textures are.
         let output = texture(
             "luxforge.gpu_preview.output",
             capacity,
             OUTPUT_FORMAT,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            &[SAMPLED_FORMAT],
         );
         let target = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampled = output.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(SAMPLED_FORMAT),
+            ..wgpu::TextureViewDescriptor::default()
+        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.gpu_preview.uniform"),
             size: UNIFORM_SIZE as u64,
@@ -1503,7 +1829,7 @@ impl PhotoPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&target),
+                    resource: wgpu::BindingResource::TextureView(&sampled),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1512,8 +1838,8 @@ impl PhotoPipeline {
             ],
         });
         let layout = TileLayout {
-            content: [0, 0, width, height],
-            texels: [0, 0, width, height],
+            content: [0, 0, output_width, output_height],
+            texels: [0, 0, output_width, output_height],
         };
         let picture = Picture {
             tiles: vec![Tile {
@@ -1523,8 +1849,8 @@ impl PhotoPipeline {
                 uniform,
                 bindings: photo_bindings,
             }],
-            width,
-            height,
+            width: output_width,
+            height: output_height,
             capacity,
             grid: (1, 1),
             limit,
@@ -1547,9 +1873,26 @@ impl PhotoPipeline {
             bytes: blocks,
         };
         let bindings = self.program_bindings(device, &boundary, &words.buffer, &blocks.buffer);
+        let intermediate = shape.intermediate.map(|format| {
+            let texture = texture(
+                "luxforge.gpu_preview.intermediate",
+                (width, height),
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                &[],
+            );
+            let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bindings = self.program_bindings(device, &texture, &words.buffer, &blocks.buffer);
+            Intermediate {
+                texture,
+                target,
+                bindings,
+            }
+        });
         Ok(GpuSlot {
-            size: (width, height),
+            shape,
             boundary,
+            intermediate,
             boundary_version: None,
             output: picture,
             target,
@@ -1580,7 +1923,7 @@ impl PhotoPipeline {
             plan.texels.origin[0].max(0.0) as u32,
             plan.texels.origin[1].max(0.0) as u32,
         );
-        let key = spatial::PlanesKey::of(&plan.steps, slot.size, origin);
+        let key = spatial::PlanesKey::of(&plan.steps, slot.shape.boundary, origin);
         if slot.spatial.as_ref().map(|spatial| &spatial.planes.key) == key.as_ref() {
             return Ok(());
         }
@@ -1651,6 +1994,18 @@ impl PhotoPipeline {
         }
     }
 
+    /// Compile `steps` on the compile thread and wait until it has finished, as a frame after the
+    /// compile would find it: what a test that is not about compiling does before it draws.
+    #[cfg(test)]
+    pub(super) fn compile_now(&mut self, device: &wgpu::Device, steps: &[GpuStep]) {
+        let figures = Arc::clone(&self.figures);
+        let _ = self.gpu.pipeline(device, steps, &figures.preview);
+        luxforge_testbase::wait_until("the sequence's compile", || {
+            self.gpu.pipelines.settle(&figures.preview);
+            !self.gpu.pipelines.compiling(steps)
+        });
+    }
+
     /// Simulate the device's loss through the handler its lost callback runs.
     #[cfg(test)]
     pub(super) fn simulate_device_loss(&self) {
@@ -1677,11 +2032,8 @@ impl PhotoPipeline {
 /// the tests that hold it to the slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
-    let (width, height) = plan.boundary.size();
+    let shape = Shape::of(plan);
     let limit = device.limits().max_texture_dimension_2d;
-    let capacity = super::full_capacity((width, height), limit);
-    let texels = u64::from(width) * u64::from(height);
-    let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
     let (mut words, mut blocks) = (Vec::new(), Vec::new());
     pack(plan, &mut words, &mut blocks);
     let origin = (
@@ -1689,10 +2041,8 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
         plan.texels.origin[1].max(0.0) as u32,
     );
     let planes =
-        spatial::PlanesKey::of(&plan.steps, (width, height), origin).map_or(0, |key| key.bytes());
-    Ok(texels * GpuBoundary::TEXEL_BYTES as u64
-        + output_bytes
-        + UNIFORM_SIZE as u64
+        spatial::PlanesKey::of(&plan.steps, shape.boundary, origin).map_or(0, |key| key.bytes());
+    Ok(shape.texture_bytes(limit)
         + buffer_capacity(device, (words.len() * 4) as u64)?
         + buffer_capacity(device, (blocks.len() * 4) as u64)?
         + planes)
@@ -1705,7 +2055,7 @@ fn le_bytes(words: &[u32]) -> Vec<u8> {
 
 /// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
 fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuBoundary) {
-    let row_bytes = u64::from(boundary.width) * GpuBoundary::TEXEL_BYTES as u64;
+    let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
     let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
     let mut row = 0;
     while row < boundary.height {
@@ -1730,6 +2080,11 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
     }
 }
 
+mod compile;
+pub(super) use compile::GpuOptions;
+pub use compile::{GpuWarm, PIPELINE_CACHE};
+mod tail;
+pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;
 mod position;
 pub use mask::{Coverage, CoverageComponent, CoverageMode, MaskedColour};
@@ -1751,5 +2106,9 @@ pub(crate) use timing::PassClock;
 #[cfg(any(test, feature = "qualification"))]
 pub mod qualification;
 
+#[cfg(test)]
+mod compile_tests;
+#[cfg(test)]
+mod tail_tests;
 #[cfg(test)]
 mod tests;

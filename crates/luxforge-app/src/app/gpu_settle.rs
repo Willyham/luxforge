@@ -51,11 +51,18 @@ impl Editor {
     }
 
     /// The GPU plan the photograph `photo` is drawn from in place of its frame: none while the
-    /// preference is off. Only an evidence run's GPU identity hook gives one today.
+    /// preference is off. An evidence run's GPU identity hook gives one; otherwise the open
+    /// gesture's plan does ([`Editor::gesture_gpu_plan`]).
     pub(crate) fn gpu_plan<'a>(&'a self, photo: Option<&'a Frame>) -> Option<&'a GpuPlan> {
         self.gpu_preview_allowed().ok()?;
-        let hook = self.evidence.as_ref()?.gpu_identity.as_ref()?;
-        hook.plan_for(photo?)
+        if let Some(hook) = self
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.gpu_identity.as_ref())
+        {
+            return hook.plan_for(photo?);
+        }
+        self.gesture_gpu_plan().map(|(plan, _)| plan)
     }
 
     /// The figure for the status bar while the GPU stage's output is the photograph on screen: the
@@ -191,7 +198,13 @@ mod tests {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
         let photo = Frame::new(Arc::new(vec![0, 128, 255, 255]), 1, 1, 21).unwrap();
         let mut hook = GpuIdentity::default();
-        hook.adopt(GpuBoundary::from_linear(1, 1, 21, [[0.0, 0.2, 1.0, 1.0]]));
+        hook.adopt(GpuBoundary::from_linear(
+            luxforge_ui::photo_surface::BoundaryFormat::Half,
+            1,
+            1,
+            21,
+            [[0.0, 0.2, 1.0, 1.0]],
+        ));
         let mut evidence = scripted_evidence("[]");
         evidence.gpu_identity = Some(hook);
         editor.evidence = Some(evidence);

@@ -95,7 +95,14 @@ fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
             } else {
                 // The conversion only checks the boundary's size; a 1-texel stand-in of the
                 // plan's stage would do as well, but the convention is what is checked here.
-                GpuBoundary::new(Arc::new(vec![0u8; 8 * 6000 * 4000]), 6000, 4000, 1).unwrap()
+                GpuBoundary::new(
+                    Arc::new(vec![0u8; 8 * 6000 * 4000]),
+                    6000,
+                    4000,
+                    1,
+                    luxforge_ui::photo_surface::BoundaryFormat::Half,
+                )
+                .unwrap()
             };
             let converted = surface_plan(&plan, held).expect("a runnable plan");
             assert_eq!(converted.steps.len(), 1, "{payload}");
@@ -305,7 +312,7 @@ fn largest(gpu: &[f32], cpu: &[f32]) -> (f64, usize) {
 #[test]
 fn gpu_presence_box_mean_matches_the_cpu_filter() {
     let test = "gpu_presence_box_mean_matches_the_cpu_filter";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -358,7 +365,7 @@ fn gpu_presence_box_mean_matches_the_cpu_filter() {
 #[test]
 fn gpu_presence_box_minimum_matches_the_cpu_filter() {
     let test = "gpu_presence_box_minimum_matches_the_cpu_filter";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (192, 128);
@@ -422,7 +429,7 @@ fn gpu_presence_box_minimum_matches_the_cpu_filter() {
 #[test]
 fn gpu_presence_self_guided_filter_matches_the_cpu_filter() {
     let test = "gpu_presence_self_guided_filter_matches_the_cpu_filter";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (224, 160);
@@ -493,7 +500,7 @@ fn gpu_presence_self_guided_filter_matches_the_cpu_filter() {
 #[test]
 fn gpu_presence_guided_filter_matches_the_cpu_filter() {
     let test = "gpu_presence_guided_filter_matches_the_cpu_filter";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (192, 144);
@@ -562,7 +569,7 @@ fn gpu_presence_guided_filter_matches_the_cpu_filter() {
 #[test]
 fn gpu_presence_block_reductions_match_the_cpu() {
     let test = "gpu_presence_block_reductions_match_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     // Neither side a multiple of 4 or 16, so the last blocks are partial.
@@ -628,7 +635,7 @@ fn gpu_presence_block_reductions_match_the_cpu() {
 #[test]
 fn gpu_presence_upsample_matches_the_cpu() {
     let test = "gpu_presence_upsample_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (203_u32, 131_u32);
@@ -665,7 +672,7 @@ fn gpu_presence_upsample_matches_the_cpu() {
 #[test]
 fn gpu_presence_soft_clip_matches_the_cpu() {
     let test = "gpu_presence_soft_clip_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let (width, height) = (256, 128);
@@ -717,7 +724,7 @@ fn gpu_presence_soft_clip_matches_the_cpu() {
 #[test]
 fn gpu_presence_atmospheric_light_matches_the_cpu() {
     let test = "gpu_presence_atmospheric_light_matches_the_cpu";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let mut worst_case = 0.0_f64;
@@ -920,7 +927,7 @@ fn measure_unit(
 #[test]
 fn gpu_presence_units_meet_the_spatial_limits() {
     let test = "gpu_presence_units_meet_the_spatial_limits";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -1003,7 +1010,7 @@ fn gpu_presence_units_meet_the_spatial_limits() {
 #[test]
 fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
     let test = "gpu_presence_on_the_byte_path_meets_the_spatial_limits";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();
@@ -1089,7 +1096,7 @@ fn gpu_presence_on_the_byte_path_meets_the_spatial_limits() {
 #[test]
 fn gpu_presence_pass_pipelines_are_shared_across_plans() {
     let test = "gpu_presence_pass_pipelines_are_shared_across_plans";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();
@@ -1194,7 +1201,7 @@ fn gpu_presence_corpus_at_fit() {
 #[test]
 fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
     let test = "gpu_presence_a_drag_reruns_only_the_passes_it_changes";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = crate::app::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();

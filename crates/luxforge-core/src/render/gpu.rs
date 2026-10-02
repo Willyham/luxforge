@@ -5,11 +5,14 @@
 //! - [`plan`]: the ordered plan from a draft's boundary to the terminal output, or why there is
 //!   none.
 //! - [`grid`]: a lens or perspective warp's coordinate grid.
+//! - [`preview`]: a draft's GPU preview, planned with its preview job, and the boundary it starts
+//!   from.
 //!
 //! The core names no GPU crate: a program is WGSL text, a plan plain data the desktop hands the
 //! photo surface. The CPU stays the only reference, and nothing here changes a CPU byte.
 mod grid;
 mod plan;
+mod preview;
 mod program;
 mod spatial;
 
@@ -27,6 +30,8 @@ pub use plan::{
     GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback, GpuGeometry,
     GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan, gpu_plan_with,
 };
+pub use preview::{BoundaryKey, BoundaryRequest, GpuPreview};
+pub(crate) use preview::{plan_preview, plan_warm};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};

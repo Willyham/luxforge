@@ -3033,6 +3033,7 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         draft_id,
         fields,
         Some((masking.asset.clone(), None)),
+        false,
     );
     assert!(late_set.is_ok(), "the owner accepts the geometry");
 
@@ -3502,6 +3503,7 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
             held.draft_id,
             Value::Object(held.fields),
             Some((masking.asset.clone(), None)),
+            false,
         );
         assert!(
             late_set.is_ok(),

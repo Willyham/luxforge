@@ -4,15 +4,15 @@
 //! the GPU frame of the same plan through the photo surface's own shader, and judges each pair by
 //! its recipe's class. [`corpus_at_fit`] takes the families to run, so a test of any program class
 //! runs the same corpus with its own.
-use super::gpu_plan::surface_plan;
+use super::gpu_plan::surface_plan_at;
 use luxforge_core::{CompileStage, GpuAnswer, GpuPlanRequest, Layer, Processing, Stage, gpu_plan};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
     srgb,
 };
 use luxforge_ui::photo_surface::{
-    GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
-    gpu_preview::qualification::{Qualifier, boundary, held},
+    BoundaryFormat, GpuPlan, GpuProgram, GpuStep, MaskedColour, TexelMap,
+    gpu_preview::qualification::{Qualifier, boundary_as, held},
 };
 use serde_json::{Value, json};
 
@@ -328,21 +328,28 @@ pub(crate) fn corpus_cell(
         let registry = evaluation.registry().clone();
         let full = evaluation.source().dimensions();
         // The Fit frame and the source it was rendered from: the proxy phase's frame over the
-        // proxy the worker built, or, for a photograph that fits the bounds at its own size, the
-        // exact phase's frame over the source itself.
+        // proxy the worker built — a window of the proxy stage when the stack reads less than all
+        // of it, as a crop does — or, for a photograph that fits the bounds at its own size, the
+        // exact phase's frame over the source itself. With the stage the plan addresses and where
+        // in it the source's first texel is.
         let mut settled_proxy = None;
-        let (cpu, proxied, is_proxy) = match outcome {
+        let (cpu, proxied, is_proxy, (stage_width, stage_height), origin) = match outcome {
             PhaseOutcome::Proxy(proxy) => {
                 let context = RenderContext::new();
-                let plan = render(
+                let exact = render(
                     &registry,
                     evaluation.source(),
                     evaluation.recipe(),
                     RenderOptions::exact(&Cancel::never()),
                     &context,
                 )
-                .map_err(|error| error.to_string())?
-                .proxy_plan(bounds)
+                .map_err(|error| error.to_string())?;
+                let (plan, window) = luxforge_core::qualification::fit_proxy(
+                    &exact,
+                    &registry,
+                    evaluation.recipe(),
+                    bounds,
+                )
                 .ok_or("a proxy frame without a proxy plan")?;
                 let proxied = evaluation
                     .source()
@@ -355,6 +362,8 @@ pub(crate) fn corpus_cell(
                         proxied.dimensions()
                     )));
                 }
+                let origin = window.map_or((0, 0), |[x, y, _, _]| (x, y));
+                let stage = (plan.width, plan.height);
                 if settles {
                     let exact = luxforge_testbase::wait_for("the settled Fit frame", || {
                         let result = queue.poll()?;
@@ -372,29 +381,28 @@ pub(crate) fn corpus_cell(
                         ));
                     };
                     settled_proxy = Some(proxy.raster);
-                    (display, proxied, true)
+                    (display, proxied, true, stage, origin)
                 } else {
-                    (proxy.raster, proxied, true)
+                    (proxy.raster, proxied, true, stage, origin)
                 }
             }
             PhaseOutcome::Exact(exact) => (
                 exact.result.map_err(|error| error.to_string())?,
                 evaluation.source().clone(),
                 false,
+                full,
+                (0, 0),
             ),
             PhaseOutcome::Region(_) => return Ok(Cell::Gap("a region at Fit".into())),
+            PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
         };
         let (width, height) = proxied.dimensions();
-        if (cpu.width, cpu.height) != (width, height) {
-            return Ok(Cell::Gap(format!(
-                "the frame is {}x{}, not its source's {width}x{height}",
-                cpu.width, cpu.height
-            )));
-        }
         // The boundary: the input of the first layer that processes pixels (restoration, colour,
         // spatial or finish), which is the source the frame was rendered from when every layer
-        // before it compiles to the identity there, as a RAW development and a reset lens profile
-        // do.
+        // before it compiles to the identity there, as a RAW development does. A geometry layer
+        // before a content layer is part of the plan's geometry tail, which the CPU runs after the
+        // content operations, so it does not change the boundary; before a finishing layer, which
+        // runs after the tail, it does, and only the worker's boundary job holds that input.
         let stage_of = |layer: &Layer| registry.effect(&layer.effect_id).map(|(_, e)| e.stage);
         let boundary_layer = recipe
             .layers
@@ -411,7 +419,11 @@ pub(crate) fn corpus_cell(
                 )
             })
             .ok_or("no layer that processes pixels")?;
+        let content = stage_of(&recipe.layers[boundary_layer]) != Some(EffectStage::Finish);
         for layer in &recipe.layers[..boundary_layer] {
+            if content && stage_of(layer) == Some(EffectStage::Geometry) {
+                continue;
+            }
             let (module, _) = registry
                 .effect(&layer.effect_id)
                 .ok_or("an unknown effect")?;
@@ -456,9 +468,13 @@ pub(crate) fn corpus_cell(
             }
         };
         let request = if is_proxy {
-            GpuPlanRequest::fit(boundary_layer, stage(width, height), stage(full.0, full.1))
+            GpuPlanRequest::fit(
+                boundary_layer,
+                stage(stage_width, stage_height),
+                stage(full.0, full.1),
+            )
         } else {
-            GpuPlanRequest::exact(boundary_layer, stage(width, height))
+            GpuPlanRequest::exact(boundary_layer, stage(stage_width, stage_height))
         }
         .qualifying();
         // A RAW photograph's frames are the linear path's, which clamps no stage boundary.
@@ -472,8 +488,38 @@ pub(crate) fn corpus_cell(
                 return Ok(Cell::Gap(format!("{}: {reason}", reason.code())));
             }
         };
-        let held = boundary(width, height, 1, &texels).ok_or("a boundary")?;
-        let converted = match surface_plan(&plan, held) {
+        // A RAW's boundary holds its values as `f32`, as the worker's boundary job writes it.
+        let format = match &proxied {
+            PreviewSource::Raw { .. } => BoundaryFormat::Float,
+            PreviewSource::Jpeg(_) => BoundaryFormat::Half,
+        };
+        let held = boundary_as(format, width, height, 1, &texels).ok_or("a boundary")?;
+        // The frame is the plan's output stage: the boundary's, or its geometry tail's.
+        let output_stage = plan.geometry.output();
+        let (out_width, out_height) = (output_stage.width, output_stage.height);
+        if (cpu.width, cpu.height) != (out_width, out_height) {
+            return Ok(Cell::Gap(format!(
+                "the frame is {}x{}, not the plan's output {out_width}x{out_height}",
+                cpu.width, cpu.height
+            )));
+        }
+        // A warp's coordinate grid over the whole output stage, as the boundary's job computes it.
+        let grid = match plan.geometry.affine() {
+            Some(_) => None,
+            None => plan
+                .geometry
+                .grid(
+                    luxforge_core::Region {
+                        x0: 0,
+                        y0: 0,
+                        width: out_width,
+                        height: out_height,
+                    },
+                    1.0,
+                )
+                .map_err(|error| error.to_string())?,
+        };
+        let converted = match surface_plan_at(&plan, held, origin, grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
                 return Ok(Cell::Gap(format!(
@@ -511,6 +557,7 @@ pub(crate) fn corpus_cell(
             .chunks_exact(4)
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
             .collect();
+        let (width, height) = (out_width, out_height);
         for (suffix, bytes) in [("gpu", &gpu), ("cpu", &reference)] {
             image::RgbImage::from_raw(width, height, bytes.clone())
                 .ok_or("a whole frame")?
@@ -590,13 +637,23 @@ fn selects_nothing(
         .all(|(out, input)| out[1] == input[1]))
 }
 
+/// A headless qualifier, with the core's output encoding installed for its passes. `None`, having
+/// printed that `test` was skipped, without an adapter.
+pub(crate) fn headless(test: &str) -> Option<Qualifier> {
+    assert!(
+        super::gpu_plan::install_output_encoding(),
+        "the surface holds the core's output encoding"
+    );
+    Qualifier::headless(test)
+}
+
 /// The qualification corpus's recipes of `families` at Fit: for each source this host has, the CPU
 /// frame the preview worker renders and the GPU frame of the same plan over the same source the
 /// worker rendered from, written as `<recipe>--<source>-{cpu,gpu}.png` with the commands that run
 /// `cargo xtask preview-error --class CLASS` over each pair, each recipe held to its own class's
-/// limits. A RAW photograph's first open commits its lens profile, a geometry tail the photo
-/// surface does not draw yet; each RAW cell is measured again with that profile reset, which the
-/// cell's name says. A cell the surface cannot run yet is a gap with its reason, never a pass.
+/// limits. A RAW photograph's first open commits its lens profile, whose warp the geometry tail
+/// draws through its coordinate grid. A cell the surface cannot run yet is a gap with its reason,
+/// never a pass.
 ///
 /// Reads `LUXFORGE_GPU_CORPUS_OUTPUT` (a new directory), `LUXFORGE_GENERATED_FIXTURES` (the
 /// generated JPEGs, `fixtures/generated` by default) and, for the RAWs, `LUXFORGE_RAW_MANIFEST`.
@@ -610,7 +667,7 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
         "{} exists: use a new directory",
         output.display()
     );
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = headless(test) else {
         return;
     };
     std::fs::create_dir_all(&output).unwrap();
@@ -631,7 +688,6 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
         qualifier.adapter(),
         fit_bounds()
     );
-    let reset_lens = json!({"api": {"method": "edit.reset-lens-profile", "params": {}}});
     let (mut cells, mut commands, mut missed) = (Vec::new(), Vec::new(), Vec::new());
     for recipe in corpus["recipes"].as_array().expect("recipes") {
         let family = recipe["family"].as_str().unwrap_or_default();
@@ -650,14 +706,8 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
             {
                 continue;
             }
-            let mut variants = vec![(String::new(), steps.clone())];
-            if source.raw {
-                let mut reset = vec![reset_lens.clone()];
-                reset.extend(steps.iter().cloned());
-                variants.push(("--lens-reset".to_owned(), reset));
-            }
-            for (suffix, steps) in variants {
-                let name = format!("{}--{}{suffix}", recipe["id"].as_str().unwrap(), source.id);
+            {
+                let name = format!("{}--{}", recipe["id"].as_str().unwrap(), source.id);
                 let cell = corpus_cell(&qualifier, source, &steps, &output, &name, class)
                     .unwrap_or_else(|error| Cell::Gap(format!("failed: {error}")));
                 match &cell {

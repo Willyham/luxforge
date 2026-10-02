@@ -87,19 +87,21 @@ pub use presets::{
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
 };
 pub use preview::{
-    AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
+    AssetSelection, BoundaryOutcome, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
 pub use render::gpu::{
-    CoordinateGrid, GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
-    GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuClipping, GpuComponent, GpuDescription,
-    GpuEstimates, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan,
-    GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuProgram,
-    GpuProgramKind, GpuSpatial, GpuSpatialUnit, gpu_plan, gpu_plan_with,
+    BoundaryKey, BoundaryRequest, CoordinateGrid, GPU_PASS_INPUTS, GPU_SHARED_VALUES,
+    GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary,
+    GpuClipping, GpuComponent, GpuDescription, GpuEstimates, GpuFallback, GpuGeometry, GpuMask,
+    GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat,
+    GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuSpatial, GpuSpatialUnit,
+    gpu_plan, gpu_plan_with,
 };
+pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
@@ -114,6 +116,25 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+
+    /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
+    /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
+    /// proxy source holds (`[x, y, width, height]`) when the stack reads less than all of it.
+    /// `None` when the stack takes no proxy, or none smaller than the source fits.
+    pub fn fit_proxy(
+        render: &crate::Render,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        bounds: crate::ProxyBounds,
+    ) -> Option<(crate::ProxyPlan, Option<[u32; 4]>)> {
+        registry.proxy_eligible(recipe).ok()?;
+        let plan = render.proxy_plan(bounds)?;
+        let plan = render.proxy_window(registry, recipe, plan).plan();
+        let window = plan
+            .window
+            .map(|window| [window.x, window.y, window.width, window.height]);
+        Some((plan, window))
+    }
 }
 
 // The crate root paths the core itself uses.
