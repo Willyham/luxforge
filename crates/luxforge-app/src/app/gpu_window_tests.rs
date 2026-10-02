@@ -9,7 +9,9 @@
 //!   of the boundary stage as over the whole stage, and over that window grown to each edge of the
 //!   stage: the tail clamps each tap to the rectangle the CPU's resample reads, then offsets it by
 //!   the window's integer origin, so every tap reads the texel it reads in the whole stage. The
-//!   planner's windows of crops at the stage's corners reach every edge of it.
+//!   planner's windows of crops at the stage's corners reach every edge of it. A spatial step
+//!   (Texture and Clarity) over the window, which the planner grows by its filters' margin, draws
+//!   the same frame too.
 //! - **At Fit.** A tight crop of a photograph that fits the display is drawn at its exact stage:
 //!   the tick asks for the window its output reads, the boundary held is that window, and a slot
 //!   over the budget asks for no boundary and names it.
@@ -330,6 +332,123 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
         "the planner's windows reach every edge of the stage"
     );
     eprintln!("gpu_window: {drawn} windowed frames, each the whole boundary's bit for bit");
+}
+
+/// A spatial step over the window a crop reads, the planner's margin for its filters included,
+/// draws what it draws over the whole boundary stage: Texture and Clarity under a straightened
+/// crop, on both formats, within 10⁻⁵ in linear light and the same codes (measured: bit for bit).
+#[test]
+fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
+    let Some(qualifier) =
+        headless("gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame")
+    else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let presence = Layer::new(
+        luxforge_core::PRESENCE_EFFECT,
+        serde_json::json!({"texture": 40.0, "clarity": 30.0}),
+    );
+    let mut cut_windows = 0;
+    for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
+        let source = source(format);
+        let pixels = whole(&source);
+        for (place, rect) in [
+            ("middle", [0.35, 0.35, 0.3, 0.3]),
+            ("top left", [0.0, 0.0, 0.3, 0.3]),
+            ("bottom right", [0.7, 0.7, 0.3, 0.3]),
+        ] {
+            let name = format!("{format:?}, {place}");
+            let recipe = Recipe {
+                layers: vec![presence.clone(), crop(rect)],
+                ..Recipe::default()
+            };
+            let request = GpuPlanRequest::exact(
+                0,
+                Stage {
+                    width: WIDTH,
+                    height: HEIGHT,
+                },
+            )
+            .qualifying();
+            let request = match format {
+                BoundaryFormat::Float => request.linear(),
+                BoundaryFormat::Half => request,
+            };
+            let plan = match gpu_plan(&registry, &recipe, request).expect("a stack") {
+                GpuAnswer::Plan(plan) => *plan,
+                GpuAnswer::Fallback(reason) => panic!("{name}: {reason}"),
+            };
+            assert!(!plan.spatial.is_empty(), "{name}: a spatial step");
+            let output = plan.geometry.output();
+            let context = RenderContext::new();
+            let exact = render(
+                &registry,
+                &source,
+                &recipe,
+                RenderOptions::exact(&Cancel::never()),
+                &context,
+            )
+            .expect("the exact render");
+            let frame = luxforge_core::qualification::region_boundary(
+                &exact,
+                0,
+                [0, 0, output.width, output.height],
+                format,
+            )
+            .expect("the windowed boundary");
+            let window = Region {
+                x0: frame.origin.0,
+                y0: frame.origin.1,
+                width: frame.width,
+                height: frame.height,
+            };
+            // The window's origin moves down to the grid of the operation's tiles, so a crop away
+            // from the origin of a stage smaller than a tile reads from the origin on.
+            cut_windows += usize::from(window.pixels() < u64::from(WIDTH * HEIGHT));
+            let draw = |window: Region| {
+                let held = boundary_as(
+                    super::gpu_plan::boundary_format(format),
+                    window.width,
+                    window.height,
+                    1,
+                    &cut(&pixels, window),
+                )
+                .expect("a boundary");
+                let converted = surface_plan_at(&plan, held, (window.x0, window.y0), None)
+                    .expect("a runnable plan");
+                (
+                    qualifier.evaluate_codes(&converted).expect("the codes"),
+                    qualifier.evaluate(&converted).expect("the values"),
+                )
+            };
+            let (codes, values) = draw(window);
+            let (whole_codes, whole_values) = draw(Region {
+                x0: 0,
+                y0: 0,
+                width: WIDTH,
+                height: HEIGHT,
+            });
+            let largest = values
+                .iter()
+                .zip(&whole_values)
+                .flat_map(|(a, b)| (0..3).map(move |c| (a[c] - b[c]).abs()))
+                .fold(0.0_f32, f32::max);
+            let codes_differ = codes
+                .iter()
+                .zip(&whole_codes)
+                .filter(|(a, b)| a != b)
+                .count();
+            eprintln!(
+                "gpu_window spatial {name}: a {}x{} window of {WIDTH}x{HEIGHT}, largest value \
+                 difference {largest:e}, {codes_differ} pixels' codes differ",
+                window.width, window.height
+            );
+            assert!(largest <= 1e-5, "{name}: {largest}");
+            assert_eq!(codes_differ, 0, "{name}: the codes");
+        }
+    }
+    assert!(cut_windows >= 4, "the windows cut the stage");
 }
 
 // ---- At Fit, at the exact stage -----------------------------------------------------------------
