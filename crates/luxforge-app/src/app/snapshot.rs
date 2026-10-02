@@ -325,6 +325,7 @@ impl Editor {
                 "plan_fallback":self.gpu_preview_allowed().err().map(|reason| json!({"reason":reason})),
                 "drawn_gpu_boundary":gpu.drawn_gpu_boundary,
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
+                "gpu_preview_done_us":gpu.gpu_preview_done_us,
                 // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
                 "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
                     "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,
