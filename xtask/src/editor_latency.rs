@@ -2306,12 +2306,19 @@ fn paced_stroke_gpu_samples(
 ) -> Result<(usize, Vec<PaintGpuSample>)> {
     let events = paced_stroke_events(events, positions)?;
     let mut pending: Option<(f64, Option<usize>)> = None;
+    // The newest position handed to the desktop: a `draft.set` carries it and every one before it.
+    // The set's own points are the simplified path, fewer than the positions it carries.
+    let mut newest: Option<usize> = None;
     let mut ticks = Vec::new();
     for event in events {
         match event["event"].as_str() {
+            Some("mask_stroke_position") => {
+                newest = event["detail"]["index"]
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok());
+            }
             Some("mask_draft_set") => {
-                let carried = event["detail"]["fields"]["points"].as_array().map(Vec::len);
-                pending = Some((elapsed(event)?, carried));
+                pending = Some((elapsed(event)?, newest.map(|index| index + 1)));
             }
             Some("mask_draft_preview") => pending = None,
             Some("gpu_preview_tick") if event["detail"]["path"] == "gpu" => {
@@ -6144,9 +6151,12 @@ mod tests {
     /// tick superseded before its draw is counted and not sampled.
     #[test]
     fn a_stroke_position_drawn_on_the_gpu_is_timed_to_the_draw_of_its_plan() {
-        let set = |at: f64, points: usize| {
-            json!({"event":"mask_draft_set","elapsed_ms":at,
-                "detail":{"fields":{"points":vec![[0.5, 0.5]; points]}}})
+        let set = |at: f64, index: usize| {
+            [
+                json!({"event":"mask_stroke_position","elapsed_ms":at,"detail":{"index":index}}),
+                json!({"event":"mask_draft_set","elapsed_ms":at,
+                    "detail":{"fields":{"points":[[0.5, 0.5]]}}}),
+            ]
         };
         let tick = |at: f64, revision: u64| {
             json!({"event":"gpu_preview_tick","elapsed_ms":at,
@@ -6156,16 +6166,16 @@ mod tests {
             json!({"event":"surface_frame_drawn","elapsed_ms":at + 5.0,
                 "detail":{"path":"gpu","drawn_ms":at,"draft_id":"m","draft_revision":revision}})
         };
-        let events = vec![
-            json!({"event":"script_step","elapsed_ms":0.0,"detail":{"request":{"mask":{"stroke":{
-                "interval_ms":24,"points":[[0.2,0.5],[0.3,0.5],[0.4,0.5]]
-            }}}}}),
-            set(10.0, 2),
-            tick(10.5, 2),
-            set(12.0, 3),
-            tick(12.5, 3),
-            drawn(19.0, 3),
+        let mut events = vec![
+            json!({"event":"script_step","elapsed_ms":0.0,"detail":{"request":{
+                "mask":{"stroke":{"interval_ms":24,"points":[[0.2,0.5],[0.3,0.5],[0.4,0.5]]}}
+            }}}),
         ];
+        events.extend(set(10.0, 1));
+        events.push(tick(10.5, 2));
+        events.extend(set(12.0, 2));
+        events.push(tick(12.5, 3));
+        events.push(drawn(19.0, 3));
         let (ticks, samples) = paced_stroke_gpu_samples(&events, 3).unwrap();
         assert_eq!(ticks, 2);
         assert_eq!(samples.len(), 1, "revision 2 was superseded before a draw");
