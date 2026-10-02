@@ -117,6 +117,9 @@ pub(crate) fn develop_with(
             "WB gains must be finite, positive, green-normalized, <=32",
         ));
     }
+    if raw.metadata.layout != crate::RawLayout::Mosaic {
+        return direct_develop(raw, gains, cancel, worker_limit, executor);
+    }
     let n = raw.mosaic.len();
     let rgb_bytes = n
         .checked_mul(3)
@@ -127,7 +130,10 @@ pub(crate) fn develop_with(
     }
     let lanes = development_lanes(n, worker_limit, executor);
     let clock = diagnostics.is_some().then(std::time::Instant::now);
-    let mosaic = raw.normalization(gains).run(lanes, cancel)?;
+    let mut mosaic = raw.normalization(gains).run(lanes, cancel)?;
+    if let Some(correction) = &raw.dng_correction {
+        correction.apply_sensor(&mut mosaic, raw, gains, cancel, lanes)?;
+    }
     if let (Some(diagnostics), Some(clock)) = (diagnostics.as_deref_mut(), clock) {
         diagnostics.normalization_ns = clock.elapsed().as_nanos() as u64;
     }
@@ -223,4 +229,58 @@ pub(crate) fn development_lanes(pixels: usize, worker_limit: usize, use_executor
         limit => limit.min(width),
     }
     .max(1)
+}
+
+/// Develop integer monochrome or already demosaiced camera RGB without a float mosaic.
+fn direct_develop(
+    raw: &RawSource,
+    gains: [f32; 3],
+    cancel: &AtomicBool,
+    worker_limit: usize,
+    executor: bool,
+) -> Result<PlanarRgb, RawError> {
+    let m = &raw.metadata;
+    if m.layout == crate::RawLayout::Monochrome && gains != [1.0; 3] {
+        return Err(RawError::InvalidInput(
+            "white balance is unavailable for monochrome originals",
+        ));
+    }
+    let n = RawSource::checked_len(m.sensor_width, m.sensor_height)?;
+    let channels = m.layout.channels();
+    if raw.mosaic.len() != n * channels || n * 12 > MAX_RGB_BYTES {
+        return Err(RawError::ResourceLimit("direct RAW layout or RGB planes"));
+    }
+    let black = normalize::BlackLevels::of(m);
+    let mut data = Vec::new();
+    data.try_reserve_exact(n * 3)
+        .map_err(|_| RawError::ResourceLimit("RGB plane allocation"))?;
+    data.resize(n * 3, 0.0);
+    let lanes = development_lanes(n, worker_limit, executor);
+    for channel in 0..3 {
+        let jobs = data[channel * n..(channel + 1) * n]
+            .chunks_mut(m.sensor_width as usize * 16)
+            .enumerate();
+        native_tiles::refill_each(lanes, jobs, |(job, rows)| {
+            for (yy, row) in rows.chunks_exact_mut(m.sensor_width as usize).enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(RawError::Cancelled);
+                }
+                let y = job * 16 + yy;
+                for (x, value) in row.iter_mut().enumerate() {
+                    let c = if channels == 1 { 0 } else { channel };
+                    let b = black.at_channel(x, y, c);
+                    *value = (raw.mosaic[(y * m.sensor_width as usize + x) * channels + c] as f32
+                        - b)
+                        / (m.sensor_white - b)
+                        * gains[channel];
+                }
+            }
+            Ok(())
+        })?;
+    }
+    Ok(PlanarRgb {
+        width: m.sensor_width,
+        height: m.sensor_height,
+        data,
+    })
 }

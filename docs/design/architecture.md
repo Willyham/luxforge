@@ -224,11 +224,12 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | Evaluated RGB16 JPEG spatial frame, per buffer | 512 MiB, checked as width × height × 6 bytes | `ByteFrame::new`, `crates/luxforge-core/src/render/byte.rs` |
 | RAW encoded source | 512 MiB | `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| RAW retained u16 samples, per buffer | 512 MiB, including all three channels for linear RGB | Checked sample count × 2 against `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/lib.rs` |
 | RAW sensor pixels | 128 million | `MAX_PIXELS`, `crates/luxforge-raw/src/limits.rs` |
 | RAW side | 16384 px | `MAX_SIDE`, `crates/luxforge-raw/src/limits.rs` |
 | RAW planar RGB float allocation, per buffer | 1.5 GiB | `MAX_RGB_BYTES` (1536 MiB), `crates/luxforge-raw/src/limits.rs` |
 | A retained second RAW development | 600 MiB of planes | `RETAINED_DEVELOPMENT_BYTES`, `crates/luxforge-raw/src/limits.rs` |
-| LibRaw's native scratch | 512 MiB | No named constant: the literal `max_raw_memory_mb = 512` in `crates/luxforge-raw/native/adapter.cpp` |
+| LibRaw's native scratch | 512 MiB normally; 1 GiB for Sony ARW6 Compressed HQ only | `max_raw_memory_mb` selected by the exact upstream decoder in `crates/luxforge-raw/native/adapter.cpp`; the format-only exception is owner-approved |
 
 **Rendering**
 
@@ -310,7 +311,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Adapter request and response | 256 MiB each | `MAX_ADAPTER_BYTES`, `crates/luxforge-core/src/capabilities/descriptor.rs` |
 | Resource quota | 16 GiB | `DEFAULT_RESOURCE_QUOTA_BYTES`, `crates/luxforge-core/src/capabilities/resources.rs` |
 
-**RAW memory.** The 1.5 GiB value is per buffer, not a process RSS limit; LibRaw's native 512 MiB scratch ceiling, retained mosaics, concurrent previews, GPU/display allocations and editor liveness still require separate accounting. All 100 selected models have authentic adapter evidence; representative editor memory is recorded in the [resource ledger](modern-camera-resource-ledger.md).
+**RAW memory.** The 1.5 GiB value is per buffer, not a process RSS limit; LibRaw's native 512 MiB scratch ceiling (1 GiB for Sony Compressed HQ), retained integer samples, concurrent previews, GPU/display allocations and editor liveness still require separate accounting. All 341 retained corpus files have authentic adapter evidence; representative editor memory is recorded in the [resource ledger](modern-camera-resource-ledger.md) and [corpus support](corpus-camera-support.md). Linear RGB retains three interleaved u16 channels within the same 512 MiB retained-sample bound.
 
 The editor keeps at most two finished developments of the open RAW: its current one and, when its planes fit 600 MiB, the most recently used development at another white balance, so switching between two entries redevelops neither. The source worker's memory gate lets a redevelopment start beside that one retained development and waits for every other ([second development](raw-integration.md#second-development)). With both held, sampled steady-state process RSS is 2290 / 2352 MiB p50 / p95 on the X100VI (468 MiB of planes, 458 MiB above one development) and 1527 / 1559 MiB on the Z6 (264 MiB above), recorded in the [performance spec](../specs/performance.md#second-development).
 

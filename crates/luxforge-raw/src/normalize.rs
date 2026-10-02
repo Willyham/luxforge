@@ -60,6 +60,15 @@ impl<'a> BlackLevels<'a> {
         }
     }
 
+    pub(crate) fn at_channel(&self, x: usize, y: usize, channel: usize) -> f32 {
+        let mut black = self.base + self.channels[channel];
+        if self.repeat_width != 0 && self.repeat_height != 0 {
+            black +=
+                self.repeat[(y % self.repeat_height) * self.repeat_width + x % self.repeat_width];
+        }
+        black
+    }
+
     /// The calibration site ID of sensor site `(x, y)`.
     fn site(&self, x: usize, y: usize) -> u8 {
         self.black_cfa[(y % self.cfa_height) * self.cfa_width + x % self.cfa_width]

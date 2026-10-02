@@ -6,6 +6,24 @@ use super::{
 };
 use luxforge_core::{CropStage, Zoom};
 
+#[test]
+fn failed_request_records_the_api_refusal_and_captures_its_state() {
+    let (mut editor, catalog, _, _) = crate::app::testing::scripted(r#"[{"wait":{"ms":1}}]"#);
+    let _ = editor.next_step();
+    editor.status.text = "validation: white balance is unavailable".into();
+    editor.outcome(crate::app::outcome::Outcome::RequestEnded { failed: true });
+    let evidence = crate::app::testing::evidence(&editor);
+    let record = evidence.current.as_ref().expect("running step");
+    assert_eq!(record["status"], json!("failed"));
+    assert_eq!(
+        record["reason"],
+        json!("validation: white balance is unavailable")
+    );
+    assert!(evidence.capture_pending);
+    assert!(evidence.had_errors);
+    finish(editor, catalog);
+}
+
 /// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame.
 #[test]
 fn empty_editor_capture_needs_no_photo_texture() {

@@ -54,6 +54,11 @@ impl RawSource {
     /// development's gain bound. Bounded point work: at most 169 sites, no frame allocated.
     pub fn neutral_gains_at(&self, x: u32, y: u32) -> Result<[f32; 3], RawError> {
         let metadata = &self.metadata;
+        if metadata.layout == crate::RawLayout::Monochrome {
+            return Err(unusable(
+                "neutral picker is unavailable for monochrome originals",
+            ));
+        }
         let crop = metadata.default_crop;
         let (out_w, out_h) = if (5..=8).contains(&metadata.exif_orientation) {
             (crop.height, crop.width)
@@ -74,6 +79,9 @@ impl RawSource {
             8 => (crop.width - 1 - y, x),
             _ => return Err(RawError::InvalidInput("orientation")),
         };
+        if metadata.layout == crate::RawLayout::LinearRgb {
+            return linear_neutral(self, crop.x + sx, crop.y + sy);
+        }
         let mosaic = Mosaic {
             samples: &self.mosaic,
             corrections: &self.mosaic_corrections,
@@ -87,7 +95,7 @@ impl RawSource {
         };
         let (corrected_x, corrected_y) = (crop.x + sx, crop.y + sy);
         if self.dng_correction.is_some() {
-            neutral_gains(
+            neutral_gains_with_sensor(
                 &mosaic,
                 corrected_x,
                 corrected_y,
@@ -98,6 +106,12 @@ impl RawSource {
                 &|x, y, channel| {
                     self.gain_at_corrected_sensor(x, y, channel)
                         .map_err(|error| unusable(format!("neutral picker gain point: {error}")))
+                },
+                &|x, y, sample, black, white| {
+                    self.dng_correction
+                        .as_ref()
+                        .unwrap()
+                        .sensor_normalized(x, y, sample, black, white)
                 },
             )
         } else {
@@ -123,6 +137,24 @@ fn neutral_gains(
     center_y: u32,
     map_at: &dyn Fn(u32, u32, usize) -> Result<(f64, f64), RawError>,
     gain_at: &dyn Fn(f64, f64, usize) -> Result<f64, RawError>,
+) -> Result<[f32; 3], RawError> {
+    neutral_gains_with_sensor(
+        source,
+        center_x,
+        center_y,
+        map_at,
+        gain_at,
+        &|_, _, sample, black, white| Ok((sample - black) / (white - black)),
+    )
+}
+
+fn neutral_gains_with_sensor(
+    source: &Mosaic<'_>,
+    center_x: u32,
+    center_y: u32,
+    map_at: &dyn Fn(u32, u32, usize) -> Result<(f64, f64), RawError>,
+    gain_at: &dyn Fn(f64, f64, usize) -> Result<f64, RawError>,
+    sensor_at: &dyn Fn(u32, u32, f64, f64, f64) -> Result<f64, RawError>,
 ) -> Result<[f32; 3], RawError> {
     let start_x = center_x
         .checked_sub(PATCH_RADIUS)
@@ -178,7 +210,13 @@ fn neutral_gains(
             if !gain.is_finite() || gain <= 0.0 {
                 return Err(unusable("neutral picker site gain is invalid"));
             }
-            let corrected = normalized * gain;
+            let corrected = sensor_at(
+                sample_x,
+                sample_y,
+                sample,
+                black,
+                f64::from(source.sensor_white),
+            )? * gain;
             if !corrected.is_finite() || corrected <= 0.0 {
                 return Err(unusable("neutral picker corrected sample is invalid"));
             }
@@ -261,6 +299,56 @@ fn nearest_site(
     nearest
         .map(|(_, x, y)| (x, y))
         .ok_or_else(|| unusable("neutral picker mapped point has no matching CFA site"))
+}
+
+/// The same bounded neutral patch for three immutable camera RGB samples per pixel.
+fn linear_neutral(raw: &RawSource, cx: u32, cy: u32) -> Result<[f32; 3], RawError> {
+    let m = &raw.metadata;
+    let x0 = cx
+        .checked_sub(PATCH_RADIUS)
+        .ok_or_else(|| unusable("neutral picker patch is outside the sensor"))?;
+    let y0 = cy
+        .checked_sub(PATCH_RADIUS)
+        .ok_or_else(|| unusable("neutral picker patch is outside the sensor"))?;
+    if x0 + PATCH_SIDE > m.sensor_width || y0 + PATCH_SIDE > m.sensor_height {
+        return Err(unusable("neutral picker patch is outside the sensor"));
+    }
+    let black = BlackLevels::of(m);
+    let mut sum = [0.0; 3];
+    for y in y0..y0 + PATCH_SIDE {
+        for x in x0..x0 + PATCH_SIDE {
+            for (c, sum) in sum.iter_mut().enumerate() {
+                let (sx, sy) = raw.corrected_sensor_sample_location(x, y, c)?;
+                let sx = sx.round();
+                let sy = sy.round();
+                if sx < 0.0
+                    || sy < 0.0
+                    || sx >= m.sensor_width as f64
+                    || sy >= m.sensor_height as f64
+                {
+                    return Err(unusable("neutral warp outside sensor"));
+                }
+                let b = black.at_channel(sx as usize, sy as usize, c) as f64;
+                let value = (raw.mosaic
+                    [(sy as usize * m.sensor_width as usize + sx as usize) * 3 + c]
+                    as f64
+                    - b)
+                    / (m.sensor_white as f64 - b);
+                if !value.is_finite() || value <= DARK_THRESHOLD || value >= CLIPPED_THRESHOLD {
+                    return Err(unusable("neutral picker patch is dark or clipped"));
+                }
+                *sum += value * raw.gain_at_corrected_sensor(x as f64, y as f64, c)?;
+            }
+        }
+    }
+    let gains = [sum[1] / sum[0], 1.0, sum[1] / sum[2]].map(|v| v as f32);
+    if !gains
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0 && *v <= MAX_GAIN)
+    {
+        return Err(unusable("neutral picker gains exceed bounds"));
+    }
+    Ok(gains)
 }
 
 #[cfg(test)]

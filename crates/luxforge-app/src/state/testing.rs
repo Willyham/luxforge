@@ -390,6 +390,7 @@ pub(crate) fn raw_source() -> luxforge_core::SourceKind {
             "make": "Nikon",
             "model": "Z 6",
             "mode": "NikonZ6Lossless14",
+            "layout": "mosaic",
             "sensor_width": 6048,
             "sensor_height": 4032,
             "active_area": rect,
