@@ -295,3 +295,72 @@ fn a_job_that_asks_renders_its_boundary_after_its_fit_frame() {
     luxforge_testbase::wait_until("the job to end", || !queue.is_busy());
     assert!(queue.poll().is_none(), "no boundary was asked for");
 }
+
+/// The plans warmed for a committed stack hold the program sequence every first drag of a colour
+/// or finish module draws, each once: a Basic drag on a stack without Basic draws exactly a warmed
+/// sequence.
+#[test]
+fn the_warmed_plans_hold_every_first_drags_sequence() {
+    let crop = crop();
+    let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
+    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
+        .unwrap()
+        .iter()
+        .map(sequence)
+        .collect();
+    for (index, one) in warmed.iter().enumerate() {
+        assert!(!warmed[..index].contains(one), "each sequence once");
+    }
+    let (job, draft) = draft_job(
+        "set-basic",
+        vec![crop.clone()],
+        vec![basic(json!({"exposure": 0.6})), crop],
+        1,
+    );
+    let drag = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
+    assert!(
+        warmed.contains(&sequence(planned(&drag))),
+        "the Basic drag's sequence {:?} is warmed among {warmed:?}",
+        sequence(planned(&drag))
+    );
+    for entry in [
+        "lf_curve_tone_curve",
+        "lf_mixer_mixer",
+        "lf_vignette_vignette",
+    ] {
+        assert!(
+            warmed.iter().any(|one| one.contains(&entry)),
+            "{entry} is warmed"
+        );
+    }
+}
+
+/// A job whose Fit frame is drawn at another stage than its boundary names still answers the
+/// request, with the reason, so the desktop never waits for a boundary that will not come.
+#[test]
+fn a_boundary_of_another_stage_is_answered_with_its_reason() {
+    let (mut job, draft) = draft_job(
+        "set-basic",
+        vec![crop()],
+        vec![basic(json!({"exposure": 0.3})), crop()],
+        3,
+    );
+    let preview = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
+    job.proxy = Some(ProxyBounds {
+        width: 220,
+        height: 150,
+    });
+    job.intent = PreviewIntent::Interactive;
+    job.boundary = preview.boundary;
+    let mut queue = PreviewQueue::default();
+    let generation = queue.request(job);
+    let proxy = wait_for("the Fit frame", || queue.poll());
+    assert_eq!(proxy.phase(), PreviewPhase::Proxy);
+    let boundary = wait_for("the boundary's answer", || queue.poll());
+    assert_eq!(
+        (boundary.generation, boundary.phase()),
+        (generation, PreviewPhase::Boundary)
+    );
+    let error = boundary.boundary().unwrap().result.as_ref().unwrap_err();
+    assert!(error.detail.contains("another stage"), "{error}");
+}

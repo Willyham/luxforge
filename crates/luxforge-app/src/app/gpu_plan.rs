@@ -31,7 +31,7 @@ pub(crate) enum Unrunnable {
     Geometry,
     /// A masked operation: the surface has no coverage step yet.
     Mask { layer: usize },
-    /// The boundary held is not the stage the plan's boundary layer receives.
+    /// The boundary held does not lie inside the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },
     /// A position map with a coefficient the surface's `f32` words cannot hold exactly.
     Position { layer: usize },
@@ -52,20 +52,28 @@ impl Unrunnable {
 /// The largest coordinate an `f32` holds exactly, and with it every integer a position map adds.
 const EXACT_F32: i64 = 1 << 24;
 
-/// `plan` as the surface's plain data over `boundary`: the boundary's texel map, then the steps of
-/// every content operation in recipe order, then the geometry tail's. A boundary inside a colour
-/// run (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
-/// [`GpuBoundary`] do.
+/// `plan` as the surface's plain data over `boundary`, which holds the plan's whole boundary
+/// stage: [`surface_plan_at`] at the stage's origin.
 pub(crate) fn surface_plan(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
 ) -> Result<GpuPlan, Unrunnable> {
-    let texels = boundary_map(plan.boundary.stage, &boundary)?;
-    let mut steps = Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum());
-    for operation in &plan.content {
-        operation_steps(operation, &mut steps)?;
-    }
-    geometry_steps(plan, &mut steps)?;
+    surface_plan_at(plan, boundary, (0, 0))
+}
+
+/// `plan` as the surface's plain data over `boundary`, whose first texel is at `origin` of the
+/// plan's boundary stage: the boundary's texel map, then the steps of every content operation in
+/// recipe order, then the geometry tail's. A windowed proxy's boundary holds the window of the
+/// stage its output reads, at that window's origin. A boundary inside a colour run
+/// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
+/// [`GpuBoundary`] do.
+pub(crate) fn surface_plan_at(
+    plan: &luxforge_core::GpuPlan,
+    boundary: GpuBoundary,
+    origin: (u32, u32),
+) -> Result<GpuPlan, Unrunnable> {
+    let texels = boundary_map(plan.boundary.stage, &boundary, origin)?;
+    let steps = plan_steps(plan)?;
     Ok(GpuPlan {
         boundary,
         texels,
@@ -73,17 +81,37 @@ pub(crate) fn surface_plan(
     })
 }
 
-/// Where the held boundary's texels are in the plan's boundary stage: the whole stage, texel for
-/// pixel. A boundary that holds a window of the stage is not held yet.
-pub(crate) fn boundary_map(stage: Stage, boundary: &GpuBoundary) -> Result<TexelMap, Unrunnable> {
+/// The steps of `plan` alone, without a boundary: what the surface's pipeline for the plan is
+/// keyed by, which a warm list names before any boundary exists.
+pub(crate) fn plan_steps(plan: &luxforge_core::GpuPlan) -> Result<Vec<GpuStep>, Unrunnable> {
+    let mut steps = Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum());
+    for operation in &plan.content {
+        operation_steps(operation, &mut steps)?;
+    }
+    geometry_steps(plan, &mut steps)?;
+    Ok(steps)
+}
+
+/// Where the held boundary's texels are in the plan's boundary stage: the rectangle at `origin`,
+/// texel for pixel, which must lie inside the stage.
+pub(crate) fn boundary_map(
+    stage: Stage,
+    boundary: &GpuBoundary,
+    origin: (u32, u32),
+) -> Result<TexelMap, Unrunnable> {
     let held = boundary.size();
-    if held != (stage.width, stage.height) {
+    let inside =
+        |at: u32, size: u32, whole: u32| at.checked_add(size).is_some_and(|end| end <= whole);
+    if !inside(origin.0, held.0, stage.width) || !inside(origin.1, held.1, stage.height) {
         return Err(Unrunnable::Boundary {
             held,
             stage: (stage.width, stage.height),
         });
     }
-    Ok(TexelMap::IDENTITY)
+    Ok(TexelMap {
+        origin: [origin.0 as f32, origin.1 as f32],
+        step: [1.0, 1.0],
+    })
 }
 
 /// One colour operation's steps, appended to `steps`: one colour step per unit, in order, each at

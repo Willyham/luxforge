@@ -499,6 +499,11 @@ enum ExpectedPhotoDraw {
     Gpu {
         boundary: u64,
     },
+    /// A gesture's GPU frame: the plan of this draft revision over the boundary of this version.
+    GpuTick {
+        boundary: u64,
+        revision: u64,
+    },
 }
 
 fn photo_drawn(
@@ -509,6 +514,11 @@ fn photo_drawn(
         ExpectedPhotoDraw::Gpu { boundary } => {
             gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
                 && gpu.drawn_gpu_boundary == Some(boundary)
+        }
+        ExpectedPhotoDraw::GpuTick { boundary, revision } => {
+            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+                && gpu.drawn_gpu_boundary == Some(boundary)
+                && gpu.drawn_gpu_tag == Some(revision)
         }
         ExpectedPhotoDraw::Full { version, content } => {
             gpu.drawn_full_version == Some(version)
@@ -583,6 +593,24 @@ impl Editor {
             || self.presentation.render_error.is_some()
         {
             return true;
+        }
+        // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
+        // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
+        // the CPU frame of its revision, the CPU frame is the one drawn.
+        let surfaces = self.surfaces();
+        if let (Some(_), Some(revision), false, Some(boundary)) = (
+            surfaces.gpu,
+            surfaces.gpu_tag,
+            surfaces.gpu_hold,
+            self.gpu.held_version(),
+        ) && luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
+            .gpu_ready_boundary
+            == Some(boundary)
+        {
+            return photo_drawn(
+                ExpectedPhotoDraw::GpuTick { boundary, revision },
+                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+            );
         }
         let full = self
             .presentation

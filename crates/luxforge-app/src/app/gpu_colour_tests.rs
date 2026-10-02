@@ -191,14 +191,19 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         surface_plan(&plan, flat_boundary(64, 48)).unwrap_err(),
         Unrunnable::Geometry
     );
-    // A boundary that is not the plan's stage.
+    // A boundary that does not lie inside the plan's stage; a window of it does, at its origin.
     let plan = planned(
         &registry,
         &stack,
         GpuPlanRequest::fit(0, stage(64, 48), stage(640, 480)).qualifying(),
     );
-    let error = surface_plan(&plan, flat_boundary(32, 48)).unwrap_err();
+    let error = surface_plan(&plan, flat_boundary(80, 48)).unwrap_err();
     assert_eq!(error.code(), "boundary-size");
+    let error =
+        super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 48), (40, 0)).unwrap_err();
+    assert_eq!(error.code(), "boundary-size");
+    let window = super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 40), (16, 8)).unwrap();
+    assert_eq!(window.texels.origin, [16.0, 8.0]);
 }
 
 /// The CPU units `layer` compiles to over `stage`, as the host compiles them.
