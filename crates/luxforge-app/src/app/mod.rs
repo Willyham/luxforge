@@ -62,6 +62,7 @@ pub(crate) mod gpu_qualification;
     )
 )]
 pub(crate) mod gpu_plan;
+pub(crate) mod gpu_settle;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -658,6 +659,7 @@ impl Editor {
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
+            gpu_frame_us: self.gpu_frame_us(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
@@ -762,20 +764,12 @@ impl Editor {
             surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
-        surfaces.gpu = self
-            .evidence
-            .as_ref()
-            .and_then(|evidence| evidence.gpu_identity.as_ref())
-            .zip(surfaces.photo)
-            .and_then(|(hook, photo)| hook.plan_for(photo));
-        // The open gesture's GPU plan, at Fit with no comparison on screen: drawn in place of the
-        // photograph's frame, or held behind it once the CPU frame of its revision is presented.
-        if surfaces.gpu.is_none()
-            && self.presentation.compare_after.is_none()
-            && matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
-            && let Some((plan, revision)) = self.gpu.surface_plan()
+        surfaces.gpu = self.gpu_plan(surfaces.photo);
+        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
+        // presented, and tagged with the revision it draws.
+        if surfaces.gpu.is_some()
+            && let Some((_, revision)) = self.gesture_gpu_plan()
         {
-            surfaces.gpu = Some(plan);
             surfaces.gpu_hold = self.gpu_held();
             surfaces.gpu_tag = Some(revision);
         }
