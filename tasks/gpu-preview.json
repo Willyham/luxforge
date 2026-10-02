@@ -524,7 +524,7 @@
     {
       "id": "TASK-010",
       "description": "Write the GPU programs for Detail (noise reduction and capture sharpening) and qualify them under the spatial limits.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
