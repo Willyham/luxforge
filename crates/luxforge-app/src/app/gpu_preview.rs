@@ -229,6 +229,11 @@ impl GpuPreviews {
         self.warm.as_ref()
     }
 
+    /// The draft whose plan the surface is handed, open or ended and not yet released.
+    pub(crate) fn draft(&self) -> Option<&DraftId> {
+        self.drag.as_ref().map(|drag| &drag.draft)
+    }
+
     /// The boundary version a held boundary is drawn under, for the capture's readiness.
     pub(crate) fn held_version(&self) -> Option<u64> {
         self.drag
@@ -246,6 +251,8 @@ impl GpuPreviews {
             "drag": {
                 "draft_id": drag.draft.as_str(),
                 "plan_revision": drag.plan.as_ref().map(|(_, revision)| *revision),
+                // A global estimate taken on the GPU rather than read from the store.
+                "approximate": drag.plan.as_ref().map(|(plan, _)| plan.approximate()),
                 "surface_revision": drag.surface.as_ref().map(|(_, revision)| *revision),
                 "boundary": drag.held.as_ref().map(|held| json!({
                     "version": held.boundary.version(),
@@ -302,7 +309,7 @@ impl Editor {
     }
 
     /// What the surface reports of its last frame.
-    fn surface_report(&self) -> SurfaceReport {
+    pub(crate) fn surface_report(&self) -> SurfaceReport {
         #[cfg(test)]
         if let Some(report) = self.gpu.surface {
             return report;
@@ -324,10 +331,9 @@ impl Editor {
         let mut boundary_request = None;
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
-        // The clipping overlay is derived from the CPU's frames, so over a GPU frame it would mark
-        // the pixels of an older one: while it is shown the gesture keeps the CPU path.
-        let clipping =
-            self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
+        // The clipping overlay is derived from the CPU's frames, so over a GPU frame the plan marks
+        // its own clipped pixels instead.
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         // At a percentage zoom the mask overlay is drawn with the CPU's region frames, which a
         // GPU frame drawn alone does not carry: while it is shown the gesture keeps the CPU path.
         let zoom = match self.session.preview.view.zoom {
@@ -369,7 +375,6 @@ impl Editor {
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
                 &mut released,
             ),
-            _ if clipping => unplanned(drag, "clipping-shown", &mut released),
             _ if overlay => unplanned(drag, "overlay-shown", &mut released),
             None => unplanned(drag, "not-fit", &mut released),
             Some(luxforge_core::GpuPreview {
@@ -428,7 +433,9 @@ impl Editor {
                             held.origin,
                             held.grid.as_deref(),
                             held.key.region(),
-                        ) {
+                        )
+                        .map(|converted| super::gpu_settle::marked(converted, plan, clip))
+                        {
                             Err(unrunnable) => {
                                 drag.surface = None;
                                 drag.reason = Some(unrunnable.code().into());
@@ -545,6 +552,7 @@ impl Editor {
         let luxforge_core::PhaseOutcome::Boundary(outcome) = result.outcome else {
             return;
         };
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let Some(drag) = self
             .gpu
             .drag
@@ -592,7 +600,9 @@ impl Editor {
                                 held.key.region(),
                             )
                             .ok()
-                            .map(|converted| (converted, *revision));
+                            .map(|converted| {
+                                (super::gpu_settle::marked(converted, plan, clip), *revision)
+                            });
                         }
                         json!({"held": true, "version": version, "width": size.0,
                             "height": size.1, "origin": [origin.0, origin.1],
@@ -629,9 +639,15 @@ impl Editor {
         let Some(plans) = plans else {
             return;
         };
+        // While a clipping overlay is shown the gestures' plans carry its marks.
+        let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let sequences: Vec<Vec<GpuStep>> = plans
             .iter()
-            .filter_map(|plan| gpu_plan::plan_steps(plan).ok())
+            .filter_map(|plan| {
+                gpu_plan::plan_steps(plan)
+                    .ok()
+                    .map(|steps| super::gpu_settle::marked_steps(steps, plan, clip))
+            })
             .collect();
         let same = self
             .gpu

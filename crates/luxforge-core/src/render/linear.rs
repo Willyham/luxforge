@@ -178,6 +178,25 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     Ok(())
 }
 
+/// The estimate prefix of a development `development` seen through `view` under an approximate
+/// `white_balance`: what the linear domain's estimates are keyed by, and a proxy not yet built is
+/// named by (`render::gpu::EstimateSource::Proxy`).
+pub(crate) fn estimate_prefix(
+    prefix_hash: &str,
+    development: u64,
+    view: ([u32; 4], u8),
+    white_balance: Option<WhiteBalanceApproximation>,
+) -> String {
+    let input_prefix = format!("{prefix_hash}+linear:{development}:{view:?}");
+    match white_balance {
+        Some(balance) => format!(
+            "{input_prefix}+white-balance-approximation:{}",
+            balance.key()
+        ),
+        None => input_prefix,
+    }
+}
+
 /// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
 /// white balance applied to each source pixel in `f64`. A segment with colour
 /// is `f32` from its entry to its end and one without stays `f64`; nothing is quantized before the
@@ -238,18 +257,12 @@ impl PixelDomain for Linear<'_> {
     /// an approximate evaluation keys its estimates apart, and a committed render of the same
     /// recipe never takes one estimated from approximate pixels.
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        let input_prefix = format!(
-            "{prefix_hash}+linear:{}:{:?}",
+        Cow::Owned(estimate_prefix(
+            prefix_hash,
             self.source.development(),
             self.source.view(),
-        );
-        Cow::Owned(match self.white_balance {
-            Some(balance) => format!(
-                "{input_prefix}+white-balance-approximation:{}",
-                balance.key()
-            ),
-            None => input_prefix,
-        })
+            self.white_balance,
+        ))
     }
 
     fn check_output(&self, width: u32, height: u32) -> Result<(), Error> {

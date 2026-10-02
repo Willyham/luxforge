@@ -23,15 +23,15 @@ use super::grid::CoordinateGrid;
 use super::program::{GpuDescription, GpuProgramKind};
 use super::spatial::{self, GpuSpatial};
 use crate::{
-    ComponentMode, EffectStage, Error, ModuleRegistry, Recipe,
+    ComponentMode, EffectStage, Error, ModuleRegistry, PreviewSource, ProxyPlan, Recipe,
     colour::srgb,
     mask_field::MaskSampling,
     modules::{ColorOperation, ExactGeometry, Global, Processing, Region, Stage},
     render::{
         Compiled, Entry, PixelDomain, RenderContext, RenderSource,
-        byte::Byte,
+        byte::{self, Byte},
         context::EstimateKey,
-        linear::Linear,
+        linear::{self, Linear},
         map::{Affine, GeometryMap, MappingShape, StageSize, WarpStep},
         pipeline::{SpatialEntry, input_prefix_key},
     },
@@ -121,7 +121,78 @@ impl GpuPlanRequest {
 #[derive(Clone, Copy)]
 pub struct GpuEstimates<'a> {
     pub context: &'a RenderContext,
-    pub source: RenderSource<'a>,
+    pub source: EstimateSource<'a>,
+}
+
+/// The source a plan's CPU frames are rendered from, as the estimate store names it.
+#[derive(Clone, Copy)]
+pub enum EstimateSource<'a> {
+    /// The source itself.
+    Render(RenderSource<'a>),
+    /// The proxy of a preview source at a plan, which the preview worker renders a Fit frame from:
+    /// named by the source's identity and the plan alone, and never built, so a plan made on the
+    /// catalog owner reads the store with no pixel work.
+    Proxy {
+        source: &'a PreviewSource,
+        plan: ProxyPlan,
+    },
+}
+
+impl<'a> From<RenderSource<'a>> for EstimateSource<'a> {
+    fn from(source: RenderSource<'a>) -> Self {
+        Self::Render(source)
+    }
+}
+
+impl EstimateSource<'_> {
+    /// Whether its frames take the linear path.
+    fn linear(&self) -> bool {
+        match self {
+            Self::Render(source) => matches!(source, RenderSource::Linear { .. }),
+            Self::Proxy { source, .. } => matches!(source, PreviewSource::Raw { .. }),
+        }
+    }
+
+    /// The fingerprint and the estimate prefix its pixel domain gives `prefix_hash`. A proxy keeps
+    /// its source's fingerprint; a JPEG's is the plan's window at the source's orientation, a
+    /// RAW's its derived development ([`crate::proxy::proxy_development`]) under an identity view
+    /// and the settings a job renders it under.
+    pub(crate) fn identity(&self, prefix_hash: &str) -> Result<(String, String), Error> {
+        Ok(match *self {
+            Self::Render(RenderSource::Byte(image)) => {
+                let domain = Byte(image);
+                (
+                    domain.fingerprint().to_owned(),
+                    input_prefix_key(&domain, prefix_hash).into_owned(),
+                )
+            }
+            Self::Render(RenderSource::Linear { image, settings }) => {
+                let domain = Linear::new(image, settings)?;
+                (
+                    domain.fingerprint().to_owned(),
+                    input_prefix_key(&domain, prefix_hash).into_owned(),
+                )
+            }
+            Self::Proxy { source, plan } => {
+                let (width, height) = plan.source_dimensions();
+                match source {
+                    PreviewSource::Jpeg(image) => (
+                        image.fingerprint.clone(),
+                        byte::estimate_prefix(prefix_hash, width, height, image.orientation),
+                    ),
+                    PreviewSource::Raw { image, settings } => (
+                        image.fingerprint().to_owned(),
+                        linear::estimate_prefix(
+                            prefix_hash,
+                            crate::proxy::proxy_development(image, plan),
+                            ([0, 0, width, height], 1),
+                            settings.white_balance,
+                        ),
+                    ),
+                }
+            }
+        })
+    }
 }
 
 impl GpuEstimates<'_> {
@@ -132,22 +203,7 @@ impl GpuEstimates<'_> {
         stage: Stage,
         key: &str,
     ) -> Result<Option<Global>, Error> {
-        let (fingerprint, prefix) = match self.source {
-            RenderSource::Byte(image) => {
-                let domain = Byte(image);
-                (
-                    domain.fingerprint().to_owned(),
-                    input_prefix_key(&domain, entry.prefix_hash()).into_owned(),
-                )
-            }
-            RenderSource::Linear { image, settings } => {
-                let domain = Linear::new(image, settings)?;
-                (
-                    domain.fingerprint().to_owned(),
-                    input_prefix_key(&domain, entry.prefix_hash()).into_owned(),
-                )
-            }
-        };
+        let (fingerprint, prefix) = self.source.identity(entry.prefix_hash())?;
         Ok(self
             .context
             .estimates()
@@ -565,7 +621,7 @@ pub fn gpu_plan_with(
     estimates: Option<GpuEstimates<'_>>,
 ) -> Result<GpuAnswer, Error> {
     if let Some(estimates) = &estimates
-        && matches!(estimates.source, RenderSource::Linear { .. }) != request.linear
+        && estimates.source.linear() != request.linear
     {
         return Err(Error::internal(
             "a GPU plan's request names one path and its estimates' source the other",

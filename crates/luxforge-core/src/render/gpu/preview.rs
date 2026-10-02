@@ -16,6 +16,10 @@
 //!   its value is still neutral, is planned as the neutral layer its first commit would insert.
 //!   A drag that leaves or returns to neutral therefore keeps one program sequence. The CPU
 //!   compile is untouched: only this plan asks for the shape.
+//! - **Stored estimates.** A spatial operation's global estimate, Dehaze's atmospheric light, is
+//!   read from the estimate store the job's CPU frames fill, under the key a Fit frame of the same
+//!   content asks with: the proxy is named by its source and plan, never built. A plan whose key
+//!   the store does not hold yet takes the estimate on the GPU and says it is approximate.
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the proxy plan with its window, or at a percentage zoom the region
@@ -23,7 +27,9 @@
 //! - **Where it is drawn** ([`GpuView`]): at Fit, the stage the job's Fit frame is drawn at; at a
 //!   percentage zoom of 100% or more, the exact stage, over the visible region at full scale, whose
 //!   boundary is the window of the boundary layer's received stage that region reads.
-use super::{GpuAnswer, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan};
+use super::{
+    EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
+};
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
     ProxyBounds, ProxyIdentity, ProxyPlan, Recipe,
@@ -286,6 +292,21 @@ impl FitStage {
         }
     }
 
+    /// Where `evaluation`'s CPU frames at this stage keep their global estimates: its context's
+    /// store, under its proxy at this plan, or under its source at the exact stage.
+    fn estimates<'a>(&self, evaluation: &'a Evaluation) -> GpuEstimates<'a> {
+        GpuEstimates {
+            context: evaluation.context(),
+            source: match self.plan {
+                Some(plan) => EstimateSource::Proxy {
+                    source: evaluation.source(),
+                    plan,
+                },
+                None => EstimateSource::Render(evaluation.source().into()),
+            },
+        }
+    }
+
     /// The masks a proxy compiles take the thin-feature supersample; the exact stage's do not.
     fn sampling(&self) -> MaskSampling {
         if self.plan.is_some() {
@@ -317,8 +338,8 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn as `view`
 /// says: the plan from the earliest layer the draft changes, at the stage the job's Fit frame is
 /// drawn at or the exact stage at a percentage zoom, and the boundary it starts from. `O(layers)`
-/// on the catalog owner: one compile at the proxy stage for the window, one for the plan, and no
-/// pixel read.
+/// on the catalog owner: one compile at the proxy stage for the window, one for the plan, a lookup
+/// in the estimate store for each global estimate, and no pixel read.
 pub(crate) fn plan_preview(
     evaluation: &Evaluation,
     draft: &Draft,
@@ -363,15 +384,16 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let mut answer = gpu_plan(registry, &planned, request)?;
+    let mut answer = gpu_plan_with(registry, &planned, request, Some(fit.estimates(evaluation)))?;
     let position = position(&fit.compiled, boundary).ok_or_else(|| {
         Error::internal(format!(
             "the GPU preview's boundary layer {boundary} is past the stack"
         ))
     })?;
     // At a percentage zoom, the window of the received stage the boundary will hold, planned now
-    // so what it takes is known before it is rendered; and a spatial estimate the GPU would take
-    // from the region alone, where the exact visible region reads the whole stage's, is the CPU's.
+    // so what it takes is known before it is rendered; and a global estimate the store does not
+    // hold yet, which the GPU would take from the region alone where the exact visible region
+    // reads the whole stage's, keeps the drag on the CPU.
     let mut window = None;
     if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
         let full = (fit.full.width, fit.full.height);
@@ -418,12 +440,83 @@ pub(crate) fn plan_preview(
     })
 }
 
+/// How many plans of spatial layers a warm list holds: one Presence layer's whole drag repertoire,
+/// its shape as it stands and the first drag of each of its three fields. A spatial layer's shape is
+/// its non-neutral units, so each field a drag moves off neutral is a sequence of its own, and a
+/// Presence sequence is the slowest to compile (up to two seconds cold on the M4). With the colour
+/// candidates — a handful of layers and modules — four keeps the list inside the surface's
+/// 16-sequence pipeline cache, so warming never evicts what it has just warmed; a stack with a
+/// second spatial layer (Presence through a mask) warms the first's, and the second's first drag
+/// compiles on demand, ahead of anything warmed.
+const WARM_SPATIAL_PLANS: usize = 4;
+
+/// The payloads a drag of spatial `layer` is likely to plan, as [`plan_preview`] plans a drag of
+/// it: the payload as it stands, then for each number field of its module's patch action that is
+/// at its default, the payload with that field at the far end of its range, where the unit it
+/// drives joins the layer. `O(fields)`, no compile.
+fn spatial_shapes(registry: &ModuleRegistry, layer: &Layer) -> Vec<serde_json::Value> {
+    let mut shapes = vec![layer.payload.clone()];
+    let Some(provider) = registry.providers().find(|provider| {
+        provider
+            .descriptor()
+            .effects
+            .iter()
+            .any(|effect| effect.id == layer.effect_id)
+    }) else {
+        return shapes;
+    };
+    let descriptor = provider.descriptor();
+    for action in descriptor.actions.iter().filter(|action| action.patch) {
+        for parameter in &action.parameters {
+            let crate::ParameterKind::Number { min, max } = parameter.kind else {
+                continue;
+            };
+            let neutral = parameter
+                .default
+                .as_ref()
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(0.0);
+            let value = layer
+                .payload
+                .get(&parameter.name)
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(neutral);
+            if value != neutral || !layer.payload.is_object() {
+                continue;
+            }
+            let far = if max != neutral { max } else { min };
+            let mut payload = layer.payload.clone();
+            payload[&parameter.name] = json!(far);
+            shapes.push(payload);
+        }
+    }
+    shapes
+}
+
+/// What a warmed plan's program sequence is told apart by: its colour units' entries, then its
+/// spatial operation's passes and applies.
+fn warm_sequence(plan: &GpuPlan) -> Vec<&'static str> {
+    plan.operations()
+        .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
+        .chain(plan.spatial.iter().flat_map(|spatial| {
+            spatial
+                .passes
+                .iter()
+                .map(|pass| pass.kernel)
+                .chain(spatial.applies.iter().map(|apply| apply.function))
+        }))
+        .collect()
+}
+
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `bounds`, for the desktop to
 /// warm their program sequences before a drag begins: a drag of each colour or finish layer the
 /// stack holds, and the first drag of each field-patch colour or finish module it does not hold
 /// yet, each from that layer with the layer in its GPU shape, as a draft of it is planned
-/// ([`plan_preview`]). One plan per program sequence, in stack order. `O(layers × modules)`
-/// compiles on the catalog owner, with no pixel read.
+/// ([`plan_preview`]); then a drag of each spatial layer the stack holds, from that layer, in its
+/// shape as it stands and with each field at its default moved off it, at most
+/// [`WARM_SPATIAL_PLANS`] of them in stack order, reading the estimates the store holds, which a
+/// drag of a colour layer before them never does. One plan per program sequence. `O(layers ×
+/// modules)` compiles on the catalog owner, with no pixel read.
 pub(crate) fn plan_warm(
     evaluation: &Evaluation,
     bounds: ProxyBounds,
@@ -437,12 +530,14 @@ pub(crate) fn plan_warm(
             Some(EffectStage::Color | EffectStage::Finish)
         )
     };
-    let mut candidates: Vec<(Recipe, usize)> = recipe
+    // Each candidate: the stack it is planned over, its boundary, and whether that layer is
+    // drafted in its GPU shape.
+    let mut candidates: Vec<(Recipe, usize, bool)> = recipe
         .layers
         .iter()
         .enumerate()
         .filter(|(_, layer)| colour(&layer.effect_id))
-        .map(|(index, _)| (recipe.clone(), index))
+        .map(|(index, _)| (recipe.clone(), index, true))
         .collect();
     for provider in registry.providers() {
         let descriptor = provider.descriptor();
@@ -461,18 +556,39 @@ pub(crate) fn plan_warm(
         }
         let index =
             registry.insertion_index_for_target(&recipe.layers, &effect.id, None, &recipe.masks);
-        candidates.push((with_neutral(recipe, index, &effect.id, None), index));
+        candidates.push((with_neutral(recipe, index, &effect.id, None), index, true));
     }
+    let spatial = recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| registry.effect_stage(&layer.effect_id) == Some(EffectStage::Spatial))
+        .flat_map(|(index, layer)| {
+            spatial_shapes(registry, layer)
+                .into_iter()
+                .map(move |payload| (index, payload))
+        })
+        .take(WARM_SPATIAL_PLANS)
+        .map(|(index, payload)| {
+            let mut planned = recipe.clone();
+            planned.layers[index].payload = payload;
+            (planned, index, false)
+        });
+    candidates.extend(spatial);
     let mut plans: Vec<GpuPlan> = Vec::new();
     let mut seen: Vec<Vec<&'static str>> = Vec::new();
-    for (planned, index) in candidates {
-        let request = fit.request(index).drafted(index);
-        let answer = gpu_plan(registry, &planned, request)?;
+    for (planned, index, drafted) in candidates {
+        // A drag of a colour layer changes the input of every spatial layer after it, so its
+        // ticks take their estimates on the GPU; a spatial layer's own drag leaves the layers
+        // before it alone, so its ticks read the store, as the warmed plan does.
+        let (request, estimates) = if drafted {
+            (fit.request(index).drafted(index), None)
+        } else {
+            (fit.request(index), Some(fit.estimates(evaluation)))
+        };
+        let answer = gpu_plan_with(registry, &planned, request, estimates)?;
         if let GpuAnswer::Plan(plan) = answer {
-            let sequence: Vec<&'static str> = plan
-                .operations()
-                .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
-                .collect();
+            let sequence = warm_sequence(&plan);
             if !seen.contains(&sequence) {
                 seen.push(sequence);
                 plans.push(*plan);

@@ -190,19 +190,19 @@ pub(crate) enum Cell {
         passed: bool,
         /// What the photo surface's slot drawing the plan charges the GPU-preview budget.
         charged: u64,
-        /// For a stack whose Fit settles from the exact render, whose reduction the figures are
-        /// judged against: the CPU's own moving proxy beside it, which the GPU frame previews.
+        /// For a stack whose Fit settles from the exact render, judged against the CPU's moving
+        /// proxy it stands in for: the jump that settlement makes beside it.
         settled: Option<Box<Settled>>,
     },
     Gap(String),
 }
 
-/// What a Fit that settles from the exact render adds to a cell: the CPU's moving proxy against
-/// the exact-derived frame it settles to, and the GPU frame against that proxy, which leaves the
-/// proxy's own approximation out.
+/// What a Fit that settles from the exact render adds to a cell, as context the limits do not
+/// judge (`docs/decisions.md`, "GPU previews"): the CPU's moving proxy against the exact-derived
+/// frame it settles to, the jump the CPU path already makes, and the GPU frame against that frame.
 pub(crate) struct Settled {
     pub(crate) proxy: Statistics,
-    pub(crate) gpu_against_proxy: Statistics,
+    pub(crate) gpu: Statistics,
 }
 
 /// A step's `mask` and `component` parameters given as `{"name": ...}`, as the corpus's evidence
@@ -304,9 +304,10 @@ pub(crate) fn corpus_cell(
     let result = (|| -> Result<Cell, String> {
         apply_steps(&owner, client, &asset, steps)?;
         let bounds = fit_bounds();
-        // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase; or,
-        // for a stack whose Fit settles from the exact render (Detail's), the reduction of the
-        // exact phase's frame that settlement presents, the proxy kept beside it.
+        // The CPU frame: the desktop's own Fit job, through the preview worker's proxy phase. A
+        // stack whose Fit settles from the exact render (Detail's) is judged against that proxy
+        // too, the frame a gesture shows on the CPU path (owner, 2026-10-02); the exact phase's
+        // reduction, which settlement presents, is kept beside it for the jump it makes.
         let mut job = crate::app::tasks::ready_preview_job(
             &owner,
             PreviewRequest::new(client, asset.clone()).proxy(bounds),
@@ -335,7 +336,7 @@ pub(crate) fn corpus_cell(
         // of it, as a crop does — or, for a photograph that fits the bounds at its own size, the
         // exact phase's frame over the source itself. With the stage the plan addresses and where
         // in it the source's first texel is.
-        let mut settled_proxy = None;
+        let mut settled_frame = None;
         let (cpu, proxied, is_proxy, (stage_width, stage_height), origin) = match outcome {
             PhaseOutcome::Proxy(proxy) => {
                 let context = RenderContext::new();
@@ -383,11 +384,9 @@ pub(crate) fn corpus_cell(
                             "the exact phase presented no settled Fit frame".to_owned(),
                         ));
                     };
-                    settled_proxy = Some(proxy.raster);
-                    (display, proxied, true, stage, origin)
-                } else {
-                    (proxy.raster, proxied, true, stage, origin)
+                    settled_frame = Some(display);
                 }
+                (proxy.raster, proxied, true, stage, origin)
             }
             PhaseOutcome::Exact(exact) => (
                 exact.result.map_err(|error| error.to_string())?,
@@ -525,23 +524,29 @@ pub(crate) fn corpus_cell(
             preview_error::compare(frame(&gpu)?, frame(&reference)?, [0, 0, width, height])?;
         let program =
             preview_error::compare(frame(&program)?, frame(&reference)?, [0, 0, width, height])?;
-        // The CPU's moving proxy, written beside the pair, against the frame it settles to, and
-        // the GPU frame against it.
-        let settled = match settled_proxy {
-            Some(proxy) => {
-                let proxy: Vec<u8> = proxy
+        // The exact-derived frame settlement presents, written beside the pair, against the CPU's
+        // moving proxy and the GPU frame: context, not judged.
+        let settled = match settled_frame {
+            Some(settled) => {
+                if (settled.width, settled.height) != (width, height) {
+                    return Err(format!(
+                        "the settled frame is {}x{}, not the proxy's {width}x{height}",
+                        settled.width, settled.height
+                    ));
+                }
+                let settled: Vec<u8> = settled
                     .rgba
                     .chunks_exact(4)
                     .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
                     .collect();
-                image::RgbImage::from_raw(width, height, proxy.clone())
+                image::RgbImage::from_raw(width, height, settled.clone())
                     .ok_or("a whole frame")?
-                    .save(output.join(format!("{name}-proxy.png")))
+                    .save(output.join(format!("{name}-settled.png")))
                     .map_err(|error| error.to_string())?;
                 let rect = [0, 0, width, height];
                 Some(Box::new(Settled {
-                    proxy: preview_error::compare(frame(&proxy)?, frame(&reference)?, rect)?,
-                    gpu_against_proxy: preview_error::compare(frame(&gpu)?, frame(&proxy)?, rect)?,
+                    proxy: preview_error::compare(frame(&reference)?, frame(&settled)?, rect)?,
+                    gpu: preview_error::compare(frame(&gpu)?, frame(&settled)?, rect)?,
                 }))
             }
             None => None,
@@ -1039,10 +1044,10 @@ fn corpus_at(test: &str, families: &[&str], zoom: Option<f32>) {
                         );
                         if let Some(settled) = settled {
                             eprintln!(
-                                "{name}: settled from exact: CPU proxy {} | GPU against the CPU \
-                                 proxy {}",
+                                "{name}: against the exact-derived frame it settles to: CPU proxy \
+                                 {} | GPU {}",
                                 figures(&settled.proxy),
-                                figures(&settled.gpu_against_proxy)
+                                figures(&settled.gpu)
                             );
                         }
                         commands.push(format!(
@@ -1073,7 +1078,7 @@ fn corpus_at(test: &str, families: &[&str], zoom: Option<f32>) {
                         if let Some(settled) = settled {
                             cell["settled_from_exact"] = json!({
                                 "cpu_proxy": stats(&settled.proxy),
-                                "gpu_against_cpu_proxy": stats(&settled.gpu_against_proxy)
+                                "gpu": stats(&settled.gpu)
                             });
                         }
                         cells.push(cell);

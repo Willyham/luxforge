@@ -336,6 +336,9 @@ impl Editor {
                 "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
                 "gpu_preview_done_us":gpu.gpu_preview_done_us,
+                // The clipping marks the GPU frame drawn carried, which stand for the overlay over it:
+                // approximate, per pixel of the stage the plan draws.
+                "clipping_marks":gpu.drawn_clipping_marks.map(|[shadows, highlights]| json!({"shadows":shadows,"highlights":highlights,"approximate":true})),
                 // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
                 "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
                     "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,
@@ -344,6 +347,7 @@ impl Editor {
                 "gpu_preview_in_use_bytes":gpu.gpu_preview_in_use_bytes,
                 "gpu_preview_peak_bytes":gpu.gpu_preview_peak_bytes,
                 "gpu_preview_passes":gpu.gpu_preview_passes,
+                "gpu_preview_spatial_passes":gpu.gpu_preview_spatial_passes,
                 "gpu_identity":self.evidence.as_ref().is_some_and(|evidence| evidence.gpu_identity.is_some()),
                 // The open gesture's GPU preview: its held boundary, the plan's revision, why the
                 // latest tick took the CPU path, and its tick counts; and the warm list's version.
@@ -357,6 +361,8 @@ impl Editor {
                 "plan_region":self.gesture_gpu_plan()
                     .and_then(|(plan, _)| plan.region)
                     .map(|region| region.rect),
+                // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
+                "settle":self.gpu_settle.summary(),
             },
             "views": self.log.loop_timing.get().views,
         })

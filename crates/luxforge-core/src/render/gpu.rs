@@ -27,8 +27,9 @@ mod wgsl_tests;
 
 pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX};
 pub use plan::{
-    GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback, GpuGeometry,
-    GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan, gpu_plan_with,
+    EstimateSource, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback,
+    GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan,
+    gpu_plan_with,
 };
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;

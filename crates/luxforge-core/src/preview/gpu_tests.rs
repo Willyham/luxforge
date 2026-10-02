@@ -84,6 +84,25 @@ fn draft_job_over(
     drafted: Vec<Layer>,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_in(
+        RenderContext::new(),
+        source,
+        action,
+        entry,
+        drafted,
+        revision,
+    )
+}
+
+/// [`draft_job_over`] in `context`, whose estimate store its frames fill and its plans read.
+fn draft_job_in(
+    context: RenderContext,
+    source: PreviewSource,
+    action: &str,
+    entry: Vec<Layer>,
+    drafted: Vec<Layer>,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -109,7 +128,7 @@ fn draft_job_over(
     draft.draft_revision = revision;
     let evaluation = Evaluation::new(
         Arc::new(ModuleRegistry::builtin()),
-        RenderContext::new(),
+        context,
         source,
         entry,
         recipe(drafted),
@@ -128,10 +147,18 @@ fn planned(preview: &GpuPreview) -> &GpuPlan {
     }
 }
 
-/// Every program the plan runs, in order: its program sequence.
+/// Every program the plan runs, in order: its program sequence, its spatial operation's passes and
+/// applies after its colour units.
 fn sequence(plan: &GpuPlan) -> Vec<&'static str> {
     plan.operations()
         .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
+        .chain(plan.spatial.iter().flat_map(|spatial| {
+            spatial
+                .passes
+                .iter()
+                .map(|pass| pass.kernel)
+                .chain(spatial.applies.iter().map(|apply| apply.function))
+        }))
         .collect()
 }
 
@@ -597,4 +624,174 @@ fn a_region_plan_never_takes_a_spatial_estimate_from_the_region_alone() {
             && window.y1() > rect.y1(),
         "{window:?} holds {rect:?} and Clarity's margin"
     );
+}
+
+/// A Presence drag reads Dehaze's light from the estimate store the committed stack's Fit frame
+/// filled, under the name of the proxy that frame was rendered from, which planning never builds:
+/// once that frame is rendered, the drag's plan holds the CPU's light and is not approximate, on a
+/// JPEG and on a RAW. Before it, and for a drag of a layer under Presence, which changes the input
+/// the light is estimated from, the light is taken on the GPU and the plan says so.
+#[test]
+fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
+    let raw = PreviewSource::Raw {
+        image: crate::render::tests::varied(WIDTH, HEIGHT),
+        settings: crate::LinearSettings::default(),
+    };
+    for (name, source) in [("JPEG", source()), ("RAW", raw)] {
+        let context = RenderContext::new();
+        let presence = |clarity: i32| {
+            Layer::new(
+                crate::PRESENCE_EFFECT,
+                json!({"dehaze": 40, "clarity": clarity}),
+            )
+        };
+        let entry = vec![presence(30)];
+        let plan_of = |action: &str, drafted: Vec<Layer>| {
+            let (job, draft) = draft_job_in(
+                context.clone(),
+                source.clone(),
+                action,
+                entry.clone(),
+                drafted,
+                1,
+            );
+            plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap()
+        };
+        let clarity = || plan_of("set-presence", vec![presence(60)]);
+        let first = clarity();
+        assert!(
+            first.boundary.as_ref().unwrap().key.plan().is_some(),
+            "{name}: a proxy"
+        );
+        assert!(
+            planned(&first).approximate(),
+            "{name}: nothing is stored yet"
+        );
+        // The committed stack's Fit frame, through the preview worker in the same context.
+        let (mut job, _) = draft_job_in(
+            context.clone(),
+            source.clone(),
+            "set-presence",
+            entry.clone(),
+            entry.clone(),
+            0,
+        );
+        job.proxy = Some(bounds());
+        job.intent = PreviewIntent::Interactive;
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let frame = wait_for("the Fit frame", || queue.poll());
+        assert_eq!(frame.phase(), PreviewPhase::Proxy, "{name}");
+        let stored = clarity();
+        assert!(
+            !planned(&stored).approximate(),
+            "{name}: the stored light is read"
+        );
+        let under = plan_of(
+            "set-basic",
+            vec![basic(json!({"exposure": 0.3})), presence(30)],
+        );
+        assert_eq!(planned(&under).boundary.layer, 0, "{name}");
+        assert!(
+            planned(&under).approximate(),
+            "{name}: a drag under Presence changes the light's input"
+        );
+    }
+}
+
+/// A drag of a spatial layer the stack holds is warmed in each shape it may draw: Presence as it
+/// stands, and with each field at its default moved off it, so a Clarity drag and the first
+/// Texture and Dehaze drags, of either sign, find their sequences warmed, within the bound.
+#[test]
+fn the_warmed_plans_hold_a_presence_layers_drags() {
+    let presence = |payload: Value| Layer::new(crate::PRESENCE_EFFECT, payload);
+    let entry = vec![presence(json!({"clarity": 30}))];
+    let (job, _) = draft_job("set-presence", entry.clone(), entry.clone(), 0);
+    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+    // The plans that start at Presence itself; the colour candidates before it hold it too.
+    let spatial = plans
+        .iter()
+        .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
+        .count();
+    assert_eq!(
+        spatial, 3,
+        "Clarity as it stands, and Texture's and Dehaze's first drags"
+    );
+    let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
+    for drafted in [
+        json!({"clarity": 60}),
+        json!({"clarity": 30, "texture": 20}),
+        json!({"clarity": 30, "dehaze": -25}),
+        json!({"clarity": 30, "dehaze": 40}),
+    ] {
+        let (job, draft) = draft_job(
+            "set-presence",
+            entry.clone(),
+            vec![presence(drafted.clone())],
+            1,
+        );
+        let drag = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+        assert!(
+            warmed.contains(&sequence(planned(&drag))),
+            "the drag to {drafted} is warmed"
+        );
+    }
+}
+
+/// At a percentage zoom a Dehaze drag reads the light the exact visible region's render stored over
+/// the whole stage, as the CPU frame that settles it does: before that render the store holds none
+/// and the drag keeps the CPU path (`region-estimate`); after it the region plan holds the CPU's
+/// light, is not approximate, and names its boundary's window.
+#[test]
+fn a_region_drag_reads_the_light_its_exact_region_stored() {
+    let rect = crate::modules::Region {
+        x0: 200,
+        y0: 120,
+        width: 160,
+        height: 100,
+    };
+    let region = crate::GpuView::Region {
+        rect,
+        magnification: 1.0,
+    };
+    let context = RenderContext::new();
+    let dehaze = |amount: i32| Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": amount}));
+    let entry = vec![dehaze(40)];
+    let plan_of = || {
+        let (job, draft) = draft_job_in(
+            context.clone(),
+            source(),
+            "set-presence",
+            entry.clone(),
+            vec![dehaze(60)],
+            1,
+        );
+        plan_preview(&job.evaluation, &draft, region).unwrap()
+    };
+    let first = plan_of();
+    assert!(
+        matches!(&first.answer, GpuAnswer::Fallback(reason) if reason.code() == "region-estimate"),
+        "nothing is stored yet"
+    );
+    // The committed stack's exact visible region, as the quiet policy settles it, in the same
+    // context.
+    let (mut job, _) = draft_job_in(
+        context.clone(),
+        source(),
+        "set-presence",
+        entry.clone(),
+        entry.clone(),
+        0,
+    );
+    job.viewport = Some(rect);
+    job.intent = PreviewIntent::Settle;
+    let mut queue = PreviewQueue::default();
+    let generation = queue.request(job);
+    wait_for("the exact region", || {
+        let result = queue.poll()?;
+        (result.generation == generation && result.phase() == PreviewPhase::Region).then_some(())
+    });
+    let stored = plan_of();
+    assert!(!planned(&stored).approximate(), "the stored light is read");
+    assert!(stored.boundary.unwrap().window.is_some());
 }

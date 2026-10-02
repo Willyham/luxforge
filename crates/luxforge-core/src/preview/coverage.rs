@@ -378,6 +378,10 @@ impl Evaluation {
 
     /// The source's pixels, the recipe format, every layer and each mask `keep` selects, hashed.
     /// Reads no pixel and keeps no source alive; a stack that does not compile has no key.
+    ///
+    /// A layer is hashed without its identity, which is bookkeeping: a layer a draft adds is given
+    /// a new identity each time the draft is evaluated, so two jobs of one draft revision would
+    /// otherwise name the same pixels differently.
     fn stack_key(&self, keep: impl Fn(&Mask) -> bool) -> Result<u64, Error> {
         self.compiled()?;
         let recipe = self.recipe();
@@ -388,7 +392,19 @@ impl Evaluation {
         )
         .map_err(|_| Error::internal("a source identity could not be formatted"))?;
         recipe.format.hash(&mut hasher);
-        hash_json(&mut hasher, &recipe.layers)?;
+        recipe.layers.len().hash(&mut hasher);
+        for layer in &recipe.layers {
+            hash_json(
+                &mut hasher,
+                &(
+                    &layer.effect_id,
+                    layer.effect_format,
+                    &layer.payload,
+                    &layer.mask,
+                    &layer.artifacts,
+                ),
+            )?;
+        }
         for mask in recipe.masks.iter().filter(|mask| keep(mask)) {
             hash_json(&mut hasher, mask)?;
         }
@@ -1273,6 +1289,11 @@ mod tests {
         bound.layers.push(layer.clone());
         let key = changed(&held, bound.clone()).pixel_content_key().unwrap();
         assert_ne!(key, initial);
+        // A layer's identity is bookkeeping: the same layer under another identity, as a draft's
+        // added layer is each time the draft is evaluated, draws the same pixels.
+        let mut renamed = bound.clone();
+        renamed.layers[0].id = LayerId::new();
+        assert_eq!(changed(&held, renamed).pixel_content_key().unwrap(), key);
         moved.layers.push(layer);
         assert_ne!(changed(&held, moved).pixel_content_key().unwrap(), key);
         bound.layers[0].payload = json!({"exposure":2.0});

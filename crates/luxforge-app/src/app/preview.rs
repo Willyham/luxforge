@@ -741,6 +741,7 @@ impl Presentation {
             gpu: None,
             gpu_hold: false,
             gpu_tag: None,
+            dissolve: None,
             gpu_warm: None,
         }
     }

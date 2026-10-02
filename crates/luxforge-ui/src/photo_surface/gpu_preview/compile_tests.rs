@@ -36,11 +36,9 @@ fn with_options(mut drawn: PhotoPrimitive, options: GpuOptions) -> PhotoPrimitiv
     drawn
 }
 
-/// Wait until the compile thread has finished every sequence `pipeline` asked of it.
+/// Wait until the compile thread has finished `steps`, drawing no frame.
 fn compiled(pipeline: &mut PhotoPipeline, steps: &[GpuStep]) {
-    let figures = Arc::clone(&pipeline.figures);
     wait_until("the compile thread", || {
-        pipeline.gpu.pipelines.settle(&figures.preview);
         !pipeline.gpu.pipelines.compiling(steps)
     });
 }
@@ -206,11 +204,56 @@ fn the_pipeline_cache_stays_bounded() {
         }
         assert!(pipeline.gpu.pipelines.len() <= PIPELINE_CACHE);
     }
-    pipeline.gpu.pipelines.settle(&figures.preview);
     assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
     assert_eq!(
         figures.preview.compiles(),
         (PIPELINE_CACHE + 4) as u64,
         "every warmed sequence compiled once"
+    );
+}
+
+/// The compile thread drains its queue whether or not a frame is drawn: a warm list of
+/// [`PIPELINE_CACHE`] sequences all compile and are counted with no frame drawn, and a second list
+/// handed after it, again with no frame between, compiles too, the cache keeping the newest.
+#[test]
+fn the_compile_queue_drains_with_no_frame_drawn() {
+    let test = "the_compile_queue_drains_with_no_frame_drawn";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, _) = boundary_with_codes(7);
+    let sequences: Vec<Vec<GpuStep>> = (0..2 * PIPELINE_CACHE)
+        .map(|index| {
+            let entry: &'static str = Box::leak(format!("drained_{index}").into_boxed_str());
+            plan_of(&boundary, named(entry)).steps
+        })
+        .collect();
+    let figures = Arc::clone(&pipeline.figures);
+    for (version, list) in sequences.chunks(PIPELINE_CACHE).enumerate() {
+        let before = figures.preview.compile_us().0;
+        pipeline.warm_gpu(&device, Some(&GpuWarm::new(version as u64, list.to_vec())));
+        let wanted = before + list.len() as u64;
+        assert_eq!(
+            figures.preview.compiles(),
+            wanted,
+            "every sequence is queued"
+        );
+        wait_until("every sequence to compile", || {
+            figures.preview.compile_us().0 == wanted
+        });
+        assert!(
+            list.iter()
+                .all(|steps| !pipeline.gpu.pipelines.compiling(steps))
+        );
+    }
+    assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
+    for steps in &sequences[PIPELINE_CACHE..] {
+        assert!(pipeline.gpu.pipelines.failure(steps).is_none());
+    }
+    eprintln!(
+        "{test}: {} sequences compiled with no frame drawn, the longest in {} µs",
+        sequences.len(),
+        figures.preview.compile_us().1
     );
 }
