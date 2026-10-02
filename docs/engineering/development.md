@@ -32,7 +32,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Core timing on a real-sized JPEG; `--lens-only` accepts JPEG or RAW and measures profile queries, commits, matched exact renders, point picks, serial export and cancellation | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]`; for Lens, `--lens-only --source JPEG\|RAW` |
 | Headless Detail full render/export, reopened-owner neutral picks, first/later colour-limited draft ticks, active cancellation cleanup and neutral source sharing; accepts the planned 24 MP or 60 MP JPEG | `cargo run --release --locked --package xtask -- detail-performance --source JPEG --output NEW_DIR [--samples N] [--case all\|render\|export\|points\|cancel\|sharing]` |
 | Detail value-mask input grids through the production coverage evaluator: dense overlay 2880×1800 and sparse thumbnail 28×19, first build and mask-amount-only reuse | `cargo run --release --locked --package xtask -- detail-grid-performance --source JPEG --output NEW_DIR [--samples N]` |
-| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--curve-layer` commits a nonneutral global Tone curve before a numeric-source workload, independently of the `--control curve` gesture target. `--detail` commits moderate sharpening 60, luminance 40 and colour 40 before the gesture. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. `--control curve` drags the developer proof curve; with `--action set-curve --parameter luminance` (any curve parameter of a non-developer field-patch action) it seeds the Tone curve with `[[0, 0], [0.5, 0.5], [1, 1]]` and drags that mid-tone point instead, in drag or commit mode. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle]` |
+| Desktop slider/curve-to-presented-frame and settled-histogram timing, peak RSS, scratch and idle CPU; `--zoom` selects a percentage view, `--moving-pan` interleaves pan with a paced burst, and `--mode viewport` captures a held draft, pans, refinement, release and full-slot reuse at 100% or 200%, and `--mode crop-start` times opening a crop draft and reads its memory. `--curve-layer` commits a nonneutral global Tone curve before a numeric-source workload, independently of the `--control curve` gesture target. `--detail` commits moderate sharpening 60, luminance 40 and colour 40 before the gesture. `--presence` commits a Presence layer with all three fields at +100 before a drag, commit or crop-start. `--lens` selects the first eligible offline profile through the desktop control, with explicit acknowledgement for a JPEG; `--perspective` seeds +20 horizontal and -10 vertical. `--action`/`--parameter` measure another drafting slider in place of Basic exposure: a field-patch slider (presence, mixer, vignette, ...), or the RAW white balance `set-raw` `temperature` or `tint` over a RAW `--source`. `--control curve` drags the developer proof curve; with `--action set-curve --parameter luminance` (any curve parameter of a non-developer field-patch action) it seeds the Tone curve with `[[0, 0], [0.5, 0.5], [1, 1]]` and drags that mid-tone point instead, in drag or commit mode. Every frame is timed on the path that drew it, GPU or CPU, and reported with its path and reason; `--warm MS` leaves the editor alone before a drag so the committed stack's GPU programs compile, `--contend N` queues N exports so an exact render holds the shared pool during a drag, and `--idle` also checks idle after the release's dissolve. | `cargo run --release --locked --package xtask -- editor-latency --source JPEG\|RAW --output NEW_DIR [--binary PATH] [--samples N] [--mode drag\|commit\|burst\|paint\|hover\|viewport\|crop-start] [--zoom PERCENT] [--moving-pan] [--control slider\|curve] [--action ID --parameter NAME] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N]` |
 | Verify golden fixtures; generate 24 MP, 60 MP, the mixer and presence scenarios' own hue-wheel and gradient/edge/texture/flat workloads, the `mask-range` scenario's own colour-chart patches and the `curve` scenario's grey ramp and colour patches and the `compare-zone-plate` scenario's 6000 × 4000 zone plate | `cargo xtask fixtures`, `cargo xtask generate-fixtures [--output NEW_DIR]` |
 | Adding a camera: download selected CC0 samples from the raw.pixls.us index, verify their SHA-256 and read each with the RAW adapter, or see why it refuses them | `cargo xtask raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW_DIR [--max-source-mib N]` |
 | Adding a camera: a DNG or TIFF's IFDs, geometry and calibration tags and opcode-list layouts, read-only | `cargo xtask inspect-dng --source DNG [--json NEW_FILE]` |
@@ -952,14 +952,33 @@ and terminal-job polling has a 2 ms interval.
 rendering over cached sources and so cannot see desktop scheduling, GPU upload or presentation. It writes its own
 evidence script, drives the release binary through a background evidence launch, and reads the
 timings out of that run's `events.jsonl`. Each measured input is one scripted `slider` step left
-open, so the step settles only once the gesture has drained: one input, one `draft.set`, one preview
-job, one frame, with nothing from the previous input still in flight. `slider_draft_set` gives the
-input's time, `slider_draft_preview` names the preview generation that `draft.set` produced, and the
-`preview_displayed` of that generation is when that raster became the photo surface's source.
-Presented therefore means that update, whose redraw draws the frame, not display scanout: the
-figures are an upper bound on the editor's own work and a lower bound on what an eye sees. The
-report has no upload row for the same reason: the photo surface writes its texture in the frame
-that draws it, so `render_and_upload` covers the render and the hand-over together. The measured window is
+open, so the step settles only once the gesture has drained: one input, one `draft.set`, one frame,
+with nothing from the previous input still in flight. `slider_draft_set` gives the input's time. A
+tick the GPU stage draws ([GPU previews](../design/gpu-preview.md)) is answered by the
+`gpu_preview_tick` of the same update, which names its draft and revision and queues no preview job,
+and its step settles on that tick rather than on a CPU frame. A tick on the CPU path is answered by
+`slider_draft_preview`, which names the preview generation, after the `gpu_preview_tick` that says
+why it took that path (`boundary-pending` for a gesture's first tick, which asks for the boundary;
+`compiling`; `not-fit`; ...). A CPU frame is presented by the `preview_displayed` of its generation,
+the update in which its raster became the photo surface's source. A GPU frame is presented by the
+surface's first draw of the plan tagged with the input's draft revision: the surface stamps each
+frame it first draws, and the desktop logs the stamp as `surface_frame_drawn` with the draw's own
+instant on the run's clock, its path, and its draft and revision or the generation of its CPU
+picture. Neither is display scanout: the figures are an upper bound on the editor's own work and a
+lower bound on what an eye sees. `input_to_presented_frame` pools both paths, which
+`gpu_input_to_presented_frame` and `cpu_input_to_presented_frame` split; `input_to_drawn_frame`
+times both to the surface's first draw (a CPU region frame at a percentage zoom has no logged draw
+yet and is left out of it); `gpu_tick_to_drawn_frame` runs from the GPU tick's update to that draw.
+The report has no upload row: the photo surface writes its texture in the frame that draws it, so
+`render_and_upload` covers a CPU frame's render and hand-over together. `frames` lists every
+drained input with its path, reason, draft, revision or generation, its two figures, and what the
+frame captured after its step showed: a GPU input's capture must show the GPU path at its own
+revision, or the run fails. `paths` counts the inputs by path and the CPU ticks by reason, beside
+the whole run's ticks by path, and `compile_queue_before_gesture` the GPU stage's programs handed
+and compiled before the first input. `--warm MS` (drag mode, up to 10 s) waits that long after the
+preconditions, so a committed stack's programs finish compiling off the interface thread as they
+would before a person's next drag; without it the first ticks over a Presence or Detail layer can
+take the CPU path as `compiling`. The measured window is
 invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
 editor's own path to the texture and say nothing about the cost of putting that texture on a
 screen. The last scripted value also
@@ -981,14 +1000,33 @@ and -10 vertical before measurement. `--crop DEGREES` commits a straightening 16
 the measured stack carries the fused geometry resample as well as the colour pass. These flags
 apply to drag, commit, burst, viewport, paint, hover and crop-start. `--basic` commits a Basic layer
 with every field non-neutral first, so each measured frame runs every one of the module's colour
-units. `--idle`, available in drag and commit modes, reopens the gesture's own committed catalog
+units; over a RAW source it leaves out Temperature and Tint, which are the source development's
+there. `--contend N` (drag mode, 1 to 5) queues N `export.jpeg` jobs of the committed stack just
+before the first input, so an exact render holds the shared pool while the drag runs, and reads the
+export lane back with an `activity.list` step after the release: the lane runs one job with the rest
+waiting, so it is busy from the first export's acceptance to the last one's end, the answer itself
+while one still runs. An input sent in that window is contended (`frames[].contended`), and
+`contended_input_to_presented_frame` is their figure; a run with none fails. The window spans the
+exports' encodes and writes as well as their renders, and the exported files are removed after the
+run. How much of a drag the exports cover depends on the source's size, so `frames[].contended`
+says which inputs they covered. `--idle`, in drag mode, first closes the Performance section
+after the release, whose one-second sampler would wake the editor, and runs an `idle` evidence step
+in the gesture's own launch: a 4-second settle for the release's dissolve and the committed frame's
+exact phase, then a 10-second window over which the surface's drawn frames, the views built and the
+process's own CPU time are counted (`idle_after_dissolve`, and its
+`idle_after_dissolve_process_cpu_percent_one_core`, `_drawn_frames` and `_views` rows; the window's
+own start counts one frame and one view). The run fails unless a dissolve ran before it. `--idle`,
+in drag and commit modes, then reopens the gesture's own committed catalog
 and source in an ordinary launch. After the exact histogram is adopted and one second of settling,
 it measures CPU time and sampled RSS for thirty seconds with the same Detail, Lens, Perspective, crop and
 colour stack. This includes the open Performance section's sampler. The harness then stops the
 process; this is no clean-close check. `latency.json` and `resources.json` keep every sample,
 scratch high-water and correlated state. Native GPU allocation, when the platform provides it,
 and the photo surface's full, region, retiring and crop-stage texture bytes are captured levels
-from the gesture, not idle-process measurements or peaks. Surface bytes exclude backend staging;
+from the gesture, not idle-process measurements or peaks. The GPU preview stage's own budget is
+reported beside them: `gpu_preview_peak_bytes`, the most its slots have held over the run, which is
+its high-water, with `last_gpu_preview_in_use_bytes` and `gpu_preview_budget_bytes`. `measure`
+drives no gesture, so it has no GPU preview figures. Surface bytes exclude backend staging;
 invisible windows provide no compositor or scanout figures. Missing counters remain null.
 
 `--mode burst` is a wild, undrained drag rather than the drained gesture drag and commit mode
@@ -1002,13 +1040,14 @@ sends the same fixed values. Its `latency.json` keeps the same header fields as 
 (host, binary hashes, launch mode, method, queue counts) and adds a `burst` object: `scripted_values`
 and `sent_values` (the paced driver's own `slider_step_value` events, which count a value the core
 coalesces away as scripted rather than measured), `draft_sets` and `preview_jobs` (the core's own
-real-time coalescing of that pace), `presented_frames` (every `preview_displayed` over the run,
-drafted and committed alike), `cancelled_exact` (`preview_exact_cancelled` events: full-resolution
+real-time coalescing of that pace), `presented_frames` (every `preview_displayed` and every first
+draw of a GPU tick's plan over the run, drafted and committed alike), `gpu_frames` and `cpu_frames`
+(the drafted inputs that reached the screen, by the path that drew them), `cancelled_exact` (`preview_exact_cancelled` events: full-resolution
 phases a newer request superseded, which carry no frame) and `proxy` (the last presented frame's
 `proxy`/`proxy_dimensions`). Its figures are rows: `presented_fps` (`presented_frames` divided by
 the seconds from the first `slider_step_value` to the last of them), `staleness_ms` (each presented
-drafted frame's own `slider_draft_set` time to its `preview_displayed` time, paired by generation
-exactly as drag mode pairs them), `frame_gap_ms` and `max_gap_ms` (the intervals between
+drafted frame's own `slider_draft_set` time to its presentation, paired by generation or by GPU
+draft revision exactly as drag mode pairs them), `frame_gap_ms` and `max_gap_ms` (the intervals between
 consecutive presented drafted frames), the GPU counters `draw_encoded_frames`,
 `photo_texture_writes` and `photo_upload_bytes`, and the sampled resources.
 With `--zoom PERCENT --moving-pan`, the same paced tick also moves the photo scrollable on a path
@@ -1046,9 +1085,14 @@ state rather than assumed, plus any requested global Detail, Lens, Perspective a
 whose positions are handed to the desktop one
 per 24 ms in real time: the first tick presses, each later one moves and the last releases, so one
 paced step is still one stroke and one history entry. `--samples` is the number of positions, 2 to 1000.
-Each position is its own mask `draft.set`, preview job and displayed frame, paired by the generation
-`mask_draft_preview` carries, and a position whose job a later one superseded is reported as
-`superseded` rather than averaged away. `latency.json` records the recipe it was painted on, the brush,
+Each position is its own mask `draft.set` and frame: on the CPU path a preview job and its displayed
+frame, paired by the generation `mask_draft_preview` carries; drawn on the GPU, the
+`gpu_preview_tick` of its own update and the surface's first draw of that tick's plan
+(`surface_frame_drawn`), listed in `gpu_samples` with the positions its `draft.set` carried. A
+position whose frame a later one superseded is reported as `superseded` rather than averaged away.
+`input_to_presented_frame`, the press rows and the position rows count both paths;
+`gpu_input_to_presented_frame`, `cpu_input_to_presented_frame` and `gpu_tick_to_drawn_frame` split
+them, and the per-phase and quartered phase rows are the CPU frames' own. `latency.json` records the recipe it was painted on, the brush,
 the path, the distributions as rows and, in its `load` record, the one-minute load average at the
 start, marked `unreliable` above the 8.0 threshold (the end-of-run load is recorded beside it). It exists because the `mask-range` scenario's paint figure is taken on four masked
 colour layers, three of whose masks bind the whole stage, and is therefore not a baseline for the
