@@ -97,6 +97,10 @@ pub(crate) struct WindowPlan {
     pub(crate) source: Region,
     /// Per segment, the rectangle of its output stage that is kept.
     outputs: Vec<Region>,
+    /// Per segment, the rectangle of the whole stage it receives that its kept output reads
+    /// through its exact geometry: inside what its boundary's cut frame holds, which a spatial
+    /// operation grows by its halo and the CPU's tile grid.
+    reads: Vec<Region>,
 }
 
 /// The stage segment `index` reads: the source for the first, or the whole stage the boundary
@@ -133,6 +137,33 @@ impl WindowPlan {
         source: (u32, u32),
         requested: Region,
     ) -> Result<Self, RegionFallback> {
+        Self::walk(compiled, source, requested, None)
+    }
+
+    /// [`Self::of_rect`] for a GPU preview's region whose boundary lies in segment `boundary`: the
+    /// CPU renders the boundary through the segments up to it, which are planned as the CPU cuts
+    /// them, and the GPU evaluates every boundary after it, each of whose windows is its output's
+    /// grown by its halo alone ([`super::Entry::plan_gpu_window`]). A spatial step evaluates every
+    /// pixel of the window it holds, so it needs no tile grid, which is the CPU's. Only
+    /// [`Self::reads`] of segments up to `boundary` and [`Self::apply_through`] to it are the
+    /// CPU's own cuts.
+    pub(crate) fn of_gpu_rect(
+        compiled: &Compiled,
+        source: (u32, u32),
+        requested: Region,
+        boundary: usize,
+    ) -> Result<Self, RegionFallback> {
+        Self::walk(compiled, source, requested, Some(boundary))
+    }
+
+    /// The walk both plans share, back from the output: the entry of a segment after `gpu_after`
+    /// is planned for the GPU, every other as the CPU cuts it.
+    fn walk(
+        compiled: &Compiled,
+        source: (u32, u32),
+        requested: Region,
+        gpu_after: Option<usize>,
+    ) -> Result<Self, RegionFallback> {
         let segments = &compiled.segments;
         let source = Stage {
             width: source.0,
@@ -147,6 +178,7 @@ impl WindowPlan {
             return Err(RegionFallback::UnplannableGeometry);
         }
         let mut outputs = vec![Region::whole(segments[count - 1].stage()); count];
+        let mut reads = outputs.clone();
         // What the segment being walked must produce, in its output stage's coordinates.
         let mut needed = requested;
         let mut read_source = None;
@@ -165,8 +197,12 @@ impl WindowPlan {
             if read.x1() > input.width || read.y1() > input.height {
                 return Err(RegionFallback::UnplannableGeometry);
             }
+            reads[index] = read;
             match &segment.entry {
                 None => read_source = Some(read),
+                Some(entry) if gpu_after.is_some_and(|boundary| index > boundary) => {
+                    needed = entry.plan_gpu_window(read, segments[index - 1].stage())?;
+                }
                 Some(entry) => {
                     needed = entry.plan_window(
                         read,
@@ -179,17 +215,16 @@ impl WindowPlan {
         Ok(Self {
             source: read_source.ok_or(RegionFallback::UnplannableGeometry)?,
             outputs,
+            reads,
         })
     }
 
-    /// The rectangle of the whole stage segment `segment` receives that this plan keeps: the
-    /// source's window for the first segment, and the window of the stage the boundary entering
-    /// any other writes, which is the previous segment's kept output.
-    pub(crate) fn received(&self, segment: usize) -> Region {
-        match segment {
-            0 => self.source,
-            _ => self.outputs[segment - 1],
-        }
+    /// The rectangle of the whole stage segment `segment` receives that its kept output reads: the
+    /// source's window for the first segment, and for a later one the part of its boundary's cut
+    /// frame inside that boundary's own margins, which a GPU preview's region boundary in it holds
+    /// ([`Self::of_gpu_rect`]).
+    pub(crate) fn reads(&self, segment: usize) -> Region {
+        self.reads[segment]
     }
 
     /// Rewrite `compiled`, the stack this plan was made from, to read a source of the window's
@@ -198,15 +233,30 @@ impl WindowPlan {
     /// one; it is asked nothing otherwise.
     pub(crate) fn apply(
         &self,
+        compiled: Compiled,
+        source: (u32, u32),
+        globals: impl FnMut(usize) -> Result<Vec<Option<Global>>, Error>,
+    ) -> Result<Compiled, Error> {
+        let last = compiled.segments.len().saturating_sub(1);
+        self.apply_through(compiled, source, last, globals)
+    }
+
+    /// [`Self::apply`] to segments `0..=last` alone, the rest left as they were compiled: what a
+    /// render that stops at segment `last` reads, such as a GPU preview's region boundary
+    /// ([`Self::of_gpu_rect`]), whose later segments the GPU evaluates and no CPU frame of the cut
+    /// compilation reaches. No estimate is asked for a segment past `last`.
+    pub(crate) fn apply_through(
+        &self,
         mut compiled: Compiled,
         source: (u32, u32),
+        last: usize,
         mut globals: impl FnMut(usize) -> Result<Vec<Option<Global>>, Error>,
     ) -> Result<Compiled, Error> {
         let source = Stage {
             width: source.0,
             height: source.1,
         };
-        if self.outputs.len() != compiled.segments.len() {
+        if self.outputs.len() != compiled.segments.len() || last >= compiled.segments.len() {
             return Err(Error::internal(
                 "a proxy window was planned for another compilation",
             ));
@@ -217,7 +267,7 @@ impl WindowPlan {
         let full_inputs: Vec<_> = (0..compiled.segments.len())
             .map(|index| input_stage(&compiled.segments, index, source))
             .collect();
-        for (index, whole_input) in full_inputs.iter().copied().enumerate() {
+        for (index, whole_input) in full_inputs.iter().copied().enumerate().take(last + 1) {
             // The window of the whole stage this segment reads: the source's, or the one its
             // boundary's cut frame holds ([`super::Entry::cut`]), read from the geometry the
             // segment composed before it is rebased below.

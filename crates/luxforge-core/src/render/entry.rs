@@ -425,10 +425,12 @@ impl<'a> Render<'a> {
 
     /// The input of the layer that begins at `position` — a segment and an operation index of this
     /// render's compilation — held over the window of its received stage that the output stage's
-    /// `rect` reads at full scale: the visible region and every margin its boundaries need,
-    /// through the windowed planner ([`WindowPlan::of_rect`]), with the same whole-stage spatial
-    /// estimates the exact region uses. A stack the planner cannot cut answers its reason as an
-    /// error, as a region the boundary cannot hold is no frame of it.
+    /// `rect` reads at full scale: the visible region and every margin the boundaries after it
+    /// need on the GPU, through the windowed planner ([`WindowPlan::of_gpu_rect`]). The segments
+    /// up to the layer's are cut as the CPU cuts them, with the same whole-stage spatial estimates
+    /// the exact region uses, and those after it are left whole, since the GPU evaluates them. A
+    /// stack the planner cannot cut answers its reason as an error, as a region the boundary
+    /// cannot hold is no frame of it.
     pub(crate) fn region_boundary(
         &self,
         rect: Region,
@@ -442,12 +444,13 @@ impl<'a> Render<'a> {
             ));
         };
         let source_size = self.source.dimensions();
-        let windows = WindowPlan::of_rect(&self.compiled, source_size, rect).map_err(|reason| {
-            Error::validation(format!(
-                "the GPU preview's region boundary: {}",
-                reason.reason()
-            ))
-        })?;
+        let windows = WindowPlan::of_gpu_rect(&self.compiled, source_size, rect, position.0)
+            .map_err(|reason| {
+                Error::validation(format!(
+                    "the GPU preview's region boundary: {}",
+                    reason.reason()
+                ))
+            })?;
         self.options.cancel.check()?;
         let source = match self.source {
             RenderSource::Byte(image) => RegionSource::Byte(
@@ -467,10 +470,15 @@ impl<'a> Render<'a> {
                 settings,
             },
         };
-        let cut = windows.apply(Compiled::clone(&self.compiled), source_size, |index| {
-            self.spatial_globals(index)
-        })?;
-        Render::compiled(source.input(), cut, self.options.clone(), self.context)?.boundary(
+        let cut = windows.apply_through(
+            Compiled::clone(&self.compiled),
+            source_size,
+            position.0,
+            |index| self.spatial_globals(index),
+        )?;
+        // A spatial operation before the boundary is cut on its tile grid, and the boundary keeps
+        // only what the region reads of its output.
+        Render::compiled(source.input(), cut, self.options.clone(), self.context)?.boundary_kept(
             &self.compiled,
             Stage {
                 width: source_size.0,
@@ -479,6 +487,8 @@ impl<'a> Render<'a> {
             windows.source,
             position,
             format,
+            None,
+            Some(windows.reads(position.0)),
         )
     }
 
