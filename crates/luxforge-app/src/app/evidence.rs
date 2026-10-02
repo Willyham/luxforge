@@ -203,9 +203,19 @@ pub(crate) struct IdleObservation {
     pub(crate) settle_until: Instant,
     pub(crate) settle_ms: u64,
     pub(crate) ms: u64,
-    /// When the window ends, the surface's drawn frames and the views built when it began: `None`
-    /// while settling.
-    pub(crate) window: Option<(Instant, u64, u64)>,
+    /// The window, once the settle has passed: `None` while settling.
+    pub(crate) window: Option<IdleWindow>,
+}
+
+/// An idle check's window: when it began and ends, and the surface's drawn frames, the views built
+/// and the process's CPU time when it began.
+#[derive(Clone, Copy)]
+pub(crate) struct IdleWindow {
+    pub(crate) started: Instant,
+    pub(crate) until: Instant,
+    pub(crate) drawn: u64,
+    pub(crate) views: u64,
+    pub(crate) cpu_ns: Option<u64>,
 }
 
 impl Evidence {
@@ -3219,9 +3229,11 @@ impl Editor {
     }
 
     /// The idle check's phase ends: the settle opens the window, counting from the surface's drawn
-    /// frames and the views built so far, and the window's end checks that nothing was drawn or
-    /// updated in it but the one frame and view of its own start. A dissolve asks for frames only
-    /// while it runs, so one that ended in the settle draws nothing in the window.
+    /// frames, the views built and the process's CPU time so far, and the window's end checks that
+    /// nothing was drawn or updated in it but the one frame and view of its own start. A dissolve
+    /// asks for frames only while it runs, so one that ended in the settle draws nothing in the
+    /// window. The CPU the whole process spent over the window is recorded beside it, a figure and
+    /// not part of the verdict.
     fn idle_deadline(&mut self) -> Task<Message> {
         let Some(observation) = self.evidence.as_ref().and_then(|e| e.idle.as_ref()) else {
             return Task::none();
@@ -3229,20 +3241,31 @@ impl Editor {
         let now = Instant::now();
         let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         let views = self.log.loop_timing.get().views;
-        let Some((until, drawn_before, views_before)) = observation.window else {
+        let Some(window) = observation.window else {
             if now >= observation.settle_until {
-                let until = now + Duration::from_millis(observation.ms);
+                let window = IdleWindow {
+                    started: now,
+                    until: now + Duration::from_millis(observation.ms),
+                    drawn: gpu.drawn_frames,
+                    views,
+                    cpu_ns: luxforge_core::resources::process_cpu_time_ns(),
+                };
                 if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
-                    idle.window = Some((until, gpu.drawn_frames, views));
+                    idle.window = Some(window);
                 }
             }
             return Task::none();
         };
-        if now < until {
+        if now < window.until {
             return Task::none();
         }
-        let drawn_delta = gpu.drawn_frames.saturating_sub(drawn_before);
-        let views_delta = views.saturating_sub(views_before);
+        let elapsed_ns = now.saturating_duration_since(window.started).as_nanos() as f64;
+        let cpu_ns = window
+            .cpu_ns
+            .zip(luxforge_core::resources::process_cpu_time_ns())
+            .map(|(before, after)| after.saturating_sub(before));
+        let drawn_delta = gpu.drawn_frames.saturating_sub(window.drawn);
+        let views_delta = views.saturating_sub(window.views);
         // The window's start was an update of its own, whose view and frame it may count.
         let passed = drawn_delta <= 1
             && views_delta <= 1
@@ -3257,6 +3280,11 @@ impl Editor {
             "dissolve_drawn": gpu.drawn_dissolve.is_some(),
             "dissolve_running": self.gpu_settle.dissolve().is_some(),
             "drawn_frames": gpu.drawn_frames,
+            "measured_window_ms": elapsed_ns / 1e6,
+            "process_cpu_ms": cpu_ns.map(|ns| ns as f64 / 1e6),
+            "process_cpu_percent_one_core": cpu_ns
+                .filter(|_| elapsed_ns > 0.0)
+                .map(|ns| 100.0 * ns as f64 / elapsed_ns),
         });
         self.event("idle_check", || detail.clone());
         self.note_step(json!({"idle_check": detail}));
@@ -4813,14 +4841,21 @@ mod tests {
         observation.settle_until = Instant::now() - Duration::from_millis(1);
         let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
         let observation = editor.evidence.as_mut().unwrap().idle.as_mut().unwrap();
-        let (until, drawn, views) = observation.window.expect("the window opened");
-        observation.window = Some((Instant::now() - Duration::from_millis(1), drawn, views));
-        assert!(until > Instant::now());
+        let window = observation.window.expect("the window opened");
+        assert!(window.until > Instant::now());
+        observation.window = Some(IdleWindow {
+            until: Instant::now() - Duration::from_millis(1),
+            ..window
+        });
         let _ = editor.evidence_update(EvidenceMessage::IdleDeadline);
         assert!(!idle(&editor));
         let check = &editor.evidence.as_ref().unwrap().current.as_ref().unwrap()["idle_check"];
         assert_eq!(check["passed"], json!(true), "{check}");
         assert_eq!(check["drawn_frames_delta"], json!(0));
+        assert!(
+            check["process_cpu_percent_one_core"].as_f64().is_some(),
+            "the window's CPU is recorded where the platform reports it: {check}"
+        );
         assert!(editor.evidence.as_ref().unwrap().capture_pending);
         crate::app::testing::finish(editor, catalog);
     }
