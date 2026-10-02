@@ -81,7 +81,7 @@ impl Qualifier {
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
     /// boundary's size, alpha one.
     pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
-        let (bytes, _) = self.run(None, plan, wgpu::TextureFormat::Rgba32Float, 16)?;
+        let (bytes, _) = self.run(None, plan, None, wgpu::TextureFormat::Rgba32Float, 16)?;
         Ok(floats(&bytes))
     }
 
@@ -93,18 +93,45 @@ impl Qualifier {
         first: &GpuPlan,
         then: &GpuPlan,
     ) -> Result<(Vec<[f32; 4]>, u64), String> {
-        let (bytes, ran) = self.run(Some(first), then, wgpu::TextureFormat::Rgba32Float, 16)?;
+        let (bytes, ran) = self.run(
+            Some(first),
+            then,
+            None,
+            wgpu::TextureFormat::Rgba32Float,
+            16,
+        )?;
         Ok((floats(&bytes), ran))
     }
 
     /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
     /// the hardware's encoding of the same values, row by row, RGBA.
     pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
-        let (bytes, _) = self.run(None, plan, OUTPUT_FORMAT, 4)?;
-        Ok(bytes
-            .chunks_exact(4)
-            .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
-            .collect())
+        let (bytes, _) = self.run(None, plan, None, OUTPUT_FORMAT, 4)?;
+        Ok(codes(&bytes))
+    }
+
+    /// [`Qualifier::evaluate`] over an `rgba32float` boundary holding `pixels`, row by row the
+    /// boundary's size, as they are, in place of the plan's half floats: a measurement of what the
+    /// boundary's format costs a program, which no slot draws.
+    pub fn evaluate_over(
+        &self,
+        plan: &GpuPlan,
+        pixels: &[[f32; 3]],
+    ) -> Result<Vec<[f32; 4]>, String> {
+        let float = Some(pixels);
+        let (bytes, _) = self.run(None, plan, float, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok(floats(&bytes))
+    }
+
+    /// [`Qualifier::evaluate_codes`] over an `rgba32float` boundary holding `pixels`, as
+    /// [`Qualifier::evaluate_over`] reads it.
+    pub fn evaluate_codes_over(
+        &self,
+        plan: &GpuPlan,
+        pixels: &[[f32; 3]],
+    ) -> Result<Vec<[u8; 4]>, String> {
+        let (bytes, _) = self.run(None, plan, Some(pixels), OUTPUT_FORMAT, 4)?;
+        Ok(codes(&bytes))
     }
 
     /// `plan` checked as `prepare` checks it, and compiled for a target of `format`.
@@ -126,10 +153,18 @@ impl Qualifier {
         compile(&self.device, &self.support, &plan.steps, format)
     }
 
-    /// `plan`'s boundary uploaded and its words and blocks packed and written, bound as group 0.
-    fn inputs(&self, plan: &GpuPlan) -> Inputs {
+    /// `plan`'s boundary uploaded, or `float`'s pixels as `rgba32float` in its place, and its words
+    /// and blocks packed and written, bound as group 0.
+    fn inputs(&self, plan: &GpuPlan, float: Option<&[[f32; 3]]>) -> Result<Inputs, String> {
         let device = &self.device;
         let (width, height) = plan.boundary.size();
+        let format = match float {
+            Some(pixels) if pixels.len() != width as usize * height as usize => {
+                return Err("an rgba32float boundary holds the boundary's pixels".into());
+            }
+            Some(_) => wgpu::TextureFormat::Rgba32Float,
+            None => wgpu::TextureFormat::Rgba16Float,
+        };
         let boundary = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("luxforge.qualification.boundary"),
             size: wgpu::Extent3d {
@@ -140,11 +175,46 @@ impl Qualifier {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        upload_boundary(&self.queue, &boundary, &plan.boundary);
+        match float {
+            Some(pixels) => {
+                // Row by row, so no staging copy is larger than a row.
+                for (y, row) in pixels.chunks_exact(width as usize).enumerate() {
+                    let texels: Vec<u8> = row
+                        .iter()
+                        .flat_map(|[r, g, b]| [*r, *g, *b, 1.0])
+                        .flat_map(f32::to_le_bytes)
+                        .collect();
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &boundary,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: 0,
+                                y: y as u32,
+                                z: 0,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &texels,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(width * 16),
+                            rows_per_image: Some(1),
+                        },
+                        wgpu::Extent3d {
+                            width,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
+            None => upload_boundary(&self.queue, &boundary, &plan.boundary),
+        }
         let (mut words, mut blocks) = (Vec::new(), Vec::new());
         pack(plan, &mut words, &mut blocks);
         let storage = |label, data: &[u32]| {
@@ -178,20 +248,22 @@ impl Qualifier {
                 },
             ],
         });
-        Inputs {
+        Ok(Inputs {
             bindings,
             words,
             blocks,
             _held: (boundary, words_buffer, blocks_buffer),
-        }
+        })
     }
 
     /// `plan` drawn into a target of `format`, `texel_bytes` a texel, read back unpadded, after
-    /// `first`'s passes when it is given; with how many of `plan`'s passes ran.
+    /// `first`'s passes when it is given and over `float`'s boundary when that is; with how many
+    /// of `plan`'s passes ran.
     fn run(
         &self,
         first: Option<&GpuPlan>,
         plan: &GpuPlan,
+        float: Option<&[[f32; 3]]>,
         format: wgpu::TextureFormat,
         texel_bytes: u32,
     ) -> Result<(Vec<u8>, u64), String> {
@@ -215,7 +287,7 @@ impl Qualifier {
                 return Err("a plan drawn after another holds the same planes".into());
             }
             let first_compiled = self.compiled(first, format)?;
-            let inputs = self.inputs(first);
+            let inputs = self.inputs(first, None)?;
             if let Some(planes) = planes.as_mut() {
                 planes.write_parameters(&self.queue, &first.steps);
                 let groups = spatial::Groups::new(device, &first_compiled.spatial, planes);
@@ -237,7 +309,7 @@ impl Qualifier {
                 self.queue.submit([encoder.finish()]);
             }
         }
-        let inputs = self.inputs(plan);
+        let inputs = self.inputs(plan, float)?;
         let bindings = &inputs.bindings;
         let texture = |label, format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -362,6 +434,14 @@ struct Inputs {
     words: Vec<u32>,
     blocks: Vec<u32>,
     _held: (wgpu::Texture, wgpu::Buffer, wgpu::Buffer),
+}
+
+/// `rgba8` texels as codes.
+fn codes(bytes: &[u8]) -> Vec<[u8; 4]> {
+    bytes
+        .chunks_exact(4)
+        .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
+        .collect()
 }
 
 /// Little-endian `rgba32float` texels as values.

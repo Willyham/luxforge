@@ -232,7 +232,7 @@ fn resolve_names(
 /// `steps`, the corpus recipe's evidence-script steps, applied through the API to `asset`, a mask
 /// or component named by name resolved to its identity. A `section` step only opens a panel and
 /// changes no recipe, so it is passed over.
-fn apply_steps(
+pub(crate) fn apply_steps(
     owner: &luxforge_core::OwnerHandle,
     client: luxforge_core::ClientId,
     asset: &luxforge_core::AssetId,

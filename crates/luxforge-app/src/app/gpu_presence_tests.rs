@@ -1311,3 +1311,6 @@ fn gpu_presence_a_drag_reruns_only_the_passes_it_changes() {
         );
     }
 }
+
+// Near-black outliers on the linear path, measured for a decision.
+mod near_black;
