@@ -2170,8 +2170,11 @@ impl Editor {
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
-        // mask edits have a different pixel key and still use the ordinary rendering path.
+        // mask edits have a different pixel key and still use the ordinary rendering path. A job
+        // carrying a GPU preview's boundary request goes to the worker, which renders the
+        // boundary after its frame; reused pixels would answer the frame and drop the request.
         let reusable = job.layer_count.is_none()
+            && job.boundary.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()

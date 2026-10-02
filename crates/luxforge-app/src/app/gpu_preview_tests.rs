@@ -241,6 +241,33 @@ fn gpu_preview_a_gpu_tick_settles_the_slider_step_waiting_for_it() {
     finish(editor, catalog);
 }
 
+/// A first tick that leaves the photograph's pixels as they are still sends its job to the
+/// worker, which renders the boundary it asks for: pixels reused from the frame on screen would
+/// answer the frame and drop the request, and the drag would never leave the CPU path.
+#[test]
+fn gpu_preview_a_tick_that_changes_no_pixel_still_asks_for_its_boundary() {
+    let catalog = catalog("unchanged");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+    // A new drag whose first value is the one committed: the same pixels.
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 1, "the job went to the worker");
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    assert_eq!(editor.gpu.ticks().2, 1, "asked once");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 /// The compile cost of each program sequence a Fit drag of the colour modules draws, measured on
 /// this host's adapter through the stage's own compile (`naga` checks, backend translation and the
 /// driver's pipeline). A functional measurement for the design's choice of one pipeline per

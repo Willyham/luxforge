@@ -362,6 +362,20 @@ impl Editor {
         });
     }
 
+    /// The surface is handed the plan of the open draft's newest revision, to draw on the GPU.
+    pub(crate) fn gpu_draws_newest_tick(&self) -> bool {
+        let surfaces = self.surfaces();
+        surfaces.gpu.is_some()
+            && !surfaces.gpu_hold
+            && surfaces.gpu_tag.is_some()
+            && surfaces.gpu_tag
+                == self
+                    .session
+                    .draft
+                    .as_ref()
+                    .map(|draft| draft.draft_revision)
+    }
+
     /// A tick drawn on the GPU puts the gesture's frame on screen as a CPU frame of it would, for
     /// whoever waits on one: its newest once nothing the gesture asked for is still to bring a
     /// frame of its own. The surface draws it at the next render.
