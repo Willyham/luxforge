@@ -9,10 +9,13 @@
 //! region holding the view, their pixels against the CPU frame the release commits. At 800%, where
 //! the view shows a corner of the photograph, the drag is panned across it while it ticks: the pan
 //! past the held region lets that boundary go and a later tick asks for the new region's, and every
-//! frame drawn on the GPU draws a region that holds the view it was captured with.
+//! frame drawn on the GPU draws a region that holds the view it was captured with. Each release's
+//! committed frame dissolves in from the drag's last GPU frame: the dissolve's start and its
+//! identities are checked, and the release's capture either shows it running or follows its end,
+//! which a capture after 150 ms allows.
 use crate::{
     gpu_preview_smoke::{
-        BASIC, EXPOSURE, gpu_drawn, named, quiet, same_pixels, step_events, ticks,
+        BASIC, EXPOSURE, dissolve_from, gpu_drawn, named, quiet, same_pixels, step_events, ticks,
     },
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -143,6 +146,50 @@ fn holds(outer: [u64; 4], inner: [u64; 4]) -> bool {
     outer[0] <= inner[0] && outer[1] <= inner[1] && outer[2] >= inner[2] && outer[3] >= inner[3]
 }
 
+/// The release's dissolve, from the drag's GPU frame `gpu` into the committed frame of the view:
+/// exactly one began, with the GPU frame's revision and boundary, and none was cancelled or cut
+/// during the release; it may follow a newer frame of the same content. The release's capture shows it running at its own progress, or, when the
+/// capture came after its 150 ms, its end is recorded: never a timing it must meet.
+fn settled_through_a_dissolve(launch: &Checked, release: &str, gpu: &Frame) -> Result<Value> {
+    let events = step_events(launch, release)?;
+    let started = dissolve_from(events, gpu, release)?;
+    let interrupted: Vec<&Value> = ["gpu_dissolve_cancelled", "gpu_dissolve_cut"]
+        .iter()
+        .flat_map(|name| named(events, name))
+        .collect();
+    ensure(
+        interrupted.is_empty(),
+        format!("{release}: its dissolve was interrupted: {interrupted:?}"),
+    )?;
+    // The dissolve follows a newer frame of the same content: the exact region, then the whole
+    // exact frame of the committed entry.
+    let targets: Vec<&Value> = std::iter::once(&started["to"])
+        .chain(
+            named(events, "gpu_dissolve_retargeted")
+                .into_iter()
+                .map(|event| &event["detail"]["to"]),
+        )
+        .collect();
+    let captured = launch.at(release)?;
+    let drawn = &captured.state()["surface"]["gpu"]["dissolve"];
+    let outcome = if drawn.is_null() {
+        json!({"captured": "after it ended",
+            "ended": named(events, "gpu_dissolve_ended")
+                .first()
+                .map(|event| event["detail"].clone())})
+    } else {
+        ensure(
+            drawn["from"] == started["from"] && targets.contains(&&drawn["to"]),
+            format!(
+                "{} drew the dissolve {drawn}, not the one that began, {started}, to {targets:?}",
+                captured["file"]
+            ),
+        )?;
+        json!({"captured": "while it ran", "drawn": drawn, "targets": targets})
+    };
+    Ok(json!({"started": started, "outcome": outcome}))
+}
+
 /// A frame at a percentage zoom drawn on the GPU drew a region holding the view it was captured
 /// with; one that drew the CPU's frame was handed no plan, or one the view leaves. Whichever path
 /// drew it, so the check holds whatever the capture's timing.
@@ -219,12 +266,14 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             ),
         )?;
         let view = never_mixed(dragged)?;
+        let settled = settled_through_a_dissolve(launch, release_name, dragged)?;
         let compared = same_pixels(dragged, launch.at(release_name)?)?;
         checks.note(
             dragged,
             &format!("the drag at {zoom}% drawn on the GPU over the visible region"),
             json!({"drawn": drawn, "gpu_ticks": gpu_ticks, "jobs": jobs, "view": view,
-                "boundary": summary["boundary"], "against_release": compared}),
+                "boundary": summary["boundary"], "against_release": compared,
+                "settled": settled}),
         );
     }
 
@@ -262,11 +311,13 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         .into_iter()
         .map(never_mixed)
         .collect::<Result<Vec<Value>>>()?;
+    let settled = settled_through_a_dissolve(launch, "pan-release", moved)?;
     checks.note(
         moved,
         "the drag at 800% panned past its region, then drawn over the new one",
         json!({"drawn": drawn, "released_for_a_new_key": changed,
-            "boundary_requests": summary["boundary_requests"], "views": views}),
+            "boundary_requests": summary["boundary_requests"], "views": views,
+            "settled": settled}),
     );
 
     checks.write(&launch.evidence, run.scenario(), json!({}))
