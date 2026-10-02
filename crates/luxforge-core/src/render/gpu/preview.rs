@@ -58,12 +58,15 @@ impl BoundaryKey {
 
 /// The boundary a draft's GPU preview starts from: its key, and where its layer begins in the
 /// compilation the preview worker renders the job's Fit frame from.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BoundaryRequest {
     pub key: BoundaryKey,
     /// The segment and operation index the boundary layer begins at in the drafted stack's
     /// compilation at the boundary's stage.
     pub(crate) position: (usize, usize),
+    /// A lens or perspective warp's geometry tail, whose coordinate grid the worker computes with
+    /// the boundary, once per draft and off the interface thread; `None` for an affine tail.
+    pub(crate) warp: Option<super::GpuGeometry>,
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -219,6 +222,16 @@ impl FitStage {
     }
 }
 
+/// A developed RAW's segments hold their values unquantized and unclamped, so its plan's tail
+/// clamps nothing before it; the plan, which knows no source, says a stage boundary clamps, as it
+/// does on a JPEG.
+fn linear_tail(evaluation: &Evaluation, answer: &mut GpuAnswer) {
+    if let (GpuAnswer::Plan(plan), crate::PreviewSource::Raw { .. }) = (answer, evaluation.source())
+    {
+        plan.geometry.clamps = false;
+    }
+}
+
 /// `recipe` with a neutral layer of `effect` for `mask` inserted at `index`: what a drafted layer
 /// the stack does not hold yet is planned as, the neutral layer its first commit would insert.
 fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId>) -> Recipe {
@@ -285,10 +298,11 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let answer = gpu_plan(registry, &planned, request)?;
+    let mut answer = gpu_plan(registry, &planned, request)?;
+    linear_tail(evaluation, &mut answer);
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
-        GpuAnswer::Plan(_) => Some(BoundaryRequest {
+        GpuAnswer::Plan(plan) => Some(BoundaryRequest {
             key: BoundaryKey {
                 source: evaluation.source().identity(),
                 prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
@@ -300,6 +314,11 @@ pub(crate) fn plan_preview(
                     "the GPU preview's boundary layer {boundary} is past the stack"
                 ))
             })?,
+            warp: plan
+                .geometry
+                .affine()
+                .is_none()
+                .then(|| plan.geometry.clone()),
         }),
     };
     Ok(GpuPreview {
@@ -357,7 +376,9 @@ pub(crate) fn plan_warm(
     let mut seen: Vec<Vec<&'static str>> = Vec::new();
     for (planned, index) in candidates {
         let request = fit.request(index).drafted(index);
-        if let GpuAnswer::Plan(plan) = gpu_plan(registry, &planned, request)? {
+        let mut answer = gpu_plan(registry, &planned, request)?;
+        linear_tail(evaluation, &mut answer);
+        if let GpuAnswer::Plan(plan) = answer {
             let sequence: Vec<&'static str> = plan
                 .operations()
                 .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))

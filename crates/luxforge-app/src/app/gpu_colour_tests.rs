@@ -15,7 +15,7 @@
 //!
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
-use super::gpu_plan::{Unrunnable, program, surface_plan};
+use super::gpu_plan::{program, surface_plan};
 use super::gpu_qualification::{Stream, codes, corpus_at_fit, figures, grid, worst};
 use luxforge_core::{
     BASIC_EFFECT, CURVE_EFFECT, CompileStage, EFFECT_FORMAT, GPU_PROGRAMS, GpuAnswer,
@@ -54,6 +54,29 @@ fn gpu_colour_every_shipped_program_passes_the_surfaces_own_convention() {
                 shipped.entry
             );
         }
+    }
+}
+
+/// The surface encodes its output with the core's quantizer, and the test reference's tables the
+/// widget crate's own tests install are the same, bit for bit.
+#[test]
+fn gpu_colour_the_output_encoding_is_the_cores_and_the_references() {
+    assert!(super::gpu_plan::install_output_encoding());
+    let installed = luxforge_ui::photo_surface::output_encoding().expect("installed");
+    assert_eq!(*installed, super::gpu_plan::output_encoding());
+    for (index, threshold) in installed.thresholds.iter().enumerate() {
+        let reference = luxforge_reference::srgb::decode_encoded((index as f64 + 0.5) / 255.0);
+        let narrowed = reference as f32;
+        let first = if f64::from(narrowed) < reference {
+            narrowed.next_up()
+        } else {
+            narrowed
+        };
+        assert_eq!(threshold.to_bits(), first.to_bits(), "threshold {index}");
+    }
+    for (code, decoded) in installed.decoded.iter().enumerate() {
+        let reference = luxforge_reference::srgb::decode(code as u8) as f32;
+        assert_eq!(decoded.to_bits(), reference.to_bits(), "code {code}");
     }
 }
 
@@ -140,7 +163,9 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         .iter()
         .map(|step| match step {
             GpuStep::Colour { program, .. } => program.entry.as_ref(),
-            GpuStep::Masked(_) => panic!("an unmasked stack converts to colour steps"),
+            GpuStep::Masked(_) | GpuStep::Geometry(_) => {
+                panic!("an unmasked stack with no tail converts to colour steps")
+            }
         })
         .collect();
     assert_eq!(
@@ -191,10 +216,14 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         GpuPlanRequest::fit(0, stage(64, 48), stage(640, 480)).qualifying(),
     );
     assert_eq!(plan.output.len(), 1, "the vignette is an output operation");
-    assert_eq!(
-        surface_plan(&plan, flat_boundary(64, 48)).unwrap_err(),
-        Unrunnable::Geometry
-    );
+    // The tail joins the steps, and the vignette runs after it, at the output pixel.
+    let converted = surface_plan(&plan, flat_boundary(64, 48)).unwrap();
+    let tail = converted
+        .steps
+        .iter()
+        .position(|step| matches!(step, GpuStep::Geometry(_)))
+        .expect("a tail");
+    assert_eq!(converted.steps.len(), tail + 2, "the vignette follows it");
     // A boundary that does not lie inside the plan's stage; a window of it does, at its origin.
     let plan = planned(
         &registry,
@@ -204,9 +233,10 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
     let error = surface_plan(&plan, flat_boundary(80, 48)).unwrap_err();
     assert_eq!(error.code(), "boundary-size");
     let error =
-        super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 48), (40, 0)).unwrap_err();
+        super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 48), (40, 0), None).unwrap_err();
     assert_eq!(error.code(), "boundary-size");
-    let window = super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 40), (16, 8)).unwrap();
+    let window =
+        super::gpu_plan::surface_plan_at(&plan, flat_boundary(32, 40), (16, 8), None).unwrap();
     assert_eq!(window.texels.origin, [16.0, 8.0]);
 }
 
@@ -329,7 +359,7 @@ fn measure(
 /// Every case of one unit, measured and reported; each enabled program must meet the pointwise
 /// limits and the finiteness rule on every case. A disabled program is reported with its misses.
 fn qualify(test: &str, entry: &str, cases: Vec<(String, Layer)>, size: (u32, u32)) {
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());
@@ -797,7 +827,7 @@ fn probes(count: usize) -> Vec<Probe> {
 #[test]
 fn gpu_colour_transcendental_precision_is_measured() {
     let test = "gpu_colour_transcendental_precision_is_measured";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     eprintln!("{test}: adapter {}", qualifier.adapter());

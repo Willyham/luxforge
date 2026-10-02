@@ -111,9 +111,13 @@ const UPLOAD_CHUNK: u64 = 8 * 1024 * 1024;
 /// The words the blocks are compared and written in, 1 KiB: a tick writes the chunks that changed.
 const BLOCK_CHUNK: usize = 256;
 
-/// The format the programs' output is written in and sampled from: the sRGB-typed format the
-/// surface's photograph textures have when the renderer gamma corrects.
-const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// The format the last pass writes the output's 8-bit codes through, which the shader computes as
+/// the CPU's quantizer does ([`tail`]).
+const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// The format the draw samples the output through: the sRGB-typed format the surface's photograph
+/// textures have when the renderer gamma corrects, so the codes draw as the CPU frame's do.
+const SAMPLED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The WGSL every assembled GPU-preview shader starts with; see the [module documentation](self).
 /// A program's own WGSL, appended to this, must validate on its own.
@@ -195,6 +199,9 @@ pub enum GpuStep {
     /// ([`MaskedColour`]): its units are colour programs, its components coverage programs,
     /// `fn <entry>(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
     Masked(MaskedColour),
+    /// The geometry tail ([`GpuTail`]): the content steps before it write the boundary's window,
+    /// and it draws the output stage from them; the steps after it run at the output pixel.
+    Geometry(GpuTail),
 }
 
 impl GpuStep {
@@ -213,6 +220,8 @@ impl GpuStep {
                 Box::new(std::iter::once((mask::Role::Colour, program)))
             }
             Self::Masked(masked) => Box::new(masked.programs()),
+            // The tail's mapping is the surface's own text, never a module's program.
+            Self::Geometry(_) => Box::new(std::iter::empty()),
         }
     }
 
@@ -221,6 +230,13 @@ impl GpuStep {
     fn signature(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
         let shape = match self {
             Self::Colour { .. } => None,
+            Self::Geometry(tail) => Some((
+                StepKind::Geometry {
+                    quantize: tail.quantizes(),
+                },
+                tail.program().entry.as_ref(),
+                tail.program().source.as_ref(),
+            )),
             Self::Masked(masked) => Some((
                 StepKind::Masked {
                     units: masked.units.len(),
@@ -245,6 +261,7 @@ impl GpuStep {
         match self {
             Self::Colour { position, .. } => *position,
             Self::Masked(masked) => masked.position,
+            Self::Geometry(_) => PositionMap::IDENTITY,
         }
     }
 
@@ -253,6 +270,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.words.len(),
             Self::Masked(masked) => masked.word_count(),
+            Self::Geometry(tail) => tail.program().words.len(),
         }
     }
 
@@ -261,6 +279,7 @@ impl GpuStep {
         match self {
             Self::Colour { program, .. } => program.block.len(),
             Self::Masked(masked) => masked.block_count(),
+            Self::Geometry(tail) => tail.program().block.len(),
         }
     }
 }
@@ -269,6 +288,7 @@ impl GpuStep {
 enum StepKind {
     Program(mask::Role),
     Masked { units: usize, components: usize },
+    Geometry { quantize: bool },
 }
 
 /// The held input boundary: `rgba16float` texels of scene-linear sRGB, eight bytes each, rows
@@ -556,8 +576,12 @@ pub(super) fn finish_retirement(figures: &SurfaceFigures, retired: RetiredPrevie
 /// One surface's GPU-preview slot: the boundary, the output the programs write and the photograph's
 /// draw samples, and the words and blocks the programs read.
 pub(super) struct GpuSlot {
-    size: (u32, u32),
+    /// The boundary's size, the output's and the intermediate's format, which a plan's slot is
+    /// allocated for.
+    shape: Shape,
     boundary: wgpu::Texture,
+    /// A geometry tail's intermediate: the content pass's result, which the tail reads.
+    intermediate: Option<Intermediate>,
     boundary_version: Option<u64>,
     output: Picture,
     target: wgpu::TextureView,
@@ -576,6 +600,52 @@ pub(super) struct GpuSlot {
     /// slot, writing the words and blocks, uploading a new boundary, encoding and submitting the
     /// pass. The device Iced creates has no timestamp queries, so the GPU's own time is not read.
     frame_us: u64,
+}
+
+/// What a slot is allocated for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Shape {
+    boundary: (u32, u32),
+    output: (u32, u32),
+    /// The tail's intermediate format, when the plan has a tail.
+    intermediate: Option<wgpu::TextureFormat>,
+}
+
+/// A geometry tail's intermediate texture, the boundary's size, with the view the content pass
+/// writes and the bindings the tail pass reads it through.
+struct Intermediate {
+    texture: wgpu::Texture,
+    target: wgpu::TextureView,
+    bindings: wgpu::BindGroup,
+}
+
+/// One render pass of `pipeline` into `target` over a viewport of `size`.
+fn encode_pass(
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::TextureView,
+    pipeline: &wgpu::RenderPipeline,
+    bindings: &wgpu::BindGroup,
+    size: (f32, f32),
+) {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("luxforge.gpu_preview.pass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_viewport(0.0, 0.0, size.0, size.1, 0.0, 1.0);
+    pass.set_pipeline(pipeline);
+    pass.set_bind_group(0, bindings, &[]);
+    pass.draw(0..3, 0..1);
 }
 
 impl GpuSlot {
@@ -699,7 +769,7 @@ impl GpuStage {
         device: &wgpu::Device,
         steps: &[GpuStep],
         figures: &Figures,
-    ) -> Result<(wgpu::RenderPipeline, u64), GpuFallback> {
+    ) -> Result<(Vec<wgpu::RenderPipeline>, u64), GpuFallback> {
         let support = self.support.as_ref().ok_or(GpuFallback::NoAdapter)?;
         self.pipelines
             .get(device, &support.pipeline_layout, steps, figures)
@@ -748,17 +818,90 @@ fn entry_name(name: &str) -> Result<(), String> {
     {
         return Err(format!("{name:?} is not a WGSL identifier"));
     }
-    if SURFACE_NAMES.contains(&name) || name.starts_with(mask::GENERATED) {
+    if SURFACE_NAMES.contains(&name)
+        || name.starts_with(mask::GENERATED)
+        || tail::GENERATED
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+    {
         return Err(format!("{name:?} is one of the surface's own names"));
     }
     Ok(())
 }
 
-/// The whole shader for `steps`: the prelude, each program once, then the entry points.
+/// The whole shader for `steps` with no geometry tail: the prelude, each program once, then the
+/// entry points, writing the output's codes. The first pass's shader of a plan with a tail.
+#[cfg(test)]
 fn assemble(steps: &[GpuStep]) -> Result<String, String> {
+    Ok(assemble_passes(steps, true)?.swap_remove(0))
+}
+
+/// What a pass's fragment stage starts from.
+enum Head<'a> {
+    /// The boundary texel and its stage pixel.
+    Boundary,
+    /// The geometry tail, step `index`: the output pixel and the tail's blend there.
+    Tail(&'a GpuTail, usize),
+}
+
+/// What a pass's fragment stage writes.
+enum End {
+    /// The linear value: an `rgba16float` intermediate, or a qualification's `rgba32float` target.
+    Linear,
+    /// The CPU quantizer's 8-bit codes, through a Unorm view.
+    Codes,
+}
+
+/// The shaders of `steps`, one per pass: the content steps, then, when a geometry tail splits them,
+/// the tail and the steps after it. The last pass writes the output's codes when `encode`, and its
+/// linear values otherwise; a quantizing tail's content pass writes codes.
+fn assemble_passes(steps: &[GpuStep], encode: bool) -> Result<Vec<String>, String> {
+    let last = if encode { End::Codes } else { End::Linear };
+    let tails: Vec<usize> = steps
+        .iter()
+        .enumerate()
+        .filter_map(|(index, step)| matches!(step, GpuStep::Geometry(_)).then_some(index))
+        .collect();
+    match tails.as_slice() {
+        [] => Ok(vec![pass_source(
+            steps,
+            0..steps.len(),
+            Head::Boundary,
+            last,
+        )?]),
+        [index] => {
+            let GpuStep::Geometry(tail) = &steps[*index] else {
+                unreachable!("the step found")
+            };
+            let content = if tail.quantizes() {
+                End::Codes
+            } else {
+                End::Linear
+            };
+            Ok(vec![
+                pass_source(steps, 0..*index, Head::Boundary, content)?,
+                pass_source(
+                    steps,
+                    index + 1..steps.len(),
+                    Head::Tail(tail, *index),
+                    last,
+                )?,
+            ])
+        }
+        _ => Err("a plan has one geometry tail at most".into()),
+    }
+}
+
+/// One pass's shader: the steps of `range` after `head`, writing `end`.
+fn pass_source(
+    steps: &[GpuStep],
+    range: std::ops::Range<usize>,
+    head: Head<'_>,
+    end: End,
+) -> Result<String, String> {
     let mut source = String::from(PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for (_, program) in steps.iter().flat_map(GpuStep::programs) {
+    for (_, program) in steps[range.clone()].iter().flat_map(GpuStep::programs) {
         entry_name(&program.entry)?;
         match included.iter().find(|seen| seen.entry == program.entry) {
             Some(seen) if seen.source != program.source => {
@@ -780,8 +923,8 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
     }
     // Each masked step's coverage, composed by a function of its own.
     let mut masked = Vec::new();
-    for (index, step) in steps.iter().enumerate() {
-        if let GpuStep::Masked(step) = step {
+    for index in range.clone() {
+        if let GpuStep::Masked(step) = &steps[index] {
             if masked.is_empty() {
                 source.push_str(mask::COMPOSE);
             }
@@ -791,9 +934,14 @@ fn assemble(steps: &[GpuStep]) -> Result<String, String> {
         }
     }
     let mut masked = masked.into_iter();
+    let quantizing = matches!(head, Head::Tail(tail, _) if tail.quantizes());
+    if quantizing || matches!(end, End::Codes) {
+        source.push_str(tail::encoding()?);
+    }
     source.push_str(BOUNDARY_BINDING);
-    source.push_str(
-        "
+    match head {
+        Head::Boundary => source.push_str(
+            "
 @fragment
 fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The border column and row past the boundary repeat its edge texels.
@@ -801,10 +949,16 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     var rgb = textureLoad(lf_boundary, texel, 0).rgb;
     let stage = vec2<f32>(lf_f32(0u), lf_f32(1u)) + vec2<f32>(texel) * vec2<f32>(lf_f32(2u), lf_f32(3u));
 ",
-    );
-    for (index, step) in steps.iter().enumerate() {
+        ),
+        Head::Tail(tail, index) => {
+            source.push_str(&tail.program().source);
+            source.push_str(&tail::sampling(tail.quantizes()));
+            source.push_str(&tail::fragment(tail, MAP_WORDS + STEP_WORDS * index));
+        }
+    }
+    for index in range {
         let base = MAP_WORDS + STEP_WORDS * index;
-        match step {
+        match &steps[index] {
             GpuStep::Colour { program, .. } => source.push_str(&format!(
                 "    rgb = {}(rgb, {}, lf_words[{base}u], lf_words[{}u]);\n",
                 program.entry,
@@ -812,9 +966,13 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
                 base + 1
             )),
             GpuStep::Masked(_) => source.push_str(&masked.next().expect("its statements")),
+            GpuStep::Geometry(_) => unreachable!("a tail splits the passes"),
         }
     }
-    source.push_str("    return vec4<f32>(rgb, 1.0);\n}\n");
+    source.push_str(match end {
+        End::Linear => "    return vec4<f32>(rgb, 1.0);\n}\n",
+        End::Codes => "    return vec4<f32>(lf_output_encode(rgb), 1.0);\n}\n",
+    });
     Ok(source)
 }
 
@@ -954,19 +1112,51 @@ fn answered<F: std::future::Future>(future: F) -> Option<F::Output> {
     }
 }
 
-/// Assemble, validate and compile `steps` into a pipeline that writes `format`, naming why it
-/// failed. The stage writes [`OUTPUT_FORMAT`]; only qualification asks for another.
+/// Assemble, validate and compile `steps` into one pipeline per pass, the last writing `format`,
+/// naming why it failed. The stage writes [`OUTPUT_FORMAT`], whose codes the last pass computes;
+/// only qualification asks for a float format, which takes the linear values. A plan with a
+/// geometry tail has a second pass, whose first writes the tail's intermediate format.
 fn compile(
     device: &wgpu::Device,
     layout: &wgpu::PipelineLayout,
     steps: &[GpuStep],
     format: wgpu::TextureFormat,
-) -> Result<wgpu::RenderPipeline, String> {
+) -> Result<Vec<wgpu::RenderPipeline>, String> {
     for step in steps {
         validate_step(step)?;
     }
-    let source = assemble(steps)?;
-    validate(&source)?;
+    let encode = !matches!(
+        format,
+        wgpu::TextureFormat::Rgba32Float | wgpu::TextureFormat::Rgba16Float
+    );
+    let sources = assemble_passes(steps, encode)?;
+    let intermediate = steps.iter().find_map(|step| match step {
+        GpuStep::Geometry(tail) => Some(tail.intermediate()),
+        _ => None,
+    });
+    let count = sources.len();
+    sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| {
+            validate(&source)?;
+            let target = if index + 1 == count {
+                format
+            } else {
+                intermediate.expect("a pass before the tail")
+            };
+            compile_pass(device, layout, source, target)
+        })
+        .collect()
+}
+
+/// One pass's pipeline, inside error scopes polled once without waiting.
+fn compile_pass(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    source: String,
+    format: wgpu::TextureFormat,
+) -> Result<wgpu::RenderPipeline, String> {
     device.push_error_scope(wgpu::ErrorFilter::Internal);
     device.push_error_scope(wgpu::ErrorFilter::Validation);
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1029,6 +1219,10 @@ pub(super) fn pack(plan: &GpuPlan, words: &mut Vec<u32>, blocks: &mut Vec<u32>) 
                 blocks.extend_from_slice(&program.block);
             }
             GpuStep::Masked(masked) => masked.pack(words, blocks),
+            GpuStep::Geometry(tail) => {
+                words.extend_from_slice(&tail.program().words);
+                blocks.extend_from_slice(&tail.program().block);
+            }
         }
     }
     if blocks.is_empty() {
@@ -1127,18 +1321,37 @@ impl PhotoPipeline {
                 limit,
             });
         }
-        let (pipeline, pipeline_id) =
+        let tail = plan.steps.iter().find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
+        if let Some((width, height)) = tail.map(GpuTail::output)
+            && (width > limit || height > limit || width == 0 || height == 0)
+        {
+            return Err(GpuFallback::TextureLimit {
+                width,
+                height,
+                limit,
+            });
+        }
+        let (pipelines, pipeline_id) =
             self.gpu
                 .pipeline(device, &plan.steps, &self.figures.preview)?;
         let mut words = std::mem::take(&mut self.gpu.words);
         let mut blocks = std::mem::take(&mut self.gpu.blocks);
         pack(plan, &mut words, &mut blocks);
+        let shape = Shape {
+            boundary: (width, height),
+            output: tail.map_or((width, height), GpuTail::output),
+            intermediate: tail.map(GpuTail::intermediate),
+        };
         let result = self.run(
             surface,
             device,
             queue,
             plan,
-            (&pipeline, pipeline_id),
+            shape,
+            (&pipelines, pipeline_id),
             &words,
             &blocks,
         );
@@ -1155,21 +1368,21 @@ impl PhotoPipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &GpuPlan,
-        (pipeline, pipeline_id): (&wgpu::RenderPipeline, u64),
+        shape: Shape,
+        (pipelines, pipeline_id): (&[wgpu::RenderPipeline], u64),
         words: &[u32],
         blocks: &[u32],
     ) -> Result<u64, GpuFallback> {
         let started = std::time::Instant::now();
-        let size = plan.boundary.size();
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
-        if surface.gpu.as_ref().is_some_and(|slot| slot.size != size)
+        if surface.gpu.as_ref().is_some_and(|slot| slot.shape != shape)
             && let Some(slot) = surface.gpu.take()
         {
             self.retire_slot(slot);
         }
         if surface.gpu.is_none() {
-            surface.gpu = Some(self.allocate(device, size, word_bytes, block_bytes)?);
+            surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes)?);
         }
         let slot = surface.gpu.as_mut().expect("an admitted slot");
         let mut rebind = false;
@@ -1198,6 +1411,14 @@ impl PhotoPipeline {
                 &slot.words.buffer,
                 &slot.blocks.buffer,
             );
+            if let Some(intermediate) = &mut slot.intermediate {
+                intermediate.bindings = self.program_bindings(
+                    device,
+                    &intermediate.texture,
+                    &slot.words.buffer,
+                    &slot.blocks.buffer,
+                );
+            }
             slot.written_words.clear();
             slot.written_blocks.clear();
             slot.evaluated = None;
@@ -1238,39 +1459,37 @@ impl PhotoPipeline {
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("luxforge.gpu_preview.encoder"),
             });
-            {
-                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("luxforge.gpu_preview.pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &slot.target,
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    timestamp_writes: None,
-                    occlusion_query_set: None,
-                });
-                // The frame and, where the bucket has room, one more column and row: the edge
-                // texels again, which the linear filter reads across the frame's edge as it reads
-                // the photograph's.
-                let (width, height) = slot.size;
-                let (columns, rows) = slot.output.capacity;
-                pass.set_viewport(
-                    0.0,
-                    0.0,
+            // A plan with a geometry tail runs its content steps into the intermediate first, over
+            // exactly the boundary's texels, and its tail reads them.
+            if let (Some(intermediate), [content, _]) = (&slot.intermediate, pipelines) {
+                let (width, height) = shape.boundary;
+                encode_pass(
+                    &mut encoder,
+                    &intermediate.target,
+                    content,
+                    &slot.bindings,
+                    (width as f32, height as f32),
+                );
+            }
+            // The frame and, where the bucket has room, one more column and row: the edge
+            // texels again, which the linear filter reads across the frame's edge as it reads the
+            // photograph's.
+            let (width, height) = shape.output;
+            let (columns, rows) = slot.output.capacity;
+            let bindings = slot
+                .intermediate
+                .as_ref()
+                .map_or(&slot.bindings, |intermediate| &intermediate.bindings);
+            encode_pass(
+                &mut encoder,
+                &slot.target,
+                pipelines.last().expect("a pass"),
+                bindings,
+                (
                     (width + 1).min(columns) as f32,
                     (height + 1).min(rows) as f32,
-                    0.0,
-                    1.0,
-                );
-                pass.set_pipeline(pipeline);
-                pass.set_bind_group(0, &slot.bindings, &[]);
-                pass.draw(0..3, 0..1);
-            }
+                ),
+            );
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
             // the queue's writes above are flushed with it. Nothing waits for it.
             queue.submit([encoder.finish()]);
@@ -1282,24 +1501,32 @@ impl PhotoPipeline {
         Ok(plan.boundary.version)
     }
 
-    /// A slot for a boundary of `size`, charged before anything is created.
+    /// A slot of `shape`, charged before anything is created.
     fn allocate(
         &self,
         device: &wgpu::Device,
-        (width, height): (u32, u32),
+        shape: Shape,
         word_bytes: u64,
         block_bytes: u64,
     ) -> Result<GpuSlot, GpuFallback> {
         let limit = device.limits().max_texture_dimension_2d;
+        let (width, height) = shape.boundary;
+        let (output_width, output_height) = shape.output;
         // The output is reserved in the photograph's own size bucket, so the draw samples it over
         // the same texture extent, and with the same filter weights, as the CPU frame it stands
         // in for; the pass writes its edge column and row into the border as an upload copies
-        // them. The boundary is only loaded, never sampled, so it is exactly its size.
-        let capacity = super::full_capacity((width, height), limit);
+        // them. The boundary is only loaded, never sampled, so it is exactly its size, and so is a
+        // tail's intermediate.
+        let capacity = super::full_capacity(shape.output, limit);
         let texels = u64::from(width) * u64::from(height);
         let output_bytes = u64::from(capacity.0) * u64::from(capacity.1) * 4;
-        let texture_bytes =
-            texels * GpuBoundary::TEXEL_BYTES as u64 + output_bytes + UNIFORM_SIZE as u64;
+        let intermediate_bytes = shape.intermediate.map_or(0, |format| {
+            texels * u64::from(format.block_copy_size(None).unwrap_or(8))
+        });
+        let texture_bytes = texels * GpuBoundary::TEXEL_BYTES as u64
+            + intermediate_bytes
+            + output_bytes
+            + UNIFORM_SIZE as u64;
         let (words, blocks) = (
             buffer_capacity(device, word_bytes)?,
             buffer_capacity(device, block_bytes)?,
@@ -1307,35 +1534,44 @@ impl PhotoPipeline {
         self.figures
             .preview
             .charge(texture_bytes + words + blocks)?;
-        let texture = |label, (width, height), format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
+        let texture =
+            |label, (width, height), format, usage, view_formats: &[wgpu::TextureFormat]| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats,
+                })
+            };
         let boundary = texture(
             "luxforge.gpu_preview.boundary",
             (width, height),
             wgpu::TextureFormat::Rgba16Float,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            &[],
         );
+        // Written through a Unorm view as the codes the last pass computes, and sampled through an
+        // sRGB-typed view, as the photograph's textures are.
         let output = texture(
             "luxforge.gpu_preview.output",
             capacity,
             OUTPUT_FORMAT,
             wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            &[SAMPLED_FORMAT],
         );
         let target = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampled = output.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(SAMPLED_FORMAT),
+            ..wgpu::TextureViewDescriptor::default()
+        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.gpu_preview.uniform"),
             size: UNIFORM_SIZE as u64,
@@ -1353,7 +1589,7 @@ impl PhotoPipeline {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&target),
+                    resource: wgpu::BindingResource::TextureView(&sampled),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -1362,8 +1598,8 @@ impl PhotoPipeline {
             ],
         });
         let layout = TileLayout {
-            content: [0, 0, width, height],
-            texels: [0, 0, width, height],
+            content: [0, 0, output_width, output_height],
+            texels: [0, 0, output_width, output_height],
         };
         let picture = Picture {
             tiles: vec![Tile {
@@ -1373,8 +1609,8 @@ impl PhotoPipeline {
                 uniform,
                 bindings: photo_bindings,
             }],
-            width,
-            height,
+            width: output_width,
+            height: output_height,
             capacity,
             grid: (1, 1),
             limit,
@@ -1397,9 +1633,26 @@ impl PhotoPipeline {
             bytes: blocks,
         };
         let bindings = self.program_bindings(device, &boundary, &words.buffer, &blocks.buffer);
+        let intermediate = shape.intermediate.map(|format| {
+            let texture = texture(
+                "luxforge.gpu_preview.intermediate",
+                (width, height),
+                format,
+                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                &[],
+            );
+            let target = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let bindings = self.program_bindings(device, &texture, &words.buffer, &blocks.buffer);
+            Intermediate {
+                texture,
+                target,
+                bindings,
+            }
+        });
         Ok(GpuSlot {
-            size: (width, height),
+            shape,
             boundary,
+            intermediate,
             boundary_version: None,
             output: picture,
             target,
@@ -1530,6 +1783,8 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
 mod compile;
 pub(super) use compile::GpuOptions;
 pub use compile::{GpuWarm, PIPELINE_CACHE};
+mod tail;
+pub use tail::{GpuTail, OutputEncoding, install_output_encoding, output_encoding};
 mod mask;
 mod position;
 pub use mask::{Coverage, CoverageComponent, CoverageMode, MaskedColour};
@@ -1544,5 +1799,7 @@ pub mod qualification;
 
 #[cfg(test)]
 mod compile_tests;
+#[cfg(test)]
+mod tail_tests;
 #[cfg(test)]
 mod tests;

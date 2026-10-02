@@ -3,7 +3,7 @@
 //!
 //! - **The plan rides the tick's own answer.** Each `draft.set` is answered with its preview job,
 //!   synchronously on this thread ([`super::tasks::draft_set_now`]), and the catalog owner plans
-//!   the draft's GPU preview with that job (`PreviewJob::gpu`): the plan in `O(layers)`, or its
+//!   the draft's GPU preview with that job (its `gpu` field): the plan in `O(layers)`, or its
 //!   reason, and the boundary it starts from. It is preview state in the desktop's typed owner
 //!   reply, never an API result, and a tick adds no hop for it (performance rule 12).
 //! - **The boundary job.** While the draft's boundary is not held, each tick takes the CPU path as
@@ -25,13 +25,16 @@
 //!   key releases it; so does the draft's end — commit or cancel — once the frame that replaces the
 //!   drafted one is presented, so the screen never falls back to an older drafted frame.
 //! - **Warming.** A committed stack's preview job carries the plans its gestures are likely to draw
-//!   (`PreviewJob::gpu_warm`), and the surface compiles their sequences before a drag begins.
+//!   (its `gpu_warm` field), and the surface compiles their sequences before a drag begins.
 use super::{Editor, gpu_plan};
-use luxforge_core::{BoundaryKey, BoundaryRequest, Draft, DraftId, GpuAnswer, PreviewJob};
+use luxforge_core::{
+    BoundaryKey, BoundaryRequest, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview,
+};
 use luxforge_ui::photo_surface::{
     self as surface, DrawingPath, GpuBoundary, GpuStep, GpuWarm, SurfaceDiagnostics,
 };
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 /// The core's plan, beside the surface's plain data of the same name.
 type CorePlan = luxforge_core::GpuPlan;
@@ -70,6 +73,9 @@ struct Held {
     key: BoundaryKey,
     boundary: GpuBoundary,
     origin: (u32, u32),
+    /// A warp tail's coordinate grid, computed with the boundary; `None` for an affine tail, or a
+    /// warp whose grid could not be built, which then keeps the CPU path.
+    grid: Option<Arc<CoordinateGrid>>,
 }
 
 /// The open draft's GPU preview.
@@ -216,11 +222,16 @@ impl Editor {
         ))
     }
 
-    /// One tick of the open draft's gesture, answered with `job`: whether the surface draws it from
-    /// the GPU plan the job carries, with no preview job and no upload, or the job goes to the
-    /// worker as today — carrying the boundary request while the boundary is not held.
-    pub(crate) fn gpu_tick(&mut self, set: &Draft, job: &mut PreviewJob) -> Tick {
-        let preview = job.gpu.take();
+    /// One tick of the open draft's gesture, answered with the GPU `preview` its job carries:
+    /// whether the surface draws it from the plan, with no preview job and no upload, or the job
+    /// goes to the worker as today — carrying the returned boundary request while the boundary is
+    /// not held.
+    pub(crate) fn gpu_tick(
+        &mut self,
+        set: &Draft,
+        preview: Option<Box<GpuPreview>>,
+    ) -> (Tick, Option<BoundaryRequest>) {
+        let mut boundary_request = None;
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
         let report = self.surface_report();
@@ -258,7 +269,7 @@ impl Editor {
                 let Some(request) = boundary else {
                     drag.reason = Some("unplannable".into());
                     drag.cpu_ticks += 1;
-                    return Tick::Cpu;
+                    return (Tick::Cpu, None);
                 };
                 if let Some(held) = drag.held.take_if(|held| held.key != request.key) {
                     // The plan needs another boundary: the window moved, the bounds changed, or
@@ -279,7 +290,7 @@ impl Editor {
                             drag.reason = Some("boundary-pending".into());
                             let pending = self.presentation.queue.pending_generation();
                             if drag.requested.is_none() || drag.requested == pending {
-                                job.boundary = Some(request);
+                                boundary_request = Some(request);
                                 drag.boundary_requests += 1;
                             }
                         }
@@ -287,7 +298,12 @@ impl Editor {
                     }
                     Some(held) => {
                         let (plan, _) = drag.plan.as_ref().expect("the plan just kept");
-                        match gpu_plan::surface_plan_at(plan, held.boundary.clone(), held.origin) {
+                        match gpu_plan::surface_plan_at(
+                            plan,
+                            held.boundary.clone(),
+                            held.origin,
+                            held.grid.as_deref(),
+                        ) {
                             Err(unrunnable) => {
                                 drag.surface = None;
                                 drag.reason = Some(unrunnable.code().into());
@@ -323,7 +339,7 @@ impl Editor {
         if let Some(version) = released {
             self.log_release(version, "key-changed");
         }
-        tick
+        (tick, boundary_request)
     }
 
     /// The tick's job, carrying the boundary request, was queued as `generation`.
@@ -407,16 +423,21 @@ impl Editor {
                             key: outcome.key,
                             boundary,
                             origin,
+                            grid: outcome.grid.and_then(Result::ok),
                         });
                         drag.failed = None;
                         // The latest tick's plan is drawn now, before the next input.
                         if let Some((plan, revision)) = &drag.plan
                             && let Some(held) = &drag.held
                         {
-                            drag.surface =
-                                gpu_plan::surface_plan_at(plan, held.boundary.clone(), held.origin)
-                                    .ok()
-                                    .map(|converted| (converted, *revision));
+                            drag.surface = gpu_plan::surface_plan_at(
+                                plan,
+                                held.boundary.clone(),
+                                held.origin,
+                                held.grid.as_deref(),
+                            )
+                            .ok()
+                            .map(|converted| (converted, *revision));
                         }
                         json!({"held": true, "version": version, "width": size.0,
                             "height": size.1, "origin": [origin.0, origin.1],
@@ -449,8 +470,8 @@ impl Editor {
 
     /// A committed stack's job carries the plans its gestures are likely to draw: hand their
     /// sequences to the surface to compile before a drag begins.
-    pub(crate) fn gpu_warm_from(&mut self, job: &PreviewJob) {
-        let Some(plans) = &job.gpu_warm else {
+    pub(crate) fn gpu_warm_from(&mut self, plans: Option<&[luxforge_core::GpuPlan]>) {
+        let Some(plans) = plans else {
             return;
         };
         let sequences: Vec<Vec<GpuStep>> = plans

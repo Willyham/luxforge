@@ -12,26 +12,46 @@
 //!
 //! - [`boundary_map`]: the held boundary against the plan's boundary stage;
 //! - [`operation_steps`]: each content operation's units, and a masked one's coverage;
-//! - [`geometry_steps`]: the geometry tail, and after it the output operations;
+//! - [`geometry_steps`]: the geometry tail, through its affine matrix or a warp's coordinate grid,
+//!   and after it the output operations, at the output pixel;
 //!
 //! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
+//!
+//! Every pass the surface draws ends in the CPU's output encoding, whose tables are the core's:
+//! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
-    ComponentMode, GpuDescription, GpuGeometry, GpuMask, GpuOperation, GpuPosition, Stage,
+    ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuMask, GpuOperation, GpuPosition,
+    Stage,
 };
 use luxforge_ui::photo_surface::{
-    Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuStep,
+    Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuStep, GpuTail,
     MaskedColour, PositionMap, TexelMap,
 };
 use std::{borrow::Cow, sync::Arc};
+
+/// The core's output quantizer and decode table, which the surface encodes its output and
+/// quantizes a JPEG's segment boundaries with.
+pub(crate) fn output_encoding() -> luxforge_ui::photo_surface::OutputEncoding {
+    luxforge_ui::photo_surface::OutputEncoding {
+        thresholds: *luxforge_core::colour::srgb::output_thresholds(),
+        decoded: *luxforge_core::colour::srgb::decode_table(),
+    }
+}
+
+/// Hand the surface [`output_encoding`], once for the process; until it has, no GPU preview pass
+/// compiles. Whether the surface holds the core's tables.
+pub(crate) fn install_output_encoding() -> bool {
+    luxforge_ui::photo_surface::install_output_encoding(output_encoding())
+}
 
 /// Why the surface cannot run a plan the core answered. Each is a stage the surface does not
 /// have yet, or a boundary that does not fit the plan; the gesture takes the CPU path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Unrunnable {
-    /// The geometry tail is not the identity, so a resample, and output-space steps after it,
-    /// follow the content pass: the surface has no geometry step yet.
-    Geometry,
+    /// A lens or perspective warp's tail with no coordinate grid held for it: the grid is computed
+    /// with the boundary, and a warp that needs more nodes than a grid holds has none.
+    Grid,
     /// The boundary held does not lie inside the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },
     /// A position map with a coefficient the surface's `f32` words cannot hold exactly.
@@ -42,7 +62,7 @@ impl Unrunnable {
     /// A stable kebab-case name for the reason, for session state and evidence.
     pub(crate) fn code(&self) -> &'static str {
         match self {
-            Self::Geometry => "surface-geometry",
+            Self::Grid => "warp-grid",
             Self::Boundary { .. } => "boundary-size",
             Self::Position { .. } => "position-range",
         }
@@ -58,7 +78,7 @@ pub(crate) fn surface_plan(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
 ) -> Result<GpuPlan, Unrunnable> {
-    surface_plan_at(plan, boundary, (0, 0))
+    surface_plan_at(plan, boundary, (0, 0), None)
 }
 
 /// `plan` as the surface's plain data over `boundary`, whose first texel is at `origin` of the
@@ -66,14 +86,16 @@ pub(crate) fn surface_plan(
 /// recipe order, then the geometry tail's. A windowed proxy's boundary holds the window of the
 /// stage its output reads, at that window's origin. A boundary inside a colour run
 /// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
-/// [`GpuBoundary`] do.
+/// [`GpuBoundary`] do. A warp's tail is drawn through `grid`, the coordinate grid the boundary's
+/// job computed for the plan's geometry.
 pub(crate) fn surface_plan_at(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
     origin: (u32, u32),
+    grid: Option<&CoordinateGrid>,
 ) -> Result<GpuPlan, Unrunnable> {
     let texels = boundary_map(plan.boundary.stage, &boundary, origin)?;
-    let steps = plan_steps(plan)?;
+    let steps = steps_with(plan, Grid::Held(grid))?;
     Ok(GpuPlan {
         boundary,
         texels,
@@ -81,15 +103,34 @@ pub(crate) fn surface_plan_at(
     })
 }
 
-/// The steps of `plan` alone, without a boundary: what the surface's pipeline for the plan is
-/// keyed by, which a warm list names before any boundary exists.
-pub(crate) fn plan_steps(plan: &luxforge_core::GpuPlan) -> Result<Vec<GpuStep>, Unrunnable> {
-    let mut steps = Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum());
+/// Where a warp's tail takes its coordinate grid from.
+#[derive(Clone, Copy)]
+pub(crate) enum Grid<'a> {
+    /// The grid the boundary's job computed, when it computed one.
+    Held(Option<&'a CoordinateGrid>),
+    /// No grid at all: the steps only name the pipeline, whose key the grid's nodes are not part
+    /// of, as a warm list does.
+    Sequence,
+}
+
+/// The steps of `plan` alone, without a boundary, a warp's tail through `grid`.
+pub(crate) fn steps_with(
+    plan: &luxforge_core::GpuPlan,
+    grid: Grid<'_>,
+) -> Result<Vec<GpuStep>, Unrunnable> {
+    let mut steps =
+        Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum::<usize>() + 1);
     for operation in &plan.content {
         operation_steps(operation, &mut steps)?;
     }
-    geometry_steps(plan, &mut steps)?;
+    geometry_steps(plan, &mut steps, grid)?;
     Ok(steps)
+}
+
+/// What the surface's pipeline for `plan` is keyed by — its steps with no grid's nodes — which a
+/// warm list names before any boundary or grid exists.
+pub(crate) fn plan_steps(plan: &luxforge_core::GpuPlan) -> Result<Vec<GpuStep>, Unrunnable> {
+    steps_with(plan, Grid::Sequence)
 }
 
 /// Where the held boundary's texels are in the plan's boundary stage: the rectangle at `origin`,
@@ -184,14 +225,60 @@ pub(crate) fn coverage(mask: &GpuMask) -> Option<Coverage> {
 
 /// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the
 /// whole boundary stage with nothing clamped, which leaves the output stage the boundary's and no
-/// output operation after it. A geometry step, and the output operations through
-/// [`operation_steps`] after it, would join here.
+/// output operation after it; otherwise the tail ([`GpuTail`]), through the plan's affine matrix
+/// or a warp's coordinate `grid`, quantizing where the CPU's segment boundary does, then each
+/// output operation's steps at the output pixel ([`operation_steps`]).
 pub(crate) fn geometry_steps(
     plan: &luxforge_core::GpuPlan,
-    _steps: &mut Vec<GpuStep>,
+    steps: &mut Vec<GpuStep>,
+    grid: Grid<'_>,
 ) -> Result<(), Unrunnable> {
-    if !identity(&plan.geometry, plan.boundary.stage) || !plan.output.is_empty() {
-        return Err(Unrunnable::Geometry);
+    let geometry = &plan.geometry;
+    if identity(geometry, plan.boundary.stage) && plan.output.is_empty() {
+        return Ok(());
+    }
+    let stage = geometry.output();
+    let output = (stage.width, stage.height);
+    let reads = geometry.reads;
+    let reads = [
+        reads.x0,
+        reads.y0,
+        reads.x0 + reads.width,
+        reads.y0 + reads.height,
+    ];
+    let tail = match (geometry.affine(), grid) {
+        (Some(matrix), _) => GpuTail::affine(
+            output,
+            reads,
+            geometry.clamps,
+            matrix.map(|value| value as f32),
+        ),
+        (None, Grid::Held(Some(grid))) => GpuTail::grid(
+            output,
+            reads,
+            geometry.clamps,
+            grid.origin,
+            grid.spacing,
+            (grid.columns, grid.rows),
+            grid.nodes
+                .iter()
+                .flat_map(|node| node.map(f32::to_bits))
+                .collect(),
+        ),
+        (None, Grid::Held(None)) => return Err(Unrunnable::Grid),
+        (None, Grid::Sequence) => GpuTail::grid(
+            output,
+            reads,
+            geometry.clamps,
+            (0, 0),
+            1,
+            (2, 2),
+            std::sync::Arc::from([0u32; 8]),
+        ),
+    };
+    steps.push(GpuStep::Geometry(tail));
+    for operation in &plan.output {
+        operation_steps(operation, steps)?;
     }
     Ok(())
 }

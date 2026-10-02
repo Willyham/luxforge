@@ -219,9 +219,8 @@ fn gpu_preview_an_ineligible_drag_names_its_reason() {
 #[ignore = "a measurement, run on purpose"]
 fn gpu_preview_compile_cost_per_sequence() {
     use luxforge_core::{GpuPlanRequest, Layer, ModuleRegistry, Recipe, Stage, gpu_plan};
-    use luxforge_ui::photo_surface::gpu_preview::qualification::Qualifier;
     let test = "gpu_preview_compile_cost_per_sequence";
-    let Some(qualifier) = Qualifier::headless(test) else {
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
     };
     let registry = ModuleRegistry::builtin();

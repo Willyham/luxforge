@@ -867,8 +867,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/latest.rs",
             // The desktop's diagnostics log writer.
             "crates/luxforge-app/src/diagnostics.rs",
-            // The widget crate's GPU retirement worker.
+            // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
             "crates/luxforge-ui/src/photo_surface.rs",
+            "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
