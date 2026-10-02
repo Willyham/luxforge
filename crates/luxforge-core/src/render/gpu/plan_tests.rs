@@ -494,8 +494,8 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
     ));
     assert!(plan.content.is_empty() && plan.spatial.is_some());
     assert!(!plan.boundary.continues_run);
-    // A restoration layer after the boundary is its spatial operation, which Detail's program,
-    // disabled until it qualifies, plans only when qualifying.
+    // A restoration layer after the boundary is its spatial operation: Detail's, one apply per
+    // unit.
     let detail = colour_recipe(vec![
         exposure_layer(&[0.5]),
         Layer::new(
@@ -503,20 +503,14 @@ fn stack_shapes_the_plan_cannot_hold_are_named() {
             json!({"sharpening": 40.0, "luminance": 20.0}),
         ),
     ]);
-    assert_eq!(
-        answer(&registry, &detail, GpuPlanRequest::exact(0, stage(41, 29))),
-        GpuAnswer::Fallback(GpuFallback::DisabledProgram {
-            layer: 1,
-            program: "lf_detail"
-        })
-    );
     let plan = planned(answer(
         &registry,
         &detail,
-        GpuPlanRequest::exact(0, stage(41, 29)).qualifying(),
+        GpuPlanRequest::exact(0, stage(41, 29)),
     ));
     let step = plan.spatial.as_ref().expect("Detail's operation");
     assert_eq!((step.layer, step.applies.len()), (1, 2));
+    assert_eq!(step.program.entry, "lf_detail");
     // A second spatial layer after the boundary has no pass: it is named.
     let mut both = detail.clone();
     both.layers

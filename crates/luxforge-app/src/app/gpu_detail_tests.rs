@@ -97,8 +97,8 @@ fn planned(answer: GpuAnswer) -> luxforge_core::GpuPlan {
 
 /// Every shape a Detail layer plans to (noise reduction, sharpening and both; at full resolution,
 /// at a Fit proxy's scale and on the linear path; masked) converts into one spatial step that
-/// passes the surface's own spatial convention. The program ships disabled until it qualifies,
-/// so a plan that does not ask for disabled programs names it.
+/// passes the surface's own spatial convention. The program is enabled: it met the spatial limits
+/// on the corpus at Fit against the CPU's moving proxy it stands in for.
 #[test]
 fn gpu_detail_the_program_passes_the_surfaces_own_convention() {
     let registry = ModuleRegistry::builtin();
@@ -119,15 +119,7 @@ fn gpu_detail_the_program_passes_the_surfaces_own_convention() {
                 GpuPlanRequest::fit(0, stage(width, height), stage(220, 165)),
                 GpuPlanRequest::exact(0, stage(width, height)).linear(),
             ] {
-                assert_eq!(
-                    gpu_plan(&registry, &stack, request).unwrap(),
-                    GpuAnswer::Fallback(luxforge_core::GpuFallback::DisabledProgram {
-                        layer: 0,
-                        program: "lf_detail"
-                    }),
-                    "{payload}"
-                );
-                let plan = planned(gpu_plan(&registry, &stack, request.qualifying()).unwrap());
+                let plan = planned(gpu_plan(&registry, &stack, request).unwrap());
                 let held = boundary(width, height, 1, &vec![[0.25; 3]; 64 * 48]).unwrap();
                 let converted = surface_plan(&plan, held).expect("a runnable plan");
                 assert_eq!(converted.steps.len(), 1, "{payload}");
@@ -141,8 +133,8 @@ fn gpu_detail_the_program_passes_the_surfaces_own_convention() {
         }
     }
     assert!(
-        !detail().enabled,
-        "Detail ships disabled until it qualifies"
+        detail().enabled,
+        "Detail met the spatial limits on the corpus"
     );
 }
 
