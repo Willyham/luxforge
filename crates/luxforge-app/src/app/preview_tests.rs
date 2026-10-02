@@ -1433,3 +1433,39 @@ fn restoration_settled_fit_rejects_a_reduction_for_previous_bounds() {
     assert!(editor.presentation.settled_frame.is_none());
     finish(editor, catalog);
 }
+
+/// The scrollable holds its offset between zero and how far the zoomed photograph overhangs the
+/// surface, and reports nothing once the photograph fits: an offset kept from 800% at the far
+/// corner, back at 100% where the photograph fits, is the photograph's whole stage, not an empty
+/// view. Where it overhangs on one axis only, that axis keeps the offset the scrollable holds.
+#[test]
+fn a_percentage_view_holds_an_offset_kept_from_a_deeper_zoom_to_the_scrollable_range() {
+    let stage = (480, 320);
+    let corner = (1400.0, 900.0);
+    let whole = super::preview::viewport_rect(
+        stage,
+        &Zoom::Percent { value: 100.0 },
+        2.0,
+        (1000.0, 700.0),
+        corner,
+    )
+    .expect("the visible region");
+    assert_eq!(
+        (whole.x0, whole.y0, whole.x1(), whole.y1()),
+        (0, 0, 480, 320)
+    );
+    // At 400% the photograph is 960 × 640 logical: it overhangs a 600 × 700 surface across only,
+    // by 360, so the offset across is held there and the one down is none.
+    let region = super::preview::viewport_rect(
+        stage,
+        &Zoom::Percent { value: 400.0 },
+        2.0,
+        (600.0, 700.0),
+        corner,
+    )
+    .expect("the visible region");
+    assert_eq!(
+        (region.x0, region.y0, region.x1(), region.y1()),
+        (179, 0, 480, 320)
+    );
+}

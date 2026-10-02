@@ -343,7 +343,7 @@ fn a_boundary_holds_exactly_its_half_float_texels() {
     )
     .expect("two texels");
     assert_eq!((boundary.size(), boundary.version()), ((2, 1), 9));
-    let halves: Vec<f32> = (*boundary.texels)
+    let halves: Vec<f32> = (**boundary.texels.as_ref().expect("its texels"))
         .as_ref()
         .chunks_exact(2)
         .map(|bytes| half::f16::from_bits(u16::from_le_bytes([bytes[0], bytes[1]])).to_f32())
@@ -401,7 +401,7 @@ fn a_float_boundary_holds_its_values_exactly() {
         GpuBoundary::from_linear(crate::photo_surface::BoundaryFormat::Float, 2, 1, 4, values)
             .expect("two texels");
     assert_eq!(boundary.bytes(), 32);
-    let held: Vec<u32> = (*boundary.texels)
+    let held: Vec<u32> = (**boundary.texels.as_ref().expect("its texels"))
         .as_ref()
         .chunks_exact(4)
         .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
@@ -1342,5 +1342,74 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
         assert_ne!(seen.drawn_path, Some(DrawingPath::Gpu), "plan {index}");
         assert_eq!(seen.drawn_gpu_boundary, None, "plan {index}");
     }
+    settle(&pipeline);
+}
+
+/// A boundary whose texels its caller let go once the slot held them draws from that slot, a tick
+/// changing only its words; a slot that no longer holds it — released by a frame with no plan —
+/// falls back naming it, drawing the CPU frame, and the texels uploaded again draw once more. A
+/// sequence still compiling leaves the slot, and the boundary it holds, as they were.
+#[test]
+fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
+    let test = "a_resident_boundary_draws_from_the_slot_that_holds_it";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(3);
+    let resident = boundary.resident();
+    assert!(boundary.holds_texels() && !resident.holds_texels());
+    assert_eq!(
+        (resident.size(), resident.version(), resident.bytes()),
+        (boundary.size(), boundary.version(), boundary.bytes())
+    );
+    let identity_of =
+        |boundary: &GpuBoundary| primitive(ID, Some(plan(boundary, vec![identity()])));
+    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
+    assert_codes(&drawn, &codes);
+    let slot_bytes = diagnostics(&pipeline, ID).gpu_preview_in_use_bytes;
+    // The next tick names the resident boundary: drawn from the slot.
+    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
+    assert_codes(&drawn, &codes);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.gpu_ready_boundary, Some(3));
+    // A sequence the frame finds still compiling keeps the slot and the boundary in it.
+    let scaled = plan(&resident, vec![scale(0.5)]);
+    paint_prepared(
+        &device,
+        &queue,
+        &mut pipeline,
+        &primitive(ID, Some(scaled.clone())),
+    );
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, Some(GpuFallback::Compiling));
+    assert_eq!(
+        seen.gpu_preview_in_use_bytes, slot_bytes,
+        "the slot is kept"
+    );
+    pipeline.compile_now(&device, &scaled.steps);
+    paint(&device, &queue, &mut pipeline, &primitive(ID, Some(scaled)));
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(
+        seen.drawn_path,
+        Some(DrawingPath::Gpu),
+        "drawn from the slot it kept"
+    );
+    assert_eq!(seen.gpu_fallback, None);
+    // A frame with no plan lets the slot go; the resident boundary cannot be drawn then.
+    assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive(ID, None)));
+    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
+    assert_cpu_frame(&drawn);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.gpu_fallback, Some(GpuFallback::BoundaryReleased));
+    assert_eq!(
+        seen.gpu_fallback.map(GpuFallback::as_str),
+        Some("boundary-released")
+    );
+    assert_eq!(seen.gpu_ready_boundary, None);
+    // Its texels, brought again, draw.
+    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
+    assert_codes(&drawn, &codes);
     settle(&pipeline);
 }
