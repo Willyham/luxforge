@@ -352,19 +352,31 @@ fn deliver_until(editor: &mut Editor, what: &str, mut done: impl FnMut(&Editor) 
 /// The fixture photograph with a tight straightened crop committed by another client, as the
 /// desktop then shows it: its output fits the display, so Fit draws its exact stage.
 fn cropped_photo(catalog: &std::path::Path) -> Editor {
-    let (mut editor, asset, agent) = real_photo(catalog);
-    let revision = editor.document.state.as_ref().unwrap().revision;
-    crate::app::tasks::call(
-        &editor.owner,
+    let (editor, asset, agent) = real_photo(catalog);
+    committed(
+        editor,
+        asset,
         agent,
         "edit.crop",
-        serde_json::json!({
-            "asset_id": asset, "angle": 7.0, "x": 0.3, "y": 0.3, "width": 0.35, "height": 0.35,
-            "mutation": {"expected_revision": revision, "request_id": "window-crop",
-                "actor": "agent"}
-        }),
+        serde_json::json!({"angle": 7.0, "x": 0.3, "y": 0.3, "width": 0.35, "height": 0.35}),
     )
-    .expect("the crop is accepted");
+}
+
+/// `editor`'s photograph after another client commits `method` with `params`, as the desktop then
+/// shows it.
+fn committed(
+    mut editor: Editor,
+    asset: luxforge_core::AssetId,
+    agent: luxforge_core::ClientId,
+    method: &str,
+    mut params: Value,
+) -> Editor {
+    let revision = editor.document.state.as_ref().unwrap().revision;
+    params["asset_id"] = serde_json::json!(asset);
+    params["mutation"] = serde_json::json!({
+        "expected_revision": revision, "request_id": "window-crop", "actor": "agent"
+    });
+    crate::app::tasks::call(&editor.owner, agent, method, params).expect("the edit is accepted");
     let refreshed = crate::app::tasks::refresh(
         &editor.owner,
         editor.client,
@@ -454,4 +466,87 @@ fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
         crate::app::message::draft::DraftMessage::Cancel,
     ));
     finish(editor, catalog);
+}
+
+/// On the corpus's Z6 and Air 2S, whose lens profile the crop is fused with, a Fit drag of Basic
+/// over a 16:9 crop straightened by 7°, the corpus's, and by 45° asks for a windowed proxy's
+/// boundary, holds it within the 256 MiB bound, and draws its later ticks on the GPU with no
+/// preview job once the surface has evaluated it. The surface is stood in for, as in every desktop
+/// test; the corpus draws the same plans on the device.
+#[test]
+#[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
+fn gpu_window_a_raw_straightened_crop_drag_at_fit_draws_on_the_gpu() {
+    let manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("LUXFORGE_RAW_MANIFEST").expect("a manifest"))
+            .unwrap(),
+    )
+    .unwrap();
+    for id in ["nikon-z6", "dji-air2s"] {
+        let path = manifest["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["id"] == id)
+            .and_then(|source| source["path"].as_str())
+            .map(std::path::PathBuf::from)
+            .expect("the RAW in the manifest");
+        for angle in [7.0, 45.0] {
+            let catalog = catalog(&format!("raw-{id}-{angle}"));
+            let (editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &path);
+            let mut editor = committed(
+                editor,
+                asset,
+                agent,
+                "edit.crop-fit",
+                serde_json::json!({"aspect": "16:9", "angle": angle}),
+            );
+            editor.gpu.surface = Some(SurfaceReport::default());
+            let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
+            deliver_until(&mut editor, "the boundary", |editor| {
+                editor.gpu.holds_boundary()
+                    || editor.gpu.summary()["drag"]["reason"] == "boundary-failed"
+            });
+            let summary = editor.gpu.summary();
+            let held = &summary["drag"]["boundary"];
+            assert!(held.is_object(), "{id} at {angle}°: {summary}");
+            let (width, height) = (
+                held["width"].as_u64().unwrap(),
+                held["height"].as_u64().unwrap(),
+            );
+            let bytes = width * height * 16;
+            assert!(
+                bytes <= luxforge_core::BOUNDARY_MAX_BYTES,
+                "{id} at {angle}°: {width}x{height}"
+            );
+            let version = editor.gpu.held_version().unwrap();
+            editor.gpu.surface = Some(SurfaceReport {
+                ready_boundary: Some(version),
+                fallback: None,
+                drawn: None,
+            });
+            let log = attach_log(&mut editor);
+            let _ = slide(&mut editor, "set-basic", "exposure", 0.3);
+            let _ = slide(&mut editor, "set-basic", "exposure", 0.4);
+            let records = logged(&mut editor, &log);
+            let ticks = events(&records, "gpu_preview_tick");
+            assert!(
+                !ticks.is_empty() && ticks.iter().all(|tick| tick["path"] == "gpu"),
+                "{id} at {angle}°: {ticks:?}"
+            );
+            assert_eq!(
+                events(&records, "preview_job_requested").len(),
+                0,
+                "{id} at {angle}°: no preview job a tick"
+            );
+            eprintln!(
+                "{id} at {angle}°: boundary {width}x{height} at {} ({bytes} B), {} GPU ticks",
+                held["origin"],
+                ticks.len()
+            );
+            let _ = editor.update(Message::Draft(
+                crate::app::message::draft::DraftMessage::Cancel,
+            ));
+            finish(editor, catalog);
+        }
+    }
 }
