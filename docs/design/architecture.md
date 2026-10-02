@@ -263,7 +263,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | A proxy without a crop | 64 MiB for a JPEG, 96 MiB of RAW planes | No single constant: follows from the display bounds and the fit rule, `ProxyPlan::fit` in `crates/luxforge-core/src/proxy.rs` |
 | Finished results waiting for their consumer, per latest-job worker | 2 | `WAITING_RESULTS`, `crates/luxforge-core/src/latest.rs` |
 | A warp's GPU-preview coordinate grid | 262,144 nodes (2 MiB) | `GRID_MAX_NODES`, `crates/luxforge-core/src/render/gpu/grid.rs` |
-| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 256 MiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 640 MiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
 | Compiled GPU-preview program sequences per photo pipeline, failed ones included | 8 | `PIPELINE_CACHE`, as above |
 
 **Catalog and API**

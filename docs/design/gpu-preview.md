@@ -59,7 +59,7 @@ The plan runs on these; each is a proposal the owner can revise.
 | Label | The status bar's render slot reads "GPU preview · N ms", beside today's "Approximate render · N ms" and "Exact render · N ms". Nothing is drawn on the photograph | A badge on the canvas |
 | Preference | On by default; `workspace.set {gpu_preview}` and a command-palette entry | No preference: automatic fallback only |
 | Storage precision | `rgba16float` for a JPEG's boundary and colour intermediates; `rgba32float` for a RAW's boundary on the linear path, where half rounding of a near-black value can flip the sign of the luminance Presence divides by ([performance](../specs/performance.md#isolated-near-black-pixels)); `r32float` for spatial accumulators | `rgba32float` throughout, at twice the memory |
-| GPU preview budget | 256 MiB for every GPU-preview texture and buffer, beside the photo-texture ceiling; a program that does not fit takes the CPU path | No separate budget |
+| GPU preview budget | 640 MiB for every GPU-preview texture and buffer, beside the photo-texture ceiling; a program that does not fit takes the CPU path. Decided by the owner on 2026-10-02 so the heaviest measured 100% spatial drags draw on the GPU ([decisions](../decisions.md#gpu-previews)) | 256 MiB, which keeps all three Presence fields, Texture with Clarity and Detail at 100% on the CPU path |
 
 ## The preview error limit
 
@@ -289,7 +289,7 @@ The desktop's own client sets the preference; an agent reads it through the same
 
 ### Bounds
 
-- **One budget.** Every GPU-preview texture and buffer is charged to one 256 MiB budget, beside the photo-texture ceiling and reported with it: the boundary, intermediates, spatial accumulators, coordinate grids and storage blocks.
+- **One budget.** Every GPU-preview texture and buffer is charged to one 640 MiB budget, beside the photo-texture ceiling and reported with it: the boundary, intermediates, spatial accumulators, coordinate grids and storage blocks.
   - Today that is each surface's one GPU-preview slot: the boundary, a geometry tail's intermediate, the output and its placement uniform, the words and blocks buffers, and a spatial step's planes, the budget shared by every surface. A slot lives as long as the gesture's held boundary. A plan whose planes would pass it takes the CPU path and names the budget.
   - An allocation that would pass it is refused before anything is created.
   - A released, replaced or outgrown resource retires through the photo surface's retirement worker and stays charged until the GPU is done with it, so the in-use figure returns to zero once a released slot has retired.
