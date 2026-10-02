@@ -575,6 +575,8 @@ impl GroupState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GroupControl {
+    pub(crate) enabled: bool,
+    pub(crate) unavailable: Option<String>,
     pub(crate) label: String,
     pub(crate) reset: Option<ResetRef>,
     /// The group's position inside its module's controls, so a reset names it without a search.
@@ -1087,9 +1089,32 @@ fn resolved_model(
     enabled: bool,
     path: &[usize],
 ) -> ControlModel {
+    let enabled = enabled
+        && !(owner.descriptor().is_some_and(source_only_module)
+            && inputs
+                .document
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.asset.source.white_balance_available()));
     match control {
         Control::Group(group) => {
             let reset = group_reset(owner.id(), control, inputs);
+            let mono = inputs
+                .document
+                .state
+                .as_ref()
+                .is_some_and(|state| !state.asset.source.white_balance_available());
+            let unavailable = luxforge_core::resolve_group_reset(
+                owner.id(),
+                control,
+                source_kind(inputs.document.state.as_ref()),
+                inputs.target,
+            )
+            .is_some_and(|reset| {
+                module_of(inputs.modules, reset.module).is_some_and(source_only_module) && mono
+            })
+            .then(|| "Monochrome original".to_owned());
+            let enabled = enabled && unavailable.is_none();
             let controls: Vec<ControlModel> = group
                 .controls
                 .iter()
@@ -1101,6 +1126,8 @@ fn resolved_model(
                 })
                 .collect();
             ControlModel::Group(GroupControl {
+                enabled,
+                unavailable,
                 label: group.label.clone(),
                 reset,
                 path: path.to_vec(),
@@ -2176,6 +2203,11 @@ impl MenuTarget {
     }
 }
 
+/// Source-specific controls require a colour response when their source cannot supply white balance.
+fn source_only_module(module: &ModuleDescriptor) -> bool {
+    module.applies_to(SourceTag::Raw) && !module.applies_to(SourceTag::Jpeg)
+}
+
 /// Whether `module` applies to the photo `state` holds, by the core's one rule
 /// ([`ModuleDescriptor::applies_to`]) for that photo's source kind: what the tools panel's
 /// sections, the palette, the mode strip, the mode shortcuts and the canvas pick gate all read, so
@@ -2288,6 +2320,10 @@ pub(crate) fn pick_modes<'a>(
         .iter()
         .filter(|module| module.is_available() && applies(module, state))
         .filter_map(|module| picker_mode(modules, module, kind, target))
+        .filter(|provider| {
+            !module_of(modules, provider).is_some_and(source_only_module)
+                || state.is_none_or(|state| state.asset.source.white_balance_available())
+        })
         .collect()
 }
 

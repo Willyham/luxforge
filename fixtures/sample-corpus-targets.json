@@ -1,0 +1,3276 @@
+{
+  "format": "luxforge-sample-targets-v1",
+  "selection_date": "2026-10-02",
+  "camera_selection": "250 curated bodies including the existing 107; brand quotas and availability, not a sales ranking or measured 99% coverage",
+  "phone_scope": {
+    "Apple": "iPhone 14\u201318 generations, released mainline variants including iPhone Air",
+    "Google": "Pixel 7\u201311, base/Pro/Pro XL where released",
+    "Samsung": "Galaxy S22\u2013S26, base/+/Ultra"
+  },
+  "generation_sources": [
+    "https://www.apple.com/newsroom/2026/09/apple-debuts-iphone-18-pro-and-iphone-18-pro-max/",
+    "https://blog.google/products-and-platforms/devices/pixel/google-pixel-11-pro-xl/",
+    "https://news.samsung.com/global/samsung-unveils-galaxy-s26-series-the-most-intuitive-galaxy-ai-phone-yet"
+  ],
+  "devices": [
+    {
+      "id": "nikond500",
+      "name": "Nikon D500",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D500",
+      "source_models": [
+        "D500"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond750",
+      "name": "Nikon D750",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D750",
+      "source_models": [
+        "D750"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond780",
+      "name": "Nikon D780",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D780",
+      "source_models": [
+        "D780"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond850",
+      "name": "Nikon D850",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D850",
+      "source_models": [
+        "D850"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz5",
+      "name": "Nikon Z 5",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 5",
+      "source_models": [
+        "Z 5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz6",
+      "name": "Nikon Z 6",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 6",
+      "source_models": [
+        "Z 6"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz7",
+      "name": "Nikon Z 7",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 7",
+      "source_models": [
+        "Z 7"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz8",
+      "name": "Nikon Z 8",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 8",
+      "source_models": [
+        "Z 8"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz9",
+      "name": "Nikon Z 9",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 9",
+      "source_models": [
+        "Z 9"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonzf",
+      "name": "Nikon Z f",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z f",
+      "source_models": [
+        "Z f"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz50",
+      "name": "Nikon Z 50",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 50",
+      "source_models": [
+        "Z 50"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonzfc",
+      "name": "Nikon Z fc",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z fc",
+      "source_models": [
+        "Z fc"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond7500",
+      "name": "Nikon D7500",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D7500",
+      "source_models": [
+        "D7500"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond5600",
+      "name": "Nikon D5600",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D5600",
+      "source_models": [
+        "D5600"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz62",
+      "name": "Nikon Z6 II",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 6_2",
+      "source_models": [
+        "Z 6_2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz72",
+      "name": "Nikon Z7 II",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 7_2",
+      "source_models": [
+        "Z 7_2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikond6",
+      "name": "Nikon D6",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D6",
+      "source_models": [
+        "D6"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz30",
+      "name": "Nikon Z 30",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z 30",
+      "source_models": [
+        "Z 30"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce6000",
+      "name": "Sony ILCE-6000 (A6000)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6000",
+      "source_models": [
+        "ILCE-6000"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce6100",
+      "name": "Sony ILCE-6100 (A6100)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6100",
+      "source_models": [
+        "ILCE-6100"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce6400",
+      "name": "Sony ILCE-6400 (A6400)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6400",
+      "source_models": [
+        "ILCE-6400"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7cm2",
+      "name": "Sony A7C II",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7CM2",
+      "source_models": [
+        "ILCE-7CM2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce6600",
+      "name": "Sony ILCE-6600 (A6600)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6600",
+      "source_models": [
+        "ILCE-6600"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce6700",
+      "name": "Sony ILCE-6700 (A6700)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6700",
+      "source_models": [
+        "ILCE-6700"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7c",
+      "name": "Sony A7C",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7C",
+      "source_models": [
+        "ILCE-7C"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7m3",
+      "name": "Sony ILCE-7M3 (A7 III)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7M3",
+      "source_models": [
+        "ILCE-7M3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7m4",
+      "name": "Sony ILCE-7M4 (A7 IV)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7M4",
+      "source_models": [
+        "ILCE-7M4"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7rm2",
+      "name": "Sony ILCE-7RM2 (A7R II)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7RM2",
+      "source_models": [
+        "ILCE-7RM2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7rm3",
+      "name": "Sony ILCE-7RM3 (A7R III)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7RM3",
+      "source_models": [
+        "ILCE-7RM3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7rm4",
+      "name": "Sony ILCE-7RM4 (A7R IV)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7RM4",
+      "source_models": [
+        "ILCE-7RM4"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7rm5",
+      "name": "Sony ILCE-7RM5 (A7R V)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7RM5",
+      "source_models": [
+        "ILCE-7RM5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7sm3",
+      "name": "Sony ILCE-7SM3 (A7S III)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7SM3",
+      "source_models": [
+        "ILCE-7SM3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce9",
+      "name": "Sony ILCE-9 (A9)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-9",
+      "source_models": [
+        "ILCE-9"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce1",
+      "name": "Sony ILCE-1 (A1)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-1",
+      "source_models": [
+        "ILCE-1"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyilce7cr",
+      "name": "Sony ILCE-7CR (A7C R)",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7CR",
+      "source_models": [
+        "ILCE-7CR"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr",
+      "name": "Canon EOS R",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R",
+      "source_models": [
+        "EOS R"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr5",
+      "name": "Canon EOS R5",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R5",
+      "source_models": [
+        "EOS R5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr6",
+      "name": "Canon EOS R6",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R6",
+      "source_models": [
+        "EOS R6"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr6markii",
+      "name": "Canon EOS R6 Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R6 Mark II",
+      "source_models": [
+        "EOS R6 Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr7",
+      "name": "Canon EOS R7",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R7",
+      "source_models": [
+        "EOS R7"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr10",
+      "name": "Canon EOS R10",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R10",
+      "source_models": [
+        "EOS R10"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr50",
+      "name": "Canon EOS R50",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R50",
+      "source_models": [
+        "EOS R50"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosrp",
+      "name": "Canon EOS RP",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS RP",
+      "source_models": [
+        "EOS RP"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr8",
+      "name": "Canon EOS R8",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R8",
+      "source_models": [
+        "EOS R8"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr3",
+      "name": "Canon EOS R3",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R3",
+      "source_models": [
+        "EOS R3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosr5markii",
+      "name": "Canon EOS R5 Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R5 Mark II",
+      "source_models": [
+        "EOS R5 Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos5dmarkiv",
+      "name": "Canon EOS 5D Mark IV",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 5D Mark IV",
+      "source_models": [
+        "EOS 5D Mark IV"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos6dmarkii",
+      "name": "Canon EOS 6D Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 6D Mark II",
+      "source_models": [
+        "EOS 6D Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos80d",
+      "name": "Canon EOS 80D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 80D",
+      "source_models": [
+        "EOS 80D"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos7dmarkii",
+      "name": "Canon EOS 7D Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 7D Mark II",
+      "source_models": [
+        "EOS 7D Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneosm6",
+      "name": "Canon EOS M6",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS M6",
+      "source_models": [
+        "EOS M6"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos1dxmarkiii",
+      "name": "Canon EOS-1D X Mark III",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS-1D X Mark III",
+      "source_models": [
+        "EOS-1D X Mark III"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmx100vi",
+      "name": "Fujifilm X100VI",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X100VI",
+      "source_models": [
+        "X100VI"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmx100v",
+      "name": "Fujifilm X100V",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X100V",
+      "source_models": [
+        "X100V"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt5",
+      "name": "Fujifilm X-T5",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T5",
+      "source_models": [
+        "X-T5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt4",
+      "name": "Fujifilm X-T4",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T4",
+      "source_models": [
+        "X-T4"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt3",
+      "name": "Fujifilm X-T3",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T3",
+      "source_models": [
+        "X-T3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt30",
+      "name": "Fujifilm X-T30",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T30",
+      "source_models": [
+        "X-T30"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxs10",
+      "name": "Fujifilm X-S10",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-S10",
+      "source_models": [
+        "X-S10"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxs20",
+      "name": "Fujifilm X-S20",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-S20",
+      "source_models": [
+        "X-S20"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxh2",
+      "name": "Fujifilm X-H2",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-H2",
+      "source_models": [
+        "X-H2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxh2s",
+      "name": "Fujifilm X-H2S",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-H2S",
+      "source_models": [
+        "X-H2S"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxpro3",
+      "name": "Fujifilm X-Pro3",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-Pro3",
+      "source_models": [
+        "X-Pro3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxe4",
+      "name": "Fujifilm X-E4",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-E4",
+      "source_models": [
+        "X-E4"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmgfx100ii",
+      "name": "Fujifilm GFX100 II",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX100 II",
+      "source_models": [
+        "GFX100 II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmgfx100s",
+      "name": "Fujifilm GFX100S",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX100S",
+      "source_models": [
+        "GFX100S"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmgfx50sii",
+      "name": "Fujifilm GFX50S II",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX50S II",
+      "source_models": [
+        "GFX50S II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt50",
+      "name": "Fujifilm X-T50",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T50",
+      "source_models": [
+        "X-T50"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmx100f",
+      "name": "Fujifilm X100F",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X100F",
+      "source_models": [
+        "X100F"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxt20",
+      "name": "Fujifilm X-T20",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T20",
+      "source_models": [
+        "X-T20"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "djifc3411",
+      "name": "Air 2S (existing qualified profile)",
+      "kind": "camera",
+      "make": "DJI",
+      "model": "FC3411",
+      "source_models": [
+        "FC3411"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "omsystemom1",
+      "name": "OM-1",
+      "kind": "camera",
+      "make": "OM System",
+      "model": "OM-1",
+      "source_models": [
+        "OM-1"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "omsystemom1markii",
+      "name": "OM-1 Mark II",
+      "kind": "camera",
+      "make": "OM System",
+      "model": "OM-1 Mark II",
+      "source_models": [
+        "OM-1 Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "omsystemom3",
+      "name": "OM-3",
+      "kind": "camera",
+      "make": "OM System",
+      "model": "OM-3",
+      "source_models": [
+        "OM-3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "omsystemom5",
+      "name": "OM-5",
+      "kind": "camera",
+      "make": "OM System",
+      "model": "OM-5",
+      "source_models": [
+        "OM-5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "pentaxk3markiii",
+      "name": "K-3 Mark III",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-3 Mark III",
+      "source_models": [
+        "K-3 Mark III"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "pentaxk1markii",
+      "name": "K-1 Mark II",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-1 Mark II",
+      "source_models": [
+        "K-1 Mark II"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "pentaxk70",
+      "name": "K-70",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-70",
+      "source_models": [
+        "K-70"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "pentaxkp",
+      "name": "KP",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "KP",
+      "source_models": [
+        "KP"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "ricohgriii",
+      "name": "GR III",
+      "kind": "camera",
+      "make": "Ricoh",
+      "model": "GR III",
+      "source_models": [
+        "GR III"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "ricohgriiix",
+      "name": "GR IIIx",
+      "kind": "camera",
+      "make": "Ricoh",
+      "model": "GR IIIx",
+      "source_models": [
+        "GR IIIx"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "leicaq2",
+      "name": "Q2",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "Q2",
+      "source_models": [
+        "Q2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "leicasl2",
+      "name": "SL2",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "SL2",
+      "source_models": [
+        "SL2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "leicam10r",
+      "name": "M10-R",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "M10-R",
+      "source_models": [
+        "M10-R"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "leicam10",
+      "name": "M10",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "M10",
+      "source_models": [
+        "M10"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "leicacl",
+      "name": "CL",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "CL",
+      "source_models": [
+        "CL"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "djifc4382",
+      "name": "Mavic 3 Pro Cine (camera identity evidenced by repository remark)",
+      "kind": "camera",
+      "make": "DJI",
+      "model": "FC4382",
+      "source_models": [
+        "FC4382"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "djifc7303",
+      "name": "Mini 2 (camera identity evidenced by repository remark)",
+      "kind": "camera",
+      "make": "DJI",
+      "model": "FC7303",
+      "source_models": [
+        "FC7303"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "djifc6310",
+      "name": "Phantom 4 Pro (camera identity evidenced by repository remark)",
+      "kind": "camera",
+      "make": "DJI",
+      "model": "FC6310",
+      "source_models": [
+        "FC6310"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "djifc220",
+      "name": "Mavic Pro (camera identity evidenced by repository remark)",
+      "kind": "camera",
+      "make": "DJI",
+      "model": "FC220",
+      "source_models": [
+        "FC220"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "sonyzve10",
+      "name": "Sony ZV-E10",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ZV-E10",
+      "source_models": [
+        "ZV-E10"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "fujifilmxm5",
+      "name": "Fujifilm X-M5",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-M5",
+      "source_models": [
+        "X-M5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz63",
+      "name": "Nikon Z6III",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z6_3",
+      "source_models": [
+        "Z6_3"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz502",
+      "name": "Nikon Z50II",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z50_2",
+      "source_models": [
+        "Z50_2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "nikonz52",
+      "name": "Nikon Z5II",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Z5_2",
+      "source_models": [
+        "Z5_2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos90d",
+      "name": "Canon EOS 90D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 90D",
+      "source_models": [
+        "EOS 90D"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos5dmarkiii",
+      "name": "Canon EOS 5D Mark III",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 5D Mark III",
+      "source_models": [
+        "EOS 5D Mark III"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "canoneos6d",
+      "name": "Canon EOS 6D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 6D",
+      "source_models": [
+        "EOS 6D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos60d",
+      "name": "Canon EOS 60D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 60D",
+      "source_models": [
+        "EOS 60D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos7d",
+      "name": "Canon EOS 7D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 7D",
+      "source_models": [
+        "EOS 7D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos1dxmarkii",
+      "name": "Canon EOS-1D X Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS-1D X Mark II",
+      "source_models": [
+        "EOS-1D X Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos70d",
+      "name": "Canon EOS 70D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 70D",
+      "source_models": [
+        "EOS 70D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosr6markiii",
+      "name": "Canon EOS R6 Mark III",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R6 Mark III",
+      "source_models": [
+        "EOS R6 Mark III"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosr100",
+      "name": "Canon EOS R100",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R100",
+      "source_models": [
+        "EOS R100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos700d",
+      "name": "Canon EOS 700D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 700D",
+      "source_models": [
+        "EOS 700D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos250d",
+      "name": "Canon EOS 250D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 250D",
+      "source_models": [
+        "EOS 250D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos77d",
+      "name": "Canon EOS 77D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 77D",
+      "source_models": [
+        "EOS 77D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosm50",
+      "name": "Canon EOS M50",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS M50",
+      "source_models": [
+        "EOS M50"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canonpowershotg7xmarkiii",
+      "name": "Canon PowerShot G7 X Mark III",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "PowerShot G7 X Mark III",
+      "source_models": [
+        "PowerShot G7 X Mark III"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosr50v",
+      "name": "Canon EOS R50 V",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS R50 V",
+      "source_models": [
+        "EOS R50 V"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canonpowershotg5xmarkii",
+      "name": "Canon PowerShot G5 X Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "PowerShot G5 X Mark II",
+      "source_models": [
+        "PowerShot G5 X Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos2000d",
+      "name": "Canon EOS 2000D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 2000D",
+      "source_models": [
+        "EOS 2000D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos1300d",
+      "name": "Canon EOS 1300D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 1300D",
+      "source_models": [
+        "EOS 1300D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canonpowershotg7xmarkii",
+      "name": "Canon PowerShot G7 X Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "PowerShot G7 X Mark II",
+      "source_models": [
+        "PowerShot G7 X Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosm6markii",
+      "name": "Canon EOS M6 Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS M6 Mark II",
+      "source_models": [
+        "EOS M6 Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneosm50markii",
+      "name": "Canon EOS M50 Mark II",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS M50 Mark II",
+      "source_models": [
+        "EOS M50 Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos850d",
+      "name": "Canon EOS 850D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 850D",
+      "source_models": [
+        "EOS 850D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos800d",
+      "name": "Canon EOS 800D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 800D",
+      "source_models": [
+        "EOS 800D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos760d",
+      "name": "Canon EOS 760D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 760D",
+      "source_models": [
+        "EOS 760D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos750d",
+      "name": "Canon EOS 750D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 750D",
+      "source_models": [
+        "EOS 750D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos550d",
+      "name": "Canon EOS 550D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 550D",
+      "source_models": [
+        "EOS 550D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos650d",
+      "name": "Canon EOS 650D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 650D",
+      "source_models": [
+        "EOS 650D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "canoneos600d",
+      "name": "Canon EOS 600D",
+      "kind": "camera",
+      "make": "Canon",
+      "model": "EOS 600D",
+      "source_models": [
+        "EOS 600D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond7200",
+      "name": "Nikon D7200",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D7200",
+      "source_models": [
+        "D7200"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond3400",
+      "name": "Nikon D3400",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D3400",
+      "source_models": [
+        "D3400"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond810",
+      "name": "Nikon D810",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D810",
+      "source_models": [
+        "D810"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond3300",
+      "name": "Nikon D3300",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D3300",
+      "source_models": [
+        "D3300"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond3500",
+      "name": "Nikon D3500",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D3500",
+      "source_models": [
+        "D3500"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond5300",
+      "name": "Nikon D5300",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D5300",
+      "source_models": [
+        "D5300"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond5100",
+      "name": "Nikon D5100",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D5100",
+      "source_models": [
+        "D5100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond610",
+      "name": "Nikon D610",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D610",
+      "source_models": [
+        "D610"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond5200",
+      "name": "Nikon D5200",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D5200",
+      "source_models": [
+        "D5200"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond5500",
+      "name": "Nikon D5500",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D5500",
+      "source_models": [
+        "D5500"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikoncoolpixp950",
+      "name": "Nikon COOLPIX P950",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "COOLPIX P950",
+      "source_models": [
+        "COOLPIX P950"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond600",
+      "name": "Nikon D600",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D600",
+      "source_models": [
+        "D600"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikoncoolpixp1000",
+      "name": "Nikon COOLPIX P1000",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "COOLPIX P1000",
+      "source_models": [
+        "COOLPIX P1000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikondf",
+      "name": "Nikon Df",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "Df",
+      "source_models": [
+        "Df"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond800",
+      "name": "Nikon D800",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D800",
+      "source_models": [
+        "D800"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond7100",
+      "name": "Nikon D7100",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D7100",
+      "source_models": [
+        "D7100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond700",
+      "name": "Nikon D700",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D700",
+      "source_models": [
+        "D700"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond7000",
+      "name": "Nikon D7000",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D7000",
+      "source_models": [
+        "D7000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "nikond90",
+      "name": "Nikon D90",
+      "kind": "camera",
+      "make": "Nikon",
+      "model": "D90",
+      "source_models": [
+        "D90"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce1m2",
+      "name": "Sony ILCE-1M2",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-1M2",
+      "source_models": [
+        "ILCE-1M2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce9m3",
+      "name": "Sony ILCE-9M3",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-9M3",
+      "source_models": [
+        "ILCE-9M3"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7m2",
+      "name": "Sony ILCE-7M2",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7M2",
+      "source_models": [
+        "ILCE-7M2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx10m4",
+      "name": "Sony DSC-RX10M4",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX10M4",
+      "source_models": [
+        "DSC-RX10M4"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce9m2",
+      "name": "Sony ILCE-9M2",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-9M2",
+      "source_models": [
+        "ILCE-9M2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx10m3",
+      "name": "Sony DSC-RX10M3",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX10M3",
+      "source_models": [
+        "DSC-RX10M3"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce6500",
+      "name": "Sony ILCE-6500",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6500",
+      "source_models": [
+        "ILCE-6500"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100m7",
+      "name": "Sony DSC-RX100M7",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100M7",
+      "source_models": [
+        "DSC-RX100M7"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100",
+      "name": "Sony DSC-RX100",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100",
+      "source_models": [
+        "DSC-RX100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce6300",
+      "name": "Sony ILCE-6300",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6300",
+      "source_models": [
+        "ILCE-6300"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7",
+      "name": "Sony ILCE-7",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7",
+      "source_models": [
+        "ILCE-7"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100m3",
+      "name": "Sony DSC-RX100M3",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100M3",
+      "source_models": [
+        "DSC-RX100M3"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce6400a",
+      "name": "Sony ILCE-6400A",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-6400A",
+      "source_models": [
+        "ILCE-6400A"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100m6",
+      "name": "Sony DSC-RX100M6",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100M6",
+      "source_models": [
+        "DSC-RX100M6"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce5100",
+      "name": "Sony ILCE-5100",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-5100",
+      "source_models": [
+        "ILCE-5100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce5000",
+      "name": "Sony ILCE-5000",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-5000",
+      "source_models": [
+        "ILCE-5000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100m5",
+      "name": "Sony DSC-RX100M5",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100M5",
+      "source_models": [
+        "DSC-RX100M5"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonydscrx100m4",
+      "name": "Sony DSC-RX100M4",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "DSC-RX100M4",
+      "source_models": [
+        "DSC-RX100M4"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7sm2",
+      "name": "Sony ILCE-7SM2",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7SM2",
+      "source_models": [
+        "ILCE-7SM2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7s",
+      "name": "Sony ILCE-7S",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7S",
+      "source_models": [
+        "ILCE-7S"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7r",
+      "name": "Sony ILCE-7R",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7R",
+      "source_models": [
+        "ILCE-7R"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "sonyilce7m5",
+      "name": "Sony ILCE-7M5",
+      "kind": "camera",
+      "make": "Sony",
+      "model": "ILCE-7M5",
+      "source_models": [
+        "ILCE-7M5"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxt2",
+      "name": "Fujifilm X-T2",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T2",
+      "source_models": [
+        "X-T2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxe5",
+      "name": "Fujifilm X-E5",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-E5",
+      "source_models": [
+        "X-E5"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxt30ii",
+      "name": "Fujifilm X-T30 II",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T30 II",
+      "source_models": [
+        "X-T30 II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxpro2",
+      "name": "Fujifilm X-Pro2",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-Pro2",
+      "source_models": [
+        "X-Pro2"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxt1",
+      "name": "Fujifilm X-T1",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T1",
+      "source_models": [
+        "X-T1"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmx100s",
+      "name": "Fujifilm X100S",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X100S",
+      "source_models": [
+        "X100S"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxh1",
+      "name": "Fujifilm X-H1",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-H1",
+      "source_models": [
+        "X-H1"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmgfx100sii",
+      "name": "Fujifilm GFX100S II",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX100S II",
+      "source_models": [
+        "GFX100S II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxe3",
+      "name": "Fujifilm X-E3",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-E3",
+      "source_models": [
+        "X-E3"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmx100t",
+      "name": "Fujifilm X100T",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X100T",
+      "source_models": [
+        "X100T"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmgfx100rf",
+      "name": "Fujifilm GFX100RF",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX100RF",
+      "source_models": [
+        "GFX100RF"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmgfx100",
+      "name": "Fujifilm GFX 100",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX 100",
+      "source_models": [
+        "GFX 100"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmgfx50s",
+      "name": "Fujifilm GFX 50S",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX 50S",
+      "source_models": [
+        "GFX 50S"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmgfx50r",
+      "name": "Fujifilm GFX 50R",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "GFX 50R",
+      "source_models": [
+        "GFX 50R"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxt30iii",
+      "name": "Fujifilm X-T30 III",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T30 III",
+      "source_models": [
+        "X-T30 III"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "fujifilmxt10",
+      "name": "Fujifilm X-T10",
+      "kind": "camera",
+      "make": "Fujifilm",
+      "model": "X-T10",
+      "source_models": [
+        "X-T10"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "omsystemom5markii",
+      "name": "OM System OM-5 Mark II",
+      "kind": "camera",
+      "make": "OM System",
+      "model": "OM-5 Mark II",
+      "source_models": [
+        "OM-5 Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk1",
+      "name": "Pentax K-1",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-1",
+      "source_models": [
+        "K-1"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk50",
+      "name": "Pentax K-50",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-50",
+      "source_models": [
+        "K-50"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk5ii",
+      "name": "Pentax K-5 II",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-5 II",
+      "source_models": [
+        "K-5 II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk3",
+      "name": "Pentax K-3",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-3",
+      "source_models": [
+        "K-3"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk30",
+      "name": "Pentax K-30",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-30",
+      "source_models": [
+        "K-30"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxq7",
+      "name": "Pentax Q7",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "Q7",
+      "source_models": [
+        "Q7"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk7",
+      "name": "Pentax K-7",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-7",
+      "source_models": [
+        "K-7"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk5iis",
+      "name": "Pentax K-5 II s",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-5 II s",
+      "source_models": [
+        "K-5 II s"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk5",
+      "name": "Pentax K-5",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-5",
+      "source_models": [
+        "K-5"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk3markiiimonochrome",
+      "name": "Pentax K-3 Mark III Monochrome",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-3 Mark III Monochrome",
+      "source_models": [
+        "K-3 Mark III Monochrome"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "pentaxk3ii",
+      "name": "Pentax K-3 II",
+      "kind": "camera",
+      "make": "Pentax",
+      "model": "K-3 II",
+      "source_models": [
+        "K-3 II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "leicasltyp601",
+      "name": "Leica SL (Typ 601)",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "SL (Typ 601)",
+      "source_models": [
+        "SL (Typ 601)"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "leicaqtyp116",
+      "name": "Leica Q (Typ 116)",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "Q (Typ 116)",
+      "source_models": [
+        "Q (Typ 116)"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "leicammonochromtyp246",
+      "name": "Leica M Monochrom (Typ 246)",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "M Monochrom (Typ 246)",
+      "source_models": [
+        "M Monochrom (Typ 246)"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "leicamtyp240",
+      "name": "Leica M (Typ 240)",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "M (Typ 240)",
+      "source_models": [
+        "M (Typ 240)"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "leicavluxtyp114",
+      "name": "Leica V-LUX (Typ 114)",
+      "kind": "camera",
+      "make": "Leica",
+      "model": "V-LUX (Typ 114)",
+      "source_models": [
+        "V-LUX (Typ 114)"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "ricohgrii",
+      "name": "Ricoh GR II",
+      "kind": "camera",
+      "make": "Ricoh",
+      "model": "GR II",
+      "source_models": [
+        "GR II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "appleiphone14",
+      "name": "Apple iPhone 14",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 14",
+      "generation": 14,
+      "source_models": [
+        "iPhone 14"
+      ]
+    },
+    {
+      "id": "appleiphone14plus",
+      "name": "Apple iPhone 14 Plus",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 14 Plus",
+      "generation": 14,
+      "source_models": [
+        "iPhone 14 Plus"
+      ]
+    },
+    {
+      "id": "appleiphone14pro",
+      "name": "Apple iPhone 14 Pro",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 14 Pro",
+      "generation": 14,
+      "source_models": [
+        "iPhone 14 Pro"
+      ]
+    },
+    {
+      "id": "appleiphone14promax",
+      "name": "Apple iPhone 14 Pro Max",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 14 Pro Max",
+      "generation": 14,
+      "source_models": [
+        "iPhone 14 Pro Max"
+      ]
+    },
+    {
+      "id": "appleiphone15",
+      "name": "Apple iPhone 15",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 15",
+      "generation": 15,
+      "source_models": [
+        "iPhone 15"
+      ]
+    },
+    {
+      "id": "appleiphone15plus",
+      "name": "Apple iPhone 15 Plus",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 15 Plus",
+      "generation": 15,
+      "source_models": [
+        "iPhone 15 Plus"
+      ]
+    },
+    {
+      "id": "appleiphone15pro",
+      "name": "Apple iPhone 15 Pro",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 15 Pro",
+      "generation": 15,
+      "source_models": [
+        "iPhone 15 Pro"
+      ]
+    },
+    {
+      "id": "appleiphone15promax",
+      "name": "Apple iPhone 15 Pro Max",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 15 Pro Max",
+      "generation": 15,
+      "source_models": [
+        "iPhone 15 Pro Max"
+      ]
+    },
+    {
+      "id": "appleiphone16",
+      "name": "Apple iPhone 16",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 16",
+      "generation": 16,
+      "source_models": [
+        "iPhone 16"
+      ]
+    },
+    {
+      "id": "appleiphone16plus",
+      "name": "Apple iPhone 16 Plus",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 16 Plus",
+      "generation": 16,
+      "source_models": [
+        "iPhone 16 Plus"
+      ]
+    },
+    {
+      "id": "appleiphone16pro",
+      "name": "Apple iPhone 16 Pro",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 16 Pro",
+      "generation": 16,
+      "source_models": [
+        "iPhone 16 Pro"
+      ]
+    },
+    {
+      "id": "appleiphone16promax",
+      "name": "Apple iPhone 16 Pro Max",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 16 Pro Max",
+      "generation": 16,
+      "source_models": [
+        "iPhone 16 Pro Max"
+      ]
+    },
+    {
+      "id": "appleiphone17",
+      "name": "Apple iPhone 17",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 17",
+      "generation": 17,
+      "source_models": [
+        "iPhone 17"
+      ]
+    },
+    {
+      "id": "appleiphone17pro",
+      "name": "Apple iPhone 17 Pro",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 17 Pro",
+      "generation": 17,
+      "source_models": [
+        "iPhone 17 Pro"
+      ]
+    },
+    {
+      "id": "appleiphone17promax",
+      "name": "Apple iPhone 17 Pro Max",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 17 Pro Max",
+      "generation": 17,
+      "source_models": [
+        "iPhone 17 Pro Max"
+      ]
+    },
+    {
+      "id": "appleiphoneair",
+      "name": "Apple iPhone Air",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone Air",
+      "generation": 17,
+      "source_models": [
+        "iPhone Air"
+      ]
+    },
+    {
+      "id": "appleiphone18pro",
+      "name": "Apple iPhone 18 Pro",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 18 Pro",
+      "generation": 18,
+      "source_models": [
+        "iPhone 18 Pro"
+      ]
+    },
+    {
+      "id": "appleiphone18promax",
+      "name": "Apple iPhone 18 Pro Max",
+      "kind": "phone",
+      "make": "Apple",
+      "model": "iPhone 18 Pro Max",
+      "generation": 18,
+      "source_models": [
+        "iPhone 18 Pro Max"
+      ]
+    },
+    {
+      "id": "googlepixel7",
+      "name": "Google Pixel 7",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 7",
+      "generation": 7,
+      "source_models": [
+        "Pixel 7"
+      ]
+    },
+    {
+      "id": "googlepixel7pro",
+      "name": "Google Pixel 7 Pro",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 7 Pro",
+      "generation": 7,
+      "source_models": [
+        "Pixel 7 Pro"
+      ]
+    },
+    {
+      "id": "googlepixel8",
+      "name": "Google Pixel 8",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 8",
+      "generation": 8,
+      "source_models": [
+        "Pixel 8"
+      ]
+    },
+    {
+      "id": "googlepixel8pro",
+      "name": "Google Pixel 8 Pro",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 8 Pro",
+      "generation": 8,
+      "source_models": [
+        "Pixel 8 Pro"
+      ]
+    },
+    {
+      "id": "googlepixel9",
+      "name": "Google Pixel 9",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 9",
+      "generation": 9,
+      "source_models": [
+        "Pixel 9"
+      ]
+    },
+    {
+      "id": "googlepixel9pro",
+      "name": "Google Pixel 9 Pro",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 9 Pro",
+      "generation": 9,
+      "source_models": [
+        "Pixel 9 Pro"
+      ]
+    },
+    {
+      "id": "googlepixel9proxl",
+      "name": "Google Pixel 9 Pro XL",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 9 Pro XL",
+      "generation": 9,
+      "source_models": [
+        "Pixel 9 Pro XL"
+      ]
+    },
+    {
+      "id": "googlepixel10",
+      "name": "Google Pixel 10",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 10",
+      "generation": 10,
+      "source_models": [
+        "Pixel 10"
+      ]
+    },
+    {
+      "id": "googlepixel10pro",
+      "name": "Google Pixel 10 Pro",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 10 Pro",
+      "generation": 10,
+      "source_models": [
+        "Pixel 10 Pro"
+      ]
+    },
+    {
+      "id": "googlepixel10proxl",
+      "name": "Google Pixel 10 Pro XL",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 10 Pro XL",
+      "generation": 10,
+      "source_models": [
+        "Pixel 10 Pro XL"
+      ]
+    },
+    {
+      "id": "googlepixel11",
+      "name": "Google Pixel 11",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 11",
+      "generation": 11,
+      "source_models": [
+        "Pixel 11"
+      ]
+    },
+    {
+      "id": "googlepixel11pro",
+      "name": "Google Pixel 11 Pro",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 11 Pro",
+      "generation": 11,
+      "source_models": [
+        "Pixel 11 Pro"
+      ]
+    },
+    {
+      "id": "googlepixel11proxl",
+      "name": "Google Pixel 11 Pro XL",
+      "kind": "phone",
+      "make": "Google",
+      "model": "Pixel 11 Pro XL",
+      "generation": 11,
+      "source_models": [
+        "Pixel 11 Pro XL"
+      ]
+    },
+    {
+      "id": "samsunggalaxys22",
+      "name": "Samsung Galaxy S22",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S22",
+      "generation": 22,
+      "source_models": [
+        "Galaxy S22",
+        "SM-S901E"
+      ]
+    },
+    {
+      "id": "samsunggalaxys22plus",
+      "name": "Samsung Galaxy S22+",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S22+",
+      "generation": 22,
+      "source_models": [
+        "Galaxy S22+"
+      ]
+    },
+    {
+      "id": "samsunggalaxys22ultra",
+      "name": "Samsung Galaxy S22 Ultra",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S22 Ultra",
+      "generation": 22,
+      "source_models": [
+        "Galaxy S22 Ultra",
+        "Galaxy S22 Ulra"
+      ]
+    },
+    {
+      "id": "samsunggalaxys23",
+      "name": "Samsung Galaxy S23",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S23",
+      "generation": 23,
+      "source_models": [
+        "Galaxy S23"
+      ]
+    },
+    {
+      "id": "samsunggalaxys23plus",
+      "name": "Samsung Galaxy S23+",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S23+",
+      "generation": 23,
+      "source_models": [
+        "Galaxy S23+"
+      ]
+    },
+    {
+      "id": "samsunggalaxys23ultra",
+      "name": "Samsung Galaxy S23 Ultra",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S23 Ultra",
+      "generation": 23,
+      "source_models": [
+        "Galaxy S23 Ultra"
+      ]
+    },
+    {
+      "id": "samsunggalaxys24",
+      "name": "Samsung Galaxy S24",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S24",
+      "generation": 24,
+      "source_models": [
+        "Galaxy S24"
+      ]
+    },
+    {
+      "id": "samsunggalaxys24plus",
+      "name": "Samsung Galaxy S24+",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S24+",
+      "generation": 24,
+      "source_models": [
+        "Galaxy S24+"
+      ]
+    },
+    {
+      "id": "samsunggalaxys24ultra",
+      "name": "Samsung Galaxy S24 Ultra",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S24 Ultra",
+      "generation": 24,
+      "source_models": [
+        "Galaxy S24 Ultra"
+      ]
+    },
+    {
+      "id": "samsunggalaxys25",
+      "name": "Samsung Galaxy S25",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S25",
+      "generation": 25,
+      "source_models": [
+        "Galaxy S25"
+      ]
+    },
+    {
+      "id": "samsunggalaxys25plus",
+      "name": "Samsung Galaxy S25+",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S25+",
+      "generation": 25,
+      "source_models": [
+        "Galaxy S25+"
+      ]
+    },
+    {
+      "id": "samsunggalaxys25ultra",
+      "name": "Samsung Galaxy S25 Ultra",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S25 Ultra",
+      "generation": 25,
+      "source_models": [
+        "Galaxy S25 Ultra"
+      ]
+    },
+    {
+      "id": "samsunggalaxys26",
+      "name": "Samsung Galaxy S26",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S26",
+      "generation": 26,
+      "source_models": [
+        "Galaxy S26"
+      ]
+    },
+    {
+      "id": "samsunggalaxys26plus",
+      "name": "Samsung Galaxy S26+",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S26+",
+      "generation": 26,
+      "source_models": [
+        "Galaxy S26+"
+      ]
+    },
+    {
+      "id": "samsunggalaxys26ultra",
+      "name": "Samsung Galaxy S26 Ultra",
+      "kind": "phone",
+      "make": "Samsung",
+      "model": "Galaxy S26 Ultra",
+      "generation": 26,
+      "source_models": [
+        "Galaxy S26 Ultra"
+      ]
+    },
+    {
+      "id": "panasonicdcs5m2",
+      "name": "DC-S5M2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S5M2",
+      "source_models": [
+        "DC-S5M2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcs5",
+      "name": "DC-S5",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S5",
+      "source_models": [
+        "DC-S5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcg9m2",
+      "name": "DC-G9M2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-G9M2",
+      "source_models": [
+        "DC-G9M2"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcgh7",
+      "name": "DC-GH7",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GH7",
+      "source_models": [
+        "DC-GH7"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcgx7mk3",
+      "name": "DC-GX7MK3",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GX7MK3",
+      "source_models": [
+        "DC-GX7MK3",
+        "DC-GX9"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcgh6",
+      "name": "Panasonic Lumix GH6",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GH6",
+      "source_models": [
+        "DC-GH6"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcgh5",
+      "name": "Panasonic Lumix GH5",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GH5",
+      "source_models": [
+        "DC-GH5"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "panasonicdcg9",
+      "name": "Panasonic DC-G9",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-G9",
+      "source_models": [
+        "DC-G9"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdmcfz300",
+      "name": "Panasonic DMC-FZ300",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DMC-FZ300",
+      "source_models": [
+        "DMC-FZ300"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdmcfz1000",
+      "name": "Panasonic DMC-FZ1000",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DMC-FZ1000",
+      "source_models": [
+        "DMC-FZ1000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcs9",
+      "name": "Panasonic DC-S9",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S9",
+      "source_models": [
+        "DC-S9"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcfz82",
+      "name": "Panasonic DC-FZ82",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-FZ82",
+      "source_models": [
+        "DC-FZ82"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdmcfz2000",
+      "name": "Panasonic DMC-FZ2000",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DMC-FZ2000",
+      "source_models": [
+        "DMC-FZ2000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcg100d",
+      "name": "Panasonic DC-G100D",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-G100D",
+      "source_models": [
+        "DC-G100D"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcg97",
+      "name": "Panasonic DC-G97",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-G97",
+      "source_models": [
+        "DC-G97"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcg95",
+      "name": "Panasonic DC-G95",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-G95",
+      "source_models": [
+        "DC-G95"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "panasonicdcgh5m2",
+      "name": "Panasonic DC-GH5M2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GH5M2",
+      "source_models": [
+        "DC-GH5M2"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcgh5s",
+      "name": "Panasonic DC-GH5S",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-GH5S",
+      "source_models": [
+        "DC-GH5S"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs1",
+      "name": "Panasonic DC-S1",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S1",
+      "source_models": [
+        "DC-S1"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs1h",
+      "name": "Panasonic DC-S1H",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S1H",
+      "source_models": [
+        "DC-S1H"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs1r",
+      "name": "Panasonic DC-S1R",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S1R",
+      "source_models": [
+        "DC-S1R"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs5m2x",
+      "name": "Panasonic DC-S5M2X",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S5M2X",
+      "source_models": [
+        "DC-S5M2X"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs1m2",
+      "name": "Panasonic DC-S1M2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S1M2",
+      "source_models": [
+        "DC-S1M2"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdcs1rm2",
+      "name": "Panasonic DC-S1RM2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-S1RM2",
+      "source_models": [
+        "DC-S1RM2"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "panasonicdclx100m2",
+      "name": "Panasonic DC-LX100M2",
+      "kind": "camera",
+      "make": "Panasonic",
+      "model": "DC-LX100M2",
+      "source_models": [
+        "DC-LX100M2"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympusem1markiii",
+      "name": "E-M1MarkIII",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M1MarkIII",
+      "source_models": [
+        "E-M1MarkIII"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "olympusem1x",
+      "name": "E-M1X",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M1X",
+      "source_models": [
+        "E-M1X"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "olympusem10markiv",
+      "name": "E-M10 Mark IV",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M10 Mark IV",
+      "source_models": [
+        "E-M10 Mark IV"
+      ],
+      "selection_reason": "existing qualified camera"
+    },
+    {
+      "id": "olympusem1markii",
+      "name": "Olympus E-M1MarkII",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M1MarkII",
+      "source_models": [
+        "E-M1MarkII"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem5markiii",
+      "name": "Olympus E-M5 Mark III",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M5 Mark III",
+      "source_models": [
+        "E-M5 Mark III"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympustg6",
+      "name": "Olympus TG-6",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "TG-6",
+      "source_models": [
+        "TG-6"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem5markii",
+      "name": "Olympus E-M5 Mark II",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M5 Mark II",
+      "source_models": [
+        "E-M5 Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem10markii",
+      "name": "Olympus E-M10 Mark II",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M10 Mark II",
+      "source_models": [
+        "E-M10 Mark II"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem1",
+      "name": "Olympus E-M1",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M1",
+      "source_models": [
+        "E-M1"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem10markiii",
+      "name": "Olympus E-M10 Mark III",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M10 Mark III",
+      "source_models": [
+        "E-M10 Mark III"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympuspenf",
+      "name": "Olympus PEN-F",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "PEN-F",
+      "source_models": [
+        "PEN-F"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem10markiiis",
+      "name": "Olympus E-M10 Mark IIIs",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M10 Mark IIIs",
+      "source_models": [
+        "E-M10 Mark IIIs"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem10",
+      "name": "Olympus E-M10",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M10",
+      "source_models": [
+        "E-M10"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusem5",
+      "name": "Olympus E-M5",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-M5",
+      "source_models": [
+        "E-M5"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "olympusep7",
+      "name": "Olympus E-P7",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-P7",
+      "source_models": [
+        "E-P7"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympusepl10",
+      "name": "Olympus E-PL10",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-PL10",
+      "source_models": [
+        "E-PL10"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympusepl9",
+      "name": "Olympus E-PL9",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-PL9",
+      "source_models": [
+        "E-PL9"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympusep5",
+      "name": "Olympus E-P5",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-P5",
+      "source_models": [
+        "E-P5"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympusepl7",
+      "name": "Olympus E-PL7",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "E-PL7",
+      "source_models": [
+        "E-PL7"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "olympustg5",
+      "name": "Olympus TG-5",
+      "kind": "camera",
+      "make": "Olympus",
+      "model": "TG-5",
+      "source_models": [
+        "TG-5"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "samsungnx1",
+      "name": "Samsung NX1",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX1",
+      "source_models": [
+        "NX1"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "samsungnx500",
+      "name": "Samsung NX500",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX500",
+      "source_models": [
+        "NX500"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "samsungnx300",
+      "name": "Samsung NX300",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX300",
+      "source_models": [
+        "NX300"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "samsungnx30",
+      "name": "Samsung NX30",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX30",
+      "source_models": [
+        "NX30"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "samsungnx200",
+      "name": "Samsung NX200",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX200",
+      "source_models": [
+        "NX200"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    },
+    {
+      "id": "samsungnx1000",
+      "name": "Samsung NX1000",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "NX1000",
+      "source_models": [
+        "NX1000"
+      ],
+      "selection_reason": "curated cross-brand extension; Flickr activity considered where available"
+    },
+    {
+      "id": "samsungex1",
+      "name": "Samsung EX1",
+      "kind": "camera",
+      "make": "Samsung",
+      "model": "EX1",
+      "source_models": [
+        "EX1"
+      ],
+      "selection_reason": "curated mainline camera extension"
+    }
+  ]
+}

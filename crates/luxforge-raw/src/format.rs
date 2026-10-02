@@ -164,7 +164,7 @@ impl<'a> Tiff<'a> {
     }
 }
 
-fn nef_compression(bytes: &[u8]) -> Option<u16> {
+pub(super) fn nef_compression(bytes: &[u8]) -> Option<u16> {
     let (root, first) = Tiff::header(bytes, 0)?;
     let (ifd, _) = root.entries(first)?;
     let exif = ifd
@@ -315,7 +315,7 @@ pub(super) fn raf_default_crop(bytes: &[u8]) -> Option<RawRect> {
     })
 }
 
-fn raf_compression(bytes: &[u8]) -> Option<u32> {
+pub(super) fn raf_compression(bytes: &[u8]) -> Option<u32> {
     if bytes.get(..8)? != b"FUJIFILM" {
         return None;
     }
@@ -475,12 +475,24 @@ pub(super) fn dng_container(
         }
         let get = |tag| entries.iter().copied().find(|e| e.tag == tag);
         let scalar = |tag| get(tag).and_then(|e| tiff.scalar(e));
+        let linear = matches!(
+            strategy,
+            DngContainer::IntegerLinearSingleSegment | DngContainer::IntegerLinearSegments
+        );
+        let source_geometry = matches!(
+            strategy,
+            DngContainer::IntegerCfaSegments | DngContainer::IntegerLinearSegments
+        );
+        let channels = native.channels;
+        let bits = get(258).and_then(|entry| rational_values(&tiff, entry, channels as usize));
+        let matching_bits =
+            bits.is_some_and(|values| values.iter().all(|value| *value == (native.raw_bps, 1)));
         if scalar(256) != Some(native.width)
             || scalar(257) != Some(native.height)
-            || scalar(258) != Some(native.raw_bps)
-            || !matches!(scalar(259), Some(1 | 7))
-            || scalar(262) != Some(32803)
-            || scalar(277) != Some(1)
+            || !matching_bits
+            || !(matches!(scalar(259), Some(1 | 7)) || linear && scalar(259) == Some(52546))
+            || scalar(262) != Some(if linear { 34892 } else { 32803 })
+            || scalar(277) != Some(channels)
             || scalar(284).unwrap_or(1) != 1
         {
             return Ok(());
@@ -490,42 +502,74 @@ pub(super) fn dng_container(
         {
             return Err(RawError::UnsupportedMode("DNG profile storage".into()));
         }
-        let expected_bytes = (u64::from(native.width) * u64::from(native.raw_bps))
-            .div_ceil(8)
-            .checked_mul(u64::from(native.height))
-            .ok_or(RawError::ResourceLimit("DNG strip size"))?;
-        let (offset_tag, count_tag) = if get(273).is_some() {
-            if scalar(278) != Some(native.height) || get(324).is_some() {
-                return Err(RawError::UnsupportedMode("DNG single-strip layout".into()));
+        let expected_bytes =
+            (u64::from(native.width) * u64::from(native.raw_bps) * u64::from(native.channels))
+                .div_ceil(8)
+                .checked_mul(u64::from(native.height))
+                .ok_or(RawError::ResourceLimit("DNG strip size"))?;
+        let (offset_tag, count_tag, segment_count) = if get(273).is_some() {
+            let rows = scalar(278).ok_or(RawError::InvalidInput("DNG RowsPerStrip"))?;
+            if rows == 0 || get(324).is_some() || (!source_geometry && rows != native.height) {
+                return Err(RawError::UnsupportedMode("DNG strip layout".into()));
             }
-            (273, 279)
-        } else if *strategy == DngContainer::IntegerCfaSingleSegment
-            && scalar(322) == Some(native.width)
-            && scalar(323) == Some(native.height)
-        {
-            (324, 325)
+            (273, 279, native.height.div_ceil(rows))
+        } else if *strategy != DngContainer::UncompressedU16SingleStrip {
+            let width = scalar(322).ok_or(RawError::InvalidInput("DNG TileWidth"))?;
+            let height = scalar(323).ok_or(RawError::InvalidInput("DNG TileLength"))?;
+            if width == 0
+                || height == 0
+                || width > 16384
+                || height > 16384
+                || (!source_geometry && (width != native.width || height != native.height))
+            {
+                return Err(RawError::UnsupportedMode("DNG tile layout".into()));
+            }
+            (
+                324,
+                325,
+                native
+                    .width
+                    .div_ceil(width)
+                    .checked_mul(native.height.div_ceil(height))
+                    .ok_or(RawError::ResourceLimit("DNG tile count"))?,
+            )
         } else {
             return Err(RawError::UnsupportedMode(
                 "DNG single-segment layout".into(),
             ));
         };
-        let strip_offset =
-            scalar(offset_tag).ok_or(RawError::InvalidInput("DNG single segment offset"))? as usize;
-        let strip_bytes = scalar(count_tag)
-            .ok_or(RawError::InvalidInput("DNG single segment byte count"))?
-            as usize;
-        let uncompressed_size_invalid = scalar(259) == Some(1)
-            && if *strategy == DngContainer::UncompressedU16SingleStrip {
-                strip_bytes as u64 != expected_bytes
-            } else {
-                (strip_bytes as u64) < expected_bytes
-            };
-        if strip_bytes == 0
-            || uncompressed_size_invalid
-            || strip_offset
-                .checked_add(strip_bytes)
-                .and_then(|end| bytes.get(strip_offset..end))
-                .is_none()
+        if segment_count == 0 || segment_count > 65536 {
+            return Err(RawError::ResourceLimit("DNG segment count"));
+        }
+        let offsets = get(offset_tag)
+            .and_then(|entry| rational_values(&tiff, entry, segment_count as usize))
+            .ok_or(RawError::InvalidInput("DNG segment offsets"))?;
+        let counts = get(count_tag)
+            .and_then(|entry| rational_values(&tiff, entry, segment_count as usize))
+            .ok_or(RawError::InvalidInput("DNG segment counts"))?;
+        let mut ranges = Vec::with_capacity(segment_count as usize);
+        let mut total = 0_u64;
+        for ((start, sd), (count, cd)) in offsets.into_iter().zip(counts) {
+            if sd != 1 || cd != 1 || count == 0 {
+                return Err(RawError::InvalidInput("DNG segment integer range"));
+            }
+            let end = start
+                .checked_add(count)
+                .ok_or(RawError::ResourceLimit("DNG segment range"))?;
+            if bytes.get(start as usize..end as usize).is_none() {
+                return Err(RawError::UnsupportedMode("DNG segment encoding".into()));
+            }
+            ranges.push((start, end));
+            total += u64::from(count);
+        }
+        ranges.sort_unstable();
+        if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+            return Err(RawError::InvalidInput("overlapping DNG segments"));
+        }
+        if scalar(259) == Some(1)
+            && (total < expected_bytes
+                || (*strategy == DngContainer::UncompressedU16SingleStrip
+                    && total != expected_bytes))
         {
             return Err(RawError::UnsupportedMode("DNG segment encoding".into()));
         }
@@ -563,13 +607,14 @@ pub(super) fn dng_container(
             .ok_or(RawError::InvalidInput("DNG active trim"))?;
         crate::checked_rect(source_active, native.width, native.height)
             .map_err(|_| RawError::InvalidInput("DNG ActiveArea bounds"))?;
-        if source_active.x != native.active_x
-            || source_active.y != native.active_y
-            || source_active.width != native.active_width
-            || area[2] != expected_bottom
-            || source_active.x + source_active.width > native.width
-            || source_active.y + source_active.height > native.height
-            || area[3] != active_right
+        if !source_geometry
+            && (source_active.x != native.active_x
+                || source_active.y != native.active_y
+                || source_active.width != native.active_width
+                || area[2] != expected_bottom
+                || source_active.x + source_active.width > native.width
+                || source_active.y + source_active.height > native.height
+                || area[3] != active_right)
         {
             return Err(RawError::InvalidInput(
                 "DNG ActiveArea differs from decoder",
@@ -608,12 +653,12 @@ pub(super) fn dng_container(
             return Err(RawError::UnsupportedMode("fractional default crop".into()));
         }
         let crop = RawRect {
-            x: native
-                .active_x
+            x: source_active
+                .x
                 .checked_add(origin[0].0)
                 .ok_or(RawError::ResourceLimit("DNG crop origin"))?,
-            y: native
-                .active_y
+            y: source_active
+                .y
                 .checked_add(origin[1].0)
                 .ok_or(RawError::ResourceLimit("DNG crop origin"))?,
             width: size[0].0,
@@ -629,8 +674,8 @@ pub(super) fn dng_container(
                 .y
                 .checked_add(crop.height)
                 .is_none_or(|v| v > native.height)
-            || crop.x < native.active_x
-            || crop.y < native.active_y
+            || crop.x < source_active.x
+            || crop.y < source_active.y
             || crop.x + crop.width > source_active.x + source_active.width
             || crop.y + crop.height > source_active.y + source_active.height
         {
@@ -656,7 +701,10 @@ pub(super) fn dng_color_calibration(
     native: &NativeMetadata,
     settings: &Dng,
 ) -> Result<([[f32; 3]; 4], DngCalibrationMetadata), RawError> {
-    let DngCalibration::RootFixedMatrix = settings.calibration;
+    if settings.calibration != DngCalibration::RootFixedMatrix {
+        return source_reference_calibration(bytes, native, settings)
+            .map(|value| (value.0, value.3));
+    }
     let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
     let (root, _) = tiff
         .entries(first)
@@ -830,6 +878,244 @@ pub(super) fn dng_color_calibration(
     ))
 }
 
+/// The single verified JPEG XL codestream, without any preview or container boxing.
+pub(super) fn dng_jxl_segment<'a>(
+    bytes: &'a [u8],
+    native: &NativeMetadata,
+) -> Result<&'a [u8], RawError> {
+    let sensor = dng_container(bytes, native, &DngContainer::IntegerLinearSegments, 0)?;
+    let (tiff, _) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG header"))?;
+    let (entries, _) = tiff
+        .entries(sensor.raw_ifd)
+        .ok_or(RawError::InvalidInput("DNG raw IFD"))?;
+    let scalar = |tag| {
+        entries
+            .iter()
+            .copied()
+            .find(|e| e.tag == tag)
+            .and_then(|e| tiff.scalar(e))
+    };
+    if scalar(259) != Some(52546) {
+        return Err(RawError::UnsupportedMode("JPEG XL DNG compression".into()));
+    }
+    let start = scalar(273).ok_or(RawError::InvalidInput("JPEG XL strip"))? as usize;
+    let len = scalar(279).ok_or(RawError::InvalidInput("JPEG XL strip length"))? as usize;
+    let data = bytes
+        .get(
+            start
+                ..start
+                    .checked_add(len)
+                    .ok_or(RawError::ResourceLimit("JPEG XL range"))?,
+        )
+        .ok_or(RawError::InvalidInput("JPEG XL strip bounds"))?;
+    if !data.starts_with(&[0xff, 0x0a]) && !data.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
+        return Err(RawError::UnsupportedMode(
+            "DNG JPEG XL codestream framing".into(),
+        ));
+    }
+    Ok(data)
+}
+
+type SourceCalibration = (
+    [[f32; 3]; 4],
+    [f32; 3],
+    [[f32; 4]; 3],
+    DngCalibrationMetadata,
+);
+
+/// A fixed, source-attributed XYZ-to-camera response for DNG variants that carry
+/// CameraCalibration, ForwardMatrix or AsShotWhiteXY. Forward profiles are recorded;
+/// this path uses the selected ColorMatrix model, rather than a DCP rendering.
+pub(super) fn source_reference_calibration(
+    bytes: &[u8],
+    native: &NativeMetadata,
+    settings: &Dng,
+) -> Result<SourceCalibration, RawError> {
+    let (tiff, first) = Tiff::header(bytes, 0).ok_or(RawError::InvalidInput("DNG TIFF header"))?;
+    let (root, _) = tiff
+        .entries(first)
+        .ok_or(RawError::InvalidInput("DNG root IFD"))?;
+    for (i, entry) in root.iter().enumerate() {
+        if root[..i].iter().any(|other| other.tag == entry.tag) {
+            return Err(RawError::InvalidInput("duplicate DNG calibration tag"));
+        }
+    }
+    tiff.walk(first, |rel, entries| {
+        if rel != first
+            && entries.iter().any(|entry| {
+                [
+                    50721, 50722, 50723, 50724, 50727, 50728, 50729, 50778, 50779, 50964, 50965,
+                ]
+                .contains(&entry.tag)
+            })
+        {
+            return Err(RawError::UnsupportedMode(
+                "DNG calibration outside root IFD".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    let get = |tag| root.iter().copied().find(|e| e.tag == tag);
+    let mut digest = Sha256::new();
+    for tag in [
+        50721, 50722, 50723, 50724, 50727, 50728, 50729, 50778, 50779, 50964, 50965,
+    ] {
+        if let Some(entry) = get(tag) {
+            digest.update(tag.to_le_bytes());
+            digest.update(
+                tiff.payload(entry)
+                    .ok_or(RawError::InvalidInput("DNG calibration payload"))?,
+            );
+        }
+    }
+    let provenance = format!("{}:{:x}", settings.calibration_identity, digest.finalize());
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+    ];
+    let metadata = |one, two| DngCalibrationMetadata {
+        illuminants: settings.illuminants,
+        color_matrix1_sha256: one,
+        color_matrix2_sha256: two,
+        selected: provenance.clone(),
+    };
+    if settings.calibration == DngCalibration::Monochrome {
+        if native.channels != 1 || native.cfa_width != 0 || native.cfa_height != 0 {
+            return Err(RawError::UnsupportedMode("DNG monochrome layout".into()));
+        }
+        return Ok((
+            [[0.0; 3]; 4],
+            [1.0; 3],
+            identity,
+            metadata(String::new(), String::new()),
+        ));
+    }
+    let matrix = |tag: u16, optional: bool| -> Result<([[f64; 3]; 3], String), RawError> {
+        let Some(entry) = get(tag) else {
+            if optional {
+                return Ok((
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    String::new(),
+                ));
+            }
+            return Err(RawError::MissingCalibration("DNG source matrix"));
+        };
+        if !matches!(entry.kind, 5 | 10) || entry.count != 9 {
+            return Err(RawError::MissingCalibration("DNG source matrix shape"));
+        }
+        let data = tiff
+            .payload(entry)
+            .ok_or(RawError::InvalidInput("DNG matrix payload"))?;
+        let mut result = [[0.0; 3]; 3];
+        for i in 0..9 {
+            let num = u32_at(data, i * 8, tiff.endian).unwrap();
+            let den = u32_at(data, i * 8 + 4, tiff.endian).unwrap();
+            let (num, den) = if entry.kind == 10 {
+                (num as i32 as f64, den as i32 as f64)
+            } else {
+                (num as f64, den as f64)
+            };
+            let v = num / den;
+            if den == 0.0 || !v.is_finite() || v.abs() > 16.0 {
+                return Err(RawError::MissingCalibration("DNG matrix coefficient"));
+            }
+            result[i / 3][i % 3] = v;
+        }
+        let determinant = crate::mat3::determinant(result);
+        if !determinant.is_finite() || determinant.abs() < 1e-8 {
+            return Err(RawError::MissingCalibration("DNG singular source matrix"));
+        }
+        Ok((result, format!("{:x}", Sha256::digest(data))))
+    };
+    let (one, hash1) = matrix(50721, false)?;
+    let (two, hash2) = if get(50722).is_some() {
+        matrix(50722, false)?
+    } else {
+        (one, String::new())
+    };
+    for (tag, expected) in [
+        (50778, settings.illuminants[0]),
+        (50779, settings.illuminants[1]),
+    ] {
+        if tiff.scalar(get(tag).ok_or(RawError::MissingCalibration("DNG source illuminant"))?)
+            != Some(expected as u32)
+        {
+            return Err(RawError::UnsupportedMode("DNG source illuminant".into()));
+        }
+    }
+    let selected = settings.selected_matrix;
+    let cm = if selected == 1 { one } else { two };
+    let cc = matrix(if selected == 1 { 50723 } else { 50724 }, true)?.0;
+    // Validate forward matrices even though this explicitly named interpretation uses CM.
+    for tag in [50964, 50965] {
+        if get(tag).is_some() {
+            matrix(tag, false)?;
+        }
+    }
+    let analog = get(50727)
+        .map(|entry| {
+            rational_values(&tiff, entry, 3)
+                .ok_or(RawError::MissingCalibration("DNG AnalogBalance"))
+        })
+        .transpose()?;
+    let analog: [f64; 3] = std::array::from_fn(|i| {
+        analog
+            .as_ref()
+            .map_or(1.0, |v| v[i].0 as f64 / v[i].1 as f64)
+    });
+    if !analog
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0 && *v <= 16.0)
+    {
+        return Err(RawError::MissingCalibration("DNG AnalogBalance range"));
+    }
+    let response: [[f64; 3]; 3] = std::array::from_fn(|r| {
+        std::array::from_fn(|c| analog[r] * (0..3).map(|k| cc[r][k] * cm[k][c]).sum::<f64>())
+    });
+    let xyz: [[f32; 3]; 4] = std::array::from_fn(|r| {
+        if r == 3 {
+            [0.0; 3]
+        } else {
+            response[r].map(|v| v as f32)
+        }
+    });
+    crate::validate_camera_response(&xyz)?;
+    let neutral = if let Some(entry) = get(50728) {
+        let v = rational_values(&tiff, entry, 3)
+            .ok_or(RawError::MissingCalibration("DNG AsShotNeutral"))?;
+        [0, 1, 2].map(|i| v[i].0 as f64 / v[i].1 as f64)
+    } else {
+        let xy = rational_values(
+            &tiff,
+            get(50729).ok_or(RawError::MissingCalibration("DNG as-shot whitepoint"))?,
+            2,
+        )
+        .ok_or(RawError::MissingCalibration("DNG AsShotWhiteXY"))?;
+        let (x, y) = (
+            xy[0].0 as f64 / xy[0].1 as f64,
+            xy[1].0 as f64 / xy[1].1 as f64,
+        );
+        if x <= 0.0 || y <= 0.0 || x + y >= 1.0 {
+            return Err(RawError::MissingCalibration("DNG whitepoint domain"));
+        }
+        let white = [x / y, 1.0, (1.0 - x - y) / y];
+        response.map(|row| row.iter().zip(white).map(|(a, b)| a * b).sum())
+    };
+    if !neutral.iter().all(|v| v.is_finite() && *v > 0.0) {
+        return Err(RawError::MissingCalibration("DNG source neutral"));
+    }
+    let gains = [neutral[1] / neutral[0], 1.0, neutral[1] / neutral[2]].map(|v| v as f32);
+    if !gains
+        .iter()
+        .all(|v| v.is_finite() && *v > 0.0 && *v <= 16.0)
+    {
+        return Err(RawError::MissingCalibration("DNG source WB"));
+    }
+    let rgb = crate::color::camera_to_rgb(response).map_err(RawError::MissingCalibration)?;
+    Ok((xyz, gains, rgb, metadata(hash1, hash2)))
+}
+
 /// The catalogued camera and recording mode of an identified, not yet unpacked, file: its
 /// identity from LibRaw's identify, and the container's compression marker where the mode
 /// declares one.
@@ -854,6 +1140,7 @@ pub(super) fn classify_mode<'a>(
         .ok_or_else(unsupported)?;
     if !matches!(native.raw_count, 1 | 2)
         || camera.cfa_size != [native.cfa_width, native.cfa_height]
+        || camera.channels != native.channels
     {
         return Err(unsupported());
     }
@@ -1292,6 +1579,7 @@ mod tests {
         long_array(&mut bytes, 320, &crop_origin);
         long_array(&mut bytes, 328, &crop_size);
         let mut native = RawSource::blank_native();
+        native.channels = 1;
         native.width = width;
         native.height = height;
         native.active_width = width;
@@ -1299,6 +1587,45 @@ mod tests {
         native.raw_bps = bits;
         native.raw_count = 1;
         (bytes, native)
+    }
+
+    #[test]
+    fn source_segments_validate_all_ranges_and_use_source_geometry() {
+        let (mut bytes, mut native) = dng_fixture(16, 1, None, [1, 0], [6, 4], 512, 64, &[]);
+        native.active_x = 1;
+        native.active_width = 6;
+        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSingleSegment, 0).is_err());
+        put_entry(&mut bytes, 8, 5, 273, 4, 2, 400);
+        put_entry(&mut bytes, 8, 7, 278, 4, 1, 2);
+        put_entry(&mut bytes, 8, 8, 279, 4, 2, 408);
+        long_array(&mut bytes, 400, &[512, 544]);
+        long_array(&mut bytes, 408, &[32, 32]);
+        let parsed = dng_container(&bytes, &native, &DngContainer::IntegerCfaSegments, 0).unwrap();
+        assert_eq!(
+            parsed.active_area,
+            RawRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 4
+            }
+        );
+        assert_eq!(
+            parsed.default_crop,
+            RawRect {
+                x: 1,
+                y: 0,
+                width: 6,
+                height: 4
+            }
+        );
+        long_array(&mut bytes, 400, &[512, 528]);
+        assert!(matches!(
+            dng_container(&bytes, &native, &DngContainer::IntegerCfaSegments, 0),
+            Err(RawError::InvalidInput("overlapping DNG segments"))
+        ));
+        long_array(&mut bytes, 400, &[512, 4096]);
+        assert!(dng_container(&bytes, &native, &DngContainer::IntegerCfaSegments, 0).is_err());
     }
 
     #[test]

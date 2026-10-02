@@ -2109,6 +2109,7 @@ impl PhotoPipeline {
                 capacity,
                 texture: output,
                 uniform,
+                written_uniform: std::sync::Mutex::new(None),
                 bindings: photo_bindings,
             }],
             width: output_width,

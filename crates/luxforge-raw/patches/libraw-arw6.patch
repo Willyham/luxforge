@@ -1,0 +1,144 @@
+--- a/internal/libraw_cameraids.h
++++ b/internal/libraw_cameraids.h
+@@ -343,4 +343,5 @@
+ #define SonyID_ILX_LR1          0x18eULL
+ #define SonyID_ZV_E10M2         0x18fULL
+ #define SonyID_ILME_FX2         0x196ULL
++#define SonyID_ILCE_7M5         0x197ULL
+ #endif
+--- a/internal/libraw_internal_funcs.h
++++ b/internal/libraw_internal_funcs.h
+@@ -282,6 +282,7 @@
+ 	void        sony_load_raw();
+ 	void        sony_arw_load_raw();
+ 	void        sony_arw2_load_raw();
++	void        sony_arw6_load_raw();
+ 	void        sony_arq_load_raw();
+ 	void        sony_ljpeg_load_raw();
+ 	void        sony_ycbcr_load_raw();
+--- a/src/metadata/identify.cpp
++++ b/src/metadata/identify.cpp
+@@ -3132,7 +3132,7 @@
+ 
+ 		  /* need samples for lossy small/medium w/ APC crop*/
+         }
+-        else if ((unique_id == SonyID_ILCE_7M4)|| (unique_id == SonyID_ILCE_7CM2) || (unique_id == SonyID_ILME_FX2))
++        else if ((unique_id == SonyID_ILCE_7M4) || (unique_id == SonyID_ILCE_7CM2) || (unique_id == SonyID_ILME_FX2) || (unique_id == SonyID_ILCE_7M5))
+         {
+           if (raw_width == 7168 && raw_height == 5120) 
+           {
+--- a/src/metadata/normalize_model.cpp
++++ b/src/metadata/normalize_model.cpp
+@@ -398,6 +398,7 @@
+       { SonyID_ILX_LR1,        "ILX-LR1"},
+       { SonyID_ZV_E10M2,       "ZV-E10M2"},
+       { SonyID_ILME_FX2,       "ILME-FX2"},
++      { SonyID_ILCE_7M5,       "ILCE-7M5"},
+ };
+ 
+   static const char *orig;
+--- a/src/metadata/sony.cpp
++++ b/src/metadata/sony.cpp
+@@ -362,6 +362,8 @@
+        LIBRAW_SONY_Tag2010None, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff},
+       {SonyID_ZV_E10M2, sbfILCE_DX,
+        LIBRAW_SONY_Tag2010None, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff},
++      {SonyID_ILCE_7M5, sbfILCE_FF,
++       LIBRAW_SONY_Tag2010None, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff},
+   };
+   ilm.CamID = id;
+   int isPreProductionFW = 0;
+@@ -451,6 +453,7 @@
+   case SonyID_ILCE_7CR:
+   case SonyID_ILCE_7CM2:
+   case SonyID_ILCE_9M3:
++  case SonyID_ILCE_7M5:
+   case SonyID_ZV_E10M2:
+     imSony.group9050 = LIBRAW_SONY_Tag9050d;
+     break;
+@@ -953,7 +956,7 @@
+     FORC4 s[c] = SonySubstitution[buf[0x1a + c]];
+     imSony.Sony0x9400_SequenceFileNumber = sget4(s);
+ 
+-    imSony.Sony0x9400_SequenceLength2 = SonySubstitution[buf[0x1e]]; // files
++    imSony.Sony0x9400_SequenceLength2 = SonySubstitution[buf[0x1e]]; // files //ilce-7m5 modifed here
+   }
+ 
+   else if ((bufx == 0x0c) && (len >= 0x1f)) // 0x9400 'b' version
+--- a/src/metadata/tiff.cpp
++++ b/src/metadata/tiff.cpp
+@@ -2074,6 +2074,17 @@
+   if (raw >= 0 && !load_raw)
+     switch (tiff_compress)
+     {
++    case 32766:
++      if (!dng_version && !strncasecmp(make, "Sony", 4) &&
++          tiff_ifd[raw].phint == 32803 && tiff_ifd[raw].samples == 1 &&
++          (tiff_bps == 12 || tiff_bps == 14) && raw_width > 0 &&
++          raw_height > 0)
++      {
++        load_raw = &LibRaw::sony_arw6_load_raw;
++        tiff_bps = 14;
++        break;
++      }
++      break;
+     case 32767:
+       if (!dng_version &&
+           tiff_ifd[raw].bytes == INT64(raw_width) * INT64(raw_height))
+--- a/src/tables/cameralist.cpp
++++ b/src/tables/cameralist.cpp
+@@ -1181,6 +1181,7 @@
+ 	"Sony ILCE-7M2 (A7 II)",
+ 	"Sony ILCE-7M3 (A7 III)",
+ 	"Sony ILCE-7M4 (A7 IV)",
++	"Sony ILCE-7M5 (A7 V)",
+ 	"Sony ILCE-7C (A7C)",
+ 	"Sony ILCE-7CR (A7CR)",
+ 	"Sony ILCE-7CM2 (A7C II)",
+--- a/src/tables/colordata.cpp
++++ b/src/tables/colordata.cpp
+@@ -1768,7 +1768,9 @@
+       { 7460,-2365,-588,-5687,13442,2474,-624,1156,6584 } },
+     { LIBRAW_CAMERAMAKER_Sony, "ILCE-7C", 0, 0,
+       { 7374,-2389,-551,-5435,13162,2519,-1006,1795,6552 } },
+-
++	  
++    { LIBRAW_CAMERAMAKER_Sony, "ILCE-7M5", 0, 0,
++      { 9089, -3577, -787, -3563, 11326, 2557, -114, 928, 5904 } },
+     { LIBRAW_CAMERAMAKER_Sony, "ILCE-7M4", 0, 0,
+       { 7460,-2365,-588,-5687,13442,2474,-624,1156,6584 } },
+     { LIBRAW_CAMERAMAKER_Sony, "ILCE-7M3", 0, 0,
+--- a/src/utils/decoder_info.cpp
++++ b/src/utils/decoder_info.cpp
+@@ -317,6 +317,11 @@
+                             LIBRAW_DECODER_TRYRAWSPEED | LIBRAW_DECODER_TRYRAWSPEED3 |
+                             LIBRAW_DECODER_SONYARW2;
+   }
++  else if (load_raw == &LibRaw::sony_arw6_load_raw)
++  {
++    d_info->decoder_name = "sony_arw6_load_raw()";
++    d_info->decoder_flags = LIBRAW_DECODER_HASCURVE | LIBRAW_DECODER_FIXEDMAXC;
++  }
+   else if (load_raw == &LibRaw::sony_arq_load_raw)
+   {
+     d_info->decoder_name = "sony_arq_load_raw()";
+--- a/src/utils/open.cpp
++++ b/src/utils/open.cpp
+@@ -1073,6 +1073,17 @@
+               S.raw_width == 2816) // A7S2=> exact, hope it works for A7S-I too
+       )
+         S.width = S.raw_width - 32;
++
++      if (load_raw == &LibRaw::sony_arw6_load_raw)
++      {
++        /* it would be great to get it via metadata */
++        C.black = 1024;
++        for (int c = 0; c < 6; c++)
++          C.cblack[c] = 0;
++        C.maximum = 39002; // last curve item
++        for (int c = 0; c < 4; c++)
++          C.linear_max[c] = 32800;
++      }
+     }
+ 
+ 

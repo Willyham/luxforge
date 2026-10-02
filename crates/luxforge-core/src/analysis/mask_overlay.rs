@@ -161,6 +161,12 @@ impl Cells<'_> {
                 *cell = MASK_COVERAGE_NONE;
                 continue;
             };
+            // The same exact-zero rectangle the renderer uses also bounds geometric overlays.
+            // Most cells of a small brush need only the mapping, never the component evaluator.
+            if !bounds.contains(x, y) {
+                *cell = MASK_COVERAGE_NONE;
+                continue;
+            }
             *cell = match self.input {
                 // A position-only mask ignores the pixel the field's signature takes, so the neutral
                 // triple below stands for "no pixel was consulted" rather than for a colour.
@@ -170,7 +176,6 @@ impl Cells<'_> {
                 // away: a range component bounds the whole stage, but the mixed mask that intersects
                 // one with a gradient costs the gradient's rectangle and no more. An empty rectangle
                 // never reaches here — `coverage_grid` answers such a mask with no grid at all.
-                Some(_) if !bounds.contains(x, y) => MASK_COVERAGE_NONE,
                 Some(input) => match match input {
                     MaskPixels::Input(input) => input.linear(x, y),
                     MaskPixels::Grid(input) => {

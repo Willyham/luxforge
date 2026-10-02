@@ -337,7 +337,11 @@ struct Index {
     rows: usize,
     /// `(stroke index, segment index)` per cell, in stored stroke order within each cell, so a
     /// pixel's fold visits strokes in the order the component stores them.
-    cells: Vec<Vec<(u32, u32)>>,
+    entries: Vec<(u32, u32)>,
+    /// Cell slices in `entries`. A contiguous index avoids a heap allocation per cell and keeps
+    /// neighbouring segment lists together during rendering. The existing cell/occupancy bounds
+    /// still govern its size.
+    offsets: Vec<usize>,
 }
 
 impl Index {
@@ -356,8 +360,8 @@ impl Index {
     /// a plane at any size.
     ///
     /// **Build cost** is `O(segments × cells each reaches)`. It reads no pixel, and the insertion
-    /// walks a segment's box row by row rather than filling its whole bounding rectangle, so a long
-    /// diagonal stroke costs the cells it reaches and not the cells it spans.
+    /// visits the conservative grown bounding rectangle twice, first counting entries and then
+    /// writing contiguous slices. No per-cell vector grows or retains spare capacity.
     fn build(strokes: &[CompiledStroke]) -> Self {
         let mut extent: Option<[f64; 4]> = None;
         let mut largest = 0.0f64;
@@ -401,20 +405,41 @@ impl Index {
             cell,
             cols,
             rows,
-            cells: vec![Vec::new(); cols * rows],
+            entries: Vec::new(),
+            offsets: Vec::new(),
         };
-        for (s, stroke) in strokes.iter().enumerate() {
-            for (g, segment) in stroke.segments.iter().enumerate() {
-                index.insert(s as u32, g as u32, segment, stroke.r);
+        let mut offsets = vec![0; cols * rows + 1];
+        for stroke in strokes {
+            for segment in &stroke.segments {
+                index.visit_cells(segment, stroke.r, |cell| offsets[cell + 1] += 1);
             }
         }
+        for cell in 1..offsets.len() {
+            offsets[cell] += offsets[cell - 1];
+        }
+        let mut entries = vec![(0, 0); offsets.last().copied().unwrap_or(0)];
+        let mut next = offsets[..cols * rows].to_vec();
+        for (s, stroke) in strokes.iter().enumerate() {
+            for (g, segment) in stroke.segments.iter().enumerate() {
+                index.visit_cells(segment, stroke.r, |cell| {
+                    entries[next[cell]] = (s as u32, g as u32);
+                    next[cell] += 1;
+                });
+            }
+        }
+        index.offsets = offsets;
+        index.entries = entries;
         index
     }
 
     /// The most entries any one cell lists: the most segments a pixel of this component can be made
     /// to test, which is the quantity the occupancy cap bounds. `O(cells)`.
     fn densest(&self) -> usize {
-        self.cells.iter().map(Vec::len).max().unwrap_or(0)
+        self.offsets
+            .windows(2)
+            .map(|pair| pair[1] - pair[0])
+            .max()
+            .unwrap_or(0)
     }
 
     fn empty() -> Self {
@@ -424,18 +449,19 @@ impl Index {
             cell: 1.0,
             cols: 0,
             rows: 0,
-            cells: Vec::new(),
+            entries: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 
     /// Record one segment in every cell its grown box reaches.
-    fn insert(&mut self, stroke: u32, segment_index: u32, segment: &Segment, r: f64) {
+    fn visit_cells(&self, segment: &Segment, r: f64, mut visit: impl FnMut(usize)) {
         let [bu0, bv0, bu1, bv1] = segment.grown_box(r);
         let (col0, col1) = self.cell_range(bu0 - self.u0, bu1 - self.u0, self.cols);
         let (row0, row1) = self.cell_range(bv0 - self.v0, bv1 - self.v0, self.rows);
         for row in row0..=row1 {
             for col in col0..=col1 {
-                self.cells[row * self.cols + col].push((stroke, segment_index));
+                visit(row * self.cols + col);
             }
         }
     }
@@ -463,7 +489,7 @@ impl Index {
     /// the grid.
     #[inline]
     fn at(&self, u: f64, v: f64) -> &[(u32, u32)] {
-        if self.cells.is_empty() {
+        if self.entries.is_empty() {
             return &[];
         }
         let col = ((u - self.u0) / self.cell).floor();
@@ -471,7 +497,8 @@ impl Index {
         if !(col >= 0.0 && col < self.cols as f64 && row >= 0.0 && row < self.rows as f64) {
             return &[];
         }
-        &self.cells[row as usize * self.cols + col as usize]
+        let cell = row as usize * self.cols + col as usize;
+        &self.entries[self.offsets[cell]..self.offsets[cell + 1]]
     }
 }
 
@@ -736,9 +763,12 @@ impl Compiled {
             .iter()
             .map(|stroke| stroke.segments.len())
             .sum();
-        let entries: usize = self.index.cells.iter().map(Vec::len).sum();
+        // The index's own cell table: each cell's first entry, then the total. An empty index has
+        // no table and is written as the one total, 0.
+        let cells = self.index.offsets.len().saturating_sub(1);
+        let entries = self.index.entries.len();
         let cells_at = GPU_SEGMENT_WORDS * segments;
-        let entries_at = cells_at + self.index.cells.len() + 1;
+        let entries_at = cells_at + cells + 1;
         let records_at = entries_at + entries;
         let mut block = Vec::with_capacity(records_at + GPU_RECORD_WORDS * self.strokes.len());
         let mut first = Vec::with_capacity(self.strokes.len());
@@ -751,18 +781,17 @@ impl Compiled {
                 );
             }
         }
-        let mut listed = 0u32;
-        for cell in &self.index.cells {
-            block.push(listed);
-            listed += cell.len() as u32;
+        if self.index.offsets.is_empty() {
+            block.push(0);
+        } else {
+            block.extend(self.index.offsets.iter().map(|&offset| offset as u32));
         }
-        block.push(listed);
-        for cell in &self.index.cells {
-            block.extend(
-                cell.iter()
-                    .map(|&(stroke, segment)| (stroke << 24) | (first[stroke as usize] + segment)),
-            );
-        }
+        block.extend(
+            self.index
+                .entries
+                .iter()
+                .map(|&(stroke, segment)| (stroke << 24) | (first[stroke as usize] + segment)),
+        );
         for stroke in &self.strokes {
             let flags = if stroke.hard { GPU_HARD } else { 0 }
                 | if stroke.erase { GPU_ERASE } else { 0 }

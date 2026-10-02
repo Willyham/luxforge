@@ -83,8 +83,10 @@ fn the_block_is_the_cpu_index_narrowed_once() {
     assert_eq!(at, cells_at, "the segments end where the cell table starts");
     // The cell table and the entries.
     let index = &field.index;
-    assert_eq!(entries_at - cells_at, index.cells.len() + 1);
-    for (cell, listed) in index.cells.iter().enumerate() {
+    let cells = index.offsets.len().saturating_sub(1);
+    assert_eq!(entries_at - cells_at, cells + 1);
+    for cell in 0..cells {
+        let listed = &index.entries[index.offsets[cell]..index.offsets[cell + 1]];
         let from = block[cells_at + cell] as usize;
         let to = block[cells_at + cell + 1] as usize;
         let decoded: Vec<(u32, u32)> = block[entries_at + from..entries_at + to]
@@ -94,12 +96,9 @@ fn the_block_is_the_cpu_index_narrowed_once() {
                 (stroke, (entry & 0xff_ffff) - first[stroke as usize])
             })
             .collect();
-        assert_eq!(&decoded, listed, "cell {cell}");
+        assert_eq!(decoded, listed, "cell {cell}");
     }
-    assert_eq!(
-        records_at - entries_at,
-        index.cells.iter().map(Vec::len).sum::<usize>()
-    );
+    assert_eq!(records_at - entries_at, index.entries.len());
     // The records.
     assert_eq!(block.len(), records_at + GPU_RECORD_WORDS * strokes.len());
     for (number, stroke) in field.strokes.iter().enumerate() {

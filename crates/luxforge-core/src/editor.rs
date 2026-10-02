@@ -63,6 +63,14 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// Source-stage colour capability, shared by API admission and the panel.
+    pub fn white_balance_available(&self) -> bool {
+        match self {
+            Self::Jpeg => true,
+            Self::Raw { metadata } => metadata.layout != luxforge_raw::RawLayout::Monochrome,
+        }
+    }
+
     /// The kind's tag, exactly as this value serializes it in `kind`.
     pub fn tag(&self) -> SourceTag {
         match self {

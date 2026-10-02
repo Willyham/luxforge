@@ -3,7 +3,8 @@
 Luxforge's camera policy lives in `crates/luxforge-raw/data/cameras.json`.
 The catalog selects supported recording modes and implemented processing
 capabilities. The modern-camera expansion and its approved resource bounds
-are tracked in [modern camera support](modern-camera-support.md).
+are tracked in [corpus camera support](corpus-camera-support.md) and
+[modern camera support](modern-camera-support.md).
 
 ## Format and ownership
 
@@ -11,7 +12,9 @@ The version-1 JSON catalog contains exact LibRaw make/model identities, sensor
 size, CFA dimensions, and recording modes. Each mode records its identifier,
 bit depth, raw frame count, decoder name, validation strategy, optional DNG
 version, container compression probe and expected value, and, when the decoder
-stores the sensor in a larger padded frame, that frame's size. Each camera selects
+stores a different observed frame, that frame's size. A mode may override the
+camera's crop and DNG settings with `processing`, allowing a native RAW and
+a converted DNG to share an identity. Each camera selects
 a crop source (`libraw_inset`, `raf_tags`, `active_area`, or `dng_tags`) and
 optional DNG processing settings. DNG settings declare the
 illuminant pair, fixed matrix selection, calibration/interpretation identities,
@@ -50,10 +53,10 @@ fields may be omitted; omitted calibration uses the backend matrix.
 
 | Object / field | Meaning |
 | --- | --- |
-| `version`, `cameras` | Current format marker `1`; 1–256 camera profiles; file capped at 1 MiB |
+| `version`, `cameras` | Current format marker `1`; 1–512 camera profiles; file capped at 1 MiB |
 | Camera `make`, `model` | Exact case-sensitive identities returned by pinned LibRaw; unique pair, printable ASCII, fewer than 64 bytes each |
 | `sensor_size` | `[width, height]` in full sensor pixels; subject to the decoder and float-buffer limits |
-| `cfa_size` | `[2, 2]` for Bayer/RCD or `[6, 6]` for X-Trans/one-pass Markesteijn; phase remains file metadata |
+| `cfa_size`, `channels` | `[2, 2]` for Bayer/RCD or `[6, 6]` for X-Trans/one-pass Markesteijn, with one retained channel (default); `[0, 0]` with one channel for monochrome or three for linear RGB. Phase remains file metadata |
 | `crop` | `libraw_inset`, `raf_tags`, `active_area`, or `dng_tags`; selects authoritative crop metadata |
 | Camera `calibration` | Optional non-DNG `{xyz_to_camera: [[number; 3]; 3], source: HTTPS URL, license: string}`. A source-attributed fixed matrix, converted through pinned LibRaw; finite bounded nonsingular values required. Omit for backend calibration; forbidden alongside DNG source calibration |
 | `modes` | 1–32 distinct recording-mode selectors: no two modes of a camera share bit depth, frame count, stored frame, decoder, DNG version and compression probe |
@@ -62,22 +65,28 @@ fields may be omitted; omitted calibration uses the backend matrix.
 | `validation` | `container_compression` for an explicit container marker, or `decoder_metadata` for validated decoder metadata |
 | `compression` | `null`, or `{ "probe": "nef_maker_note" or "raf_header", "value": integer }`; absent/malformed source markers never match |
 | `dng_version` | Packed DNG version integer or `null`; `17039360` is `0x01040000` |
-| Mode `frame_size` | Optional `[width, height]` of the decoder's stored frame when the mode pads the sensor, such as Sony's lossless compressed ARW in 512-pixel tiles. At least `sensor_size` in each dimension, different from it, within the same limits, and not allowed on a DNG profile. Omit when the stored frame is the sensor |
-| `unpacker` | Optional: `libraw` (the default when omitted) fills the mosaic with LibRaw's own decoder; `rawspeed` fills it with RawSpeed in place of that decoder, and is accepted only when `decoder` is in the code-owned replaceable table (`crates/luxforge-raw/src/unpacker.rs`). Any other value fails the build. Route a mode only with authentic evidence that its mosaic equals the LibRaw-only hash ([RawSpeed unpacking](rawspeed-unpack.md)) |
+| Mode `frame_size` | Optional exact observed `[width, height]` for a padded, cropped or converted recording mode. Different from `sensor_size` and within the same resource limits. The file still supplies the authoritative active area and default crop. Omit when the stored frame is the sensor |
+| `unpacker` | Optional: `libraw` (the default when omitted) fills the mosaic with LibRaw's own decoder; `rawspeed` fills it with RawSpeed in place of that decoder, and is accepted only when `decoder` is in the code-owned replaceable table (`crates/luxforge-raw/src/unpacker.rs`). `jxl` uses LibRaw identification and the bounded Rust JPEG XL path for a single-segment 16-bit linear RGB DNG. Any other value fails the build. Route a mode only with authentic evidence that its mosaic equals the LibRaw-only hash ([RawSpeed unpacking](rawspeed-unpack.md)) |
 | Camera `dng` | `null` for backend calibration, or the complete DNG settings object below; enabled together with `dng_tags` |
-| DNG `container` | `uncompressed_u16_single_strip` or `integer_cfa_single_segment`: one-channel integer CFA storage with matching sensor geometry and integral crop |
-| `calibration` | `root_fixed_matrix`: both source matrices required, identity AnalogBalance, no alternate calibration/forward profiles |
+| Mode `processing` | Optional `{crop, dng}` selecting the effective processing settings for this observed mode |
+| DNG `container` | `uncompressed_u16_single_strip`, `integer_cfa_single_segment` or `integer_linear_single_segment` for the strict single-segment paths; `integer_cfa_segments` or `integer_linear_segments` for bounded strips/tiles and source-authoritative ActiveArea. All require integer storage and integral crop; at most 65,536 nonoverlapping, in-file segments |
+| `calibration` | `root_fixed_matrix` preserves the strict existing path. `source_reference_matrix` reads root source ColorMatrix, CameraCalibration, AnalogBalance and AsShotNeutral or AsShotWhiteXY, validating both matrices and any ForwardMatrix without applying a DCP profile or illuminant interpolation. `monochrome` has no colour matrix or white balance |
 | `illuminants`, `selected_matrix` | Expected two DNG illuminant IDs; select matrix `1` or `2` for fixed XYZ-to-camera calibration |
 | `calibration_identity` | Persisted description of the selected calibration; update when its interpretation changes |
 | `corrections` | `stage3_gain_map_then_warp` for the GainMap→Warp path, or `stage_ordered` for bounded ordered opcode processing |
-| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs, from the one allowlist in `crates/luxforge-raw/src/opcodes.rs`, are GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations and at most one list-51008 sensor repair, version 16973824 (`0x01030000`), flags 0 |
+| `required_opcodes` | 0–8 ordered descriptors `{id, list, version, flags}`. Supported IDs, from the one allowlist in `crates/luxforge-raw/src/opcodes.rs`, are GainMap 9, WarpRectilinear 1, FixVignetteRadial 3, FixBadPixelsConstant 4, and FixBadPixelsList 5; list 51022 for stage-three operations, list 51009 for CFA GainMap and list 51008 for sensor repairs or pre-black FixVignetteRadial, version 16973824 (`0x01030000`), flags 0 |
 | `interpretation` | Persisted correction interpretation identity; update when processing semantics change |
 | `decoder_active_bottom_trim` | Optional integer 0–63. For a decoder whose reported active bottom is shorter than the authoritative DNG `ActiveArea`, requires the source bottom to equal decoder bottom plus this exact trim; all other edges must match. Omit when no decoder trim is needed. |
+
+Monochrome calibration is valid only for a one-channel non-CFA layout. The
+sampled monochrome path accepts no required DNG correction opcodes. Linear
+RGB accepts supported stage-three corrections; pre-demosaic sensor corrections
+remain CFA-only. Incompatible combinations fail catalog validation.
 
 The opcode recipe is validated against the implemented algorithm's supported
 order, stage, version and flags. Stage-ordered processing preserves source
 operation order and uses bounded sparse immutable mosaic patches for bad-pixel
-operations; the retained source mosaic is never rewritten. Vignette evaluation
+operations; the retained source integer samples are never rewritten. Vignette evaluation
 follows DNG normalized outer-pixel coordinates, while the bounded implementation
 records its interpretation rather than claiming blanket SDK bit identity.
 Changing data cannot enable an unimplemented
@@ -103,11 +112,11 @@ RAW payloads and generated outputs remain outside the repository.
 ## Acceptance
 
 - No Luxforge production branch selects processing by camera name or mode ID.
-- The current catalog contains 107 camera profiles and 126 recording modes.
-  Authentic adapter evidence covers 123 of the modes with 130 samples, every
-  model at least once; the Z6 lossless and X100VI lossless modes are covered by
-  the crate's authentic fixture tests. Controlled color and the remaining
-  recording modes' qualification remain separate.
+- The catalog contains 259 camera/phone profiles and 316 recording modes.
+  The retained 341-source corpus freezes 315 modes on 258 exact identities;
+  the owner Air 2S fixture supplies the remaining profile/mode. Every retained
+  source passes strict M4 decode/development regression. Controlled colour and
+  unsampled recording settings remain separate.
 - Camera addition using existing strategies requires only data; implementing a
   new format/algorithm still requires code, tests and authentic qualification.
 - Invalid catalogs fail explicitly, with no partially accepted entries.
@@ -122,7 +131,10 @@ RAW payloads and generated outputs remain outside the repository.
 Source reads, hashing and unpack still use the verified source worker/cache.
 Profiles add a bounded immutable catalog. Sensor repairs add at most 65,536
 sorted sparse patches shared with the source, with no additional full-frame
-mosaic copy. Neutral sampling validates the bounded patch list and uses binary
+mosaic copy. New source-segment sensor repairs exclude masked padding, while
+the existing strict paths retain their frozen full-frame repair interpretation.
+Stage-one vignette gain applies before black subtraction; stage-two CFA gain
+maps multiply normalized sensor values before demosaic. Neutral sampling validates the bounded patch list and uses binary
 search per sampled site; it never develops or renders a frame. Owner work,
 desktop refreshes and timers gain no frame processing. Native allowlist lookup and mode classification run before unpack. Existing
 exact mosaic, correction, geometry and sharing tests remain applicable. Timing

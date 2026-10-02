@@ -1560,19 +1560,31 @@ pub(crate) mod mask_overlay {
     ///
     /// `off` paints nothing, which is `None` rather than a transparent buffer: an overlay that is off
     /// costs no texture at all.
+    #[cfg(test)]
     pub(crate) fn paint(
         grid: &MaskOverlay,
         mode: MaskOverlayMode,
         tint: MaskOverlayColour,
     ) -> Option<Vec<u8>> {
+        paint_cancellable(grid, mode, tint, &luxforge_core::Cancel::never()).unwrap()
+    }
+
+    pub(crate) fn paint_cancellable(
+        grid: &MaskOverlay,
+        mode: MaskOverlayMode,
+        tint: MaskOverlayColour,
+        cancel: &luxforge_core::Cancel,
+    ) -> Result<Option<Vec<u8>>, luxforge_core::Error> {
+        cancel.check()?;
         if mode == MaskOverlayMode::Off {
-            return None;
+            return Ok(None);
         }
         let wash = colour(tint);
-        let mut rgba = vec![0u8; grid.coverage.len() * 4];
-        for (cell, pixel) in grid.coverage.iter().zip(rgba.chunks_exact_mut(4)) {
-            let coverage = f32::from(*cell) / f32::from(MASK_COVERAGE_FULL);
-            pixel.copy_from_slice(&match mode {
+        // Each quantized cell has only 256 possible colours. Freeze the exact former arithmetic
+        // once per value instead of repeating its float conversion and rounding for every cell.
+        let palette: [[u8; 4]; 256] = std::array::from_fn(|value| {
+            let coverage = value as f32 / f32::from(MASK_COVERAGE_FULL);
+            match mode {
                 MaskOverlayMode::Off => [0, 0, 0, 0],
                 MaskOverlayMode::Tint => [
                     channel(wash.r),
@@ -1585,9 +1597,78 @@ pub(crate) mod mask_overlay {
                     [grey, grey, grey, 255]
                 }
                 MaskOverlayMode::ImageOnBlack => [0, 0, 0, channel(1.0 - coverage)],
-            });
+            }
+        });
+        let mut rgba = vec![0u8; grid.coverage.len() * 4];
+        for (cells, pixels) in grid.coverage.chunks(4096).zip(rgba.chunks_mut(4096 * 4)) {
+            cancel.check()?;
+            for (cell, pixel) in cells.iter().zip(pixels.chunks_exact_mut(4)) {
+                pixel.copy_from_slice(&palette[usize::from(*cell)]);
+            }
         }
-        Some(rgba)
+        Ok(Some(rgba))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn every_overlay_code_matches_the_frozen_float_painter_and_cancellation_returns_no_pixels()
+        {
+            let grid = MaskOverlay {
+                mask: luxforge_core::MaskId::new(),
+                component: None,
+                cells_w: 256,
+                cells_h: 1,
+                coverage: (0..=255).collect(),
+            };
+            for tint in [MaskOverlayColour::Green, MaskOverlayColour::White] {
+                for mode in [
+                    MaskOverlayMode::Tint,
+                    MaskOverlayMode::MaskOnBlack,
+                    MaskOverlayMode::ImageOnBlack,
+                ] {
+                    let wash = colour(tint);
+                    let expected: Vec<u8> = grid
+                        .coverage
+                        .iter()
+                        .flat_map(|cell| {
+                            let coverage = f32::from(*cell) / 255.0;
+                            let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+                            match mode {
+                                MaskOverlayMode::Tint => [
+                                    byte(wash.r),
+                                    byte(wash.g),
+                                    byte(wash.b),
+                                    byte(coverage * 0.55),
+                                ],
+                                MaskOverlayMode::MaskOnBlack => {
+                                    [byte(coverage), byte(coverage), byte(coverage), 255]
+                                }
+                                MaskOverlayMode::ImageOnBlack => [0, 0, 0, byte(1.0 - coverage)],
+                                MaskOverlayMode::Off => unreachable!(),
+                            }
+                        })
+                        .collect();
+                    assert_eq!(paint(&grid, mode, tint).unwrap(), expected);
+                }
+            }
+            assert!(paint(&grid, MaskOverlayMode::Off, MaskOverlayColour::Green).is_none());
+            let cancel = luxforge_core::Cancel::new();
+            cancel.cancel();
+            assert_eq!(
+                paint_cancellable(
+                    &grid,
+                    MaskOverlayMode::Tint,
+                    MaskOverlayColour::Green,
+                    &cancel
+                )
+                .unwrap_err()
+                .kind,
+                luxforge_core::ErrorKind::Cancelled
+            );
+        }
     }
 }
 
@@ -1599,21 +1680,42 @@ impl Editor {
     /// never changing the photograph, in the next redraw. It is kept with its generation and drawn
     /// only while that frame is the one on screen — an overlay drawn over another image would claim
     /// a selection covers pixels it does not.
+    #[cfg(test)]
     pub(crate) fn present_mask_overlay(
         &mut self,
         generation: u64,
         grid: luxforge_core::analysis::MaskOverlay,
     ) -> bool {
-        let workspace = &self.session.workspace;
         let mode = self.effective_mask_overlay();
-        let Some(rgba) = mask_overlay::paint(&grid, mode, workspace.mask_overlay_colour) else {
+        let Some(rgba) =
+            mask_overlay::paint(&grid, mode, self.session.workspace.mask_overlay_colour)
+        else {
             self.presentation.presenter.clear_coverage();
             return false;
         };
-        let (width, height) = (grid.cells_w, grid.cells_h);
+        self.present_painted_mask_overlay(
+            generation,
+            &grid.mask,
+            grid.component.as_ref(),
+            (grid.cells_w, grid.cells_h),
+            std::sync::Arc::new(rgba),
+        )
+    }
+
+    pub(crate) fn present_painted_mask_overlay(
+        &mut self,
+        generation: u64,
+        mask: &MaskId,
+        component: Option<&ComponentId>,
+        cells: (u32, u32),
+        rgba: std::sync::Arc<Vec<u8>>,
+    ) -> bool {
+        let workspace = &self.session.workspace;
+        let mode = self.effective_mask_overlay();
+        let (width, height) = cells;
         self.event(
             "mask_overlay",
-            || json!({"generation":generation,"mask":grid.mask.as_str(),"component":grid.component.as_ref().map(luxforge_core::ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
+            || json!({"generation":generation,"mask":mask.as_str(),"component":component.map(ComponentId::as_str),"cells":[width,height],"mode":mode.as_str(),"setting":workspace.mask_overlay.as_str(),"colour":workspace.mask_overlay_colour.as_str()}),
         );
         let shown = match self
             .presentation

@@ -2038,11 +2038,12 @@ fn write_uniforms(
         let region = picture.region_key.map_or(whole_region, |key| {
             key.placement(tile.layout, (picture.width, picture.height))
         });
-        queue.write_buffer(
-            &tile.uniform,
-            0,
-            &uniform_bytes([viewport, destination, region, texels, bright, turn]),
-        );
+        let bytes = uniform_bytes([viewport, destination, region, texels, bright, turn]);
+        let mut written = tile.written_uniform.lock().expect("photo uniform identity");
+        if written.as_ref() != Some(&bytes) {
+            queue.write_buffer(&tile.uniform, 0, &bytes);
+            *written = Some(bytes);
+        }
     }
 }
 
@@ -2145,6 +2146,9 @@ struct Tile {
     capacity: (u32, u32),
     texture: wgpu::Texture,
     uniform: wgpu::Buffer,
+    /// The last bytes written to this tile, independent of pixel version. A resource sample,
+    /// cursor move or mask update with unchanged geometry needs no GPU uniform upload.
+    written_uniform: Mutex<Option<[u8; UNIFORM_SIZE]>>,
     bindings: wgpu::BindGroup,
 }
 
@@ -2596,6 +2600,23 @@ impl PhotoPipeline {
         // A photograph drawn under half its size is held with mip levels when they may exist; see
         // [`mips`]. One that may not is the plain texture, drawn through the bilinear sampler.
         let chain = layer == Layer::Photo && minified && mips::admissible((width, height), limit);
+        // A slot already holding this frame at this size writes nothing, unless it must now be
+        // rebuilt with the mip levels it lacks.
+        if surface.slots[layer.index()]
+            .as_ref()
+            .is_some_and(|picture| {
+                picture.width == width
+                    && picture.height == height
+                    && picture.limit == limit
+                    && (!chain || picture.mip_levels > 1)
+                    && picture.matching_frame(frame, content_id, region_key)
+            })
+        {
+            if layer == Layer::Photo && std::mem::take(&mut surface.deferred_photo) {
+                wake_surface();
+            }
+            return true;
+        }
         let reusable = surface.slots[layer.index()]
             .as_ref()
             // A crop stage is reserved at exactly its frame's size, so the display-size proxy a
@@ -2908,6 +2929,7 @@ impl PhotoPipeline {
             capacity: (width, height),
             texture,
             uniform,
+            written_uniform: Mutex::new(None),
             bindings,
         }
     }

@@ -113,6 +113,11 @@ impl Default for RawPayload {
 }
 
 impl RawPayload {
+    /// Monochrome sources carry no colour response, so WB cannot be an edit.
+    pub fn white_balance_available(&self) -> bool {
+        self.cam_xyz.iter().flatten().any(|value| *value != 0.0)
+    }
+
     pub fn for_as_shot(gains: [f32; 3], cam_xyz: [[f32; 3]; 4]) -> Result<Self, Error> {
         let payload = Self {
             wb_mode: WhiteBalanceMode::AsShot,
@@ -146,6 +151,15 @@ impl RawPayload {
             .any(|value| !value.is_finite())
         {
             return Err(Error::validation("RAW camera calibration must be finite"));
+        }
+        if !self.white_balance_available()
+            && (self.wb_mode != WhiteBalanceMode::AsShot
+                || self.gains != [1.0; 3]
+                || self.as_shot_gains != [1.0; 3])
+        {
+            return Err(Error::validation(
+                "white balance is unavailable for monochrome originals",
+            ));
         }
         match (self.wb_mode, self.temperature_kelvin, self.tint) {
             (WhiteBalanceMode::AsShot, None, None) if self.gains == self.as_shot_gains => {}
@@ -503,6 +517,23 @@ impl ToolModule for RawModule {
             Error::incompatible("RAW recipe is missing its required source layer")
         })?;
         let stored = RawPayload::from_layer(layer)?;
+        if !stored.white_balance_available() {
+            // Reset Basic composes the source group's As shot reset with its tone reset.
+            // A monochrome original is already As shot; this component changes nothing.
+            if input.action_id == SET_RAW
+                && input.parameters.len() == 1
+                && input
+                    .parameters
+                    .get("white-balance")
+                    .and_then(Value::as_str)
+                    == Some(AS_SHOT)
+            {
+                return Ok(ActionPlan::NoOp);
+            }
+            return Err(Error::validation(
+                "white balance and neutral picker are unavailable for monochrome originals",
+            ));
+        }
         let mut payload = stored.clone();
         match input.action_id.as_str() {
             SET_RAW => {
@@ -757,6 +788,33 @@ mod tests {
     /// The module declares one field patch, the two gain actions and the sensor pick, no controls,
     /// no module reset and a pick canvas without a shortcut of its own: Basic's White balance group
     /// reaches every one of them through its RAW variants.
+    #[test]
+    fn monochrome_is_as_shot_only_and_colour_changes_refuse() {
+        let original = RawPayload::for_as_shot([1.0; 3], [[0.0; 3]; 4]).unwrap();
+        let layer = original.layer(LayerId::new());
+        assert!(!original.white_balance_available());
+        for (action, params) in [
+            (SET_RAW, json!({"temperature":5500.0})),
+            (SET_RAW, json!({"tint":10.0})),
+            (SET_RED, json!({"gain":2.0})),
+            (SET_BLUE, json!({"gain":0.9})),
+            (PICK_NEUTRAL, json!({"x":16,"y":16})),
+        ] {
+            let error = plan_of(&layer, action, params).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Validation);
+            assert!(error.detail.contains("monochrome"));
+        }
+        assert_eq!(
+            plan_of(&layer, SET_RAW, json!({"white-balance":"as-shot"})).unwrap(),
+            ActionPlan::NoOp
+        );
+        assert!(RawPayload::for_as_shot([2.0, 1.0, 1.0], [[0.0; 3]; 4]).is_err());
+        let mut edited = original;
+        edited.wb_mode = WhiteBalanceMode::Custom;
+        edited.gains = [2.0, 1.0, 1.0];
+        assert!(edited.validate().is_err());
+    }
+
     #[test]
     fn the_descriptor_declares_set_raw_and_no_controls() {
         let module = RawModule::new();

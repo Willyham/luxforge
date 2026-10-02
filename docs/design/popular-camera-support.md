@@ -33,7 +33,7 @@ The ranked cameras not in the table already open in their default and common mod
 
 **Nikon High Efficiency is refused explicitly.** A NEF whose Nikon maker note records compression 13 (High Efficiency) or 14 (High Efficiency★), or whose raw data begins with the JPEG XS start-of-codestream and capabilities markers (`FF10 FF50`), is refused before LibRaw unpacks it, whatever the camera model, and whether or not the model is catalogued. The error is a distinct RAW error that the core maps to `unsupported-input`. Its message names the format and the remedy: record Lossless compressed RAW. As a second check, the native adapter refuses any file for which LibRaw selects `nikon_he_load_raw()`. Today a catalogued body's High Efficiency file fails inside LibRaw's unpack as a generic decode error. On the Z50II and Z5II, LibRaw 0.22.2 misreads the file as lossless and returns corrupt samples. The owner's decision is to wait for upstream LibRaw support; this design adds no High Efficiency decoder.
 
-**Other refusals stay explicit.** The Sony A7 V's compressed formats decode in neither library and keep failing at LibRaw's open. Crop-sensor sizes (APS-C crop on full-frame bodies), small RAW sizes and other sizes that differ from a camera's catalogued sensor size keep failing as unsupported recording modes, because a camera profile has one sensor size.
+**Further sampled modes.** Sony A7 V Compressed HQ (8846) is admitted through the staged upstream ARW6 decoder, with the owner-approved separate 1 GiB native working-space budget. Exact sampled alternate frame sizes are catalogued individually. Unsampled crop, resolution and compression settings still fail explicitly; see [corpus camera support](corpus-camera-support.md).
 
 ## Constraints
 
