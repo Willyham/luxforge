@@ -482,6 +482,28 @@ impl<'a> Render<'a> {
         )
     }
 
+    /// [`Self::region_boundary`] over the whole output stage: the input of the layer that begins at
+    /// `position`, held over the window of its received stage that the whole output reads — what
+    /// a crop, a straightening and a warp read, with their taps — which a Fit frame drawn at the
+    /// exact stage starts from.
+    pub(crate) fn output_boundary(
+        &self,
+        position: (usize, usize),
+        format: super::BoundaryFormat,
+    ) -> Result<super::BoundaryFrame, Error> {
+        let (width, height) = self.stage();
+        self.region_boundary(
+            Region {
+                x0: 0,
+                y0: 0,
+                width,
+                height,
+            },
+            position,
+            format,
+        )
+    }
+
     /// [`Self::region_boundary`] of layer `layer`, wherever it begins in this render's
     /// compilation: the boundary a percentage zoom's GPU preview of a drag from that layer holds.
     #[cfg(feature = "qualification")]
