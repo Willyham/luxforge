@@ -234,6 +234,10 @@ impl Editor {
         let mut boundary_request = None;
         // With the preference off the plan is never handed over, so nothing is asked for it.
         let allowed = self.gpu_preview_allowed();
+        // The clipping overlay is derived from the CPU's frames, so over a GPU frame it would mark
+        // the pixels of an older one: while it is shown the gesture keeps the CPU path.
+        let clipping =
+            self.session.workspace.clip_shadows || self.session.workspace.clip_highlights;
         let report = self.surface_report();
         let mut released = None;
         let drag = match &mut self.gpu.drag {
@@ -257,6 +261,7 @@ impl Editor {
                 allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
                 &mut released,
             ),
+            _ if clipping => unplanned(drag, "clipping-shown", &mut released),
             None => unplanned(drag, "not-fit", &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
