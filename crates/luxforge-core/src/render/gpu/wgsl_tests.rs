@@ -4,6 +4,10 @@
 //! parse and validate in that module, declare only functions and constants, every one named after
 //! its entry, and no binding, entry point, type or attribute of its own.
 //!
+//! A spatial program is held to the spatial convention ([`super::spatial`]): the same prelude with
+//! the spatial declarations after it, stood in for by stubs of the same signatures, and a harness
+//! that runs every kernel and apply its units' descriptions name, each with its own signature.
+//!
 //! The real prelude is the surface's (`luxforge-ui`), which the core cannot name; a test in
 //! `luxforge-app` checks the same programs against it.
 use super::program::testing;
@@ -31,6 +35,26 @@ fn lf_block_word(i: u32) -> u32 { return lf_blocks[i]; }
 fn lf_block_f32(i: u32) -> f32 { return bitcast<f32>(lf_blocks[i]); }
 ";
 
+/// A copy of the spatial convention's declarations, as stubs of the signatures the surface
+/// generates for each module that holds a spatial program.
+pub(super) const SPATIAL_PRELUDE: &str = "\
+var<workgroup> lf_shared: array<f32, 1024>;
+fn lf_plane(slot: u32, at: vec2<i32>) -> vec4<f32> { return vec4<f32>(f32(slot), vec2<f32>(at), 1.0); }
+fn lf_plane_size(slot: u32) -> vec2<i32> { return vec2<i32>(i32(slot) + 1); }
+fn lf_source(at: vec2<i32>) -> vec3<f32> { return vec3<f32>(vec2<f32>(at), 0.5); }
+fn lf_origin() -> vec2<i32> { return vec2<i32>(0); }
+fn lf_size() -> vec2<i32> { return vec2<i32>(1); }
+fn lf_store(at: vec2<i32>, value: vec4<f32>) {}
+";
+
+/// The prelude a program of `kind` is assembled after.
+pub(super) fn prelude(kind: GpuProgramKind) -> String {
+    match kind {
+        GpuProgramKind::Spatial => format!("{PRELUDE}{SPATIAL_PRELUDE}"),
+        GpuProgramKind::Colour | GpuProgramKind::Coverage => PRELUDE.to_owned(),
+    }
+}
+
 /// The names the prelude and the harness declare, which a program's own names must not be.
 const HOST_FUNCTIONS: &[&str] = &[
     "lf_word",
@@ -38,8 +62,23 @@ const HOST_FUNCTIONS: &[&str] = &[
     "lf_block_word",
     "lf_block_f32",
     "lf_harness",
+    "lf_plane",
+    "lf_plane_size",
+    "lf_source",
+    "lf_origin",
+    "lf_size",
+    "lf_store",
 ];
-const HOST_GLOBALS: &[&str] = &["lf_words", "lf_blocks", "lf_harness_out"];
+const HOST_GLOBALS: &[&str] = &["lf_words", "lf_blocks", "lf_harness_out", "lf_shared"];
+
+/// Every kernel and apply the descriptions of a shipped spatial program name, to call in its
+/// harness.
+fn spatial_functions(program: &GpuProgram) -> (Vec<&'static str>, Vec<&'static str>) {
+    match program.entry {
+        "lf_presence" => crate::modules::presence_gpu_functions(),
+        other => panic!("{other}: name the kernels and applies its descriptions use"),
+    }
+}
 
 /// An entry point that calls `program`'s entry with its kind's argument types, binds the result
 /// to its kind's return type and writes it, so a wrong signature fails validation.
@@ -57,6 +96,23 @@ fn harness(program: &GpuProgram) -> String {
              lf_harness_out[0] = coverage;",
             program.entry
         ),
+        GpuProgramKind::Spatial => {
+            let (kernels, applies) = spatial_functions(program);
+            let mut call = String::new();
+            for kernel in kernels {
+                call.push_str(&format!(
+                    "{kernel}(vec2<i32>(id.xy), id.z, id.z + 1u);\n    "
+                ));
+            }
+            call.push_str("var rgb = vec3<f32>(0.25, 0.5, -0.75);\n    ");
+            for apply in applies {
+                call.push_str(&format!(
+                    "rgb = {apply}(rgb, vec2<i32>(id.xy), id.z, id.z + 1u, id.z + 2u);\n    "
+                ));
+            }
+            call.push_str("lf_harness_out[0] = rgb.x + rgb.y + rgb.z;");
+            call
+        }
     };
     format!(
         "@group(0) @binding(2) var<storage, read_write> lf_harness_out: array<f32>;\n\
@@ -106,7 +162,12 @@ fn validate(program: &GpuProgram) -> Result<(), String> {
             "{entry}: a program declares no attribute, binding or entry point"
         ));
     }
-    let source = format!("{PRELUDE}\n{}\n{}", program.source, harness(program));
+    let source = format!(
+        "{}\n{}\n{}",
+        prelude(program.kind),
+        program.source,
+        harness(program)
+    );
     let module = wgsl::parse_str(&source).map_err(|error| error.emit_to_string(&source))?;
     Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
@@ -131,7 +192,8 @@ fn validate(program: &GpuProgram) -> Result<(), String> {
         own(&function.name)?;
         declares_entry |= function.name.as_deref() == Some(entry);
     }
-    if !declares_entry {
+    // A spatial program's entry names the program, which starts every kernel and apply.
+    if !declares_entry && program.kind != GpuProgramKind::Spatial {
         return Err(format!("{entry}: the text declares no function {entry}"));
     }
     for (_, constant) in module.constants.iter() {

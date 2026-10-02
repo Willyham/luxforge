@@ -12,13 +12,18 @@
 //!
 //! - [`boundary_map`]: the held boundary against the plan's boundary stage;
 //! - [`operation_steps`]: each content operation's units, and where its mask's coverage joins;
+//! - [`spatial_step`]: the spatial operation the content enters, its planes, passes and applies;
 //! - [`geometry_steps`]: the geometry tail, and after it the output operations;
 //!
 //! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
-use luxforge_core::{GpuDescription, GpuGeometry, GpuOperation, GpuPosition, Stage};
+use luxforge_core::{
+    GpuDescription, GpuGeometry, GpuOperation, GpuPassShape, GpuPlaneFormat, GpuPlaneSize,
+    GpuPosition, GpuSpatial, Stage,
+};
 use luxforge_ui::photo_surface::{
     GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap,
+    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -65,6 +70,9 @@ pub(crate) fn surface_plan(
     for operation in &plan.content {
         operation_steps(operation, &mut steps)?;
     }
+    if let Some(spatial) = &plan.spatial {
+        steps.push(spatial_step(spatial)?);
+    }
     geometry_steps(plan, &mut steps)?;
     Ok(GpuPlan {
         boundary,
@@ -106,6 +114,67 @@ pub(crate) fn operation_steps(
         position,
     }));
     Ok(())
+}
+
+/// The spatial operation as the surface's spatial step: the core's static program text, borrowed,
+/// with the operation's words, and its planes, passes and applies as they are. A masked operation's
+/// blend would join here; the surface has no coverage step yet.
+pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> {
+    if spatial.mask.is_some() {
+        return Err(Unrunnable::Mask {
+            layer: spatial.layer,
+        });
+    }
+    let index = |value: usize| u32::try_from(value).expect("a plane, word or apply index");
+    Ok(GpuStep::Spatial(Box::new(gpu_preview::GpuSpatial {
+        program: GpuProgram {
+            entry: Cow::Borrowed(spatial.program.entry),
+            source: Cow::Borrowed(spatial.program.source),
+            words: spatial.words.clone(),
+            block: Arc::from([]),
+        },
+        planes: spatial
+            .planes
+            .iter()
+            .map(|plane| gpu_preview::GpuPlane {
+                format: match plane.format {
+                    GpuPlaneFormat::Colour => PlaneFormat::Colour,
+                    GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
+                    GpuPlaneFormat::Pair => PlaneFormat::Pair,
+                    GpuPlaneFormat::Quad => PlaneFormat::Quad,
+                },
+                size: match plane.size {
+                    GpuPlaneSize::Reduced(s) => PlaneSize::Reduced(s),
+                    GpuPlaneSize::Fixed { width, height } => PlaneSize::Fixed { width, height },
+                },
+            })
+            .collect(),
+        passes: spatial
+            .passes
+            .iter()
+            .map(|pass| gpu_preview::GpuPass {
+                kernel: Cow::Borrowed(pass.kernel),
+                inputs: pass.inputs.iter().map(|&plane| index(plane)).collect(),
+                output: index(pass.output),
+                words: index(pass.words),
+                source: index(pass.source),
+                shape: match pass.shape {
+                    GpuPassShape::Texels { span } => PassShape::Texels { span },
+                    GpuPassShape::Workgroup => PassShape::Workgroup,
+                },
+            })
+            .collect(),
+        applies: spatial
+            .applies
+            .iter()
+            .map(|apply| gpu_preview::GpuApply {
+                function: Cow::Borrowed(apply.function),
+                planes: apply.planes.iter().map(|&plane| index(plane)).collect(),
+                words: index(apply.words),
+            })
+            .collect(),
+        clamps: spatial.clamps,
+    })))
 }
 
 /// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the

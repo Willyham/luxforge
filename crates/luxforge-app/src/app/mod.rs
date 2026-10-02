@@ -48,6 +48,8 @@ mod gesture_tests;
 mod gpu_colour_tests;
 pub(crate) mod gpu_identity;
 #[cfg(test)]
+mod gpu_presence_tests;
+#[cfg(test)]
 pub(crate) mod gpu_qualification;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
 // not draw a gesture on the GPU yet, so only its tests reach it.
