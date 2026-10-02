@@ -37,13 +37,16 @@
 //! applies' planes as a second bind group, so the operation holds no colour plane of its own: its
 //! memory is its planes, charged to the GPU-preview budget with the slot. Nothing is read back.
 use super::{
-    GpuProgram, GpuStep, MAP_WORDS, PositionMap, STEP_WORDS, Support, entry_name, validate,
+    GpuProgram, GpuStep, MAP_WORDS, PositionMap, STEP_WORDS, StepKind, Support, entry_name,
+    mask::{self, Coverage, MaskedColour, Role},
+    validate, validate_program,
 };
 use std::borrow::Cow;
 use wgpu::naga;
 
-/// How many inputs one pass reads.
+/// How many inputs one pass reads, and how many planes one apply reads.
 pub const PASS_INPUTS: usize = 4;
+const APPLY_PLANES: usize = 4;
 
 /// The lanes of a workgroup pass, and the values of `lf_shared`.
 const WORKGROUP_LANES: u32 = 256;
@@ -181,17 +184,128 @@ pub struct GpuSpatial {
     /// Clamp the operation's input to `[0, 1]` before its first unit and its output after its
     /// last, where the CPU quantizes both.
     pub clamps: bool,
+    /// The mask the operation's output is blended by against its input, per channel in linear
+    /// light and the input itself where coverage is exactly zero, as the CPU blends a masked
+    /// spatial operation. Its words come first in the step's, in the masked colour step's layout
+    /// with no units ([`MaskedColour`]), and its blocks after the program's.
+    pub mask: Option<Coverage>,
+}
+
+/// What decides one pass's pipeline besides its kernel's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PassKey {
+    inputs: [u32; PASS_INPUTS],
+    count: usize,
+    output: u32,
+    words: u32,
+    source: u32,
+    shape: PassShape,
+}
+
+/// What decides one apply's place in the frame's pipeline besides its function's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ApplyKey {
+    planes: [u32; APPLY_PLANES],
+    count: usize,
+    words: u32,
+}
+
+fn first<const N: usize>(values: &[u32]) -> [u32; N] {
+    std::array::from_fn(|index| values.get(index).copied().unwrap_or(u32::MAX))
 }
 
 impl GpuSpatial {
-    /// Whether `other` compiles to the same pipelines: everything but the words and the block.
-    pub(super) fn same_pipelines(&self, other: &Self) -> bool {
-        self.program.entry == other.program.entry
-            && self.program.source == other.program.source
-            && self.planes == other.planes
-            && self.passes == other.passes
-            && self.applies == other.applies
-            && self.clamps == other.clamps
+    /// The mask as the masked colour step's coverage with no units, whose words, blocks and
+    /// coverage function a masked spatial step shares.
+    fn coverage(&self) -> Option<MaskedColour> {
+        self.mask.as_ref().map(|mask| MaskedColour {
+            units: Vec::new(),
+            position: PositionMap::IDENTITY,
+            mask: mask.clone(),
+        })
+    }
+
+    /// The words the mask takes before the program's.
+    fn mask_words(&self) -> usize {
+        self.coverage().map_or(0, |coverage| coverage.word_count())
+    }
+
+    /// The words the step packs after the header: the mask's, then the program's.
+    pub(super) fn word_count(&self) -> usize {
+        self.mask_words() + self.program.words.len()
+    }
+
+    /// The block words the step packs: the program's, then the mask's.
+    pub(super) fn block_count(&self) -> usize {
+        self.program.block.len() + self.coverage().map_or(0, |coverage| coverage.block_count())
+    }
+
+    /// Append the step's words and blocks at the bases the header recorded for it.
+    pub(super) fn pack(&self, words: &mut Vec<u32>, blocks: &mut Vec<u32>) {
+        blocks.extend_from_slice(&self.program.block);
+        if let Some(coverage) = self.coverage() {
+            coverage.pack(words, blocks);
+        }
+        words.extend_from_slice(&self.program.words);
+    }
+
+    /// The spatial program, then the mask's coverage programs.
+    pub(super) fn programs(&self) -> impl Iterator<Item = (Role, &GpuProgram)> {
+        std::iter::once((Role::Spatial, &self.program)).chain(
+            self.mask
+                .iter()
+                .flat_map(|mask| &mask.components)
+                .map(|component| (Role::Coverage, &component.program)),
+        )
+    }
+
+    /// What decides the step's pipelines besides its programs: the clamp and the mask's words,
+    /// every plane, and every pass and apply with its kernel or function.
+    pub(super) fn shape(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
+        std::iter::once((
+            StepKind::Spatial {
+                clamps: self.clamps,
+                mask_words: self.mask.as_ref().map(|_| self.mask_words()),
+            },
+            "",
+            "",
+        ))
+        .chain(
+            self.planes
+                .iter()
+                .map(|plane| (StepKind::Plane(*plane), "", "")),
+        )
+        .chain(self.passes.iter().map(|pass| {
+            (
+                StepKind::Pass(PassKey {
+                    inputs: first(&pass.inputs),
+                    count: pass.inputs.len(),
+                    output: pass.output,
+                    words: pass.words,
+                    source: pass.source,
+                    shape: pass.shape,
+                }),
+                pass.kernel.as_ref(),
+                "",
+            )
+        }))
+        .chain(self.applies.iter().map(|apply| {
+            (
+                StepKind::Apply(ApplyKey {
+                    planes: first(&apply.planes),
+                    count: apply.planes.len(),
+                    words: apply.words,
+                }),
+                apply.function.as_ref(),
+                "",
+            )
+        }))
+    }
+
+    /// The coverage function of a masked step at header `base`, which its frame statements call.
+    fn coverage_function(&self, index: usize, base: usize) -> Option<String> {
+        self.coverage()
+            .map(|coverage| coverage.assemble(index, base).0)
     }
 
     /// The bytes every plane takes over a boundary of `size` at stage `origin`.
@@ -364,11 +478,18 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
                  block: u32, planes: u32) -> vec3<f32>"
             ));
         }
-        if apply.planes.iter().any(|&plane| plane >= planes) || apply.words >= words.max(1) {
+        if apply.planes.len() > APPLY_PLANES
+            || apply.planes.iter().any(|&plane| plane >= planes)
+            || apply.words >= words.max(1)
+        {
             return Err(format!(
-                "{function:?} names a plane or a word the step does not hold"
+                "{function:?} reads more than {APPLY_PLANES} planes, or names a plane or a word \
+                 the step does not hold"
             ));
         }
+    }
+    for component in spatial.mask.iter().flat_map(|mask| &mask.components) {
+        validate_program(Role::Coverage, &component.program)?;
     }
     Ok(())
 }
@@ -459,15 +580,19 @@ fn declarations(slots: &Slots) -> String {
 /// applies, reading each apply's planes from the slot `slots` binds them at, at boundary `texel`.
 fn applies(index: usize, spatial: &GpuSpatial, count: usize, slots: &Slots) -> String {
     let base = MAP_WORDS + STEP_WORDS * index;
+    let mask_words = spatial.mask_words();
     let mut text = String::new();
     if spatial.clamps {
         text.push_str("    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));\n");
+    }
+    if spatial.mask.is_some() {
+        text.push_str("    let lf_spatial_input = rgb;\n");
     }
     for (number, apply) in spatial.applies.iter().enumerate().take(count) {
         text.push_str(&format!(
             "    rgb = {}(rgb, vec2<i32>(texel), lf_words[{base}u] + {}u, lf_words[{}u], {}u);\n",
             apply.function,
-            apply.words,
+            mask_words + apply.words as usize,
             base + 1,
             slots.apply(index, number)
         ));
@@ -475,9 +600,60 @@ fn applies(index: usize, spatial: &GpuSpatial, count: usize, slots: &Slots) -> S
     text
 }
 
-/// The frame pass's statements for step `index`: a colour step's entry at its position, or a
-/// spatial step's clamp, applies and clamp.
-pub(super) fn step_statements(steps: &[GpuStep], index: usize, slots: &Slots) -> String {
+/// The frame pass's statements for spatial step `index`: its clamp, its applies, its mask's blend
+/// against the operation's input and its clamp, in a block of their own.
+pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots) -> String {
+    let mut text = String::from("    {\n");
+    text.push_str(&applies(index, spatial, spatial.applies.len(), slots));
+    if spatial.mask.is_some() {
+        text.push_str(&format!(
+            "    let lf_spatial_coverage = lf_surface_mask_{index}(stage, lf_spatial_input);\n    \
+             if lf_spatial_coverage == 0.0 {{\n        rgb = lf_spatial_input;\n    }} else {{\n        \
+             rgb = (1.0 - lf_spatial_coverage) * lf_spatial_input + lf_spatial_coverage * rgb;\n    \
+             }}\n"
+        ));
+    }
+    if spatial.clamps {
+        text.push_str("    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));\n");
+    }
+    text.push_str("    }\n");
+    text
+}
+
+/// The coverage functions of the masked steps of `steps[..until]`, after the one fold they share,
+/// and each masked colour step's frame statements, by step: what a module holding those steps
+/// declares and runs.
+pub(super) fn masks(steps: &[GpuStep], until: usize) -> (String, Vec<Option<String>>) {
+    let mut functions = String::new();
+    let mut statements = Vec::with_capacity(until);
+    for (index, step) in steps.iter().enumerate().take(until) {
+        let base = MAP_WORDS + STEP_WORDS * index;
+        let (function, statement) = match step {
+            GpuStep::Masked(masked) => {
+                let (function, statement) = masked.assemble(index, base);
+                (Some(function), Some(statement))
+            }
+            GpuStep::Spatial(spatial) => (spatial.coverage_function(index, base), None),
+            GpuStep::Colour { .. } => (None, None),
+        };
+        if let Some(function) = function {
+            if functions.is_empty() {
+                functions.push_str(mask::COMPOSE);
+            }
+            functions.push_str(&function);
+        }
+        statements.push(statement);
+    }
+    (functions, statements)
+}
+
+/// The frame pass's statements for any step, `masked` the masked steps' own from [`masks`].
+pub(super) fn statements(
+    steps: &[GpuStep],
+    index: usize,
+    slots: &Slots,
+    masked: &[Option<String>],
+) -> String {
     let base = MAP_WORDS + STEP_WORDS * index;
     match &steps[index] {
         GpuStep::Colour { program, .. } => format!(
@@ -486,13 +662,8 @@ pub(super) fn step_statements(steps: &[GpuStep], index: usize, slots: &Slots) ->
             PositionMap::wgsl(base + 2, "stage"),
             base + 1
         ),
-        GpuStep::Spatial(spatial) => {
-            let mut text = applies(index, spatial, spatial.applies.len(), slots);
-            if spatial.clamps {
-                text.push_str("    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));\n");
-            }
-            text
-        }
+        GpuStep::Masked(_) => masked[index].clone().expect("a masked step's statements"),
+        GpuStep::Spatial(spatial) => frame_statements(index, spatial, slots),
     }
 }
 
@@ -531,13 +702,14 @@ pub(super) fn pass_module(
     slots.bind_applies(steps, index, pass.source as usize);
     let mut source = String::from(super::PRELUDE);
     let mut included: Vec<&GpuProgram> = Vec::new();
-    for step in &steps[..=index] {
-        let program = step.program();
+    for (_, program) in steps[..=index].iter().flat_map(GpuStep::programs) {
         if !included.iter().any(|seen| seen.entry == program.entry) {
             source.push_str(&format!("\n// {}\n{}\n", program.entry, program.source));
             included.push(program);
         }
     }
+    let (functions, masked) = masks(steps, index);
+    source.push_str(&functions);
     source.push_str("\n@group(0) @binding(2) var lf_boundary: texture_2d<f32>;\n");
     source.push_str(&declarations(&slots));
     source.push_str(&format!(
@@ -553,7 +725,7 @@ pub(super) fn pass_module(
          vec2<f32>(lf_f32(2u), lf_f32(3u));\n",
     );
     for earlier in 0..index {
-        source.push_str(&step_statements(steps, earlier, &slots));
+        source.push_str(&statements(steps, earlier, &slots, &masked));
     }
     source.push_str(&applies(index, spatial, pass.source as usize, &slots));
     source.push_str("    return rgb;\n}\n");
@@ -561,7 +733,7 @@ pub(super) fn pass_module(
     let call = format!(
         "{}(at, lf_words[{base}u] + {}u, lf_words[{}u]);",
         pass.kernel,
-        pass.words,
+        spatial.mask_words() + pass.words as usize,
         base + 1
     );
     match pass.shape {
@@ -734,7 +906,7 @@ impl PlanesKey {
             .enumerate()
             .filter_map(|(index, step)| match step {
                 GpuStep::Spatial(spatial) => Some((index, spatial.planes.clone())),
-                GpuStep::Colour { .. } => None,
+                GpuStep::Colour { .. } | GpuStep::Masked(_) => None,
             })
             .collect();
         (!planes.is_empty()).then_some(Self {

@@ -139,6 +139,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         .iter()
         .map(|step| match step {
             GpuStep::Colour { program, .. } => program.entry.as_ref(),
+            GpuStep::Masked(_) => panic!("an unmasked stack converts to colour steps"),
             GpuStep::Spatial(_) => panic!("a colour stack has no spatial step"),
         })
         .collect();
@@ -165,7 +166,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
             position,
         } = step
         else {
-            panic!("a colour stack has no spatial step");
+            panic!("an unmasked stack converts to colour steps");
         };
         assert_eq!(*position, PositionMap::IDENTITY);
         assert_eq!(converted, &program(unit));

@@ -11,18 +11,19 @@
 //! surface gains joins the part it belongs to:
 //!
 //! - [`boundary_map`]: the held boundary against the plan's boundary stage;
-//! - [`operation_steps`]: each content operation's units, and where its mask's coverage joins;
+//! - [`operation_steps`]: each content operation's units, and a masked one's coverage;
 //! - [`spatial_step`]: the spatial operation the content enters, its planes, passes and applies;
 //! - [`geometry_steps`]: the geometry tail, and after it the output operations;
 //!
 //! A part the surface cannot run yet answers the reason ([`Unrunnable`]), and the gesture keeps
 //! the CPU path.
 use luxforge_core::{
-    GpuDescription, GpuGeometry, GpuOperation, GpuPassShape, GpuPlaneFormat, GpuPlaneSize,
-    GpuPosition, GpuSpatial, Stage,
+    ComponentMode, GpuDescription, GpuGeometry, GpuMask, GpuOperation, GpuPassShape,
+    GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Stage,
 };
 use luxforge_ui::photo_surface::{
-    GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap,
+    Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuStep,
+    MaskedColour, PositionMap, TexelMap,
     gpu_preview::{self, PassShape, PlaneFormat, PlaneSize},
 };
 use std::{borrow::Cow, sync::Arc};
@@ -34,8 +35,6 @@ pub(crate) enum Unrunnable {
     /// The geometry tail is not the identity, so a resample, and output-space steps after it,
     /// follow the content pass: the surface has no geometry step yet.
     Geometry,
-    /// A masked operation: the surface has no coverage step yet.
-    Mask { layer: usize },
     /// The boundary held is not the stage the plan's boundary layer receives.
     Boundary { held: (u32, u32), stage: (u32, u32) },
     /// A position map with a coefficient the surface's `f32` words cannot hold exactly.
@@ -47,7 +46,6 @@ impl Unrunnable {
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Geometry => "surface-geometry",
-            Self::Mask { .. } => "surface-mask",
             Self::Boundary { .. } => "boundary-size",
             Self::Position { .. } => "position-range",
         }
@@ -95,36 +93,40 @@ pub(crate) fn boundary_map(stage: Stage, boundary: &GpuBoundary) -> Result<Texel
 }
 
 /// One colour operation's steps, appended to `steps`: one colour step per unit, in order, each at
-/// the operation's position map. A masked operation's coverage, and the blend against its input,
-/// would join here; the surface has no coverage step yet.
+/// the operation's position map; or, for a masked operation, one masked step holding its units and
+/// its mask's coverage, blended against the operation's own input.
 pub(crate) fn operation_steps(
     operation: &GpuOperation,
     steps: &mut Vec<GpuStep>,
 ) -> Result<(), Unrunnable> {
-    if operation.mask.is_some() {
-        return Err(Unrunnable::Mask {
-            layer: operation.layer,
-        });
-    }
-    let position = position_map(operation.position).ok_or(Unrunnable::Position {
+    let unrunnable = || Unrunnable::Position {
         layer: operation.layer,
-    })?;
-    steps.extend(operation.units.iter().map(|unit| GpuStep::Colour {
-        program: program(unit),
-        position,
-    }));
+    };
+    let position = position_map(operation.position).ok_or_else(unrunnable)?;
+    match &operation.mask {
+        None => steps.extend(operation.units.iter().map(|unit| GpuStep::Colour {
+            program: program(unit),
+            position,
+        })),
+        Some(mask) => steps.push(GpuStep::Masked(MaskedColour {
+            units: operation.units.iter().map(program).collect(),
+            position,
+            mask: coverage(mask).ok_or_else(unrunnable)?,
+        })),
+    }
     Ok(())
 }
 
 /// The spatial operation as the surface's spatial step: the core's static program text, borrowed,
-/// with the operation's words, and its planes, passes and applies as they are. A masked operation's
-/// blend would join here; the surface has no coverage step yet.
+/// with the operation's words, its planes, passes and applies as they are, and a masked
+/// operation's coverage, which the step blends its output by against its input.
 pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> {
-    if spatial.mask.is_some() {
-        return Err(Unrunnable::Mask {
+    let mask = match &spatial.mask {
+        None => None,
+        Some(mask) => Some(coverage(mask).ok_or(Unrunnable::Position {
             layer: spatial.layer,
-        });
-    }
+        })?),
+    };
     let index = |value: usize| u32::try_from(value).expect("a plane, word or apply index");
     Ok(GpuStep::Spatial(Box::new(gpu_preview::GpuSpatial {
         program: GpuProgram {
@@ -174,7 +176,51 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
             })
             .collect(),
         clamps: spatial.clamps,
+        mask,
     })))
+}
+
+/// The core's mask as the surface's coverage: its position map, its bounds as the half-open
+/// rectangle they are, the supersample, each component's program with its mode and inversion, the
+/// mask's inversion and its amount. `None` for a position map an `f32` cannot hold exactly, its
+/// doubled stage under the supersample included.
+pub(crate) fn coverage(mask: &GpuMask) -> Option<Coverage> {
+    let position = position_map(mask.position)?;
+    let bounds = mask.bounds;
+    let corners = [
+        bounds.x0,
+        bounds.y0,
+        bounds.x0 + bounds.width,
+        bounds.y0 + bounds.height,
+    ];
+    // A supersampled mask's components address the doubled stage, whose last pixel is twice the
+    // bounds' far corner.
+    if corners
+        .iter()
+        .any(|corner| 2 * i64::from(*corner) > EXACT_F32)
+    {
+        return None;
+    }
+    Some(Coverage {
+        position,
+        bounds: corners,
+        supersample: mask.supersample,
+        components: mask
+            .components
+            .iter()
+            .map(|component| CoverageComponent {
+                mode: match component.mode {
+                    ComponentMode::Add => CoverageMode::Add,
+                    ComponentMode::Subtract => CoverageMode::Subtract,
+                    ComponentMode::Intersect => CoverageMode::Intersect,
+                },
+                invert: component.invert,
+                program: program(&component.program),
+            })
+            .collect(),
+        invert: mask.invert,
+        scale: mask.scale,
+    })
 }
 
 /// The geometry tail's steps, appended to `steps`: none for a tail that is the identity over the

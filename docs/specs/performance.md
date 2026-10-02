@@ -3415,6 +3415,74 @@ cargo test -p luxforge-app gpu_colour_corpus -- --ignored --nocapture
 
 The run writes `<recipe>--<source>[--lens-reset]-{cpu,gpu}.png` for each measured cell, `cells.json` with both figures and every gap's reason, and `commands.sh`, one `cargo xtask preview-error --class pointwise` line per pair.
 
+## GPU mask coverage at Fit
+
+The coverage programs of every mask kind ([GPU previews](../design/gpu-preview.md#mask-coverage)), each carrying the corpus's masked Basic layer (Exposure +0.8, Contrast 20, Vibrance 30), against the CPU frame each previews, at Fit, on every masked recipe of the [corpus](../../fixtures/preview/corpus.json) (`mask-linear`, `mask-radial`, `mask-brush`, `mask-luminance-range`, `mask-colour-range` and the algebra, `mask-composed`, a linear less a radial) over every source this host has. These are the figures the programs were enabled on. Pixel measurements, not timings.
+
+### Scope
+
+- **Measure.** `cargo xtask preview-error --candidate GPU.png --reference CPU.png --photo-rect 0,0,W,H --class pointwise` over each pair; all 42 measured pairs exit 0.
+- **The frames.** As for [the colour programs](#gpu-colour-programs-at-fit): the desktop's own Fit job through the preview worker against the same stack planned with `gpu_plan` over the same proxy source held as `rgba16float`, converted by `app::gpu_plan` into one masked step and drawn by the photo surface's own assembled shader, read back headlessly. The corpus names its mask and components by name; the harness resolves each to its identity, and plans from the recipe the frame was rendered from, whose painted strokes are resolved.
+- **Bounds, host and build.** 1716 × 1508 physical pixels. Apple M4 Pro, macOS 26.5.2, the `Apple M4 Pro` adapter on Metal. The `test` profile build of `luxforge-app` at `6120d6cc`, `gpu_mask_corpus_at_fit`. One run; the pixels are deterministic.
+- **Sources and gaps.** The generated 24 MP and 60 MP JPEGs and the Presence fixture, and the Z6 NEF, X100VI RAF and Air 2S DNG through the private RAW manifest, each RAW also with its lens profile reset as for the colour programs. The zone plate has no file. The Z6 and Air 2S cells as the corpus states them plan the lens profile's warp, which the surface does not draw yet (`surface-geometry`): 12 gaps. The X100VI commits no profile, so its reset row is the same stack and is left out below.
+- **An empty mask is a gap.** A cell whose mask selects nothing on its source (read back over the boundary before the frame) is recorded as a gap, not a pass. No measured cell was empty. On the generated JPEGs the colour range covers some pixels, and its GPU and CPU frames are identical code for code.
+
+### Results
+
+Mean ΔE00, worst 16 × 16 block, p99 and signed mean ΔL\* of the drawn frame. The last column is the mean of the GPU's `f32` output through the reference quantizer instead of the hardware encoder.
+
+| Recipe, source | Stage | Mean | Worst block | p99 | Signed ΔL\* | Max | Mean, program output |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Linear, 24 MP JPEG | 1716 × 1144 | 0.012 | 0.07 | 0.25 | +0.001 | 0.71 | 0.003 |
+| Linear, 60 MP JPEG | 1716 × 1030 | 0.013 | 0.06 | 0.27 | +0.001 | 0.35 | 0.003 |
+| Linear, Presence fixture | 1440 × 960, exact | 0.006 | 0.09 | 0.28 | +0.003 | 1.00 | 0.004 |
+| Linear, Z6, lens reset | 1003 × 1508 | 0.061 | 0.27 | 0.99 | −0.003 | 2.26 | 0.017 |
+| Linear, X100VI | 1716 × 1144 | 0.051 | 0.33 | 0.83 | −0.001 | 2.32 | 0.012 |
+| Linear, Air 2S, lens reset | 1716 × 1143 | 0.066 | 0.32 | 0.94 | −0.004 | 2.14 | 0.013 |
+| Radial, 24 MP JPEG | 1716 × 1144 | 0.002 | 0.08 | 0.03 | +0.000 | 0.63 | 0.001 |
+| Radial, 60 MP JPEG | 1716 × 1030 | 0.002 | 0.08 | 0.03 | +0.000 | 0.38 | 0.000 |
+| Radial, Presence fixture | 1440 × 960, exact | 0.001 | 0.03 | 0.00 | +0.000 | 0.67 | 0.000 |
+| Radial, Z6, lens reset | 1003 × 1508 | 0.075 | 0.33 | 1.06 | −0.005 | 2.36 | 0.015 |
+| Radial, X100VI | 1716 × 1144 | 0.059 | 0.34 | 0.92 | −0.003 | 2.26 | 0.011 |
+| Radial, Air 2S, lens reset | 1716 × 1143 | 0.081 | 0.31 | 1.01 | −0.005 | 2.34 | 0.012 |
+| Brush, 24 MP JPEG | 1716 × 1144 | 0.001 | 0.04 | 0.03 | +0.000 | 0.42 | 0.000 |
+| Brush, 60 MP JPEG | 1716 × 1030 | 0.001 | 0.04 | 0.03 | +0.000 | 0.36 | 0.000 |
+| Brush, Presence fixture | 1440 × 960, exact | 0.001 | 0.07 | 0.00 | +0.001 | 0.85 | 0.001 |
+| Brush, Z6, lens reset | 1003 × 1508 | 0.078 | 0.33 | 1.06 | −0.006 | 2.36 | 0.015 |
+| Brush, X100VI | 1716 × 1144 | 0.059 | 0.34 | 0.92 | −0.003 | 2.26 | 0.011 |
+| Brush, Air 2S, lens reset | 1716 × 1143 | 0.082 | 0.31 | 1.01 | −0.005 | 2.34 | 0.012 |
+| Luminance range, 24 MP JPEG | 1716 × 1144 | 0.007 | 0.03 | 0.03 | +0.001 | 0.28 | 0.000 |
+| Luminance range, 60 MP JPEG | 1716 × 1030 | 0.007 | 0.03 | 0.03 | +0.001 | 0.28 | 0.000 |
+| Luminance range, Presence fixture | 1440 × 960, exact | 0.009 | 0.09 | 0.28 | +0.010 | 0.38 | 0.008 |
+| Luminance range, Z6, lens reset | 1003 × 1508 | 0.058 | 0.32 | 0.99 | −0.002 | 2.36 | 0.020 |
+| Luminance range, X100VI | 1716 × 1144 | 0.046 | 0.34 | 0.78 | −0.001 | 2.26 | 0.013 |
+| Luminance range, Air 2S, lens reset | 1716 × 1143 | 0.055 | 0.30 | 0.90 | −0.002 | 2.40 | 0.015 |
+| Colour range, 24 MP JPEG | 1716 × 1144 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 0.000 |
+| Colour range, 60 MP JPEG | 1716 × 1030 | 0.000 | 0.00 | 0.00 | +0.000 | 0.00 | 0.000 |
+| Colour range, Presence fixture | 1440 × 960, exact | 0.009 | 0.09 | 0.28 | +0.010 | 0.38 | 0.008 |
+| Colour range, Z6, lens reset | 1003 × 1508 | 0.059 | 0.27 | 0.98 | −0.002 | 2.09 | 0.022 |
+| Colour range, X100VI | 1716 × 1144 | 0.062 | 0.30 | 0.84 | −0.002 | 2.25 | 0.026 |
+| Colour range, Air 2S, lens reset | 1716 × 1143 | 0.064 | 0.19 | 0.90 | −0.004 | 2.14 | 0.020 |
+| Linear less radial, 24 MP JPEG | 1716 × 1144 | 0.011 | 0.07 | 0.25 | +0.001 | 0.71 | 0.003 |
+| Linear less radial, 60 MP JPEG | 1716 × 1030 | 0.012 | 0.06 | 0.26 | +0.001 | 0.43 | 0.003 |
+| Linear less radial, Presence fixture | 1440 × 960, exact | 0.006 | 0.09 | 0.28 | +0.003 | 1.00 | 0.004 |
+| Linear less radial, Z6, lens reset | 1003 × 1508 | 0.063 | 0.27 | 1.00 | −0.003 | 2.26 | 0.016 |
+| Linear less radial, X100VI | 1716 × 1144 | 0.052 | 0.33 | 0.83 | −0.001 | 2.32 | 0.012 |
+| Linear less radial, Air 2S, lens reset | 1716 × 1143 | 0.067 | 0.32 | 0.95 | −0.004 | 2.14 | 0.013 |
+
+Every measured cell is within the pointwise limits (mean 0.5, worst block 1.0, p99 2.0, ΔL\* ±0.25): the largest figures are a mean of 0.082, a worst block of 0.34, a p99 of 1.06 and a ΔL\* of +0.010. They are the colour programs' own figures for the same Basic layer: on the JPEGs the program output is within 0.004 of the CPU's, and on the RAWs the half-float boundary and the hardware encoder dominate as they do there. The masks' coverage itself is held to the CPU's by the contour rule in the readback tests (`cargo test -p luxforge-app gpu_mask`), within 0.004 px on every case.
+
+### Reproducing it
+
+```sh
+LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/NEW_DIR \
+LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
+LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
+cargo test -p luxforge-app gpu_mask_corpus -- --ignored --nocapture
+```
+
+The run writes the same files as the colour corpus.
+
 ## GPU Presence program
 
 The Presence program ([GPU previews](../design/gpu-preview.md#spatial-programs)) on the M4, against the CPU per filter, per unit and on the [corpus](../../fixtures/preview/corpus.json)'s Presence recipes at Fit. These are the figures the program was enabled on. Pixel and arithmetic measurements, not timings.

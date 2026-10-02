@@ -58,19 +58,53 @@ fn colour(
     }
 }
 
-/// A coverage program's twin: one component's falloff at `pos`, before its inversion.
-fn coverage(component: &GpuComponent, pos: [f32; 2], _rgb: [f32; 3]) -> f32 {
+/// Component `index` of `layer`'s mask at `pos`, before its inversion: a test program's Rust twin,
+/// or a shipped coverage program's CPU field, narrowed from its `f64` falloff.
+fn coverage(
+    units: &Units,
+    layer: usize,
+    index: usize,
+    component: &GpuComponent,
+    pos: [f32; 2],
+    rgb: [f32; 3],
+) -> f32 {
     let program = &component.program;
     let word = |index: usize| f32::from_bits(program.words[index]);
     let block = |index: usize| f32::from_bits(program.block.as_ref().expect("a block")[index]);
     match program.program.entry {
         "lf_test_ramp" => ((pos[0] + block(0) + 0.5) / word(0)).clamp(0.0, 1.0),
-        other => panic!("the reference executor has no twin of {other}"),
+        other if other.starts_with("lf_test_") => {
+            panic!("the reference executor has no twin of {other}")
+        }
+        other => {
+            let field = units
+                .get(&layer)
+                .and_then(ColorOperation::mask)
+                .unwrap_or_else(|| panic!("layer {layer} compiled no masked colour operation"));
+            assert_eq!(
+                field
+                    .gpu()
+                    .ok()
+                    .map(|mask| mask.components[index].program.program.entry),
+                Some(other),
+                "component {index} of layer {layer} is not the one the plan describes"
+            );
+            field.gpu_component_falloff(index, pos[0] as u32, pos[1] as u32, rgb.map(f64::from))
+                as f32
+        }
     }
 }
 
-/// The mask's composed coverage at the pass pixel `(x, y)`, for the operation's input `rgb`.
-fn mask_coverage(mask: &GpuMask, x: i64, y: i64, rgb: [f32; 3]) -> f32 {
+/// The mask's composed coverage at the pass pixel `(x, y)`, for the input `rgb` of `layer`'s
+/// operation.
+fn mask_coverage(
+    units: &Units,
+    layer: usize,
+    mask: &GpuMask,
+    x: i64,
+    y: i64,
+    rgb: [f32; 3],
+) -> f32 {
     let (mx, my) = mask.position.at(x, y);
     let bounds = mask.bounds;
     let inside = mx >= i64::from(bounds.x0)
@@ -82,8 +116,8 @@ fn mask_coverage(mask: &GpuMask, x: i64, y: i64, rgb: [f32; 3]) -> f32 {
     }
     let fold = |px: i64, py: i64| -> f32 {
         let mut m = 0.0_f32;
-        for component in &mask.components {
-            let c = coverage(component, [px as f32, py as f32], rgb);
+        for (index, component) in mask.components.iter().enumerate() {
+            let c = coverage(units, layer, index, component, [px as f32, py as f32], rgb);
             let c = if component.invert { 1.0 - c } else { c };
             m = match component.mode {
                 ComponentMode::Add => m.max(c),
@@ -119,7 +153,7 @@ fn operation(units: &Units, operation: &GpuOperation, rgb: [f32; 3], x: i64, y: 
     let Some(mask) = &operation.mask else {
         return output;
     };
-    let m = mask_coverage(mask, x, y, rgb);
+    let m = mask_coverage(units, operation.layer, mask, x, y, rgb);
     if m == 0.0 {
         return rgb;
     }
@@ -188,11 +222,14 @@ fn spatial(
     for (index, texel) in texels.iter_mut().enumerate() {
         let applied: [f32; 3] = std::array::from_fn(|channel| planes[channel * len + index]);
         let rgb = input[index];
-        let value = match &step.mask {
-            None => applied,
-            Some(mask) => {
+        // A mask's twin is the operation's own field, evaluated where the CPU's blend evaluates
+        // it: at the stage pixel, on the operation's input.
+        let value = match (&step.mask, operation.mask()) {
+            (None, _) => applied,
+            (Some(_), None) => panic!("layer {} compiled no mask", step.layer),
+            (Some(_), Some(field)) => {
                 let (x, y) = (index as u32 % stage.width, index as u32 / stage.width);
-                let m = mask_coverage(mask, i64::from(x), i64::from(y), rgb);
+                let m = field.evaluate(x, y, rgb);
                 if m == 0.0 {
                     rgb
                 } else {

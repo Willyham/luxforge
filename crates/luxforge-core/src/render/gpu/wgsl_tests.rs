@@ -19,10 +19,12 @@ use naga::{
 use std::collections::HashSet;
 use std::path::Path;
 
-/// Every GPU program a built-in module ships ([`crate::GPU_PROGRAMS`]). Each is a `.wgsl` file
-/// beside its unit, and [`every_wgsl_file_in_the_core_is_a_shipped_program`] fails for a file
-/// missing there.
-static SHIPPED: &[&GpuProgram] = crate::GPU_PROGRAMS;
+/// Every GPU program the core ships: each built-in module's ([`crate::GPU_PROGRAMS`]) and each mask
+/// component kind's ([`crate::MASK_GPU_PROGRAMS`]). Each is a `.wgsl` file beside its unit or
+/// field, and [`every_wgsl_file_in_the_core_is_a_shipped_program`] fails for a file missing there.
+fn shipped() -> impl Iterator<Item = &'static &'static GpuProgram> {
+    crate::GPU_PROGRAMS.iter().chain(crate::MASK_GPU_PROGRAMS)
+}
 
 /// A copy of the convention's prelude: the concatenated uniform words and storage blocks, and the
 /// four helpers a program reads them through.
@@ -219,19 +221,18 @@ fn validate(program: &GpuProgram) -> Result<(), String> {
 
 #[test]
 fn every_shipped_program_validates_under_the_surface_convention() {
-    for program in SHIPPED.iter().chain(testing::PROGRAMS) {
+    for program in shipped().chain(testing::PROGRAMS) {
         if let Err(error) = validate(program) {
             panic!("{} does not validate:\n{error}", program.entry);
         }
     }
-    let entries: HashSet<_> = SHIPPED
-        .iter()
+    let entries: HashSet<_> = shipped()
         .chain(testing::PROGRAMS)
         .map(|program| program.entry)
         .collect();
     assert_eq!(
         entries.len(),
-        SHIPPED.len() + testing::PROGRAMS.len(),
+        shipped().count() + testing::PROGRAMS.len(),
         "two programs share an entry name, which would collide in one module"
     );
 }
@@ -263,11 +264,12 @@ fn every_wgsl_file_in_the_core_is_a_shipped_program() {
     );
     for (path, text) in &found {
         assert!(
-            SHIPPED.iter().any(|program| program.source == text),
-            "{path} is not a shipped program: list it in SHIPPED so it is validated"
+            shipped().any(|program| program.source == text),
+            "{path} is not a shipped program: list it in GPU_PROGRAMS or MASK_GPU_PROGRAMS so \
+             it is validated"
         );
     }
-    for program in SHIPPED {
+    for program in shipped() {
         assert!(
             found.iter().any(|(_, text)| text == program.source),
             "{} is not kept in a .wgsl file beside its unit",

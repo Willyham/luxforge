@@ -46,6 +46,18 @@ pub mod srgb {
     srgb_transfer!(decode, encode, f64);
     srgb_transfer!(decode_f32, encode_f32, f32);
 
+    /// The `f32` encode's constants by the names a GPU program that restates the encode gives them
+    /// (`<entry>_linear_end` and so on), for the tests that hold those programs to them. A test
+    /// below holds this table to [`encode_f32`] itself.
+    #[cfg(test)]
+    pub(crate) const ENCODE_F32: [(&str, f32); 5] = [
+        ("linear_end", 0.003_130_8),
+        ("slope", 12.92),
+        ("scale", 1.055),
+        ("offset", 0.055),
+        ("exponent", 1.0 / 2.4),
+    ];
+
     /// One 8-bit channel code decoded to linear light at `f64` precision: the same transfer
     /// function the `f32` table below is built from, without that table's storage rounding. A
     /// caller that reasons about colour off the per-pixel path — the neutral picker averages 25
@@ -612,6 +624,37 @@ pub(crate) mod cct {
 
 #[cfg(test)]
 mod tests {
+    /// The encode's constants a GPU program is held to are the ones the `f32` encode evaluates:
+    /// the table reproduces it bit for bit on both branches and at the branch point.
+    #[test]
+    fn the_encode_table_is_the_f32_transfer_function() {
+        let constant = |name: &str| {
+            super::srgb::ENCODE_F32
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(_, value)| *value)
+                .unwrap()
+        };
+        let (end, slope) = (constant("linear_end"), constant("slope"));
+        let (scale, offset, exponent) =
+            (constant("scale"), constant("offset"), constant("exponent"));
+        for index in 0..=4096 {
+            let linear = index as f32 / 2048.0 - 0.25;
+            for value in [linear, end, end.next_up(), end.next_down()] {
+                let table = if value <= end {
+                    slope * value
+                } else {
+                    scale * value.powf(exponent) - offset
+                };
+                assert_eq!(
+                    table.to_bits(),
+                    super::srgb::encode_f32(value).to_bits(),
+                    "{value}"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -56,6 +56,7 @@ pub use editor::{
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::CaptureMetadata;
+pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
     EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE, Mask, MaskId,
