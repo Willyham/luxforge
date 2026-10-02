@@ -13,7 +13,7 @@ use luxforge_testbase::{wait_for, wait_until};
 use std::time::Duration;
 
 /// The identity program: a pointwise colour program that returns its input.
-fn identity() -> GpuProgram {
+pub(super) fn identity() -> GpuProgram {
     GpuProgram::new(
         "identity",
         "fn identity(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n    \
@@ -22,7 +22,7 @@ fn identity() -> GpuProgram {
 }
 
 /// Scales by its one uniform word.
-fn scale(factor: f32) -> GpuProgram {
+pub(super) fn scale(factor: f32) -> GpuProgram {
     GpuProgram {
         words: vec![factor.to_bits()],
         ..GpuProgram::new(
@@ -60,7 +60,7 @@ fn stripe(grey: f32, period: u32) -> GpuProgram {
     }
 }
 
-fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan {
+pub(super) fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan {
     GpuPlan {
         boundary: boundary.clone(),
         texels: TexelMap::IDENTITY,
@@ -428,8 +428,8 @@ pub(super) fn diagnostics(pipeline: &PhotoPipeline, surface: SurfaceId) -> Surfa
     pipeline.figures.diagnostics_for(surface)
 }
 
-const ID: SurfaceId = SurfaceId::new(0);
-const SIDE: u32 = 64;
+pub(super) const ID: SurfaceId = SurfaceId::new(0);
+pub(super) const SIDE: u32 = 64;
 
 /// The CPU frame every surface here is built with, solid, so a CPU-path draw is told apart from
 /// any GPU output at every pixel.
@@ -451,6 +451,7 @@ pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimi
         region_overlays: [None, None],
         gpu: plan,
         gpu_options: Default::default(),
+        dissolve: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
         clip_size: Size::new(SIDE as f32, SIDE as f32),
@@ -471,7 +472,7 @@ fn wait(device: &wgpu::Device, index: wgpu::SubmissionIndex) {
 
 /// One frame as Iced renders it — `prepare`, then `draw` into a 64 × 64 sRGB BGRA target — read
 /// back. The readback, and the wait for it, are the test's: the surface never reads a pixel.
-fn paint(
+pub(super) fn paint(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &mut PhotoPipeline,
@@ -599,14 +600,14 @@ pub(super) fn assert_cpu_frame(bytes: &[u8]) {
 }
 
 /// Wait for `pipeline`'s retirements, which its worker finishes when the GPU is done with them.
-fn settle(pipeline: &PhotoPipeline) {
+pub(super) fn settle(pipeline: &PhotoPipeline) {
     wait_until("the pipeline's retirements", || {
         pipeline.figures.retirement_pending.load(Ordering::Acquire) == 0
     });
 }
 
 /// One 8-bit code's linear value, as the boundary holds it: the nearest half float.
-fn held(code: u8) -> f32 {
+pub(super) fn held(code: u8) -> f32 {
     half::f16::from_f32(srgb::decode(code) as f32).to_f32()
 }
 
@@ -989,6 +990,7 @@ fn a_destroyed_devices_callback_names_the_loss() {
         &device,
         &queue,
         Some(&plan(&boundary, vec![identity()])),
+        None,
     );
     assert_eq!(surface.gpu_outcome, Some(Err(GpuFallback::DeviceLost)));
     assert!(surface.gpu.is_none());

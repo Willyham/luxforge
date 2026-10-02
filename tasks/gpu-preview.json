@@ -355,15 +355,16 @@
     {
       "id": "TASK-007",
       "description": "Hand off from GPU frames to CPU frames on settle with a dissolve, and add the label, the motion overlays and the gpu_preview preference with its API equivalent.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-006"
+        "TASK-002"
       ],
       "extra_context": [
         "On settle (the shared quiet policy or release), CPU settlement runs as today. When the CPU frame for the GPU frame's content arrives, the surface dissolves in linear light over 150 ms (recorded default). Redraws are requested only while a dissolve runs; an input during one cancels it.",
         "The status bar's render slot reads 'GPU preview · N ms' while a GPU frame is shown, timed from GPU timestamps where the adapter has them. The histogram keeps its existing updating state.",
         "During GPU motion the clipping overlay comes from the program's own clipping marks, labelled approximate; during a GPU mask gesture the tint comes from the program's coverage. Whole-image counts and the coverage worker's grid remain authoritative and replace them on settle.",
-        "workspace.set gains gpu_preview (boolean, on by default), reported in session state; the command palette toggles it. With it off every gesture takes the CPU path."
+        "workspace.set gains gpu_preview (boolean, on by default), reported in session state; the command palette toggles it. With it off every gesture takes the CPU path.",
+        "The preference with its API, schema, session state and palette entry, the status label and the surface's dissolve need only the GPU stage; settling from GPU frames, the motion overlays and the corpus check at settle need the Fit drag path, so the task completes after it."
       ],
       "context_links": [
         {
@@ -689,24 +690,19 @@
         "TASK-004",
         "TASK-005",
         "TASK-006",
+        "TASK-007",
         "TASK-009"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-007",
+        "TASK-008",
         "TASK-010"
       ]
     },
     {
       "wave": 4,
-      "task_ids": [
-        "TASK-008"
-      ]
-    },
-    {
-      "wave": 5,
       "task_ids": [
         "TASK-012"
       ]

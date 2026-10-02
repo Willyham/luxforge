@@ -643,11 +643,13 @@ impl Editor {
                     luxforge_core::Zoom::Percent { .. }
                 );
                 // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
-                // frame to capture is that draw, over the boundary held from this frame.
+                // frame to capture is that draw, over the boundary held from this frame; with the
+                // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
                 let forced = self
                     .evidence
                     .as_ref()
-                    .is_some_and(|evidence| evidence.gpu_identity.is_some());
+                    .is_some_and(|evidence| evidence.gpu_identity.is_some())
+                    && self.gpu_preview_allowed().is_ok();
                 if forced && !percent && self.presentation.compare_after.is_none() {
                     ExpectedPhotoDraw::Gpu {
                         boundary: photo.version(),
@@ -661,20 +663,25 @@ impl Editor {
                 }
             })
         });
-        expected.is_some_and(|expected| {
-            photo_drawn(
-                expected,
-                luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
-            )
-        }) && self.surfaces().comparison.is_none_or(|(after, _)| {
-            photo_drawn(
-                ExpectedPhotoDraw::Full {
-                    version: after.version(),
-                    content: None,
-                },
-                luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
-            )
-        })
+        // The status bar names the frame the surface drew last, which only that draw can say: a
+        // change of drawing path wakes the desktop, whose next update derives the label again.
+        let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
+        label_current
+            && expected.is_some_and(|expected| {
+                photo_drawn(
+                    expected,
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
+                )
+            })
+            && self.surfaces().comparison.is_none_or(|(after, _)| {
+                photo_drawn(
+                    ExpectedPhotoDraw::Full {
+                        version: after.version(),
+                        content: None,
+                    },
+                    luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE),
+                )
+            })
     }
 
     /// Evidence with clipping enabled must show the requested mask over the current photograph,
@@ -3576,6 +3583,7 @@ impl Editor {
             PaletteAction::Mode(_)
             | PaletteAction::TogglePanel(_)
             | PaletteAction::ToggleThirds
+            | PaletteAction::ToggleGpuPreview
             | PaletteAction::Fit
             | PaletteAction::HundredPercent => self.await_step(Settle::Session),
             PaletteAction::TogglePerformance => self.arm_performance_settle(),

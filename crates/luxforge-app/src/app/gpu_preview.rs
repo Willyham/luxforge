@@ -221,6 +221,8 @@ impl Editor {
     /// worker as today — carrying the boundary request while the boundary is not held.
     pub(crate) fn gpu_tick(&mut self, set: &Draft, job: &mut PreviewJob) -> Tick {
         let preview = job.gpu.take();
+        // With the preference off the plan is never handed over, so nothing is asked for it.
+        let allowed = self.gpu_preview_allowed();
         let report = self.surface_report();
         let mut released = None;
         let drag = match &mut self.gpu.drag {
@@ -239,6 +241,11 @@ impl Editor {
             Tick::Cpu
         };
         let tick = match preview.map(|preview| *preview) {
+            _ if allowed.is_err() => unplanned(
+                drag,
+                allowed.err().unwrap_or(super::gpu_settle::PREFERENCE_OFF),
+                &mut released,
+            ),
             None => unplanned(drag, "not-fit", &mut released),
             Some(luxforge_core::GpuPreview {
                 answer: GpuAnswer::Fallback(reason),
@@ -464,6 +471,25 @@ impl Editor {
             || json!({"version": version, "sequences": sequences.len()}),
         );
         self.gpu.warm = Some(GpuWarm::new(version, sequences));
+    }
+
+    /// The open gesture's converted plan and the draft revision it draws, at Fit with no
+    /// comparison on screen, where the surface runs it.
+    pub(crate) fn gesture_gpu_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
+        (self.presentation.compare_after.is_none()
+            && matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit))
+        .then(|| self.gpu.surface_plan())
+        .flatten()
+    }
+
+    /// Why the desktop hands the surface no plan for the open gesture's newest tick, or why that
+    /// tick took the CPU path: the preference, the plan's reason, a boundary not yet held, the
+    /// converter's reason or the surface's fallback.
+    pub(crate) fn gpu_plan_fallback(&self) -> Option<String> {
+        if let Err(reason) = self.gpu_preview_allowed() {
+            return Some(reason.into());
+        }
+        self.gpu.drag.as_ref().and_then(|drag| drag.reason.clone())
     }
 
     /// Whether the surface holds the drawn plan behind the CPU frame: the CPU frame of the drawn
