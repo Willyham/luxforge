@@ -28,8 +28,10 @@
 //! and an `idle` step after the release's and the stroke's dissolves checks that nothing draws or
 //! updates once they have ended. With the GPU preview turned off from the palette a drag takes the
 //! CPU path, naming the preference, and its release starts no dissolve. With both clipping
-//! overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. A third drag's
-//! release dissolves, and the next gesture's first tick, the Detail drag's, cancels it.
+//! overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. Turning them
+//! off, and the Detail drag after a third drag's release, each cancel a release's dissolve that
+//! still runs when they take effect; one that had already ended, as a release capture longer than
+//! 150 ms on a loaded host leaves it, is recorded with both times and passes.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -814,6 +816,67 @@ fn dissolve_from(events: &[Value], gpu: &Frame, what: &str) -> Result<Value> {
     Ok(started[0]["detail"].clone())
 }
 
+/// What became of the dissolve `release`'s commit began, given the input the step `input` sent,
+/// which takes effect at its first `effect` event and cancels a running dissolve (`why`). Still
+/// running then, it must be cancelled by it; ended first, which a release capture that outlasts
+/// the 150 ms dissolve on a loaded host allows, it is recorded with both times and passes. A
+/// dissolve that ends, or is cut, after the input took effect fails.
+fn cancelled_or_ended(
+    launch: &Checked,
+    release: &str,
+    input: &str,
+    effect: &str,
+    why: &str,
+) -> Result<Value> {
+    let events = span_events(launch, release, input)?;
+    let sent = events.len() - step_events(launch, input)?.len();
+    let start = events
+        .iter()
+        .position(|event| event["event"] == "gpu_dissolve_started")
+        .ok_or_else(|| format!("{release}: no dissolve started"))?;
+    let ends = [
+        "gpu_dissolve_cancelled",
+        "gpu_dissolve_ended",
+        "gpu_dissolve_cut",
+    ];
+    let end = events[start + 1..]
+        .iter()
+        .position(|event| ends.iter().any(|name| event["event"] == *name))
+        .map(|offset| start + 1 + offset);
+    let took = events[sent..]
+        .iter()
+        .position(|event| event["event"] == effect)
+        .map(|offset| sent + offset)
+        .ok_or_else(|| format!("{input}: its input never took effect ({effect})"))?;
+    let at = |index: usize| {
+        events[index]["elapsed_ms"].as_f64().unwrap_or(f64::NAN)
+            - events[start]["elapsed_ms"].as_f64().unwrap_or(f64::NAN)
+    };
+    let Some(end) = end else {
+        return Err(format!(
+            "{release}'s dissolve neither ended nor was cancelled by {input}'s input"
+        )
+        .into());
+    };
+    let (name, detail) = (&events[end]["event"], &events[end]["detail"]);
+    let mut outcome = json!({"input_sent_ms": at(sent), "input_ms": at(took)});
+    if name == "gpu_dissolve_cancelled" && detail["why"] == json!(why) && end > took {
+        outcome["outcome"] = json!("cancelled");
+        outcome["cancelled_ms"] = detail["elapsed_ms"].clone();
+    } else if name == "gpu_dissolve_ended" && end < took {
+        outcome["outcome"] = json!("ended before the input");
+        outcome["ended_ms"] = detail["elapsed_ms"].clone();
+    } else {
+        return Err(format!(
+            "{release}'s dissolve, still running when {input}'s input took effect {:.1} ms in, \
+             was not cancelled by it ({why}): {name} {detail}",
+            at(took)
+        )
+        .into());
+    }
+    Ok(outcome)
+}
+
 /// The idle check the step `name` recorded, which must have passed.
 fn idle_passed(launch: &Checked, name: &str) -> Result<Value> {
     let checks = named(step_events(launch, name)?, "idle_check");
@@ -867,7 +930,8 @@ fn jump(gpu: &Frame, cpu: &Frame) -> Result<Value> {
 
 /// The settle hand-off: each release's dissolve from the GPU frame on screen, the jump it hides
 /// within the pointwise limits, idle once it has ended, the preference turned off and on, the
-/// clipping marks of a GPU drag, and a dissolve cancelled by the next gesture.
+/// clipping marks of a GPU drag, and a dissolve cancelled by a clipping toggle and by the next
+/// gesture, each where it still ran when the input took effect.
 fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
     // The drag's release: its committed frame dissolves in from the drag's last GPU frame, and
     // once it has ended nothing draws.
@@ -947,7 +1011,28 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         json!({"drawn": drawn, "clipping_marks": marks}),
     );
 
-    // A dissolve the next gesture, the Detail drag, cancels: its first tick is an input.
+    // Clipping turned off while the second release's dissolve may run: a view input.
+    let again = launch.at("again-gpu")?;
+    let started = dissolve_from(
+        step_events(launch, "again-release")?,
+        again,
+        "the second release",
+    )?;
+    let outcome = cancelled_or_ended(
+        launch,
+        "again-release",
+        "clipping-off",
+        "gpu_settle_view",
+        "view",
+    )?;
+    checks.note(
+        launch.at("clipping-off")?,
+        "turning the clipping overlays off cancelled the release's dissolve, or it had ended first",
+        json!({"dissolve": started, "outcome": outcome}),
+    );
+
+    // The next gesture, the Detail drag, while the third release's dissolve may run: its first
+    // tick is an input.
     let third = launch.at("third-gpu")?;
     gpu_drawn(third)?;
     let started = dissolve_from(
@@ -955,37 +1040,17 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         third,
         "the third release",
     )?;
-    let cancelled = named(
-        span_events(launch, "third-release", "detail-first")?,
-        "gpu_dissolve_cancelled",
-    );
-    let ended = named(
-        span_events(launch, "third-release", "detail-first")?,
-        "gpu_dissolve_ended",
-    );
-    ensure(
-        cancelled.len() == 1
-            && cancelled[0]["detail"]["why"] == json!("input")
-            && cancelled[0]["detail"]["from"] == started["from"]
-            && ended.is_empty(),
-        format!(
-            "The next gesture did not cancel the third release's dissolve: cancelled {:?}, \
-             ended {:?} (a release capture longer than the 150 ms dissolve leaves nothing to \
-             cancel)",
-            cancelled
-                .iter()
-                .map(|event| &event["detail"])
-                .collect::<Vec<_>>(),
-            ended
-                .iter()
-                .map(|event| &event["detail"])
-                .collect::<Vec<_>>()
-        ),
+    let outcome = cancelled_or_ended(
+        launch,
+        "third-release",
+        "detail-first",
+        "slider_draft_begin",
+        "input",
     )?;
     checks.note(
         launch.at("detail-first")?,
-        "the next gesture cancelled the release's dissolve",
-        json!({"dissolve": started, "cancelled": cancelled[0]["detail"]}),
+        "the next gesture cancelled the release's dissolve, or it had ended first",
+        json!({"dissolve": started, "outcome": outcome}),
     );
 
     // The moved gradient's Apply, and the stroke: each dissolves from its GPU frame, and the
