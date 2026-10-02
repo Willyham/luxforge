@@ -496,8 +496,12 @@ pub(super) struct GpuSlot {
     evaluated: Option<u64>,
     /// The interface thread's time, in microseconds, to prepare what `output` holds: fitting the
     /// slot, writing the words and blocks, uploading a new boundary, encoding and submitting the
-    /// pass. The device Iced creates has no timestamp queries, so the GPU's own time is not read.
+    /// pass.
     frame_us: u64,
+    /// How many passes the slot has submitted, which names each to its clock.
+    passes: u64,
+    /// When the GPU finished the slot's passes, as the queue reports it ([`timing`]).
+    clock: Arc<PassClock>,
 }
 
 impl GpuSlot {
@@ -511,6 +515,11 @@ impl GpuSlot {
 
     pub(super) fn frame_us(&self) -> u64 {
         self.frame_us
+    }
+
+    /// The clock the queue reports the slot's passes complete to.
+    pub(super) fn clock(&self) -> Arc<PassClock> {
+        Arc::clone(&self.clock)
     }
 }
 
@@ -1190,6 +1199,8 @@ impl PhotoPipeline {
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
             // the queue's writes above are flushed with it. Nothing waits for it.
             queue.submit([encoder.finish()]);
+            slot.passes += 1;
+            slot.clock.follow(queue, slot.passes, started);
             slot.evaluated = Some(pipeline_id);
             slot.output.version = plan.boundary.version;
             slot.frame_us = started.elapsed().as_micros() as u64;
@@ -1327,6 +1338,8 @@ impl PhotoPipeline {
             written_blocks: Vec::new(),
             evaluated: None,
             frame_us: 0,
+            passes: 0,
+            clock: Arc::default(),
         })
     }
 
@@ -1437,6 +1450,9 @@ pub use position::PositionMap;
 mod dissolve;
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
 pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
+
+mod timing;
+pub(crate) use timing::PassClock;
 
 #[cfg(feature = "qualification")]
 pub mod qualification;
