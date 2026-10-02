@@ -162,6 +162,34 @@ fn sequence(plan: &GpuPlan) -> Vec<&'static str> {
         .collect()
 }
 
+/// What decides a plan's pipelines, as the surface keys its program sequence: its colour units'
+/// programs, then its spatial operation's clamp, mask, planes, passes and applies, but for every
+/// word, which is what a drag changes.
+fn pipelines(plan: &GpuPlan) -> Vec<String> {
+    let mut keys: Vec<String> = plan
+        .operations()
+        .flat_map(|operation| operation.units.iter())
+        .map(|unit| unit.program.entry.to_owned())
+        .collect();
+    if let Some(spatial) = &plan.spatial {
+        keys.push(format!(
+            "{}: clamps {}, masked {}",
+            spatial.program.entry,
+            spatial.clamps,
+            spatial.mask.is_some()
+        ));
+        keys.extend(spatial.planes.iter().map(|plane| format!("{plane:?}")));
+        keys.extend(spatial.passes.iter().map(|pass| {
+            format!(
+                "{} {:?} -> {}, source {}, {:?}",
+                pass.kernel, pass.inputs, pass.output, pass.source, pass.shape
+            )
+        }));
+        keys.extend(spatial.applies.iter().map(|apply| format!("{apply:?}")));
+    }
+    keys
+}
+
 /// A Basic drag from neutral — the layer absent, then holding a value, then another, then back at
 /// neutral — plans one program sequence and one boundary throughout, while the CPU compile of the
 /// same stacks keeps only the non-neutral unit.
@@ -532,41 +560,188 @@ fn a_presence_drag_reads_the_light_its_fit_frame_stored() {
     }
 }
 
-/// A drag of a spatial layer the stack holds is warmed in each shape it may draw: Presence as it
-/// stands, and with each field at its default moved off it, so a Clarity drag and the first
-/// Texture and Dehaze drags, of either sign, find their sequences warmed, within the bound.
+/// A drag of a restoration or spatial layer the stack holds is warmed by one plan, the layer in
+/// its GPU shape, which every drag of it draws: a Presence layer's Clarity drag and the first
+/// Texture and Dehaze drags of either sign, and a Detail layer's Sharpening drag and first
+/// noise-reduction drags, all find their pipelines warmed. Dehaze's light is stored by the
+/// committed stack's Fit frame only after the warm list is planned with its job, and the drags
+/// that read it still find theirs.
 #[test]
-fn the_warmed_plans_hold_a_presence_layers_drags() {
-    let presence = |payload: Value| Layer::new(crate::PRESENCE_EFFECT, payload);
-    let entry = vec![presence(json!({"clarity": 30}))];
-    let (job, _) = draft_job("set-presence", entry.clone(), entry.clone(), 0);
-    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
-    // The plans that start at Presence itself; the colour candidates before it hold it too.
-    let spatial = plans
-        .iter()
-        .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
-        .count();
-    assert_eq!(
-        spatial, 3,
-        "Clarity as it stands, and Texture's and Dehaze's first drags"
-    );
-    let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
-    for drafted in [
-        json!({"clarity": 60}),
-        json!({"clarity": 30, "texture": 20}),
-        json!({"clarity": 30, "dehaze": -25}),
-        json!({"clarity": 30, "dehaze": 40}),
-    ] {
-        let (job, draft) = draft_job(
+fn the_warmed_plans_hold_a_spatial_layers_drags() {
+    for (action, effect, held, drags) in [
+        (
             "set-presence",
-            entry.clone(),
-            vec![presence(drafted.clone())],
+            crate::PRESENCE_EFFECT,
+            json!({"clarity": 30, "dehaze": 40}),
+            [
+                json!({"clarity": 60, "dehaze": 40}),
+                json!({"clarity": 30, "dehaze": 40, "texture": 20}),
+                json!({"clarity": 30, "dehaze": -25}),
+                json!({"clarity": 30}),
+            ],
+        ),
+        (
+            "set-detail",
+            crate::DETAIL_EFFECT,
+            json!({"sharpening": 40}),
+            [
+                json!({"sharpening": 80}),
+                json!({"sharpening": 40, "luminance": 30}),
+                json!({"sharpening": 40, "colour": 30}),
+                json!({}),
+            ],
+        ),
+    ] {
+        let layer = Layer::new(effect, held);
+        let entry = vec![layer.clone()];
+        let context = RenderContext::new();
+        let job_of = |stack: Vec<Layer>, revision| {
+            draft_job_in(
+                context.clone(),
+                source(),
+                action,
+                entry.clone(),
+                stack,
+                revision,
+            )
+        };
+        let (job, _) = job_of(entry.clone(), 0);
+        let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+        // The plans that start at the layer itself; the colour candidates before it hold it too.
+        let own: Vec<&GpuPlan> = plans
+            .iter()
+            .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
+            .collect();
+        assert_eq!(
+            own.len(),
             1,
+            "{effect}: one plan, the layer in its GPU shape"
         );
-        let drag = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
-        assert!(
-            warmed.contains(&sequence(planned(&drag))),
-            "the drag to {drafted} is warmed"
+        // The committed stack's Fit frame, through the preview worker in the same context, fills
+        // the estimate store after the warm list was planned.
+        let (mut job, _) = job_of(entry.clone(), 0);
+        job.proxy = Some(bounds());
+        job.intent = PreviewIntent::Interactive;
+        let mut queue = PreviewQueue::default();
+        queue.request(job);
+        let frame = wait_for("the Fit frame", || queue.poll());
+        assert_eq!(frame.phase(), PreviewPhase::Proxy, "{effect}");
+        for drafted in drags {
+            let payload = drafted.clone();
+            let (job, draft) = job_of(
+                vec![Layer {
+                    payload,
+                    ..layer.clone()
+                }],
+                1,
+            );
+            let drag = plan_preview(&job.evaluation, &draft, bounds()).unwrap();
+            assert!(
+                !planned(&drag).approximate(),
+                "{effect}: a stored estimate is read"
+            );
+            assert_eq!(
+                pipelines(planned(&drag)),
+                pipelines(own[0]),
+                "the drag to {drafted} is warmed"
+            );
+        }
+    }
+}
+
+/// A drag of a restoration or spatial layer across zero — a unit joining and leaving, or noise
+/// reduction's coarsest level with Colour — plans one program sequence and one boundary
+/// throughout, from the layer absent or held, Detail's and Presence's alike, while the CPU compile
+/// of the same stacks holds only the units the values need.
+#[test]
+fn a_spatial_drag_across_zero_keeps_one_program_sequence_and_one_boundary() {
+    let registry = ModuleRegistry::builtin();
+    // How many stages the CPU compile of `stack` opens: one for a restoration or spatial layer it
+    // holds units of.
+    let stages = |stack: &[Layer]| -> usize {
+        let compiled = registry
+            .compile(WIDTH, HEIGHT, &recipe(stack.to_vec()))
+            .unwrap();
+        compiled
+            .segments
+            .iter()
+            .filter(|segment| segment.entry.is_some())
+            .count()
+    };
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({}));
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({}));
+    // Each gesture: its action and layer, the values it starts from (`None` for a layer the stack
+    // does not hold yet), and the field it drags from zero, through two values and back.
+    for (action, layer, held, field, values) in [
+        ("set-presence", &presence, None, "dehaze", [40.0, -30.0]),
+        (
+            "set-presence",
+            &presence,
+            Some(json!({"texture": 10})),
+            "clarity",
+            [20.0, -20.0],
+        ),
+        ("set-detail", &detail, None, "luminance", [30.0, 80.0]),
+        (
+            "set-detail",
+            &detail,
+            Some(json!({"sharpening": 40})),
+            "colour",
+            [30.0, 60.0],
+        ),
+        (
+            "set-detail",
+            &detail,
+            Some(json!({"luminance": 30})),
+            "sharpening",
+            [50.0, 150.0],
+        ),
+    ] {
+        let at = |value: f64| {
+            let mut payload = held.clone().unwrap_or_else(|| json!({}));
+            payload[field] = json!(value);
+            Layer {
+                payload,
+                ..layer.clone()
+            }
+        };
+        let entry: Vec<Layer> = held
+            .iter()
+            .map(|payload| Layer {
+                payload: payload.clone(),
+                ..layer.clone()
+            })
+            .collect();
+        let stacks = [
+            entry.clone(),
+            vec![at(values[0])],
+            vec![at(values[1])],
+            vec![at(0.0)],
+        ];
+        let previews: Vec<GpuPreview> = stacks
+            .iter()
+            .enumerate()
+            .map(|(revision, stack)| {
+                let (job, draft) = draft_job(action, entry.clone(), stack.clone(), revision as u64);
+                plan_preview(&job.evaluation, &draft, bounds()).unwrap()
+            })
+            .collect();
+        let first = planned(&previews[0]);
+        for (preview, stack) in previews.iter().zip(&stacks) {
+            assert_eq!(
+                pipelines(planned(preview)),
+                pipelines(first),
+                "{action} {field} over {held:?}: {stack:?}"
+            );
+            assert_eq!(preview.boundary, previews[0].boundary, "one boundary");
+        }
+        // The CPU's shape: a layer at zero opens no stage; a non-neutral one holds only the units
+        // its values need, which the modules' own tests count.
+        assert_eq!(
+            stages(&stacks[3]),
+            usize::from(held.is_some()),
+            "{action} {field}"
         );
+        assert_eq!(stages(&stacks[1]), 1);
     }
 }
