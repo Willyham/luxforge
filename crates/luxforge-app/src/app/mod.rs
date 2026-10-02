@@ -47,6 +47,8 @@ mod gesture_tests;
 #[cfg(test)]
 mod gpu_colour_tests;
 pub(crate) mod gpu_identity;
+#[cfg(test)]
+mod gpu_mask_tests;
 pub(crate) mod gpu_preview;
 #[cfg(test)]
 mod gpu_preview_tests;

@@ -23,7 +23,6 @@
 use super::{Figures, GpuFallback, GpuStep, OUTPUT_FORMAT, StepKind, compile};
 use crate::photo_surface::wake_surface;
 use std::{
-    borrow::Cow,
     sync::{
         Arc, Mutex, PoisonError,
         atomic::Ordering,
@@ -72,29 +71,23 @@ pub(in crate::photo_surface) struct GpuOptions {
     pub(in crate::photo_surface) warm: Option<GpuWarm>,
 }
 
-/// What a cached sequence is keyed by: each step's kind, entry and source.
-type Signature = Vec<(StepKind, Cow<'static, str>, Cow<'static, str>)>;
+/// What a cached sequence is keyed by: each step's signature in order, the shape of a masked
+/// step and each program's role, entry and source ([`GpuStep::signature`]).
+type Signature = Vec<(StepKind, String, String)>;
 
 fn signature(steps: &[GpuStep]) -> Signature {
     steps
         .iter()
-        .map(|step| {
-            let program = step.program();
-            (step.kind(), program.entry.clone(), program.source.clone())
-        })
+        .flat_map(GpuStep::signature)
+        .map(|(kind, entry, source)| (kind, entry.to_owned(), source.to_owned()))
         .collect()
 }
 
 fn matches(signature: &Signature, steps: &[GpuStep]) -> bool {
-    signature.len() == steps.len()
-        && signature
-            .iter()
-            .zip(steps)
-            .all(|((kind, entry, source), step)| {
-                *kind == step.kind()
-                    && *entry == step.program().entry
-                    && *source == step.program().source
-            })
+    signature
+        .iter()
+        .map(|(kind, entry, source)| (*kind, entry.as_str(), source.as_str()))
+        .eq(steps.iter().flat_map(GpuStep::signature))
 }
 
 /// Where one cached sequence is.
