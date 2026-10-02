@@ -29,7 +29,7 @@
 //! updates once they have ended. With the GPU preview turned off from the palette a drag takes the
 //! CPU path, naming the preference, and its release starts no dissolve. With both clipping
 //! overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. A third drag's
-//! release dissolves, and the next gesture's first tick cancels it.
+//! release dissolves, and the next gesture's first tick, the Detail drag's, cancels it.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
@@ -104,13 +104,12 @@ fn stroke_path() -> Vec<[f64; 2]> {
 }
 const STROKE_INTERVAL_MS: u64 = 60;
 
-/// The exposure the preference-off drag moves through, the second GPU drag's, and the next
-/// gesture's that cancels its dissolve. Each release differs from the exposure before it, the
-/// cancel's from the Presence section's Basic drag's too, so that each commits.
+/// The exposure the preference-off drag moves through, the second GPU drag's and the third's. Each
+/// release differs from the exposure before it, the third's from the Presence section's Basic
+/// drag's too, so that each commits.
 const OFF: [f64; 2] = [0.6, 0.65];
 const AGAIN: [f64; 2] = [0.4, 0.45];
 const THIRD: [f64; 2] = [0.2, 0.25];
-const CANCEL: f64 = 0.35;
 /// An idle check: long enough a settle for a 150 ms dissolve to end and the slot to retire, then a
 /// second over which nothing may draw.
 const IDLE: script::IdleStep = script::IdleStep {
@@ -200,8 +199,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 .commits(0)
                 .workspace("clip_shadows", json!(false))
                 .workspace("clip_highlights", json!(false)),
-            // A third drag on the GPU, whose release's dissolve the next gesture's first tick
-            // cancels: the release's capture, with no overlay to derive, ends well inside it.
+            // A third drag on the GPU, whose release's dissolve the next gesture's first tick, the
+            // Detail drag's, cancels: the release's capture, with no overlay to derive, ends well
+            // inside it.
             Step::new("third-first", SliderStep::new(BASIC, EXPOSURE, [THIRD[0]])).commits(0),
             quiet("third-held"),
             Step::new("third-gpu", SliderStep::new(BASIC, EXPOSURE, THIRD))
@@ -210,15 +210,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             Step::new(
                 "third-release",
                 SliderStep::new(BASIC, EXPOSURE, [THIRD[1]]).release(),
-            )
-            .commits(1)
-            .no_draft(),
-            Step::new("cancel-drag", SliderStep::new(BASIC, EXPOSURE, [CANCEL]))
-                .commits(0)
-                .draft(BASIC, json!({ EXPOSURE: CANCEL })),
-            Step::new(
-                "cancel-release",
-                SliderStep::new(BASIC, EXPOSURE, [CANCEL]).release(),
             )
             .commits(1)
             .no_draft(),
@@ -956,7 +947,7 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         json!({"drawn": drawn, "clipping_marks": marks}),
     );
 
-    // A dissolve the next gesture cancels: its first tick is an input.
+    // A dissolve the next gesture, the Detail drag, cancels: its first tick is an input.
     let third = launch.at("third-gpu")?;
     gpu_drawn(third)?;
     let started = dissolve_from(
@@ -965,11 +956,11 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         "the third release",
     )?;
     let cancelled = named(
-        span_events(launch, "third-release", "cancel-drag")?,
+        span_events(launch, "third-release", "detail-first")?,
         "gpu_dissolve_cancelled",
     );
     let ended = named(
-        span_events(launch, "third-release", "cancel-drag")?,
+        span_events(launch, "third-release", "detail-first")?,
         "gpu_dissolve_ended",
     );
     ensure(
@@ -992,7 +983,7 @@ fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
         ),
     )?;
     checks.note(
-        launch.at("cancel-drag")?,
+        launch.at("detail-first")?,
         "the next gesture cancelled the release's dissolve",
         json!({"dissolve": started, "cancelled": cancelled[0]["detail"]}),
     );
