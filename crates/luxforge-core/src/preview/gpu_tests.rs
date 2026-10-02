@@ -1016,7 +1016,7 @@ fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
     let window = zoomed.boundary.as_ref().unwrap().window.unwrap();
     let bytes = |plan: &GpuPlan| {
         plan.spatial
-            .as_ref()
+            .first()
             .unwrap()
             .plane_bytes((window.x0, window.y0), (window.width, window.height))
     };
@@ -1093,4 +1093,52 @@ fn a_region_drag_reads_the_light_its_exact_region_stored() {
     let stored = plan_of();
     assert!(!planned(&stored).approximate(), "the stored light is read");
     assert!(stored.boundary.unwrap().window.is_some());
+}
+
+/// With Detail and Presence both in the stack, the warm list holds a Detail drag's sequence, which
+/// chains Presence's operation after Detail's, and a Presence drag's.
+#[test]
+fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30, "dehaze": 20}));
+    let entry = vec![detail.clone(), presence.clone()];
+    let (job, _) = draft_job("set-detail", entry.clone(), entry.clone(), 0);
+    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
+        .unwrap()
+        .iter()
+        .map(sequence)
+        .collect();
+    let drags = [
+        (
+            "set-detail",
+            vec![
+                Layer {
+                    payload: json!({"sharpening": 70, "luminance": 20}),
+                    ..detail.clone()
+                },
+                presence.clone(),
+            ],
+            2,
+        ),
+        (
+            "set-presence",
+            vec![
+                detail,
+                Layer {
+                    payload: json!({"clarity": 50, "dehaze": 20}),
+                    ..presence
+                },
+            ],
+            1,
+        ),
+    ];
+    for (action, drafted, chained) in drags {
+        let (job, draft) = draft_job(action, entry.clone(), drafted, 1);
+        let drag = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+        assert_eq!(planned(&drag).spatial.len(), chained, "{action}");
+        assert!(
+            warmed.contains(&sequence(planned(&drag))),
+            "{action}'s sequence is warmed"
+        );
+    }
 }

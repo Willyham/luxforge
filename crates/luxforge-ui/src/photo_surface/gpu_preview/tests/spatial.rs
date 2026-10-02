@@ -629,3 +629,40 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
         eprintln!("{test}: {change}: {runs} passes");
     }
 }
+
+/// Chained spatial steps share scratch textures: a later step's plane no apply reads takes an
+/// earlier step's scratch texture of the same format and extent, while every plane an apply reads
+/// keeps its own, and the charge is the textures'.
+#[test]
+fn chained_spatial_steps_share_their_scratch_textures() {
+    let steps = vec![
+        GpuStep::Spatial(Box::new(test_spatial())),
+        GpuStep::colour(scale(0.5)),
+        GpuStep::Spatial(Box::new(test_spatial())),
+    ];
+    let key = super::super::spatial::PlanesKey::of(&steps, (SIDE, SIDE), (0, 0)).expect("planes");
+    // Plane 0 is the copy only the passes read; planes 1 and 2 the apply reads.
+    assert_eq!(
+        key.texture(2, 0),
+        key.texture(0, 0),
+        "the scratch copy is shared"
+    );
+    let applied = [
+        key.texture(0, 1),
+        key.texture(0, 2),
+        key.texture(2, 1),
+        key.texture(2, 2),
+    ];
+    for (index, texture) in applied.iter().enumerate() {
+        assert!(
+            !applied[..index].contains(texture),
+            "an apply's plane keeps its own"
+        );
+        assert_ne!(*texture, key.texture(0, 0));
+    }
+    let single =
+        super::super::spatial::PlanesKey::of(&steps[..1], (SIDE, SIDE), (0, 0)).expect("planes");
+    let copy = 64 * 64 * 8;
+    // Two steps' planes, less the copy they share; each step's three passes' parameters.
+    assert_eq!(key.bytes(), 2 * single.bytes() - copy);
+}
