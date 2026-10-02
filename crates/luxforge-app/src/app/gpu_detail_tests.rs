@@ -1210,6 +1210,184 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
     }
 }
 
+// ---- Drags at Fit -----------------------------------------------------------------------------
+
+mod drags {
+    //! A Detail drag at Fit drawn on the GPU, end to end against a real owner and preview worker,
+    //! with what the surface reports stood in for, as `gpu_preview_tests` does.
+    use super::super::{
+        Editor, Message,
+        gpu_preview::SurfaceReport,
+        message::{preview::PreviewMessage, view::ViewMessage},
+        testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
+    };
+    use luxforge_testbase::wait_until;
+    use luxforge_ui::photo_surface::GpuStep;
+    use serde_json::Value;
+
+    fn catalog(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "luxforge-gpu-detail-{name}-{}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    /// Take up the preview worker's results until `done`.
+    fn deliver_until(editor: &mut Editor, what: &str, mut done: impl FnMut(&Editor) -> bool) {
+        wait_until(what, || {
+            let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+            done(editor)
+        });
+    }
+
+    /// The surface reports that it evaluated the held boundary's plan with no fallback.
+    fn surface_ready(editor: &mut Editor) {
+        let version = editor.gpu.held_version().expect("a held boundary");
+        editor.gpu.surface = Some(SurfaceReport {
+            ready_boundary: Some(version),
+            fallback: None,
+            drawn: None,
+        });
+    }
+
+    fn jobs(records: &[Value]) -> usize {
+        events(records, "preview_job_requested").len()
+    }
+
+    /// The program of the spatial step the surface is handed.
+    fn spatial_program(editor: &Editor) -> Option<String> {
+        editor.surfaces().gpu.and_then(|plan| {
+            plan.steps.iter().find_map(|step| match step {
+                GpuStep::Spatial(spatial) => Some(spatial.program.entry.to_string()),
+                _ => None,
+            })
+        })
+    }
+
+    /// A Detail Amount drag at Fit on a photograph drawn as a proxy. Its first tick takes the CPU
+    /// path and asks for the boundary: the input of the restoration layer, which is the proxy
+    /// source itself. Once the boundary is held and the surface has evaluated it, every tick is
+    /// Detail's spatial step drawn on the GPU with no preview job. The release commits, and the
+    /// CPU's frames replace the GPU's: the moving proxy, then the reduction of the exact render
+    /// the stack settles to; the boundary goes once that is presented.
+    #[test]
+    fn gpu_detail_a_fit_drag_is_drawn_on_the_gpu_and_settles_from_exact() {
+        let catalog = catalog("drag");
+        let (mut editor, _, _) = real_photo(&catalog);
+        // A window too small for the photograph at its own size: the Fit frame is a proxy, and
+        // a Detail stack settles from the exact render's reduction.
+        let _ = editor.update(Message::View(ViewMessage::Resized(900.0, 600.0)));
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let log = attach_log(&mut editor);
+        let _ = slide(&mut editor, "set-detail", "sharpening", 40.0);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary()
+        });
+        let records = logged(&mut editor, &log);
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks[0]["path"], "cpu");
+        assert_eq!(ticks[0]["reason"], "boundary-pending");
+        assert_eq!(ticks[0]["boundary_requested"], true);
+        // The boundary is the Detail layer's input at the proxy's size.
+        let summary = editor.gpu.summary();
+        let boundary = &summary["drag"]["boundary"];
+        assert_eq!(boundary["layer"], 0, "{summary}");
+        let (width, height) = (
+            boundary["width"].as_u64().unwrap(),
+            boundary["height"].as_u64().unwrap(),
+        );
+        assert!(width < 480 && height < 320, "a proxy, {width}x{height}");
+        assert_eq!(
+            spatial_program(&editor).as_deref(),
+            Some("lf_detail"),
+            "Detail's spatial step is drawn"
+        );
+        surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        for amount in [60.0, 80.0, 100.0] {
+            let _ = slide(&mut editor, "set-detail", "sharpening", amount);
+            let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+            let surfaces = editor.surfaces();
+            assert!(surfaces.gpu.is_some(), "the plan is drawn");
+            assert_eq!(surfaces.gpu_tag, Some(revision), "tagged with its tick");
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "no preview job per tick");
+        let ticks = events(&records, "gpu_preview_tick");
+        assert_eq!(ticks.len(), 3);
+        assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
+        // The release commits. The CPU's frames take over: the moving proxy, then the reduction
+        // of the exact render, after which the boundary is let go.
+        let log = attach_log(&mut editor);
+        let _ = let_go(&mut editor, "set-detail", "sharpening");
+        assert!(run_commit(&mut editor));
+        deliver_until(&mut editor, "the settled Fit frame", |editor| {
+            !editor.gpu.has_drag() && editor.presentation.presented_settled
+        });
+        let records = logged(&mut editor, &log);
+        let shown = events(&records, "preview_displayed");
+        let settled = shown
+            .iter()
+            .position(|frame| frame["settled_from_exact"] == true)
+            .expect("the exact-derived Fit frame");
+        assert!(
+            shown[..settled]
+                .iter()
+                .any(|frame| frame["proxy"] == true && frame["settled_from_exact"] == false),
+            "the moving proxy before it: {shown:?}"
+        );
+        assert_eq!(
+            events(&records, "gpu_boundary_released")[0]["why"],
+            "draft-ended"
+        );
+        assert!(editor.surfaces().gpu.is_none());
+        finish(editor, catalog);
+    }
+
+    /// A drag of a layer after a committed Detail layer: its boundary is the restoration prefix's
+    /// output, which the worker reads from the restoration-prefix proxy cache its first tick's
+    /// frame just held, and its ticks are drawn on the GPU with no preview job, while the CPU
+    /// frame before them reports the cache's use.
+    #[test]
+    fn gpu_detail_a_drag_after_detail_starts_from_the_restoration_prefix() {
+        let catalog = catalog("suffix");
+        let (mut editor, _, _) = real_photo(&catalog);
+        let _ = editor.update(Message::View(ViewMessage::Resized(900.0, 600.0)));
+        let _ = slide(&mut editor, "set-detail", "sharpening", 60.0);
+        let _ = let_go(&mut editor, "set-detail", "sharpening");
+        assert!(run_commit(&mut editor));
+        deliver_until(&mut editor, "the committed Detail frame", |editor| {
+            !editor.gpu.has_drag() && editor.presentation.presented_settled
+        });
+        editor.gpu.surface = Some(SurfaceReport::default());
+        let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
+        deliver_until(&mut editor, "the boundary", |editor| {
+            editor.gpu.holds_boundary() && editor.presentation.restoration_prefix.is_some()
+        });
+        assert_eq!(editor.gpu.summary()["drag"]["boundary"]["layer"], 1);
+        assert!(editor.presentation.restoration_prefix.is_some());
+        // The plan runs from Basic's input: colour, no spatial step.
+        assert!(editor.surfaces().gpu.is_some());
+        assert_eq!(spatial_program(&editor), None);
+        surface_ready(&mut editor);
+        let log = attach_log(&mut editor);
+        for exposure in [0.4, 0.6] {
+            let _ = slide(&mut editor, "set-basic", "exposure", exposure);
+        }
+        let records = logged(&mut editor, &log);
+        assert_eq!(jobs(&records), 0, "no preview job per tick");
+        assert!(
+            events(&records, "gpu_preview_tick")
+                .iter()
+                .all(|tick| tick["path"] == "gpu")
+        );
+        let _ = editor.update(Message::Draft(
+            super::super::message::draft::DraftMessage::Cancel,
+        ));
+        finish(editor, catalog);
+    }
+}
+
 // ---- The corpus at Fit ------------------------------------------------------------------------
 
 /// The qualification corpus's Detail recipes at Fit through the shared harness

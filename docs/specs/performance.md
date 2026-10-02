@@ -3685,6 +3685,13 @@ Every cell is within the spatial limits: at worst a mean of 0.096, a worst block
 
 **Memory.** "Charged" is what the photo surface's slot drawing the plan charges the GPU-preview budget, as for Presence. Both units hold 68 bytes a pixel of planes, noise reduction 64 alone and sharpening 52 alone. With the moderate settings on the 60 MP JPEG at Fit (a 1716 × 1030 proxy), the slot holds 151.1 MB (144.1 MiB) of the 256 MiB budget, of which the planes are 120.2 MB; over the evidence window's whole 1716 × 1508 bounds it would hold 213.5 MB (203.6 MiB). The RAWs charge more, their boundary held as `f32` and the Z6's and Air 2S's lens grid beside it: 197.3 MB at most, the Air 2S with moderate settings. One slot is held at a time, so this is its peak. A JPEG Fit stage past about 3.3 MP passes the budget (2400 × 1600 would charge 303.3 MiB) and takes the CPU path, naming it (`gpu_detail_planes_are_charged_to_the_budget`). The 100% figure waits for the region boundary.
 
+### A drag at Fit
+
+A Detail drag at Fit drawn on the GPU is proven functionally, not timed:
+
+- `cargo test -p luxforge-app gpu_detail_tests::drags` against a real owner and preview worker. In the first test, a Detail Amount drag over a photograph drawn as a proxy asks for its boundary, the Detail layer's input at the proxy's size, with its first CPU tick. Its later ticks are Detail's spatial step drawn on the GPU with no preview job. The release then presents the CPU's moving proxy and the exact-derived Fit frame before the boundary is let go. In the second, a Basic drag after a committed Detail layer starts from Basic's input, read from the restoration-prefix proxy cache, and its ticks are drawn on the GPU with no preview job.
+- `cargo run --release --locked --package xtask -- smoke --scenario gpu-preview --output NEW_DIR` at `2a2be14e` with the Detail steps: one CPU tick asking for the boundary at layer 0, then 2 GPU ticks with no preview job. The GPU frame equals the frame the release commits at four flat patches and two across the white cross, to the code. The slot held 11.5 MB over the 480 × 320 photograph, which fits the window at its own size, so its Fit frame is the exact render. Once settled, nothing is held.
+
 ### Reproducing it
 
 ```sh
