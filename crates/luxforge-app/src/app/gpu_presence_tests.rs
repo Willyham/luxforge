@@ -1427,3 +1427,6 @@ fn gpu_presence_the_drafted_shape_draws_what_the_cpus_does() {
 
 // Near-black outliers on the linear path, measured for a decision.
 mod near_black;
+
+// Detail followed by Presence, chained in one plan.
+mod chain;

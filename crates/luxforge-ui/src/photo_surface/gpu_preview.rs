@@ -1851,9 +1851,13 @@ impl PhotoPipeline {
             if let Some(spatial) = slot.spatial.as_mut()
                 && let Some((_, groups)) = spatial.groups.as_ref()
             {
-                let run = spatial
-                    .schedule
-                    .run(&plan.steps, words, blocks, plan.boundary.version);
+                let run = spatial.schedule.run(
+                    &plan.steps,
+                    words,
+                    blocks,
+                    plan.boundary.version,
+                    &spatial.planes.key,
+                );
                 let dispatched =
                     groups.encode(&mut encoder, &pipeline.spatial, &slot.bindings, &run);
                 spatial.dispatched += dispatched;

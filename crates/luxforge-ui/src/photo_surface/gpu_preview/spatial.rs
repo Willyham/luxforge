@@ -1123,10 +1123,19 @@ pub(super) fn compile_passes(
 }
 
 /// What a spatial plan's planes are keyed by: each spatial step's planes, the boundary's size and
-/// its stage origin.
+/// its stage origin, and which texture holds each plane.
+///
+/// A plane no apply reads is scratch: only its own step's passes use it, and they have all run
+/// before a later step's first pass. A later step's scratch plane of the same format and extent
+/// therefore takes an earlier step's scratch texture, so chained spatial steps hold one texture for
+/// both; a plane an apply reads keeps its own, which the frame and every later step's input read.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct PlanesKey {
     planes: Vec<(usize, Vec<GpuPlane>)>,
+    /// Each step's planes' textures, indices into `textures`.
+    aliases: Vec<(usize, Vec<usize>)>,
+    /// The textures, each the plane that first took it.
+    textures: Vec<GpuPlane>,
     /// How many passes the parameter buffer holds a slice for.
     passes: usize,
     size: (u32, u32),
@@ -1146,19 +1155,75 @@ impl PlanesKey {
                 | GpuStep::Clipping(_) => None,
             })
             .collect();
-        (!planes.is_empty()).then_some(Self {
+        if planes.is_empty() {
+            return None;
+        }
+        // Earlier steps' scratch textures, free for a later step's scratch planes.
+        let mut textures: Vec<GpuPlane> = Vec::new();
+        let mut scratch: Vec<usize> = Vec::new();
+        let mut aliases = Vec::with_capacity(planes.len());
+        for (index, step_planes) in &planes {
+            let GpuStep::Spatial(spatial) = &steps[*index] else {
+                continue;
+            };
+            let read = |plane: usize| {
+                spatial
+                    .applies
+                    .iter()
+                    .any(|apply| apply.planes.contains(&(plane as u32)))
+            };
+            let mut taken: Vec<usize> = Vec::new();
+            let mut made_scratch: Vec<usize> = Vec::new();
+            let step_aliases = step_planes
+                .iter()
+                .enumerate()
+                .map(|(number, plane)| {
+                    let extent = plane.extent(origin, size);
+                    let shared = (!read(number))
+                        .then(|| {
+                            scratch.iter().copied().find(|texture| {
+                                !taken.contains(texture)
+                                    && textures[*texture].format == plane.format
+                                    && textures[*texture].extent(origin, size) == extent
+                            })
+                        })
+                        .flatten();
+                    let texture = shared.unwrap_or_else(|| {
+                        textures.push(*plane);
+                        if !read(number) {
+                            made_scratch.push(textures.len() - 1);
+                        }
+                        textures.len() - 1
+                    });
+                    taken.push(texture);
+                    texture
+                })
+                .collect();
+            scratch.extend(made_scratch);
+            aliases.push((*index, step_aliases));
+        }
+        Some(Self {
             planes,
+            aliases,
+            textures,
             passes: pass_count(steps),
             size,
             origin,
         })
     }
 
-    /// The bytes every plane takes, and the passes' parameter buffer.
-    pub(super) fn bytes(&self) -> u64 {
-        self.planes
+    /// The texture that holds plane `plane` of step `step`.
+    pub(super) fn texture(&self, step: usize, plane: u32) -> usize {
+        self.aliases
             .iter()
-            .flat_map(|(_, planes)| planes)
+            .find(|(index, _)| *index == step)
+            .map_or(usize::MAX, |(_, aliases)| aliases[plane as usize])
+    }
+
+    /// The bytes every texture takes, and the passes' parameter buffer.
+    pub(super) fn bytes(&self) -> u64 {
+        self.textures
+            .iter()
             .map(|plane| plane.bytes(self.origin, self.size))
             .sum::<u64>()
             + self.parameter_bytes()
@@ -1172,8 +1237,8 @@ impl PlanesKey {
 /// A plan's planes, created at their extents, with their views.
 pub(super) struct Planes {
     pub(super) key: PlanesKey,
-    /// By step, then plane.
-    textures: Vec<(usize, Vec<(wgpu::Texture, wgpu::TextureView)>)>,
+    /// Each texture of [`PlanesKey`], which one or more planes share.
+    textures: Vec<(wgpu::Texture, wgpu::TextureView)>,
     /// Every pass's parameters, a [`PARAMS_STRIDE`] slice each, in plan order.
     parameters: wgpu::Buffer,
     /// What `parameters` holds, so a tick whose passes keep their places writes nothing.
@@ -1185,33 +1250,27 @@ impl Planes {
     /// Every plane of `key`, created. The caller has charged [`PlanesKey::bytes`].
     pub(super) fn create(device: &wgpu::Device, key: PlanesKey) -> Self {
         let textures = key
-            .planes
+            .textures
             .iter()
-            .map(|(step, planes)| {
-                let made = planes
-                    .iter()
-                    .map(|plane| {
-                        let (width, height) = plane.extent(key.origin, key.size);
-                        let texture = device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("luxforge.gpu_preview.plane"),
-                            size: wgpu::Extent3d {
-                                width,
-                                height,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: plane.format.texture(),
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                | wgpu::TextureUsages::STORAGE_BINDING,
-                            view_formats: &[],
-                        });
-                        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                        (texture, view)
-                    })
-                    .collect();
-                (*step, made)
+            .map(|plane| {
+                let (width, height) = plane.extent(key.origin, key.size);
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("luxforge.gpu_preview.plane"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: plane.format.texture(),
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::STORAGE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
             })
             .collect();
         let parameters = device.create_buffer(&wgpu::BufferDescriptor {
@@ -1242,12 +1301,7 @@ impl Planes {
     }
 
     fn view(&self, step: usize, plane: u32) -> &wgpu::TextureView {
-        let (_, planes) = self
-            .textures
-            .iter()
-            .find(|(index, _)| *index == step)
-            .expect("a spatial step's planes");
-        &planes[plane as usize].1
+        &self.textures[self.key.texture(step, plane)].1
     }
 
     fn extent(&self, step: usize, plane: u32) -> (u32, u32) {
@@ -1382,11 +1436,13 @@ impl Groups {
 /// unless an input's only writer before it is its first in the tick and the plane already holds
 /// what that writer would write. A pass that writes an apply's plane on the way to its last writer
 /// runs that last writer too, so an apply never reads a plane a scratch use left behind. A new
-/// sequence or new planes start from nothing kept, which runs every pass the applies need.
+/// sequence or new planes start from nothing kept, which runs every pass the applies need. The key
+/// is kept by texture, so a scratch texture chained steps share holds the key of the step that
+/// wrote it last.
 #[derive(Default)]
 pub(super) struct Schedule {
-    /// The key of what each plane holds, by step and plane.
-    kept: Vec<((usize, u32), u64)>,
+    /// The key of what each texture holds ([`PlanesKey::texture`]).
+    kept: Vec<(usize, u64)>,
 }
 
 fn hash_of(parts: impl std::hash::Hash) -> u64 {
@@ -1402,29 +1458,30 @@ impl Schedule {
         self.kept.clear();
     }
 
-    fn kept(&self, step: usize, plane: u32) -> Option<u64> {
+    fn kept(&self, texture: usize) -> Option<u64> {
         self.kept
             .iter()
-            .find(|(at, _)| *at == (step, plane))
+            .find(|(at, _)| *at == texture)
             .map(|(_, key)| *key)
     }
 
-    fn keep(&mut self, step: usize, plane: u32, key: u64) {
-        match self.kept.iter_mut().find(|(at, _)| *at == (step, plane)) {
+    fn keep(&mut self, texture: usize, key: u64) {
+        match self.kept.iter_mut().find(|(at, _)| *at == texture) {
             Some((_, kept)) => *kept = key,
-            None => self.kept.push(((step, plane), key)),
+            None => self.kept.push((texture, key)),
         }
     }
 
     /// The passes of `steps` this tick runs, in [`CompiledSpatial`]'s order, given the tick's
-    /// packed `words` and `blocks` and the boundary's `version`; the planes they write are then
-    /// taken as written.
+    /// packed `words` and `blocks`, the boundary's `version` and the `textures` that hold the
+    /// planes; the planes they write are then taken as written.
     pub(super) fn run(
         &mut self,
         steps: &[GpuStep],
         words: &[u32],
         blocks: &[u32],
         version: u64,
+        textures: &PlanesKey,
     ) -> Vec<bool> {
         let mut run = Vec::new();
         // The upstream of each step: the boundary, the texel map, every step before it, by
@@ -1442,7 +1499,8 @@ impl Schedule {
                 let program = own.get(spatial.mask_words()..).unwrap_or(&[]);
                 let program_blocks = own_blocks.get(..spatial.program.block.len()).unwrap_or(&[]);
                 let inward = hash_of((upstream, position, program_blocks));
-                let keys = self.step(index, spatial, program, inward, &mut run);
+                let texture = |plane: u32| textures.texture(index, plane);
+                let keys = self.step(&texture, spatial, program, inward, &mut run);
                 // A later step's source runs this one's applies over its planes.
                 upstream = hash_of((upstream, position, own, own_blocks, keys));
             } else {
@@ -1455,7 +1513,7 @@ impl Schedule {
     /// One spatial step's passes, appended to `run`; answers its apply planes' keys.
     fn step(
         &mut self,
-        index: usize,
+        texture: &dyn Fn(u32) -> usize,
         spatial: &GpuSpatial,
         program: &[u32],
         upstream: u64,
@@ -1531,7 +1589,7 @@ impl Schedule {
                 None => false,
                 Some(writer) => {
                     writers(plane).next() != Some(writer)
-                        || self.kept(index, plane) != Some(keys[writer])
+                        || self.kept(texture(plane)) != Some(keys[writer])
                 }
             }
         };
@@ -1540,13 +1598,13 @@ impl Schedule {
             writers(plane)
                 .rfind(|writer| runs[*writer])
                 .map(|writer| keys[writer])
-                .or(self.kept(index, plane))
+                .or(self.kept(texture(plane)))
         };
         let mut stale: Vec<u32> = read
             .iter()
             .copied()
             .filter(|&plane| writers(plane).next().is_some())
-            .filter(|&plane| self.kept(index, plane) != Some(holds(&held, &plane)))
+            .filter(|&plane| self.kept(texture(plane)) != Some(holds(&held, &plane)))
             .collect();
         // Backward from the stale apply planes, until no apply plane is left half written.
         let runs = loop {
@@ -1583,7 +1641,7 @@ impl Schedule {
             })
             .collect();
         for (plane, key) in written {
-            self.keep(index, plane, key);
+            self.keep(texture(plane), key);
         }
         run.extend_from_slice(&runs);
         read.iter().map(|plane| holds(&held, plane)).collect()
