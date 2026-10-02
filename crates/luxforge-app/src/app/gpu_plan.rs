@@ -290,6 +290,8 @@ pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> 
                     GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
                     GpuPlaneFormat::Pair => PlaneFormat::Pair,
                     GpuPlaneFormat::Quad => PlaneFormat::Quad,
+                    GpuPlaneFormat::HalfScalar => PlaneFormat::HalfScalar,
+                    GpuPlaneFormat::HalfPair => PlaneFormat::HalfPair,
                 },
                 size: match plane.size {
                     GpuPlaneSize::Reduced(s) => PlaneSize::Reduced(s),

@@ -23,6 +23,10 @@ const lf_presence_luma_r: f32 = 0.2126;
 const lf_presence_luma_g: f32 = 0.7152;
 const lf_presence_luma_b: f32 = 0.0722;
 const lf_presence_near_black: f32 = 1e-6;
+// Texture's fine smoother of the encoded luminance is held less this, so a half-float plane holds
+// it about zero, where a half's step is two to four times finer over most of its range; the band
+// adds it back before it takes the coarse smoother from it.
+const lf_presence_fine_offset: f32 = 0.5;
 // tanh is 1 to every bit an f32 holds past 9.01; the argument is held inside +-16 so no
 // implementation is asked for an exponent it cannot represent.
 const lf_presence_tanh_bound: f32 = 16.0;
@@ -180,9 +184,10 @@ fn lf_presence_finish(finish: u32, mean: vec4<f32>, at: vec2<i32>, eps: f32) -> 
             return vec4<f32>(a, mi - a * mg, 0.0, 0.0);
         }
         case 3u: {
-            // q = mean(b) + mean(a) G, the guide the encoded source.
+            // q = mean(b) + mean(a) G, the guide the encoded source: Texture's fine smoother, held
+            // less the offset for the band to add back.
             let guide = lf_presence_encoded(lf_source(at));
-            return vec4<f32>(mean.y + mean.x * guide, 0.0, 0.0, 0.0);
+            return vec4<f32>(mean.y + mean.x * guide - lf_presence_fine_offset, 0.0, 0.0, 0.0);
         }
         case 4u: {
             // The same with the guide in plane 1.
@@ -192,7 +197,8 @@ fn lf_presence_finish(finish: u32, mean: vec4<f32>, at: vec2<i32>, eps: f32) -> 
             // Texture's band: the fine smoother in plane 1 less this, the coarse one, of the
             // encoded source, so the coarse smoother is never held.
             let guide = lf_presence_encoded(lf_source(at));
-            return vec4<f32>(lf_plane(1u, at).x - (mean.y + mean.x * guide), 0.0, 0.0, 0.0);
+            let fine = lf_plane(1u, at).x + lf_presence_fine_offset;
+            return vec4<f32>(fine - (mean.y + mean.x * guide), 0.0, 0.0, 0.0);
         }
         default: {
             return mean;
