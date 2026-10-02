@@ -72,7 +72,7 @@ impl Cancel {
 
     /// `Err(ErrorKind::Cancelled)` when cancelled, for the passes to call per chunk.
     #[inline]
-    pub(crate) fn check(&self) -> Result<(), Error> {
+    pub fn check(&self) -> Result<(), Error> {
         if self.is_cancelled() {
             Err(Error::cancelled(CANCELLED))
         } else {

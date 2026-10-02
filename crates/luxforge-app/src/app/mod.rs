@@ -111,7 +111,10 @@ use luxforge_core::{
     ClientAuthority, ClientId, ClientSession, LocalServer, ModuleDescriptor, OwnerHandle,
     POINTER_MODE,
 };
-use message::{Message, evidence::EvidenceMessage, preview::PreviewMessage, view::ViewMessage};
+use message::{
+    Message, evidence::EvidenceMessage, performance::PerformanceMessage, preview::PreviewMessage,
+    view::ViewMessage,
+};
 use serde_json::{Value, json};
 use std::{sync::Arc, thread::JoinHandle, time::Instant};
 use tasks::{modules_task, presets_task};
@@ -415,6 +418,12 @@ impl Editor {
             Evidence::new(dir, queue, std::mem::take(&mut config.script))
         });
         let initial = config.files.pop_front();
+        let preferences = tasks::call(&owner, client, "preferences.read", json!({}));
+        let expanded = preferences
+            .as_ref()
+            .ok()
+            .and_then(|(value, _)| value["performance_expanded"].as_bool())
+            .unwrap_or(true);
         let mut editor = Self {
             owner: owner.clone(),
             owner_join: Some(join),
@@ -455,7 +464,7 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
-            performance: performance::Sampler::open(),
+            performance: performance::Sampler::new(expanded),
             export: Default::default(),
             workspace: Default::default(),
         };
@@ -479,6 +488,9 @@ impl Editor {
             .set_activity(editor.owner.activity());
         if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
+        }
+        if let Err(reason) = preferences {
+            editor.status.text = format!("Could not read Performance preference: {reason}");
         }
         editor.event(
             "startup",
@@ -550,6 +562,33 @@ impl Editor {
     /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
     /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        // An idle resource sample changes only this section. Keep the same sampling resolution,
+        // but avoid rebuilding all tool controls, masks, history and histogram for its redraw.
+        if self.evidence.is_none()
+            && !self.busy
+            && self.gesture.is_none()
+            && !self.workers_busy()
+            && !self.view_plan.dirty
+            && !self.view_plan.in_flight
+            && self.view_plan.quiet_since.is_none()
+            && self.sync.poll.idle()
+            && self.performance.cancelling.is_empty()
+            && matches!(
+                &message,
+                Message::Performance(PerformanceMessage::Tick | PerformanceMessage::Sampled { .. })
+            )
+        {
+            let task = self.dispatch(message);
+            let transition = self.performance_transition();
+            let rederive_started = Instant::now();
+            self.workspace
+                .performance
+                .refresh_sample(self.performance.expanded, &self.performance.history);
+            let mut timing = self.log.loop_timing.get();
+            timing.last_rederive_ms = rederive_started.elapsed().as_secs_f64() * 1000.0;
+            self.log.loop_timing.set(timing);
+            return Task::batch([task, transition]);
+        }
         let before = Before::of(self);
         let mut tasks = vec![self.dispatch(message)];
         tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
@@ -643,6 +682,12 @@ impl Editor {
             performance: &self.performance.history,
         };
         workspace.derive(&inputs);
+        for job in &mut workspace.performance.jobs {
+            job.cancelling = job
+                .job_id
+                .as_ref()
+                .is_some_and(|id| self.performance.cancelling.contains(id));
+        }
         self.workspace = workspace;
     }
 

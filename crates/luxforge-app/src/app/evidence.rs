@@ -424,6 +424,7 @@ pub(crate) enum Settle {
     /// The Performance section's first read since it started sampling has answered, so the frame
     /// shows its figures rather than the dashes before them.
     Performance,
+    PerformanceCancel,
     /// A capability step's round trips have answered and, unless it said otherwise, the jobs it
     /// started have finished.
     Capability,
@@ -453,6 +454,7 @@ impl Settle {
             Self::Pan => "pan",
             Self::Quiet => "quiet",
             Self::Performance => "performance",
+            Self::PerformanceCancel => "performance_cancel",
             Self::Capability => "capability",
             Self::Export => "export",
             Self::Agent => "agent",
@@ -1019,6 +1021,21 @@ impl Editor {
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
+            Step::PerformanceCancel { row } => {
+                let job = self
+                    .workspace
+                    .performance
+                    .jobs
+                    .get(row)
+                    .filter(|job| job.running && !job.cancelling)
+                    .and_then(|job| job.job_id.clone());
+                let Some(job_id) = job else {
+                    return self.fail_step("the Performance row has no enabled Cancel button");
+                };
+                self.note_step(json!({"job_id": job_id}));
+                self.await_step(Settle::PerformanceCancel);
+                self.update(Message::Performance(PerformanceMessage::Cancel(job_id)))
+            }
             Step::Wait { ms } => self.wait_step(ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
@@ -3984,6 +4001,13 @@ impl Editor {
                     evidence.recorded.activity = None;
                 }
             }
+            Outcome::PerformanceCancelled { failed } => {
+                if failed {
+                    let _ = self.fail_step(self.status.text.clone());
+                } else {
+                    self.settle_step(Settle::PerformanceCancel, by);
+                }
+            }
             Outcome::ExportPlanned(plan) => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.export_plan = Some(plan.clone());
@@ -5113,6 +5137,27 @@ mod tests {
         assert!(!editor.performance.expanded);
         assert!(evidence(&editor).capture_pending);
         assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        finish(editor, catalog);
+    }
+
+    #[test]
+    fn a_performance_cancel_step_waits_for_the_buttons_own_command_answer() {
+        let (mut editor, catalog, _, _) = scripted(r#"[{"performance_cancel":{"row":0}}]"#);
+        let job_id = luxforge_core::JobId::new();
+        editor.performance.history.push(
+            luxforge_core::resources::read(&luxforge_core::RenderContext::new()),
+            serde_json::from_value(json!({"sequence":1,"active":[{"id":1,"kind":"module.task","label":"Running task","job_id":job_id,"elapsed_ms":1600}],"recent":[],"untracked":0})).unwrap(),
+        );
+        editor.rederive();
+        let _ = editor.next_step();
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::PerformanceCancel));
+        assert!(!evidence(&editor).capture_pending);
+        let _ = editor.update(Message::Performance(PerformanceMessage::Cancelled {
+            job_id,
+            result: Ok(json!({"status":"cancelled"})),
+        }));
+        assert!(evidence(&editor).capture_pending);
+        assert_eq!(editor.status.text, "Background job cancelled");
         finish(editor, catalog);
     }
 
