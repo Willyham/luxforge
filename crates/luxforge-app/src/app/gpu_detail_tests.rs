@@ -1221,8 +1221,9 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
 // ---- The corpus at Fit ------------------------------------------------------------------------
 
 /// The qualification corpus's Detail recipes at Fit through the shared harness
-/// ([`corpus_at_fit`]), each held to the spatial limits against the frame a Detail stack's Fit
-/// settles to: the reduction of the exact render.
+/// ([`corpus_at_fit`]), each held to the spatial limits against the CPU's moving proxy the GPU
+/// frame stands in for (owner, 2026-10-02), with the jump from that proxy to the exact-derived
+/// frame a Detail stack settles to reported beside it.
 ///
 /// ```sh
 /// LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/new-dir \
