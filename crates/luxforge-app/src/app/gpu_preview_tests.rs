@@ -812,9 +812,11 @@ fn gpu_preview_the_texels_are_let_go_once_the_slot_holds_them_and_asked_again_if
     );
     let version = editor.gpu.held_version().unwrap();
     surface_ready(&mut editor);
+    // The message the surface's draw wakes the desktop with lets them go, with no tick.
     let log = attach_log(&mut editor);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     assert_eq!(texels_held(&editor), json!(false));
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
     let plan = editor.surfaces().gpu.expect("the plan is drawn");
     assert!(!plan.boundary.holds_texels(), "the resident boundary");
     assert_eq!(plan.boundary.version(), version);
