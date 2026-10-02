@@ -424,6 +424,23 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             last["state"]["surface"]["gpu"][field].as_u64(),
         ));
     }
+    // The process's memory footprint as the Performance section last read it: its lifetime peak,
+    // which catches what falls between samples, and its level then. Null where it was not read.
+    let memory = &last["state"]["performance"]["resources"]["memory"];
+    rows.push(stats::scalar(
+        "process_peak_footprint_mib",
+        "MiB",
+        memory["peak_bytes"]
+            .as_f64()
+            .map(|bytes| bytes / (1024.0 * 1024.0)),
+    ));
+    rows.push(stats::scalar(
+        "last_footprint_mib",
+        "MiB",
+        memory["bytes"]
+            .as_f64()
+            .map(|bytes| bytes / (1024.0 * 1024.0)),
+    ));
     // The GPU preview stage's own budget, charged outside the photo slots: the most it has held
     // over the run, what it holds at the last frame, and its budget.
     let preview = &last["state"]["surface"]["gpu"];
