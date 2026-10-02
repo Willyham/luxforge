@@ -665,7 +665,7 @@
         "approach": "mixed",
         "steps": [
           "Run the corpus comparison across every program; run editor-latency for each case; capture GPU memory.",
-          "Each latency report lists every frame with the path that drew it and why a CPU tick took the CPU path; GPU-preview memory high-water is each run's gpu_preview_peak_bytes row, and idle after a dissolve the idle_after_dissolve rows of an --idle drag. RAW is the X100VI's RAF. The 100% and 200% commands measure whatever path the drags take, CPU regions until 100% drags draw on the GPU.",
+          "Each latency report lists every frame with the path that drew it and why a CPU tick took the CPU path; GPU-preview memory high-water is each run's gpu_preview_peak_bytes row, and idle after a dissolve the idle_after_dissolve rows of an --idle drag. RAW is the X100VI's RAF. At 100% and 200% a drag's first tick asks for its region's boundary on the CPU path and its later ticks draw on the GPU, as at Fit.",
           "Run the Linux functional checks; update documents; run verify."
         ],
         "commands": [
