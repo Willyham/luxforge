@@ -437,6 +437,132 @@ fn a_raw_boundary_holds_its_values_as_f32() {
     }
 }
 
+/// A tight crop whose output fits the display bounds is drawn at Fit at its exact stage, and its
+/// boundary holds only the window of the source its output reads: through a straightening, a
+/// perspective warp fused with it and a crop that runs to the source's edge, the planner's
+/// window, which the worker renders after the exact Fit frame as the source's own texels there.
+#[test]
+fn an_exact_fit_boundary_holds_only_the_window_its_output_reads() {
+    let perspective = Layer::new(
+        crate::PERSPECTIVE_EFFECT,
+        json!({"horizontal": 20, "vertical": -10}),
+    );
+    let tight = |rect: [f64; 4]| Layer::crop(fitted_crop(WIDTH, HEIGHT, 7.0, rect));
+    let cases = [
+        ("straightened", vec![tight([0.4, 0.4, 0.2, 0.2])], false),
+        (
+            "perspective",
+            vec![perspective.clone(), tight([0.4, 0.4, 0.2, 0.2])],
+            false,
+        ),
+        ("at the corner", vec![tight([0.0, 0.0, 0.22, 0.22])], true),
+    ];
+    let table = decode_table();
+    let held = |value: f32| half::f16::from_f32(value).to_f32();
+    let PreviewSource::Jpeg(image) = source() else {
+        panic!("a JPEG")
+    };
+    for (name, geometry, edge) in cases {
+        let mut drafted = vec![basic(json!({"exposure": 0.3}))];
+        drafted.extend(geometry.iter().cloned());
+        let (mut job, draft) = draft_job("set-basic", geometry, drafted, 2);
+        let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+        let output = planned(&preview).geometry.output();
+        assert!(
+            output.width <= bounds().width && output.height <= bounds().height,
+            "{name}: the output fits the display"
+        );
+        let request = preview.boundary.clone().expect("a boundary");
+        assert_eq!(request.key.plan(), None, "{name}: drawn at the exact stage");
+        let window = request.window.expect("the window the crop reads");
+        assert!(
+            window.pixels() < u64::from(WIDTH * HEIGHT) / 4,
+            "{name}: a {window:?} window of the {WIDTH}x{HEIGHT} source"
+        );
+        if edge {
+            assert!(
+                window.x0 == 0 || window.y0 == 0,
+                "{name}: {window:?} reaches the source's edge"
+            );
+        }
+        job.proxy = Some(bounds());
+        job.intent = PreviewIntent::Interactive;
+        job.boundary = Some(request.clone());
+        let mut queue = PreviewQueue::default();
+        let generation = queue.request(job);
+        let exact = wait_for("the Fit frame", || queue.poll());
+        assert_eq!(
+            (exact.generation, exact.phase()),
+            (generation, PreviewPhase::Exact)
+        );
+        let boundary = wait_for("the boundary", || queue.poll());
+        let outcome = boundary.boundary().unwrap();
+        assert_eq!(outcome.key, request.key);
+        let frame = outcome.result.as_ref().unwrap();
+        assert_eq!(frame.origin, (window.x0, window.y0), "{name}");
+        assert_eq!((frame.width, frame.height), (window.width, window.height));
+        assert_eq!(
+            frame.stage,
+            Stage {
+                width: WIDTH,
+                height: HEIGHT
+            }
+        );
+        for y in 0..frame.height {
+            for x in 0..frame.width {
+                let at = (((y + window.y0) * WIDTH + x + window.x0) * 4) as usize;
+                assert_eq!(
+                    frame.texel(x, y).unwrap(),
+                    [0, 1, 2].map(|channel| held(table[usize::from(image.rgba[at + channel])])),
+                    "{name}: texel ({x}, {y})"
+                );
+            }
+        }
+    }
+}
+
+/// At the exact stage at Fit a stack the window cannot hold whole keeps the whole stage: a drag
+/// under Dehaze, whose light the GPU then takes from the stage it holds, and a stack with no crop,
+/// whose output reads every pixel.
+#[test]
+fn an_exact_fit_boundary_keeps_the_whole_stage_where_a_window_cannot_hold_it() {
+    let tight = Layer::crop(fitted_crop(WIDTH, HEIGHT, 7.0, [0.4, 0.4, 0.2, 0.2]));
+    let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
+    let small = || {
+        let PreviewSource::Jpeg(image) = source() else {
+            panic!("a JPEG")
+        };
+        // A photograph that fits the display bounds whole.
+        let window = crate::modules::Region {
+            x0: 0,
+            y0: 0,
+            width: 150,
+            height: 100,
+        };
+        PreviewSource::Jpeg(image.window(window, &crate::Cancel::never()).unwrap())
+    };
+    for (name, source, entry, drafted) in [
+        (
+            "under Dehaze",
+            source(),
+            vec![dehaze.clone(), tight.clone()],
+            vec![basic(json!({"exposure": 0.3})), dehaze, tight],
+        ),
+        (
+            "no crop",
+            small(),
+            Vec::new(),
+            vec![basic(json!({"exposure": 0.3}))],
+        ),
+    ] {
+        let (job, draft) = draft_job_over(source, "set-basic", entry, drafted, 2);
+        let preview = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+        let request = preview.boundary.expect("a boundary");
+        assert_eq!(request.key.plan(), None, "{name}: drawn at the exact stage");
+        assert_eq!(request.window, None, "{name}: the whole stage");
+    }
+}
+
 /// The plans warmed for a committed stack hold the program sequence every first drag of a colour
 /// or finish module draws, each once: a Basic drag on a stack without Basic draws exactly a warmed
 /// sequence.

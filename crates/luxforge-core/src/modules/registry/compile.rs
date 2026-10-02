@@ -549,8 +549,7 @@ impl ModuleRegistry {
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && entry.fuse(step, output)?
                     {
-                        segment.width = output.width;
-                        segment.height = output.height;
+                        segment.fused(output);
                         continue;
                     }
                     let map = Mapping::Warp(std::sync::Arc::new(
@@ -574,8 +573,7 @@ impl ModuleRegistry {
                         && let Some(entry) = segment.entry.as_mut()
                         && entry.fuse(WarpStep::Affine(*matrix), output)?
                     {
-                        segment.width = output.width;
-                        segment.height = output.height;
+                        segment.fused(output);
                         continue;
                     }
                     segments.push(Segment::new(
