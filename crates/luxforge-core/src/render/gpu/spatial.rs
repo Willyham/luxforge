@@ -42,6 +42,14 @@ use crate::Error;
 /// How many inputs one pass may read: planes `0..4` of `lf_plane`.
 pub const GPU_PASS_INPUTS: usize = 4;
 
+/// The most planes the applies of a plan's chained spatial operations may read. A pass binds its
+/// own inputs, at most [`GPU_PASS_INPUTS`], and the planes of every apply its input runs through,
+/// beside the boundary, within the 16 sampled textures a shader stage has on every adapter the
+/// surface runs spatial steps on: `16 - 1 - 4`. Detail's three apply planes and Presence's four
+/// fit, with a second Presence, through a mask, beside them; a stack past it names
+/// `spatial-chain`.
+pub const GPU_CHAIN_APPLY_PLANES: usize = 11;
+
 /// The lanes of a [`GpuPassShape::Workgroup`] pass, and how many values `lf_shared` holds.
 pub const GPU_WORKGROUP_LANES: u32 = 256;
 pub const GPU_SHARED_VALUES: u32 = 1024;
@@ -181,6 +189,10 @@ pub struct GpuSpatial {
     /// A global estimate is computed on the GPU from the stage it holds instead of read from the
     /// estimate store, so the frame is labelled approximate, as the CPU proxy is.
     pub estimated: bool,
+    /// The colour operations of its segment, which run on its output before the next spatial
+    /// operation of the plan enters: empty for the last, whose segment's colour operations are the
+    /// plan's output operations.
+    pub after: Vec<super::GpuOperation>,
 }
 
 impl GpuSpatial {
@@ -222,6 +234,7 @@ pub(crate) fn compose(
         clamps,
         mask,
         estimated: false,
+        after: Vec::new(),
     };
     // Scratch planes the units before this one wrote, free for this one.
     let mut free: Vec<usize> = Vec::new();

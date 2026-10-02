@@ -171,7 +171,7 @@ fn pipelines(plan: &GpuPlan) -> Vec<String> {
         .flat_map(|operation| operation.units.iter())
         .map(|unit| unit.program.entry.to_owned())
         .collect();
-    if let Some(spatial) = &plan.spatial {
+    for spatial in &plan.spatial {
         keys.push(format!(
             "{}: clamps {}, masked {}",
             spatial.program.entry,
@@ -777,7 +777,7 @@ fn the_warmed_plans_hold_a_spatial_layers_drags() {
         // The plans that start at the layer itself; the colour candidates before it hold it too.
         let own: Vec<&GpuPlan> = plans
             .iter()
-            .filter(|plan| plan.spatial.is_some() && plan.content.is_empty())
+            .filter(|plan| !plan.spatial.is_empty() && plan.content.is_empty())
             .collect();
         assert_eq!(
             own.len(),
@@ -937,7 +937,7 @@ fn at_a_percentage_zoom_a_spatial_drag_keeps_the_cpus_shape() {
     let (job, draft) = draft_job("set-presence", entry, dragged, 1);
     let applies = |view| {
         let preview = plan_preview(&job.evaluation, &draft, view).unwrap();
-        planned(&preview).spatial.as_ref().unwrap().applies.len()
+        planned(&preview).spatial.first().unwrap().applies.len()
     };
     assert_eq!(
         applies(crate::GpuView::Fit(bounds())),

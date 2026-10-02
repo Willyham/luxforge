@@ -1089,7 +1089,7 @@ fn gpu_detail_on_the_byte_path_meets_the_spatial_limits() {
             )
             .unwrap(),
         );
-        assert!(plan.spatial.as_ref().unwrap().clamps);
+        assert!(plan.spatial.first().unwrap().clamps);
         let converted = surface_plan(&plan, boundary(width, height, 1, &texels).unwrap()).unwrap();
         let gpu = qualifier.evaluate(&converted).unwrap();
         let reference: Vec<u8> = cpu
@@ -1137,8 +1137,9 @@ fn gpu_detail_pass_pipelines_are_shared() {
         );
         let passes = plan
             .spatial
-            .as_ref()
-            .map_or(0, |spatial| spatial.passes.len());
+            .iter()
+            .map(|spatial| spatial.passes.len())
+            .sum::<usize>();
         (
             surface_plan(&plan, boundary(width, height, 1, &pixels).unwrap()).unwrap(),
             passes,
@@ -1198,7 +1199,7 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
         );
         let planes = plan
             .spatial
-            .as_ref()
+            .first()
             .unwrap()
             .plane_bytes((0, 0), (width, height));
         let pixels = vec![[0.25_f32; 3]; (width * height) as usize];

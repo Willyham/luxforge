@@ -200,8 +200,11 @@ fn steps_drawing(
     for operation in &plan.content {
         operation_steps(operation, &mut steps)?;
     }
-    if let Some(spatial) = &plan.spatial {
+    for spatial in &plan.spatial {
         steps.push(spatial_step(spatial)?);
+        for operation in &spatial.after {
+            operation_steps(operation, &mut steps)?;
+        }
     }
     geometry_steps(plan, &mut steps, grid, output)?;
     Ok(steps)
