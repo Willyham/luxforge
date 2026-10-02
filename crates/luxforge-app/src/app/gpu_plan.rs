@@ -12,6 +12,7 @@
 //!
 //! - [`boundary_map`]: the held boundary against the plan's boundary stage;
 //! - [`operation_steps`]: each content operation's units, and a masked one's coverage;
+//! - [`spatial_step`]: the spatial operation the content enters, its planes, passes and applies;
 //! - [`geometry_steps`]: the geometry tail, through its affine matrix or a warp's coordinate grid,
 //!   and after it the output operations, at the output pixel;
 //!
@@ -21,12 +22,13 @@
 //! Every pass the surface draws ends in the CPU's output encoding, whose tables are the core's:
 //! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
-    ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuMask, GpuOperation, GpuPosition,
-    Stage,
+    ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuMask, GpuOperation,
+    GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Stage,
 };
 use luxforge_ui::photo_surface::{
     Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuStep, GpuTail,
     MaskedColour, PositionMap, TexelMap,
+    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -83,7 +85,7 @@ pub(crate) fn surface_plan(
 
 /// `plan` as the surface's plain data over `boundary`, whose first texel is at `origin` of the
 /// plan's boundary stage: the boundary's texel map, then the steps of every content operation in
-/// recipe order, then the geometry tail's. A windowed proxy's boundary holds the window of the
+/// recipe order, the spatial operation's, then the geometry tail's. A windowed proxy's boundary holds the window of the
 /// stage its output reads, at that window's origin. A boundary inside a colour run
 /// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
 /// [`GpuBoundary`] do. A warp's tail is drawn through `grid`, the coordinate grid the boundary's
@@ -122,6 +124,9 @@ pub(crate) fn steps_with(
         Vec::with_capacity(plan.operations().map(|op| op.units.len()).sum::<usize>() + 1);
     for operation in &plan.content {
         operation_steps(operation, &mut steps)?;
+    }
+    if let Some(spatial) = &plan.spatial {
+        steps.push(spatial_step(spatial)?);
     }
     geometry_steps(plan, &mut steps, grid)?;
     Ok(steps)
@@ -178,6 +183,69 @@ pub(crate) fn operation_steps(
         })),
     }
     Ok(())
+}
+
+/// The spatial operation as the surface's spatial step: the core's static program text, borrowed,
+/// with the operation's words, its planes, passes and applies as they are, and a masked
+/// operation's coverage, which the step blends its output by against its input.
+pub(crate) fn spatial_step(spatial: &GpuSpatial) -> Result<GpuStep, Unrunnable> {
+    let mask = match &spatial.mask {
+        None => None,
+        Some(mask) => Some(coverage(mask).ok_or(Unrunnable::Position {
+            layer: spatial.layer,
+        })?),
+    };
+    let index = |value: usize| u32::try_from(value).expect("a plane, word or apply index");
+    Ok(GpuStep::Spatial(Box::new(gpu_preview::GpuSpatial {
+        program: GpuProgram {
+            entry: Cow::Borrowed(spatial.program.entry),
+            source: Cow::Borrowed(spatial.program.source),
+            words: spatial.words.clone(),
+            block: Arc::from([]),
+        },
+        planes: spatial
+            .planes
+            .iter()
+            .map(|plane| gpu_preview::GpuPlane {
+                format: match plane.format {
+                    GpuPlaneFormat::Colour => PlaneFormat::Colour,
+                    GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
+                    GpuPlaneFormat::Pair => PlaneFormat::Pair,
+                    GpuPlaneFormat::Quad => PlaneFormat::Quad,
+                },
+                size: match plane.size {
+                    GpuPlaneSize::Reduced(s) => PlaneSize::Reduced(s),
+                    GpuPlaneSize::Fixed { width, height } => PlaneSize::Fixed { width, height },
+                },
+            })
+            .collect(),
+        passes: spatial
+            .passes
+            .iter()
+            .map(|pass| gpu_preview::GpuPass {
+                kernel: Cow::Borrowed(pass.kernel),
+                inputs: pass.inputs.iter().map(|&plane| index(plane)).collect(),
+                output: index(pass.output),
+                words: index(pass.words),
+                source: index(pass.source),
+                shape: match pass.shape {
+                    GpuPassShape::Texels { span } => PassShape::Texels { span },
+                    GpuPassShape::Workgroup => PassShape::Workgroup,
+                },
+            })
+            .collect(),
+        applies: spatial
+            .applies
+            .iter()
+            .map(|apply| gpu_preview::GpuApply {
+                function: Cow::Borrowed(apply.function),
+                planes: apply.planes.iter().map(|&plane| index(plane)).collect(),
+                words: index(apply.words),
+            })
+            .collect(),
+        clamps: spatial.clamps,
+        mask,
+    })))
 }
 
 /// The core's mask as the surface's coverage: its position map, its bounds as the half-open

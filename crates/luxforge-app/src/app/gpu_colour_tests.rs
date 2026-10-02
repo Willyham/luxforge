@@ -40,13 +40,12 @@ fn gpu_colour_every_shipped_program_passes_the_surfaces_own_convention() {
     assert!(!GPU_PROGRAMS.is_empty());
     let mut entries = std::collections::HashSet::new();
     for shipped in GPU_PROGRAMS {
-        assert_eq!(
-            shipped.kind,
-            GpuProgramKind::Colour,
-            "{}: the surface runs colour steps only so far",
-            shipped.entry
-        );
         assert!(entries.insert(shipped.entry), "{} twice", shipped.entry);
+        // A spatial program's step is its planes and passes too; `gpu_presence` checks it.
+        if shipped.kind == GpuProgramKind::Spatial {
+            continue;
+        }
+        assert_eq!(shipped.kind, GpuProgramKind::Colour, "{}", shipped.entry);
         let step = GpuStep::colour(GpuProgram::new(shipped.entry, shipped.source));
         if let Err(error) = validate_step(&step) {
             panic!(
@@ -166,6 +165,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
             GpuStep::Masked(_) | GpuStep::Geometry(_) => {
                 panic!("an unmasked stack with no tail converts to colour steps")
             }
+            GpuStep::Spatial(_) => panic!("a colour stack has no spatial step"),
         })
         .collect();
     assert_eq!(

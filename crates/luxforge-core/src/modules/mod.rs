@@ -37,6 +37,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
+    &presence::PRESENCE_PROGRAM,
 ];
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
@@ -90,6 +91,10 @@ pub use pixel::PIXEL_EFFECT;
 pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
+#[cfg(test)]
+pub(crate) use presence::gpu_functions as presence_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use presence::qualification as presence_qualification;
 #[cfg(test)]
 pub(crate) use presets::APPLY_PRESET;
 pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};

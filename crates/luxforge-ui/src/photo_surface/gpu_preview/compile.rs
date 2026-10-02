@@ -6,7 +6,8 @@
 //! backend translates it and the driver builds the pipeline), so it never runs on the UI thread:
 //!
 //! - **A first-seen sequence** is handed to one compile thread, which holds a clone of the device
-//!   and the pipeline layout, and the frame that asked draws the CPU frame and names why
+//!   and the stage's shared support — its layouts and the spatial passes' cache — and compiles
+//!   through the stage's one `compile`. The frame that asked draws the CPU frame and names why
 //!   ([`GpuFallback::Compiling`]). When the compile ends the thread wakes the surface, and the
 //!   next `prepare` finds the pipeline ready, or failed, and keeps it so.
 //! - **Warming.** The desktop names the sequences a gesture is likely to need when the stack
@@ -20,7 +21,7 @@
 //! belong to the device, not to a thread, and the UI thread pushes none of its own, so the stack
 //! stays balanced; an error the UI thread raised while a compile's scope is open would be counted
 //! as that compile's failure, which takes the CPU path for that sequence and nothing worse.
-use super::{Figures, GpuFallback, GpuStep, OUTPUT_FORMAT, StepKind, compile};
+use super::{Compiled, Figures, GpuFallback, GpuStep, OUTPUT_FORMAT, StepKind, Support, compile};
 use crate::photo_surface::wake_surface;
 use std::{
     sync::{
@@ -95,7 +96,7 @@ enum State {
     /// On the compile thread.
     Compiling,
     /// One pipeline per pass.
-    Ready(Vec<wgpu::RenderPipeline>),
+    Ready(Compiled),
     /// Refused, with why: kept, so it is not compiled again every frame. The reason is read by the
     /// tests that name each failure.
     Failed(#[cfg_attr(not(test), allow(dead_code))] Arc<str>),
@@ -112,7 +113,7 @@ struct Entry {
 /// One finished compile, from the thread.
 struct Done {
     id: u64,
-    result: Result<Vec<wgpu::RenderPipeline>, String>,
+    result: Result<Compiled, String>,
     elapsed: Duration,
 }
 
@@ -124,19 +125,20 @@ struct Worker {
 }
 
 impl Worker {
-    /// The thread, with a clone of `device` and of the stage's pipeline `layout`. It sleeps on its
+    /// The thread, with a clone of `device` and the stage's shared [`Support`]: its layouts and
+    /// the spatial passes' cache, which the one `compile` reads and fills. It sleeps on its
     /// channel while nothing is asked, and ends when the pipeline that owns it is dropped.
-    fn spawn(device: &wgpu::Device, layout: &wgpu::PipelineLayout) -> Self {
+    fn spawn(device: &wgpu::Device, support: &Arc<Support>) -> Self {
         let (jobs, requests) = channel::<(u64, Vec<GpuStep>)>();
         let (finished, done) = channel();
         let device = device.clone();
-        let layout = layout.clone();
+        let support = Arc::clone(support);
         std::thread::Builder::new()
             .name("luxforge-gpu-compile".into())
             .spawn(move || {
                 while let Ok((id, steps)) = requests.recv() {
                     let started = Instant::now();
-                    let result = compile(&device, &layout, &steps, OUTPUT_FORMAT);
+                    let result = compile(&device, &support, &steps, OUTPUT_FORMAT);
                     let done = Done {
                         id,
                         result,
@@ -171,10 +173,10 @@ impl Pipelines {
     pub(super) fn get(
         &mut self,
         device: &wgpu::Device,
-        layout: &wgpu::PipelineLayout,
+        support: &Arc<Support>,
         steps: &[GpuStep],
         figures: &Figures,
-    ) -> Result<(Vec<wgpu::RenderPipeline>, u64), GpuFallback> {
+    ) -> Result<(Compiled, u64), GpuFallback> {
         self.collect(figures);
         self.clock += 1;
         let clock = self.clock;
@@ -190,7 +192,7 @@ impl Pipelines {
                 State::Compiling => Err(GpuFallback::Compiling),
             };
         }
-        self.request(device, layout, steps, figures);
+        self.request(device, support, steps, figures);
         Err(GpuFallback::Compiling)
     }
 
@@ -199,7 +201,7 @@ impl Pipelines {
     pub(super) fn warm(
         &mut self,
         device: &wgpu::Device,
-        layout: &wgpu::PipelineLayout,
+        support: &Arc<Support>,
         sequences: &[Vec<GpuStep>],
         figures: &Figures,
     ) {
@@ -214,7 +216,7 @@ impl Pipelines {
                 continue;
             }
             self.clock += 1;
-            if !self.request(device, layout, steps, figures) {
+            if !self.request(device, support, steps, figures) {
                 break;
             }
         }
@@ -225,7 +227,7 @@ impl Pipelines {
     fn request(
         &mut self,
         device: &wgpu::Device,
-        layout: &wgpu::PipelineLayout,
+        support: &Arc<Support>,
         steps: &[GpuStep],
         figures: &Figures,
     ) -> bool {
@@ -244,7 +246,7 @@ impl Pipelines {
         }
         let worker = self
             .worker
-            .get_or_insert_with(|| Worker::spawn(device, layout));
+            .get_or_insert_with(|| Worker::spawn(device, support));
         let id = self.clock;
         if worker.jobs.send((id, steps.to_vec())).is_err() {
             return false;

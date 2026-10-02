@@ -4,7 +4,7 @@
 //! the GPU frame of the same plan through the photo surface's own shader, and judges each pair by
 //! its recipe's class. [`corpus_at_fit`] takes the families to run, so a test of any program class
 //! runs the same corpus with its own.
-use super::gpu_plan::surface_plan;
+use super::gpu_plan::surface_plan_at;
 use luxforge_core::{CompileStage, GpuAnswer, GpuPlanRequest, Layer, Processing, Stage, gpu_plan};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
@@ -132,7 +132,6 @@ pub(crate) fn fit_bounds() -> luxforge_core::ProxyBounds {
 pub(crate) struct CorpusSource {
     pub(crate) id: String,
     pub(crate) path: std::path::PathBuf,
-    pub(crate) raw: bool,
 }
 
 /// The corpus's sources this host has: the generated JPEGs under `generated`, and the RAWs the
@@ -162,11 +161,7 @@ pub(crate) fn corpus_sources(
             _ => None,
         };
         match path.filter(|path| path.is_file()) {
-            Some(path) => found.push(CorpusSource {
-                raw: source["kind"] == "raw",
-                id,
-                path,
-            }),
+            Some(path) => found.push(CorpusSource { id, path }),
             None => eprintln!("gap: {id} has no file on this host"),
         }
     }
@@ -185,6 +180,8 @@ pub(crate) enum Cell {
         /// the hardware encoder's rounding out.
         program: Statistics,
         passed: bool,
+        /// What the photo surface's slot drawing the plan charges the GPU-preview budget.
+        charged: u64,
     },
     Gap(String),
 }
@@ -343,16 +340,11 @@ pub(crate) fn corpus_cell(
             PhaseOutcome::Boundary(_) => return Ok(Cell::Gap("a boundary for a Fit frame".into())),
         };
         let (width, height) = proxied.dimensions();
-        if (cpu.width, cpu.height) != (width, height) {
-            return Ok(Cell::Gap(format!(
-                "the frame is {}x{}, not its source's {width}x{height}",
-                cpu.width, cpu.height
-            )));
-        }
         // The boundary: the input of the first layer that processes pixels (restoration, colour,
         // spatial or finish), which is the source the frame was rendered from when every layer
-        // before it compiles to the identity there, as a RAW development and a reset lens profile
-        // do.
+        // before it compiles to the identity there, as a RAW development does. A geometry layer
+        // before it is part of the plan's geometry tail, which the CPU runs after the content
+        // operations, so it does not change the boundary.
         let stage_of = |layer: &Layer| registry.effect(&layer.effect_id).map(|(_, e)| e.stage);
         let boundary_layer = recipe
             .layers
@@ -370,6 +362,9 @@ pub(crate) fn corpus_cell(
             })
             .ok_or("no layer that processes pixels")?;
         for layer in &recipe.layers[..boundary_layer] {
+            if stage_of(layer) == Some(EffectStage::Geometry) {
+                continue;
+            }
             let (module, _) = registry
                 .effect(&layer.effect_id)
                 .ok_or("an unknown effect")?;
@@ -419,6 +414,11 @@ pub(crate) fn corpus_cell(
             GpuPlanRequest::exact(boundary_layer, stage(width, height))
         }
         .qualifying();
+        // A RAW photograph's frames are the linear path's, which clamps no stage boundary.
+        let request = match &proxied {
+            PreviewSource::Raw { .. } => request.linear(),
+            PreviewSource::Jpeg(_) => request,
+        };
         let plan = match gpu_plan(&registry, &recipe, request).map_err(|e| e.to_string())? {
             GpuAnswer::Plan(plan) => *plan,
             GpuAnswer::Fallback(reason) => {
@@ -426,7 +426,32 @@ pub(crate) fn corpus_cell(
             }
         };
         let held = boundary(width, height, 1, &texels).ok_or("a boundary")?;
-        let converted = match surface_plan(&plan, held) {
+        // The frame is the plan's output stage: the boundary's, or its geometry tail's.
+        let output_stage = plan.geometry.output();
+        let (out_width, out_height) = (output_stage.width, output_stage.height);
+        if (cpu.width, cpu.height) != (out_width, out_height) {
+            return Ok(Cell::Gap(format!(
+                "the frame is {}x{}, not the plan's output {out_width}x{out_height}",
+                cpu.width, cpu.height
+            )));
+        }
+        // A warp's coordinate grid over the whole output stage, as the boundary's job computes it.
+        let grid = match plan.geometry.affine() {
+            Some(_) => None,
+            None => plan
+                .geometry
+                .grid(
+                    luxforge_core::Region {
+                        x0: 0,
+                        y0: 0,
+                        width: out_width,
+                        height: out_height,
+                    },
+                    1.0,
+                )
+                .map_err(|error| error.to_string())?,
+        };
+        let converted = match surface_plan_at(&plan, held, (0, 0), grid.as_ref()) {
             Ok(converted) => converted,
             Err(reason) => {
                 return Ok(Cell::Gap(format!(
@@ -445,6 +470,9 @@ pub(crate) fn corpus_cell(
                 "the mask selects nothing on this source".to_owned(),
             ));
         }
+        let charged = qualifier
+            .charged_bytes(&converted)
+            .map_err(|reason| format!("{reason:?}"))?;
         let drawn = qualifier.evaluate_codes(&converted)?;
         let gpu: Vec<u8> = drawn
             .iter()
@@ -461,6 +489,7 @@ pub(crate) fn corpus_cell(
             .chunks_exact(4)
             .flat_map(|pixel| [pixel[0], pixel[1], pixel[2]])
             .collect();
+        let (width, height) = (out_width, out_height);
         for (suffix, bytes) in [("gpu", &gpu), ("cpu", &reference)] {
             image::RgbImage::from_raw(width, height, bytes.clone())
                 .ok_or("a whole frame")?
@@ -478,6 +507,7 @@ pub(crate) fn corpus_cell(
             passed: preview_error::verdict(&statistics, class).passed(),
             statistics,
             program,
+            charged,
         })
     })();
     finish(owner, join);
@@ -531,9 +561,9 @@ pub(crate) fn headless(test: &str) -> Option<Qualifier> {
 /// frame the preview worker renders and the GPU frame of the same plan over the same source the
 /// worker rendered from, written as `<recipe>--<source>-{cpu,gpu}.png` with the commands that run
 /// `cargo xtask preview-error --class CLASS` over each pair, each recipe held to its own class's
-/// limits. A RAW photograph's first open commits its lens profile, a geometry tail the photo
-/// surface does not draw yet; each RAW cell is measured again with that profile reset, which the
-/// cell's name says. A cell the surface cannot run yet is a gap with its reason, never a pass.
+/// limits. A RAW photograph's first open commits its lens profile, whose warp the geometry tail
+/// draws through its coordinate grid. A cell the surface cannot run yet is a gap with its reason,
+/// never a pass.
 ///
 /// Reads `LUXFORGE_GPU_CORPUS_OUTPUT` (a new directory), `LUXFORGE_GENERATED_FIXTURES` (the
 /// generated JPEGs, `fixtures/generated` by default) and, for the RAWs, `LUXFORGE_RAW_MANIFEST`.
@@ -568,7 +598,6 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
         qualifier.adapter(),
         fit_bounds()
     );
-    let reset_lens = json!({"api": {"method": "edit.reset-lens-profile", "params": {}}});
     let (mut cells, mut commands, mut missed) = (Vec::new(), Vec::new(), Vec::new());
     for recipe in corpus["recipes"].as_array().expect("recipes") {
         let family = recipe["family"].as_str().unwrap_or_default();
@@ -587,14 +616,8 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
             {
                 continue;
             }
-            let mut variants = vec![(String::new(), steps.clone())];
-            if source.raw {
-                let mut reset = vec![reset_lens.clone()];
-                reset.extend(steps.iter().cloned());
-                variants.push(("--lens-reset".to_owned(), reset));
-            }
-            for (suffix, steps) in variants {
-                let name = format!("{}--{}{suffix}", recipe["id"].as_str().unwrap(), source.id);
+            {
+                let name = format!("{}--{}", recipe["id"].as_str().unwrap(), source.id);
                 let cell = corpus_cell(&qualifier, source, &steps, &output, &name, class)
                     .unwrap_or_else(|error| Cell::Gap(format!("failed: {error}")));
                 match &cell {
@@ -604,9 +627,10 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                         statistics,
                         program,
                         passed,
+                        charged,
                     } => {
                         eprintln!(
-                            "{name} at {}x{}{}: drawn {} | program {}{}",
+                            "{name} at {}x{}{}: drawn {} | program {} | charged {charged} B{}",
                             proxy.0,
                             proxy.1,
                             if *is_proxy { "" } else { " (exact)" },
@@ -636,7 +660,7 @@ pub(crate) fn corpus_at_fit(test: &str, families: &[&str]) {
                             "cell": name, "class": class.name(),
                             "stage": [proxy.0, proxy.1], "proxy": is_proxy,
                             "drawn": stats(statistics), "program": stats(program),
-                            "passed": passed
+                            "passed": passed, "charged_bytes": charged
                         }));
                     }
                     Cell::Gap(reason) => {

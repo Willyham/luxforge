@@ -129,6 +129,9 @@ pub(super) enum Role {
     Colour,
     /// `fn(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
     Coverage,
+    /// A spatial program's kernels and applies, which its step checks
+    /// ([`super::spatial::validate_spatial`]).
+    Spatial,
 }
 
 impl MaskedColour {
