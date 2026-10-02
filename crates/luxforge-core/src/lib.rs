@@ -112,6 +112,7 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 /// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
 #[cfg(feature = "qualification")]
 pub mod qualification {
+    pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
 }
 
