@@ -162,7 +162,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
         .iter()
         .map(|step| match step {
             GpuStep::Colour { program, .. } => program.entry.as_ref(),
-            GpuStep::Masked(_) | GpuStep::Geometry(_) => {
+            GpuStep::Masked(_) | GpuStep::Geometry(_) | GpuStep::Clipping(_) => {
                 panic!("an unmasked stack with no tail converts to colour steps")
             }
             GpuStep::Spatial(_) => panic!("a colour stack has no spatial step"),
