@@ -443,7 +443,7 @@ fn cpu_frame() -> Frame {
 }
 
 /// Surface `surface`'s photograph, drawn over the whole 64 × 64 target, with `plan` when given.
-fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimitive {
+pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimitive {
     PhotoPrimitive {
         surface,
         layers: vec![(Layer::Photo, cpu_frame())],
