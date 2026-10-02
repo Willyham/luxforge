@@ -924,15 +924,11 @@ fn curve_view_steps(field: &FieldTarget, source: SourceTag, masking: bool) -> Ve
         None => Vec::new(),
         Some(CurveOwner::Proof) => {
             // The latency source is JPEG; the RAW section is absent from its tools model entirely.
-            let mut steps: Vec<script::Step> = [
-                "luxforge.basic",
-                "luxforge.pixel",
-                "luxforge.transform",
-                "luxforge.crop",
-            ]
-            .into_iter()
-            .map(|module| script::Step::section(module, false))
-            .collect();
+            let mut steps: Vec<script::Step> =
+                ["luxforge.basic", "luxforge.pixel", "luxforge.crop"]
+                    .into_iter()
+                    .map(|module| script::Step::section(module, false))
+                    .collect();
             steps.push(script::Step::section(CONTROLS_MODULE, true));
             steps.push(script::Step::tools_scroll(1.0));
             steps
@@ -3742,7 +3738,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         },
         "view_setup":match &field.curve {
             Some(CurveOwner::Proof) => json!({"developer":true,"proof_section":CONTROLS_MODULE,
-                "collapsed":["luxforge.basic","luxforge.pixel","luxforge.transform","luxforge.crop"],
+                "collapsed":["luxforge.basic","luxforge.pixel","luxforge.crop"],
                 "raw_section":"absent for the JPEG latency source",
                 "tools_scroll":1.0}),
             Some(CurveOwner::Module(module)) => json!({"developer":false,"section":module,
@@ -5270,13 +5266,8 @@ mod tests {
             json!({"aspect":"16:9","angle":8.0}),
         )];
         expected.extend(
-            [
-                "luxforge.basic",
-                "luxforge.pixel",
-                "luxforge.transform",
-                "luxforge.crop",
-            ]
-            .map(|module| script::Step::section(module, false)),
+            ["luxforge.basic", "luxforge.pixel", "luxforge.crop"]
+                .map(|module| script::Step::section(module, false)),
         );
         expected.push(script::Step::section(CONTROLS_MODULE, true));
         expected.push(script::Step::tools_scroll(1.0));
@@ -5948,7 +5939,7 @@ mod tests {
             assert_eq!(f64::from(fraction as f32), *expected);
         }
         let setup = curve_view_steps(&field, SourceTag::Jpeg, false);
-        assert_eq!(setup.len(), 6);
+        assert_eq!(setup.len(), 5);
         assert_eq!(setup.last().unwrap(), &script::Step::tools_scroll(1.0));
         let burst = burst_step(&values, Control::Curve, &field).to_value();
         assert_eq!(burst["curve"]["points"].as_array().unwrap().len(), 31);

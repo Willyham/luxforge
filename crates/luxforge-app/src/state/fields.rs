@@ -977,7 +977,7 @@ mod tests {
             .flat_map(|module| module.actions.iter())
             .flat_map(|action| action.parameters.iter())
             .find(|parameter| matches!(parameter.kind, ParameterKind::Enum { .. }))
-            .expect("the transform module declares an enum");
+            .expect("the crop module declares an enum");
         let ParameterKind::Enum { options } = &choice.kind else {
             unreachable!("filtered above")
         };
@@ -1069,12 +1069,12 @@ mod tests {
             Ok(Map::new()),
             "the pixel action is not a patch, so its fields all travel together"
         );
-        // The transform module's controls are action buttons rather than fields, which is the
+        // The crop module's controls are action buttons rather than fields, which is the
         // shape this submit rule is about; Basic's are sliders of a patch action.
         let choice = modules
             .iter()
-            .find(|module| module.id == "luxforge.transform")
-            .expect("the transform module");
+            .find(|module| module.id == "luxforge.crop")
+            .expect("the crop module");
         let Some(Control::Group(group)) = choice.controls.first() else {
             unreachable!("transform controls are grouped")
         };
