@@ -103,6 +103,25 @@ fn draft_job_in(
     drafted: Vec<Layer>,
     revision: u64,
 ) -> (PreviewJob, Draft) {
+    draft_job_of(
+        context,
+        source,
+        action,
+        recipe(entry),
+        recipe(drafted),
+        revision,
+    )
+}
+
+/// [`draft_job_in`] over whole recipes, masks and all.
+fn draft_job_of(
+    context: RenderContext,
+    source: PreviewSource,
+    action: &str,
+    entry: Recipe,
+    drafted: Recipe,
+    revision: u64,
+) -> (PreviewJob, Draft) {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),
@@ -119,7 +138,7 @@ fn draft_job_in(
         snapshot: Snapshot {
             id: SnapshotId::new(),
             asset_id: asset.clone(),
-            recipe: recipe(entry),
+            recipe: entry,
         },
         undo_parent: None,
         restore_target: None,
@@ -131,7 +150,7 @@ fn draft_job_in(
         context,
         source,
         entry,
-        recipe(drafted),
+        drafted,
         Some(DraftStamp {
             draft_id: draft.draft_id.clone(),
             draft_revision: revision,
@@ -425,13 +444,11 @@ fn a_raw_boundary_holds_its_values_as_f32() {
 fn the_warmed_plans_hold_every_first_drags_sequence() {
     let crop = crop();
     let (job, _) = draft_job("set-basic", vec![crop.clone()], vec![crop.clone()], 0);
-    let warmed: Vec<Vec<&'static str>> = crate::render::gpu::plan_warm(&job.evaluation, bounds())
-        .unwrap()
-        .iter()
-        .map(sequence)
-        .collect();
-    for (index, one) in warmed.iter().enumerate() {
-        assert!(!warmed[..index].contains(one), "each sequence once");
+    let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+    let warmed: Vec<Vec<&'static str>> = plans.iter().map(sequence).collect();
+    let keys: Vec<Vec<String>> = plans.iter().map(pipelines).collect();
+    for (index, one) in keys.iter().enumerate() {
+        assert!(!keys[..index].contains(one), "each sequence once");
     }
     let (job, draft) = draft_job(
         "set-basic",
@@ -455,6 +472,55 @@ fn the_warmed_plans_hold_every_first_drags_sequence() {
             "{entry} is warmed"
         );
     }
+}
+
+/// The warm list keys a plan as the surface keys its sequence, masks included: a Presence drag
+/// through a mask runs the programs of the same drag unmasked but compiles to another sequence, so
+/// a list holding both keeps both; and a Presence layer through a mask is warmed with its mask.
+#[test]
+fn the_warmed_plans_tell_a_masked_layer_from_an_unmasked_one() {
+    let mut mask = crate::Mask::new("Mask 1");
+    mask.components.push(crate::Component::new(
+        "Radial 1",
+        crate::ComponentMode::Add,
+        "radial",
+        json!({"x": 0.45, "y": 0.55, "radius_x": 0.3, "radius_y": 0.22, "angle": 18.0,
+               "feather": 45.0}),
+    ));
+    let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 20}));
+    let stack = |masked: bool| Recipe {
+        masks: vec![mask.clone()],
+        ..recipe(vec![Layer {
+            mask: masked.then(|| mask.id.clone()),
+            ..presence.clone()
+        }])
+    };
+    let warm = |masked: bool| {
+        let (job, _) = draft_job_of(
+            RenderContext::new(),
+            source(),
+            "set-presence",
+            stack(masked),
+            stack(masked),
+            0,
+        );
+        let plans = crate::render::gpu::plan_warm(&job.evaluation, bounds()).unwrap();
+        plans
+            .into_iter()
+            .find(|plan| plan.content.is_empty() && !plan.spatial.is_empty())
+            .expect("the Presence layer's drag")
+    };
+    let (unmasked, masked) = (warm(false), warm(true));
+    assert!(
+        masked.spatial.first().unwrap().mask.is_some(),
+        "warmed with its mask"
+    );
+    assert_eq!(sequence(&masked), sequence(&unmasked), "the same programs");
+    assert_ne!(
+        crate::render::gpu::warm_sequence(&masked),
+        crate::render::gpu::warm_sequence(&unmasked),
+        "two sequences"
+    );
 }
 
 /// A job whose Fit frame is drawn at another stage than its boundary names still answers the
@@ -914,11 +980,12 @@ fn a_spatial_drag_across_zero_keeps_one_program_sequence_and_one_boundary() {
     }
 }
 
-/// At a percentage zoom a restoration or spatial layer's drag is planned in the CPU's shape, the
-/// units its values need, since over the visible region at full scale its slot is what the budget
-/// binds; at Fit the same drag holds every unit. A colour layer keeps its GPU shape at any view.
+/// At a percentage zoom a restoration or spatial layer's drag is planned in its GPU shape, with
+/// the plan of its CPU shape beside it, from the same boundary, for the desktop to draw when only
+/// that one fits the budget; the CPU shape holds less. A layer every unit of which is moved has
+/// no smaller shape, and at Fit there is no choice to make.
 #[test]
-fn at_a_percentage_zoom_a_spatial_drag_keeps_the_cpus_shape() {
+fn at_a_percentage_zoom_a_spatial_drag_carries_its_cpu_shape_too() {
     let region = crate::GpuView::Region {
         rect: crate::modules::Region {
             x0: 40,
@@ -929,34 +996,45 @@ fn at_a_percentage_zoom_a_spatial_drag_keeps_the_cpus_shape() {
         magnification: 1.0,
     };
     let presence = Layer::new(crate::PRESENCE_EFFECT, json!({"texture": 10}));
-    let entry = vec![presence.clone()];
-    let dragged = vec![Layer {
-        payload: json!({"texture": 10, "clarity": 20}),
-        ..presence
-    }];
-    let (job, draft) = draft_job("set-presence", entry, dragged, 1);
-    let applies = |view| {
-        let preview = plan_preview(&job.evaluation, &draft, view).unwrap();
-        planned(&preview).spatial.first().unwrap().applies.len()
+    let drag = |payload: Value, view| {
+        let dragged = vec![Layer {
+            payload,
+            ..presence.clone()
+        }];
+        let (job, draft) = draft_job("set-presence", vec![presence.clone()], dragged, 1);
+        plan_preview(&job.evaluation, &draft, view).unwrap()
     };
-    assert_eq!(
-        applies(crate::GpuView::Fit(bounds())),
-        3,
-        "every unit at Fit"
+    let applies = |plan: &GpuPlan| plan.spatial.iter().map(|s| s.applies.len()).sum::<usize>();
+    let zoomed = drag(json!({"texture": 10, "clarity": 20}), region);
+    assert_eq!(applies(planned(&zoomed)), 3, "every unit");
+    let cpu = zoomed
+        .cpu_shape
+        .as_deref()
+        .expect("the CPU's shape beside it");
+    assert_eq!(applies(cpu), 2, "Texture and Clarity");
+    assert_eq!(cpu.boundary, planned(&zoomed).boundary, "the same boundary");
+    let window = zoomed.boundary.as_ref().unwrap().window.unwrap();
+    let bytes = |plan: &GpuPlan| {
+        plan.spatial
+            .as_ref()
+            .unwrap()
+            .plane_bytes((window.x0, window.y0), (window.width, window.height))
+    };
+    assert!(bytes(cpu) < bytes(planned(&zoomed)));
+    // Detail with both strengths and Colour moved: both units and every level either way.
+    let detail = Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 40}));
+    let moved = vec![Layer {
+        payload: json!({"sharpening": 40, "luminance": 20, "colour": 30}),
+        ..detail.clone()
+    }];
+    let (job, draft) = draft_job("set-detail", vec![detail], moved, 1);
+    let every = plan_preview(&job.evaluation, &draft, region).unwrap();
+    assert!(!planned(&every).spatial.is_empty() && every.cpu_shape.is_none());
+    let fit = drag(
+        json!({"texture": 10, "clarity": 20}),
+        crate::GpuView::Fit(bounds()),
     );
-    assert_eq!(applies(region), 2, "Texture and Clarity at a zoom");
-    let (job, draft) = draft_job(
-        "set-basic",
-        Vec::new(),
-        vec![basic(json!({"exposure": 0.3}))],
-        1,
-    );
-    let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
-    assert_eq!(
-        planned(&preview).content[0].units.len(),
-        4,
-        "Basic's every unit"
-    );
+    assert!(fit.cpu_shape.is_none(), "no choice at Fit");
 }
 
 /// At a percentage zoom a Dehaze drag reads the light the exact visible region's render stored over
