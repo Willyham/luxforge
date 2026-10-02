@@ -208,3 +208,76 @@ fn gpu_preview_an_ineligible_drag_names_its_reason() {
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
+
+/// The compile cost of each program sequence a Fit drag of the colour modules draws, measured on
+/// this host's adapter through the stage's own compile (`naga` checks, backend translation and the
+/// driver's pipeline). A functional measurement for the design's choice of one pipeline per
+/// sequence, not a timing gate: run it on purpose, with `--ignored --nocapture`, and record the
+/// build profile and host beside its figures. Each sequence is compiled first in a new process's
+/// order, then again, which the driver's own shader cache may serve.
+#[test]
+#[ignore = "a measurement, run on purpose"]
+fn gpu_preview_compile_cost_per_sequence() {
+    use luxforge_core::{GpuPlanRequest, Layer, ModuleRegistry, Recipe, Stage, gpu_plan};
+    use luxforge_ui::photo_surface::gpu_preview::qualification::Qualifier;
+    let test = "gpu_preview_compile_cost_per_sequence";
+    let Some(qualifier) = Qualifier::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let basic = || Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.5}));
+    let curve = || {
+        Layer::new(
+            "luxforge.curve.tone",
+            json!({"luminance": [[0.0, 0.0], [0.4, 0.5], [1.0, 1.0]]}),
+        )
+    };
+    let mixer = || Layer::new(luxforge_core::MIXER_EFFECT, json!({"red-hue": 20.0}));
+    let vignette = || Layer::new(luxforge_core::VIGNETTE_EFFECT, json!({"amount": -30.0}));
+    let stage = Stage {
+        width: 1600,
+        height: 1067,
+    };
+    let full = Stage {
+        width: 6000,
+        height: 4000,
+    };
+    let cases: [(&str, Vec<Layer>, usize); 6] = [
+        ("Basic", vec![basic()], 0),
+        ("Tone curve", vec![basic(), curve()], 1),
+        ("Mixer", vec![basic(), curve(), mixer()], 2),
+        ("Vignette", vec![basic(), vignette()], 1),
+        (
+            "Basic under a curve and a mixer",
+            vec![basic(), curve(), mixer()],
+            0,
+        ),
+        (
+            "Basic under every colour module",
+            vec![basic(), curve(), mixer(), vignette()],
+            0,
+        ),
+    ];
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    for (what, layers, boundary) in cases {
+        let recipe = Recipe {
+            format: luxforge_core::RECIPE_FORMAT,
+            layers,
+            ..Recipe::default()
+        };
+        let request = GpuPlanRequest::fit(boundary, stage, full).drafted(boundary);
+        let plan = match gpu_plan(&registry, &recipe, request).unwrap() {
+            luxforge_core::GpuAnswer::Plan(plan) => plan,
+            luxforge_core::GpuAnswer::Fallback(reason) => panic!("{what}: {reason}"),
+        };
+        let steps = super::gpu_plan::plan_steps(&plan).expect("a sequence the surface runs");
+        let first = qualifier.compile_time(&steps).expect("it compiles");
+        let again = qualifier.compile_time(&steps).expect("it compiles");
+        eprintln!(
+            "{test}: {what}: {} steps, first {:.2} ms, again {:.2} ms",
+            steps.len(),
+            first.as_secs_f64() * 1000.0,
+            again.as_secs_f64() * 1000.0
+        );
+    }
+}

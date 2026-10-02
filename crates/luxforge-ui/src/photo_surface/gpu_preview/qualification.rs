@@ -63,6 +63,20 @@ impl Qualifier {
         )
     }
 
+    /// How long the stage's own compile of `steps` takes on this device, from the programs' `naga`
+    /// checks to the backend's pipeline, as the compile thread runs it
+    /// ([`super::compile`](mod@super::compile)): wall-clock time on the calling thread.
+    pub fn compile_time(&self, steps: &[super::GpuStep]) -> Result<std::time::Duration, String> {
+        let started = std::time::Instant::now();
+        compile(
+            &self.device,
+            &self.support.pipeline_layout,
+            steps,
+            OUTPUT_FORMAT,
+        )?;
+        Ok(started.elapsed())
+    }
+
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
     /// boundary's size, alpha one.
     pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
