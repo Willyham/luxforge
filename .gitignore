@@ -12,6 +12,7 @@
 .DS_Store
 Thumbs.db
 /.tools/
+__pycache__/
 
 # Owner RAW originals used only for local verification.
 /fixtures/raw/

@@ -163,6 +163,10 @@ pub enum Step {
     Performance {
         expanded: bool,
     },
+    /// Press Cancel on one displayed running job row (zero-based, at most four rows).
+    PerformanceCancel {
+        row: usize,
+    },
     /// Ask nothing of the editor for at least this many milliseconds, then capture. The evidence
     /// tick keeps rebuilding the view meanwhile, as the editor's own event sync does while a
     /// photograph is open, so the frame shows what idling did to the screen.
@@ -291,6 +295,13 @@ impl Step {
             Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
+            Self::PerformanceCancel { row } => {
+                if *row < 4 {
+                    Ok(())
+                } else {
+                    Err("performance_cancel row must be below 4".into())
+                }
+            }
             Self::Compare(CompareStep::Position(position)) => {
                 unit(f64::from(*position), "compare position")
             }

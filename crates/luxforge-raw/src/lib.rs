@@ -12,9 +12,13 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+mod color;
+#[cfg(test)]
+mod corpus_tests;
 mod develop;
 mod dng;
 mod format;
+mod jxl;
 mod limits;
 mod mat3;
 mod native_status;
@@ -135,14 +139,25 @@ impl RawMode {
         self.0.dng_version.is_some()
     }
 
+    /// A catalogued one-channel source without a CFA has no white-balance capability.
+    pub fn is_monochrome(self) -> bool {
+        camera_catalog().cameras.iter().any(|camera| {
+            camera.cfa_size == [0, 0]
+                && camera.channels == 1
+                && camera.modes.iter().any(|mode| mode.id == self.0.id)
+        })
+    }
+
     /// The camera's declared DNG optical roles, derived from its static catalog record.
     pub fn dng_optics(self) -> Option<&'static DngOptics> {
-        camera_catalog()
+        let camera = camera_catalog()
             .cameras
             .iter()
-            .find(|camera| camera.modes.iter().any(|mode| mode.id == self.0.id))?
-            .dng
-            .as_ref()?
+            .find(|camera| camera.modes.iter().any(|mode| mode.id == self.0.id))?;
+        self.0
+            .processing
+            .as_ref()
+            .map_or(camera.dng.as_ref(), |processing| processing.dng.as_ref())?
             .optics
             .as_ref()
     }
@@ -177,12 +192,28 @@ impl<'de> Deserialize<'de> for RawMode {
     }
 }
 
+/// Integer samples retained from the original, before development.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawLayout {
+    Mosaic,
+    LinearRgb,
+    Monochrome,
+}
+
+impl RawLayout {
+    pub fn channels(self) -> usize {
+        if self == Self::LinearRgb { 3 } else { 1 }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawMetadata {
     pub make: String,
     pub model: String,
     pub mode: RawMode,
+    pub layout: RawLayout,
     pub sensor_width: u32,
     pub sensor_height: u32,
     pub active_area: RawRect,
@@ -292,8 +323,9 @@ struct NativeIdentity {
     cfa_height: u32,
     cfa: [u8; 36],
     black_cfa: [u8; 36],
+    channels: u32,
 }
-const _: () = assert!(std::mem::size_of::<NativeIdentity>() == 312);
+const _: () = assert!(std::mem::size_of::<NativeIdentity>() == 316);
 
 impl NativeIdentity {
     fn blank() -> Self {
@@ -315,6 +347,7 @@ impl NativeIdentity {
             ("DNG version", self.dng_version != native.dng_version),
             ("decoder flags", self.decoder_flags != native.decoder_flags),
             ("frame count", self.raw_count != native.raw_count),
+            ("sample channels", self.channels != native.channels),
             (
                 "CFA",
                 self.cfa_width != native.cfa_width
@@ -348,6 +381,7 @@ enum NativeUnpacker {
     /// LibRaw's unpack with RawSpeed in place of a replaceable LibRaw decoder
     /// ([`unpacker::REPLACEABLE`]); refused before unpack for any other decoder.
     Rawspeed = 1,
+    JxlOxide = 2,
 }
 
 impl NativeUnpacker {
@@ -356,6 +390,7 @@ impl NativeUnpacker {
         match unpacker {
             unpacker::Unpacker::Libraw => Self::Libraw,
             unpacker::Unpacker::Rawspeed => Self::Rawspeed,
+            unpacker::Unpacker::JxlOxide => Self::JxlOxide,
         }
     }
 }
@@ -384,6 +419,7 @@ struct NativeMetadata {
     cfa_height: u32,
     flip: u32,
     raw_count: u32,
+    channels: u32,
     cfa: [u8; 36],
     black_cfa: [u8; 36],
     black_base: f32,
@@ -673,7 +709,8 @@ impl RawSource {
     pub fn metadata(&self) -> &RawMetadata {
         &self.metadata
     }
-    pub fn mosaic(&self) -> &[u16] {
+    /// Canonical decoded integers: one value per CFA/monochrome site, or interleaved RGB.
+    pub fn source_samples(&self) -> &[u16] {
         &self.mosaic
     }
 
@@ -718,7 +755,17 @@ impl RawSource {
         // Identify, then classify from what identify decided and the container, so an
         // unsupported mode or DNG opcode is refused before any unpack work.
         let (mut handle, identity) = NativeHandle::open(bytes, cancel)?;
-        let n = Self::checked_len(identity.width, identity.height)?;
+        let pixels = Self::checked_len(identity.width, identity.height)?;
+        let n = pixels
+            .checked_mul(identity.channels as usize)
+            .ok_or(RawError::ResourceLimit("sensor sample count"))?;
+        if n.checked_mul(2)
+            .is_none_or(|bytes| bytes > MAX_SOURCE_BYTES)
+        {
+            return Err(RawError::ResourceLimit(
+                "integer sensor samples exceed 512 MiB",
+            ));
+        }
         // Only a DNG carries opcode lists; LibRaw reports its version. Every required operation
         // must be one the corrections implement, whatever the camera.
         let opcodes = if identity.dng_version != 0 {
@@ -743,13 +790,14 @@ impl RawSource {
             &c_text(&identity.decoder),
             bytes,
         )?;
+        let profile = recording.processing(profile);
         reject_unhandled_required_opcodes(profile.dng.is_some(), &opcodes)?;
         let unpacker = forced.unwrap_or(NativeUnpacker::of(recording.unpacker));
         let native = handle.unpack(unpacker, cancel)?;
         identity.unchanged_in(&native)?;
         let (mut metadata, dng_correction) = Self::interpret(
             &native,
-            profile,
+            &profile,
             RawMode(recording),
             unpacker,
             bytes,
@@ -760,29 +808,35 @@ impl RawSource {
             .try_reserve_exact(n)
             .map_err(|_| RawError::ResourceLimit("sensor mosaic allocation"))?;
         samples.resize(n, 0);
-        handle.copy(&mut samples)?;
+        if unpacker == NativeUnpacker::JxlOxide {
+            jxl::decode_into(bytes, &native, &mut samples, cancel)?;
+        } else {
+            handle.copy(&mut samples)?;
+        }
         drop(handle);
         drop(encoded);
         if cancel.load(Ordering::Relaxed) {
             return Err(RawError::Cancelled);
         }
         let (mosaic_corrections, unresolved) = match &dng_correction {
-            Some(correction) => correction.mosaic_corrections(
+            Some(correction) if native.cfa_width != 0 => correction.mosaic_corrections(
                 &samples,
                 native.width as usize,
                 native.height as usize,
                 &metadata.cfa,
             )?,
-            None => (Vec::new(), 0),
+            _ => (Vec::new(), 0),
         };
         if unresolved > 0 {
             metadata.warnings.push(format!("DNG bad-pixel interpolation left {unresolved} markers unchanged because no usable same-color neighbors were available"));
         }
+        let mut shape = develop::DemosaicShape::of(&native);
+        shape.rgb_cam = std::array::from_fn(|i| metadata.rgb_cam[i / 4][i % 4]);
         Ok(Self {
             metadata,
             mosaic_corrections: Arc::new(mosaic_corrections),
             mosaic: Arc::new(samples),
-            shape: develop::DemosaicShape::of(&native),
+            shape,
             dng_correction,
         })
     }
@@ -816,10 +870,9 @@ impl RawSource {
     ) -> Result<Option<f64>, RawError> {
         let bayer = self.metadata.cfa_width == 2 && self.metadata.cfa_height == 2;
         if !bayer
-            || self
-                .dng_correction
-                .as_ref()
-                .is_some_and(dng::DngCorrection::corrects_after_demosaic)
+            || self.dng_correction.as_ref().is_some_and(|correction| {
+                correction.corrects_after_demosaic() || correction.changes_normalization()
+            })
         {
             return Ok(None);
         }
@@ -925,6 +978,29 @@ impl RawSource {
         bytes: &[u8],
         opcodes: &[format::DngOpcode],
     ) -> Result<(RawMetadata, Option<dng::DngCorrection>), RawError> {
+        let calibrated;
+        let source_calibration = profile
+            .dng
+            .as_ref()
+            .filter(|settings| settings.calibration != profiles::DngCalibration::RootFixedMatrix)
+            .map(|settings| format::source_reference_calibration(bytes, native, settings))
+            .transpose()?;
+        let native = if let Some((matrix, gains, rgb, _)) = &source_calibration {
+            let mut value = native.clone();
+            value.cam_xyz = std::array::from_fn(|i| matrix[i / 3][i % 3]);
+            value.rgb_cam = std::array::from_fn(|i| rgb[i / 4][i % 4]);
+            value.as_shot = *gains;
+            calibrated = value;
+            &calibrated
+        } else {
+            native
+        };
+        let layout = match (native.cfa_width, native.cfa_height, native.channels) {
+            (0, 0, 1) => RawLayout::Monochrome,
+            (0, 0, 3) => RawLayout::LinearRgb,
+            (_, _, 1) => RawLayout::Mosaic,
+            _ => return Err(RawError::UnsupportedCfa),
+        };
         let make = c_text(&native.make);
         let model = c_text(&native.model);
         let decoder = c_text(&native.decoder);
@@ -946,7 +1022,7 @@ impl RawSource {
         )?;
         let inset = libraw_inset(native, native.width, native.height)?;
         let (cfa_w, cfa_h) = (native.cfa_width as usize, native.cfa_height as usize);
-        if !matches!((cfa_w, cfa_h), (2, 2) | (6, 6)) {
+        if !matches!((cfa_w, cfa_h), (2, 2) | (6, 6) | (0, 0)) {
             return Err(RawError::UnsupportedCfa);
         }
         let cfa = native.cfa[..cfa_w * cfa_h].to_vec();
@@ -1100,13 +1176,21 @@ impl RawSource {
         } else {
             (cam_xyz, None)
         };
-        validate_camera_response(&cam_xyz)?;
+        if layout != RawLayout::Monochrome {
+            validate_camera_response(&cam_xyz)?;
+        } else {
+            warnings.push("Monochrome original: grayscale development; white balance and neutral picker are unavailable".into());
+        }
+        if source_calibration.is_some() && layout != RawLayout::Monochrome {
+            warnings.push("DNG colour uses the recorded fixed ColorMatrix/CameraCalibration response; dual-illuminant and ForwardMatrix DCP rendering is not applied".into());
+        }
         let dng_corrections = dng_correction.as_ref().map(|v| v.metadata.clone());
         Ok((
             RawMetadata {
                 make,
                 model,
                 mode,
+                layout,
                 sensor_width: native.width,
                 sensor_height: native.height,
                 active_area: dng_container
@@ -1129,8 +1213,12 @@ impl RawSource {
                 rgb_cam,
                 cam_xyz,
                 backend: match unpacker {
+                    NativeUnpacker::Libraw if decoder == "sony_arw6_load_raw()" => {
+                        "LibRaw 0.22.2 + ARW6 f6b3a500/e419de08 + librtprocess"
+                    }
                     NativeUnpacker::Libraw => LIBRAW_PROVIDER,
                     NativeUnpacker::Rawspeed => RAWSPEED_PROVIDER,
+                    NativeUnpacker::JxlOxide => "LibRaw 0.22.2 identify + jxl-oxide 0.12.6",
                 }
                 .to_string(),
                 libraw_inset: inset,
@@ -1220,6 +1308,7 @@ mod tests {
         let mut cases = Vec::new();
         for (width, height) in [(1040_usize, 1030_usize), (317, 221)] {
             let mut meta = RawSource::blank_native();
+            meta.channels = 1;
             meta.width = width as u32;
             meta.height = height as u32;
             meta.cfa_width = 2;
@@ -1289,6 +1378,7 @@ mod tests {
     /// estimates and colour ratios vary within and across its tiles.
     fn synthetic_bayer(width: usize, height: usize, cfa: [u8; 4]) -> (Vec<u16>, NativeMetadata) {
         let mut meta = RawSource::blank_native();
+        meta.channels = 1;
         meta.width = width as u32;
         meta.height = height as u32;
         meta.cfa_width = 2;
@@ -1476,6 +1566,7 @@ mod tests {
             2, 0, 2, 1, 2, 0, 1,
         ];
         let mut meta = RawSource::blank_native();
+        meta.channels = 1;
         meta.width = width as u32;
         meta.height = height as u32;
         meta.cfa_width = 6;
@@ -2221,6 +2312,7 @@ mod tests {
     #[test]
     fn libraw_inset_absence_is_distinct_from_malformed_rectangles() {
         let mut native = RawSource::blank_native();
+        native.channels = 1;
         native.inset_width = 0;
         native.inset_height = 0;
         assert_eq!(libraw_inset(&native, 100, 80).unwrap(), None);
@@ -2244,6 +2336,7 @@ mod tests {
     #[test]
     fn active_area_crop_is_available_when_libraw_inset_is_absent() {
         let mut native = RawSource::blank_native();
+        native.channels = 1;
         native.width = 100;
         native.height = 80;
         native.active_x = 2;
@@ -2279,6 +2372,7 @@ mod tests {
     #[test]
     fn native_calibration_uses_both_bayer_green_sites() {
         let mut native = RawSource::blank_native();
+        native.channels = 1;
         native.width = 16;
         native.height = 16;
         native.cfa_width = 2;
@@ -2977,8 +3071,8 @@ mod tests {
         assert_eq!(native_counters::live_handles(), 0);
     }
 
-    /// Only the LibRaw and RawSpeed unpackers exist: any other selector is refused before unpack
-    /// work and leaves the handle usable.
+    /// Selectors beyond LibRaw, RawSpeed and external JPEG XL are refused before unpack
+    /// work and leave the handle usable.
     #[test]
     fn unpack_selector_rejects_unknown_values() {
         assert_eq!(NativeUnpacker::Libraw as u32, 0);
@@ -2995,7 +3089,7 @@ mod tests {
         let cancel = AtomicBool::new(false);
         let unpacks = native_counters::unpack_calls();
         let (mut handle, _) = NativeHandle::open(&bytes, &cancel).unwrap();
-        for unknown in [2, 3, u32::MAX] {
+        for unknown in [3, 4, u32::MAX] {
             let (result, native) = raw_unpack(&mut handle, unknown, cancelled, token(&cancel));
             assert!(
                 matches!(&result, Err(RawError::Native(text)) if text == "unknown RAW unpacker"),
@@ -3158,7 +3252,7 @@ mod tests {
             );
             assert_eq!(native_counters::unpack_calls(), unpacks + 1, "{decoder}");
         }
-        // A three-channel LinearRaw DNG is refused at open, before any unpacker is chosen.
+        // This camera's catalog only admits CFA storage: changing its layout is refused before unpack.
         let (linear, _) = synthetic_dng_edited("DJI", "FC3411", 64, 48, |entries| {
             entries.retain(|entry| !matches!(entry.0, 33_421 | 33_422));
             for entry in entries.iter_mut() {
@@ -3169,10 +3263,10 @@ mod tests {
                 }
             }
         });
-        assert!(matches!(
-            NativeHandle::open(&linear, &cancel),
-            Err(RawError::UnsupportedCfa)
-        ));
+        let unpacks = native_counters::unpack_calls();
+        let error = RawSource::decode(&linear, &cancel).unwrap_err();
+        assert!(matches!(error, RawError::UnsupportedMode(_)), "{error:?}");
+        assert_eq!(native_counters::unpack_calls(), unpacks);
         assert_eq!(native_counters::live_handles(), 0);
     }
 
@@ -3370,6 +3464,7 @@ mod tests {
     #[test]
     fn identity_changes_during_unpack_fail_explicitly() {
         let mut native = RawSource::blank_native();
+        native.channels = 1;
         native.make[..3].copy_from_slice(&[b'D' as c_char, b'J' as c_char, b'I' as c_char]);
         native.width = 64;
         native.height = 48;
@@ -3380,6 +3475,7 @@ mod tests {
         native.cfa[..4].copy_from_slice(&[0, 1, 1, 2]);
         let mut identity = NativeIdentity::blank();
         identity.make = native.make;
+        identity.channels = native.channels;
         identity.width = 64;
         identity.height = 48;
         identity.raw_bps = 16;
@@ -3389,7 +3485,7 @@ mod tests {
         identity.cfa = native.cfa;
         identity.unchanged_in(&native).unwrap();
         type Change = (&'static str, fn(&mut NativeMetadata));
-        let changes: [Change; 10] = [
+        let changes: [Change; 11] = [
             ("make", |n| n.make[0] = b'X' as c_char),
             ("model", |n| n.model[0] = b'X' as c_char),
             ("decoder", |n| n.decoder[0] = b'X' as c_char),
@@ -3399,6 +3495,7 @@ mod tests {
             ("DNG version", |n| n.dng_version = 1),
             ("decoder flags", |n| n.decoder_flags = 1),
             ("frame count", |n| n.raw_count = 2),
+            ("sample channels", |n| n.channels = 3),
             ("CFA", |n| n.black_cfa[2] = 3),
         ];
         for (field, change) in changes {
@@ -3446,6 +3543,7 @@ mod tests {
     #[test]
     fn geometry_and_orientation_are_bounded() {
         let mut n = RawSource::blank_native();
+        n.channels = 1;
         n.width = 16_385;
         n.height = 1;
         assert!(matches!(
@@ -3485,3 +3583,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod layout_tests;

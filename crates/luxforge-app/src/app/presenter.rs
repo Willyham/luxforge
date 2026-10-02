@@ -216,10 +216,10 @@ impl Presenter {
     pub(crate) fn show_coverage(
         &mut self,
         generation: u64,
-        rgba: Vec<u8>,
+        rgba: Arc<Vec<u8>>,
         (width, height): (u32, u32),
     ) -> bool {
-        self.coverage = frame(Arc::new(rgba), width, height, &mut self.coverage_versions)
+        self.coverage = frame(rgba, width, height, &mut self.coverage_versions)
             .map(|frame| (generation, frame));
         self.coverage.is_some()
     }
@@ -296,12 +296,12 @@ impl Presenter {
 
     pub(crate) fn show_region_coverage(
         &mut self,
-        rgba: Vec<u8>,
+        rgba: Arc<Vec<u8>>,
         size: (u32, u32),
         region: &super::preview::PresentedRegion,
     ) -> bool {
-        self.region_coverage = frame(Arc::new(rgba), size.0, size.1, &mut self.coverage_versions)
-            .and_then(|frame| {
+        self.region_coverage =
+            frame(rgba, size.0, size.1, &mut self.coverage_versions).and_then(|frame| {
                 RegionOverlay::new(
                     frame,
                     [
@@ -449,10 +449,10 @@ mod tests {
         assert!(presenter.show_clipping(3, vec![0; 2 * 2 * 4], (2, 2)));
         assert!(presenter.clipping(3).is_some());
         assert!(presenter.clipping(4).is_none());
-        assert!(presenter.show_coverage(4, vec![0; 3 * 4], (3, 1)));
+        assert!(presenter.show_coverage(4, vec![0; 3 * 4].into(), (3, 1)));
         assert_eq!(presenter.coverage(4).map(Frame::size), Some((3, 1)));
         assert!(presenter.coverage(3).is_none());
-        assert!(!presenter.show_coverage(5, vec![0; 3], (3, 1)));
+        assert!(!presenter.show_coverage(5, vec![0; 3].into(), (3, 1)));
         assert!(presenter.coverage(4).is_none() && presenter.coverage(5).is_none());
         // Each overlay's own versions move independently of the photograph's.
         assert!(presenter.show_clipping(3, vec![0; 2 * 2 * 4], (2, 2)));

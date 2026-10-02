@@ -275,6 +275,18 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "protocol identity and every method with its parameters; a generated method lists the source kinds its module applies to as sources when that is not every kind, and a parameter another module's control variant supersedes on a kind's global target lists superseded: [{source, by}], the field that is its one path there"
     ),
     owner!(
+        "preferences.read",
+        NoParams,
+        |owner, _, _| value(owner.host.preferences.read()?),
+        "user preferences outside the catalog: {performance_expanded}; defaults to expanded on first use; reads no pixels, changes no history and creates no file; malformed or unsupported preferences are refused without rewriting them"
+    ),
+    owner!(
+        "preferences.set",
+        PreferencesSet,
+        |owner, _, p| value(owner.host.preferences.set(p.performance_expanded)?),
+        "persist the Performance section's expanded state through one bounded atomic user-settings write; returns {performance_expanded}; changes no recipe or history; needs a configured application preference directory"
+    ),
+    owner!(
         "catalog.import",
         owner::Import,
         owner::catalog_import,
@@ -1398,6 +1410,12 @@ host_params! {
         zoom: Option<Zoom> = json("{mode: fit} or {mode: percent, value: 10..1600}"),
         pan_x: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
         pan_y: Option<f32> = number(f32::MIN as f64, f32::MAX as f64),
+    }
+}
+
+host_params! {
+    pub(super) struct PreferencesSet {
+        performance_expanded: bool = boolean(),
     }
 }
 

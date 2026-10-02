@@ -22,6 +22,7 @@ pub(crate) enum Unpacker {
     #[default]
     Libraw,
     Rawspeed,
+    JxlOxide,
 }
 
 /// What the replaced LibRaw decoder writes for each decoded value `v`. The native adapter applies

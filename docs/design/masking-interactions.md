@@ -3,6 +3,8 @@
 Status: implemented and verified with final quick/rendered checks, native RAW liveness and
 scoped 24/60 MP hover and continuous-paint measurements. The [performance evidence](../specs/performance.md#native-masking-interaction-qualification)
 records timing, memory and diagnostic limits; total editor memory and display latency remain unqualified.
+The [mask performance work](mask-performance.md) moves exact overlay painting off the UI thread,
+keeps its handoff bounded, and records a scoped native brush comparison.
 The [masking model](masking.md), frozen coverage equations, content coordinates, stroke storage
 and current catalog/API shapes remain the shared contract. The [workspace design](masking-workspace.md)
 describes the panel.
@@ -72,7 +74,14 @@ providers and exact pixel-input refusals remain explicit.
 
 Fit and viewport requests use the same content transform and exact evaluator. The grid is a
 quantized coverage display, independent of whether the photograph is currently a proxy or exact
-frame. Green/white tint and both black presentations paint that one grid once.
+frame. Green/white tint and both black presentations paint that one grid once on the coverage
+worker, using an exact 256-code palette. Delivered results retain identity, dimensions and shared
+RGBA; the cache alone keeps the coverage plane. A handoff lease bounds worker and consumer
+buffers through adoption or replacement of a waiting result, and semantic cancellation wakes a
+blocked worker. The [performance design](mask-performance.md) states the unchanged byte bound.
+Coverage that finishes before its matching photograph is drained when that photograph is adopted,
+without first waking an undrawable window redraw. A later completion, feedback on unchanged photo
+pixels and an unavailable outcome wake normally; publication before draining prevents lost wakes.
 
 ## Visibility and keys
 

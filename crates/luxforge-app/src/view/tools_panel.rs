@@ -1603,10 +1603,14 @@ fn group_rows<'a>(
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
 ) -> Vec<PanelRow<'a>> {
+    let enabled = enabled && group.enabled;
     let header = sub_group_header(
         &SubGroupHeaderModel {
             label: group.label.clone(),
-            state: group.state.map(|state| state.caption().to_owned()),
+            state: group
+                .unavailable
+                .clone()
+                .or_else(|| group.state.map(|state| state.caption().to_owned())),
             state_accent: group.state == Some(GroupState::Custom),
             expanded: Some(group.expanded),
             reset: group.reset.is_some(),

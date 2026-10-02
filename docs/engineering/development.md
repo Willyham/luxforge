@@ -1,6 +1,6 @@
 # Development, verification and packaging
 
-All tooling is Rust: `cargo xtask <command>`. Commands reject unknown arguments and pass paths to child processes without shell interpolation. `cargo xtask help` lists everything.
+Build, editor and verification tooling uses Rust: `cargo xtask <command>`. Commands reject unknown arguments and pass paths to child processes without shell interpolation. `cargo xtask help` lists those commands. The optional [extended camera corpus](#extended-camera-corpus) uses Python and AWS CLI for cloud transfers.
 
 ## Setup
 
@@ -410,6 +410,95 @@ smoke run per manifest source and one RAW `performance` smoke run over the first
 ### Rendered scenario cost: why every scenario stays in `rendered`
 
 Per-scenario elapsed time comes from each run's own `summary.json`, and `verify --tier rendered --output NEW_DIR` (`--jobs 1` for serial figures) reproduces it. A scenario is one editor launch and costs one to two seconds, so against a rendered tier that stays under two minutes no single one is a material share of it. Every scenario that a checkout can open therefore stays in `rendered`; `full` adds only the RAW components (with `--manifest`, a `raw-editor` and a `raw-panel` run per manifest source and one RAW `performance` run). Two scenarios cost more because they wait in real time, and stay because nothing else in `rendered` checks what they do: `zoom` (two launches with three one-second idle waits each) is the only rendered check of the percentage zooms, and `performance` (the sampler needs real seconds to fill its window and to prove itself asleep) is the only rendered check of the Performance section and of its sampler's gating. The summary records the load average for timing components only. The Performance scenario has a 75-second process ceiling around the editor's 60-second script deadline, allowing its full 60 MP render and fixed sampler windows to report a result. Its checks validate sampled state and completion; latency measurements use the timing tier's quiet-host conditions. External memory comparisons use observation intervals wholly before and after each app sample, excluding calls that overlap it; the complete intervals must stay within 1,000 ms, with the existing 8 MiB memory slack.
+
+## Extended camera corpus
+
+This optional path needs Python 3.10+, AWS CLI v2 (CI pins 2.35.16), the Rust
+toolchain above and private R2 access. It reads the checked-in
+[manifest](../../fixtures/sample-corpus.json); it does not use the upstream site
+during tests. The [design](../design/sample-corpus.md) records device coverage,
+qualification limits, resource bounds and credential expiry dates.
+
+Copy `.env.example` to ignored `.env`, set the account/bucket and S3 keypair,
+and run `chmod 600 .env`. Read-only keys in `R2_READ_ACCESS_KEY_ID` and
+`R2_READ_SECRET_ACCESS_KEY` are preferred for sync/test; only publication uses
+the separate writer. Process `R2_*` variables override the file. The parser
+reads literal values and never evaluates shell expressions.
+
+```sh
+# Inventory and a selected regression; downloads are cleaned after each chunk.
+python3 tools/sample_corpus.py inventory
+python3 tools/sample_corpus.py test --group canon --cleanup --output artifacts/corpus-canon
+
+# Keep a selected local cache, then run without network access.
+python3 tools/sample_corpus.py sync --group nikon --qualified-only
+python3 tools/sample_corpus.py test --group nikon --qualified-only --offline --output artifacts/corpus-nikon
+
+# Remove only selected, verified files from the tool-owned cache.
+python3 tools/sample_corpus.py clean --group nikon --qualified-only
+
+# Full extended run, bounded transfers and serial processing within chunks.
+python3 tools/sample_corpus.py test --chunk-size 8 --chunk-mib 1024 --transfer-jobs 2 --cleanup --output artifacts/corpus-full
+```
+
+`--group` can repeat: `canon`, `nikon`, `sony`, `fujifilm`, `panasonic`,
+`olympus`, `omsystem`, `pentax`, `leica`, `ricoh`, `dji`, `samsung` or `phones`.
+`--shard 0/4` selects a deterministic quarter of source hashes (indices 0–3).
+`--qualified-only` includes both full qualified and older mosaic-only references;
+`--strict-development` additionally requires the M4 reference development
+hashes. The full 341-file strict M4 repeat passes in about 11 minutes.
+`mosaic_sha256` covers little-endian u16 source samples (interleaved for RGB);
+monochrome second developments repeat unity gains after verifying that changed
+white balance is refused. Linux uses portable metadata, integer and numeric checks. A candidate
+decode or refusal remains unqualified, even when the command succeeds. To
+require the entire target list to have samples and every selected test file to
+have a frozen expectation, use `--require-complete`; the current acquisition
+gaps make it fail even for a qualified-only test selection.
+
+The default cache is `private/sample-corpus/cache`; choose `--cache DIRECTORY`
+to isolate concurrent runs. A marker identifies tool-owned caches; foreign
+nonempty directories and symlinks are refused. `--cleanup` removes only files
+created by that invocation, preserving any already cached files. `clean`
+removes selected cache entries only after verifying all their hashes. It never
+deletes originals outside the cache or reports. A new output directory is
+required for each test; it holds the exact input list, qualifier results, logs,
+manifest hash, elapsed time and qualification/failure classifications.
+
+Tests automatically build the release `qualify_profiles` example unless
+`--qualifier PATH` supplies an existing binary. Ordinary repository checks do
+not download samples. Offline controller tests are:
+
+```sh
+python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
+```
+
+For maintainers adding licensed samples, review
+`fixtures/sample-corpus-targets.json`, fetch the raw.pixls.us JSON index into an
+ignored directory and rebuild the provenance manifest. Preserve reviewed
+expectations with `--previous`; newly discovered files remain candidates.
+
+```sh
+python3 tools/build_sample_manifest.py --index private/sample-corpus/raw-pixls-index.json --previous fixtures/sample-corpus.json
+python3 tools/sample_corpus.py publish --transfer-jobs 4 --cleanup
+python3 tools/sample_corpus.py publish-index --transfer-jobs 4
+```
+
+The builder bounds HEAD requests and pins exact sizes. `mirror` downloads from
+the pinned upstream URLs without R2; `publish` downloads/reuses verified cache
+files and uploads immutable R2 objects, optionally reusing hash-matched
+originals from repeated `--source-dir DIRECTORY`. Existing remote objects must
+match size and SHA metadata and are never overwritten. `publish-index` verifies
+the full manifest's remote object metadata and archives the immutable manifest;
+`verify-remote` checks selected object metadata. Actual `sync`/`test` reads also
+verify every object's bytes against SHA-256.
+
+The [weekly/manual workflow](../../.github/workflows/sample-corpus.yml) uses only
+GitHub's encrypted reader secrets and `R2_ACCOUNT_ID` repository variable. Its
+Monday 04:23 UTC schedule activates on the default branch, runs four shards
+with at most two jobs concurrently, limits each job to 30 minutes and retains
+reports for 14 days. It receives no publishing credential and has no
+pull-request trigger. Hosted Linux elapsed time remains unmeasured until its
+first run; the strict 132-reference M4 adapter run takes about five minutes.
 
 ## Running the application
 
@@ -859,6 +948,7 @@ Each step is an object with exactly one key.
 - `preset_import` imports one file through the section's own import task, bypassing only the native
   dialog: `{"path": "fixtures/presets/develop.xmp"}`, relative to the editor's working directory.
   Captured once the library answers; a refused file is a failed step.
+- `performance_cancel {row}` presses Cancel on a displayed running Performance job row, numbered from zero, and captures its command answer; a row without an enabled Cancel fails the step. The `capabilities` scenario cancels a real held task through this button and verifies that its accepted edit remains intact.
 - `performance` opens or closes the state panel's Performance section through its heading's own
   message: `{"expanded": true}` or `{"expanded": false}`. Opening it, with the state panel shown, is
   captured once the section's first `resources.read` and `activity.list` have answered, so the frame

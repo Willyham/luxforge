@@ -74,6 +74,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Masks** ([design](design/masking.md)). Local adjustments. All four phases are delivered: the mask model and its persistence, the `mask.*` command family, the masked colour and spatial primitives, the Mask mode and panel, the coverage overlay — including for a mask that reads pixels, which [proposal P16](design/range-study.md#proposals) settled by reading the input of the mask's first bound layer once per display cell, measured and inside the preview budget, with the refusal kept where there is no operation to read or where reading one would cost a tile per cell — both gradients, brushes over the content-addressed stroke store, and the non-AI luminance and colour range selections with the colour-constrained brush.
 - [Interaction repairs](design/masking-interactions.md): live candidate coverage, coherent selection and brush targets, unplaced/exclusive creation, `O` visibility and bounded live capture are implemented and verified. Native RAW liveness and scoped 24/60 MP hover/paint measurements pass; [performance](specs/performance.md#native-masking-interaction-qualification) records the memory and diagnostic limits
+- [Mask performance](design/mask-performance.md) reduces overlay handoff and preview-worker cost within the existing buffer bounds. General photo/coverage tail latency remains open; the [matched native comparison](specs/performance.md#mask-feedback-and-the-coverage-handoff) keeps loaded runs and delayed positions visible
 - A paint gesture's latency misses the provisional p95 bound on every recipe measured; the figures and their scope are in [performance](specs/performance.md#a-painted-strokes-own-latency)
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, model-based selections, copying masks between photographs and mask presets are out of scope with their reasons recorded
@@ -105,11 +106,9 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Inspection
 
 **Performance panel follow-ups** ([design](design/performance-panel.md)). The Performance section, the activity board and the resource counters are delivered.
-- Cancel listed work from the section, through the cancel each job already has
 - GPU time and allocations on Linux (DRM `fdinfo`) and Windows (D3DKMT), and native checks of the CPU and memory counters there
 - Attribute memory to the prepared source, the proxy and the GPU textures in `resources.read`
-- Remember whether the section is collapsed, in the host's user-level settings
-- Lower the cost of the open section's one-second redraw, which now counts in the idle figure
+- Reduce the open section's whole-window redraw cost: idle model updates and unchanged GPU writes are cheaper, but an aggregate idle CPU improvement is not established
 - A rendered frame of a RAW development while it runs
 
 ## Platform and release

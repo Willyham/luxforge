@@ -307,12 +307,12 @@ mod tests {
             libraw.metadata().sensor_height,
         );
         let curve = libraw_curve(&bytes);
-        let mut rawspeed = vec![0u16; libraw.mosaic().len()];
+        let mut rawspeed = vec![0u16; libraw.source_samples().len()];
         decode_mosaic(&bytes, width, height, &mut rawspeed).expect("RawSpeed decode");
         let mut curved = 0;
         let mut first_mismatch = None;
         let mut mismatches = 0usize;
-        for (index, (&raw, &expected)) in rawspeed.iter().zip(libraw.mosaic()).enumerate() {
+        for (index, (&raw, &expected)) in rawspeed.iter().zip(libraw.source_samples()).enumerate() {
             let mapped = curve[usize::from(raw)];
             curved += usize::from(mapped != raw);
             if mapped != expected || (direct && raw != expected) {
@@ -498,10 +498,10 @@ mod tests {
                     "{path}: RawMetadata"
                 );
                 assert!(
-                    routed.mosaic() == libraw.mosaic(),
+                    routed.source_samples() == libraw.source_samples(),
                     "{path}: RawSource mosaic"
                 );
-                assert_eq!(routed.mosaic(), &routed_mosaic[..], "{path}");
+                assert_eq!(routed.source_samples(), &routed_mosaic[..], "{path}");
                 let rgb = routed
                     .develop(routed.metadata().as_shot_gains, &cancel)
                     .unwrap_or_else(|e| panic!("{path}: develop: {e}"));
@@ -744,7 +744,7 @@ mod tests {
         recorded: Option<&Recorded>,
     ) -> Result<(), String> {
         let cancel = AtomicBool::new(false);
-        let libraw_mosaic = format!("{:x}", Sha256::digest(le_bytes(libraw.mosaic())));
+        let libraw_mosaic = format!("{:x}", Sha256::digest(le_bytes(libraw.source_samples())));
         if let Some(recorded) = recorded
             && libraw_mosaic != recorded.mosaic
         {
@@ -755,19 +755,19 @@ mod tests {
         }
         let routed = RawSource::decode_forcing(bytes, &cancel, NativeUnpacker::Rawspeed)
             .map_err(|e| format!("routed decode refused: {e}"))?;
-        if routed.mosaic() != libraw.mosaic() {
-            let pairs = || routed.mosaic().iter().zip(libraw.mosaic());
+        if routed.source_samples() != libraw.source_samples() {
+            let pairs = || routed.source_samples().iter().zip(libraw.source_samples());
             let differing = pairs().filter(|(a, b)| a != b).count();
             let first = pairs().position(|(a, b)| a != b).unwrap_or(0);
             let width = libraw.metadata().sensor_width as usize;
             return Err(format!(
                 "mosaic differs in {differing} of {} samples; first at (x {}, y {}): RawSpeed {}, \
                  LibRaw {}",
-                libraw.mosaic().len(),
+                libraw.source_samples().len(),
                 first % width,
                 first / width,
-                routed.mosaic()[first],
-                libraw.mosaic()[first],
+                routed.source_samples()[first],
+                libraw.source_samples()[first],
             ));
         }
         let fields = metadata_differences(libraw.metadata(), routed.metadata());
@@ -800,8 +800,11 @@ mod tests {
         let expected = match libraw.metadata().mode.0.unpacker {
             crate::unpacker::Unpacker::Libraw => crate::LIBRAW_PROVIDER,
             crate::unpacker::Unpacker::Rawspeed => crate::RAWSPEED_PROVIDER,
+            crate::unpacker::Unpacker::JxlOxide => "LibRaw 0.22.2 identify + jxl-oxide 0.12.6",
         };
-        if catalogued.metadata().backend != expected || catalogued.mosaic() != libraw.mosaic() {
+        if catalogued.metadata().backend != expected
+            || catalogued.source_samples() != libraw.source_samples()
+        {
             return Err(format!(
                 "the catalog decode ({}) differs",
                 catalogued.metadata().backend
@@ -1159,7 +1162,7 @@ mod tests {
                     "{file}"
                 );
                 assert!(
-                    libraw.mosaic() == rawspeed.mosaic(),
+                    libraw.source_samples() == rawspeed.source_samples(),
                     "{file}: mosaics differ"
                 );
                 let sensor = [
