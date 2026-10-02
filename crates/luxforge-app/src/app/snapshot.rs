@@ -335,6 +335,7 @@ impl Editor {
                 "gpu_preview_compile_max_us":gpu.gpu_preview_compile_max_us,
                 "gpu_preview_compile_last_us":gpu.gpu_preview_compile_last_us,
                 "gpu_preview_frame_us":gpu.gpu_preview_frame_us,
+                "gpu_preview_done_us":gpu.gpu_preview_done_us,
                 // A settle's dissolve from the GPU frame to the CPU frame, as the draw drew it.
                 "dissolve":gpu.drawn_dissolve.map(|dissolve| json!({"from":dissolve.from,
                     "to":dissolve.to,"gpu_boundary":dissolve.gpu_boundary,

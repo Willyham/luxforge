@@ -19,7 +19,14 @@
 mod clarity;
 mod dehaze;
 mod filters;
+mod gpu;
+#[cfg(feature = "qualification")]
+pub mod qualification;
 mod texture;
+
+pub(crate) use gpu::PRESENCE_PROGRAM;
+#[cfg(test)]
+pub(crate) use gpu::functions as gpu_functions;
 
 #[cfg(test)]
 mod oracle;

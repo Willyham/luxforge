@@ -165,6 +165,8 @@ struct FitStage {
     /// The stage the plan addresses, and the source's full content stage.
     stage: Stage,
     full: Stage,
+    /// The source is a developed RAW, whose frames take the linear path.
+    linear: bool,
 }
 
 impl FitStage {
@@ -182,6 +184,9 @@ impl FitStage {
             .ok()
             .and_then(|()| exact.proxy_plan(bounds))
             .map(|plan| exact.proxy_window(registry, recipe, plan));
+        // A developed RAW's frames are the linear path's, unclamped and unquantized between
+        // segments, where a JPEG's are clamped and quantized at every stage boundary.
+        let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
         Ok(match proxy {
             Some(stage) => {
                 let plan = stage.plan();
@@ -193,6 +198,7 @@ impl FitStage {
                         height: plan.height,
                     },
                     full,
+                    linear,
                 }
             }
             None => Self {
@@ -200,15 +206,21 @@ impl FitStage {
                 compiled: evaluation.compiled()?.clone(),
                 stage: full,
                 full,
+                linear,
             },
         })
     }
 
-    /// A plan request from `boundary` at this stage.
+    /// A plan request from `boundary` at this stage, on the source's path.
     fn request(&self, boundary: usize) -> GpuPlanRequest {
-        match self.plan {
+        let request = match self.plan {
             Some(_) => GpuPlanRequest::fit(boundary, self.stage, self.full),
             None => GpuPlanRequest::exact(boundary, self.full),
+        };
+        if self.linear {
+            request.linear()
+        } else {
+            request
         }
     }
 
@@ -219,16 +231,6 @@ impl FitStage {
         } else {
             MaskSampling::Point
         }
-    }
-}
-
-/// A developed RAW's segments hold their values unquantized and unclamped, so its plan's tail
-/// clamps nothing before it; the plan, which knows no source, says a stage boundary clamps, as it
-/// does on a JPEG.
-fn linear_tail(evaluation: &Evaluation, answer: &mut GpuAnswer) {
-    if let (GpuAnswer::Plan(plan), crate::PreviewSource::Raw { .. }) = (answer, evaluation.source())
-    {
-        plan.geometry.clamps = false;
     }
 }
 
@@ -298,8 +300,7 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let mut answer = gpu_plan(registry, &planned, request)?;
-    linear_tail(evaluation, &mut answer);
+    let answer = gpu_plan(registry, &planned, request)?;
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
         GpuAnswer::Plan(plan) => Some(BoundaryRequest {
@@ -376,8 +377,7 @@ pub(crate) fn plan_warm(
     let mut seen: Vec<Vec<&'static str>> = Vec::new();
     for (planned, index) in candidates {
         let request = fit.request(index).drafted(index);
-        let mut answer = gpu_plan(registry, &planned, request)?;
-        linear_tail(evaluation, &mut answer);
+        let answer = gpu_plan(registry, &planned, request)?;
         if let GpuAnswer::Plan(plan) = answer {
             let sequence: Vec<&'static str> = plan
                 .operations()

@@ -528,6 +528,17 @@ pub(crate) trait SpatialUnit: Send + Sync {
         parallelism: Parallelism,
     ) -> Result<(), Error>;
 
+    /// The unit on the GPU, for a preview drawn there (`docs/design/gpu-preview.md`, "Spatial
+    /// programs"): its program, the planes and passes that compute what its apply reads, and the
+    /// apply. `global` is the estimate the store holds for this unit over the stage the plan is
+    /// drawn at, when the plan found one; a unit that declares an estimate key and is handed none
+    /// computes it on the GPU from the stage it holds and says so. The default is none, which takes
+    /// the CPU path. Answered on the catalog owner while planning: it reads no pixel and holds
+    /// nothing that scales with the image.
+    fn gpu(&self, _global: Option<&Global>) -> Option<crate::render::gpu::GpuSpatialUnit> {
+        None
+    }
+
     /// Run one tile under the render's cancellation token. Units with several passes override
     /// this to check between levels or bounded row chunks; simple units use the default.
     #[allow(clippy::too_many_arguments)]

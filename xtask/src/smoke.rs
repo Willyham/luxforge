@@ -1353,6 +1353,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
                 "gpu_preview_in_use_bytes": gpu["gpu_preview_in_use_bytes"],
                 "gpu_preview_peak_bytes": gpu["gpu_preview_peak_bytes"],
                 "gpu_preview_frame_us": gpu["gpu_preview_frame_us"],
+                "gpu_preview_done_us": gpu["gpu_preview_done_us"],
                 "full_resident_bytes": gpu["full_resident_bytes"],
                 "render": bar["render"],
                 "gpu_ms": bar["gpu_ms"],

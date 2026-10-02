@@ -3,8 +3,9 @@
 //! stack's GPU frame against the CPU frame it previews (`docs/design/gpu-preview.md`).
 //!
 //! It runs the stage's own shader: each step checked by [`validate_step`], the plan assembled and
-//! its words packed exactly as `prepare` assembles and packs them, and the boundary uploaded as the
-//! slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
+//! its words packed exactly as `prepare` assembles and packs them, a spatial step's planes created
+//! and its passes encoded before the frame's as the slot encodes them, and the boundary uploaded
+//! as the slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
 //! program's `f32` output is read before any encoding, which is where a non-finite value would be
 //! hidden; [`Qualifier::evaluate_codes`] writes the stage's own sRGB-typed output format and reads
 //! the codes the surface draws.
@@ -13,8 +14,9 @@
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
 use super::{
-    GpuBoundary, GpuPlan, OUTPUT_FORMAT, Support, answered, assemble_passes, compile, encode_pass,
-    le_bytes, pack, upload_boundary, validate, validate_step,
+    GpuBoundary, GpuFallback, GpuPlan, GpuStep, OUTPUT_FORMAT, Support, answered, assemble_passes,
+    compile, encode_pass, le_bytes, pack, slot_charge, spatial, upload_boundary, validate,
+    validate_step,
 };
 use std::sync::mpsc;
 
@@ -64,17 +66,25 @@ impl Qualifier {
     }
 
     /// How long the stage's own compile of `steps` takes on this device, from the programs' `naga`
-    /// checks to the backend's pipeline, as the compile thread runs it
+    /// checks to the backend's pipelines, as the compile thread runs it
     /// ([`super::compile`](mod@super::compile)): wall-clock time on the calling thread.
-    pub fn compile_time(&self, steps: &[super::GpuStep]) -> Result<std::time::Duration, String> {
+    pub fn compile_time(&self, steps: &[GpuStep]) -> Result<std::time::Duration, String> {
         let started = std::time::Instant::now();
-        compile(
-            &self.device,
-            &self.support.pipeline_layout,
-            steps,
-            OUTPUT_FORMAT,
-        )?;
+        compile(&self.device, &self.support, steps, OUTPUT_FORMAT)?;
         Ok(started.elapsed())
+    }
+
+    /// How many spatial pass pipelines this qualifier has created: a pass whose module another
+    /// pass or an earlier plan already compiled reuses that pipeline and adds nothing.
+    pub fn pass_pipelines_created(&self) -> u64 {
+        self.support.passes.created()
+    }
+
+    /// What the photo surface's slot holding `plan` charges the GPU-preview budget on this device:
+    /// the boundary, a tail's intermediate, the output in the photograph's size bucket and its
+    /// uniform, the words and blocks buffers and a spatial step's planes.
+    pub fn charged_bytes(&self, plan: &GpuPlan) -> Result<u64, GpuFallback> {
+        slot_charge(&self.device, plan)
     }
 
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
@@ -116,9 +126,19 @@ impl Qualifier {
         for source in assemble_passes(&plan.steps, true)? {
             validate(&source)?;
         }
-        let pipelines = compile(device, &self.support.pipeline_layout, &plan.steps, format)?;
+        let spatial_steps = plan
+            .steps
+            .iter()
+            .any(|step| matches!(step, GpuStep::Spatial(_)));
+        if spatial_steps && !spatial::supported(&device.limits()) {
+            return Err("the device cannot run a spatial step".into());
+        }
+        if spatial_steps && plan.texels.step != [1.0, 1.0] {
+            return Err("a spatial step runs over the boundary's own texels".into());
+        }
+        let compiled = compile(device, &self.support, &plan.steps, format)?;
         let tail = plan.steps.iter().find_map(|step| match step {
-            super::GpuStep::Geometry(tail) => Some(tail),
+            GpuStep::Geometry(tail) => Some(tail),
             _ => None,
         });
         let boundary_size = plan.boundary.size();
@@ -208,26 +228,54 @@ impl Qualifier {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        let mut planes = spatial::PlanesKey::of(&plan.steps, boundary_size, origin)
+            .map(|key| spatial::Planes::create(device, key));
+        if let Some(planes) = planes.as_mut() {
+            planes.write_parameters(&self.queue, &plan.steps);
+        }
+        let groups = planes
+            .as_ref()
+            .map(|planes| spatial::Groups::new(device, &compiled.spatial, planes));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.qualification.encoder"),
         });
+        if let Some(groups) = &groups {
+            groups.encode(&mut encoder, &compiled.spatial, &bindings);
+        }
+        let planes_group = groups.as_ref().and_then(|groups| groups.fragment.as_ref());
         let size = |(width, height): (u32, u32)| (width as f32, height as f32);
-        match (&intermediate, pipelines.as_slice()) {
-            (Some(intermediate), [content, last]) => {
+        match (&intermediate, &compiled.tail) {
+            (Some(intermediate), Some(tail)) => {
                 let view = intermediate.create_view(&wgpu::TextureViewDescriptor::default());
-                encode_pass(&mut encoder, &view, content, &bindings, size(boundary_size));
+                encode_pass(
+                    &mut encoder,
+                    &view,
+                    &compiled.render,
+                    (&bindings, planes_group),
+                    size(boundary_size),
+                );
                 let view = target.create_view(&wgpu::TextureViewDescriptor::default());
                 encode_pass(
                     &mut encoder,
                     &view,
-                    last,
-                    &bind(intermediate),
+                    tail,
+                    (&bind(intermediate), None),
                     size((width, height)),
                 );
             }
-            (None, [only]) => {
+            (None, None) => {
                 let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-                encode_pass(&mut encoder, &view, only, &bindings, size((width, height)));
+                encode_pass(
+                    &mut encoder,
+                    &view,
+                    &compiled.render,
+                    (&bindings, planes_group),
+                    size((width, height)),
+                );
             }
             _ => return Err("a plan's passes do not match its tail".into()),
         }

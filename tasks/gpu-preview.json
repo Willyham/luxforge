@@ -523,13 +523,16 @@
     {
       "id": "TASK-010",
       "description": "Write the GPU programs for Detail (noise reduction and capture sharpening) and qualify them under the spatial limits.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
-        "TASK-009"
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
       ],
       "extra_context": [
         "Separable Gaussians, the a-trous B3 wavelet levels in Oklab with soft shrinkage, coring, gradient-energy gating, 3 x 3 extrema and the tanh limiter, reusing the separable-pass infrastructure from Presence.",
-        "Detail is a restoration-stage layer. Its own drags become GPU-eligible; drags of later layers already reuse the restoration-prefix proxy cache as their boundary. Fit settlement still presents the reduction of the exact CPU render, which is the frame the dissolve ends on."
+        "Detail is a restoration-stage layer. Its own drags become GPU-eligible; drags of later layers already reuse the restoration-prefix proxy cache as their boundary. Fit settlement still presents the reduction of the exact CPU render, which is the frame the dissolve ends on.",
+        "The kernels reuse the compute step, planes and separable passes that Presence's programs introduced, which are on the integration branch; its drags at Fit and 100% need the Fit and 100% drag paths, so the task completes after them."
       ],
       "context_links": [
         {
@@ -691,14 +694,14 @@
         "TASK-005",
         "TASK-006",
         "TASK-007",
-        "TASK-009"
+        "TASK-009",
+        "TASK-010"
       ]
     },
     {
       "wave": 3,
       "task_ids": [
-        "TASK-008",
-        "TASK-010"
+        "TASK-008"
       ]
     },
     {

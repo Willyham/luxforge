@@ -33,6 +33,12 @@ pub enum GpuProgramKind {
     /// pixel of the stage the mask was compiled against; `rgb` is the input of the operation the
     /// mask modulates.
     Coverage,
+    /// A spatial operation's compute kernels and the pointwise applies that use what they wrote,
+    /// under the spatial convention ([`super::spatial`]). Its entry is the program's name, which
+    /// starts every kernel's and apply's; a description ([`super::GpuSpatialUnit`]) names the
+    /// passes and applies a unit runs, so the program's own `words` is `0` and each description
+    /// carries its own.
+    Spatial,
 }
 
 /// One WGSL program, owned by the module whose CPU unit it mirrors and kept in a `.wgsl` file
@@ -176,7 +182,11 @@ pub(crate) mod testing {
                 other => panic!("a constant of f32 values, not {other:?}"),
             }
         }
-        let source = format!("{}\n{}", super::super::wgsl_tests::PRELUDE, program.source);
+        let source = format!(
+            "{}\n{}",
+            super::super::wgsl_tests::prelude(program.kind),
+            program.source
+        );
         let module = naga::front::wgsl::parse_str(&source)
             .unwrap_or_else(|error| panic!("{}", error.emit_to_string(&source)));
         let (_, constant) = module
