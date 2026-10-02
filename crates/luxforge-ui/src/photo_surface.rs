@@ -115,8 +115,8 @@ pub mod gpu_preview;
 pub use gpu_preview::{
     BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
     Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan,
-    GpuProgram, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE,
-    PositionMap, TexelMap, install_output_encoding, output_encoding, validate_step,
+    GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
+    PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -852,8 +852,9 @@ impl PhotoSurface {
     /// them, and the output is placed, snapped and filtered exactly as the photograph's frame is.
     /// The frame the surface was built with stays its fallback: a frame the stage cannot draw
     /// draws that one and names why in [`SurfaceDiagnostics::gpu_fallback`]. Without a plan the
-    /// surface's GPU-preview slot is released. Only a whole-frame photograph
-    /// ([`photo_surface`]) runs the stage; a percentage view or a crop stage ignores the plan.
+    /// surface's GPU-preview slot is released. A whole-frame photograph ([`photo_surface`]) runs a
+    /// whole frame's plan, and a percentage view a region's ([`GpuPlan::region`]) of its own stage,
+    /// drawn as that region of the photograph; a crop stage ignores a plan.
     pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
         self.gpu = plan.cloned();
         self
@@ -1090,8 +1091,18 @@ where
                 layers: self.layers.clone(),
                 viewport: self.viewport.clone(),
                 region_overlays: self.region_overlays.clone(),
+                // A whole frame's plan draws the photograph at Fit, a region's at a percentage zoom
+                // of the same stage; a crop stage runs none.
                 gpu: match self.base {
-                    Base::Photo(_) if self.viewport.is_none() => self.gpu.clone(),
+                    Base::Photo(_) => {
+                        self.gpu
+                            .clone()
+                            .filter(|plan| match (&self.viewport, plan.region) {
+                                (None, None) => true,
+                                (Some(view), Some(region)) => region.stage == view.full_stage,
+                                _ => false,
+                            })
+                    }
                     _ => None,
                 },
                 gpu_options: self.gpu_options.clone(),
@@ -1600,7 +1611,22 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
-        if let Some(view) = &self.viewport {
+        // At a percentage zoom, a region plan's GPU frame is the photograph: drawn alone, so no
+        // region of other content is composited with it.
+        let gpu_region = self.viewport.as_ref().and_then(|view| {
+            surface.gpu_output().filter(|output| {
+                output
+                    .region_key
+                    .is_some_and(|key| key.full_stage == view.full_stage)
+            })
+        });
+        if let Some(output) = gpu_region {
+            draw_picture(render_pass, output);
+            drew_photo = true;
+            drawn_gpu_boundary = Some(output.version);
+            gpu_frame_us = surface.gpu_frame_us();
+            gpu_clock = surface.gpu_clock();
+        } else if let Some(view) = &self.viewport {
             let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {

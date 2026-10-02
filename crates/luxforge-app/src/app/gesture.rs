@@ -720,8 +720,9 @@ impl Editor {
             return self.draft_set(result);
         }
         let preview = previews.then(|| (asset, self.proxy_bounds()));
-        // The GPU preview is planned with the tick's job only at Fit, where the surface draws it.
-        let gpu = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+        // The GPU preview is planned with the tick's job at Fit and at 100% or more, where the
+        // surface draws it.
+        let gpu = self.gpu_ask();
         let result = tasks::draft_set_now(&self.owner, self.client, draft_id, fields, preview, gpu);
         self.draft_set(result)
     }

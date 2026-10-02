@@ -330,7 +330,7 @@ fn lf_tail_sample(uv: vec2<f32>, words: u32) -> vec3<f32> {{
 }
 
 /// The opening of the tail pass's fragment stage, for a tail whose header is at `base`: the output
-/// pixel, its edge column and row repeated past the output stage, its coordinate in the boundary
+/// pixel, its edge column and row repeated past the frame and offset by the region's origin, its coordinate in the boundary
 /// stage through the mapping, and the blend there, quantized as the CPU's resample output is when
 /// the tail quantizes. `stage` is the output pixel the steps after the tail address.
 pub(super) fn fragment(tail: &GpuTail, base: usize) -> String {
@@ -346,7 +346,9 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
     let lf_tail_words = lf_words[{base}u];
     let lf_tail_block = lf_words[{block}u];
     let lf_tail_last = vec2<u32>(lf_word(lf_tail_words), lf_word(lf_tail_words + 1u)) - vec2<u32>(1u);
-    let texel = min(vec2<u32>(position.xy), lf_tail_last);
+    // The drawn pixel, its edge column and row repeated, then offset to the output stage: a
+    // region's origin at a percentage zoom, zero for a whole frame.
+    let texel = min(vec2<u32>(position.xy), lf_tail_last) + vec2<u32>(lf_word(4u), lf_word(5u));
     let stage = vec2<f32>(texel);
     let uv = {entry}(stage + vec2<f32>(0.5), lf_tail_words, lf_tail_block);
     var rgb = lf_tail_sample(uv, lf_tail_words);
