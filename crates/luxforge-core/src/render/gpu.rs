@@ -25,7 +25,7 @@ mod plan_tests;
 #[cfg(test)]
 mod wgsl_tests;
 
-pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_TOLERANCE_PX};
+pub use grid::{CoordinateGrid, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX};
 pub use plan::{
     EstimateSource, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuEstimates, GpuFallback,
     GpuGeometry, GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, gpu_plan,
