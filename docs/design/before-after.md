@@ -10,7 +10,7 @@ The title bar Compare button toggles the slider, and the palette exposes the sam
 
 ## Command and resource contract
 
-`preview.compare` owns the slider selection and its normalized divider position in the client's preview session. Enabling saves the prior selection and fixes the After entry; Before selects the Original with that After entry's geometry. Disabling restores the prior selection. Position-only updates change no preview generation and request no rendering, source work or history reads. Ordinary selection changes clear comparison. The desktop calls this command through the shared registry.
+`preview.compare` owns the slider selection and its normalized divider position in the client's preview session. Enabling saves the prior selection and fixes the After entry; Before selects the Original with that After entry's geometry. Disabling restores the prior selection. Position-only updates change no preview generation and request no rendering, source work or history reads. Ordinary selection changes clear comparison. The desktop calls this command through the shared registry. JPEG export names the fixed After entry explicitly, so selecting Original for the Before surface does not change the exported photograph.
 
 Held comparison uses `preview.select` and `preview.return-current`. Entering and releasing adopt the session in the input's own update, before preparing a preview on the worker. The released selection's generation rejects a late Before answer, including when release happens before its preparation finishes.
 
