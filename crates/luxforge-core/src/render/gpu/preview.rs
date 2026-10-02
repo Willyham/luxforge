@@ -95,6 +95,10 @@ pub struct BoundaryRequest {
     /// Physical pixels an output pixel is drawn at, which a warp's coordinate grid is made dense
     /// enough for: one at Fit, the zoom at a percentage.
     pub(crate) magnification: f64,
+    /// At a percentage zoom, the window of the boundary layer's received stage the region reads,
+    /// which the boundary holds: the region and every margin after it, so what the boundary and
+    /// a slot drawing over it take is known before it is rendered.
+    pub window: Option<Region>,
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -171,7 +175,7 @@ fn first_change(entry: &Recipe, drafted: &Recipe) -> Option<usize> {
 
 /// Where layer `layer` of a stack compiled as `compiled` begins: its own position, or the end of
 /// the last segment for a layer one past the stack.
-fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usize)> {
+pub(crate) fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usize)> {
     match compiled.layers.get(layer) {
         Some(position) => Some(*position),
         None if layer == compiled.layers.len() => {
@@ -359,7 +363,34 @@ pub(crate) fn plan_preview(
         Some(drafted) if drafted.held => (recipe.clone(), request.drafted(drafted.index)),
         _ => (recipe.clone(), request),
     };
-    let answer = gpu_plan(registry, &planned, request)?;
+    let mut answer = gpu_plan(registry, &planned, request)?;
+    let position = position(&fit.compiled, boundary).ok_or_else(|| {
+        Error::internal(format!(
+            "the GPU preview's boundary layer {boundary} is past the stack"
+        ))
+    })?;
+    // At a percentage zoom, the window of the received stage the boundary will hold, planned now
+    // so what it takes is known before it is rendered; and a spatial estimate the GPU would take
+    // from the region alone, where the exact visible region reads the whole stage's, is the CPU's.
+    let mut window = None;
+    if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
+        let full = (fit.full.width, fit.full.height);
+        answer = match plan.spatial.as_ref().filter(|spatial| spatial.estimated) {
+            Some(spatial) => GpuAnswer::Fallback(GpuFallback::RegionEstimate {
+                layer: spatial.layer,
+            }),
+            None => match crate::render::window::WindowPlan::of_rect(&fit.compiled, full, rect) {
+                Ok(windows) => {
+                    window = Some(windows.received(position.0));
+                    answer
+                }
+                Err(reason) => GpuAnswer::Fallback(GpuFallback::Unplannable(format!(
+                    "the region's boundary: {}",
+                    reason.reason()
+                ))),
+            },
+        };
+    }
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
         GpuAnswer::Plan(plan) => Some(BoundaryRequest {
@@ -370,13 +401,10 @@ pub(crate) fn plan_preview(
                 plan: fit.plan,
                 region: fit.region.map(|(rect, _)| rect),
             },
-            position: position(&fit.compiled, boundary).ok_or_else(|| {
-                Error::internal(format!(
-                    "the GPU preview's boundary layer {boundary} is past the stack"
-                ))
-            })?,
+            position,
             format: crate::BoundaryFormat::of(fit.linear),
             magnification: fit.region.map_or(1.0, |(_, magnification)| magnification),
+            window,
             warp: plan
                 .geometry
                 .affine()

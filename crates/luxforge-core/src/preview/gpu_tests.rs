@@ -494,6 +494,17 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
         assert_eq!(outcome.key, request.key);
         let frame = outcome.result.as_ref().unwrap();
         assert_eq!(frame.format, crate::BoundaryFormat::Half);
+        // The window the request named when it was planned is the one the boundary holds.
+        assert_eq!(
+            request.window,
+            Some(crate::modules::Region {
+                x0: frame.origin.0,
+                y0: frame.origin.1,
+                width: frame.width,
+                height: frame.height,
+            }),
+            "{what}"
+        );
         assert_eq!(
             frame.stage,
             Stage {
@@ -534,4 +545,56 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
             }
         }
     }
+}
+
+/// At a percentage zoom a Dehaze plan whose atmospheric light the GPU would take from the visible
+/// region alone, where the exact visible region reads the whole stage's, is the CPU's, naming why
+/// and asking for no boundary; at Fit, where the GPU holds the whole stage, the same draft plans.
+/// A spatial plan with no global estimate plans over the region, its window wider than the region
+/// by the margin its filters read.
+#[test]
+fn a_region_plan_never_takes_a_spatial_estimate_from_the_region_alone() {
+    let rect = crate::modules::Region {
+        x0: 200,
+        y0: 120,
+        width: 160,
+        height: 100,
+    };
+    let region = crate::GpuView::Region {
+        rect,
+        magnification: 1.0,
+    };
+    let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
+    let (job, draft) = draft_job("set-presence", Vec::new(), vec![dehaze], 1);
+    let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
+    match &preview.answer {
+        GpuAnswer::Fallback(reason) => {
+            assert_eq!(reason.code(), "region-estimate");
+            assert_eq!(reason.layer(), Some(0));
+        }
+        GpuAnswer::Plan(_) => panic!("a region plan took Dehaze's light from the region"),
+    }
+    assert!(preview.boundary.is_none());
+    let fit = plan_preview(&job.evaluation, &draft, crate::GpuView::Fit(bounds())).unwrap();
+    assert!(
+        planned(&fit).approximate(),
+        "at Fit the GPU takes it over the whole stage"
+    );
+    assert_eq!(fit.boundary.unwrap().window, None);
+    let clarity = Layer::new(crate::PRESENCE_EFFECT, json!({"clarity": 30.0}));
+    let (job, draft) = draft_job("set-presence", Vec::new(), vec![clarity], 1);
+    let preview = plan_preview(&job.evaluation, &draft, region).unwrap();
+    assert!(!planned(&preview).approximate());
+    let window = preview
+        .boundary
+        .unwrap()
+        .window
+        .expect("the region's window");
+    assert!(
+        window.x0 < rect.x0
+            && window.y0 < rect.y0
+            && window.x1() > rect.x1()
+            && window.y1() > rect.y1(),
+        "{window:?} holds {rect:?} and Clarity's margin"
+    );
 }
