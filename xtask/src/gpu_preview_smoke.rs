@@ -46,8 +46,8 @@ pub const SCENARIO: &str = "gpu-preview";
 /// Four flat quadrants: every patch below reads one colour, which a drag moves by a known amount.
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 
-const BASIC: &str = "set-basic";
-const EXPOSURE: &str = "exposure";
+pub(crate) const BASIC: &str = "set-basic";
+pub(crate) const EXPOSURE: &str = "exposure";
 const PRESENCE: &str = "set-presence";
 /// The committed Presence the drags start from, then each Presence drag's first tick and its GPU
 /// ticks, one a step, so each GPU step's frame counts one tick's compute passes.
@@ -119,7 +119,7 @@ const IDLE: script::IdleStep = script::IdleStep {
     ms: 1000,
 };
 
-fn quiet(name: &str) -> Step {
+pub(crate) fn quiet(name: &str) -> Step {
     quiet_for(name, QUIET_MS)
 }
 
@@ -360,7 +360,7 @@ fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<St
 }
 
 /// The events of the step whose frame is `frame`: from its `script_step` record to the next.
-fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
+pub(crate) fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
     let step = launch.index(frame)? as u64;
     let events = &launch.events;
     let start = events
@@ -374,7 +374,7 @@ fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
     Ok(&events[start..end])
 }
 
-fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
+pub(crate) fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
     events
         .iter()
         .filter(|event| event["event"] == name)
@@ -382,7 +382,7 @@ fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
 }
 
 /// The GPU ticks and CPU ticks among `events`, and how many preview jobs went to the worker.
-fn ticks(events: &[Value]) -> (usize, usize, usize) {
+pub(crate) fn ticks(events: &[Value]) -> (usize, usize, usize) {
     let ticks = named(events, "gpu_preview_tick");
     let gpu = ticks
         .iter()
@@ -398,7 +398,7 @@ fn ticks(events: &[Value]) -> (usize, usize, usize) {
 /// A frame the surface drew on the GPU from the plan of the gesture's newest tick: the GPU path
 /// with no fallback, the held boundary's version and the draft revision of the frame's own draft,
 /// the slot's bytes within the budget, and the status bar's GPU label of the frame's own figure.
-fn gpu_drawn(frame: &Frame) -> Result<Value> {
+pub(crate) fn gpu_drawn(frame: &Frame) -> Result<Value> {
     let state = frame.state();
     let gpu = &state["surface"]["gpu"];
     let summary = &gpu["gpu_preview"]["drag"];
@@ -461,7 +461,7 @@ fn gpu_drawn(frame: &Frame) -> Result<Value> {
 
 /// Each patch's mean colour in `gpu` against the same patch of `cpu`, the CPU's frame of the same
 /// settings: within [`SAME_CODES`] on every channel.
-fn same_pixels(gpu: &Frame, cpu: &Frame) -> Result<Value> {
+pub(crate) fn same_pixels(gpu: &Frame, cpu: &Frame) -> Result<Value> {
     same_pixels_at(gpu, cpu, &PATCHES)
 }
 

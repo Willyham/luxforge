@@ -847,6 +847,7 @@ fn gpu_colour_transcendental_precision_is_measured() {
                 block: Arc::from(block),
                 ..GpuProgram::new("probe", PROBE)
             })],
+            region: None,
         };
         let output = qualifier.evaluate(&plan).expect("a probe readback");
         let mut channels = [Precision::default(), Precision::default()];
