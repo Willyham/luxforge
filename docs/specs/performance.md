@@ -3702,6 +3702,22 @@ cargo test -p luxforge-app gpu_detail_corpus -- --ignored --nocapture
 
 The corpus run writes, beside each pair, `<recipe>--<source>[--lens-reset]-proxy.png`, the CPU's moving proxy, and records its figures in `cells.json` under `settled_from_exact`.
 
+## GPU preview settle
+
+What a person sees when a gesture settles: the GPU frame on screen against the CPU frame the 150 ms dissolve ends on ([design](../design/gpu-preview.md#settle-and-the-dissolve)). M4 Pro (Metal), 2026-10-02, on a shared host at load average about 25: functional figures, not timings.
+
+**In the editor.** The `gpu-preview` scenario's Basic drag, its last frame drawn on the GPU against the settled frame its release committed, over the whole photograph: mean ΔE00 1.1 × 10⁻⁵, worst block 0.014, p99 0, signed ΔL\* −3 × 10⁻⁶, within the pointwise limits. The moved gradient's and the stroke's frames carry their handles or cursor, which the settled frames do not, so they are held to the CPU's by patch instead. Every commit that replaced a GPU frame dissolved from that frame's draft revision and boundary, ending after 155 to 188 ms at the next message; the next gesture's first tick cancelled a release's dissolve 48 ms in; and an idle second after the release's and the stroke's dissolves drew one frame and ran one update, the window's own.
+
+**Across the corpus.** The harness's GPU frame for each recipe against the frame settlement presents, which the dissolve ends on (`gpu_colour_corpus_at_fit`, `gpu_mask_corpus_at_fit`, `gpu_presence_corpus_at_fit`, the generated JPEGs and the Z6, X100VI and Air 2S; the `test` profile build at `1e001460`):
+
+| Families | Class | Cells within the limits | Worst mean | Worst block | Worst p99 | Worst \|ΔL\*\| |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Colour: Basic, Tone curve, Mixer, Vignette, crop, lens and perspective | pointwise | 40 of 40 | 0.089 | 0.38 | 1.06 | 0.007 |
+| Every mask kind | pointwise | 36 of 36 | 0.090 | 0.34 | 1.03 | 0.009 |
+| Presence | spatial | 42 of 42 | 0.138 | 0.53 | 1.08 | 0.010 |
+
+Two colour cells are gaps: a lens distortion before the boundary, which the surface cannot run yet.
+
 ## Method
 
 Optimized builds only, with commit, lockfile, OS, CPU/GPU, RAM, display and storage recorded. Report cold and warm runs separately and say which cold is meant. Keep at least 30 samples and never drop failures or tails silently. Measure user event to presented frame, not shader time, and account CPU RSS, cache bytes, GPU allocations and transient copies without double-counting unified memory. Capture idle after all background work stops. No timing gates in CI; CI enforces exactness, deterministic bounds and coverage. VM checks record hypervisor, guest graphics path and software versus accelerated rendering, and never stand in for native timings.
