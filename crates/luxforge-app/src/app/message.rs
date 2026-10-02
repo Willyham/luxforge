@@ -106,7 +106,11 @@ impl Message {
                 matches!(message, overlay::OverlayMessage::ToggleClipping(_))
             }
             Self::Performance(message) => {
-                matches!(message, performance::PerformanceMessage::Toggle)
+                matches!(
+                    message,
+                    performance::PerformanceMessage::Toggle
+                        | performance::PerformanceMessage::Cancel(_)
+                )
             }
             Self::Preset(message) => matches!(
                 message,
