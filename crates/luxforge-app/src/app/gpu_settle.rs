@@ -21,10 +21,10 @@
 //! updating state does: a change of drawing path wakes the desktop, and the update that wake runs
 //! names the new path.
 use super::Editor;
-use luxforge_core::WorkspaceState;
+use luxforge_core::{DraftId, EntryId, WorkspaceState};
 use luxforge_ui::{
     Frame,
-    photo_surface::{DrawingPath, GpuPlan},
+    photo_surface::{Dissolve, DrawingPath, GpuPlan},
 };
 use serde_json::{Value, json};
 
@@ -80,6 +80,237 @@ impl Editor {
             None
         }
     }
+}
+
+/// The GPU frame the surface drew last, which the CPU frame replacing it may dissolve from.
+#[derive(Clone, Debug, PartialEq)]
+struct Shown {
+    /// The draft whose tick it drew, that tick's revision and the boundary it was drawn over.
+    draft: DraftId,
+    revision: u64,
+    boundary: u64,
+    /// The CPU frame the surface held behind it: the frame that replaces it is a newer one.
+    photo: Option<u64>,
+    /// The entry on screen behind the draft: a commit makes another one current.
+    entry: Option<EntryId>,
+}
+
+/// What a dissolve's CPU frame shows, which a newer frame of the same content keeps it running to.
+#[derive(Clone, Debug, PartialEq)]
+enum Content {
+    /// A frame of the open draft at this revision: the shared quiet policy's settlement.
+    Draft(DraftId, u64),
+    /// The frame of the entry the draft committed.
+    Committed(Option<EntryId>),
+}
+
+impl Content {
+    fn case(&self) -> &'static str {
+        match self {
+            Self::Draft(..) => "held",
+            Self::Committed(_) => "committed",
+        }
+    }
+}
+
+/// A dissolve handed to the surface.
+#[derive(Clone, Debug)]
+struct Running {
+    dissolve: Dissolve,
+    /// The open draft and its revision when it began: any newer tick, or another gesture, is an
+    /// input that cancels it.
+    input: Option<(DraftId, u64)>,
+    content: Content,
+    boundary: u64,
+}
+
+/// The desktop's half of the settle hand-off: the GPU frame on screen, and the dissolve from it to
+/// the CPU frame that replaces it ([`Editor::follow_gpu_settle`]).
+#[derive(Debug, Default)]
+pub(crate) struct GpuSettle {
+    shown: Option<Shown>,
+    running: Option<Running>,
+    started: u64,
+    cancelled: u64,
+    /// The newest GPU frame's replacement, as evidence records it.
+    last: Option<Value>,
+}
+
+impl GpuSettle {
+    /// The dissolve the surface draws now.
+    pub(crate) fn dissolve(&self) -> Option<Dissolve> {
+        self.running.as_ref().map(|running| running.dissolve)
+    }
+
+    /// The settle hand-off as evidence records it.
+    pub(crate) fn summary(&self) -> Value {
+        json!({
+            "running": self.running.as_ref().map(|running| json!({
+                "from": running.dissolve.from,
+                "to": running.dissolve.to,
+                "gpu_boundary": running.boundary,
+                "case": running.content.case(),
+                "elapsed_ms": running.dissolve.started.elapsed().as_secs_f64() * 1000.0,
+            })),
+            "dissolves": self.started,
+            "cancelled": self.cancelled,
+            "last": self.last,
+        })
+    }
+}
+
+impl Editor {
+    /// What the CPU frame on screen shows, when it is the open draft's or a commit's.
+    fn shown_content(&self, shown: &Shown) -> Option<Content> {
+        let displayed = &self.presentation;
+        if displayed.displayed_draft_id.as_ref() == Some(&shown.draft) {
+            // The shared quiet policy, or the release, settled the drafted settings on the CPU:
+            // never a revision older than the GPU frame's.
+            let revision = displayed.displayed_draft_revision?;
+            return (revision >= shown.revision)
+                .then(|| Content::Draft(shown.draft.clone(), revision));
+        }
+        let open = self.session.draft.as_ref().map(|draft| &draft.draft_id);
+        let entry = self.displayed_entry();
+        // The draft ended, and the entry on screen is not the one it was drawn over: its commit's.
+        // A cancel shows the entry it was drawn over again, which is older content.
+        (displayed.displayed_draft_id.is_none()
+            && open != Some(&shown.draft)
+            && entry != shown.entry)
+            .then_some(Content::Committed(entry))
+    }
+
+    /// Whether the CPU frame on screen still shows `content`: a newer frame of the same settings,
+    /// such as the exact phase after the proxy, keeps the dissolve running to it.
+    fn shows(&self, content: &Content) -> bool {
+        let displayed = &self.presentation;
+        match content {
+            Content::Draft(draft, revision) => {
+                displayed.displayed_draft_id.as_ref() == Some(draft)
+                    && displayed.displayed_draft_revision == Some(*revision)
+            }
+            Content::Committed(entry) => {
+                displayed.displayed_draft_id.is_none() && self.displayed_entry() == *entry
+            }
+        }
+    }
+
+    /// After every message: follow the GPU frame on screen, and when the CPU frame of its content
+    /// replaces it at Fit — the drafted settings settled on the CPU, or the entry the draft
+    /// committed — dissolve from one to the other. A cancel or any older content is a plain swap.
+    /// The running dissolve ends after its 150 ms, follows a newer frame of the same content, and
+    /// is cancelled by any input: a newer tick of the draft, or another gesture.
+    pub(crate) fn follow_gpu_settle(&mut self) {
+        let photo = self.surfaces().photo.map(Frame::version);
+        let input = self
+            .session
+            .draft
+            .as_ref()
+            .map(|draft| (draft.draft_id.clone(), draft.draft_revision));
+        if let Some(running) = self.gpu_settle.running.clone() {
+            let elapsed_ms = running.dissolve.started.elapsed().as_secs_f64() * 1000.0;
+            let detail = |why: &str| {
+                json!({"from": running.dissolve.from, "to": running.dissolve.to,
+                    "elapsed_ms": elapsed_ms, "why": why})
+            };
+            if input != running.input {
+                self.gpu_settle.running = None;
+                self.gpu_settle.cancelled += 1;
+                self.event("gpu_dissolve_cancelled", || detail("input"));
+            } else if running.dissolve.share(std::time::Instant::now()) >= 1.0 {
+                self.gpu_settle.running = None;
+                self.event("gpu_dissolve_ended", || detail("ended"));
+            } else if photo != Some(running.dissolve.to) {
+                if let Some(to) = photo.filter(|_| self.shows(&running.content)) {
+                    // The same settings at better quality: keep dissolving, to it.
+                    let dissolve = Dissolve {
+                        to,
+                        ..running.dissolve
+                    };
+                    self.event("gpu_dissolve_retargeted", || {
+                        let mut detail = detail("same content");
+                        detail["to"] = json!(to);
+                        detail
+                    });
+                    if let Some(running) = &mut self.gpu_settle.running {
+                        running.dissolve = dissolve;
+                    }
+                } else {
+                    self.gpu_settle.running = None;
+                    self.event("gpu_dissolve_cut", || detail("other content"));
+                }
+            }
+        }
+        // The plan the surface draws in place of the CPU frame, when it is not held behind it.
+        let surfaces = self.surfaces();
+        let drawing = surfaces.gpu.is_some() && !surfaces.gpu_hold;
+        // A newer CPU frame behind a GPU frame that stays on screen changes nothing on it.
+        if drawing && let Some(shown) = &mut self.gpu_settle.shown {
+            shown.photo = photo;
+        }
+        // A newer CPU frame replaced the GPU frame on screen.
+        if let Some(shown) = self.gpu_settle.shown.clone()
+            && photo != shown.photo
+        {
+            self.gpu_settle.shown = None;
+            let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
+                && self.presentation.compare_after.is_none();
+            let content = self.shown_content(&shown).filter(|_| fit);
+            let decision = match (&content, photo) {
+                (Some(content), Some(to)) => {
+                    let dissolve = Dissolve::start(shown.revision, to);
+                    self.gpu_settle.running = Some(Running {
+                        dissolve,
+                        input: input.clone(),
+                        content: content.clone(),
+                        boundary: shown.boundary,
+                    });
+                    self.gpu_settle.started += 1;
+                    json!({"dissolve": true, "case": content.case(), "from": shown.revision,
+                        "to": to, "gpu_boundary": shown.boundary})
+                }
+                _ => json!({"dissolve": false, "from": shown.revision, "to": photo,
+                    "why": if fit { "older content" } else { "not fit" }}),
+            };
+            self.event(
+                if content.is_some() && photo.is_some() {
+                    "gpu_dissolve_started"
+                } else {
+                    "gpu_settle_swapped"
+                },
+                || decision.clone(),
+            );
+            self.gpu_settle.last = Some(decision);
+        }
+        // The GPU frame on screen: a gesture's tick the last draw showed, tagged with its revision,
+        // while its plan is still drawn in place of the CPU frame. Once the plan is held or gone,
+        // the last draw's report describes a frame already replaced.
+        if drawing
+            && let Some((boundary, revision)) = self.surface_report().drawn
+            && let Some(draft) = self.gpu.draft().cloned()
+        {
+            let entry = self
+                .gpu_settle
+                .shown
+                .as_ref()
+                .filter(|shown| shown.draft == draft)
+                .map_or_else(|| self.displayed_entry(), |shown| shown.entry.clone());
+            self.gpu_settle.shown = Some(Shown {
+                draft,
+                revision,
+                boundary,
+                photo,
+                entry,
+            });
+        }
+    }
+}
+
+/// After every message: the settle hand-off follows the GPU frame on screen
+/// ([`Editor::follow_gpu_settle`]).
+pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Task<super::Message> {
+    editor.follow_gpu_settle();
+    iced::Task::none()
 }
 
 #[cfg(test)]

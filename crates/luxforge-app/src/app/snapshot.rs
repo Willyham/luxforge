@@ -348,6 +348,8 @@ impl Editor {
                 // The open gesture's GPU preview: its held boundary, the plan's revision, why the
                 // latest tick took the CPU path, and its tick counts; and the warm list's version.
                 "gpu_preview":self.gpu.summary(),
+                // The settle hand-off: the dissolve the desktop hands the surface and the last settle.
+                "settle":self.gpu_settle.summary(),
             },
             "views": self.log.loop_timing.get().views,
         })
