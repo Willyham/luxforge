@@ -151,8 +151,26 @@ impl Content {
     }
 }
 
-/// The clipping overlays shown, and whether the photograph is at Fit with no comparison.
-type SettleView = (Option<[bool; 2]>, bool);
+/// The clipping overlays shown, and how the photograph is drawn.
+type SettleView = (Option<[bool; 2]>, SettleZoom);
+
+/// How the photograph is drawn, as far as a dissolve is concerned: at Fit or at a percentage zoom
+/// of 100% or more, where a gesture's GPU frame settles into the CPU's, or any other way, a
+/// comparison included, where none dissolves.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SettleZoom {
+    Fit,
+    /// A percentage zoom of 100% or more, its value.
+    Percent(f32),
+    Other,
+}
+
+impl SettleZoom {
+    /// Whether a GPU frame drawn this way settles through a dissolve.
+    fn dissolves(self) -> bool {
+        !matches!(self, Self::Other)
+    }
+}
 
 /// A dissolve handed to the surface.
 #[derive(Clone, Debug)]
@@ -162,8 +180,10 @@ struct Running {
     /// input that cancels it.
     input: Option<(DraftId, u64)>,
     /// What the surface showed over the photograph when it began: a clipping overlay turned on or
-    /// off, a zoom away from Fit or a comparison is an input that cancels it too.
+    /// off, a change of zoom or a comparison is an input that cancels it too.
     view: SettleView,
+    /// At a percentage zoom, the scroll offset it began at: a pan cancels it too.
+    pan: Option<(f32, f32)>,
     content: Content,
     boundary: u64,
 }
@@ -242,26 +262,64 @@ impl Editor {
         }
     }
 
+    /// How the photograph is drawn now ([`SettleZoom`]).
+    fn settle_zoom(&self) -> SettleZoom {
+        if self.presentation.compare_after.is_some() {
+            return SettleZoom::Other;
+        }
+        match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Fit => SettleZoom::Fit,
+            luxforge_core::Zoom::Percent { value } if value >= 100.0 => SettleZoom::Percent(value),
+            luxforge_core::Zoom::Percent { .. } => SettleZoom::Other,
+        }
+    }
+
+    /// The version of the CPU frame the photograph is drawn from now: at Fit its frame; at a
+    /// percentage zoom the view's whole frame of the current content, or else its region of it,
+    /// as the canvas hands them to the percentage view.
+    fn settle_frame(&self, zoom: SettleZoom) -> Option<u64> {
+        let surfaces = self.surfaces();
+        match zoom {
+            SettleZoom::Percent(_) => {
+                if surfaces.photo_content == Some(surfaces.current_content) {
+                    surfaces.photo.map(Frame::version)
+                } else {
+                    surfaces
+                        .region
+                        .filter(|region| region.content_id == surfaces.current_content)
+                        .map(|region| region.frame.version())
+                }
+            }
+            SettleZoom::Fit | SettleZoom::Other => surfaces.photo.map(Frame::version),
+        }
+    }
+
     /// After every message: follow the GPU frame on screen, and when the CPU frame of its content
-    /// replaces it at Fit — the drafted settings settled on the CPU, or the entry the draft
-    /// committed — dissolve from one to the other. A cancel or any older content is a plain swap.
-    /// The running dissolve ends after its 150 ms, follows a newer frame of the same content, and
-    /// is cancelled by any input: a newer tick of the draft, or another gesture.
+    /// replaces it at Fit or at a percentage zoom of 100% or more — the drafted settings settled on
+    /// the CPU, or the entry the draft committed — dissolve from one to the other. A cancel or any
+    /// older content is a plain swap. The running dissolve ends after its 150 ms, follows a newer
+    /// frame of the same content, and is cancelled by any input: a newer tick of the draft, another
+    /// gesture, or a change of what is drawn over the photograph or of the view, a pan included.
     pub(crate) fn follow_gpu_settle(&mut self) {
-        let photo = self.surfaces().photo.map(Frame::version);
+        let zoom = self.settle_zoom();
+        let photo = self.settle_frame(zoom);
         let input = self
             .session
             .draft
             .as_ref()
             .map(|draft| (draft.draft_id.clone(), draft.draft_revision));
-        let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit)
-            && self.presentation.compare_after.is_none();
-        let view = (clip_flags(&self.session.workspace), fit);
+        let fit = zoom.dissolves();
+        let pan = matches!(zoom, SettleZoom::Percent(_)).then_some(self.view_state.local_pan);
+        let view = (clip_flags(&self.session.workspace), zoom);
         if self.gpu_settle.view.replace(view) != Some(view) {
-            self.event(
-                "gpu_settle_view",
-                || json!({"clipping": view.0, "fit": view.1}),
-            );
+            self.event("gpu_settle_view", || {
+                json!({"clipping": view.0, "fit": view.1 == SettleZoom::Fit,
+                "zoom": match view.1 {
+                    SettleZoom::Percent(value) => json!(value),
+                    SettleZoom::Fit => json!("fit"),
+                    SettleZoom::Other => Value::Null,
+                }})
+            });
         }
         if let Some(running) = self.gpu_settle.running.clone() {
             let elapsed_ms = running.dissolve.started.elapsed().as_secs_f64() * 1000.0;
@@ -269,7 +327,7 @@ impl Editor {
                 json!({"from": running.dissolve.from, "to": running.dissolve.to,
                     "elapsed_ms": elapsed_ms, "why": why})
             };
-            if input != running.input || view != running.view {
+            if input != running.input || view != running.view || pan != running.pan {
                 self.gpu_settle.running = None;
                 self.gpu_settle.cancelled += 1;
                 let why = if input == running.input {
@@ -322,6 +380,7 @@ impl Editor {
                         dissolve,
                         input: input.clone(),
                         view,
+                        pan,
                         content: content.clone(),
                         boundary: shown.boundary,
                     });

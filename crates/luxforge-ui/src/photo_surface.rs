@@ -737,6 +737,23 @@ struct ViewportFrames {
     full_stage: (u32, u32),
 }
 
+impl ViewportFrames {
+    /// The version of the CPU frame this view draws the current content from: its whole frame of
+    /// that content, or else its region of it.
+    fn drawn_version(&self) -> Option<u64> {
+        self.full
+            .as_ref()
+            .filter(|(_, content)| *content == self.current_content)
+            .map(|(frame, _)| frame.version())
+            .or_else(|| {
+                self.region
+                    .as_ref()
+                    .filter(|region| region.content_id == self.current_content)
+                    .map(|region| region.frame.version())
+            })
+    }
+}
+
 /// The photograph, placed by `placement`, on surface `id`.
 pub fn photo_surface(
     id: SurfaceId,
@@ -902,7 +919,9 @@ impl PhotoSurface {
     }
 
     /// Dissolve from the GPU frame this surface last drew to its frame, which must be the version
-    /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]).
+    /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]). A
+    /// percentage view dissolves from its region's GPU frame into the frame it draws its current
+    /// content from, its whole frame or its region.
     /// The widget asks for redraws only while it runs. It runs with no plan, or behind a plan held
     /// behind the CPU frame ([`PhotoSurface::gpu_hold`]); a plan drawn beside it cancels it, and a
     /// surface whose last frame was not the GPU stage's draws its frame alone.
@@ -911,17 +930,20 @@ impl PhotoSurface {
         self
     }
 
-    /// The dissolve this surface draws at `now`, if one runs.
+    /// The dissolve this surface draws at `now`, if one runs: into a whole-frame photograph's
+    /// frame, or the frame a percentage view draws its current content from.
     fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
-        let whole = matches!(self.base, Base::Photo(_))
-            && self.viewport.is_none()
-            && (self.gpu.is_none() || self.gpu_options.hold);
-        let frame = self
-            .layers
-            .first()
-            .filter(|(layer, _)| *layer == Layer::Photo)
-            .map(|(_, frame)| frame);
-        gpu_preview::dissolving(self.dissolve, whole, frame, now)
+        let photo =
+            matches!(self.base, Base::Photo(_)) && (self.gpu.is_none() || self.gpu_options.hold);
+        let version = match &self.viewport {
+            None => self
+                .layers
+                .first()
+                .filter(|(layer, _)| *layer == Layer::Photo)
+                .map(|(_, frame)| frame.version()),
+            Some(view) => view.drawn_version(),
+        };
+        gpu_preview::dissolving(self.dissolve, photo, version, now)
     }
 
     /// The size the picture is placed by: a percentage view's full stage, the exact stage a
@@ -1197,6 +1219,25 @@ pub struct PhotoPrimitive {
 }
 
 impl PhotoPrimitive {
+    /// Whether `surface` holds, in its textures, the CPU frame a dissolve into version `to` lays
+    /// over the GPU frame: a whole-frame photograph's own frame, or a percentage view's whole
+    /// frame or region of that version.
+    fn dissolve_ready(&self, surface: &SurfaceSlots, to: u64) -> bool {
+        match &self.viewport {
+            None => self.photo_ready(surface),
+            Some(_) => {
+                surface.slots[Layer::Photo.index()]
+                    .as_ref()
+                    .is_some_and(|picture| picture.version == to && picture.region_key.is_none())
+                    || surface
+                        .regions
+                        .iter()
+                        .flatten()
+                        .any(|picture| picture.version == to)
+            }
+        }
+    }
+
     /// Whether `surface`'s photograph texture holds exactly the frame this primitive draws, or it
     /// draws none.
     fn photo_ready(&self, surface: &SurfaceSlots) -> bool {
@@ -1514,10 +1555,22 @@ impl shader::Primitive for PhotoPrimitive {
         // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
         // while the plan is held behind the CPU frame: a plan drawn cancels it.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
-        let dissolve = self.dissolve.filter(|_| {
-            self.photo_ready(&surface) && (self.gpu.is_none() || self.gpu_options.hold)
+        let dissolve = self.dissolve.filter(|frame| {
+            self.dissolve_ready(&surface, frame.dissolve.to)
+                && (self.gpu.is_none() || self.gpu_options.hold)
         });
         pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
+        // A whole frame's GPU output dissolves under a whole-frame photograph, and a region's
+        // under the percentage view of its own stage: any other pairing draws the CPU frame alone.
+        if surface.dissolved_output().is_some_and(|output| {
+            match (&self.viewport, output.region_key) {
+                (None, None) => false,
+                (Some(view), Some(key)) => key.full_stage != view.full_stage,
+                _ => true,
+            }
+        }) {
+            surface.dissolving = None;
+        }
         surface.gpu_hold = self.gpu_options.hold;
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
         surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
@@ -1544,25 +1597,17 @@ impl shader::Primitive for PhotoPrimitive {
             }
         }
         if self.viewport.is_some() {
+            // Over a dissolving GPU region frame the view's own pictures are drawn at the
+            // dissolve's share.
+            let (bright, picture_turn) = match surface.dissolving {
+                Some(frame) => gpu_preview::photo_uniform(frame.share),
+                None => ([x0, y0, x1, y1], turn),
+            };
             if let Some(picture) = &surface.slots[Layer::Photo.index()] {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                write_uniforms(queue, picture, viewport, destination, bright, picture_turn);
             }
             for picture in surface.regions.iter().flatten() {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                write_uniforms(queue, picture, viewport, destination, bright, picture_turn);
             }
             for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
                 if let Some(overlay) = &self.region_overlays[index]
@@ -1647,6 +1692,17 @@ impl shader::Primitive for PhotoPrimitive {
             gpu_frame_us = surface.gpu_frame_us();
             gpu_clock = surface.gpu_clock();
         } else if let Some(view) = &self.viewport {
+            // A dissolve draws the GPU region frame it starts from first; the view's own pictures
+            // below are laid over it at the dissolve's share.
+            if let Some(output) = surface.dissolved_output()
+                && let Some(frame) = surface.dissolving
+            {
+                draw_picture(render_pass, output);
+                drawn_gpu_boundary = Some(output.version);
+                gpu_frame_us = surface.gpu_frame_us();
+                gpu_clock = surface.gpu_clock();
+                drawn_dissolve = Some(frame.drawn(output.version));
+            }
             let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {
