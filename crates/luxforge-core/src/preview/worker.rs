@@ -330,12 +330,24 @@ pub(super) fn run(
                                         height: window.height,
                                     });
                                 let result = match (uncut, &proxied) {
-                                    (Some(uncut), Ok(proxy)) => proxy.boundary(
+                                    // Read from the restoration prefix this frame just held,
+                                    // when the boundary lies in the segment it opens.
+                                    (Some(uncut), Ok(proxy)) => proxy.boundary_reading(
                                         &uncut,
                                         whole,
                                         window,
                                         request.position,
                                         request.format,
+                                        proxy
+                                            .held_prefix(
+                                                evaluation.registry(),
+                                                recipe,
+                                                &key,
+                                                restoration,
+                                            )
+                                            .ok()
+                                            .flatten()
+                                            .as_ref(),
                                     ),
                                     _ => Err(drawn_elsewhere()),
                                 };
