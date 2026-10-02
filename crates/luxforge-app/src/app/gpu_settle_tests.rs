@@ -7,7 +7,7 @@
 //! (`GpuPreviews::surface`).
 use super::{
     gpu_preview::SurfaceReport,
-    message::{draft::DraftMessage, preview::PreviewMessage},
+    message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
@@ -229,5 +229,128 @@ fn gpu_settle_a_clipping_toggle_cancels_the_dissolve() {
     assert_eq!(views.len(), 1, "{records:?}");
     assert_eq!(views[0]["clipping"], json!([false, true]));
     editor.session.workspace.clip_highlights = false;
+    finish(editor, catalog);
+}
+
+/// The photograph at 400%, where the window shows part of it, once its first frame is on screen:
+/// the session's zoom on the owner, as the zoom field sets it, and as the desktop adopts it.
+fn zoomed(editor: &mut Editor) {
+    deliver_until(editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    luxforge_testkit::client::call(
+        &editor.owner,
+        editor.client,
+        "view.set",
+        json!({"zoom": {"mode": "percent", "value": 400.0}}),
+    )
+    .expect("the zoom");
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+}
+
+/// The version of the CPU frame the percentage view draws the current content from: its whole
+/// frame of that content, or else its region of it.
+fn view_frame(editor: &Editor) -> Option<u64> {
+    let surfaces = editor.surfaces();
+    if surfaces.photo_content == Some(surfaces.current_content) {
+        surfaces.photo.map(luxforge_ui::Frame::version)
+    } else {
+        surfaces
+            .region
+            .filter(|region| region.content_id == surfaces.current_content)
+            .map(|region| region.frame.version())
+    }
+}
+
+/// At a percentage zoom the release's committed frame of the visible region replaces the GPU
+/// region frame through a dissolve, into the frame the view draws the committed content from; a
+/// pan while it runs is a view input that cancels it.
+#[test]
+fn gpu_settle_at_a_percentage_zoom_a_commit_dissolves_into_the_views_frame_and_a_pan_cancels_it() {
+    let catalog = catalog("percent-commit");
+    let (mut editor, _, _) = real_photo(&catalog);
+    zoomed(&mut editor);
+    gpu_drag(&mut editor, &[0.2, 0.35]);
+    assert!(
+        editor
+            .surfaces()
+            .gpu
+            .is_some_and(|plan| plan.region.is_some()),
+        "a region plan"
+    );
+    let (drawn, boundary) = (revision(&editor), editor.gpu.held_version().unwrap());
+    let behind = view_frame(&editor);
+    let log = attach_log(&mut editor);
+    let _ = let_go(&mut editor, ACTION, FIELD);
+    assert!(run_commit(&mut editor));
+    deliver_until(&mut editor, "the committed region", |editor| {
+        editor.gpu_settle.dissolve().is_some()
+    });
+    let dissolve = editor.gpu_settle.dissolve().expect("a dissolve");
+    assert_eq!(dissolve.from, drawn);
+    assert_ne!(Some(dissolve.to), behind, "to a newer frame");
+    assert_eq!(
+        Some(dissolve.to),
+        view_frame(&editor),
+        "to the frame the view draws"
+    );
+    assert_eq!(editor.surfaces().dissolve, Some(dissolve));
+    // A pan while it runs cancels it.
+    let (x, y) = editor.view_state.local_pan;
+    let _ = editor.update(Message::View(ViewMessage::Panned(x + 40.0, y + 40.0)));
+    assert!(editor.gpu_settle.dissolve().is_none());
+    assert!(editor.surfaces().dissolve.is_none());
+    let records = logged(&mut editor, &log);
+    let started = events(&records, "gpu_dissolve_started");
+    assert_eq!(started.len(), 1, "{records:?}");
+    assert_eq!(started[0]["case"], "committed");
+    assert_eq!(started[0]["gpu_boundary"], json!(boundary));
+    let cancelled = events(&records, "gpu_dissolve_cancelled");
+    assert_eq!(cancelled.len(), 1, "{records:?}");
+    assert_eq!(cancelled[0]["why"], "view");
+    finish(editor, catalog);
+}
+
+/// At a percentage zoom a tick the surface cannot draw sends its region job to the worker, and
+/// that region of the newer revision replaces the GPU region frame through a dissolve with the
+/// plan held behind it; a change of zoom cancels it, and a dissolve that runs to its end is let go
+/// by the next message.
+#[test]
+fn gpu_settle_at_a_percentage_zoom_the_drafts_region_dissolves_and_a_zoom_cancels_it() {
+    let catalog = catalog("percent-held");
+    let (mut editor, _, _) = real_photo(&catalog);
+    zoomed(&mut editor);
+    gpu_drag(&mut editor, &[0.2, 0.35]);
+    let drawn = revision(&editor);
+    let version = editor.gpu.held_version().unwrap();
+    let held_tick = |editor: &mut Editor, value: f64| {
+        editor.gpu.surface = Some(SurfaceReport {
+            ready_boundary: None,
+            fallback: Some(SurfaceFallback::Compiling),
+            drawn: Some((version, drawn)),
+        });
+        let _ = slide(editor, ACTION, FIELD, value);
+        deliver_until(editor, "the drafted region", |editor| {
+            editor.gpu_settle.dissolve().is_some()
+        });
+    };
+    held_tick(&mut editor, 0.5);
+    let dissolve = editor.gpu_settle.dissolve().unwrap();
+    assert_eq!(dissolve.from, drawn);
+    assert_eq!(Some(dissolve.to), view_frame(&editor));
+    assert!(editor.surfaces().gpu_hold, "the plan is held behind it");
+    // A change of zoom cancels it.
+    let log = attach_log(&mut editor);
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 800.0 };
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(editor.gpu_settle.dissolve().is_none());
+    let records = logged(&mut editor, &log);
+    let cancelled = events(&records, "gpu_dissolve_cancelled");
+    assert_eq!(cancelled.len(), 1, "{records:?}");
+    assert_eq!(cancelled[0]["why"], "view");
+    let views = events(&records, "gpu_settle_view");
+    assert_eq!(views.len(), 1, "{records:?}");
+    assert_eq!(views[0]["zoom"], json!(800.0));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }

@@ -11,8 +11,9 @@
 //! once. Once the share reaches one the frame is the CPU's alone, and the slot is released unless
 //! a plan is still held behind the CPU frame for the open draft's next tick.
 //!
-//! - Only a whole-frame photograph dissolves, and only into the frame its dissolve names, once that
-//!   frame is in its texture. It runs with no plan, or behind a plan held behind the CPU frame
+//! - A whole-frame photograph dissolves from a whole frame's GPU output, and a percentage view from
+//!   its region's, each only into the frame its dissolve names — the photograph's frame, or the
+//!   view's whole frame or region of its current content — once that frame is in its texture. It runs with no plan, or behind a plan held behind the CPU frame
 //!   (`PhotoSurface::gpu_hold`), whose unchanged words leave the slot's output as the GPU frame
 //!   last shown. A plan drawn beside it cancels it: an input during a dissolve draws the next GPU
 //!   frame.
@@ -22,7 +23,7 @@
 //!   the redraw that finds it ended asks for nothing and an idle editor stays asleep.
 //! - Each draw records the dissolve it drew ([`DrawnDissolve`]): both identities, the boundary of
 //!   the GPU output under it and the CPU frame's share.
-use super::super::{Frame, turn_uniform};
+use super::super::turn_uniform;
 use std::time::{Duration, Instant};
 
 /// How long a settle's dissolve takes: the recorded default.
@@ -100,17 +101,17 @@ impl DissolveFrame {
     }
 }
 
-/// The dissolve a surface draws at `now`: one was handed to a `whole` photograph — a whole-frame
-/// photograph handed no plan, or a plan held behind its frame — whose `frame` is the one it names, and its share is still short of
-/// one. `None` asks for no further redraw.
+/// The dissolve a surface draws at `now`: one was handed to a `photo` — a photograph or a
+/// percentage view handed no plan, or a plan held behind its frame — whose frame of `version` is
+/// the one it names, and its share is still short of one. `None` asks for no further redraw.
 pub(crate) fn dissolving(
     dissolve: Option<Dissolve>,
-    whole: bool,
-    frame: Option<&Frame>,
+    photo: bool,
+    version: Option<u64>,
     now: Instant,
 ) -> Option<DissolveFrame> {
-    let dissolve = dissolve.filter(|_| whole)?;
-    frame.filter(|frame| frame.version() == dissolve.to)?;
+    let dissolve = dissolve.filter(|_| photo)?;
+    version.filter(|version| *version == dissolve.to)?;
     let share = dissolve.share(now);
     (share < 1.0).then_some(DissolveFrame { dissolve, share })
 }

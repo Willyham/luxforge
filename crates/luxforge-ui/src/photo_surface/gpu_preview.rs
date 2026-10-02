@@ -358,7 +358,8 @@ impl BoundaryFormat {
 /// whenever the texels do and never otherwise.
 #[derive(Clone)]
 pub struct GpuBoundary {
-    texels: Arc<dyn AsRef<[u8]> + Send + Sync>,
+    /// The texels, until the caller lets them go once the slot holds them ([`Self::resident`]).
+    texels: Option<Arc<dyn AsRef<[u8]> + Send + Sync>>,
     width: u32,
     height: u32,
     version: u64,
@@ -391,7 +392,7 @@ impl GpuBoundary {
             .checked_mul(height as usize)?
             .checked_mul(format.texel_bytes())?;
         (width > 0 && height > 0 && (*texels).as_ref().len() == expected).then(|| Self {
-            texels,
+            texels: Some(texels),
             width,
             height,
             version,
@@ -450,6 +451,23 @@ impl GpuBoundary {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// This boundary with its texels let go: what a plan names once the surface's slot holds them
+    /// (its `gpu_ready_boundary` is this version), so the caller keeps no copy of them for the
+    /// rest of the gesture. The slot draws it from its own texture; a slot that no longer holds
+    /// it — released, or refitted to another shape — cannot, and the frame is the CPU's with
+    /// [`GpuFallback::BoundaryReleased`], for the caller to bring the texels again.
+    pub fn resident(&self) -> Self {
+        Self {
+            texels: None,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the boundary still holds its texels, which a slot that does not hold them uploads.
+    pub fn holds_texels(&self) -> bool {
+        self.texels.is_some()
     }
 }
 
@@ -552,6 +570,9 @@ pub enum GpuFallback {
     TextureLimit { width: u32, height: u32, limit: u32 },
     /// The words or the blocks are larger than the device allows a storage binding to be.
     BufferLimit { bytes: u64, limit: u64 },
+    /// The plan names a boundary whose texels its caller let go ([`GpuBoundary::resident`]), and
+    /// the slot no longer holds them.
+    BoundaryReleased,
 }
 
 impl GpuFallback {
@@ -564,6 +585,7 @@ impl GpuFallback {
             Self::BudgetExceeded { .. } => "budget-exceeded",
             Self::TextureLimit { .. } => "texture-limit",
             Self::BufferLimit { .. } => "buffer-limit",
+            Self::BoundaryReleased => "boundary-released",
         }
     }
 }
@@ -1620,7 +1642,9 @@ impl PhotoPipeline {
             return;
         };
         let outcome = self.evaluate(surface, device, queue, plan);
-        if outcome.is_err() {
+        // A sequence still compiling leaves the slot as it was, its boundary included, for the
+        // frame that finds the pipeline ready; any other fallback lets the slot go.
+        if outcome.is_err() && outcome != Err(GpuFallback::Compiling) {
             self.release_gpu(surface);
         }
         // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
@@ -1739,6 +1763,14 @@ impl PhotoPipeline {
         let started = std::time::Instant::now();
         let word_bytes = (words.len() * 4) as u64;
         let block_bytes = (blocks.len() * 4) as u64;
+        // A boundary whose texels were let go is drawn only from the slot that holds them.
+        if !plan.boundary.holds_texels()
+            && surface.gpu.as_ref().is_none_or(|slot| {
+                slot.shape != shape || slot.boundary_version != Some(plan.boundary.version)
+            })
+        {
+            return Err(GpuFallback::BoundaryReleased);
+        }
         if surface.gpu.as_ref().is_some_and(|slot| slot.shape != shape)
             && let Some(slot) = surface.gpu.take()
         {
@@ -2226,6 +2258,10 @@ fn le_bytes(words: &[u32]) -> Vec<u8> {
 
 /// Queue the boundary's texels straight from the caller's buffer, in bounded chunks of rows.
 fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuBoundary) {
+    // A resident boundary is never uploaded: only the slot that holds it draws it.
+    let Some(texels) = &boundary.texels else {
+        return;
+    };
     let row_bytes = u64::from(boundary.width) * boundary.format.texel_bytes() as u64;
     let rows_per_chunk = (UPLOAD_CHUNK / row_bytes).max(1) as u32;
     let mut row = 0;
@@ -2235,7 +2271,7 @@ fn upload_boundary(queue: &wgpu::Queue, texture: &wgpu::Texture, boundary: &GpuB
         destination.origin.y = row;
         queue.write_texture(
             destination,
-            (*boundary.texels).as_ref(),
+            (**texels).as_ref(),
             wgpu::TexelCopyBufferLayout {
                 offset: u64::from(row) * row_bytes,
                 bytes_per_row: Some(row_bytes as u32),
