@@ -145,6 +145,9 @@ struct SurfaceFigures {
     diagnostics: Mutex<SurfaceDiagnostics>,
     /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
     draws: Mutex<HashMap<SurfaceId, SurfaceDiagnostics>>,
+    /// The clock of the GPU frame each surface drew last, read live: the queue reports a pass
+    /// complete after the draw that drew it.
+    clocks: Mutex<HashMap<SurfaceId, Arc<gpu_preview::PassClock>>>,
     /// The GPU-preview budget and what is charged to it, which its retirements discharge.
     preview: gpu_preview::Figures,
 }
@@ -173,6 +176,14 @@ impl SurfaceFigures {
         overall.drawn_gpu_boundary = drawn.drawn_gpu_boundary;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
+        // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
+        // later submit or poll.
+        overall.gpu_preview_done_us = self
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
+            .get(&surface)
+            .and_then(|clock| clock.figure());
         // Read live: a retirement discharges the budget on the worker, between draws.
         overall.gpu_preview_budget_bytes = self.preview.budget();
         overall.gpu_preview_in_use_bytes = self.preview.in_use();
@@ -322,6 +333,12 @@ pub struct SurfaceDiagnostics {
     /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
     /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
     pub gpu_preview_frame_us: Option<u64>,
+    /// The time, in microseconds, from the start of the preparation of the newest GPU-frame pass
+    /// the queue has reported complete, of the slot the last draw drew, to when the interface
+    /// learned the GPU had finished it: at the first submit or poll after it finished
+    /// (`gpu_preview::timing`). Read live; `None` before one is reported. Evidence only, an upper
+    /// bound on when the GPU finished: the wait for the next submit is most of it.
+    pub gpu_preview_done_us: Option<u64>,
     /// The settle dissolve the last draw drew, with its identities and progress.
     pub drawn_dissolve: Option<DrawnDissolve>,
     /// The GPU-preview budget, beside the photo-texture figures above but not part of them.
@@ -1506,6 +1523,7 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_fallback_content = None;
         let mut drawn_gpu_boundary = None;
         let mut gpu_frame_us = None;
+        let mut gpu_clock = None;
         let mut drawn_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
@@ -1661,6 +1679,7 @@ impl shader::Primitive for PhotoPrimitive {
                     drew_photo = true;
                     drawn_gpu_boundary = Some(output.version);
                     gpu_frame_us = surface.gpu_frame_us();
+                    gpu_clock = surface.gpu_clock();
                     continue;
                 }
                 // A dissolve draws the GPU frame it starts from first; the photograph's own draw
@@ -1673,6 +1692,7 @@ impl shader::Primitive for PhotoPrimitive {
                     draw_picture(render_pass, output);
                     drawn_gpu_boundary = Some(output.version);
                     gpu_frame_us = surface.gpu_frame_us();
+                    gpu_clock = surface.gpu_clock();
                     drawn_dissolve = Some(frame.drawn(output.version));
                 }
                 if let Some(picture) = &surface.slots[layer.index()] {
@@ -1748,6 +1768,17 @@ impl shader::Primitive for PhotoPrimitive {
             .lock()
             .expect("surface draw identities lock")
             .insert(self.surface, drawn);
+        {
+            let mut clocks = pipeline
+                .figures
+                .clocks
+                .lock()
+                .expect("surface pass clocks lock");
+            match gpu_clock {
+                Some(clock) => clocks.insert(self.surface, clock),
+                None => clocks.remove(&self.surface),
+            };
+        }
         if status_changed {
             // A draw can discover staleness after the app has built its status bar. One buffered
             // wake refreshes that label on the next update, and another clears it after recovery.
@@ -2002,6 +2033,11 @@ impl SurfaceSlots {
     /// The interface thread's time to prepare the GPU output this surface holds.
     fn gpu_frame_us(&self) -> Option<u64> {
         self.gpu.as_ref().map(gpu_preview::GpuSlot::frame_us)
+    }
+
+    /// The clock the queue reports this surface's GPU passes complete to.
+    fn gpu_clock(&self) -> Option<Arc<gpu_preview::PassClock>> {
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::clock)
     }
 
     fn full_bytes(&self) -> u64 {
@@ -2641,6 +2677,11 @@ impl Drop for PhotoPipeline {
             .lock()
             .expect("surface draw identities lock")
             .clear();
+        self.figures
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
+            .clear();
         self.publish_diagnostics();
     }
 }
@@ -2913,6 +2954,11 @@ impl shader::Pipeline for PhotoPipeline {
             .draws
             .lock()
             .expect("surface draw identities lock")
+            .retain(|id, _| self.surfaces.contains_key(id));
+        self.figures
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
             .retain(|id, _| self.surfaces.contains_key(id));
         self.publish_diagnostics();
     }

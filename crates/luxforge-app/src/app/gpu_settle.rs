@@ -13,7 +13,10 @@
 //! its device with no optional features, so the device the surface receives has no timestamp
 //! queries on any adapter; N is therefore the interface thread's own time to prepare that frame in
 //! the surface's `prepare` — writing its words, uploading a new boundary, encoding and submitting
-//! its pass — and not the GPU's execution time, which nothing reads back. Only a draw knows which
+//! its pass — and not the GPU's execution time, which nothing reads back. The queue's completion
+//! callback would add the GPU's execution, but it is reported at the next submit, so on the M4 its
+//! figure is mostly the wait for that submit; evidence keeps it as `gpu_preview_done_us` (the
+//! design's "Labels and overlays during motion"). Only a draw knows which
 //! path drew it, so the label describes the frame the surface drew last, as the photograph's
 //! updating state does: a change of drawing path wakes the desktop, and the update that wake runs
 //! names the new path.
