@@ -113,10 +113,10 @@ use std::time::Instant;
 
 pub mod gpu_preview;
 pub use gpu_preview::{
-    BoundaryFormat, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION, Dissolve,
-    DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan, GpuProgram,
-    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
-    TexelMap, install_output_encoding, output_encoding, validate_step,
+    BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
+    Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan,
+    GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
+    PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -179,6 +179,7 @@ impl SurfaceFigures {
         overall.gpu_ready_boundary = drawn.gpu_ready_boundary;
         overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
         overall.drawn_dissolve = drawn.drawn_dissolve;
+        overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
         // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
         // later submit or poll.
         overall.gpu_preview_done_us = self
@@ -358,6 +359,10 @@ pub struct SurfaceDiagnostics {
     pub gpu_preview_done_us: Option<u64>,
     /// The settle dissolve the last draw drew, with its identities and progress.
     pub drawn_dissolve: Option<DrawnDissolve>,
+    /// The classes, shadows and highlights, of the clipping marks the GPU output the last draw
+    /// drew in place of the photograph carried ([`ClipMarks`]): approximate, and in place of the
+    /// CPU frame's overlay, which marks another frame's pixels.
+    pub drawn_clipping_marks: Option<[bool; 2]>,
     /// The GPU-preview budget, beside the photo-texture figures above but not part of them.
     pub gpu_preview_budget_bytes: u64,
     /// Every surface's GPU-preview textures and buffers, resident or retiring.
@@ -847,8 +852,9 @@ impl PhotoSurface {
     /// them, and the output is placed, snapped and filtered exactly as the photograph's frame is.
     /// The frame the surface was built with stays its fallback: a frame the stage cannot draw
     /// draws that one and names why in [`SurfaceDiagnostics::gpu_fallback`]. Without a plan the
-    /// surface's GPU-preview slot is released. Only a whole-frame photograph
-    /// ([`photo_surface`]) runs the stage; a percentage view or a crop stage ignores the plan.
+    /// surface's GPU-preview slot is released. A whole-frame photograph ([`photo_surface`]) runs a
+    /// whole frame's plan, and a percentage view a region's ([`GpuPlan::region`]) of its own stage,
+    /// drawn as that region of the photograph; a crop stage ignores a plan.
     pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
         self.gpu = plan.cloned();
         self
@@ -877,7 +883,8 @@ impl PhotoSurface {
 
     /// Dissolve from the GPU frame this surface last drew to its frame, which must be the version
     /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]).
-    /// The widget asks for redraws only while it runs. A plan handed beside it cancels it, and a
+    /// The widget asks for redraws only while it runs. It runs with no plan, or behind a plan held
+    /// behind the CPU frame ([`PhotoSurface::gpu_hold`]); a plan drawn beside it cancels it, and a
     /// surface whose last frame was not the GPU stage's draws its frame alone.
     pub fn dissolve(mut self, dissolve: Option<Dissolve>) -> Self {
         self.dissolve = dissolve;
@@ -886,8 +893,9 @@ impl PhotoSurface {
 
     /// The dissolve this surface draws at `now`, if one runs.
     fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
-        let whole =
-            matches!(self.base, Base::Photo(_)) && self.viewport.is_none() && self.gpu.is_none();
+        let whole = matches!(self.base, Base::Photo(_))
+            && self.viewport.is_none()
+            && (self.gpu.is_none() || self.gpu_options.hold);
         let frame = self
             .layers
             .first()
@@ -1083,8 +1091,18 @@ where
                 layers: self.layers.clone(),
                 viewport: self.viewport.clone(),
                 region_overlays: self.region_overlays.clone(),
+                // A whole frame's plan draws the photograph at Fit, a region's at a percentage zoom
+                // of the same stage; a crop stage runs none.
                 gpu: match self.base {
-                    Base::Photo(_) if self.viewport.is_none() => self.gpu.clone(),
+                    Base::Photo(_) => {
+                        self.gpu
+                            .clone()
+                            .filter(|plan| match (&self.viewport, plan.region) {
+                                (None, None) => true,
+                                (Some(view), Some(region)) => region.stage == view.full_stage,
+                                _ => false,
+                            })
+                    }
                     _ => None,
                 },
                 gpu_options: self.gpu_options.clone(),
@@ -1473,12 +1491,19 @@ impl shader::Primitive for PhotoPrimitive {
         pipeline.generate_mips(device, queue, &mut surface, drawn);
         // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
         // without a plan it releases the slot, unless a dissolve into a frame already in its
-        // texture keeps it for the GPU frame it dissolves from.
+        // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
+        // while the plan is held behind the CPU frame: a plan drawn cancels it.
         pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
-        let dissolve = self.dissolve.filter(|_| self.photo_ready(&surface));
+        let dissolve = self.dissolve.filter(|_| {
+            self.photo_ready(&surface) && (self.gpu.is_none() || self.gpu_options.hold)
+        });
         pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
         surface.gpu_hold = self.gpu_options.hold;
         surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
+        surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
+            Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
+            _ => None,
+        });
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
@@ -1582,10 +1607,26 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_gpu_boundary = None;
         let mut gpu_frame_us = None;
         let mut gpu_clock = None;
+        let mut drawn_clipping_marks = None;
         let mut drawn_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
-        if let Some(view) = &self.viewport {
+        // At a percentage zoom, a region plan's GPU frame is the photograph: drawn alone, so no
+        // region of other content is composited with it.
+        let gpu_region = self.viewport.as_ref().and_then(|view| {
+            surface.gpu_output().filter(|output| {
+                output
+                    .region_key
+                    .is_some_and(|key| key.full_stage == view.full_stage)
+            })
+        });
+        if let Some(output) = gpu_region {
+            draw_picture(render_pass, output);
+            drew_photo = true;
+            drawn_gpu_boundary = Some(output.version);
+            gpu_frame_us = surface.gpu_frame_us();
+            gpu_clock = surface.gpu_clock();
+        } else if let Some(view) = &self.viewport {
             let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {
@@ -1730,6 +1771,11 @@ impl shader::Primitive for PhotoPrimitive {
                 if matches!(*layer, Layer::Clipping | Layer::Coverage) && !photo_ready {
                     continue;
                 }
+                // The CPU frame's clipping overlay marks that frame's pixels: over the GPU output
+                // drawn in place of it, the plan's own marks are the overlay.
+                if *layer == Layer::Clipping && surface.gpu_output().is_some() {
+                    continue;
+                }
                 if *layer == Layer::Photo
                     && let Some(output) = surface.gpu_output()
                 {
@@ -1738,6 +1784,7 @@ impl shader::Primitive for PhotoPrimitive {
                     drawn_gpu_boundary = Some(output.version);
                     gpu_frame_us = surface.gpu_frame_us();
                     gpu_clock = surface.gpu_clock();
+                    drawn_clipping_marks = surface.gpu_marks;
                     continue;
                 }
                 // A dissolve draws the GPU frame it starts from first; the photograph's own draw
@@ -1801,6 +1848,7 @@ impl shader::Primitive for PhotoPrimitive {
         diagnostic.drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
         diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
         diagnostic.gpu_preview_frame_us = gpu_frame_us;
+        diagnostic.drawn_clipping_marks = drawn_clipping_marks;
         diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
@@ -2076,6 +2124,8 @@ struct SurfaceSlots {
     gpu_tag: Option<u64>,
     /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
     dissolving: Option<gpu_preview::DissolveFrame>,
+    /// The classes of the clipping marks the plan this frame was handed draws.
+    gpu_marks: Option<[bool; 2]>,
 }
 
 impl SurfaceSlots {
@@ -2256,6 +2306,7 @@ impl PhotoPipeline {
             gpu_hold: false,
             gpu_tag: None,
             dissolving: None,
+            gpu_marks: None,
         }
     }
 

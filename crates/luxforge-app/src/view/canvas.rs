@@ -494,6 +494,7 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
+    let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
             let Some(raster) = raster else {
@@ -517,6 +518,7 @@ fn plain<'a>(
                 .gpu_hold(gpu_hold)
                 .gpu_tag(gpu_tag)
                 .gpu_warm(gpu_warm)
+                .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
                 // through the affine and the same contained rectangle the photograph is drawn into.
@@ -617,6 +619,12 @@ fn plain<'a>(
                         )
                         .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
                         .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
+                        // At 100% and above a gesture's plan draws the visible region at full
+                        // scale, placed at its rectangle of the stage.
+                        .gpu_preview(gpu)
+                        .gpu_hold(gpu_hold)
+                        .gpu_tag(gpu_tag)
+                        .gpu_warm(gpu_warm)
                         .into()
                     };
                 let handles = mask_draft
@@ -1265,6 +1273,7 @@ mod tests {
             gpu: None,
             gpu_hold: false,
             gpu_tag: None,
+            dissolve: None,
             gpu_warm: None,
         };
         let model = CanvasModel {

@@ -65,6 +65,7 @@ pub(super) fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan
         boundary: boundary.clone(),
         texels: TexelMap::IDENTITY,
         steps: programs.into_iter().map(GpuStep::colour).collect(),
+        region: None,
     }
 }
 
@@ -225,7 +226,7 @@ fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() 
             base + 1
         )
     };
-    for (entry, base) in [("scale", 4), ("swap", 12), ("scale", 20)] {
+    for (entry, base) in [("scale", 6), ("swap", 14), ("scale", 22)] {
         assert!(
             source.contains(&call(entry, base)),
             "{entry} at {base}:\n{source}"
@@ -289,6 +290,9 @@ fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
         5f32.to_bits(),
         1f32.to_bits(),
         0.5f32.to_bits(),
+        // A whole frame's output starts at the stage's first pixel.
+        0,
+        0,
     ];
     // scale: its word after the header, no block.
     expected.extend([header, 0]);
@@ -305,6 +309,27 @@ fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
     // Every block empty still binds one word.
     pack(&plan(&boundary, vec![identity()]), &mut words, &mut blocks);
     assert_eq!(blocks, [0]);
+    // A region's output starts at its rectangle: in the boundary's texels with no tail, in the
+    // stage with one.
+    let mut region = plan(&boundary, vec![identity()]);
+    region.texels.origin = [3.0, 4.0];
+    region.region = Some(GpuRegion {
+        rect: [10, 20, 30, 40],
+        stage: (64, 64),
+    });
+    pack(&region, &mut words, &mut blocks);
+    assert_eq!(words[4..MAP_WORDS], [7, 16]);
+    region.steps.insert(
+        0,
+        GpuStep::Geometry(GpuTail::affine(
+            (20, 20),
+            [0, 0, 1, 1],
+            false,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        )),
+    );
+    pack(&region, &mut words, &mut blocks);
+    assert_eq!(words[4..MAP_WORDS], [10, 20]);
 }
 
 #[test]
@@ -1261,3 +1286,61 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
 
 mod masked;
 mod spatial;
+
+/// At a percentage zoom a region plan's frame is the photograph: drawn alone at its rectangle of
+/// the whole stage, one texel to one pixel, with no CPU frame of other content composited with
+/// it. A whole frame's plan is no frame of a percentage view, so that view draws the CPU's.
+#[test]
+fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
+    let test = "a_percentage_view_draws_a_region_plans_frame_at_its_rectangle";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let (boundary, codes) = boundary_with_codes(9);
+    // The 128 × 128 stage at 100%, panned so its middle 64 × 64 fills the target, and the
+    // boundary holding that window of it.
+    let stage = (2 * SIDE, 2 * SIDE);
+    let viewed = |surface, plan| {
+        let mut primitive = primitive(surface, plan);
+        primitive.viewport = Some(super::super::ViewportFrames {
+            full: None,
+            region: None,
+            current_content: 1,
+            full_stage: stage,
+        });
+        primitive.offset = Vector::new(-(SIDE as f32) / 2.0, -(SIDE as f32) / 2.0);
+        primitive.size = Size::new(stage.0 as f32, stage.1 as f32);
+        primitive
+    };
+    let half = SIDE / 2;
+    let mut region = plan(&boundary, vec![identity()]);
+    region.texels.origin = [half as f32, half as f32];
+    region.region = Some(GpuRegion {
+        rect: [half, half, half + SIDE, half + SIDE],
+        stage,
+    });
+    let drawn = paint(&device, &queue, &mut pipeline, &viewed(ID, Some(region)));
+    assert_codes(&drawn, &codes);
+    let seen = diagnostics(&pipeline, ID);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.drawn_gpu_boundary, Some(9));
+    assert_eq!(seen.drawn_full_version, None, "no CPU frame was drawn");
+    // A whole frame's plan at a percentage view, and a region plan of another stage, run nothing.
+    let mut elsewhere = plan(&boundary, vec![identity()]);
+    elsewhere.region = Some(GpuRegion {
+        rect: [0, 0, SIDE, SIDE],
+        stage: (SIDE, SIDE),
+    });
+    for (index, plan) in [plan(&boundary, vec![identity()]), elsewhere]
+        .into_iter()
+        .enumerate()
+    {
+        let surface = SurfaceId::new(10 + index as u64);
+        paint(&device, &queue, &mut pipeline, &viewed(surface, Some(plan)));
+        let seen = diagnostics(&pipeline, surface);
+        assert_ne!(seen.drawn_path, Some(DrawingPath::Gpu), "plan {index}");
+        assert_eq!(seen.drawn_gpu_boundary, None, "plan {index}");
+    }
+    settle(&pipeline);
+}

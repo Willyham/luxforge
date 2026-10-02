@@ -69,6 +69,8 @@ pub(crate) mod gpu_qualification;
 )]
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
+#[cfg(test)]
+mod gpu_settle_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -343,6 +345,8 @@ pub(crate) struct Editor {
     /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
     /// list of the committed stack.
     pub(crate) gpu: gpu_preview::GpuPreviews,
+    /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
+    pub(crate) gpu_settle: gpu_settle::GpuSettle,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -391,7 +395,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 13] = [
+const AFTER_MESSAGE: [AfterMessage; 14] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
@@ -399,6 +403,7 @@ const AFTER_MESSAGE: [AfterMessage; 13] = [
     controls::after_message,
     preview::after_message,
     gpu_preview::after_message,
+    gpu_settle::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
@@ -490,6 +495,7 @@ impl Editor {
             performance: performance::Sampler::open(),
             export: Default::default(),
             gpu: Default::default(),
+            gpu_settle: Default::default(),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -783,6 +789,7 @@ impl Editor {
             surfaces.gpu_tag = Some(revision);
         }
         surfaces.gpu_warm = self.gpu.warm();
+        surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }
 

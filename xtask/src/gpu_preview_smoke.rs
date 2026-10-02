@@ -21,22 +21,33 @@
 //! recorded with it — the drawing path, the boundary version and the draft revision the surface
 //! drew — and its pixels against the CPU's frame of the same settings: each drag's last value
 //! against the frame its release commits, and the moved gradient, under the coverage tint, against
-//! the frame its Apply commits, patch by patch.
+//! the frame its Apply commits, patch by patch.//!
+//! **The settle hand-off.** Each commit that replaces a GPU frame dissolves to it from that
+//! frame's own draft revision and boundary, as the editor records; the drag's GPU frame against
+//! the settled frame that replaced it is held to the pointwise limits over the whole photograph,
+//! and an `idle` step after the release's and the stroke's dissolves checks that nothing draws or
+//! updates once they have ended. With the GPU preview turned off from the palette a drag takes the
+//! CPU path, naming the preference, and its release starts no dissolve. With both clipping
+//! overlays shown a drag is still drawn on the GPU, marking its own clipped pixels. Turning them
+//! off, and the Detail drag after a third drag's release, each cancel a release's dissolve that
+//! still runs when they take effect; one that had already ended, as a release capture longer than
+//! 150 ms on a loaded host leaves it, is recorded with both times and passes.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_core::{BASIC_EFFECT, DETAIL_EFFECT};
 use luxforge_evidence::{
-    self as script, DragHandle, MaskStep, PaintStep, Reference, SliderStep, WorkspaceStep,
+    self as script, DragHandle, MaskStep, PaintStep, PaletteStep, Reference, SliderStep,
+    WorkspaceStep,
 };
 
 pub const SCENARIO: &str = "gpu-preview";
 /// Four flat quadrants: every patch below reads one colour, which a drag moves by a known amount.
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 
-const BASIC: &str = "set-basic";
-const EXPOSURE: &str = "exposure";
+pub(crate) const BASIC: &str = "set-basic";
+pub(crate) const EXPOSURE: &str = "exposure";
 const PRESENCE: &str = "set-presence";
 /// The committed Presence the drags start from, then each Presence drag's first tick and its GPU
 /// ticks, one a step, so each GPU step's frame counts one tick's compute passes.
@@ -95,7 +106,20 @@ fn stroke_path() -> Vec<[f64; 2]> {
 }
 const STROKE_INTERVAL_MS: u64 = 60;
 
-fn quiet(name: &str) -> Step {
+/// The exposure the preference-off drag moves through, the second GPU drag's and the third's. Each
+/// release differs from the exposure before it, the third's from the Presence section's Basic
+/// drag's too, so that each commits.
+const OFF: [f64; 2] = [0.6, 0.65];
+const AGAIN: [f64; 2] = [0.4, 0.45];
+const THIRD: [f64; 2] = [0.2, 0.25];
+/// An idle check: long enough a settle for a 150 ms dissolve to end and the slot to retire, then a
+/// second over which nothing may draw.
+const IDLE: script::IdleStep = script::IdleStep {
+    settle_ms: 600,
+    ms: 1000,
+};
+
+pub(crate) fn quiet(name: &str) -> Step {
     quiet_for(name, QUIET_MS)
 }
 
@@ -109,6 +133,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(
         vec![
             Step::opened("opened").no_draft().masks(0),
+            // The Performance section's sampler wakes the editor every second while it is open; the
+            // idle checks below are of the GPU preview alone.
+            Step::new(
+                "performance-closed",
+                script::Step::Performance { expanded: false },
+            )
+            .commits(0),
             // 1: the drag's first tick: the CPU frame, its job carrying the boundary request.
             Step::new("drag-first", SliderStep::new(BASIC, EXPOSURE, [FIRST]))
                 .commits(0)
@@ -127,8 +158,63 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .no_draft()
             .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[1] })),
-            // 5: settled: the boundary and the slot let go.
-            quiet("settled").no_draft(),
+            // 5: settled: the dissolve the release started has ended, nothing draws once it has,
+            // and the boundary and the slot are let go.
+            Step::new("settled", script::Step::Idle(IDLE))
+                .commits(0)
+                .no_draft(),
+            // The preference off from the palette: a drag takes the CPU path, naming it, and asks for
+            // no boundary; its release starts no dissolve. Then on again.
+            Step::new("preference-off", PaletteStep::Run("gpu preview".into()))
+                .commits(0)
+                .workspace("gpu_preview", json!(false)),
+            Step::new("drag-off", SliderStep::new(BASIC, EXPOSURE, OFF))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: OFF[1] })),
+            Step::new(
+                "drag-off-release",
+                SliderStep::new(BASIC, EXPOSURE, [OFF[1]]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            Step::new("preference-on", PaletteStep::Run("gpu preview".into()))
+                .commits(0)
+                .workspace("gpu_preview", json!(true)),
+            // Both clipping overlays shown (J): a drag is still drawn on the GPU, marking its own
+            // clipped pixels.
+            Step::new("clipping-on", script::Step::Key { key: "j".into() })
+                .commits(0)
+                .workspace("clip_shadows", json!(true))
+                .workspace("clip_highlights", json!(true)),
+            Step::new("again-first", SliderStep::new(BASIC, EXPOSURE, [AGAIN[0]])).commits(0),
+            quiet("again-held"),
+            Step::new("again-gpu", SliderStep::new(BASIC, EXPOSURE, AGAIN))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: AGAIN[1] })),
+            Step::new(
+                "again-release",
+                SliderStep::new(BASIC, EXPOSURE, [AGAIN[1]]).release(),
+            )
+            .commits(1)
+            .no_draft(),
+            Step::new("clipping-off", script::Step::Key { key: "j".into() })
+                .commits(0)
+                .workspace("clip_shadows", json!(false))
+                .workspace("clip_highlights", json!(false)),
+            // A third drag on the GPU, whose release's dissolve the next gesture's first tick, the
+            // Detail drag's, cancels: the release's capture, with no overlay to derive, ends well
+            // inside it.
+            Step::new("third-first", SliderStep::new(BASIC, EXPOSURE, [THIRD[0]])).commits(0),
+            quiet("third-held"),
+            Step::new("third-gpu", SliderStep::new(BASIC, EXPOSURE, THIRD))
+                .commits(0)
+                .draft(BASIC, json!({ EXPOSURE: THIRD[1] })),
+            Step::new(
+                "third-release",
+                SliderStep::new(BASIC, EXPOSURE, [THIRD[1]]).release(),
+            )
+            .commits(1)
+            .no_draft(),
             // 6-10: a Detail Amount drag. Its first tick takes the CPU path and asks for the
             // boundary, the restoration layer's input; its later ticks are Detail's spatial step
             // drawn on the GPU; its release commits; and once settled nothing is held.
@@ -208,6 +294,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             )
             .commits(0),
             mask("move-apply", MaskStep::Apply).commits(1),
+            // The applied gradient once its dissolve has ended: the frame that replaced the GPU one.
+            quiet("apply-settled"),
             // 17-18: a brush on the same mask, and one stroke painted a position per tick: its first
             // positions ask for the boundary, its later ones are drawn on the GPU, and its release
             // commits it as one entry.
@@ -222,6 +310,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 },
             )
             .commits(1),
+            // The stroke's dissolve ends, and nothing draws after it.
+            Step::new("stroke-idle", script::Step::Idle(IDLE)).commits(0),
             // 19-: back in the pointer mode, Presence committed, then three drags on the GPU.
             Step::new(
                 "pointer-mode",
@@ -270,7 +360,7 @@ fn drag_steps(name: &str, action: &str, field: &str, values: [f64; 3]) -> Vec<St
 }
 
 /// The events of the step whose frame is `frame`: from its `script_step` record to the next.
-fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
+pub(crate) fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
     let step = launch.index(frame)? as u64;
     let events = &launch.events;
     let start = events
@@ -284,7 +374,7 @@ fn step_events<'a>(launch: &'a Checked, frame: &str) -> Result<&'a [Value]> {
     Ok(&events[start..end])
 }
 
-fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
+pub(crate) fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
     events
         .iter()
         .filter(|event| event["event"] == name)
@@ -292,7 +382,7 @@ fn named<'a>(events: &'a [Value], name: &str) -> Vec<&'a Value> {
 }
 
 /// The GPU ticks and CPU ticks among `events`, and how many preview jobs went to the worker.
-fn ticks(events: &[Value]) -> (usize, usize, usize) {
+pub(crate) fn ticks(events: &[Value]) -> (usize, usize, usize) {
     let ticks = named(events, "gpu_preview_tick");
     let gpu = ticks
         .iter()
@@ -308,7 +398,7 @@ fn ticks(events: &[Value]) -> (usize, usize, usize) {
 /// A frame the surface drew on the GPU from the plan of the gesture's newest tick: the GPU path
 /// with no fallback, the held boundary's version and the draft revision of the frame's own draft,
 /// the slot's bytes within the budget, and the status bar's GPU label of the frame's own figure.
-fn gpu_drawn(frame: &Frame) -> Result<Value> {
+pub(crate) fn gpu_drawn(frame: &Frame) -> Result<Value> {
     let state = frame.state();
     let gpu = &state["surface"]["gpu"];
     let summary = &gpu["gpu_preview"]["drag"];
@@ -371,7 +461,7 @@ fn gpu_drawn(frame: &Frame) -> Result<Value> {
 
 /// Each patch's mean colour in `gpu` against the same patch of `cpu`, the CPU's frame of the same
 /// settings: within [`SAME_CODES`] on every channel.
-fn same_pixels(gpu: &Frame, cpu: &Frame) -> Result<Value> {
+pub(crate) fn same_pixels(gpu: &Frame, cpu: &Frame) -> Result<Value> {
     same_pixels_at(gpu, cpu, &PATCHES)
 }
 
@@ -681,5 +771,319 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         );
     }
 
+    settle_checks(launch, &mut checks)?;
     checks.write(&launch.evidence, run.scenario(), json!({}))
+}
+
+/// The events from the start of `first`'s step to the end of `last`'s.
+fn span_events<'a>(launch: &'a Checked, first: &str, last: &str) -> Result<&'a [Value]> {
+    let start = step_events(launch, first)?.as_ptr();
+    let events = &launch.events;
+    let from = events
+        .iter()
+        .position(|event| std::ptr::eq(event, start))
+        .ok_or("the span's first step")?;
+    let end = step_events(launch, last)?;
+    let to = events
+        .iter()
+        .position(|event| std::ptr::eq(event, end.as_ptr()))
+        .ok_or("the span's last step")?
+        + end.len();
+    Ok(&events[from..to])
+}
+
+/// The one `gpu_dissolve_started` among `events`, from the GPU frame `gpu` drew: its revision and
+/// boundary.
+fn dissolve_from(events: &[Value], gpu: &Frame, what: &str) -> Result<Value> {
+    let started = named(events, "gpu_dissolve_started");
+    let drawn = &gpu.state()["surface"]["gpu"];
+    ensure(
+        started.len() == 1
+            && started[0]["detail"]["case"] == json!("committed")
+            && started[0]["detail"]["from"] == drawn["drawn_gpu_revision"]
+            && started[0]["detail"]["gpu_boundary"] == drawn["drawn_gpu_boundary"],
+        format!(
+            "{what}: expected one dissolve from {}'s revision {} over boundary {}, got {:?}",
+            gpu["file"],
+            drawn["drawn_gpu_revision"],
+            drawn["drawn_gpu_boundary"],
+            started
+                .iter()
+                .map(|event| &event["detail"])
+                .collect::<Vec<_>>()
+        ),
+    )?;
+    Ok(started[0]["detail"].clone())
+}
+
+/// What became of the dissolve `release`'s commit began, given the input the step `input` sent,
+/// which takes effect at its first `effect` event and cancels a running dissolve (`why`). Still
+/// running then, it must be cancelled by it; ended first, which a release capture that outlasts
+/// the 150 ms dissolve on a loaded host allows, it is recorded with both times and passes. A
+/// dissolve that ends, or is cut, after the input took effect fails.
+fn cancelled_or_ended(
+    launch: &Checked,
+    release: &str,
+    input: &str,
+    effect: &str,
+    why: &str,
+) -> Result<Value> {
+    let events = span_events(launch, release, input)?;
+    let sent = events.len() - step_events(launch, input)?.len();
+    let start = events
+        .iter()
+        .position(|event| event["event"] == "gpu_dissolve_started")
+        .ok_or_else(|| format!("{release}: no dissolve started"))?;
+    let ends = [
+        "gpu_dissolve_cancelled",
+        "gpu_dissolve_ended",
+        "gpu_dissolve_cut",
+    ];
+    let end = events[start + 1..]
+        .iter()
+        .position(|event| ends.iter().any(|name| event["event"] == *name))
+        .map(|offset| start + 1 + offset);
+    let took = events[sent..]
+        .iter()
+        .position(|event| event["event"] == effect)
+        .map(|offset| sent + offset)
+        .ok_or_else(|| format!("{input}: its input never took effect ({effect})"))?;
+    let at = |index: usize| {
+        events[index]["elapsed_ms"].as_f64().unwrap_or(f64::NAN)
+            - events[start]["elapsed_ms"].as_f64().unwrap_or(f64::NAN)
+    };
+    let Some(end) = end else {
+        return Err(format!(
+            "{release}'s dissolve neither ended nor was cancelled by {input}'s input"
+        )
+        .into());
+    };
+    let (name, detail) = (&events[end]["event"], &events[end]["detail"]);
+    let mut outcome = json!({"input_sent_ms": at(sent), "input_ms": at(took)});
+    if name == "gpu_dissolve_cancelled" && detail["why"] == json!(why) && end > took {
+        outcome["outcome"] = json!("cancelled");
+        outcome["cancelled_ms"] = detail["elapsed_ms"].clone();
+    } else if name == "gpu_dissolve_ended" && end < took {
+        outcome["outcome"] = json!("ended before the input");
+        outcome["ended_ms"] = detail["elapsed_ms"].clone();
+    } else {
+        return Err(format!(
+            "{release}'s dissolve, still running when {input}'s input took effect {:.1} ms in, \
+             was not cancelled by it ({why}): {name} {detail}",
+            at(took)
+        )
+        .into());
+    }
+    Ok(outcome)
+}
+
+/// The idle check the step `name` recorded, which must have passed.
+fn idle_passed(launch: &Checked, name: &str) -> Result<Value> {
+    let checks = named(step_events(launch, name)?, "idle_check");
+    ensure(
+        checks.len() == 1 && checks[0]["detail"]["passed"] == json!(true),
+        format!(
+            "{name}: the editor was not idle after the dissolve: {:?}",
+            checks
+                .iter()
+                .map(|event| &event["detail"])
+                .collect::<Vec<_>>()
+        ),
+    )?;
+    let surface = &launch.at(name)?.state()["surface"]["gpu"];
+    ensure(
+        surface["dissolve"].is_null() && surface["settle"]["running"].is_null(),
+        format!("{name}: a dissolve still runs: {}", surface["settle"]),
+    )?;
+    Ok(checks[0]["detail"].clone())
+}
+
+/// The jump a person sees at settle: the GPU frame on screen against the CPU frame that replaced
+/// it, over the photograph, held to the pointwise limits.
+fn jump(gpu: &Frame, cpu: &Frame) -> Result<Value> {
+    let rect = gpu.visible_photo()?;
+    ensure(
+        cpu.visible_photo()? == rect,
+        format!(
+            "{} and {} show different rectangles",
+            gpu["file"], cpu["file"]
+        ),
+    )?;
+    let report = crate::preview_error::report(
+        gpu.image()?,
+        cpu.image()?,
+        rect,
+        Some(luxforge_reference::preview_error::Class::Pointwise),
+    )?;
+    ensure(
+        report["verdict"]["passed"] == json!(true),
+        format!(
+            "{} against {} misses the pointwise limits: {}",
+            gpu["file"], cpu["file"], report["verdict"]
+        ),
+    )?;
+    Ok(
+        json!({"gpu": gpu["file"], "cpu": cpu["file"], "statistics": report["statistics"],
+        "verdict": report["verdict"]}),
+    )
+}
+
+/// The settle hand-off: each release's dissolve from the GPU frame on screen, the jump it hides
+/// within the pointwise limits, idle once it has ended, the preference turned off and on, the
+/// clipping marks of a GPU drag, and a dissolve cancelled by a clipping toggle and by the next
+/// gesture, each where it still ran when the input took effect.
+fn settle_checks(launch: &Checked, checks: &mut Checks) -> Result {
+    // The drag's release: its committed frame dissolves in from the drag's last GPU frame, and
+    // once it has ended nothing draws.
+    let (dragged, settled) = (launch.at("drag-gpu")?, launch.at("settled")?);
+    let started = dissolve_from(
+        span_events(launch, "release", "settled")?,
+        dragged,
+        "the release",
+    )?;
+    ensure(
+        !named(
+            span_events(launch, "release", "settled")?,
+            "gpu_dissolve_ended",
+        )
+        .is_empty(),
+        "The release's dissolve never ended",
+    )?;
+    let idle = idle_passed(launch, "settled")?;
+    let jumped = jump(dragged, settled)?;
+    checks.note(
+        settled,
+        "the release dissolved from the GPU frame to the committed frame, then idle",
+        json!({"dissolve": started, "release_frame_dissolve":
+            launch.at("release")?.state()["surface"]["gpu"]["dissolve"], "idle": idle,
+            "jump": jumped}),
+    );
+
+    // The preference off: every tick on the CPU, naming it, no boundary asked for, and no
+    // dissolve at release; on again.
+    let off = launch.at("drag-off")?;
+    let events = step_events(launch, "drag-off")?;
+    let ticks = named(events, "gpu_preview_tick");
+    let gpu = &off.state()["surface"]["gpu"];
+    ensure(
+        !ticks.is_empty()
+            && ticks.iter().all(|tick| {
+                tick["detail"]["path"] == json!("cpu")
+                    && tick["detail"]["reason"] == json!("preference-off")
+                    && tick["detail"]["boundary_requested"] == json!(false)
+            })
+            && gpu["drawing_path"] == json!("cpu")
+            && gpu["plan_fallback"] == json!({"reason": "preference-off"}),
+        format!(
+            "With the preference off the drag was not the CPU's: ticks {:?}, path {}, plan \
+             fallback {}",
+            ticks.iter().map(|tick| &tick["detail"]).collect::<Vec<_>>(),
+            gpu["drawing_path"],
+            gpu["plan_fallback"]
+        ),
+    )?;
+    ensure(
+        named(
+            step_events(launch, "drag-off-release")?,
+            "gpu_dissolve_started",
+        )
+        .is_empty(),
+        "A release with no GPU frame on screen started a dissolve",
+    )?;
+    checks.note(
+        off,
+        "the preference off: the drag on the CPU",
+        json!({"ticks": ticks.len(), "plan_fallback": gpu["plan_fallback"],
+            "preference_on": launch.at("preference-on")?.state()["workspace"]["gpu_preview"]}),
+    );
+
+    // Clipping shown: the drag still drawn on the GPU, marking its own clipped pixels.
+    let marked = launch.at("again-gpu")?;
+    let drawn = gpu_drawn(marked)?;
+    let marks = &marked.state()["surface"]["gpu"]["clipping_marks"];
+    ensure(
+        marks == &json!({"shadows": true, "highlights": true, "approximate": true}),
+        format!("The GPU drag with clipping shown drew marks {marks}"),
+    )?;
+    checks.note(
+        marked,
+        "a drag with both clipping overlays shown, drawn on the GPU with its own marks",
+        json!({"drawn": drawn, "clipping_marks": marks}),
+    );
+
+    // Clipping turned off while the second release's dissolve may run: a view input.
+    let again = launch.at("again-gpu")?;
+    let started = dissolve_from(
+        step_events(launch, "again-release")?,
+        again,
+        "the second release",
+    )?;
+    let outcome = cancelled_or_ended(
+        launch,
+        "again-release",
+        "clipping-off",
+        "gpu_settle_view",
+        "view",
+    )?;
+    checks.note(
+        launch.at("clipping-off")?,
+        "turning the clipping overlays off cancelled the release's dissolve, or it had ended first",
+        json!({"dissolve": started, "outcome": outcome}),
+    );
+
+    // The next gesture, the Detail drag, while the third release's dissolve may run: its first
+    // tick is an input.
+    let third = launch.at("third-gpu")?;
+    gpu_drawn(third)?;
+    let started = dissolve_from(
+        step_events(launch, "third-release")?,
+        third,
+        "the third release",
+    )?;
+    let outcome = cancelled_or_ended(
+        launch,
+        "third-release",
+        "detail-first",
+        "slider_draft_begin",
+        "input",
+    )?;
+    checks.note(
+        launch.at("detail-first")?,
+        "the next gesture cancelled the release's dissolve, or it had ended first",
+        json!({"dissolve": started, "outcome": outcome}),
+    );
+
+    // The moved gradient's Apply, and the stroke: each dissolves from its GPU frame, and the
+    // editor is idle after the last. The moved gradient's frame carries its handles, which its
+    // applied frame does not, so its pixels are held to the CPU's by the patches above rather than
+    // over the whole photograph.
+    let moved = launch.at("move-gpu")?;
+    let applied = dissolve_from(
+        span_events(launch, "move-apply", "apply-settled")?,
+        moved,
+        "the gradient's Apply",
+    )?;
+    checks.note(
+        launch.at("apply-settled")?,
+        "the gradient's Apply dissolved from its GPU frame",
+        json!({"dissolve": applied}),
+    );
+    let stroke = named(step_events(launch, "stroke")?, "gpu_dissolve_started");
+    ensure(
+        stroke.len() == 1 && stroke[0]["detail"]["case"] == json!("committed"),
+        format!(
+            "The stroke's commit did not dissolve from its GPU frame: {:?}",
+            stroke
+                .iter()
+                .map(|event| &event["detail"])
+                .collect::<Vec<_>>()
+        ),
+    )?;
+    let idle = idle_passed(launch, "stroke-idle")?;
+    checks.note(
+        launch.at("stroke-idle")?,
+        "the stroke dissolved, then idle",
+        json!({"dissolve": stroke[0]["detail"], "idle": idle}),
+    );
+    Ok(())
 }

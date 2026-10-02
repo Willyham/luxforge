@@ -89,7 +89,7 @@ impl Qualifier {
     }
 
     /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
-    /// boundary's size, alpha one.
+    /// boundary's size, or its region's or tail's output, alpha one.
     pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
         let (bytes, _) = self.run(None, plan, None, wgpu::TextureFormat::Rgba32Float, 16)?;
         Ok(floats(&bytes))
@@ -161,6 +161,9 @@ impl Qualifier {
         }
         if spatial_steps && plan.texels.step != [1.0, 1.0] {
             return Err("a spatial step runs over the boundary's own texels".into());
+        }
+        if !super::region_drawable(plan) {
+            return Err("the plan's region is not inside what it draws".into());
         }
         compile(&self.device, &self.support, &plan.steps, format)
     }
@@ -332,7 +335,10 @@ impl Qualifier {
         let inputs = self.inputs(plan, float)?;
         let bindings = &inputs.bindings;
         // The output is the tail's output stage when the plan has a tail.
-        let (width, height) = tail.map_or(boundary_size, GpuTail::output);
+        let (width, height) = tail.map_or_else(
+            || plan.region.map_or(boundary_size, |region| region.size()),
+            GpuTail::output,
+        );
         let texture = |label, (width, height): (u32, u32), format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),

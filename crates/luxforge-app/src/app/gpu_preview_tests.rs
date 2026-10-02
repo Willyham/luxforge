@@ -148,6 +148,15 @@ fn gpu_preview_a_tick_the_surface_cannot_draw_takes_the_cpu_path() {
     for (fallback, value) in [
         (SurfaceFallback::Compiling, 0.25),
         (SurfaceFallback::DeviceLost, 0.35),
+        // A plan the surface finds over the GPU-preview budget once its boundary is held.
+        (
+            SurfaceFallback::BudgetExceeded {
+                requested: 2,
+                in_use: 0,
+                budget: 1,
+            },
+            0.45,
+        ),
     ] {
         editor.gpu.surface = Some(SurfaceReport {
             ready_boundary: None,
@@ -208,14 +217,14 @@ fn gpu_preview_the_boundary_is_released_at_cancel_and_on_a_key_change() {
     finish(editor, catalog);
 }
 
-/// An ineligible drag takes the CPU path and says why: at a percentage zoom no GPU preview is
-/// planned at all.
+/// An ineligible drag takes the CPU path and says why: at a percentage zoom below 100% no GPU
+/// preview is planned at all.
 #[test]
 fn gpu_preview_an_ineligible_drag_names_its_reason() {
     let catalog = catalog("ineligible");
     let (mut editor, _, _) = real_photo(&catalog);
-    // The session the owner answered a 100% zoom with.
-    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+    // The session the owner answered a 50% zoom with.
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 50.0 };
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     let records = logged(&mut editor, &log);
@@ -364,26 +373,42 @@ fn gpu_preview_presence_drags_draw_on_the_gpu_with_no_job_per_tick() {
     finish(editor, catalog);
 }
 
-/// While a clipping overlay is shown, which is derived from the CPU's frames, a drag takes the CPU
-/// path and says why, asking for no boundary.
+/// While a clipping overlay is shown, which is derived from the CPU's frames, a drag is still drawn
+/// on the GPU, its plan marking its own clipped pixels in the overlay's colours by the quantizer's
+/// thresholds; the marks follow the overlay's classes, and its warm sequences carry them.
 #[test]
-fn gpu_preview_a_drag_with_clipping_shown_keeps_the_cpu_path() {
+fn gpu_preview_a_drag_with_clipping_shown_draws_its_own_marks() {
+    use luxforge_ui::photo_surface::GpuStep;
     let catalog = catalog("clipping");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.session.workspace.clip_highlights = true;
-    let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    deliver_until(&mut editor, "the boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     let records = logged(&mut editor, &log);
-    assert_eq!(jobs(&records), 2);
-    let ticks = events(&records, "gpu_preview_tick");
-    assert!(
-        ticks
-            .iter()
-            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "clipping-shown")
-    );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
-    assert_eq!(editor.gpu_plan_fallback(), Some("clipping-shown".into()));
+    assert_eq!(jobs(&records), 0, "drawn on the GPU");
+    assert_eq!(editor.gpu_plan_fallback(), None);
+    let marks = |editor: &Editor| match editor.surfaces().gpu.and_then(|plan| plan.steps.last()) {
+        Some(GpuStep::Clipping(marks)) => Some(*marks),
+        _ => None,
+    };
+    let shown = marks(&editor).expect("the plan's last step marks clipping");
+    assert_eq!((shown.shadows, shown.highlights), (false, true));
+    let palette = super::overlay::palette();
+    assert_eq!(shown.palette, [palette[1], palette[2], palette[3]]);
+    // Both classes, then none: the next tick's plan follows.
+    editor.session.workspace.clip_shadows = true;
+    let _ = slide(&mut editor, ACTION, FIELD, 0.35);
+    let shown = marks(&editor).expect("marks");
+    assert_eq!((shown.shadows, shown.highlights), (true, true));
+    editor.session.workspace.clip_shadows = false;
+    editor.session.workspace.clip_highlights = false;
+    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
+    assert!(marks(&editor).is_none(), "no overlay, no marks");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
@@ -538,4 +563,228 @@ fn gpu_preview_compile_cost_per_sequence() {
             again.as_secs_f64() * 1000.0
         );
     }
+}
+
+/// The visible region of the 480 × 320 photograph at 400%, which the window shows only part of.
+fn zoomed(editor: &mut Editor) -> luxforge_core::Region {
+    deliver_until(editor, "the first frame", |editor| {
+        editor.presentation.dimensions.is_some() && !editor.presentation.queue.is_busy()
+    });
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 400.0 };
+    let stage = editor
+        .presentation
+        .dimensions
+        .expect("the photograph's stage");
+    let wanted = editor.desired_view_for(stage).expect("a visible region");
+    assert!(
+        wanted.width < stage.0 && wanted.height < stage.1,
+        "the view shows part of the photograph: {wanted:?} of {stage:?}"
+    );
+    wanted
+}
+
+/// The held boundary's region, as the drag's evidence names it.
+fn held_region(editor: &Editor) -> Value {
+    editor.gpu.summary()["drag"]["boundary"]["region"].clone()
+}
+
+fn corners(rect: luxforge_core::Region) -> Value {
+    json!([rect.x0, rect.y0, rect.width, rect.height])
+}
+
+/// A drag at a percentage zoom of 100% or more is drawn over the visible region at full scale: its
+/// first tick takes the CPU path and its region job carries the one boundary request, for that
+/// region; once the boundary is held and the surface has evaluated it, every tick is drawn on the
+/// GPU with no preview job — no tick's, and no region job for the view, which the GPU frame holds —
+/// and the plan handed to the surface draws that region of the stage.
+#[test]
+fn gpu_preview_a_percentage_drag_draws_its_region_with_no_job_per_tick() {
+    let catalog = catalog("region");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let wanted = zoomed(&mut editor);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 1);
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks[0]["path"], "cpu");
+    assert_eq!(ticks[0]["reason"], "boundary-pending");
+    assert_eq!(ticks[0]["boundary_requested"], true);
+    deliver_until(&mut editor, "the region's boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    assert_eq!(held_region(&editor), corners(wanted));
+    assert_eq!(editor.gpu.summary()["drag"]["zoom"], 400.0);
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    for value in [0.2, 0.3, 0.45] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+        let surfaces = editor.surfaces();
+        let plan = surfaces.gpu.expect("the region's plan is drawn");
+        let region = plan.region.expect("a region plan");
+        assert_eq!(
+            region.rect,
+            [wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]
+        );
+        assert_eq!(region.stage, editor.presentation.dimensions.unwrap());
+        assert_eq!(surfaces.gpu_tag, Some(revision), "tagged with its tick");
+        assert!(!surfaces.gpu_hold);
+        assert!(
+            editor.gpu_draws_view(wanted),
+            "the GPU frame holds the view"
+        );
+        // The tick's view motion plans no region job: the GPU frame answers the view.
+        assert!(!editor.view_plan.in_flight, "no region job for the view");
+        assert!(!editor.view_plan.dirty);
+        assert!(
+            editor.view_plan.quiet_since.is_some(),
+            "the quiet policy runs"
+        );
+    }
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0, "no preview job per tick");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks.len(), 3);
+    assert!(ticks.iter().all(|tick| tick["path"] == "gpu"));
+    assert_eq!(editor.gpu.ticks(), (3, 1, 1));
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A pan during a GPU-drawn drag at a percentage zoom to where the held region does not reach
+/// withdraws the plan at once, so the surface draws the CPU's frames and never the GPU frame of one
+/// region beside them; the next tick asks for the new region's boundary and takes the CPU path,
+/// handing the surface no plan until that boundary is held, and then draws the new region on the
+/// GPU.
+#[test]
+fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boundary() {
+    let catalog = catalog("pan");
+    let (mut editor, _, _) = real_photo(&catalog);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let first = zoomed(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    deliver_until(&mut editor, "the region's boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    assert!(editor.surfaces().gpu.is_some(), "drawn on the GPU");
+    let version = editor.gpu.held_version();
+    // Pan to the photograph's far corner, which the held region does not reach.
+    let _ = editor.update(Message::View(ViewMessage::Panned(1400.0, 900.0)));
+    let stage = editor.presentation.dimensions.unwrap();
+    let second = editor.desired_view_for(stage).expect("a visible region");
+    assert!(!super::preview::contains_region(first, second));
+    assert!(
+        editor.surfaces().gpu.is_none(),
+        "the plan is withdrawn the moment the view leaves its region"
+    );
+    assert!(!editor.gpu_draws_view(second));
+    // The next tick plans the new region: the old boundary goes and the new one is asked for.
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    let records = logged(&mut editor, &log);
+    let released = events(&records, "gpu_boundary_released");
+    assert_eq!(released.len(), 1);
+    assert_eq!(released[0]["why"], "key-changed");
+    assert_eq!(released[0]["version"], json!(version));
+    assert_eq!(
+        jobs(&records),
+        1,
+        "the tick's region job carries the request"
+    );
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks[0]["path"], "cpu");
+    assert_eq!(ticks[0]["reason"], "boundary-pending");
+    assert!(
+        editor.surfaces().gpu.is_none(),
+        "no plan until the new boundary"
+    );
+    deliver_until(&mut editor, "the new region's boundary", |editor| {
+        editor.gpu.holds_boundary()
+    });
+    assert_eq!(held_region(&editor), corners(second));
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.4);
+    let plan = editor.surfaces().gpu.expect("the new region's plan");
+    assert_eq!(
+        plan.region.map(|region| region.rect),
+        Some([second.x0, second.y0, second.x1(), second.y1()])
+    );
+    assert_eq!(editor.gpu.ticks().2, 2, "one boundary request a region");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A region whose boundary and frame alone would pass the GPU-preview budget asks for no boundary:
+/// every tick takes the CPU path, naming the budget, and the drag's evidence carries the bytes and
+/// the budget they pass.
+#[test]
+fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
+    let catalog = catalog("budget");
+    let (mut editor, _, _) = real_photo(&catalog);
+    let wanted = zoomed(&mut editor);
+    // A Basic layer's boundary is the region itself, with no tail and no plane: on a JPEG eight
+    // bytes a texel, and four an output pixel.
+    let needed = u64::from(wanted.width) * u64::from(wanted.height) * 12;
+    editor.gpu.budget = Some(needed - 1);
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.2);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 2, "each tick has its region job");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert!(
+        ticks
+            .iter()
+            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
+        "{ticks:?}"
+    );
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(
+        editor.gpu.summary()["drag"]["over_budget"],
+        json!({"requested": needed, "budget": needed - 1})
+    );
+    assert_eq!(editor.gpu_plan_fallback(), Some("budget-exceeded".into()));
+    assert!(editor.surfaces().gpu.is_none());
+    // Within the budget the same region is drawn on the GPU.
+    editor.gpu.budget = Some(needed);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.3);
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// Every family of the qualification corpus at 100%, in the largest window the owner's display
+/// holds: the worker's exact visible region against the GPU frame of the region plan over the
+/// region's own boundary, each held to its recipe's class, and a slot over the GPU-preview budget
+/// a gap naming it.
+#[test]
+#[ignore = "the GPU preview corpus at 100%: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
+            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
+            LUXFORGE_RAW_MANIFEST"]
+fn gpu_preview_corpus_at_100_percent() {
+    super::gpu_qualification::corpus_at_percent(
+        "gpu_preview_corpus_at_100_percent",
+        &[
+            "basic",
+            "tone-curve",
+            "mixer",
+            "vignette",
+            "colour-stack",
+            "mask-linear",
+            "mask-radial",
+            "mask-brush",
+            "mask-luminance-range",
+            "mask-colour-range",
+            "mask-composed",
+            "crop",
+            "lens-perspective",
+            "presence",
+            "detail",
+        ],
+        100.0,
+    );
 }
