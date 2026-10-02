@@ -30,7 +30,7 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 
 - `crates/luxforge-core`: images, recipes, rendering, the SQLite catalog and history, preview scheduling and the JSON API; its files are listed [below](#the-cores-files).
 - `crates/luxforge-net`: the host's network transport and secure secret store, behind the core's `Transport` and `SecretStore` traits. The desktop and `luxforge-json` build both and give them to the catalog owner through `HostConfig`. Only this crate may depend on `ureq`, and only it frames HTTP *(enforced)*. Its files are listed [below](#the-transports-files).
-- `crates/luxforge-ui`: the widget library and theme tokens of the Develop workspace. It depends on Iced only, never on the core, so a widget cannot hold editing logic.
+- `crates/luxforge-ui`: the widget library and theme tokens of the Develop workspace, and the photo surface that draws the photograph, whose GPU stage runs a gesture's preview plan, plain-data WGSL programs over a held boundary, within the GPU-preview budget ([GPU previews](gpu-preview.md)). It depends on Iced only, never on the core, so a widget cannot hold editing logic.
 - `crates/luxforge-jpeg`: the one JPEG codec, libjpeg-turbo through `mozjpeg`, and the JPEG container around it; described [below](#the-jpeg-codec). It depends on no workspace crate, and only `luxforge-core` depends on it *(enforced)*.
 - `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)); its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
 - `crates/luxforge-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API.
@@ -61,7 +61,7 @@ Paths are under `crates/luxforge-core/src`.
 | `editor/describe.rs` | State and recipe views |
 | `editor/artifact_store.rs` | Derived artifacts |
 | `editor/test_support.rs` | The helpers the service's tests share. Each concern's tests sit in its file, the artifact store's in `artifact_tests.rs` |
-| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (a resample's read rectangle and the byte domain's bilinear pass), `map.rs` (the shared exact, affine and warp coordinate mapping), `colour_runs.rs` (colour runs and their masked blend), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `restoration.rs` (the bounded processed restoration-prefix cache), `input_grid.rs` (bounded value-mask inputs), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
+| `render.rs` and `render/` | Rendering, one file per concept: `entry.rs` (the one way in, `render`, and the `Render` it returns), `compiled.rs` (segments separated by stage boundaries, and `Entry`, the one dispatch over the boundary kinds), `geometry.rs` (a resample's read rectangle and the byte domain's bilinear pass), `map.rs` (the shared exact, affine and warp coordinate mapping), `colour_runs.rs` (colour runs and their masked blend), `gpu.rs` and `gpu/` (the GPU programs modules own as WGSL beside their units, the plan a gesture's GPU preview is drawn from, and a lens warp's coordinate grid), `pipeline.rs` (the one pipeline, generic over its pixel domain), `byte.rs` and `linear.rs` (the two pixel domains, each with its rows and its driver), `spatial.rs` and `window.rs` (the spatial primitive's execution and the windowed proxy), `restoration.rs` (the bounded processed restoration-prefix cache), `input_grid.rs` (bounded value-mask inputs), `raster.rs` (the rendered frame), `locate.rs` (the locate and transform types), `context.rs` and `parallel.rs` (the render context's budgets and the one parallel gate) |
 | `source.rs` and `source/linear.rs` | The prepared sources: `SourceImage`, and the RAW source's `LinearImage` with its view |
 | `cancel.rs` | `Cancel`, the crate's one cancellation token |
 | `colour.rs` | Each colour equation the renderers and tool modules share, once: the sRGB transfer function and exact output quantizer, Rec. 709 luminance and the luminance-ratio reconstruction, the Oklab conversion, 3×3 linear algebra, and the Planckian locus with the CIE 1960 `uv` projection |
@@ -84,7 +84,7 @@ Paths are under `crates/luxforge-core/src`.
 
 Paths are under `crates/luxforge-app/src`.
 
-- `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver.
+- `app/`: the Iced application, messages, update, owner tasks, evidence, keymap and the crop driver, and the GPU preview's desktop half: the plan a tick hands the surface and its held boundary (`gpu_preview.rs`, `gpu_plan.rs`) and the settle's dissolve (`gpu_settle.rs`).
 - `state/`: the pure view model, with no framework types, no widget crate and no view.
 - `view/`: rendering, with no core types and no owner access, including the crop and mask canvases (`view/crop_canvas.rs` and `view/mask_canvas.rs`) and the one view transform and ellipse builder both draw through (`view/canvas_view.rs`).
 - `layout.rs`: the window's framework-free layout: the bar and panel sizes, the rules between them, the Fit inset and the photo surface they leave.
@@ -263,6 +263,11 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Display bounds | 4096 px per side and 8 megapixels | `ProxyBounds::MAX_SIDE` and `ProxyBounds::MAX_PIXELS`, `crates/luxforge-core/src/proxy.rs` |
 | A proxy without a crop | 64 MiB for a JPEG, 96 MiB of RAW planes | No single constant: follows from the display bounds and the fit rule, `ProxyPlan::fit` in `crates/luxforge-core/src/proxy.rs` |
 | Finished results waiting for their consumer, per latest-job worker | 2 | `WAITING_RESULTS`, `crates/luxforge-core/src/latest.rs` |
+| A lens warp's GPU-preview coordinate grid | 262,144 nodes (2 MiB) | `GRID_MAX_NODES`, `crates/luxforge-core/src/render/gpu/grid.rs` |
+| A held GPU-preview boundary | 256 MiB, its CPU copy let go once the photo surface holds it | `BOUNDARY_MAX_BYTES`, `crates/luxforge-core/src/render/boundary.rs` |
+| A boundary's upload a frame | 32 MiB, so its arrival stages at most two frames' chunks | `UPLOAD_PER_FRAME`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| GPU-preview textures and buffers, every photo surface's together, resident or retiring | 640 MiB, one slot per surface | `GPU_PREVIEW_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview.rs` |
+| Compiled GPU-preview program sequences per photo pipeline, failed ones included | 8 | `PIPELINE_CACHE`, as above |
 
 **Catalog and API**
 

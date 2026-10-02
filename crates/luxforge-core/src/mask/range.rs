@@ -35,10 +35,35 @@ use crate::{
     Component, Control, Error, ParameterDescriptor, RailDecoration,
     colour::{luma::rec709_f64, oklab::lab_f64, srgb},
     modules::{Region, Stage},
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::{Arc, LazyLock};
+
+/// The luminance range's GPU coverage program (`luminance_range.wgsl`), for a preview during a
+/// gesture. It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
+pub(crate) static LUMINANCE_PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mask_luminance_range",
+    source: include_str!("luminance_range.wgsl"),
+    kind: GpuProgramKind::Coverage,
+    words: 4,
+    enabled: true,
+};
+
+/// The colour range's GPU coverage program (`colour_range.wgsl`): the sample count, the radius and
+/// room for every sample's Oklab pair. It is enabled: on the M4 its half-coverage contour lies within a quarter pixel of
+/// this field's and, carrying a masked Basic layer, it meets the pointwise limits on the corpus
+/// (`docs/design/gpu-preview.md#mask-coverage`).
+pub(crate) static COLOUR_PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mask_colour_range",
+    source: include_str!("colour_range.wgsl"),
+    kind: GpuProgramKind::Coverage,
+    words: 2 + 2 * MAX_SAMPLES,
+    enabled: true,
+};
 
 /// The token a stored luminance-range component carries.
 pub(super) const LUMINANCE_KIND: &str = "luminance-range";
@@ -336,6 +361,16 @@ impl ComponentField for CompiledLuminance {
     fn feature_px(&self, stage: Stage) -> f64 {
         value_feature_px(stage)
     }
+
+    /// The band's four compiled terms, each narrowed to `f32` once. A feather of exactly zero
+    /// narrows to exactly zero, so the program takes the hard branch the CPU field does.
+    fn gpu(&self, _stage: Stage) -> Option<GpuDescription> {
+        let words = [self.lo, self.hi, self.lo_feather, self.hi_feather];
+        Some(GpuDescription::new(
+            &LUMINANCE_PROGRAM,
+            words.iter().map(|word| (*word as f32).to_bits()).collect(),
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +608,15 @@ impl CompiledColour {
         let r = d / self.radius;
         smooth(((1.0 - r) / SPAN).clamp(0.0, 1.0))
     }
+
+    /// Each sample's Oklab `(a, b)` and the radius, narrowed to `f32` once: what a GPU program reads
+    /// of this falloff, the colour range's own and the limited brush stroke's.
+    pub(super) fn gpu_terms(&self) -> (impl Iterator<Item = [f32; 2]> + '_, f32) {
+        (
+            self.points.iter().map(|(a, b)| [*a as f32, *b as f32]),
+            self.radius as f32,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -656,6 +700,20 @@ impl ComponentField for CompiledColour {
 
     fn feature_px(&self, stage: Stage) -> f64 {
         value_feature_px(stage)
+    }
+
+    /// The sample count, the radius and every sample's Oklab pair, the unused pairs zero. The count
+    /// is at most [`MAX_SAMPLES`], which the parser refuses past.
+    fn gpu(&self, _stage: Stage) -> Option<GpuDescription> {
+        let (points, radius) = self.gpu_terms();
+        let mut words = vec![0u32; COLOUR_PROGRAM.words];
+        words[0] = self.points.len() as u32;
+        words[1] = radius.to_bits();
+        for (index, [a, b]) in points.take(MAX_SAMPLES).enumerate() {
+            words[2 + 2 * index] = a.to_bits();
+            words[3 + 2 * index] = b.to_bits();
+        }
+        Some(GpuDescription::new(&COLOUR_PROGRAM, words))
     }
 }
 

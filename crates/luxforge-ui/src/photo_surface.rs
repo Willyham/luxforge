@@ -27,7 +27,9 @@
 //!   which is the identity on an opaque texel drawn one-to-one.
 //! - **Filtering.** The photograph and the crop stage are sampled with a linear sampler clamped to
 //!   the edge, the image widget's `FilterMethod::Linear` default. The overlays are cell grids and
-//!   are sampled with the nearest texel, which is how they were drawn as images.
+//!   are sampled with the nearest texel, which is how they were drawn as images. The linear
+//!   sampler also filters between mip levels, which only a photograph drawn under half its size
+//!   has: see [`mips`].
 //! - **Blending.** The image pipeline's own blend state, so an overlay's translucent cells and the
 //!   crop stage's dimmed part composite exactly as the image widget composited them; a photograph's
 //!   raster is opaque, where that blend is the identity. The image shader applies an opacity by
@@ -78,21 +80,43 @@
 //! resident or retiring — is one budget shared by every surface: a second surface draws from it
 //! rather than doubling it, and an allocation that would pass it is deferred, leaving every
 //! surface's current picture in place, until a retirement or a released surface makes room. The
-//! crop stage and overlays have separate textures outside that budget. The crop stage's is
-//! reserved at exactly its frame's size: the display-size proxy a draft shows at Fit, and a
-//! full-size exact stage only at a percentage zoom that needs one, never kept for the proxy after
-//! it. The pixels are borrowed from desktop frames, and uploads read their rows directly from those
-//! buffers.
+//! mip levels of a photograph drawn under half its size ([`mips`]) are part of the slot that holds
+//! them, a third more than its base, and counted with it. The crop stage and overlays have
+//! separate textures outside that budget. The crop stage's is reserved at exactly its frame's
+//! size: the display-size proxy a draft shows at Fit, and a full-size exact stage only at a
+//! percentage zoom that needs one, never kept for the proxy after it. The pixels are borrowed from
+//! desktop frames, and uploads read their rows directly from those buffers.
+//!
+//! The GPU stage ([`gpu_preview`]) gives a whole-frame photograph one more slot: a held
+//! `rgba16float` boundary, the output its programs write and the buffers they read, all charged to
+//! the separate GPU-preview budget and retired through the same worker. While a surface is handed
+//! a GPU plan it draws that output in place of its frame, and its frame stays the fallback. When a
+//! settle hands it the CPU frame with a [`Dissolve`] instead, it dissolves from the GPU output it
+//! last drew to that frame, asking for redraws only while the dissolve runs.
+
+mod mips;
+
+pub use mips::admissible as mips_admissible;
 
 use iced::{
-    ContentFit, Element, Length, Point, Rectangle, Size, Vector,
-    advanced::{Layout, Widget, layout, mouse, renderer, widget::Tree},
+    ContentFit, Element, Event, Length, Point, Rectangle, Size, Vector,
+    advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget::Tree},
     widget::shader::{self, Viewport},
+    window,
 };
 use std::collections::HashMap;
 use std::sync::{
     Arc, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicU8, AtomicU64, Ordering},
+};
+use std::time::Instant;
+
+pub mod gpu_preview;
+pub use gpu_preview::{
+    BoundaryFormat, ClipMarks, Coverage, CoverageComponent, CoverageMode, DISSOLVE_DURATION,
+    Dissolve, DrawingPath, DrawnDissolve, GPU_PREVIEW_BUDGET, GpuBoundary, GpuFallback, GpuPlan,
+    GpuProgram, GpuRegion, GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE,
+    PRELUDE, PositionMap, TexelMap, install_output_encoding, output_encoding, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
@@ -116,10 +140,17 @@ struct SurfaceFigures {
     /// nothing. The crop stage and the overlays have textures of their own and are not counted.
     writes: AtomicU64,
     upload_bytes: AtomicU64,
+    /// How many mip chains the pipeline has generated.
+    mip_generations: AtomicU64,
     retirement_pending: AtomicU64,
     diagnostics: Mutex<SurfaceDiagnostics>,
     /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
     draws: Mutex<HashMap<SurfaceId, SurfaceDiagnostics>>,
+    /// The clock of the GPU frame each surface drew last, read live: the queue reports a pass
+    /// complete after the draw that drew it.
+    clocks: Mutex<HashMap<SurfaceId, Arc<gpu_preview::PassClock>>>,
+    /// The GPU-preview budget and what is charged to it, which its retirements discharge.
+    preview: gpu_preview::Figures,
 }
 
 impl SurfaceFigures {
@@ -141,6 +172,36 @@ impl SurfaceFigures {
         overall.drawn_photo_blank = drawn.drawn_photo_blank;
         overall.drawn_stale_photo = drawn.drawn_stale_photo;
         overall.drawn_fallback_content = drawn.drawn_fallback_content;
+        overall.drawn_path = drawn.drawn_path;
+        overall.gpu_fallback = drawn.gpu_fallback;
+        overall.drawn_gpu_boundary = drawn.drawn_gpu_boundary;
+        overall.drawn_gpu_tag = drawn.drawn_gpu_tag;
+        overall.gpu_ready_boundary = drawn.gpu_ready_boundary;
+        overall.gpu_preview_frame_us = drawn.gpu_preview_frame_us;
+        overall.drawn_dissolve = drawn.drawn_dissolve;
+        overall.drawn_clipping_marks = drawn.drawn_clipping_marks;
+        overall.first_drawn = drawn.first_drawn;
+        // Read live, as the budget is: the queue reports the drawn GPU frame's pass complete at a
+        // later submit or poll.
+        overall.gpu_preview_done_us = self
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
+            .get(&surface)
+            .and_then(|clock| clock.figure());
+        // Read live: a retirement discharges the budget on the worker, between draws.
+        overall.gpu_preview_budget_bytes = self.preview.budget();
+        overall.gpu_preview_in_use_bytes = self.preview.in_use();
+        overall.gpu_preview_peak_bytes = self.preview.peak();
+        overall.gpu_preview_passes = self.preview.passes();
+        overall.gpu_preview_spatial_passes = self.preview.spatial_passes();
+        overall.gpu_preview_staged_bytes = self.preview.staged();
+        overall.gpu_preview_compiles = self.preview.compiles();
+        (
+            overall.gpu_preview_compiled,
+            overall.gpu_preview_compile_max_us,
+            overall.gpu_preview_compile_last_us,
+        ) = self.preview.compile_us();
         overall
     }
 }
@@ -234,12 +295,33 @@ pub struct DrawnRegion {
     pub quality: RegionQuality,
 }
 
+/// The frame a surface draws now, and when the surface first drew it: what evidence times an input
+/// to the draw of the frame that carries it by ([`SurfaceDiagnostics::first_drawn`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FirstDrawn {
+    pub path: DrawingPath,
+    /// The CPU frame's picture: the full photograph's version, or the topmost region's. `None` on
+    /// the GPU path.
+    pub picture: Option<u64>,
+    /// The GPU path's boundary version and its plan's tag, the draft revision it was drawn for.
+    pub boundary: Option<u64>,
+    pub tag: Option<u64>,
+    /// When the draw that first drew it was encoded: before the frame is submitted and presented,
+    /// so not display scanout.
+    pub at: Instant,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SurfaceDiagnostics {
     pub photo_writes: u64,
     pub upload_bytes: u64,
     pub full_resident_bytes: u64,
     pub region_resident_bytes: u64,
+    /// The part of `full_resident_bytes` that is mip levels beyond the first: a photograph drawn
+    /// under half its size has them, in the slot that holds it.
+    pub mip_resident_bytes: u64,
+    /// How many mip chains have been generated: once per photograph written while drawn that small.
+    pub mip_generations: u64,
     /// The crop draft's input-stage texture: a display-size proxy's at Fit, the exact stage's only
     /// at a percentage zoom that needs it, and nothing once the draft ends.
     pub stage_resident_bytes: u64,
@@ -268,6 +350,60 @@ pub struct SurfaceDiagnostics {
     pub drawn_regions: [Option<DrawnRegion>; 2],
     /// Clipping frame whose draw call was encoded with the photograph, if any.
     pub drawn_clipping_version: Option<u64>,
+    /// Which path drew the last photograph: the GPU stage's output in place of the CPU frame, or
+    /// the CPU frame, alone or over a dissolving GPU frame. `None` when none was drawn.
+    pub drawn_path: Option<DrawingPath>,
+    /// Why the last draw that was handed a GPU plan drew the CPU frame instead.
+    pub gpu_fallback: Option<GpuFallback>,
+    /// The boundary version whose GPU-stage output the last draw drew, in place of the CPU frame
+    /// or under a dissolve.
+    pub drawn_gpu_boundary: Option<u64>,
+    /// The tag of the plan whose output the last draw drew ([`PhotoSurface::gpu_tag`]): the draft
+    /// revision a gesture's plan was drawn for.
+    pub drawn_gpu_tag: Option<u64>,
+    /// The boundary version of the plan the last prepare evaluated, whether the draw then drew its
+    /// output or held it behind the CPU frame ([`PhotoSurface::gpu_hold`]): the plan's pipeline is
+    /// ready and its slot holds that boundary, so the next tick can be drawn from it.
+    pub gpu_ready_boundary: Option<u64>,
+    /// The interface thread's time, in microseconds, to prepare the GPU frame the last draw drew:
+    /// writing its words and blocks, uploading a new boundary, encoding and submitting its pass.
+    /// The device Iced creates has no timestamp queries, so the GPU's own time is not in it.
+    pub gpu_preview_frame_us: Option<u64>,
+    /// The time, in microseconds, from the start of the preparation of the newest GPU-frame pass
+    /// the queue has reported complete, of the slot the last draw drew, to when the interface
+    /// learned the GPU had finished it: at the first submit or poll after it finished
+    /// (`gpu_preview::timing`). Read live; `None` before one is reported. Evidence only, an upper
+    /// bound on when the GPU finished: the wait for the next submit is most of it.
+    pub gpu_preview_done_us: Option<u64>,
+    /// The settle dissolve the last draw drew, with its identities and progress.
+    pub drawn_dissolve: Option<DrawnDissolve>,
+    /// The frame the last draw drew and when it was first drawn: kept across redraws of the same
+    /// frame, stamped anew when the path, the CPU picture or the GPU plan's boundary or tag change.
+    pub first_drawn: Option<FirstDrawn>,
+    /// The classes, shadows and highlights, of the clipping marks the GPU output the last draw
+    /// drew in place of the photograph carried ([`ClipMarks`]): approximate, and in place of the
+    /// CPU frame's overlay, which marks another frame's pixels.
+    pub drawn_clipping_marks: Option<[bool; 2]>,
+    /// The GPU-preview budget, beside the photo-texture figures above but not part of them.
+    pub gpu_preview_budget_bytes: u64,
+    /// Every surface's GPU-preview textures and buffers, resident or retiring.
+    pub gpu_preview_in_use_bytes: u64,
+    /// The most `gpu_preview_in_use_bytes` has been.
+    pub gpu_preview_peak_bytes: u64,
+    /// How many passes the GPU stage has encoded: a redraw of an unchanged plan encodes none.
+    pub gpu_preview_passes: u64,
+    /// How many compute passes the GPU stage's spatial steps have dispatched: a pass runs only when
+    /// what its plane holds changed, so a tick that moves only an apply's word dispatches none.
+    pub gpu_preview_spatial_passes: u64,
+    /// Bytes of boundary texels the GPU stage has written into wgpu's staging, over every frame: a
+    /// new boundary's at most [`gpu_preview::UPLOAD_PER_FRAME`] a frame.
+    pub gpu_preview_staged_bytes: u64,
+    /// Program sequences handed to the compile thread, and how many have finished compiling.
+    pub gpu_preview_compiles: u64,
+    pub gpu_preview_compiled: u64,
+    /// The longest and the last compile's wall-clock time on the compile thread, in microseconds.
+    pub gpu_preview_compile_max_us: u64,
+    pub gpu_preview_compile_last_us: u64,
 }
 
 /// Aggregate resource counters with the requested surface's own last draw identity.
@@ -379,6 +515,11 @@ impl Frame {
 
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// The RGBA8 bytes, borrowed from the buffer the frame shares.
+    pub fn pixels(&self) -> &[u8] {
+        (*self.pixels).as_ref()
     }
 }
 
@@ -578,6 +719,16 @@ pub struct PhotoSurface {
     /// proxy of it; see [`PhotoSurface::exact_stage`].
     exact_stage: Option<(u32, u32)>,
     reveal_from: f32,
+    /// What the GPU stage evaluates in place of the photograph's frame; see
+    /// [`PhotoSurface::gpu_preview`].
+    gpu: Option<GpuPlan>,
+    /// What the GPU stage is asked beside the plan: [`PhotoSurface::gpu_hold`],
+    /// [`PhotoSurface::gpu_tag`] and [`PhotoSurface::gpu_warm`].
+    gpu_options: gpu_preview::GpuOptions,
+    /// A settle's dissolve from the GPU frame to this frame; see [`PhotoSurface::dissolve`].
+    dissolve: Option<Dissolve>,
+    /// The time of the redraw this widget last saw, which its draw takes the dissolve's share at.
+    clock: Option<Instant>,
     width: Length,
     height: Length,
 }
@@ -588,6 +739,23 @@ struct ViewportFrames {
     region: Option<RegionFrame>,
     current_content: u64,
     full_stage: (u32, u32),
+}
+
+impl ViewportFrames {
+    /// The version of the CPU frame this view draws the current content from: its whole frame of
+    /// that content, or else its region of it.
+    fn drawn_version(&self) -> Option<u64> {
+        self.full
+            .as_ref()
+            .filter(|(_, content)| *content == self.current_content)
+            .map(|(frame, _)| frame.version())
+            .or_else(|| {
+                self.region
+                    .as_ref()
+                    .filter(|region| region.content_id == self.current_content)
+                    .map(|region| region.frame.version())
+            })
+    }
 }
 
 /// The photograph, placed by `placement`, on surface `id`.
@@ -606,6 +774,10 @@ pub fn photo_surface(
         region_overlays: [None, None],
         exact_stage: None,
         reveal_from: 0.0,
+        gpu: None,
+        gpu_options: Default::default(),
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -640,6 +812,10 @@ pub fn viewport_surface(
         region_overlays: [None, None],
         exact_stage: None,
         reveal_from: 0.0,
+        gpu: None,
+        gpu_options: Default::default(),
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -663,6 +839,10 @@ pub fn stage_surface(
         region_overlays: [None, None],
         exact_stage: None,
         reveal_from: 0.0,
+        gpu: None,
+        gpu_options: Default::default(),
+        dissolve: None,
+        clock: None,
         width,
         height,
     }
@@ -706,6 +886,82 @@ impl PhotoSurface {
     pub fn exact_stage(mut self, stage: (u32, u32)) -> Self {
         self.exact_stage = Some(stage);
         self
+    }
+
+    /// Draw the photograph from the GPU stage's evaluation of `plan` while one is given: the
+    /// boundary is uploaded when its version changes, the programs run in the frame that draws
+    /// them, and the output is placed, snapped and filtered exactly as the photograph's frame is.
+    /// The frame the surface was built with stays its fallback: a frame the stage cannot draw
+    /// draws that one and names why in [`SurfaceDiagnostics::gpu_fallback`]. Without a plan the
+    /// surface's GPU-preview slot is released. A whole-frame photograph ([`photo_surface`]) runs a
+    /// whole frame's plan, and a percentage view a region's ([`GpuPlan::region`]) of its own stage,
+    /// drawn as that region of the photograph; a crop stage ignores a plan.
+    pub fn gpu_preview(mut self, plan: Option<&GpuPlan>) -> Self {
+        self.gpu = plan.cloned();
+        self
+    }
+
+    /// Keep the GPU stage's slot for the plan, but draw the photograph's frame: the CPU frame of
+    /// the content the plan draws has arrived, and it is the reference. The next plan of a new
+    /// value draws again with no upload, because the boundary stays held.
+    pub fn gpu_hold(mut self, hold: bool) -> Self {
+        self.gpu_options.hold = hold;
+        self
+    }
+
+    /// Report the plan's output under `tag` ([`SurfaceDiagnostics::drawn_gpu_tag`]), so evidence
+    /// correlates each GPU frame with the input that produced it.
+    pub fn gpu_tag(mut self, tag: Option<u64>) -> Self {
+        self.gpu_options.tag = tag;
+        self
+    }
+
+    /// Compile `warm`'s sequences ahead of the gesture that needs them, on the compile thread.
+    pub fn gpu_warm(mut self, warm: Option<&GpuWarm>) -> Self {
+        self.gpu_options.warm = warm.cloned();
+        self
+    }
+
+    /// Dissolve from the GPU frame this surface last drew to its frame, which must be the version
+    /// `dissolve` names, over [`DISSOLVE_DURATION`] in linear light ([`gpu_preview::Dissolve`]). A
+    /// percentage view dissolves from its region's GPU frame into the frame it draws its current
+    /// content from, its whole frame or its region.
+    /// The widget asks for redraws only while it runs. It runs with no plan, or behind a plan held
+    /// behind the CPU frame ([`PhotoSurface::gpu_hold`]); a plan drawn beside it cancels it, and a
+    /// surface whose last frame was not the GPU stage's draws its frame alone.
+    pub fn dissolve(mut self, dissolve: Option<Dissolve>) -> Self {
+        self.dissolve = dissolve;
+        self
+    }
+
+    /// Whether the GPU stage is still uploading the boundary of the plan this surface is handed: its
+    /// last frame said so, and the plan still names that boundary with its texels. The widget then
+    /// asks for the next frame, whose `prepare` writes the next chunks; an upload's start wakes the
+    /// desktop, whose update draws the frame that asks.
+    fn uploading(&self) -> bool {
+        self.gpu
+            .as_ref()
+            .is_some_and(|plan| plan.boundary.holds_texels())
+            && matches!(
+                surface_diagnostics(self.id).gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )
+    }
+
+    /// The dissolve this surface draws at `now`, if one runs: into a whole-frame photograph's
+    /// frame, or the frame a percentage view draws its current content from.
+    fn dissolving(&self, now: Instant) -> Option<gpu_preview::DissolveFrame> {
+        let photo =
+            matches!(self.base, Base::Photo(_)) && (self.gpu.is_none() || self.gpu_options.hold);
+        let version = match &self.viewport {
+            None => self
+                .layers
+                .first()
+                .filter(|(layer, _)| *layer == Layer::Photo)
+                .map(|(_, frame)| frame.version()),
+            Some(view) => view.drawn_version(),
+        };
+        gpu_preview::dissolving(self.dissolve, photo, version, now)
     }
 
     /// The size the picture is placed by: a percentage view's full stage, the exact stage a
@@ -895,6 +1151,22 @@ where
                 layers: self.layers.clone(),
                 viewport: self.viewport.clone(),
                 region_overlays: self.region_overlays.clone(),
+                // A whole frame's plan draws the photograph at Fit, a region's at a percentage zoom
+                // of the same stage; a crop stage runs none.
+                gpu: match self.base {
+                    Base::Photo(_) => {
+                        self.gpu
+                            .clone()
+                            .filter(|plan| match (&self.viewport, plan.region) {
+                                (None, None) => true,
+                                (Some(view), Some(region)) => region.stage == view.full_stage,
+                                _ => false,
+                            })
+                    }
+                    _ => None,
+                },
+                gpu_options: self.gpu_options.clone(),
+                dissolve: self.dissolving(self.clock.unwrap_or_else(Instant::now)),
                 offset: visible.offset,
                 size: visible.size,
                 clip_size: visible.clip.size(),
@@ -903,6 +1175,28 @@ where
                 snap,
             },
         );
+    }
+
+    /// Each redraw's own time is the dissolve's clock: the widget keeps it for its draw and asks
+    /// for the next frame only while a dissolve still runs at it, so the redraw that finds the
+    /// dissolve ended asks for nothing.
+    fn update(
+        &mut self,
+        _tree: &mut Tree,
+        event: &Event,
+        _layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &Renderer,
+        _clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) {
+        if let Event::Window(window::Event::RedrawRequested(now)) = event {
+            self.clock = Some(*now);
+            if self.dissolving(*now).is_some() || self.uploading() {
+                shell.request_redraw();
+            }
+        }
     }
 
     fn mouse_interaction(
@@ -929,12 +1223,55 @@ pub struct PhotoPrimitive {
     layers: Vec<(Layer, Frame)>,
     viewport: Option<ViewportFrames>,
     region_overlays: [Option<RegionOverlay>; 2],
+    /// A whole-frame photograph's GPU plan, drawn in place of its frame when the stage can.
+    gpu: Option<GpuPlan>,
+    gpu_options: gpu_preview::GpuOptions,
+    /// A whole-frame photograph's dissolve from the GPU frame last drawn, at this frame's share.
+    dissolve: Option<gpu_preview::DissolveFrame>,
     offset: Vector,
     size: Size,
     clip_size: Size,
     bright: Option<(Rectangle, f32)>,
     angle: f32,
     snap: bool,
+}
+
+impl PhotoPrimitive {
+    /// Whether `surface` holds, in its textures, the CPU frame a dissolve into version `to` lays
+    /// over the GPU frame: a whole-frame photograph's own frame, or a percentage view's whole
+    /// frame or region of that version.
+    fn dissolve_ready(&self, surface: &SurfaceSlots, to: u64) -> bool {
+        match &self.viewport {
+            None => self.photo_ready(surface),
+            Some(_) => {
+                surface.slots[Layer::Photo.index()]
+                    .as_ref()
+                    .is_some_and(|picture| picture.version == to && picture.region_key.is_none())
+                    || surface
+                        .regions
+                        .iter()
+                        .flatten()
+                        .any(|picture| picture.version == to)
+            }
+        }
+    }
+
+    /// Whether `surface`'s photograph texture holds exactly the frame this primitive draws, or it
+    /// draws none.
+    fn photo_ready(&self, surface: &SurfaceSlots) -> bool {
+        self.layers
+            .iter()
+            .find(|(layer, _)| *layer == Layer::Photo)
+            .is_none_or(|(_, frame)| {
+                surface.slots[Layer::Photo.index()]
+                    .as_ref()
+                    .is_some_and(|picture| {
+                        picture.matching_frame(frame, None, None)
+                            && picture.width == frame.width
+                            && picture.height == frame.height
+                    })
+            })
+    }
 }
 
 /// The uniform block's first two rectangles, in physical pixels of the whole frame: the render
@@ -1160,6 +1497,10 @@ impl shader::Primitive for PhotoPrimitive {
                 surface.slots[layer.index()] = None;
             }
         }
+        // The picture's size on screen in physical pixels, which says whether a photograph's
+        // texture is drawn under half its size and so is held with mip levels.
+        let scale = viewport.scale_factor();
+        let drawn = (self.size.width * scale, self.size.height * scale);
         for (layer, frame) in &self.layers {
             let content_id = self.viewport.as_ref().and_then(|viewport| {
                 (viewport.current_content
@@ -1170,7 +1511,17 @@ impl shader::Primitive for PhotoPrimitive {
                 .then_some(viewport.current_content)
             });
             if self.viewport.is_none() || *layer != Layer::Photo {
-                pipeline.write_slot(&mut surface, device, queue, *layer, frame, content_id, None);
+                let minified = *layer == Layer::Photo && mips::minified(frame.size(), drawn);
+                pipeline.write_slot(
+                    &mut surface,
+                    device,
+                    queue,
+                    *layer,
+                    frame,
+                    content_id,
+                    None,
+                    minified,
+                );
             }
         }
         if let Some(view) = &self.viewport {
@@ -1185,6 +1536,7 @@ impl shader::Primitive for PhotoPrimitive {
                     frame,
                     Some(*content),
                     None,
+                    mips::minified(frame.size(), drawn),
                 );
             }
             let full_ready = surface.slots[Layer::Photo.index()]
@@ -1210,49 +1562,70 @@ impl shader::Primitive for PhotoPrimitive {
                         &overlay.frame,
                         Some(key.content_id),
                         Some(key),
+                        false,
                     );
                 }
             }
         }
+        pipeline.generate_mips(device, queue, &mut surface, drawn);
+        // The GPU stage evaluates a plan into its own slot, or names why this frame is the CPU's;
+        // without a plan it releases the slot, unless a dissolve into a frame already in its
+        // texture keeps it for the GPU frame it dissolves from. A dissolve runs beside a plan only
+        // while the plan is held behind the CPU frame: a plan drawn cancels it.
+        pipeline.warm_gpu(device, self.gpu_options.warm.as_ref());
+        let dissolve = self.dissolve.filter(|frame| {
+            self.dissolve_ready(&surface, frame.dissolve.to)
+                && (self.gpu.is_none() || self.gpu_options.hold)
+        });
+        pipeline.prepare_gpu(&mut surface, device, queue, self.gpu.as_ref(), dissolve);
+        // A whole frame's GPU output dissolves under a whole-frame photograph, and a region's
+        // under the percentage view of its own stage: any other pairing draws the CPU frame alone.
+        if surface.dissolved_output().is_some_and(|output| {
+            match (&self.viewport, output.region_key) {
+                (None, None) => false,
+                (Some(view), Some(key)) => key.full_stage != view.full_stage,
+                _ => true,
+            }
+        }) {
+            surface.dissolving = None;
+        }
+        surface.gpu_hold = self.gpu_options.hold;
+        surface.gpu_tag = self.gpu.as_ref().and(self.gpu_options.tag);
+        surface.gpu_marks = self.gpu.as_ref().and_then(|plan| match plan.steps.last() {
+            Some(GpuStep::Clipping(marks)) => Some([marks.shadows, marks.highlights]),
+            _ => None,
+        });
         // The uniforms are refreshed every prepare instead, because the bounds and the viewport
         // can change with no new frame at all — a window resize, a pan, a panel opening. `bounds`
         // is the visible part of the widget, translated to where it is drawn.
-        let scale = viewport.scale_factor();
         let (viewport, destination) = physical_rects(*bounds, self.offset, self.size, scale);
         let [x0, y0, x1, y1, dim] = physical_bright(*bounds, self.bright, scale);
         let turn = turn_uniform(self.angle, dim, self.snap);
+        if let Some(output) = surface.gpu_output().or(surface.dissolved_output()) {
+            write_uniforms(queue, output, viewport, destination, [x0, y0, x1, y1], turn);
+        }
         for (layer, _) in &self.layers {
             if let Some(picture) = &surface.slots[layer.index()] {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                // Over a dissolving GPU frame the photograph is drawn at the dissolve's share.
+                let (bright, turn) = match surface.dissolving.filter(|_| *layer == Layer::Photo) {
+                    Some(frame) => gpu_preview::photo_uniform(frame.share),
+                    None => ([x0, y0, x1, y1], turn),
+                };
+                write_uniforms(queue, picture, viewport, destination, bright, turn);
             }
         }
         if self.viewport.is_some() {
+            // Over a dissolving GPU region frame the view's own pictures are drawn at the
+            // dissolve's share.
+            let (bright, picture_turn) = match surface.dissolving {
+                Some(frame) => gpu_preview::photo_uniform(frame.share),
+                None => ([x0, y0, x1, y1], turn),
+            };
             if let Some(picture) = &surface.slots[Layer::Photo.index()] {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                write_uniforms(queue, picture, viewport, destination, bright, picture_turn);
             }
             for picture in surface.regions.iter().flatten() {
-                write_uniforms(
-                    queue,
-                    picture,
-                    viewport,
-                    destination,
-                    [x0, y0, x1, y1],
-                    turn,
-                );
+                write_uniforms(queue, picture, viewport, destination, bright, picture_turn);
             }
             for (index, layer) in [Layer::Clipping, Layer::Coverage].into_iter().enumerate() {
                 if let Some(overlay) = &self.region_overlays[index]
@@ -1314,9 +1687,40 @@ impl shader::Primitive for PhotoPrimitive {
         let mut drawn_regions = [None; 2];
         let mut drawn_content = None;
         let mut drawn_fallback_content = None;
+        let mut drawn_gpu_boundary = None;
+        let mut gpu_frame_us = None;
+        let mut gpu_clock = None;
+        let mut drawn_clipping_marks = None;
+        let mut drawn_dissolve = None;
         let mut drew_photo = false;
         let mut stale_photo = false;
-        if let Some(view) = &self.viewport {
+        // At a percentage zoom, a region plan's GPU frame is the photograph: drawn alone, so no
+        // region of other content is composited with it.
+        let gpu_region = self.viewport.as_ref().and_then(|view| {
+            surface.gpu_output().filter(|output| {
+                output
+                    .region_key
+                    .is_some_and(|key| key.full_stage == view.full_stage)
+            })
+        });
+        if let Some(output) = gpu_region {
+            draw_picture(render_pass, output);
+            drew_photo = true;
+            drawn_gpu_boundary = Some(output.version);
+            gpu_frame_us = surface.gpu_frame_us();
+            gpu_clock = surface.gpu_clock();
+        } else if let Some(view) = &self.viewport {
+            // A dissolve draws the GPU region frame it starts from first; the view's own pictures
+            // below are laid over it at the dissolve's share.
+            if let Some(output) = surface.dissolved_output()
+                && let Some(frame) = surface.dissolving
+            {
+                draw_picture(render_pass, output);
+                drawn_gpu_boundary = Some(output.version);
+                gpu_frame_us = surface.gpu_frame_us();
+                gpu_clock = surface.gpu_clock();
+                drawn_dissolve = Some(frame.drawn(output.version));
+            }
             let matching_full = surface.slots[Layer::Photo.index()]
                 .as_ref()
                 .filter(|picture| {
@@ -1456,22 +1860,39 @@ impl shader::Primitive for PhotoPrimitive {
                 }
             }
         } else {
-            let photo_ready = self
-                .layers
-                .iter()
-                .find(|(layer, _)| *layer == Layer::Photo)
-                .is_none_or(|(_, frame)| {
-                    surface.slots[Layer::Photo.index()]
-                        .as_ref()
-                        .is_some_and(|picture| {
-                            picture.matching_frame(frame, None, None)
-                                && picture.width == frame.width
-                                && picture.height == frame.height
-                        })
-                });
+            let photo_ready = self.photo_ready(surface);
             for (layer, frame) in &self.layers {
                 if matches!(*layer, Layer::Clipping | Layer::Coverage) && !photo_ready {
                     continue;
+                }
+                // The CPU frame's clipping overlay marks that frame's pixels: over the GPU output
+                // drawn in place of it, the plan's own marks are the overlay.
+                if *layer == Layer::Clipping && surface.gpu_output().is_some() {
+                    continue;
+                }
+                if *layer == Layer::Photo
+                    && let Some(output) = surface.gpu_output()
+                {
+                    draw_picture(render_pass, output);
+                    drew_photo = true;
+                    drawn_gpu_boundary = Some(output.version);
+                    gpu_frame_us = surface.gpu_frame_us();
+                    gpu_clock = surface.gpu_clock();
+                    drawn_clipping_marks = surface.gpu_marks;
+                    continue;
+                }
+                // A dissolve draws the GPU frame it starts from first; the photograph's own draw
+                // below lays the CPU frame over it at the dissolve's share.
+                if *layer == Layer::Photo
+                    && photo_ready
+                    && let Some(output) = surface.dissolved_output()
+                    && let Some(frame) = surface.dissolving
+                {
+                    draw_picture(render_pass, output);
+                    drawn_gpu_boundary = Some(output.version);
+                    gpu_frame_us = surface.gpu_frame_us();
+                    gpu_clock = surface.gpu_clock();
+                    drawn_dissolve = Some(frame.drawn(output.version));
                 }
                 if let Some(picture) = &surface.slots[layer.index()] {
                     draw_picture(render_pass, picture);
@@ -1497,10 +1918,63 @@ impl shader::Primitive for PhotoPrimitive {
             self.viewport.is_some() || self.layers.iter().any(|(layer, _)| *layer == Layer::Photo);
         let mut diagnostic = pipeline.figures.diagnostics();
         let blank_photo = expects_photo && !drew_photo;
+        // Under a dissolve the photograph is the CPU frame, laid over the GPU frame it replaces.
+        let drawn_path = drew_photo.then_some(
+            if drawn_gpu_boundary.is_some() && drawn_dissolve.is_none() {
+                DrawingPath::Gpu
+            } else {
+                DrawingPath::Cpu
+            },
+        );
+        let gpu_fallback = surface.gpu_outcome.and_then(Result::err);
+        let drawn_gpu_tag = drawn_gpu_boundary.and(surface.gpu_tag);
+        let first_drawn = drawn_path.map(|path| {
+            let (picture, boundary, tag) = match path {
+                DrawingPath::Gpu => (None, drawn_gpu_boundary, drawn_gpu_tag),
+                DrawingPath::Cpu => (drawn_full_version.or(drawn_region_version), None, None),
+            };
+            let previous = pipeline
+                .figures
+                .draws
+                .lock()
+                .expect("surface draw identities lock")
+                .get(&self.surface)
+                .and_then(|drawn| drawn.first_drawn);
+            previous
+                .filter(|first| {
+                    (first.path, first.picture, first.boundary, first.tag)
+                        == (path, picture, boundary, tag)
+                })
+                .unwrap_or(FirstDrawn {
+                    path,
+                    picture,
+                    boundary,
+                    tag,
+                    at: Instant::now(),
+                })
+        });
         // Each surface compares against its own last draw, so two surfaces in different states
-        // do not wake each other every frame.
-        let status = u8::from(blank_photo) | (u8::from(stale_photo) << 1);
+        // do not wake each other every frame. A change of drawing path, a new fallback, a
+        // dissolve's start or end, or a boundary upload's, wakes the desktop once too.
+        let status = u8::from(blank_photo)
+            | (u8::from(stale_photo) << 1)
+            | (u8::from(drawn_path == Some(DrawingPath::Gpu)) << 2)
+            | (u8::from(gpu_fallback.is_some()) << 3)
+            | (u8::from(drawn_dissolve.is_some()) << 4)
+            | (u8::from(matches!(
+                gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )) << 5);
         let status_changed = surface.drawn_status.swap(status, Ordering::Relaxed) != status;
+        diagnostic.drawn_path = drawn_path;
+        diagnostic.gpu_fallback = gpu_fallback;
+        diagnostic.drawn_gpu_boundary = drawn_gpu_boundary;
+        diagnostic.drawn_gpu_tag = drawn_gpu_tag;
+        diagnostic.first_drawn = first_drawn;
+        diagnostic.gpu_ready_boundary = surface.gpu_outcome.and_then(Result::ok);
+        diagnostic.gpu_preview_frame_us = gpu_frame_us;
+        diagnostic.drawn_clipping_marks = drawn_clipping_marks;
+        diagnostic.drawn_dissolve = drawn_dissolve;
         diagnostic.drawn_content = drawn_content;
         diagnostic.drawn_full_version = drawn_full_version;
         diagnostic.drawn_region_version = drawn_region_version;
@@ -1527,6 +2001,17 @@ impl shader::Primitive for PhotoPrimitive {
             .lock()
             .expect("surface draw identities lock")
             .insert(self.surface, drawn);
+        {
+            let mut clocks = pipeline
+                .figures
+                .clocks
+                .lock()
+                .expect("surface pass clocks lock");
+            match gpu_clock {
+                Some(clock) => clocks.insert(self.surface, clock),
+                None => clocks.remove(&self.surface),
+            };
+        }
         if status_changed {
             // A draw can discover staleness after the app has built its status bar. One buffered
             // wake refreshes that label on the next update, and another clears it after recovery.
@@ -1680,7 +2165,15 @@ struct Picture {
     version: u64,
     content_id: Option<u64>,
     region_key: Option<RegionKey>,
+    /// Every level of every tile's texture.
     allocated_bytes: u64,
+    /// The levels of its one texture: 1, or the whole chain of a photograph that was drawn under
+    /// half its size when it was allocated, which is then exactly the frame's size.
+    mip_levels: u32,
+    /// The bytes of the levels beyond the first, inside `allocated_bytes`.
+    mip_bytes: u64,
+    /// Whether those levels hold the reduction of the pixels now in the first.
+    mips_current: bool,
 }
 
 struct RetiredPicture {
@@ -1688,6 +2181,13 @@ struct RetiredPicture {
     full: bool,
     /// The retiring charge of the surface that retired it, beside the pipeline's own.
     surface: Arc<Retiring>,
+}
+
+/// What the retirement worker holds until the GPU is done with it: a photograph allocation, or a
+/// GPU-preview slot or buffer, each with the charge its own budget keeps until then.
+enum Retired {
+    Picture(RetiredPicture),
+    Preview(gpu_preview::RetiredPreview),
 }
 
 /// Allocations charged while they retire: the pipeline's, which the shared budget counts, or one
@@ -1738,11 +2238,51 @@ struct SurfaceSlots {
     retiring: Arc<Retiring>,
     /// Prepared since the last end-of-frame trim.
     shown: bool,
-    /// The last draw's blank (bit 0) and stale (bit 1) status, so a change wakes the desktop once.
+    /// The last draw's blank (bit 0), stale (bit 1), GPU-drawn (bit 2), fallback (bit 3) and
+    /// dissolve (bit 4) status, so a change wakes the desktop once.
     drawn_status: AtomicU8,
+    /// The GPU stage's one slot, charged to the GPU-preview budget, while a plan is given or a
+    /// dissolve starts from its output.
+    gpu: Option<gpu_preview::GpuSlot>,
+    /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
+    /// `None` when the frame was handed no plan.
+    gpu_outcome: Option<Result<u64, GpuFallback>>,
+    /// The frame holds the GPU stage's slot but draws its CPU frame ([`PhotoSurface::gpu_hold`]).
+    gpu_hold: bool,
+    /// The tag of the plan this frame was handed ([`PhotoSurface::gpu_tag`]).
+    gpu_tag: Option<u64>,
+    /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
+    dissolving: Option<gpu_preview::DissolveFrame>,
+    /// The classes of the clipping marks the plan this frame was handed draws.
+    gpu_marks: Option<[bool; 2]>,
 }
 
 impl SurfaceSlots {
+    /// The GPU stage's output, when this frame draws it in place of the photograph's frame.
+    fn gpu_output(&self) -> Option<&Picture> {
+        if matches!(self.gpu_outcome, Some(Ok(_))) && !self.gpu_hold {
+            self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
+        } else {
+            None
+        }
+    }
+
+    /// The GPU stage's output, when this frame dissolves from it to the photograph's frame.
+    fn dissolved_output(&self) -> Option<&Picture> {
+        self.dissolving?;
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
+    }
+
+    /// The interface thread's time to prepare the GPU output this surface holds.
+    fn gpu_frame_us(&self) -> Option<u64> {
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::frame_us)
+    }
+
+    /// The clock the queue reports this surface's GPU passes complete to.
+    fn gpu_clock(&self) -> Option<Arc<gpu_preview::PassClock>> {
+        self.gpu.as_ref().map(gpu_preview::GpuSlot::clock)
+    }
+
     fn full_bytes(&self) -> u64 {
         self.slots[Layer::Photo.index()]
             .as_ref()
@@ -1857,12 +2397,17 @@ pub struct PhotoPipeline {
     linear: wgpu::Sampler,
     nearest: wgpu::Sampler,
     texture_format: wgpu::TextureFormat,
+    /// The pass that writes mip levels, built with the pipeline so the first photograph to need
+    /// them compiles nothing on the UI thread.
+    mips: mips::MipPipeline,
     surfaces: HashMap<SurfaceId, SurfaceSlots>,
     /// Every surface's retiring allocations, which the shared budget counts.
     retiring: Arc<Retiring>,
-    retirement_sender: std::sync::mpsc::Sender<RetiredPicture>,
+    retirement_sender: std::sync::mpsc::Sender<Retired>,
     /// What this pipeline counts of its own texture work.
     figures: Arc<SurfaceFigures>,
+    /// The GPU stage: whether the device can run it, its lost flag and its compiled sequences.
+    gpu: gpu_preview::GpuStage,
 }
 
 impl PhotoPipeline {
@@ -1871,8 +2416,15 @@ impl PhotoPipeline {
     /// on exactly the status changes it always did.
     fn new_surface(&self) -> SurfaceSlots {
         let diagnostic = self.figures.diagnostics();
-        let status =
-            u8::from(diagnostic.drawn_photo_blank) | (u8::from(diagnostic.drawn_stale_photo) << 1);
+        let status = u8::from(diagnostic.drawn_photo_blank)
+            | (u8::from(diagnostic.drawn_stale_photo) << 1)
+            | (u8::from(diagnostic.drawn_path == Some(DrawingPath::Gpu)) << 2)
+            | (u8::from(diagnostic.gpu_fallback.is_some()) << 3)
+            | (u8::from(diagnostic.drawn_dissolve.is_some()) << 4)
+            | (u8::from(matches!(
+                diagnostic.gpu_fallback,
+                Some(GpuFallback::BoundaryUploading { .. })
+            )) << 5);
         SurfaceSlots {
             slots: [None, None, None, None],
             regions: [None, None],
@@ -1882,6 +2434,12 @@ impl PhotoPipeline {
             retiring: Arc::default(),
             shown: false,
             drawn_status: AtomicU8::new(status),
+            gpu: None,
+            gpu_outcome: None,
+            gpu_hold: false,
+            gpu_tag: None,
+            dissolving: None,
+            gpu_marks: None,
         }
     }
 
@@ -1899,19 +2457,24 @@ impl PhotoPipeline {
         // The worker receives each retirement once. Admission bounds what can be charged at once
         // — per surface its current full allocation, one retiring and two region sets, and for
         // every surface together the shared ceilings — so this queue is bounded without a timer.
-        if let Err(error) = self.retirement_sender.send(RetiredPicture {
-            picture,
-            full,
-            surface: Arc::clone(&surface.retiring),
-        }) {
+        if let Err(error) = self
+            .retirement_sender
+            .send(Retired::Picture(RetiredPicture {
+                picture,
+                full,
+                surface: Arc::clone(&surface.retiring),
+            }))
+            && let Retired::Picture(retired) = error.0
+        {
             // Device loss or pipeline teardown can end the worker. Its GPU allocations are then
             // invalid; release their charge and wake the desktop instead of waiting forever.
-            finish_retirement(&self.figures, error.0, &self.retiring, true);
+            finish_retirement(&self.figures, retired, &self.retiring, true);
         }
     }
 
-    /// Release a surface that is no longer shown: its charged photo and region allocations retire
-    /// against the shared budget, and its crop stage and overlays, which are not charged, go.
+    /// Release a surface that is no longer shown: its charged photo and region allocations and
+    /// its GPU-preview slot retire against their budgets, and its crop stage and overlays, which
+    /// are not charged, go.
     fn release(&self, mut surface: SurfaceSlots) {
         if let Some(picture) = surface.slots[Layer::Photo.index()].take() {
             self.retire(&surface, picture, true);
@@ -1921,6 +2484,7 @@ impl PhotoPipeline {
                 self.retire(&surface, picture, false);
             }
         }
+        self.release_gpu(&mut surface);
     }
 
     /// Every surface in the map. While `prepare` writes one it is out of the map, so these are
@@ -1943,6 +2507,13 @@ impl PhotoPipeline {
             .filter_map(|surface| surface.slots[Layer::Stage.index()].as_ref())
             .map(|picture| picture.allocated_bytes)
             .sum();
+        diagnostic.mip_resident_bytes = self
+            .surfaces
+            .values()
+            .filter_map(|surface| surface.slots[Layer::Photo.index()].as_ref())
+            .map(|picture| picture.mip_bytes)
+            .sum();
+        diagnostic.mip_generations = self.figures.mip_generations.load(Ordering::Relaxed);
         diagnostic.photo_writes = self.figures.writes.load(Ordering::Relaxed);
         diagnostic.upload_bytes = self.figures.upload_bytes.load(Ordering::Relaxed);
     }
@@ -1988,7 +2559,9 @@ impl PhotoPipeline {
         region_key: Option<RegionKey>,
     ) -> bool {
         self.with_surface(id, |pipeline, surface| {
-            pipeline.write_slot(surface, device, queue, layer, frame, content_id, region_key)
+            pipeline.write_slot(
+                surface, device, queue, layer, frame, content_id, region_key, false,
+            )
         })
     }
 
@@ -2018,17 +2591,24 @@ impl PhotoPipeline {
         frame: &Frame,
         content_id: Option<u64>,
         region_key: Option<RegionKey>,
+        minified: bool,
     ) -> bool {
         let (width, height) = frame.size();
         // The device's limit, not the GPU's: Iced asks wgpu for its default limits, so this is
         // 8192 on the owner's Mac although the GPU could hold larger textures.
         let limit = device.limits().max_texture_dimension_2d;
+        // A photograph drawn under half its size is held with mip levels when they may exist; see
+        // [`mips`]. One that may not is the plain texture, drawn through the bilinear sampler.
+        let chain = layer == Layer::Photo && minified && mips::admissible((width, height), limit);
+        // A slot already holding this frame at this size writes nothing, unless it must now be
+        // rebuilt with the mip levels it lacks.
         if surface.slots[layer.index()]
             .as_ref()
             .is_some_and(|picture| {
                 picture.width == width
                     && picture.height == height
                     && picture.limit == limit
+                    && (!chain || picture.mip_levels > 1)
                     && picture.matching_frame(frame, content_id, region_key)
             })
         {
@@ -2043,16 +2623,33 @@ impl PhotoPipeline {
             // draft shows at Fit never keeps the full-size texture an exact stage at a percentage
             // zoom allocated.
             .filter(|picture| layer != Layer::Stage || picture.capacity == (width, height))
+            // A chain is cut for exactly the size it was allocated at, and a photograph that is
+            // now minified but holds none is rebuilt with one; a chain, once held, is kept.
+            .filter(|picture| picture.mip_levels == 1 || picture.capacity == (width, height))
+            .filter(|picture| !chain || picture.mip_levels > 1)
             .and_then(|picture| picture.layouts_for((width, height), limit));
         let fresh = reusable.is_none();
         if fresh {
-            let capacity = if layer == Layer::Photo {
+            let capacity = if chain {
+                (width, height)
+            } else if layer == Layer::Photo {
                 full_capacity((width, height), limit)
             } else {
                 (width, height)
             };
             let layouts = tile_layout(capacity, limit);
-            let bytes = allocated_bytes(&layouts);
+            let level_zero = allocated_bytes(&layouts);
+            let mip_levels = if chain {
+                mips::level_count(capacity)
+            } else {
+                1
+            };
+            // The chain is one tile's texture, so its levels follow from the one tile's size.
+            let bytes = if chain {
+                mips::chain_bytes(capacity, mip_levels)
+            } else {
+                level_zero
+            };
             if layer == Layer::Photo {
                 // At most this surface's current and one retiring full allocation may exist, and
                 // every surface's together stay within the shared ceiling. While an older
@@ -2081,7 +2678,7 @@ impl PhotoPipeline {
             let grid = tile_grid(capacity, limit);
             let tiles = layouts
                 .into_iter()
-                .map(|tile| self.tile(device, layer, tile))
+                .map(|tile| self.tile(device, layer, tile, mip_levels))
                 .collect();
             surface.slots[layer.index()] = Some(Picture {
                 tiles,
@@ -2095,6 +2692,9 @@ impl PhotoPipeline {
                 content_id: None,
                 region_key: None,
                 allocated_bytes: bytes,
+                mip_levels,
+                mip_bytes: bytes - level_zero,
+                mips_current: false,
             });
         }
         let Some(picture) = &mut surface.slots[layer.index()] else {
@@ -2120,6 +2720,7 @@ impl PhotoPipeline {
         picture.version = frame.version;
         picture.content_id = content_id;
         picture.region_key = region_key;
+        picture.mips_current = false;
         if layer == Layer::Photo {
             self.figures.writes.fetch_add(1, Ordering::Relaxed);
         }
@@ -2129,6 +2730,31 @@ impl PhotoPipeline {
             wake_surface();
         }
         true
+    }
+
+    /// Write the mip levels of `surface`'s photograph when it has them, they do not yet hold its
+    /// current pixels and it is drawn under half its size, which is the only draw that samples them.
+    /// The passes are encoded and submitted here and never waited on.
+    fn generate_mips(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        surface: &mut SurfaceSlots,
+        drawn: (f32, f32),
+    ) {
+        let Some(picture) = surface.slots[Layer::Photo.index()]
+            .as_mut()
+            .filter(|picture| picture.mip_levels > 1 && !picture.mips_current)
+            .filter(|picture| mips::minified((picture.width, picture.height), drawn))
+        else {
+            return;
+        };
+        for tile in &picture.tiles {
+            self.mips
+                .generate(device, queue, &tile.texture, picture.mip_levels);
+        }
+        picture.mips_current = true;
+        self.figures.mip_generations.fetch_add(1, Ordering::Relaxed);
     }
 
     fn write_region_slot(
@@ -2183,7 +2809,7 @@ impl PhotoPipeline {
             let grid = tile_grid(capacity, limit);
             let tiles = layouts
                 .into_iter()
-                .map(|tile| self.tile(device, Layer::Photo, tile))
+                .map(|tile| self.tile(device, Layer::Photo, tile, 1))
                 .collect();
             surface.regions[index] = Some(Picture {
                 tiles,
@@ -2196,6 +2822,9 @@ impl PhotoPipeline {
                 content_id: None,
                 region_key: None,
                 allocated_bytes: bytes,
+                mip_levels: 1,
+                mip_bytes: 0,
+                mips_current: false,
             });
         }
         let picture = surface.regions[index].as_mut().expect("admitted region");
@@ -2221,8 +2850,23 @@ impl PhotoPipeline {
     }
 
     /// One tile's texture, uniform and bindings, sampled as its layer is.
-    fn tile(&self, device: &wgpu::Device, layer: Layer, layout: TileLayout) -> Tile {
+    fn tile(
+        &self,
+        device: &wgpu::Device,
+        layer: Layer,
+        layout: TileLayout,
+        mip_levels: u32,
+    ) -> Tile {
         let (width, height) = layout.texture_size();
+        // Levels are written by render passes through an sRGB-typed view, so a texture of any
+        // other format names that view.
+        let chain = mip_levels > 1;
+        let view_formats: &[wgpu::TextureFormat] =
+            if chain && self.texture_format != mips::MIP_FORMAT {
+                &[mips::MIP_FORMAT]
+            } else {
+                &[]
+            };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("luxforge.photo_surface.texture"),
             size: wgpu::Extent3d {
@@ -2230,12 +2874,25 @@ impl PhotoPipeline {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count: mip_levels,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: self.texture_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
+            usage: {
+                let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+                // A test reads its textures back.
+                let usage = if cfg!(test) {
+                    usage | wgpu::TextureUsages::COPY_SRC
+                } else {
+                    usage
+                };
+                if chain {
+                    usage | wgpu::TextureUsages::RENDER_ATTACHMENT
+                } else {
+                    usage
+                }
+            },
+            view_formats,
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.photo_surface.uniform"),
@@ -2287,6 +2944,11 @@ impl Drop for PhotoPipeline {
             .draws
             .lock()
             .expect("surface draw identities lock")
+            .clear();
+        self.figures
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
             .clear();
         self.publish_diagnostics();
     }
@@ -2459,16 +3121,16 @@ fn wake_surface() {
 }
 
 /// Ends one retirement, whether it `failed`: [`finish_retirement`] over the charges and figures of
-/// the pipeline that retired it.
-type FinishRetirement = Arc<dyn Fn(RetiredPicture, bool) + Send + Sync>;
+/// the pipeline that retired it, or the GPU-preview budget's.
+type FinishRetirement = Arc<dyn Fn(Retired, bool) + Send + Sync>;
 
 fn retirement_worker(
     device: wgpu::Device,
     queue: wgpu::Queue,
-    receiver: std::sync::mpsc::Receiver<RetiredPicture>,
+    receiver: std::sync::mpsc::Receiver<Retired>,
     finish: FinishRetirement,
 ) {
-    let mut pending: Vec<Arc<Mutex<Option<RetiredPicture>>>> = Vec::new();
+    let mut pending: Vec<Arc<Mutex<Option<Retired>>>> = Vec::new();
     loop {
         // Sleep indefinitely when idle. While one or two resources retire, poll maintenance at
         // bounded intervals; wgpu invokes completion callbacks only during submit or poll.
@@ -2560,6 +3222,11 @@ impl shader::Pipeline for PhotoPipeline {
             .draws
             .lock()
             .expect("surface draw identities lock")
+            .retain(|id, _| self.surfaces.contains_key(id));
+        self.figures
+            .clocks
+            .lock()
+            .expect("surface pass clocks lock")
             .retain(|id, _| self.surfaces.contains_key(id));
         self.publish_diagnostics();
     }
@@ -2686,23 +3353,31 @@ impl PhotoPipeline {
         let finish: FinishRetirement = {
             let figures = Arc::clone(&figures);
             let retiring = Arc::clone(&retiring);
-            Arc::new(move |retired, failed| {
-                finish_retirement(&figures, retired, &retiring, failed);
+            Arc::new(move |retired, failed| match retired {
+                Retired::Picture(retired) => {
+                    finish_retirement(&figures, retired, &retiring, failed);
+                }
+                Retired::Preview(retired) => {
+                    gpu_preview::finish_retirement(&figures, retired, failed);
+                }
             })
         };
         std::thread::spawn(move || {
             retirement_worker(waiter_device, waiter_queue, retirement_receiver, finish);
         });
+        let gpu = gpu_preview::GpuStage::new(device, format, &figures.preview);
         Self {
             pipeline,
             layout,
             linear,
             nearest,
             texture_format,
+            mips: mips::MipPipeline::new(device),
             surfaces: HashMap::new(),
             retiring,
             retirement_sender,
             figures,
+            gpu,
         }
     }
 }
@@ -3828,6 +4503,9 @@ mod gpu_surface_tests {
             layers: vec![(Layer::Photo, frame)],
             viewport: None,
             region_overlays: [None, None],
+            gpu: None,
+            gpu_options: Default::default(),
+            dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
@@ -3853,6 +4531,9 @@ mod gpu_surface_tests {
                 full_stage,
             }),
             region_overlays: [None, None],
+            gpu: None,
+            gpu_options: Default::default(),
+            dissolve: None,
             offset: Vector::new(0.0, 0.0),
             size: Size::new(64.0, 64.0),
             clip_size: Size::new(64.0, 64.0),
@@ -4283,6 +4964,323 @@ mod gpu_surface_tests {
                 .map(|picture| picture.capacity),
             Some((30, 20))
         );
+    }
+
+    /// An opaque raster of vertical stripes: a white column in every four, black between. Its
+    /// light averages to a quarter, which encodes as 137, where an average of the codes would be 64
+    /// and a sampler that skips texels reads black.
+    fn stripe_raster(width: u32, height: u32, version: u64) -> Frame {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for _y in 0..height {
+            for x in 0..width {
+                let code = if x % 4 == 0 { 255 } else { 0 };
+                pixels.extend_from_slice(&[code, code, code, 255]);
+            }
+        }
+        Frame::new(Arc::new(pixels), width, height, version).expect("stripes")
+    }
+
+    /// `frame` on the default surface, drawn `size` physical pixels square from the target's origin.
+    fn drawn_at(frame: &Frame, size: f32) -> PhotoPrimitive {
+        let mut primitive = full_primitive(frame.clone());
+        primitive.size = Size::new(size, size);
+        primitive
+    }
+
+    /// The first `count` pixels of the target's first row as BGRA.
+    fn row(bytes: &[u8], count: usize) -> Vec<[u8; 4]> {
+        bytes
+            .chunks_exact(4)
+            .take(count)
+            .map(|pixel| [pixel[0], pixel[1], pixel[2], pixel[3]])
+            .collect()
+    }
+
+    /// A photograph drawn under half its size is held with a chain of linear-light mip levels,
+    /// which the draw samples: stripes a fine four texels apart average to the light's quarter, 137,
+    /// and no output pixel is black or white as the skipped texels would make it.
+    #[test]
+    fn a_photograph_drawn_under_half_its_size_is_sampled_from_linear_light_mips() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(256, 256, 1);
+        let drawn = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        for (index, pixel) in drawn.chunks_exact(4).enumerate() {
+            for channel in &pixel[..3] {
+                assert!(
+                    channel.abs_diff(137) <= 2,
+                    "output pixel {index} reads {pixel:?}, not the quarter-light grey 137"
+                );
+            }
+        }
+        // The chain is the slot's own, counted with it, and written once.
+        let levels = mips::level_count((256, 256));
+        assert_eq!(levels, 9);
+        let chain = mips::chain_bytes((256, 256), levels);
+        let base = 256 * 256 * 4;
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.full_resident_bytes, chain);
+        assert_eq!(figures.mip_resident_bytes, chain - base);
+        assert_eq!(figures.mip_generations, 1);
+        // Drawn again, nothing is written and nothing is generated again.
+        let again = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        assert_eq!(again, drawn);
+        assert_eq!(writes(&pipeline), 1);
+        assert_eq!(diagnostics(&pipeline).mip_generations, 1);
+        // A new version of the photograph rewrites level 0 and so its levels.
+        let next = stripe_raster(256, 256, 2);
+        paint(&device, &queue, &mut pipeline, &drawn_at(&next, 64.0));
+        assert_eq!(writes(&pipeline), 2);
+        assert_eq!(diagnostics(&pipeline).mip_generations, 2);
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+    }
+
+    /// The same photograph drawn at half its size or more has no chain, and is the plain bucketed
+    /// texture it has always been.
+    #[test]
+    fn a_photograph_drawn_at_its_size_has_no_mip_levels_and_the_bytes_it_always_had() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(64, 64, 1);
+        for size in [64.0, 33.0] {
+            let drawn = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, size));
+            if size == 64.0 {
+                for (x, pixel) in row(&drawn, 64).iter().enumerate() {
+                    let code = if x % 4 == 0 { 255 } else { 0 };
+                    assert_eq!(*pixel, [code, code, code, 255], "column {x}");
+                }
+            }
+        }
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.mip_generations, 0);
+        assert_eq!(
+            figures.full_resident_bytes,
+            allocated_bytes(&tile_layout(full_capacity((64, 64), 8192), 8192))
+        );
+    }
+
+    /// A photograph that was drawn at its size and is then drawn under half of it is rebuilt with a
+    /// chain, once; drawn at its size again it keeps the chain and uploads nothing, and the
+    /// chain's level 0 draws the same pixels. Closing the surface retires the whole chain.
+    #[test]
+    fn a_photograph_minified_after_being_drawn_at_its_size_gains_a_chain_it_then_keeps() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(160, 160, 1);
+        let plain = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 160.0));
+        let plain_bytes = diagnostics(&pipeline).full_resident_bytes;
+        assert_eq!(diagnostics(&pipeline).mip_resident_bytes, 0);
+        paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 64.0));
+        let chain = mips::chain_bytes((160, 160), mips::level_count((160, 160)));
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+        assert_eq!(
+            diagnostics(&pipeline).mip_resident_bytes,
+            chain - 160 * 160 * 4
+        );
+        assert_eq!(writes(&pipeline), 2);
+        // The plain texture it replaced retires, and is no longer charged.
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        assert_ne!(plain_bytes, chain);
+        // Back at its size: the chain stays, nothing is uploaded, and level 0 draws as it did.
+        let at_size = paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 160.0));
+        assert_eq!(writes(&pipeline), 2);
+        assert_eq!(diagnostics(&pipeline).full_resident_bytes, chain);
+        for (a, b) in at_size.iter().zip(&plain) {
+            assert!(a.abs_diff(*b) <= 2, "level 0 drew {a}, not {b}");
+        }
+        // The surface closes: its chain retires with it, at the end of the first frame without it.
+        pipeline.trim();
+        let other = placed(
+            SurfaceId::new(9),
+            solid_raster(8, 8, 1, [0, 255, 0, 255]),
+            Vector::new(0.0, 0.0),
+            Size::new(8.0, 8.0),
+        );
+        paint_frame(&device, &queue, &mut pipeline, &[&other]);
+        pipeline.trim();
+        assert!(!pipeline.surfaces.contains_key(&ID));
+        settle(&pipeline);
+        assert_eq!(pipeline.retiring.bytes(), 0);
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.retiring_bytes, 0);
+        assert_eq!(
+            figures.full_resident_bytes,
+            allocated_bytes(&tile_layout(full_capacity((8, 8), 8192), 8192))
+        );
+    }
+
+    /// A photograph wider than the device's texture is held in tiles, whose aprons would put a seam
+    /// into every level, so it never has a chain: it is drawn through the bilinear sampler, and
+    /// the desktop draws its display reduction instead.
+    #[test]
+    fn a_tiled_photograph_never_has_mip_levels() {
+        let Some((device, queue)) = headless_with_texture_limit(64) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut pipeline = own_pipeline(&device, &queue);
+        let frame = stripe_raster(100, 100, 1);
+        assert!(!mips::admissible((100, 100), 64));
+        paint(&device, &queue, &mut pipeline, &drawn_at(&frame, 40.0));
+        let figures = diagnostics(&pipeline);
+        assert_eq!(figures.mip_resident_bytes, 0);
+        assert_eq!(figures.mip_generations, 0);
+        assert!(figures.full_resident_bytes >= 100 * 100 * 4);
+    }
+
+    /// The upper-left, `width` by `height`, of level `level` of `texture`, as RGBA bytes.
+    fn read_level(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        level: u32,
+        (width, height): (u32, u32),
+    ) -> Vec<u8> {
+        let row = (width * 4).next_multiple_of(256);
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("mip readback"),
+            size: u64::from(row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: level,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).expect("readback receiver")
+            });
+        wait(device, index);
+        receiver
+            .recv_timeout(Duration::from_secs(10))
+            .expect("readback callback")
+            .expect("readback mapping");
+        let mapped = readback.slice(..).get_mapped_range().to_vec();
+        readback.unmap();
+        mapped
+            .chunks_exact(row as usize)
+            .flat_map(|line| line[..(width * 4) as usize].to_vec())
+            .collect()
+    }
+
+    /// Each level is the mean, in linear light, of the 2 × 2 texels of the level above it, for an
+    /// sRGB-typed texture and for the plain one a non-sRGB target gets, whose levels are still
+    /// written through an sRGB view. A side of one texel repeats its edge, and an odd side drops
+    /// its last texel as the GPU's own chains do.
+    #[test]
+    fn each_mip_level_is_the_linear_light_mean_of_the_level_above_for_both_texture_formats() {
+        let Some((device, queue)) = headless() else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let size = (13u32, 6u32);
+        for target in [
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+            wgpu::TextureFormat::Bgra8Unorm,
+        ] {
+            let pipeline = PhotoPipeline::with_figures(&device, &queue, target, Arc::default());
+            let levels = mips::level_count(size);
+            assert_eq!(levels, 4);
+            let layout = tile_layout(size, 8192)[0];
+            let tile = pipeline.tile(&device, Layer::Photo, layout, levels);
+            let mut expected: Vec<u8> = (0..size.1)
+                .flat_map(|y| {
+                    (0..size.0).flat_map(move |x| {
+                        [
+                            ((x * 53 + y * 29) % 256) as u8,
+                            ((x * 7 + y * 113) % 256) as u8,
+                            ((x * x + y * 5) % 256) as u8,
+                            255,
+                        ]
+                    })
+                })
+                .collect();
+            queue.write_texture(
+                tile.texture.as_image_copy(),
+                &expected,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.0 * 4),
+                    rows_per_image: Some(size.1),
+                },
+                wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            mips::MipPipeline::new(&device).generate(&device, &queue, &tile.texture, levels);
+            let mut above = size;
+            for level in 1..levels {
+                let here = ((above.0 / 2).max(1), (above.1 / 2).max(1));
+                let mut next = Vec::new();
+                for y in 0..here.1 {
+                    for x in 0..here.0 {
+                        for channel in 0..4 {
+                            let at = |dx: u32, dy: u32| {
+                                let sx = (2 * x + dx).min(above.0 - 1);
+                                let sy = (2 * y + dy).min(above.1 - 1);
+                                expected[((sy * above.0 + sx) * 4) as usize + channel]
+                            };
+                            next.push(if channel == 3 {
+                                at(0, 0)
+                            } else {
+                                luxforge_reference::srgb::code(
+                                    (luxforge_reference::srgb::decode(at(0, 0))
+                                        + luxforge_reference::srgb::decode(at(1, 0))
+                                        + luxforge_reference::srgb::decode(at(0, 1))
+                                        + luxforge_reference::srgb::decode(at(1, 1)))
+                                        / 4.0,
+                                )
+                            });
+                        }
+                    }
+                }
+                let read = read_level(&device, &queue, &tile.texture, level, here);
+                for (index, (got, want)) in read.iter().zip(&next).enumerate() {
+                    assert!(
+                        got.abs_diff(*want) <= 1,
+                        "{target:?} level {level} byte {index}: the GPU wrote {got}, the linear-light mean is {want}"
+                    );
+                }
+                expected = next;
+                above = here;
+            }
+        }
     }
 
     #[test]

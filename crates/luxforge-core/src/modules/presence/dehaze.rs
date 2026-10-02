@@ -27,6 +27,7 @@ use super::filters::{
 use crate::{
     Error,
     modules::{Global, Parallelism, Planes, PlanesMut, Reduction, SpatialUnit, Stage},
+    render::gpu::GpuSpatialUnit,
 };
 use std::borrow::Cow;
 
@@ -37,23 +38,26 @@ const R_DARK_6000: f64 = 12.0;
 /// The guided-filter refinement radius in full-resolution pixels at the reference long side (0.4%).
 const R_GUIDE_6000: f64 = 24.0;
 /// The transmission guided filter's regularization, in squared encoded units.
-const EPS_DEHAZE: f32 = 1.0e-4;
+pub(super) const EPS_DEHAZE: f32 = 1.0e-4;
 /// The veil fraction the transmission estimate removes at `|amount| = 100`. `1.0`, not the
 /// literature's `0.95`: at `+100` this unit is the exact inverse of the forward model wherever the
 /// dark-channel estimate of `t` is exact.
 const OMEGA_MAX: f64 = 1.0;
 /// The transmission floor, bounding the recovery gain at `1 / T_FLOOR = 10`.
-const T_FLOOR: f32 = 0.1;
+pub(super) const T_FLOOR: f32 = 0.1;
 /// The extra uniform veil a negative amount adds on top of deepening the estimated one. Without it
 /// a negative amount would be an exact no-op on a haze-free photograph, whose dark-channel estimate
 /// is `t = 1` everywhere.
 const VEIL_MAX: f64 = 0.5;
 /// The floor on each channel of the atmospheric light, so `I / A` is always finite.
-const A_FLOOR: f64 = 1.0e-3;
+pub(super) const A_FLOOR: f64 = 1.0e-3;
 /// The fraction of the host reduction's brightest dark-channel pixels averaged for `A`.
 const ATMOSPHERE_FRACTION: f64 = 0.001;
 /// The minimum number of reduction pixels averaged for `A`.
-const ATMOSPHERE_MIN_COUNT: usize = 16;
+pub(super) const ATMOSPHERE_MIN_COUNT: usize = 16;
+/// [`ATMOSPHERE_FRACTION`] as the divisor it is: the CPU's `ceil(fraction * n)` is `ceil(n /
+/// divisor)` exactly for every reduction the host builds, which the GPU computes in integers.
+pub(super) const ATMOSPHERE_DIVISOR: u32 = 1000;
 
 /// Dehaze's dark-channel min-filter radius on its reduced grid.
 pub(super) fn dark_radius(long_side: u32) -> i64 {
@@ -96,6 +100,33 @@ impl Dehaze {
             r_dark: dark_radius(long_side),
             r_guide: guide_radius(long_side),
         }
+    }
+
+    /// The coefficients the GPU description writes as its words.
+    pub(super) fn dark_radius(&self) -> i64 {
+        self.r_dark
+    }
+
+    pub(super) fn guide_radius(&self) -> i64 {
+        self.r_guide
+    }
+
+    pub(super) fn omega(&self) -> f32 {
+        self.omega
+    }
+
+    pub(super) fn veil(&self) -> f32 {
+        self.veil
+    }
+
+    /// Whether the unit removes the veil, which is the inverse branch, or deepens it.
+    pub(super) fn positive(&self) -> bool {
+        self.amount > 0.0
+    }
+
+    /// Whether the amount is 0: a unit only the GPU shape holds, which changes nothing.
+    pub(super) fn neutral(&self) -> bool {
+        self.amount == 0.0
     }
 }
 
@@ -341,6 +372,12 @@ impl SpatialUnit for Dehaze {
             }
         });
         Ok(())
+    }
+
+    /// The stored atmospheric light when the plan found one for this stage's content, else the
+    /// GPU takes it from the stage it holds.
+    fn gpu(&self, global: Option<&Global>) -> Option<GpuSpatialUnit> {
+        Some(super::gpu::dehaze(self, global))
     }
 
     fn is_finite(&self) -> bool {

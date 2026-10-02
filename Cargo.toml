@@ -66,6 +66,10 @@ zeroize = "=1.9.0"
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the
 # build and no second GPU stack. Only `wgsl` is asked for, which is the shader language used.
 wgpu = { version = "=27.0.1", default-features = false, features = ["wgsl"] }
+# The WGSL front end and validator `wgpu` 27.0.1 resolves to, pinned to the version already in the
+# lockfile so it adds no package. Only `luxforge-core`'s tests name it, as a dev-dependency, to
+# validate the GPU programs the core ships as WGSL text; the core itself names no GPU crate.
+naga = { version = "=27.0.3", default-features = false }
 # The renderer crate behind `iced::Renderer`, for one trait: `primitive::Renderer`, through which the
 # photo surface's own widget hands the renderer only the visible part of the photograph instead of
 # its whole zoomed box. Iced 0.14 hides it for the same reason as `wgpu` above, so it is named here

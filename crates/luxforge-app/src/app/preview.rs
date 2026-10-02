@@ -217,8 +217,9 @@ pub(crate) struct Presentation {
     /// Every frame the photo surface draws: the photograph, the crop draft's input stage and the
     /// overlays over the photograph.
     pub(crate) presenter: Presenter,
-    /// The slider's immutable After frame, sharing the existing render allocation.
-    pub(crate) compare_after: Option<luxforge_ui::Frame>,
+    /// The slider's immutable After frame, sharing the existing render allocation, and the display
+    /// reduction that stands in for it at Fit when it cannot be drawn below its size cleanly.
+    pub(crate) compare_after: Option<super::compare_after::CompareAfter>,
     /// One active and one replaceable pending preview job, off the UI thread.
     pub(crate) queue: PreviewQueue,
     /// The generation of the newest preview requested for the photograph.
@@ -461,6 +462,9 @@ impl Presentation {
             render_ms,
         };
         match outcome {
+            // A GPU preview boundary is taken up before any result reaches here
+            // ([`super::Editor::poll_preview`]); it is never a frame to present.
+            PhaseOutcome::Boundary(_) => Presented::Stale,
             PhaseOutcome::Region(region) => Presented::Region(Box::new((delivery, region))),
             PhaseOutcome::Proxy(outcome) => {
                 let frame = ProxyFrame {
@@ -734,6 +738,11 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             draft: None,
+            gpu: None,
+            gpu_hold: false,
+            gpu_tag: None,
+            dissolve: None,
+            gpu_warm: None,
         }
     }
 
@@ -870,6 +879,11 @@ pub(super) fn bounds_of((width, height): (f32, f32)) -> Option<ProxyBounds> {
 /// The output pixels a percentage view can display now. The scrollable reports its offset in
 /// logical pixels, while percent zoom is defined in physical pixels; the widget's box uses the
 /// same division by display scale. One guard pixel covers snapped edges and linear sampling.
+///
+/// The offset is the scrollable's, which it holds between zero and how far the zoomed photograph
+/// overhangs the surface on each axis, as the canvas places the photograph ([`crate::view::canvas`]'s
+/// `drawn_photo`). A `pan` past that — an offset kept from a deeper zoom, which the scrollable never
+/// reports again once the photograph fits the surface — is held to it here too.
 pub(super) fn viewport_rect(
     stage: (u32, u32),
     zoom: &Zoom,
@@ -896,6 +910,7 @@ pub(super) fn viewport_rect(
         return None;
     }
     let edge = |start: f32, length: f32, limit: u32| {
+        let start = start.clamp(0.0, (limit as f32 * scale - length).max(0.0));
         let first = ((start / scale).floor() as i64 - 1).clamp(0, i64::from(limit)) as u32;
         let last = (((start + length) / scale).ceil() as i64 + 1)
             .clamp(i64::from(first), i64::from(limit)) as u32;
@@ -1040,6 +1055,7 @@ impl Editor {
     }
 
     pub(super) fn cancel_preview_queue(&mut self) -> u64 {
+        self.gpu_queue_cancelled();
         self.invalidate_mask_coverage();
         let generation = self.presentation.cancel();
         self.view_plan.request_generation = None;
@@ -1241,6 +1257,12 @@ impl Editor {
             }
             return Task::none();
         };
+        // A gesture's GPU frame of a region holding the view is its motion frame: no region job
+        // until the shared quiet policy settles it.
+        if self.gpu_draws_view(wanted) {
+            self.view_plan.dirty = false;
+            return Task::none();
+        }
         if self.presentation.presenter.full_content() == Some(self.presentation.content_serial)
             && self.presentation.exact.as_ref().is_some_and(|frame| {
                 (frame.raster.width, frame.raster.height) == stage
@@ -1388,6 +1410,11 @@ impl Editor {
     pub(super) fn poll_preview(&mut self) -> Option<PreviewResult> {
         loop {
             let result = self.presentation.queue.poll()?;
+            // A draft's GPU preview boundary is no frame: it is held for the gesture, or let go.
+            if result.boundary().is_some() {
+                self.gpu_boundary_ready(result);
+                continue;
+            }
             if !result.cancelled() {
                 return Some(result);
             }
@@ -1486,6 +1513,7 @@ impl Editor {
                 PreviewPhase::Proxy => "proxy",
                 PreviewPhase::Region => "region",
                 PreviewPhase::Exact => "exact",
+                PreviewPhase::Boundary => "boundary",
             };
             self.event("preview_result_received", || {
                 json!({
@@ -1637,7 +1665,7 @@ impl Editor {
             "exact"
         };
         let (frame, proxy, bounded) = match result.outcome {
-            PhaseOutcome::Region(_) => return (Task::none(), false),
+            PhaseOutcome::Region(_) | PhaseOutcome::Boundary(_) => return (Task::none(), false),
             PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
             // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {
@@ -2133,6 +2161,7 @@ impl Editor {
         };
         let content = self.presentation.admit(&mut job);
         self.request_mask_coverage(&job, content);
+        self.gpu_warm_from(job.gpu_warm.as_deref());
         // Reusing pixels cannot complete work the viewport still owes. A moving region is
         // intentionally half detail and carries no whole-image report; Settle must refine it
         // and retain exact pixels. A non-interactive request for analysis also needs its exact
@@ -2154,8 +2183,11 @@ impl Editor {
             || (self.presentation.analysis_content == Some(content)
                 && self.presentation.analysis.is_some());
         // Photograph bytes can be reused for an unbound candidate or a mask-only commit. Bound
-        // mask edits have a different pixel key and still use the ordinary rendering path.
+        // mask edits have a different pixel key and still use the ordinary rendering path. A job
+        // carrying a GPU preview's boundary request goes to the worker, which renders the
+        // boundary after its frame; reused pixels would answer the frame and drop the request.
         let reusable = job.layer_count.is_none()
+            && job.boundary.is_none()
             && content == self.presentation.presented_content
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()

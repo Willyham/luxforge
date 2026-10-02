@@ -251,6 +251,15 @@ pub struct PreviewRequest {
     /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
     /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
     pub proxy: Option<ProxyBounds>,
+    /// Plan the draft's GPU preview with the job ([`PreviewJob::gpu`]): the plan a gesture's tick
+    /// is drawn from at these bounds, and the boundary it starts from; or, for a committed stack,
+    /// the plans its gestures are likely to draw ([`PreviewJob::gpu_warm`]). Only a job with bounds
+    /// has either; planning is `O(layers)` here and reads no pixel.
+    pub gpu: bool,
+    /// At a percentage zoom of 100% or more, the region of the output stage a draft's GPU preview
+    /// is drawn over at full scale, and the physical pixels an output pixel takes there
+    /// ([`crate::GpuView::Region`]); `None` at Fit, where the bounds decide.
+    pub gpu_region: Option<(crate::modules::Region, f64)>,
 }
 
 impl PreviewRequest {
@@ -264,6 +273,8 @@ impl PreviewRequest {
             draft: None,
             analyse: false,
             proxy: None,
+            gpu: false,
+            gpu_region: None,
         }
     }
     /// Show this entry instead of the current one.
@@ -290,6 +301,19 @@ impl PreviewRequest {
     /// Offer this job a proxy phase at the display bounds the frame will be shown in.
     pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
         self.proxy = Some(bounds);
+        self
+    }
+    /// Plan the draft's GPU preview with the job ([`Self::gpu`]).
+    pub fn gpu(mut self) -> Self {
+        self.gpu = true;
+        self
+    }
+
+    /// Plan the draft's GPU preview over `rect` of the output stage at full scale, drawn at
+    /// `magnification` physical pixels an output pixel: a percentage zoom of 100% or more.
+    pub fn gpu_region(mut self, rect: crate::modules::Region, magnification: f64) -> Self {
+        self.gpu = true;
+        self.gpu_region = Some((rect, magnification));
         self
     }
 }
@@ -1901,8 +1925,43 @@ impl Owner {
                 "the draft's pixel inputs changed; set or reapply the draft before previewing it",
             ));
         }
+        // A draft's GPU preview, planned from the job's own evaluation at the bounds the frame
+        // is drawn in: `O(layers)`, no pixel. A plan that cannot be made is reported, never an
+        // error the job's own frame would fail with.
         let job = job.map(|mut job| {
             job.analyse = request.analyse;
+            // A committed stack's job carries the plans its gestures are likely to draw, so the
+            // desktop warms their pipelines when the stack changes rather than when a drag begins.
+            if let (true, None, Some(bounds), None) =
+                (request.gpu, draft, request.proxy, request.layer_count)
+            {
+                job.gpu_warm = crate::render::gpu::plan_warm(&job.evaluation, bounds)
+                    .ok()
+                    .map(Into::into);
+            }
+            let view = match (request.gpu_region, request.proxy) {
+                (Some((rect, magnification)), _) => Some(crate::GpuView::Region {
+                    rect,
+                    magnification,
+                }),
+                (None, Some(bounds)) => Some(crate::GpuView::Fit(bounds)),
+                (None, None) => None,
+            };
+            if let (true, Some(draft), Some(view), None) =
+                (request.gpu, draft, view, request.layer_count)
+            {
+                job.gpu = Some(Box::new(
+                    crate::render::gpu::plan_preview(&job.evaluation, draft, view).unwrap_or_else(
+                        |error| crate::GpuPreview {
+                            answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
+                                error.detail,
+                            )),
+                            boundary: None,
+                            cpu_shape: None,
+                        },
+                    ),
+                ));
+            }
             job
         });
         // A stack whose source is not prepared queues that preparation and answers with the job to

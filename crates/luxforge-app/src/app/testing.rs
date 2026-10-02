@@ -346,6 +346,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         frames: Vec::new(),
         capture_pending: false,
         view_idle: None,
+        idle: None,
         allow_unready_capture: false,
         capture_overlay: false,
         saving: false,
@@ -360,6 +361,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         agent_wait: None,
         sync: crate::app::evidence::CaptureSync::default(),
         recorded: Default::default(),
+        gpu_identity: None,
     }
 }
 

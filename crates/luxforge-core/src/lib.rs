@@ -57,6 +57,7 @@ pub use editor::{
 };
 pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::CaptureMetadata;
+pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
     EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE, Mask, MaskId,
@@ -69,30 +70,39 @@ pub use modules::{
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
     CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GroupControl,
-    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MIN_ANGLE,
-    MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
-    NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
-    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
-    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
-    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
-    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec,
-    Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    Values, WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint,
-    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
-    resolve_group_reset, temperature_tint_from_gains,
+    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, FitSettle, GPU_PROGRAMS,
+    GroupControl, IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
+    MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
+    NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT,
+    PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor,
+    ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing, Provider,
+    QueryChoiceControl, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region,
+    RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
+    SpatialOperation, Spec, Stage, StageContext, StageQuestions, TaskControl, ToggleControl,
+    ToolModule, VIGNETTE_EFFECT, Values, WhiteBalanceMode, check_parameters, check_value,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
 };
 pub use preview::{
-    AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
+    AssetSelection, BoundaryOutcome, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
     PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
 };
 pub use proxy::{ProxyApproximation, ProxyBounds, ProxyIdentity, ProxyPlan};
+pub use render::gpu::{
+    BoundaryKey, BoundaryRequest, CoordinateGrid, EstimateSource, GPU_PASS_INPUTS,
+    GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
+    GRID_TOLERANCE_PX, GpuAnswer, GpuApply, GpuBoundary, GpuClipping, GpuComponent, GpuDescription,
+    GpuEstimates, GpuFallback, GpuGeometry, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan,
+    GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram,
+    GpuProgramKind, GpuSpatial, GpuSpatialUnit, GpuView, gpu_plan, gpu_plan_with,
+};
+pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
     MappingDescriptor, MappingShape, PrefixUse, Raster, RegionFrame, Render, RenderContext,
@@ -100,6 +110,56 @@ pub use render::{
     render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
+
+/// Qualification only: CPU filters the desktop's GPU readback tests hold each GPU kernel to. Built
+/// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
+#[cfg(feature = "qualification")]
+pub mod qualification {
+    pub use crate::modules::detail_qualification as detail;
+    pub use crate::modules::presence_qualification as presence;
+
+    /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
+    /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
+    /// proxy source holds (`[x, y, width, height]`) when the stack reads less than all of it.
+    /// `None` when the stack takes no proxy, or none smaller than the source fits.
+    pub fn fit_proxy(
+        render: &crate::Render,
+        registry: &crate::ModuleRegistry,
+        recipe: &crate::Recipe,
+        bounds: crate::ProxyBounds,
+    ) -> Option<(crate::ProxyPlan, Option<[u32; 4]>)> {
+        registry.proxy_eligible(recipe).ok()?;
+        let plan = render.proxy_plan(bounds)?;
+        let plan = render.proxy_window(registry, recipe, plan).plan();
+        let window = plan
+            .window
+            .map(|window| [window.x, window.y, window.width, window.height]);
+        Some((plan, window))
+    }
+
+    /// The input of layer `layer` of `render`'s stack over the window of its received stage that
+    /// the output stage's `rect` (`[x, y, width, height]`) reads at full scale, held as `format`:
+    /// the boundary a percentage zoom's GPU preview of a drag from that layer starts from, as the
+    /// preview worker renders it for a job carrying its request.
+    pub fn region_boundary(
+        render: &crate::Render,
+        layer: usize,
+        rect: [u32; 4],
+        format: crate::BoundaryFormat,
+    ) -> Result<crate::BoundaryFrame, crate::Error> {
+        let [x0, y0, width, height] = rect;
+        render.layer_region_boundary(
+            crate::modules::Region {
+                x0,
+                y0,
+                width,
+                height,
+            },
+            layer,
+            format,
+        )
+    }
+}
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};

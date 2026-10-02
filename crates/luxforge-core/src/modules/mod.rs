@@ -24,6 +24,22 @@ mod transform;
 mod vignette;
 
 pub use crate::render::map::{Mapping, RadialModel, WarpStep};
+
+/// Every GPU program a built-in module ships (`docs/design/gpu-preview.md`): each a `.wgsl` file
+/// beside the CPU unit it mirrors, in the order the units run in a stack. The core's tests validate
+/// each under the photo surface's calling convention and fail for a `.wgsl` file this list omits;
+/// the desktop's tests check each against the surface's own prelude and qualify each on a device.
+pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
+    &detail::DETAIL_PROGRAM,
+    &basic::WHITE_BALANCE_PROGRAM,
+    &basic::EXPOSURE_PROGRAM,
+    &basic::TONE_PROGRAM,
+    &basic::COLOUR_ADJUST_PROGRAM,
+    &curve::TONE_CURVE_PROGRAM,
+    &mixer::MIXER_PROGRAM,
+    &vignette::VIGNETTE_PROGRAM,
+    &presence::PRESENCE_PROGRAM,
+];
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
@@ -65,6 +81,10 @@ pub(crate) use descriptor::{
 };
 pub use detail::DETAIL_EFFECT;
 use detail::DetailModule;
+#[cfg(test)]
+pub(crate) use detail::gpu_functions as detail_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::LensModule;
@@ -76,6 +96,10 @@ pub use pixel::PIXEL_EFFECT;
 pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
+#[cfg(test)]
+pub(crate) use presence::gpu_functions as presence_gpu_functions;
+#[cfg(feature = "qualification")]
+pub use presence::qualification as presence_qualification;
 #[cfg(test)]
 pub(crate) use presets::APPLY_PRESET;
 pub(crate) use presets::{MAX_PRESET_NAME, PresetsModule};

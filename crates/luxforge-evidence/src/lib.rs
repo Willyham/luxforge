@@ -121,6 +121,9 @@ pub enum Step {
     /// Change zoom, then inspect the already drawn photo after an idle interval with evidence
     /// ticks and frame-capture subscriptions suspended for that interval.
     ViewIdle(ViewIdleStep),
+    /// Leave the editor alone with evidence's own timers and redraws suspended, then check that
+    /// nothing drew: see [`IdleStep`].
+    Idle(IdleStep),
     Workspace(WorkspaceStep),
     Preview(PreviewStep),
     /// Move the comparison divider, or release a backslash hold through the keymap.
@@ -289,6 +292,7 @@ impl Step {
             Self::View(step) => step.validate(),
             Self::Pinch(step) => step.validate(),
             Self::ViewIdle(step) => step.validate(),
+            Self::Idle(step) => step.validate(),
             Self::Workspace(step) => step.validate(),
             Self::Preview(_) | Self::Palette(_) | Self::Performance { .. } => Ok(()),
             Self::PerformanceCancel { row } => {
@@ -1167,6 +1171,29 @@ impl ViewIdleStep {
         } else {
             Err(format!(
                 "view_idle ms takes an integer from 1 to {MAX_WAIT_MS}"
+            ))
+        }
+    }
+}
+
+/// A native idle check: with evidence's own timers and redraws suspended, `settle_ms` for whatever
+/// is still running, such as a settle's dissolve, to end, then a window of `ms` over which the
+/// photo surface may draw no frame of its own and the desktop run no update but the one the
+/// window's start itself ran. Captured once the window has passed.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdleStep {
+    pub settle_ms: u64,
+    pub ms: u64,
+}
+
+impl IdleStep {
+    fn validate(&self) -> Result<(), String> {
+        if (1..=MAX_WAIT_MS).contains(&self.settle_ms) && (1..=MAX_WAIT_MS).contains(&self.ms) {
+            Ok(())
+        } else {
+            Err(format!(
+                "idle settle_ms and ms each take an integer from 1 to {MAX_WAIT_MS}"
             ))
         }
     }

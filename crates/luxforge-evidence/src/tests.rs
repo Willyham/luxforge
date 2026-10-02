@@ -115,6 +115,22 @@ fn native_hover_sweep_round_trips_and_bounds_its_work_and_duration() {
 }
 
 #[test]
+fn idle_step_round_trips_and_bounds_its_windows() {
+    let script = r#"[{"idle":{"settle_ms":500,"ms":1000}}]"#;
+    let steps = parse(script).expect("a valid idle check");
+    assert_eq!(
+        steps,
+        vec![Step::Idle(IdleStep {
+            settle_ms: 500,
+            ms: 1000
+        })]
+    );
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"idle":{"settle_ms":0,"ms":1000}}]"#).is_err());
+    assert!(parse(r#"[{"idle":{"settle_ms":500,"ms":20000}}]"#).is_err());
+}
+
+#[test]
 fn view_idle_step_round_trips_and_bounds_its_deadline() {
     let script = r#"[{"view_idle":{"view":{"zoom":"fit"},"ms":1000}}]"#;
     let steps = parse(script).expect("a valid native idle probe");

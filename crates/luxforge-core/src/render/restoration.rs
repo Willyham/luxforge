@@ -27,9 +27,16 @@ struct RestorationPrefixKey {
     held: Region,
 }
 #[derive(Clone)]
-enum PrefixPixels {
+pub(super) enum PrefixPixels {
     Byte(ByteFrame),
     Linear(Arc<Vec<f32>>),
+}
+/// A held restoration prefix's output: the input of segment `segment`, a frame of `stage`, shared
+/// with the cache that holds it.
+pub(crate) struct HeldPrefix {
+    pub(super) segment: usize,
+    pub(super) stage: Stage,
+    pub(super) pixels: PrefixPixels,
 }
 struct RestorationPrefixFrame {
     key: RestorationPrefixKey,
@@ -76,23 +83,21 @@ impl Render<'_> {
         }
         result
     }
-    fn cached_frame(
+    /// The key this render's frame asks the cache with: the segment whose input is the active
+    /// leading restoration prefix's output, the key naming that output, and the stage it holds.
+    /// `None` when the stack has no active leading restoration prefix.
+    fn prefix_key(
         &self,
-        snapshot_id: SnapshotId,
         registry: &ModuleRegistry,
         recipe: &Recipe,
         proxy: &ProxyKey,
-        cache: &mut RestorationPrefixCache,
-    ) -> Result<(Raster, Option<PrefixUse>), Error> {
-        self.options.cancel.check()?;
+    ) -> Result<Option<(usize, RestorationPrefixKey, Stage)>, Error> {
         let Some(boundary) = self.compiled.restoration_boundary() else {
-            cache.clear();
-            return self.frame(snapshot_id).map(|r| (r, None));
+            return Ok(None);
         };
         let count = registry.restoration_prefix(&recipe.layers);
         if count == 0 {
-            cache.clear();
-            return self.frame(snapshot_id).map(|r| (r, None));
+            return Ok(None);
         }
         let hash = prefix_hash(
             &recipe.layers[..count],
@@ -124,6 +129,48 @@ impl Render<'_> {
             wide,
             held,
         };
+        Ok(Some((boundary, key, stage)))
+    }
+
+    /// The restoration prefix's output `cache` holds under the key this render's frame asks with:
+    /// the input of the segment that output opens, which a GPU preview boundary in that segment
+    /// reads ([`Render::boundary_reading`]), so the boundary job does not evaluate the prefix
+    /// again. `None` when the cache holds another key, or the stack has no active prefix.
+    pub(crate) fn held_prefix(
+        &self,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        proxy: &ProxyKey,
+        cache: &RestorationPrefixCache,
+    ) -> Result<Option<HeldPrefix>, Error> {
+        let Some((boundary, key, stage)) = self.prefix_key(registry, recipe, proxy)? else {
+            return Ok(None);
+        };
+        Ok(cache
+            .frame
+            .as_ref()
+            .filter(|frame| frame.key == key)
+            .map(|frame| HeldPrefix {
+                segment: boundary,
+                stage,
+                pixels: frame.pixels.clone(),
+            }))
+    }
+
+    fn cached_frame(
+        &self,
+        snapshot_id: SnapshotId,
+        registry: &ModuleRegistry,
+        recipe: &Recipe,
+        proxy: &ProxyKey,
+        cache: &mut RestorationPrefixCache,
+    ) -> Result<(Raster, Option<PrefixUse>), Error> {
+        self.options.cancel.check()?;
+        let Some((boundary, key, stage)) = self.prefix_key(registry, recipe, proxy)? else {
+            cache.clear();
+            return self.frame(snapshot_id).map(|r| (r, None));
+        };
+        let (wide, held) = (key.wide, key.held);
         let per_pixel = match self.source {
             RenderSource::Byte(_) => {
                 if wide {
@@ -756,3 +803,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "restoration_held_tests.rs"]
+mod held_tests;

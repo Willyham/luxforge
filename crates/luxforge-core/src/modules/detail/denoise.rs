@@ -1,7 +1,8 @@
 use super::filters::{self, Geometry, Kernel};
 use crate::{
     Cancel, Error,
-    modules::{Global, Parallelism, Planes, PlanesMut, SamplingScale, SpatialUnit, Stage},
+    modules::{Global, Parallelism, Planes, PlanesMut, Region, SamplingScale, SpatialUnit, Stage},
+    render::gpu::GpuSpatialUnit,
 };
 
 const BAND_NOISE: [f64; 4] = [0.8914, 0.1992, 0.0860, 0.0417];
@@ -28,6 +29,44 @@ impl Denoise {
         scale: SamplingScale,
     ) -> Self {
         let levels = if colour == 0.0 { 3 } else { 4 };
+        Self::with_levels(
+            luminance,
+            luminance_detail,
+            colour,
+            colour_detail,
+            scale,
+            levels,
+        )
+    }
+
+    /// The unit with every level it can hold, a level whose thresholds are zero changing nothing:
+    /// its GPU shape (`CompileStage::gpu_shape`), whose passes do not change as Colour leaves or
+    /// returns to zero. No CPU frame runs it; the CPU's own shape is [`Self::new`]'s.
+    pub fn every_level(
+        luminance: f64,
+        luminance_detail: f64,
+        colour: f64,
+        colour_detail: f64,
+        scale: SamplingScale,
+    ) -> Self {
+        Self::with_levels(
+            luminance,
+            luminance_detail,
+            colour,
+            colour_detail,
+            scale,
+            BAND_NOISE.len(),
+        )
+    }
+
+    fn with_levels(
+        luminance: f64,
+        luminance_detail: f64,
+        colour: f64,
+        colour_detail: f64,
+        scale: SamplingScale,
+        levels: usize,
+    ) -> Self {
         let mut kernels = filters::denoise_kernels(scale);
         kernels.truncate(levels);
         let halo = (0..2)
@@ -66,6 +105,13 @@ impl Denoise {
             kernels,
             halo,
         }
+    }
+}
+#[cfg(feature = "qualification")]
+impl Denoise {
+    /// The per-level thresholds `[luminance, chroma]` the unit holds.
+    pub(super) fn thresholds(&self) -> &[[f32; 2]] {
+        &self.thresholds
     }
 }
 impl SpatialUnit for Denoise {
@@ -143,59 +189,16 @@ impl SpatialUnit for Denoise {
                     },
                 )?;
             }
-            for c in 0..3 {
-                let kind = usize::from(c != 0);
-                let threshold = thresholds[kind];
-                if threshold == 0.0 {
-                    continue;
-                }
-                let detail = if kind == 0 {
-                    self.luminance_detail
-                } else {
-                    self.colour_detail
-                };
-                filters::rows(
-                    &mut delta[c * len..(c + 1) * len],
-                    geometry,
-                    out,
-                    parallelism,
-                    cancel,
-                    |y, row| {
-                        for (column, value) in row.iter_mut().enumerate() {
-                            let x = i64::from(out.x0) + column as i64;
-                            let y = i64::from(y);
-                            let index = geometry.index(x, y);
-                            let mut energy = 0.0;
-                            for dy in -1..=1 {
-                                for dx in -1..=1 {
-                                    let i = geometry.index(x + dx, y + dy);
-                                    if kind == 0 {
-                                        energy += coarse[i] * coarse[i];
-                                    } else {
-                                        energy += coarse[len + i] * coarse[len + i]
-                                            + coarse[2 * len + i] * coarse[2 * len + i];
-                                    }
-                                }
-                            }
-                            energy /= 9.0;
-                            let protection =
-                                energy / (energy + (3.0 * threshold) * (3.0 * threshold));
-                            let effective = threshold * (1.0 - detail * protection);
-                            let squared = if kind == 0 {
-                                coarse[index] * coarse[index]
-                            } else {
-                                coarse[len + index] * coarse[len + index]
-                                    + coarse[2 * len + index] * coarse[2 * len + index]
-                            };
-                            if squared != 0.0 {
-                                let factor = (1.0 - effective * effective / squared).max(0.0);
-                                let d = coarse[c * len + index];
-                                *value += d * factor - d;
-                            }
-                        }
-                    },
-                )?;
-            }
+            shrink(
+                coarse,
+                delta,
+                geometry,
+                out,
+                *thresholds,
+                [self.luminance_detail, self.colour_detail],
+                parallelism,
+                cancel,
+            )?;
             for c in 0..3 {
                 filters::rows(
                     &mut coarse[c * len..(c + 1) * len],
@@ -234,6 +237,13 @@ impl SpatialUnit for Denoise {
         });
         cancel.check()
     }
+    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+        super::gpu::denoise(
+            &self.kernels,
+            &self.thresholds,
+            [self.luminance_detail, self.colour_detail],
+        )
+    }
     fn is_finite(&self) -> bool {
         self.thresholds.iter().flatten().all(|v| v.is_finite())
             && self.luminance_detail.is_finite()
@@ -250,4 +260,71 @@ impl SpatialUnit for Denoise {
             self.halo
         )
     }
+}
+
+/// One level's soft shrinkage over `out`, added to `delta`: for each channel kind with a threshold,
+/// the non-negative garrote of the level's detail `band`, its threshold lowered where the band's
+/// mean energy over the 3 x 3 neighbourhood is high. `band` and `delta` are planar L, a and b over
+/// `geometry.held`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn shrink(
+    band: &[f32],
+    delta: &mut [f32],
+    geometry: Geometry,
+    out: Region,
+    thresholds: [f32; 2],
+    details: [f32; 2],
+    parallelism: Parallelism,
+    cancel: &Cancel,
+) -> Result<(), Error> {
+    let len = geometry.held.pixels() as usize;
+    for c in 0..3 {
+        let kind = usize::from(c != 0);
+        let threshold = thresholds[kind];
+        if threshold == 0.0 {
+            continue;
+        }
+        let detail = details[kind];
+        filters::rows(
+            &mut delta[c * len..(c + 1) * len],
+            geometry,
+            out,
+            parallelism,
+            cancel,
+            |y, row| {
+                for (column, value) in row.iter_mut().enumerate() {
+                    let x = i64::from(out.x0) + column as i64;
+                    let y = i64::from(y);
+                    let index = geometry.index(x, y);
+                    let mut energy = 0.0;
+                    for dy in -1..=1 {
+                        for dx in -1..=1 {
+                            let i = geometry.index(x + dx, y + dy);
+                            if kind == 0 {
+                                energy += band[i] * band[i];
+                            } else {
+                                energy += band[len + i] * band[len + i]
+                                    + band[2 * len + i] * band[2 * len + i];
+                            }
+                        }
+                    }
+                    energy /= 9.0;
+                    let protection = energy / (energy + (3.0 * threshold) * (3.0 * threshold));
+                    let effective = threshold * (1.0 - detail * protection);
+                    let squared = if kind == 0 {
+                        band[index] * band[index]
+                    } else {
+                        band[len + index] * band[len + index]
+                            + band[2 * len + index] * band[2 * len + index]
+                    };
+                    if squared != 0.0 {
+                        let factor = (1.0 - effective * effective / squared).max(0.0);
+                        let d = band[c * len + index];
+                        *value += d * factor - d;
+                    }
+                }
+            },
+        )?;
+    }
+    Ok(())
 }

@@ -45,6 +45,7 @@ use crate::{
     Component, ComponentId, ComponentMode, Control, Error, Mask, ParameterDescriptor,
     modules::{Region, Stage},
     path::StrokeTable,
+    render::gpu::{GpuComponent, GpuDescription, GpuProgram},
 };
 use std::sync::Arc;
 
@@ -60,6 +61,21 @@ mod range;
 pub mod rules;
 mod stroke;
 
+/// Every mask component kind's GPU coverage program (`docs/design/gpu-preview.md`), in the kind
+/// table's order: each a `.wgsl` file beside the CPU field it mirrors, with the coverage signature
+/// `fn(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`. The core's tests validate
+/// each under the photo surface's calling convention; the desktop's tests run each in the surface's
+/// masked step and qualify it against its CPU field on a device.
+pub static MASK_GPU_PROGRAMS: &[&GpuProgram] = &[
+    &linear::PROGRAM,
+    &radial::PROGRAM,
+    &brush::PROGRAM,
+    &range::LUMINANCE_PROGRAM,
+    &range::COLOUR_PROGRAM,
+];
+
+/// The brush's GPU storage block's bound, which a painted stroke's ticks stay within.
+pub use brush::GPU_BLOCK_WORDS_MAX as BRUSH_GPU_BLOCK_WORDS_MAX;
 pub use brush::{SEGMENTS_PER_PIXEL, STROKES_PER_COMPONENT};
 pub use linear::{LinearGradient, POSITION_MAX, POSITION_MIN};
 pub use radial::{ANGLE_MAX, ANGLE_MIN, FEATHER_MAX, FEATHER_MIN, RadialGradient};
@@ -481,7 +497,7 @@ type Field = Arc<dyn ComponentField>;
 /// names a kind. The per-pixel method is reached through one indirection per component and computes
 /// exactly what the kind's own transcription computes, in the reference's spelling and order, so
 /// coverage is bit-identical to the frozen references whichever way it is dispatched.
-trait ComponentField: std::fmt::Debug + Send + Sync {
+pub(crate) trait ComponentField: std::fmt::Debug + Send + Sync {
     /// The component's own falloff at a mask-space point, before its inversion and before the
     /// composition. A geometric kind ignores `rgb`, which is the whole of what proposal P12 costs
     /// it; a value-based kind ignores the position instead.
@@ -511,11 +527,24 @@ trait ComponentField: std::fmt::Debug + Send + Sync {
     fn segments_at(&self, _u: f64, _v: f64) -> usize {
         0
     }
+
+    /// This component's GPU coverage program and the words it reads, compiled against `stage`, the
+    /// stage this field was compiled against, for a preview during a gesture
+    /// (`docs/design/gpu-preview.md`). Its entry is a
+    /// [`GpuProgramKind::Coverage`](crate::render::gpu::GpuProgramKind::Coverage) function: the
+    /// falloff before this component's inversion and the composition, which the plan carries as
+    /// data, at the stage pixel `pos`. `None`, the default, sends every stack drawing this mask
+    /// down the CPU path. CPU coverage never reads a GPU value, so a program changes no CPU byte.
+    fn gpu(&self, _stage: Stage) -> Option<GpuDescription> {
+        None
+    }
 }
 
-/// One compiled component: its mode, its own inversion and its stage-bound geometry.
+/// One compiled component: its mode, its own inversion and its stage-bound geometry, with the kind
+/// token it was compiled through, which a refusal names.
 #[derive(Clone, Debug)]
 struct CompiledComponent {
+    kind: &'static str,
     mode: ComponentMode,
     invert: bool,
     geometry: Field,
@@ -583,8 +612,10 @@ impl CompiledMask {
         };
         let mut components = Vec::with_capacity(mask.components.len());
         for component in &mask.components {
-            let geometry = (kind_of(component)?.compile)(component, &binding)?;
+            let kind = kind_of(component)?;
+            let geometry = (kind.compile)(component, &binding)?;
             components.push(CompiledComponent {
+                kind: kind.kind,
                 mode: component.mode,
                 invert: component.invert,
                 geometry,
@@ -730,6 +761,74 @@ impl CompiledMask {
             .iter()
             .map(|component| component.geometry.segments_at(u, v))
             .sum()
+    }
+
+    /// Every component's GPU program with its mode and inversion, in composition order, or the kind
+    /// of the first component that has none. The composition itself, the whole-mask inversion and
+    /// `amount / 100` are the plan's data ([`Self::invert`], [`Self::scale`]), not a program's.
+    /// `O(components)`; reads no pixel.
+    pub(crate) fn gpu_components(&self) -> Result<Vec<GpuComponent>, &'static str> {
+        self.components
+            .iter()
+            .map(|component| {
+                let program = component.geometry.gpu(self.stage).ok_or(component.kind)?;
+                Ok(GpuComponent {
+                    kind: component.kind,
+                    mode: component.mode,
+                    invert: component.invert,
+                    program,
+                })
+            })
+            .collect()
+    }
+
+    /// Component `index`'s own falloff at the centre of stage pixel `(x, y)`, before its inversion
+    /// and the composition, in `f64`: what the plan's reference executor runs for its GPU program.
+    #[cfg(test)]
+    pub(crate) fn component_falloff(&self, index: usize, x: u32, y: u32, rgb: [f64; 3]) -> f64 {
+        let u = (f64::from(x) + 0.5) / self.height;
+        let v = (f64::from(y) + 0.5) / self.height;
+        self.components[index].geometry.coverage(u, v, rgb)
+    }
+
+    /// Whether the composed coverage is inverted, `1 - m`, before the final multiply.
+    pub(crate) fn invert(&self) -> bool {
+        self.invert
+    }
+
+    /// `amount / 100`, the composition's final multiply.
+    pub(crate) fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    /// A mask of these components, already bound to `stage`, for a test that needs a component this
+    /// build's kind table does not hold — a GPU plan's tests give one a program.
+    #[cfg(test)]
+    pub(crate) fn from_fields(
+        stage: Stage,
+        components: Vec<(&'static str, ComponentMode, bool, Arc<dyn ComponentField>)>,
+        invert: bool,
+        amount: f64,
+    ) -> Self {
+        let components: Vec<CompiledComponent> = components
+            .into_iter()
+            .map(|(kind, mode, invert, geometry)| CompiledComponent {
+                kind,
+                mode,
+                invert,
+                geometry,
+            })
+            .collect();
+        let scale = amount / 100.0;
+        let bounds = compose_bounds(&components, stage, invert, scale);
+        Self {
+            stage,
+            height: f64::from(stage.height),
+            scale,
+            invert,
+            components,
+            bounds,
+        }
     }
 }
 
@@ -950,6 +1049,9 @@ fn half_plane_bounds(stage: Stage, inside: impl Fn(f64, f64) -> f64) -> Region {
     }
     region_from_bounds(stage, min_x, max_x, min_y, max_y)
 }
+
+#[cfg(test)]
+mod gpu_tests;
 
 #[cfg(test)]
 mod tests {

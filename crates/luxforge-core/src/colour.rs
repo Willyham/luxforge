@@ -46,6 +46,18 @@ pub mod srgb {
     srgb_transfer!(decode, encode, f64);
     srgb_transfer!(decode_f32, encode_f32, f32);
 
+    /// The `f32` encode's constants by the names a GPU program that restates the encode gives them
+    /// (`<entry>_linear_end` and so on), for the tests that hold those programs to them. A test
+    /// below holds this table to [`encode_f32`] itself.
+    #[cfg(test)]
+    pub(crate) const ENCODE_F32: [(&str, f32); 5] = [
+        ("linear_end", 0.003_130_8),
+        ("slope", 12.92),
+        ("scale", 1.055),
+        ("offset", 0.055),
+        ("exponent", 1.0 / 2.4),
+    ];
+
     /// One 8-bit channel code decoded to linear light at `f64` precision: the same transfer
     /// function the `f32` table below is built from, without that table's storage rounding. A
     /// caller that reasons about colour off the per-pixel path — the neutral picker averages 25
@@ -68,9 +80,10 @@ pub mod srgb {
 
     /// The table itself, [`TO_LINEAR`], indexed by code, for a pass that decodes many pixels: it
     /// takes the table once and hands it to [`decode_pixel_in`], since every dereference of the
-    /// lazy static is an atomic load the compiler cannot merge.
+    /// lazy static is an atomic load the compiler cannot merge. The desktop's evidence runs read
+    /// it too, to hold a displayed frame as a GPU boundary.
     #[inline]
-    pub(crate) fn decode_table() -> &'static [f32; 256] {
+    pub fn decode_table() -> &'static [f32; 256] {
         &TO_LINEAR
     }
 
@@ -139,6 +152,26 @@ pub mod srgb {
         }
         thresholds
     });
+
+    /// The first `f32` at or above each of [`CODE_THRESHOLDS`]: an `f32` value's output code is the
+    /// number of these at or below it, clamped to `[0, 1]` with NaN taken to 0, which is the code
+    /// [`Quantizer::pixel`] and [`Quantizer::rounded`] give it — a test below holds both to that at
+    /// every threshold. A program that quantizes in `f32` on the GPU compares against these.
+    static CODE_THRESHOLDS_F32: LazyLock<[f32; 255]> = LazyLock::new(|| {
+        CODE_THRESHOLDS.map(|threshold| {
+            let narrowed = threshold as f32;
+            if f64::from(narrowed) < threshold {
+                narrowed.next_up()
+            } else {
+                narrowed
+            }
+        })
+    });
+
+    /// [`CODE_THRESHOLDS_F32`], for the desktop to hand the GPU preview's output encoding.
+    pub fn output_thresholds() -> &'static [f32; 255] {
+        &CODE_THRESHOLDS_F32
+    }
 
     pub(crate) const CODE_BINS: usize = 4096;
 
@@ -365,6 +398,16 @@ pub(crate) mod oklab {
     const M2: [[f32; 3]; 3] = as_f32(M2_F64);
     const M2_INV: [[f32; 3]; 3] = as_f32(M2_INV_F64);
     const M1_INV: [[f32; 3]; 3] = as_f32(M1_INV_F64);
+
+    /// The four `f32` matrices by the names a GPU program that restates the conversion gives their
+    /// rows (`<entry>_m1_0` and so on), for the tests that hold those programs to them.
+    #[cfg(test)]
+    pub(crate) const MATRICES: [(&str, [[f32; 3]; 3]); 4] = [
+        ("m1", M1),
+        ("m2", M2),
+        ("m2_inv", M2_INV),
+        ("m1_inv", M1_INV),
+    ];
 
     /// Linear sRGB to Oklab `[L, a, b]` at one working precision: `M2 · cbrt(M1 · rgb)`, with the
     /// signed cube root that stays finite for the negative LMS component a linear value preserved
@@ -601,7 +644,58 @@ pub(crate) mod cct {
 
 #[cfg(test)]
 mod tests {
+    /// The encode's constants a GPU program is held to are the ones the `f32` encode evaluates:
+    /// the table reproduces it bit for bit on both branches and at the branch point.
+    #[test]
+    fn the_encode_table_is_the_f32_transfer_function() {
+        let constant = |name: &str| {
+            super::srgb::ENCODE_F32
+                .iter()
+                .find(|(held, _)| *held == name)
+                .map(|(_, value)| *value)
+                .unwrap()
+        };
+        let (end, slope) = (constant("linear_end"), constant("slope"));
+        let (scale, offset, exponent) =
+            (constant("scale"), constant("offset"), constant("exponent"));
+        for index in 0..=4096 {
+            let linear = index as f32 / 2048.0 - 0.25;
+            for value in [linear, end, end.next_up(), end.next_down()] {
+                let table = if value <= end {
+                    slope * value
+                } else {
+                    scale * value.powf(exponent) - offset
+                };
+                assert_eq!(
+                    table.to_bits(),
+                    super::srgb::encode_f32(value).to_bits(),
+                    "{value}"
+                );
+            }
+        }
+    }
+
     use super::*;
+
+    /// Both output quantizers change code at exactly the `f32` thresholds: each threshold takes
+    /// the upper code and the `f32` below it the lower, and both are monotonic, so counting the
+    /// thresholds at or below an `f32` is their code for every `f32` in `[0, 1]`.
+    #[test]
+    fn the_f32_thresholds_are_where_both_quantizers_change_code() {
+        let quantizer = srgb::quantizer();
+        let count = |value: f32| {
+            srgb::output_thresholds().partition_point(|threshold| *threshold <= value) as u8
+        };
+        for (index, threshold) in srgb::output_thresholds().iter().copied().enumerate() {
+            let code = index as u8 + 1;
+            for (value, expected) in [(threshold, code), (threshold.next_down(), code - 1)] {
+                let wide = f64::from(value);
+                assert_eq!(quantizer.pixel([value; 3]), [expected; 3], "{value}");
+                assert_eq!(quantizer.rounded(wide), expected, "{value}");
+                assert_eq!(count(value), expected, "{value}");
+            }
+        }
+    }
 
     #[test]
     fn srgb_round_trip_is_the_identity_across_the_byte_range() {

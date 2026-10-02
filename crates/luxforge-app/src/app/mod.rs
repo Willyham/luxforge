@@ -29,6 +29,7 @@ mod actions_tests;
 pub(crate) mod capabilities;
 #[cfg(test)]
 mod capabilities_tests;
+pub(crate) mod compare_after;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
@@ -43,6 +44,34 @@ mod export_tests;
 pub(crate) mod gesture;
 #[cfg(test)]
 mod gesture_tests;
+#[cfg(test)]
+mod gpu_colour_tests;
+#[cfg(test)]
+mod gpu_detail_tests;
+pub(crate) mod gpu_identity;
+#[cfg(test)]
+mod gpu_mask_tests;
+#[cfg(test)]
+mod gpu_presence_tests;
+pub(crate) mod gpu_preview;
+#[cfg(test)]
+mod gpu_preview_tests;
+#[cfg(test)]
+pub(crate) mod gpu_qualification;
+// The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
+// not draw a gesture on the GPU yet, so only its tests reach it.
+mod drawn_frames;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Fit drags convert their GPU plans here once the desktop draws them on the GPU"
+    )
+)]
+pub(crate) mod gpu_plan;
+pub(crate) mod gpu_settle;
+#[cfg(test)]
+mod gpu_settle_tests;
 mod history;
 #[cfg(test)]
 mod history_tests;
@@ -317,6 +346,13 @@ pub(crate) struct Editor {
     pub(crate) performance: performance::Sampler,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
+    /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
+    /// list of the committed stack.
+    pub(crate) gpu: gpu_preview::GpuPreviews,
+    /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.
+    pub(crate) gpu_settle: gpu_settle::GpuSettle,
+    /// The surface's drawn frames as evidence logs them ([`drawn_frames`]).
+    drawn_frames: drawn_frames::DrawnFrames,
     /// The whole screen as plain data, derived again after every message.
     pub(crate) workspace: Workspace,
 }
@@ -365,19 +401,22 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 12] = [
+const AFTER_MESSAGE: [AfterMessage; 15] = [
     view_state::after_message,
     performance::after_message,
     slider::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
+    gpu_preview::after_message,
+    gpu_settle::after_message,
     mask_panel::after_message,
     crop::after_message,
     sync::after_message,
     overlay::after_message,
     thumbnails::after_message,
     mask_coverage::after_message,
+    drawn_frames::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -415,7 +454,9 @@ impl Editor {
         let client = client.unwrap_or_else(|| owner.register_with(ClientAuthority::Permissions));
         let evidence = config.evidence.take().map(|dir| {
             let queue = std::mem::take(&mut config.files);
-            Evidence::new(dir, queue, std::mem::take(&mut config.script))
+            let mut evidence = Evidence::new(dir, queue, std::mem::take(&mut config.script));
+            evidence.gpu_identity = config.gpu_identity.then(Default::default);
+            evidence
         });
         let initial = config.files.pop_front();
         let preferences = tasks::call(&owner, client, "preferences.read", json!({}));
@@ -466,6 +507,9 @@ impl Editor {
             capability_started: Vec::new(),
             performance: performance::Sampler::new(expanded),
             export: Default::default(),
+            gpu: Default::default(),
+            gpu_settle: Default::default(),
+            drawn_frames: Default::default(),
             workspace: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
@@ -476,6 +520,9 @@ impl Editor {
         editor.thumbnailer.queue.set_waker(waker::waker());
         editor.coverage_worker.queue.set_waker(waker::waker());
         luxforge_ui::set_surface_waker(waker::waker());
+        // The GPU preview encodes its output with the core's quantizer, which the widget crate
+        // cannot reach.
+        gpu_plan::install_output_encoding();
         // The owner wakes the event sync when another client changes something, so no timer asks
         // it whether anything did.
         editor
@@ -671,6 +718,7 @@ impl Editor {
             clients: self.live_server.as_ref().map(LocalServer::connected),
             rendering: self.presentation.queue.is_busy() || self.surface_photo_updating(),
             render: self.activity.render,
+            gpu_frame_us: self.gpu_frame_us(),
             render_bar: self.activity.render_bar,
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.analysis.as_ref(),
@@ -766,7 +814,10 @@ impl Editor {
                     !self.document.compare_hold
                         && self.presentation.presented_entry == self.document.original_entry
                 })
-                .map(|(frame, comparison)| (frame, comparison.position)),
+                .map(|(after, comparison)| {
+                    let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
+                    (after.drawn(fit), comparison.position)
+                }),
             mask_draft: self.mask_shape(),
             mask_map: self.held_mask().and_then(|mask| mask.map.as_ref()),
             draft: self.crop(),
@@ -778,6 +829,17 @@ impl Editor {
             surfaces.region_clipping = None;
             surfaces.region_coverage = None;
         }
+        surfaces.gpu = self.gpu_plan(surfaces.photo);
+        // The open gesture's plan is held behind the CPU frame of its revision once that frame is
+        // presented, and tagged with the revision it draws.
+        if surfaces.gpu.is_some()
+            && let Some((_, revision)) = self.gesture_gpu_plan()
+        {
+            surfaces.gpu_hold = self.gpu_held();
+            surfaces.gpu_tag = Some(revision);
+        }
+        surfaces.gpu_warm = self.gpu.warm();
+        surfaces.dissolve = self.gpu_settle.dissolve();
         surfaces
     }
 

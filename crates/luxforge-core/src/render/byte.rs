@@ -120,6 +120,18 @@ fn encoded(rgb: [f32; 3], wide: bool) -> [u16; 3] {
         quantize_pixel(rgb).map(|v| u16::from(v) * 257)
     }
 }
+/// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
+/// estimates are keyed by, and a proxy not yet built is named by
+/// (`render::gpu::EstimateSource::Proxy`).
+pub(crate) fn estimate_prefix(
+    prefix_hash: &str,
+    width: u32,
+    height: u32,
+    orientation: u8,
+) -> String {
+    format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
+}
+
 fn decoded(rgb: [u16; 3]) -> [f32; 3] {
     let table = decode16_table();
     rgb.map(|code| table[usize::from(code)])
@@ -134,9 +146,11 @@ impl PixelDomain for Byte<'_> {
         &self.0.fingerprint
     }
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(format!(
-            "{prefix_hash}+byte:{}x{}:orientation:{}",
-            self.0.width, self.0.height, self.0.orientation
+        Cow::Owned(estimate_prefix(
+            prefix_hash,
+            self.0.width,
+            self.0.height,
+            self.0.orientation,
         ))
     }
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {
@@ -555,7 +569,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 ByteFrame::Wide(pixels) => segment_pass(
-                    &FloatRows::<u16>::new(segment, None),
+                    &FloatRows::<Wide>::new(segment, None),
                     segment,
                     super::raster::frame_mut16(pixels),
                     band,
@@ -576,7 +590,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 (_, ByteFrame::Narrow(output)) => segment_pass(
-                    &FloatRows::<u8>::new(segment, Some((&frame, stage))),
+                    &FloatRows::<Narrow>::new(segment, Some((&frame, stage))),
                     segment,
                     frame_mut(output),
                     band,
@@ -584,7 +598,7 @@ pub(super) fn frames(
                     context.scratch(),
                 )?,
                 (_, ByteFrame::Wide(output)) => segment_pass(
-                    &FloatRows::<u16>::new(segment, Some((&frame, stage))),
+                    &FloatRows::<Wide>::new(segment, Some((&frame, stage))),
                     segment,
                     super::raster::frame_mut16(output),
                     band,
@@ -600,28 +614,50 @@ pub(super) fn frames(
     Ok((frame, stage))
 }
 
-trait SampleStore: Copy + Send + Sync {
+/// How a float row pass stores a pixel: the narrow 8-bit frame, the wide RGB16 frame a spatial chain
+/// reads, or the half floats a GPU preview's boundary holds.
+trait SampleStore: Send + Sync {
+    type Sample: Copy + Send + Sync;
     const SAMPLES: usize;
-    fn load(pixel: &[Self]) -> [f32; 3];
-    fn store(pixel: &mut [Self], rgb: [f32; 3]);
+    fn load(pixel: &[Self::Sample]) -> [f32; 3];
+    fn store(pixel: &mut [Self::Sample], rgb: [f32; 3]);
 }
-impl SampleStore for u8 {
+/// Opaque 8-bit sRGB, four bytes a pixel.
+struct Narrow;
+impl SampleStore for Narrow {
+    type Sample = u8;
     const SAMPLES: usize = 4;
-    fn load(p: &[Self]) -> [f32; 3] {
+    fn load(p: &[u8]) -> [f32; 3] {
         decode_pixel_in(decode_table(), [p[0], p[1], p[2]])
     }
-    fn store(p: &mut [Self], rgb: [f32; 3]) {
+    fn store(p: &mut [u8], rgb: [f32; 3]) {
         p[..3].copy_from_slice(&quantize_pixel(rgb));
         p[3] = 255;
     }
 }
-impl SampleStore for u16 {
+/// Encoded RGB16, three samples a pixel.
+struct Wide;
+impl SampleStore for Wide {
+    type Sample = u16;
     const SAMPLES: usize = 3;
-    fn load(p: &[Self]) -> [f32; 3] {
+    fn load(p: &[u16]) -> [f32; 3] {
         decoded([p[0], p[1], p[2]])
     }
-    fn store(p: &mut [Self], rgb: [f32; 3]) {
+    fn store(p: &mut [u16], rgb: [f32; 3]) {
         p.copy_from_slice(&encoded(rgb, true));
+    }
+}
+/// Linear light as a JPEG's GPU preview boundary holds it ([`super::boundary`]): four
+/// little-endian half floats a pixel, eight bytes, with the value unclamped and opaque alpha.
+pub(super) struct Half;
+impl SampleStore for Half {
+    type Sample = u8;
+    const SAMPLES: usize = super::boundary::BoundaryFormat::Half.texel_bytes();
+    fn load(p: &[u8]) -> [f32; 3] {
+        super::boundary::read_texel(super::boundary::BoundaryFormat::Half, p)
+    }
+    fn store(p: &mut [u8], rgb: [f32; 3]) {
+        super::boundary::write_texel(super::boundary::BoundaryFormat::Half, p, rgb);
     }
 }
 struct FloatRows<'a, S> {
@@ -639,7 +675,7 @@ impl<'a, S> FloatRows<'a, S> {
     }
 }
 impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
-    type Sample = S;
+    type Sample = S::Sample;
     type Scratch = Vec<[f32; 3]>;
     fn samples_per_pixel(&self) -> usize {
         S::SAMPLES
@@ -647,7 +683,12 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
     fn scratch_bytes(&self, width: usize, rows: usize, _: usize) -> usize {
         width * rows * 12
     }
-    fn load(&self, scratch: &mut Self::Scratch, y0: u32, chunk: &mut [S]) -> Result<(), Error> {
+    fn load(
+        &self,
+        scratch: &mut Self::Scratch,
+        y0: u32,
+        chunk: &mut [S::Sample],
+    ) -> Result<(), Error> {
         scratch.clear();
         match self.input {
             Some((input, stage)) => {
@@ -667,7 +708,7 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
     fn replace(
         &self,
         scratch: &mut Self::Scratch,
-        _: &mut [S],
+        _: &mut [S::Sample],
         offset: usize,
         rgb: [u8; 3],
     ) -> Result<(), Error> {
@@ -677,7 +718,7 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
     fn run(
         &self,
         scratch: &mut Self::Scratch,
-        _: &mut [S],
+        _: &mut [S::Sample],
         run: &ColorRun<'_>,
         y0: u32,
         rows: std::ops::Range<usize>,
@@ -695,12 +736,40 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
         }
         Ok(())
     }
-    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [S]) -> Result<(), Error> {
+    fn store(&self, scratch: &mut Self::Scratch, chunk: &mut [S::Sample]) -> Result<(), Error> {
         for (pixel, rgb) in chunk.chunks_exact_mut(S::SAMPLES).zip(scratch) {
             S::store(pixel, *rgb);
         }
         Ok(())
     }
+}
+
+/// One segment's pass into the GPU preview's boundary ([`super::boundary`]): `segment`'s rows read
+/// from `input`, the `stage` frame entering it, through its exact geometry and colour runs, and
+/// stored as half floats without quantizing, so a boundary inside a colour run holds the value
+/// the run hands the next layer.
+pub(super) fn boundary_pass(
+    segment: &Segment,
+    input: &ByteFrame,
+    stage: Stage,
+    cancel: &Cancel,
+    context: &RenderContext,
+) -> Result<Vec<u8>, Error> {
+    let len = super::boundary::frame_len(
+        segment.width,
+        segment.height,
+        super::boundary::BoundaryFormat::Half,
+    )?;
+    let mut texels = vec![0u8; len];
+    segment_pass(
+        &FloatRows::<Half>::new(segment, Some((input, stage))),
+        segment,
+        &mut texels,
+        0..segment.height as usize,
+        cancel,
+        context.scratch(),
+    )?;
+    Ok(texels)
 }
 
 /// The rows of segment `index`'s frame its colour runs reach: those the boundary after it reads
@@ -809,7 +878,10 @@ mod tests {
             ),
         ];
         for (segments, expected) in cases {
-            let compiled = Compiled { segments };
+            let compiled = Compiled {
+                segments,
+                layers: Box::new([]),
+            };
             let actual: Vec<_> = byte_frame_widths(&compiled)
                 .into_iter()
                 .map(|w| (w.input, w.output))
@@ -823,9 +895,12 @@ mod tests {
             output_height: 10,
         }));
         assert!(
-            byte_frame_widths(&Compiled { segments })
-                .iter()
-                .all(|w| !w.input && !w.output)
+            byte_frame_widths(&Compiled {
+                segments,
+                layers: Box::new([])
+            })
+            .iter()
+            .all(|w| !w.input && !w.output)
         );
     }
     #[test]

@@ -20,6 +20,17 @@
 use crate::{
     colour::oklab::{self, Oklab},
     modules::PointwiseColor,
+    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
+};
+
+/// The mixer unit's GPU program (`unit.wgsl`): the hue warp's eight cubics and the two per-range
+/// coefficient arrays, 48 words.
+pub(crate) static PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_mixer_mixer",
+    source: include_str!("unit.wgsl"),
+    kind: GpuProgramKind::Colour,
+    words: 48,
+    enabled: true,
 };
 
 /// The eight hue ranges, in wheel order (ascending Oklab hue angle).
@@ -399,6 +410,24 @@ impl PointwiseColor for Mixer {
             return "mixer(neutral)".into();
         }
         format!("mixer({})", fields.join(", "))
+    }
+
+    /// The unit's whole state as `apply_row` reads it: the hue warp's cubics in wheel order, then
+    /// the chroma gains, then the luminance amounts. The description leaves out a slider at zero of
+    /// either sign, and every coefficient a negative zero gives is processed as the positive one,
+    /// so each word is the coefficient plus `+0.0`: a pure function of the sliders the description
+    /// writes.
+    fn gpu(&self) -> Option<GpuDescription> {
+        Some(GpuDescription::new(
+            &PROGRAM,
+            self.hue_warp
+                .iter()
+                .flatten()
+                .chain(&self.chroma_gain)
+                .chain(&self.luminance_amount)
+                .map(|value| (value + 0.0).to_bits())
+                .collect(),
+        ))
     }
 }
 
@@ -868,5 +897,62 @@ mod tests {
         // Printed with --nocapture so the handoff can quote a measured figure rather than a bound.
         println!("maximum observed deviation {worst} at {worst_case}");
         assert!(worst < 1e-5 + 1e-5, "the worst case stays inside the bound");
+    }
+
+    /// The GPU program's 48 words are the unit's whole state in order, two separately built units
+    /// that describe themselves identically carry identical uniforms, and the program's centres,
+    /// gaps and Oklab matrices are the `f32` values the CPU unit reads, bit for bit.
+    #[test]
+    fn gpu_uniforms_follow_the_description() {
+        let mut sets: Vec<[[f64; RANGE_COUNT]; 3]> = vec![[[0.0; RANGE_COUNT]; 3]];
+        for range in 0..RANGE_COUNT {
+            for property in 0..3 {
+                for value in [-100.0, -0.0, 37.0, 100.0] {
+                    let mut set = [[0.0; RANGE_COUNT]; 3];
+                    set[property][range] = value;
+                    sets.push(set);
+                }
+            }
+        }
+        sets.push([
+            [100.0; RANGE_COUNT],
+            [-100.0; RANGE_COUNT],
+            [100.0; RANGE_COUNT],
+        ]);
+        let build = || -> Vec<Mixer> {
+            sets.iter()
+                .map(|[hue, saturation, luminance]| Mixer::new(*hue, *saturation, *luminance))
+                .collect()
+        };
+        let (first, second) = (build(), build());
+        let units: Vec<&dyn PointwiseColor> = first
+            .iter()
+            .chain(&second)
+            .map(|unit| unit as &dyn PointwiseColor)
+            .collect();
+        crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
+        for mixer in &first {
+            let words = mixer.gpu().expect("the mixer has a program").words;
+            assert_eq!(f32::from_bits(words[4 * 3 + 2]), mixer.hue_warp[3][2]);
+            assert_eq!(f32::from_bits(words[32 + 5]), mixer.chroma_gain[5]);
+            assert_eq!(f32::from_bits(words[40 + 7]), mixer.luminance_amount[7]);
+        }
+        let constant = |name: &str| crate::render::gpu::testing::wgsl_constant(&PROGRAM, name);
+        let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&constant("lf_mixer_mixer_centres")), bits(&CENTRES));
+        assert_eq!(bits(&constant("lf_mixer_mixer_gaps")), bits(&GAPS));
+        assert_eq!(
+            bits(&constant("lf_mixer_mixer_chroma_ramp_edge")),
+            bits(&[CHROMA_RAMP_EDGE])
+        );
+        for (name, matrix) in crate::colour::oklab::MATRICES {
+            for (row, values) in matrix.iter().enumerate() {
+                assert_eq!(
+                    bits(&constant(&format!("lf_mixer_mixer_{name}_{row}"))),
+                    bits(values),
+                    "{name} row {row}"
+                );
+            }
+        }
     }
 }

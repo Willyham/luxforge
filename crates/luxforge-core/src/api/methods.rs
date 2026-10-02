@@ -710,7 +710,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "workspace.set",
         WorkspaceSet,
         workspace_set,
-        "per-client screen preference: panels, canvas mode and overlays; needs no asset and changes no history or frame; returns the session"
+        "per-client screen preference: panels, canvas mode, overlays and the GPU preview; needs no asset and changes no history or frame; returns the session"
     ),
     service!(
         "session.state",
@@ -1431,6 +1431,7 @@ host_params! {
         // and an unknown one is refused with the vocabulary spelled out.
         mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
         mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
+        gpu_preview: Option<bool> = boolean().notes("draw this client's gestures through the GPU preview stage where it can; on by default; off, every gesture previews on the CPU; the settled frame and every answer are the CPU's either way"),
     }
 }
 
@@ -1934,6 +1935,11 @@ fn workspace_set(
     }
     if let Some(colour) = mask_overlay_colour {
         session.workspace.mask_overlay_colour = colour;
+    }
+    // Which path draws this client's gesture previews: a preference, never an edit, and nothing
+    // a settled frame, sample, analysis or export reads.
+    if let Some(gpu_preview) = p.gpu_preview {
+        session.workspace.gpu_preview = gpu_preview;
     }
     session.touch();
     session_value(service, session)
@@ -4058,8 +4064,9 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
+                "gpu_preview": true,
             }),
-            "a fresh session opens with both panels, the pointer and no overlay"
+            "a fresh session opens with both panels, the pointer, no overlay and the GPU preview on"
         );
         let set = ok(
             &mut service,
@@ -4078,6 +4085,7 @@ mod tests {
                 "clip_highlights": false,
                 "mask_overlay": "off",
                 "mask_overlay_colour": "green",
+                "gpu_preview": true,
             })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
@@ -4128,6 +4136,105 @@ mod tests {
             set["workspace"],
             "an empty request keeps the state"
         );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The GPU preview is a per-client preference, on by default: `workspace.set` turns it off and
+    /// on, `session.state` reports it, another client's is its own, a wrong type is refused without
+    /// changing anything, and `schema.list` publishes it as an optional boolean, so an agent finds
+    /// and sets it with no GUI.
+    #[test]
+    fn the_gpu_preview_preference_round_trips_and_is_discoverable() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-methods-gpu-preview-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let mut session = ClientSession::default();
+        let mut other = ClientSession::default();
+        let state = |service: &mut EditorService, session: &mut ClientSession| {
+            ok(service, session, "session.state", json!({}))["workspace"]["gpu_preview"].clone()
+        };
+        assert_eq!(
+            state(&mut service, &mut session),
+            json!(true),
+            "on by default"
+        );
+
+        let off = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"gpu_preview": false}),
+        );
+        assert_eq!(off["workspace"]["gpu_preview"], json!(false));
+        assert_eq!(off["revision"], json!(1), "a session change is a revision");
+        let mut expected = serde_json::to_value(super::super::WorkspaceState::default()).unwrap();
+        expected["gpu_preview"] = json!(false);
+        assert_eq!(off["workspace"], expected, "nothing else moved");
+        assert_eq!(state(&mut service, &mut session), json!(false));
+        assert_eq!(
+            state(&mut service, &mut other),
+            json!(true),
+            "another client's preference is its own"
+        );
+
+        let refused = call(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"gpu_preview": "on"}),
+        )
+        .error
+        .expect("a wrong type is refused");
+        assert_eq!(refused.code, "validation");
+        assert!(
+            refused
+                .message
+                .contains("parameter gpu_preview must be a boolean"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(
+            state(&mut service, &mut session),
+            json!(false),
+            "a refused request changes nothing"
+        );
+        let on = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"gpu_preview": true}),
+        );
+        assert_eq!(
+            on["workspace"],
+            serde_json::to_value(super::super::WorkspaceState::default()).unwrap()
+        );
+
+        let listed = ok(&mut service, &mut session, "schema.list", json!({}));
+        let method = &listed["methods"]["workspace.set"];
+        assert_eq!(
+            method["mutates"],
+            json!(false),
+            "a preference mutates nothing"
+        );
+        assert!(
+            method["optional"]["gpu_preview"]
+                .as_str()
+                .is_some_and(|notes| notes.contains("on by default")),
+            "{}",
+            method["optional"]
+        );
+        let parameter = method["parameters"]
+            .as_array()
+            .expect("the typed parameters")
+            .iter()
+            .find(|parameter| parameter["name"] == "gpu_preview")
+            .expect("gpu_preview is typed");
+        assert_eq!(parameter["kind"], json!("boolean"));
+        assert_ne!(parameter["required"], json!(true));
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }

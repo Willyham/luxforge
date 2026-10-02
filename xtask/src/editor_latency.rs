@@ -38,7 +38,7 @@ use crate::{
 use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
-    Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
+    PaletteStep, Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -424,6 +424,41 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
             last["state"]["surface"]["gpu"][field].as_u64(),
         ));
     }
+    // The process's memory footprint as the Performance section last read it: its lifetime peak,
+    // which catches what falls between samples, and its level then. Null where it was not read.
+    let memory = &last["state"]["performance"]["resources"]["memory"];
+    rows.push(stats::scalar(
+        "process_peak_footprint_mib",
+        "MiB",
+        memory["peak_bytes"]
+            .as_f64()
+            .map(|bytes| bytes / (1024.0 * 1024.0)),
+    ));
+    rows.push(stats::scalar(
+        "last_footprint_mib",
+        "MiB",
+        memory["bytes"]
+            .as_f64()
+            .map(|bytes| bytes / (1024.0 * 1024.0)),
+    ));
+    // The GPU preview stage's own budget, charged outside the photo slots: the most it has held
+    // over the run, what it holds at the last frame, and its budget.
+    let preview = &last["state"]["surface"]["gpu"];
+    rows.push(counter(
+        "gpu_preview_peak_bytes",
+        "bytes",
+        preview["gpu_preview_peak_bytes"].as_u64(),
+    ));
+    rows.push(counter(
+        "last_gpu_preview_in_use_bytes",
+        "bytes",
+        preview["gpu_preview_in_use_bytes"].as_u64(),
+    ));
+    rows.push(counter(
+        "gpu_preview_budget_bytes",
+        "bytes",
+        preview["gpu_preview_budget_bytes"].as_u64(),
+    ));
     rows
 }
 
@@ -443,7 +478,7 @@ const TOOL: &str = "editor-latency";
 
 /// Editor-latency's argument order: the evidence directory, the catalog and the data root first,
 /// then the script, the photograph and the developer flag.
-const ORDER: [Flag; 9] = [
+const ORDER: [Flag; 10] = [
     Flag::Evidence,
     Flag::Catalog,
     Flag::DataRoot,
@@ -453,6 +488,7 @@ const ORDER: [Flag; 9] = [
     Flag::Disable,
     Flag::Endpoint,
     Flag::Window,
+    Flag::GpuIdentity,
 ];
 
 /// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
@@ -539,29 +575,100 @@ fn idle_launch(catalog: &Path, data: &Path, source: &Path, developer: bool) -> L
     }
 }
 
+/// Which path drew an input's frame: the GPU stage, from the plan its tick handed the surface, or
+/// the CPU frame its preview job rendered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FramePath {
+    Gpu,
+    Cpu,
+}
+
+impl FramePath {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
 /// One input's journey, from the `draft.set` that carried it to the frame that showed it.
 struct Input {
     value: f64,
     /// `slider_draft_set`: the desktop handed this value to the owner. This is the input's time.
     sent_ms: f64,
-    /// `slider_draft_preview`: `draft.set` answered and the preview job for it was queued.
+    /// The tick's answer. On the CPU path `slider_draft_preview`: `draft.set` answered and the
+    /// preview job for it queued. On the GPU path `gpu_preview_tick`: the plan of the draft's new
+    /// revision handed to the surface in the same update, with no preview job.
     queued_ms: f64,
-    /// `preview_displayed` for that job's generation: its raster became the surface's source and
-    /// the redraw that draws it was requested.
+    /// When the frame carrying the input was presented. A CPU frame: `preview_displayed` for its
+    /// job's generation, the update in which its raster became the surface's source and the redraw
+    /// that draws it was requested. A GPU frame: the surface's first draw of the plan tagged with
+    /// the input's draft revision (`surface_frame_drawn`), since its pixels exist only once the
+    /// surface draws them.
     displayed_ms: f64,
-    /// The preview job's generation and draft revision; `None` when the draft was accepted but its
-    /// preview job was refused (`slider_draft_unpreviewed`) — a RAW draft whose development is not
-    /// in memory, while a redevelopment is in flight — so the input has no frame of its own.
+    /// The surface's first draw of the frame carrying the input, on either path
+    /// (`surface_frame_drawn`): the moment the draw was encoded, before the frame is submitted, so
+    /// not display scanout. NaN when no draw of it was logged.
+    drawn_ms: f64,
+    /// The preview job's generation; `None` on the GPU path, which queues no job, and when the
+    /// draft was accepted but its preview job was refused.
     generation: Option<u64>,
     draft_revision: Option<u64>,
+    /// The draft a GPU tick drew for, which its draw names too.
+    draft_id: Option<String>,
+    path: FramePath,
+    /// Why a tick of a gesture the GPU stage follows took the CPU path, as its `gpu_preview_tick`
+    /// says; `None` on the GPU path and where no GPU tick was logged.
+    reason: Option<String>,
+    /// `slider_draft_unpreviewed`: the draft accepted the value but its preview job was refused —
+    /// a RAW draft whose development is not in memory, while a redevelopment is in flight — so the
+    /// input has no frame of its own.
+    unpreviewed: bool,
 }
 
-/// Pair every `draft.set` with the preview job it produced and the frame that job was displayed as.
+impl Input {
+    fn new(value: f64, sent_ms: f64, queued_ms: f64, path: FramePath) -> Self {
+        Self {
+            value,
+            sent_ms,
+            queued_ms,
+            displayed_ms: f64::NAN,
+            drawn_ms: f64::NAN,
+            generation: None,
+            draft_revision: None,
+            draft_id: None,
+            path,
+            reason: None,
+            unpreviewed: false,
+        }
+    }
+
+    /// The input's row of a report.
+    fn sample(&self) -> Value {
+        let since = |at: f64| at.is_finite().then_some(at - self.sent_ms);
+        json!({
+            "value": self.value,
+            "path": self.path.name(),
+            "reason": self.reason,
+            "draft_id": self.draft_id,
+            "draft_revision": self.draft_revision,
+            "generation": self.generation,
+            "sent_ms": self.sent_ms,
+            "input_to_presented_ms": since(self.displayed_ms),
+            "input_to_drawn_ms": since(self.drawn_ms),
+        })
+    }
+}
+
+/// Pair every `draft.set` with the tick that answered it and the frame that showed it.
 ///
 /// The pairing is not a guess: a gesture holds one round trip at a time, so the
-/// `slider_draft_preview` that follows a `slider_draft_set` is that set's own answer, and it
-/// carries the preview generation, which `preview_displayed` repeats. The value is checked on both
-/// ends, so a mispairing fails the run instead of producing a number.
+/// `slider_draft_preview` or GPU `gpu_preview_tick` that follows a `slider_draft_set` is that
+/// set's own answer. A CPU tick's answer carries the preview generation, which `preview_displayed`
+/// repeats; a GPU tick's carries the draft and its revision, which the surface's draw of its plan
+/// repeats (`surface_frame_drawn`). The value is checked on both ends of a CPU tick, so a
+/// mispairing fails the run instead of producing a number.
 fn event_value(value: &Value, control: Control) -> Option<f64> {
     match control {
         Control::Slider => value.as_f64(),
@@ -573,6 +680,8 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
     let key = field.parameter.as_str();
     let mut inputs = Vec::new();
     let mut pending: Option<(f64, f64)> = None;
+    // The reason a CPU tick names, logged before its `slider_draft_preview`.
+    let mut reason: Option<String> = None;
     for event in events {
         match event["event"].as_str() {
             Some("slider_draft_set") => {
@@ -583,6 +692,27 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     "Two slider_draft_set events without an answer between them",
                 )?;
                 pending = Some((value, elapsed(event)?));
+                reason = None;
+            }
+            Some("gpu_preview_tick") => {
+                let detail = &event["detail"];
+                if detail["path"] != "gpu" {
+                    reason = detail["reason"].as_str().map(str::to_owned);
+                    continue;
+                }
+                // The tick drawn on the GPU answers the draft.set of its own update; one with no
+                // slider set before it is another gesture's.
+                let Some((value, sent_ms)) = pending.take() else {
+                    continue;
+                };
+                let mut input = Input::new(value, sent_ms, elapsed(event)?, FramePath::Gpu);
+                input.draft_revision = Some(
+                    detail["draft_revision"]
+                        .as_u64()
+                        .ok_or("A GPU tick names no draft revision")?,
+                );
+                input.draft_id = detail["draft_id"].as_str().map(str::to_owned);
+                inputs.push(input);
             }
             Some("slider_draft_preview") => {
                 let (value, sent_ms) = pending
@@ -593,14 +723,12 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     event_value(&detail["value"], control) == Some(value),
                     "A draft preview reports a value its draft.set did not send",
                 )?;
-                inputs.push(Input {
-                    value,
-                    sent_ms,
-                    queued_ms: elapsed(event)?,
-                    displayed_ms: f64::NAN,
-                    generation: Some(detail["generation"].as_u64().ok_or("No generation")?),
-                    draft_revision: Some(detail["draft_revision"].as_u64().ok_or("No revision")?),
-                });
+                let mut input = Input::new(value, sent_ms, elapsed(event)?, FramePath::Cpu);
+                input.generation = Some(detail["generation"].as_u64().ok_or("No generation")?);
+                input.draft_revision =
+                    Some(detail["draft_revision"].as_u64().ok_or("No revision")?);
+                input.reason = reason.take();
+                inputs.push(input);
             }
             // The draft accepted the value but its preview job was refused: the input reached the
             // owner and no frame of its own follows it.
@@ -612,14 +740,10 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     event_value(&event["detail"]["value"], control) == Some(value),
                     "An unpreviewed draft reports a value its draft.set did not send",
                 )?;
-                inputs.push(Input {
-                    value,
-                    sent_ms,
-                    queued_ms: elapsed(event)?,
-                    displayed_ms: f64::NAN,
-                    generation: None,
-                    draft_revision: None,
-                });
+                let mut input = Input::new(value, sent_ms, elapsed(event)?, FramePath::Cpu);
+                input.reason = reason.take();
+                input.unpreviewed = true;
+                inputs.push(input);
             }
             _ => {}
         }
@@ -645,7 +769,48 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
             }
         }
     }
+    for (drawn_ms, frame) in drawn_frames(events)? {
+        let input = inputs.iter_mut().find(|input| {
+            !input.drawn_ms.is_finite()
+                && drawn_ms >= input.queued_ms
+                && match input.path {
+                    FramePath::Gpu => {
+                        frame["path"] == "gpu"
+                            && frame["draft_revision"].as_u64() == input.draft_revision
+                            && (frame["draft_id"].is_null()
+                                || frame["draft_id"].as_str() == input.draft_id.as_deref())
+                    }
+                    FramePath::Cpu => {
+                        frame["path"] == "cpu"
+                            && input.generation.is_some()
+                            && frame["generation"].as_u64() == input.generation
+                    }
+                }
+        });
+        if let Some(input) = input {
+            input.drawn_ms = drawn_ms;
+            if input.path == FramePath::Gpu {
+                input.displayed_ms = drawn_ms;
+            }
+        }
+    }
     Ok(inputs)
+}
+
+/// Every `surface_frame_drawn` in the run, in log order: when the surface first drew the frame, on
+/// the run's clock, and the event's detail naming it.
+fn drawn_frames(events: &[Value]) -> Result<Vec<(f64, &Value)>> {
+    events
+        .iter()
+        .filter(|event| event["event"] == "surface_frame_drawn")
+        .map(|event| {
+            let detail = &event["detail"];
+            let drawn_ms = detail["drawn_ms"]
+                .as_f64()
+                .ok_or("A drawn frame carries no drawn_ms")?;
+            Ok((drawn_ms, detail))
+        })
+        .collect()
 }
 
 /// The gesture script: one slider step per value, each left open so the step settles on the frame
@@ -1041,6 +1206,18 @@ pub struct Options<'a> {
     /// Paint mode only: show the selected mask's tint while the stroke is painted, so each drafted
     /// job fills the overlay's coverage grid beside its frame.
     pub mask_overlay: bool,
+    /// Drag mode only: queue this many JPEG exports of the committed stack (`export.jpeg`, the
+    /// export lane's one running and four waiting jobs at most) just before the drag, so an exact
+    /// render holds the shared pool while it runs, and read the lane's windows back with
+    /// `activity.list` after the release.
+    pub contend: Option<usize>,
+    /// Drag mode only: leave the editor alone this many milliseconds after the preconditions and
+    /// before the gesture, so the GPU programs the committed stack's warm list names finish
+    /// compiling off the interface thread, as they would before a person's next drag.
+    pub warm_ms: Option<u64>,
+    /// Drag and commit modes only: turn the GPU preview off from the palette before anything else,
+    /// as a person does, so every tick takes the CPU path: the same build's baseline for a GPU run.
+    pub gpu_preview_off: bool,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -1067,8 +1244,18 @@ fn mask_precondition() -> [script::Step; 3] {
 }
 
 /// The step that commits the full Basic layer a `--basic` run drags over.
-fn basic_precondition() -> script::Step {
-    script::Step::call("edit.set-basic", full_basic())
+///
+/// On a RAW photo Temperature and Tint are the source development's (`set-raw`), and Basic refuses
+/// them, so its full layer there is every other field.
+fn basic_precondition(options: &Options) -> script::Step {
+    let mut fields = full_basic();
+    if source_tag(options.source).is_ok_and(|tag| tag == SourceTag::Raw)
+        && let Some(fields) = fields.as_object_mut()
+    {
+        fields.remove("temperature");
+        fields.remove("tint");
+    }
+    script::Step::call("edit.set-basic", fields)
 }
 
 /// The paint gesture's own pacing and brush, each a named constant because the report quotes it.
@@ -1219,7 +1406,7 @@ fn report_geometry(result: &mut Value, options: &Options) {
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
     let mut steps = geometry_preconditions(options);
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     steps.extend(paint_precondition(options));
     steps.extend(zoom_step(options));
@@ -1240,7 +1427,12 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
 /// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
 /// frame captured after the last of them is the one the curve's readiness is checked on.
 fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
-    let mut steps = geometry_preconditions(options);
+    let mut steps: Vec<script::Step> = options
+        .gpu_preview_off
+        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
+        .into_iter()
+        .collect();
+    steps.extend(geometry_preconditions(options));
     if options.curve_layer {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
@@ -1251,7 +1443,7 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
         steps.extend(mask_precondition());
     }
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     if options.presence {
         steps.push(crate::scenario::recipe::full_presence());
@@ -1260,6 +1452,72 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
         steps.push(seed_step(field, options.mask));
     }
     steps.extend(curve_view_steps(field, source, options.mask));
+    steps
+}
+
+/// The most exports a contended run queues: the export lane's one running job and four waiting.
+const CONTEND_MAX: usize = 5;
+
+/// The idle check a drag run with `--idle` makes after its release has dissolved from the drag's
+/// last GPU frame: a settle long enough for the dissolve and the committed frame's exact phase and
+/// histogram, then the longest window an evidence step takes.
+const IDLE_AFTER_DISSOLVE: script::IdleStep = script::IdleStep {
+    settle_ms: 4000,
+    ms: script::MAX_WAIT_MS,
+};
+
+/// The exports a contended run queues before its drag, each to a new file in `dir`.
+fn contention_steps(dir: &Path, count: usize) -> Vec<script::Step> {
+    (0..count)
+        .map(|index| {
+            script::Step::call(
+                "export.jpeg",
+                json!({"destination": dir.join(format!("export-{index}.jpg"))}),
+            )
+        })
+        .collect()
+}
+
+/// What a drag run adds after its release, before the burst step: the export lane's activity read
+/// back for a contended run, and for `--idle` the Performance section closed — its one-second
+/// sampler would wake the editor — and an idle check after the release's dissolve.
+fn after_release_steps(options: &Options) -> Vec<script::Step> {
+    let mut steps = Vec::new();
+    if options.contend.is_some() {
+        steps.push(script::Step::call("activity.list", json!({})));
+    }
+    if options.idle {
+        steps.push(script::Step::Performance { expanded: false });
+        steps.push(script::Step::Idle(IDLE_AFTER_DISSOLVE));
+    }
+    steps
+}
+
+/// A drag run's script with what `--contend` and `--idle` add around the gesture: the exports just
+/// before its first input, and [`after_release_steps`] just after its release. Without either it
+/// is [`gesture_script`]'s.
+fn measured_script(
+    options: &Options,
+    field: &FieldTarget,
+    source: SourceTag,
+    values: &[f64],
+    drag: bool,
+    contention: &Path,
+) -> Vec<script::Step> {
+    let mut steps = gesture_script(options, field, source, values, drag);
+    if !drag {
+        return steps;
+    }
+    let first = setup_steps(options, field, source).len() + usize::from(options.zoom.is_some());
+    let mut exports: Vec<script::Step> = options
+        .warm_ms
+        .map(|ms| script::Step::Wait { ms })
+        .into_iter()
+        .collect();
+    exports.extend(contention_steps(contention, options.contend.unwrap_or(0)));
+    let release = first + exports.len() + values.len();
+    steps.splice(first..first, exports);
+    steps.splice(release..release, after_release_steps(options));
     steps
 }
 
@@ -1300,7 +1558,7 @@ fn burst_script(
         steps.extend(mask_precondition());
     }
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     steps.extend(zoom_step(options));
     steps.push(burst_gesture_step(
@@ -1390,7 +1648,7 @@ fn viewport_script(options: &Options, field: &FieldTarget) -> (Vec<script::Step>
         steps.extend(mask_precondition());
     }
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     steps.extend(zoom_step(options));
     let values = field.gesture_values(2);
@@ -2026,6 +2284,100 @@ fn paced_stroke_phase_samples(
     Ok((inputs.len(), samples))
 }
 
+/// One paint input drawn on the GPU: its `mask_draft_set`, the GPU tick that handed the plan of its
+/// draft revision to the surface in the same update, and the surface's first draw of that plan.
+struct PaintGpuSample {
+    draft_revision: u64,
+    /// How many positions the stroke had captured when the `draft.set` behind this frame went.
+    positions: Option<usize>,
+    /// When the surface first drew it, on the run's own clock.
+    displayed_ms: f64,
+    input_to_presented_ms: f64,
+    tick_to_drawn_ms: f64,
+}
+
+/// The paced stroke's GPU ticks, and those of them the surface drew: each `mask_draft_set` paired
+/// with the GPU `gpu_preview_tick` of its own update, and that tick's draft and revision with the
+/// first `surface_frame_drawn` naming them. Returns how many ticks were drawn on the GPU path and
+/// the samples of those whose plan the surface drew before a newer one replaced it.
+fn paced_stroke_gpu_samples(
+    events: &[Value],
+    positions: usize,
+) -> Result<(usize, Vec<PaintGpuSample>)> {
+    let events = paced_stroke_events(events, positions)?;
+    let mut pending: Option<(f64, Option<usize>)> = None;
+    // The newest position handed to the desktop: a `draft.set` carries it and every one before it.
+    // The set's own points are the simplified path, fewer than the positions it carries.
+    let mut newest: Option<usize> = None;
+    let mut ticks = Vec::new();
+    for event in events {
+        match event["event"].as_str() {
+            Some("mask_stroke_position") => {
+                newest = event["detail"]["index"]
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok());
+            }
+            Some("mask_draft_set") => {
+                pending = Some((elapsed(event)?, newest.map(|index| index + 1)));
+            }
+            Some("mask_draft_preview") => pending = None,
+            Some("gpu_preview_tick") if event["detail"]["path"] == "gpu" => {
+                if let Some((sent, carried)) = pending.take() {
+                    let detail = &event["detail"];
+                    let revision = detail["draft_revision"]
+                        .as_u64()
+                        .ok_or("A GPU tick names no draft revision")?;
+                    ticks.push((
+                        sent,
+                        elapsed(event)?,
+                        revision,
+                        detail["draft_id"].as_str(),
+                        carried,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    let drawn = drawn_frames(events)?;
+    let samples = ticks
+        .iter()
+        .filter_map(|(sent, tick, revision, draft, carried)| {
+            drawn
+                .iter()
+                .find(|(at, frame)| {
+                    at >= tick
+                        && frame["path"] == "gpu"
+                        && frame["draft_revision"].as_u64() == Some(*revision)
+                        && (frame["draft_id"].is_null() || frame["draft_id"].as_str() == *draft)
+                })
+                .map(|(at, _)| PaintGpuSample {
+                    draft_revision: *revision,
+                    positions: *carried,
+                    displayed_ms: *at,
+                    input_to_presented_ms: at - sent,
+                    tick_to_drawn_ms: at - tick,
+                })
+        })
+        .collect();
+    Ok((ticks.len(), samples))
+}
+
+/// Every frame of the stroke that reached the screen, on either path: when it was presented and how
+/// many positions its `draft.set` carried.
+fn presented_paint_frames(
+    cpu: &[PaintPhaseSample],
+    gpu: &[PaintGpuSample],
+) -> Vec<(f64, Option<usize>)> {
+    cpu.iter()
+        .map(|sample| (sample.displayed_ms, sample.positions))
+        .chain(
+            gpu.iter()
+                .map(|sample| (sample.displayed_ms, sample.positions)),
+        )
+        .collect()
+}
+
 /// The paced stroke's press, as drag mode's press rows read a slider's: from the stroke's first
 /// `mask_stroke_position`, logged in the update that hands the press to the desktop, to the first
 /// `mask_draft_set` after it and to the first of the stroke's frames presented. Every later position
@@ -2035,7 +2387,7 @@ fn paced_stroke_phase_samples(
 fn stroke_press(
     events: &[Value],
     positions: usize,
-    samples: &[PaintPhaseSample],
+    presented: &[(f64, Option<usize>)],
 ) -> Result<(f64, Option<f64>)> {
     let events = paced_stroke_events(events, positions)?;
     let press = events
@@ -2054,9 +2406,9 @@ fn stroke_press(
         .into_iter()
         .find(|at| *at >= press)
         .ok_or("The press sent no mask draft.set")?;
-    let first_frame = samples
+    let first_frame = presented
         .iter()
-        .map(|sample| sample.displayed_ms)
+        .map(|(displayed_ms, _)| *displayed_ms)
         .filter(|at| *at >= press)
         .reduce(f64::min)
         .map(|at| at - press);
@@ -2074,12 +2426,12 @@ fn stroke_press(
 fn position_latencies(
     events: &[Value],
     positions: usize,
-    samples: &[PaintPhaseSample],
+    frames: &[(f64, Option<usize>)],
 ) -> Result<Vec<(usize, f64)>> {
     let events = paced_stroke_events(events, positions)?;
-    let mut presented: Vec<(f64, usize)> = samples
+    let mut presented: Vec<(f64, usize)> = frames
         .iter()
-        .filter_map(|sample| Some((sample.displayed_ms, sample.positions?)))
+        .filter_map(|(displayed_ms, carried)| Some((*displayed_ms, (*carried)?)))
         .collect();
     presented.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut latencies = Vec::new();
@@ -2250,7 +2602,7 @@ fn hover_script(options: &Options) -> Result<(Vec<script::Step>, Vec<usize>)> {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     if options.detail {
         steps.push(crate::scenario::recipe::moderate_detail());
@@ -2458,10 +2810,21 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     let components = components.len();
 
     let (queued, phase_samples) = paced_stroke_phase_samples(&events, options.samples)?;
+    let (gpu_ticks, gpu_samples) = paced_stroke_gpu_samples(&events, options.samples)?;
+    let presented = presented_paint_frames(&phase_samples, &gpu_samples);
     let feedback = paced_stroke_latencies(paced_stroke_events(&events, options.samples)?)?;
-    let latencies: Vec<f64> = phase_samples
+    let cpu_latencies: Vec<f64> = phase_samples
         .iter()
         .map(|sample| sample.input_to_presented_ms)
+        .collect();
+    let gpu_latencies: Vec<f64> = gpu_samples
+        .iter()
+        .map(|sample| sample.input_to_presented_ms)
+        .collect();
+    let latencies: Vec<f64> = cpu_latencies
+        .iter()
+        .chain(&gpu_latencies)
+        .copied()
         .collect();
     ensure(
         !latencies.is_empty() || !feedback.coverage_ms.is_empty(),
@@ -2469,11 +2832,16 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     )?;
     let input_p95 = stats::Distribution::of(latencies.clone()).map(|d| d.p95);
     let load_end = launch::load_average(root);
-    let mut rows = vec![stats::row(
-        "input_to_presented_frame",
-        "ms",
-        latencies.clone(),
-    )];
+    let mut rows = vec![
+        stats::row("input_to_presented_frame", "ms", latencies.clone()),
+        stats::row("gpu_input_to_presented_frame", "ms", gpu_latencies),
+        stats::row("cpu_input_to_presented_frame", "ms", cpu_latencies),
+        stats::row(
+            "gpu_tick_to_drawn_frame",
+            "ms",
+            gpu_samples.iter().map(|sample| sample.tick_to_drawn_ms),
+        ),
+    ];
     rows.push(stats::row(
         "input_to_authoritative_mask_coverage",
         "ms",
@@ -2498,14 +2866,14 @@ fn paint(run: &mut Run, options: &Options) -> Result {
     for (metric, phase) in phases {
         rows.push(stats::row(metric, "ms", phase_samples.iter().map(phase)));
     }
-    let (press_to_set, press_to_frame) = stroke_press(&events, options.samples, &phase_samples)?;
+    let (press_to_set, press_to_frame) = stroke_press(&events, options.samples, &presented)?;
     rows.push(stats::row("press_to_first_draft_set", "ms", [press_to_set]));
     rows.push(stats::row(
         "press_to_first_presented_frame",
         "ms",
         press_to_frame,
     ));
-    let carried = position_latencies(&events, options.samples, &phase_samples)?;
+    let carried = position_latencies(&events, options.samples, &presented)?;
     rows.push(stats::row(
         "position_to_presented_frame",
         "ms",
@@ -2572,7 +2940,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "mode":"paint",
         "samples":options.samples,
         "mask_overlay":if options.mask_overlay {"tint"} else {"off"},
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. One curved brush stroke of {} positions is handed to the desktop one per {} ms in real time, so the first tick presses, each later one moves and the last releases: one paced step is still one stroke and one history entry. Each mask draft.set is paired with its preview job and displayed frame by the generation mask_draft_preview carries, and each position with the first presented frame whose draft.set carried it. The early_ and late_ rows are the stroke's first and last quarters by the positions a frame's draft.set carried. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source; it is not display scanout.", options.samples, PAINT_INTERVAL_MS),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. One curved brush stroke of {} positions is handed to the desktop one per {} ms in real time, so the first tick presses, each later one moves and the last releases: one paced step is still one stroke and one history entry. Each mask draft.set is paired with its preview job and displayed frame by the generation mask_draft_preview carries, or, drawn on the GPU, with the GPU tick of its own update and the surface's first draw of that tick's plan, and each position with the first presented frame whose draft.set carried it. The early_ and late_ rows are the stroke's first and last quarters by the positions a frame's draft.set carried; their phase rows are the CPU frames'. Presented means, for a CPU frame, preview_displayed: the update in which the rendered raster became the photo surface's source; for a GPU frame, the surface's first draw of the tick's plan (surface_frame_drawn). Neither is display scanout.", options.samples, PAINT_INTERVAL_MS),
         "recipe":{
             "masks":masks.len(),
             "components":components,
@@ -2592,8 +2960,10 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "positions_carried_to_the_screen":carried.len(),
             "inputs_that_queued_a_preview":queued,
             "displayed":latencies.len(),
+            "gpu_ticks":gpu_ticks,
+            "gpu_frames_drawn":gpu_samples.len(),
             "authoritative_coverage_feedback":feedback.coverage_ms.len(),
-            "superseded":queued.saturating_sub(latencies.len()),
+            "superseded":(queued + gpu_ticks).saturating_sub(latencies.len()),
             "superseded_note":"A position whose own preview job was superseded by the next position before its pixels were drawn. It is what a hand does not see during a continuous stroke, and it is reported rather than averaged away.",
         },
         "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,
@@ -2631,6 +3001,17 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "Source SHA-256 is unchanged",
         ],
     });
+    result["gpu_samples"] = json!(
+        gpu_samples
+            .iter()
+            .map(|sample| json!({
+                "draft_revision": sample.draft_revision,
+                "positions": sample.positions,
+                "input_to_presented_frame_ms": sample.input_to_presented_ms,
+                "gpu_tick_to_drawn_frame_ms": sample.tick_to_drawn_ms,
+            }))
+            .collect::<Vec<_>>()
+    );
     report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
@@ -2655,7 +3036,7 @@ fn crop_start_script(options: &Options) -> (Vec<script::Step>, Vec<usize>) {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
     if options.basic {
-        steps.push(basic_precondition());
+        steps.push(basic_precondition(options));
     }
     if options.detail {
         steps.push(crate::scenario::recipe::moderate_detail());
@@ -2859,6 +3240,29 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         options.control == Control::Slider || matches!(options.mode, Mode::Drag | Mode::Commit),
         "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
     )?;
+    ensure(
+        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--no-gpu-preview measures a drag or a commit; pass --mode drag or --mode commit",
+    )?;
+    if let Some(ms) = options.warm_ms {
+        ensure(
+            options.mode == Mode::Drag && (1..=script::MAX_WAIT_MS).contains(&ms),
+            format!(
+                "--warm waits 1 to {} ms before a drag; pass --mode drag",
+                script::MAX_WAIT_MS
+            ),
+        )?;
+    }
+    if let Some(count) = options.contend {
+        ensure(
+            options.mode == Mode::Drag && (1..=CONTEND_MAX).contains(&count),
+            format!("--contend queues 1 to {CONTEND_MAX} exports before a drag; pass --mode drag"),
+        )?;
+        ensure(
+            !options.idle,
+            "--contend and --idle measure different things; run them separately",
+        )?;
+    }
     if options.mode == Mode::Viewport {
         return run_viewport(root, out, bin, &options);
     }
@@ -2919,7 +3323,11 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     }
 
     let kind = source_tag(&source)?;
-    let steps = gesture_script(options, field, kind, &values, drag);
+    let contention = out.join("contention");
+    if options.contend.is_some() {
+        fs::create_dir_all(&contention)?;
+    }
+    let steps = measured_script(options, field, kind, &values, drag, &contention);
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
@@ -3037,12 +3445,61 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     } else {
         &[][..]
     };
-    let unpreviewed = measured
-        .iter()
-        .filter(|input| input.generation.is_none())
-        .count();
+    // What the frame captured after each drained input's own step shows: a GPU input's frame is the
+    // GPU stage's output of its own revision, as the surface reported drawing it. A CPU input's
+    // frame may already have been redrawn on the GPU by then — its tick asked for the boundary, and
+    // the plan of the same revision is drawn once it is held — so it is recorded, not checked.
+    let first_input = setup_steps(options, field, kind).len()
+        + usize::from(options.zoom.is_some())
+        + usize::from(options.warm_ms.is_some())
+        + options.contend.unwrap_or(0);
+    // The GPU stage's compile queue just before the first input: what the warm list handed it, and
+    // how much had compiled.
+    let before =
+        &frame_at(frames, first_input, "the frame before the gesture")?["state"]["surface"]["gpu"];
+    let compile_queue = json!({
+        "warm_ms": options.warm_ms,
+        "compiles": before["gpu_preview_compiles"],
+        "compiled": before["gpu_preview_compiled"],
+    });
+    let mut captured = Vec::new();
+    for (index, input) in drained.iter().enumerate() {
+        let frame = frame_at(frames, first_input + index + 1, "a drained input's step")?;
+        let gpu = &frame["state"]["surface"]["gpu"];
+        if input.path == FramePath::Gpu {
+            ensure(
+                gpu["drawing_path"] == "gpu"
+                    && gpu["drawn_gpu_revision"].as_u64() == input.draft_revision,
+                format!(
+                    "{} was drawn on the GPU for draft revision {:?}, but its step's capture shows \
+                     path {} at revision {}",
+                    frame["file"],
+                    input.draft_revision,
+                    gpu["drawing_path"],
+                    gpu["drawn_gpu_revision"]
+                ),
+            )?;
+        }
+        captured.push(json!({"frame": frame["file"], "path": gpu["drawing_path"],
+            "drawn_gpu_revision": gpu["drawn_gpu_revision"], "gpu_ms": frame["state"]["status_bar"]["gpu_ms"],
+            "approximate": gpu["gpu_preview"]["drag"]["approximate"]}));
+    }
+    if options.gpu_preview_off {
+        ensure(
+            last["state"]["workspace"]["gpu_preview"] == false
+                && drained.iter().all(|input| {
+                    input.path == FramePath::Cpu
+                        && input
+                            .reason
+                            .as_deref()
+                            .is_none_or(|reason| reason == "preference-off")
+                }),
+            "--no-gpu-preview left the GPU preview on, or a drained input drew another way",
+        )?;
+    }
+    let unpreviewed = measured.iter().filter(|input| input.unpreviewed).count();
     ensure(
-        !drained.iter().any(|input| input.generation.is_none()),
+        !drained.iter().any(|input| input.unpreviewed),
         format!(
             "{unpreviewed} of {} draft.set answers of {} carried no preview job (slider_draft_unpreviewed): the core refused to preview a drafted value, so the drag has no frame per input to time",
             measured.len(),
@@ -3051,21 +3508,37 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     )?;
     ensure(
         drained.iter().all(|input| input.displayed_ms.is_finite()),
-        "An input's preview job was never displayed, so the gesture was not drained per step",
+        "An input's frame was never presented — a CPU tick's preview job never displayed, or a GPU \
+         tick's plan never drawn — so the gesture was not drained per step",
     )?;
 
-    let input_to_frame: Vec<f64> = drained
-        .iter()
-        .map(|input| input.displayed_ms - input.sent_ms)
-        .collect();
-    let set_round_trip: Vec<f64> = drained
-        .iter()
-        .map(|input| input.queued_ms - input.sent_ms)
-        .collect();
-    let render_and_upload: Vec<f64> = drained
-        .iter()
-        .map(|input| input.displayed_ms - input.queued_ms)
-        .collect();
+    // Each path's figures over the drained inputs it drew: `to - from`, where both were observed.
+    let span = |path: Option<FramePath>, to: fn(&Input) -> f64, from: fn(&Input) -> f64| {
+        drained
+            .iter()
+            .filter(|input| path.is_none_or(|path| input.path == path))
+            .map(|input| to(input) - from(input))
+            .filter(|ms| ms.is_finite())
+            .collect::<Vec<f64>>()
+    };
+    let presented: fn(&Input) -> f64 = |input| input.displayed_ms;
+    let drawn: fn(&Input) -> f64 = |input| input.drawn_ms;
+    let queued: fn(&Input) -> f64 = |input| input.queued_ms;
+    let sent: fn(&Input) -> f64 = |input| input.sent_ms;
+    let input_to_frame = span(None, presented, sent);
+    let set_round_trip = span(None, queued, sent);
+    let render_and_upload = span(Some(FramePath::Cpu), presented, queued);
+    let contended = match options.contend {
+        Some(count) => Some(contention_windows(&events, &app, count)?),
+        None => None,
+    };
+    let in_contention = |input: &Input| {
+        contended.as_ref().is_some_and(|(windows, _)| {
+            windows
+                .iter()
+                .any(|(start, end)| (*start..=*end).contains(&input.sent_ms))
+        })
+    };
     let input_p95 = stats::Distribution::of(input_to_frame.clone()).map(|d| d.p95);
     // A gesture's press: its `slider_draft_begin`, logged in the update that opens the draft, paired
     // with the first measured `draft.set` after it and, in a drag, the frame that set's preview job
@@ -3094,11 +3567,69 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         .collect();
     let mut rows = vec![
         stats::row("input_to_presented_frame", "ms", input_to_frame),
+        stats::row("input_to_drawn_frame", "ms", span(None, drawn, sent)),
+        stats::row(
+            "gpu_input_to_presented_frame",
+            "ms",
+            span(Some(FramePath::Gpu), presented, sent),
+        ),
+        stats::row(
+            "cpu_input_to_presented_frame",
+            "ms",
+            span(Some(FramePath::Cpu), presented, sent),
+        ),
         stats::row("draft_set_round_trip", "ms", set_round_trip),
         stats::row("render_and_upload", "ms", render_and_upload),
+        stats::row(
+            "gpu_tick_to_drawn_frame",
+            "ms",
+            span(Some(FramePath::Gpu), presented, queued),
+        ),
         stats::row("press_to_first_draft_set", "ms", press_to_first_set),
         stats::row("press_to_first_presented_frame", "ms", press_to_first_frame),
     ];
+    let contended_samples: Vec<f64> = drained
+        .iter()
+        .filter(|input| in_contention(input))
+        .map(|input| input.displayed_ms - input.sent_ms)
+        .collect();
+    if let Some((_, report)) = &contended {
+        ensure(
+            !contended_samples.is_empty(),
+            format!(
+                "No drained input was sent while an export ran, so nothing was measured under \
+                 contention: {report}"
+            ),
+        )?;
+        rows.push(stats::row(
+            "contended_input_to_presented_frame",
+            "ms",
+            contended_samples.iter().copied(),
+        ));
+    }
+    let idle = if options.idle && drag {
+        Some(idle_after_dissolve(&events)?)
+    } else {
+        None
+    };
+    if let Some(idle) = &idle {
+        let check = &idle["check"];
+        rows.push(stats::scalar(
+            "idle_after_dissolve_process_cpu_percent_one_core",
+            "%",
+            check["process_cpu_percent_one_core"].as_f64(),
+        ));
+        rows.push(counter(
+            "idle_after_dissolve_drawn_frames",
+            "frames",
+            check["drawn_frames_delta"].as_u64(),
+        ));
+        rows.push(counter(
+            "idle_after_dissolve_views",
+            "views",
+            check["views_delta"].as_u64(),
+        ));
+    }
 
     // The settled exact histogram. A drafted preview is never analysed — the design keeps the plot
     // labelled stale during a gesture — so the exact report is reduced from the frame the commit's
@@ -3223,12 +3754,12 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         },
         "samples":options.samples,
         "gesture_values":values,
-        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set, one preview job and one frame. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.",
+        "method":"Background evidence launch of the release binary, warm filesystem cache. In drag mode one scripted control step per input is left open, so the step settles only when the gesture has drained: every interval is one input, one draft.set and one frame, drawn by the GPU stage from the tick's plan with no preview job or by the CPU from the tick's preview job. In commit mode each step is a whole gesture, moved and released at once, so each sample is one committed frame and its exact histogram. Presented means, for a CPU frame, preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; for a GPU frame, the surface's first draw of the plan tagged with the input's draft revision (surface_frame_drawn), since its pixels exist only once the surface draws them. Drawn means the surface's first draw of the frame on either path, the moment its draw is encoded. Neither is display scanout.",
         "provisional_input_to_frame_target":{"p95_below_ms":16.0,"acceptable_below_ms":32.0,"measured_p95_ms":input_p95,
             "met":input_p95.map(|ms| ms < 16.0),"acceptable":input_p95.map(|ms| ms < 32.0)},
         "rows":rows,
         "press_note":"press_to_first_draft_set and press_to_first_presented_frame start at the gesture's slider_draft_begin, logged in the update that opens its draft, and end at its first draft.set and, in a drag, at the preview_displayed of that set's preview job; they are the only rows that include what a press waits for before its first draft.set. A drag has one press, so each run adds one sample; a commit run has one per sample and no drafted frame survives its commit.",
-        "render_and_upload_note":"The photo surface writes the raster into its own texture during the frame that draws it, so there is no upload step to time: render_and_upload covers the render and the hand-over together.",
+        "render_and_upload_note":"The photo surface writes the raster into its own texture during the frame that draws it, so there is no upload step to time: render_and_upload covers a CPU frame's render and the hand-over together. A GPU frame's gpu_tick_to_drawn_frame runs from the update that handed its plan to the surface to the draw that evaluated and drew it.",
         "queue":{
             "scripted_slider_values":if options.control == Control::Slider {
                 json!(if drag { values.len() + options.samples + 1 } else { values.len() })
@@ -3267,6 +3798,29 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     });
     // Beside the rest rather than inside it: the report is already as deep as json! expands.
     result["approximate_white_balance_frames"] = approximate;
+    result["frames"] = json!(
+        drained
+            .iter()
+            .zip(captured)
+            .map(|(input, captured)| {
+                let mut sample = input.sample();
+                sample["captured"] = captured;
+                if contended.is_some() {
+                    sample["contended"] = json!(in_contention(input));
+                }
+                sample
+            })
+            .collect::<Vec<_>>()
+    );
+    result["gpu_preview"] = json!(!options.gpu_preview_off);
+    result["paths"] = paths(drained, &events);
+    result["compile_queue_before_gesture"] = compile_queue;
+    result["contention"] = contended.map_or(Value::Null, |(_, report)| report);
+    result["idle_after_dissolve"] = idle.unwrap_or(Value::Null);
+    if options.contend.is_some() {
+        // The exports are there to hold the pool, not evidence: what they wrote is in the report.
+        let _ = fs::remove_dir_all(&contention);
+    }
     result["zoom_percent"] = json!(options.zoom);
     report_geometry(&mut result, options);
     stamp(&mut result, &header);
@@ -3280,6 +3834,155 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     Ok(())
 }
 
+/// Which path drew a drag's drained inputs, why each CPU tick took the CPU path, and the whole run's
+/// ticks by path as the editor logged them.
+fn paths(drained: &[Input], events: &[Value]) -> Value {
+    let mut reasons = BTreeMap::<String, usize>::new();
+    for input in drained.iter().filter(|input| input.path == FramePath::Cpu) {
+        *reasons
+            .entry(input.reason.clone().unwrap_or_else(|| "none logged".into()))
+            .or_default() += 1;
+    }
+    let ticks = |path: &str| {
+        events
+            .iter()
+            .filter(|event| event["event"] == "gpu_preview_tick" && event["detail"]["path"] == path)
+            .count()
+    };
+    json!({
+        "gpu_frames": drained.iter().filter(|input| input.path == FramePath::Gpu).count(),
+        "cpu_frames": drained.iter().filter(|input| input.path == FramePath::Cpu).count(),
+        "cpu_reasons": reasons,
+        "run_gpu_ticks": ticks("gpu"),
+        "run_cpu_ticks": ticks("cpu"),
+        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (boundary-pending for the gesture's first tick, which asks for the boundary). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
+    })
+}
+
+/// Whether an `activity.list` entry is an export job's.
+fn is_export(entry: &Value) -> bool {
+    entry["kind"] == "export"
+}
+
+/// When the step that sent the API call `method` was answered, on the run's clock: the first such
+/// step's settle.
+fn answered_ms(events: &[Value], method: &str) -> Result<f64> {
+    let asked = events
+        .iter()
+        .position(|event| {
+            event["event"] == "script_step" && event["detail"]["request"]["api"]["method"] == method
+        })
+        .ok_or_else(|| format!("The run logged no {method} step"))?;
+    events[asked..]
+        .iter()
+        .find(|event| event["event"] == "script_step_settled")
+        .map(elapsed)
+        .ok_or_else(|| format!("The {method} step never settled"))?
+}
+
+/// A contended run's contention window on the run's clock, and its report. The export lane runs
+/// one job at a time with the rest waiting, and the run queues every export before the first can
+/// finish, so the lane is busy without a gap from the first export's acceptance to the last one's
+/// end. That end is read back from the `activity.list` the run makes after the release: the answer
+/// itself while an export still runs, otherwise the latest finished export's end, `ended_ms_ago`
+/// before the answer. The board keeps only work that ran 250 ms or longer, so each export the
+/// answer names is listed with its own window, and an export too short to be kept is inside the
+/// lane's window all the same.
+fn contention_windows(
+    events: &[Value],
+    app: &Value,
+    queued: usize,
+) -> Result<(Vec<(f64, f64)>, Value)> {
+    let script = app["script"]
+        .as_array()
+        .ok_or("The run recorded no script")?;
+    let method = |record: &Value| record["request"]["api"]["method"].clone();
+    let accepted = script
+        .iter()
+        .filter(|record| method(record) == "export.jpeg" && record["result"]["job_id"].is_string())
+        .count();
+    ensure(
+        accepted == queued,
+        format!("Only {accepted} of {queued} contention exports were queued"),
+    )?;
+    let answer = script
+        .iter()
+        .find(|record| method(record) == "activity.list")
+        .map(|record| &record["result"])
+        .ok_or("The contended run recorded no activity.list answer")?;
+    let first = answered_ms(events, "export.jpeg")?;
+    let answered = answered_ms(events, "activity.list")?;
+    let entries = |list: &str| {
+        answer[list]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|entry| is_export(entry))
+            .collect::<Vec<_>>()
+    };
+    let running = entries("active");
+    let finished: Vec<(f64, f64)> = entries("recent")
+        .iter()
+        .filter_map(|entry| {
+            let end = answered - entry["ended_ms_ago"].as_f64()?;
+            Some((end - entry["duration_ms"].as_f64()?, end))
+        })
+        .collect();
+    let end = if running.is_empty() {
+        finished
+            .iter()
+            .map(|(_, end)| *end)
+            .reduce(f64::max)
+            .ok_or("No export ran long enough for the activity board to keep its end")?
+    } else {
+        answered
+    };
+    ensure(
+        end > first,
+        format!("The exports ended at {end} ms, before the first was accepted at {first} ms"),
+    )?;
+    let report = json!({
+        "exports_queued": queued,
+        "lane_busy_ms": [first, end],
+        "still_running_at_answer": running.len(),
+        "finished_export_windows_ms": finished.iter().map(|(start, end)| json!([start, end])).collect::<Vec<_>>(),
+        "activity_answered_ms": answered,
+        "activity": answer,
+        "note": "Each export renders the committed stack exactly on the shared pool, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
+    });
+    Ok((vec![(first, end)], report))
+}
+
+/// The idle check a drag run with `--idle` made after its release: what the editor drew, updated
+/// and spent in its window, and the dissolves that ran before it, at least one of which must have
+/// — the release's committed frame replacing the drag's last GPU frame.
+fn idle_after_dissolve(events: &[Value]) -> Result<Value> {
+    let (at, check) = events
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, event)| event["event"] == "idle_check")
+        .ok_or("The idle step recorded no idle check")?;
+    let before = |name: &str| {
+        events[..at]
+            .iter()
+            .filter(|event| event["event"] == name)
+            .count()
+    };
+    let started = before("gpu_dissolve_started");
+    ensure(
+        started > 0,
+        "No dissolve ran before the idle check: the release's frame replaced no GPU frame",
+    )?;
+    Ok(json!({
+        "check": check["detail"],
+        "dissolves_started": started,
+        "dissolves_ended": before("gpu_dissolve_ended"),
+        "dissolves_cancelled": before("gpu_dissolve_cancelled"),
+        "method": "In the gesture's own launch, after the release: the Performance section closed, then an idle evidence step with evidence's own ticks and captures suspended, a settle for the dissolve and the committed frame's exact phase, then a window over which the surface's drawn frames, the views built and the process's CPU time are counted. The window's own start counts one frame and one view.",
+    }))
+}
+
 /// Everything the burst report's own figures come from, computed purely from one run's
 /// `events.jsonl`. Pulling this out of [`run_burst`] is what lets it be proven against a synthetic
 /// event list rather than only against a real launch.
@@ -3290,10 +3993,15 @@ struct BurstAnalysis {
     sent_values: usize,
     /// Pan commands sent on the same paced ticks as slider values.
     pan_moves: usize,
-    /// `preview_displayed` events from the first `slider_step_value` onward, drafted and committed
+    /// `preview_displayed` events, and the surface's first draws of GPU ticks' plans
+    /// (`surface_frame_drawn`), from the first `slider_step_value` onward, drafted and committed
     /// alike: the count `presented_fps` divides by the same window's seconds. A frame presented
     /// before the gesture started (the initial open) is not one of these.
     presented_frames: usize,
+    /// Of the drafted inputs that reached the screen, how many were drawn on the GPU and how many
+    /// by the CPU.
+    gpu_frames: usize,
+    cpu_frames: usize,
     presented_fps: f64,
     /// One sample per drafted generation that reached the screen: its own `slider_draft_set` time
     /// to its `preview_displayed` time, paired by generation exactly as [`inputs`] pairs them for
@@ -3348,11 +4056,19 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
         !value_events.is_empty(),
         "no paced slider value reached the owner",
     )?;
-    let displayed_events: Vec<f64> = events
+    let mut displayed_events: Vec<f64> = events
         .iter()
         .filter(|event| event["event"] == "preview_displayed")
         .map(elapsed)
         .collect::<Result<Vec<_>>>()?;
+    // A GPU frame is presented by its draw: the surface's first draw of a GPU tick's plan.
+    displayed_events.extend(
+        drawn_frames(events)?
+            .into_iter()
+            .filter(|(_, frame)| frame["path"] == "gpu")
+            .map(|(at, _)| at),
+    );
+    displayed_events.sort_by(f64::total_cmp);
     ensure(
         !displayed_events.is_empty(),
         "no frame was presented during the whole run",
@@ -3423,10 +4139,13 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
         }),
     };
 
+    let drawn_on = |path| drafted.iter().filter(|input| input.path == path).count();
     Ok(BurstAnalysis {
         sent_values: value_events.len(),
         pan_moves: counted("slider_step_pan"),
         presented_frames,
+        gpu_frames: drawn_on(FramePath::Gpu),
+        cpu_frames: drawn_on(FramePath::Cpu),
         presented_fps,
         staleness_ms,
         frame_gap_ms,
@@ -3574,7 +4293,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         "samples":Value::Null,
         "gesture_values":values,
         "approximate_white_balance_frames":approximate,
-        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s. An interior origin follows a triangle peaking at {} of the smaller half of its declared range (±2 EV on exposure); a limit origin follows one inward triangle to that fraction of the available range and back. Values are paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; it is not display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
+        "method":format!("Background evidence launch of the release binary, warm filesystem cache. --samples is ignored: every burst run of a field sends the same fixed {} values over {} s at {} values/s. An interior origin follows a triangle peaking at {} of the smaller half of its declared range (±2 EV on exposure); a limit origin follows one inward triangle to that fraction of the available range and back. Values are paced one per tick of the desktop's own paced slider step rather than sent all at once, so the driver's real coalescing runs on them. Presented means, for a CPU frame, preview_displayed: the update in which the rendered raster became the photo surface's source, drawn by the redraw that update requests; for a GPU frame, the surface's first draw of the tick's plan (surface_frame_drawn). Neither is display scanout.", values.len(), BURST_SECONDS, BURST_RATE_PER_SEC, BURST_PEAK_FRACTION),
         "queue":{
             "scripted_slider_values":values.len(),
             "draft_set_requests":analysis.draft_sets,
@@ -3594,6 +4313,8 @@ fn burst(run: &mut Run, options: &Options) -> Result {
             "draft_sets":analysis.draft_sets,
             "preview_jobs":analysis.preview_jobs,
             "presented_frames":analysis.presented_frames,
+            "gpu_frames":analysis.gpu_frames,
+            "cpu_frames":analysis.cpu_frames,
             "cancelled_exact":analysis.cancelled_exact,
             "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("No exact phase was cancelled in this run; cancellation depends on timing and workload"),
             "proxy":analysis.proxy,
@@ -3607,7 +4328,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         "histogram":last["state"]["histogram"],
         "checks":[
             "Every scripted value reached a captured tick and its own slider_step_value event",
-            "Presented frames are counted from preview_displayed, and drafted staleness is paired with its own slider_draft_set by generation, exactly as drag mode pairs them",
+            "Presented frames are counted from preview_displayed and the GPU frames' draws, and drafted staleness is paired with its own slider_draft_set by generation or by GPU draft revision, exactly as drag mode pairs them",
             "Source SHA-256 is unchanged"
         ],
     });
@@ -3638,7 +4359,7 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     result["burst"]["regions"] = json!(region_events);
     result["burst"]["surface_gpu"] = last["state"]["surface"]["gpu"].clone();
     result["burst"]["adoption_note"] = json!(
-        "presented_frames/presented_fps count preview_displayed adoption events. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
+        "presented_frames/presented_fps count preview_displayed adoption events and the first draws of GPU ticks' plans. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
     );
     report_geometry(&mut result, options);
     stamp(&mut result, &header);
@@ -3838,6 +4559,9 @@ mod tests {
             zoom: Some(100.0),
             moving_pan: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
         };
         let geometry = geometry_preconditions(&options);
         // A JPEG's Lens precondition is the section and its Apply.
@@ -3974,6 +4698,9 @@ mod tests {
                             zoom,
                             moving_pan,
                             mask_overlay: false,
+                            contend: None,
+                            warm_ms: None,
+                            gpu_preview_off: false,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -4054,6 +4781,9 @@ mod tests {
                             zoom: Some(zoom),
                             moving_pan: false,
                             mask_overlay: false,
+                            contend: None,
+                            warm_ms: None,
+                            gpu_preview_off: false,
                         };
                         let tag =
                             format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
@@ -4111,6 +4841,9 @@ mod tests {
             perspective: false,
             mask: false,
             mask_overlay: true,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
             zoom: None,
             moving_pan: false,
         };
@@ -4151,6 +4884,9 @@ mod tests {
             perspective: false,
             mask: true,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
             zoom: Some(100.0),
             moving_pan: true,
         };
@@ -4164,7 +4900,7 @@ mod tests {
             baseline.last(),
             Some(&burst_gesture_step(&field, &burst_values(), interval, true))
         );
-        assert!(baseline.contains(&basic_precondition()));
+        assert!(baseline.contains(&basic_precondition(&options)));
         assert!(baseline.contains(&script::Step::View(ViewStep::Percent(100.0))));
         for step in crop_precondition(&options)
             .into_iter()
@@ -4217,6 +4953,9 @@ mod tests {
             zoom: Some(100.0),
             moving_pan: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
         };
         let field = FieldTarget::basic_exposure();
         let (steps, positions) = viewport_script(&options, &field);
@@ -4225,7 +4964,7 @@ mod tests {
         assert_eq!(&steps[..geometry.len()], geometry.as_slice());
         assert_eq!(steps[geometry.len()], detail);
         assert_eq!(steps[geometry.len() + 1], mask_precondition()[0]);
-        assert!(steps.contains(&basic_precondition()));
+        assert!(steps.contains(&basic_precondition(&options)));
         assert_eq!(steps.iter().filter(|step| **step == detail).count(), 1);
         assert!(positions.into_iter().all(|index| index <= steps.len()));
         assert_eq!(
@@ -4271,6 +5010,9 @@ mod tests {
             zoom: None,
             moving_pan: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
@@ -4338,6 +5080,9 @@ mod tests {
             zoom: None,
             moving_pan: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
         }
     }
 
@@ -4712,6 +5457,9 @@ mod tests {
             perspective: false,
             mask: false,
             mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
             zoom: None,
             moving_pan: false,
         };
@@ -4855,7 +5603,8 @@ mod tests {
         // Position 2's own frame was superseded: position 3's frame, which carried both, is the
         // first to show it.
         let samples = [sample(1, 1, 20.0), sample(2, 2, 44.0), sample(4, 4, 95.0)];
-        let latencies = position_latencies(&events, 4, &samples).expect("paired positions");
+        let presented = presented_paint_frames(&samples, &[]);
+        let latencies = position_latencies(&events, 4, &presented).expect("paired positions");
         assert_eq!(latencies, vec![(0, 10.0), (1, 10.0), (2, 37.0), (3, 13.0)]);
         assert_eq!(overlay_lags(&events, &samples).unwrap(), vec![4.0, 4.0]);
         assert_eq!(stroke_quarter(Some(1), 4), Some("early"));
@@ -4894,8 +5643,8 @@ mod tests {
             before_worker_result_ms: 0.0,
             result_to_surface_ms: 0.0,
         };
-        let (set, frame) =
-            stroke_press(&events, 2, &[sample(40.0), sample(22.0)]).expect("a press");
+        let presented = presented_paint_frames(&[sample(40.0), sample(22.0)], &[]);
+        let (set, frame) = stroke_press(&events, 2, &presented).expect("a press");
         assert_eq!(set, 1.0);
         assert_eq!(frame, Some(10.0), "the earliest of the stroke's frames");
         assert_eq!(stroke_press(&events, 2, &[]).expect("a press").1, None);
@@ -5207,6 +5956,236 @@ mod tests {
             assert!((0.0..=1.0).contains(&point[1].as_f64().unwrap()));
         }
         assert!(setup.len() + gesture.len() + 2 <= script::MAX_SCRIPT_STEPS); // optional crop, then burst
+    }
+
+    /// A GPU tick answers the draft.set of its own update and is presented by the surface's first
+    /// draw of its plan, named by its draft and revision; another draft's frame of the same
+    /// revision is not it. A CPU tick keeps its preview job's frame and its reason, and its draw is
+    /// named by its generation.
+    #[test]
+    fn a_gpu_tick_is_presented_by_the_draw_of_its_own_revision() {
+        let field = FieldTarget::basic_exposure();
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,
+                "detail":{"fields":{"exposure":0.1}}}),
+            json!({"event":"gpu_preview_tick","elapsed_ms":10.25,"detail":{"path":"cpu",
+                "reason":"boundary-pending","draft_id":"d","draft_revision":1,"generation":5}}),
+            json!({"event":"slider_draft_preview","elapsed_ms":10.5,
+                "detail":{"value":0.1,"generation":5,"draft_revision":1}}),
+            json!({"event":"preview_displayed","elapsed_ms":40.0,
+                "detail":{"generation":5,"draft_revision":1}}),
+            json!({"event":"surface_frame_drawn","elapsed_ms":60.0,
+                "detail":{"path":"cpu","drawn_ms":45.0,"generation":5,"picture":3}}),
+            json!({"event":"slider_draft_set","elapsed_ms":70.0,
+                "detail":{"fields":{"exposure":0.2}}}),
+            json!({"event":"gpu_preview_tick","elapsed_ms":70.25,"detail":{"path":"gpu",
+                "draft_id":"d","draft_revision":2,"boundary":1}}),
+            json!({"event":"surface_frame_drawn","elapsed_ms":75.0,"detail":{"path":"gpu",
+                "drawn_ms":71.0,"draft_id":"e","draft_revision":2,"boundary":1}}),
+            json!({"event":"surface_frame_drawn","elapsed_ms":90.0,"detail":{"path":"gpu",
+                "drawn_ms":78.5,"draft_id":"d","draft_revision":2,"boundary":1}}),
+        ];
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired.len(), 2);
+        let (cpu, gpu) = (&paired[0], &paired[1]);
+        assert_eq!(
+            (cpu.path, cpu.reason.as_deref(), cpu.generation),
+            (FramePath::Cpu, Some("boundary-pending"), Some(5))
+        );
+        assert_eq!((cpu.displayed_ms, cpu.drawn_ms), (40.0, 45.0));
+        assert_eq!(
+            (gpu.path, gpu.draft_revision, gpu.draft_id.as_deref()),
+            (FramePath::Gpu, Some(2), Some("d"))
+        );
+        assert_eq!(gpu.queued_ms, 70.25);
+        assert_eq!((gpu.displayed_ms, gpu.drawn_ms), (78.5, 78.5));
+        let sample = gpu.sample();
+        assert_eq!(sample["path"], "gpu");
+        assert_eq!(sample["input_to_presented_ms"], json!(8.5));
+        // A GPU tick whose plan was never drawn is not presented.
+        let undrawn = inputs(&events[..8], Control::Slider, &field).unwrap();
+        assert!(undrawn[1].displayed_ms.is_nan());
+    }
+
+    /// `--warm` and `--contend` put their steps between the preconditions and the first input, and
+    /// the activity read follows the release; `--idle` closes the Performance section and checks
+    /// idle after the release instead. Without them the script is the plain drag's.
+    #[test]
+    fn a_drag_places_its_warm_contention_and_idle_steps_around_the_gesture() {
+        let source = PathBuf::from("unused.jpg");
+        let dir = PathBuf::from("/tmp/contention");
+        let field = FieldTarget::basic_exposure();
+        let options = Options {
+            source: &source,
+            samples: 3,
+            mode: Mode::Drag,
+            control: Control::Slider,
+            action: None,
+            parameter: None,
+            crop: None,
+            idle: false,
+            basic: true,
+            presence: false,
+            curve_layer: false,
+            detail: false,
+            lens: false,
+            perspective: false,
+            mask: false,
+            zoom: None,
+            moving_pan: false,
+            mask_overlay: false,
+            contend: None,
+            warm_ms: None,
+            gpu_preview_off: false,
+        };
+        let values = gesture_values(4, Control::Slider, &field);
+        let plain = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
+        assert_eq!(
+            measured_script(&options, &field, SourceTag::Jpeg, &values, true, &dir),
+            plain
+        );
+        let contended = Options {
+            contend: Some(2),
+            warm_ms: Some(500),
+            ..options
+        };
+        let steps = measured_script(&contended, &field, SourceTag::Jpeg, &values, true, &dir);
+        assert_eq!(steps.len(), plain.len() + 4);
+        assert_eq!(steps[0], basic_precondition(&contended));
+        assert_eq!(steps[1], script::Step::Wait { ms: 500 });
+        assert_eq!(steps[2..4], contention_steps(&dir, 2)[..]);
+        assert_eq!(
+            steps[4..8],
+            plain[1..5],
+            "the drag's inputs and its release"
+        );
+        assert_eq!(steps[8], script::Step::call("activity.list", json!({})));
+        assert_eq!(steps.last(), plain.last(), "then the burst step");
+        let idle = Options {
+            idle: true,
+            ..options
+        };
+        let steps = measured_script(&idle, &field, SourceTag::Jpeg, &values, true, &dir);
+        assert_eq!(
+            steps[5..7],
+            [
+                script::Step::Performance { expanded: false },
+                script::Step::Idle(IDLE_AFTER_DISSOLVE)
+            ]
+        );
+        let commit = measured_script(&idle, &field, SourceTag::Jpeg, &values, false, &dir);
+        assert_eq!(
+            commit,
+            gesture_script(&idle, &field, SourceTag::Jpeg, &values, false)
+        );
+        // `--no-gpu-preview` turns the preference off from the palette before anything else.
+        let off = Options {
+            gpu_preview_off: true,
+            ..options
+        };
+        let steps = measured_script(&off, &field, SourceTag::Jpeg, &values, true, &dir);
+        assert_eq!(
+            steps[0],
+            script::Step::Palette(PaletteStep::Run("gpu preview".into()))
+        );
+        assert_eq!(steps[1..], plain[..]);
+    }
+
+    /// The lane is busy from the first export's acceptance to the end the activity board reads
+    /// back: the answer itself while one still runs, otherwise the latest finished export's end.
+    #[test]
+    fn a_contended_runs_window_runs_from_the_first_export_to_the_last_ones_end() {
+        let export =
+            |job: &str| json!({"request":{"api":{"method":"export.jpeg"}},"result":{"job_id":job}});
+        let mut app = json!({"script":[export("a"), export("b"),
+            {"request":{"api":{"method":"activity.list"}},"result":{"active":[],"recent":[
+                {"kind":"export","duration_ms":300.0,"ended_ms_ago":100.0},
+                {"kind":"render","duration_ms":900.0,"ended_ms_ago":10.0}]}}]});
+        let step = |at: f64, method: &str| {
+            [
+                json!({"event":"script_step","elapsed_ms":at,
+                    "detail":{"request":{"api":{"method":method}}}}),
+                json!({"event":"script_step_settled","elapsed_ms":at + 2.0}),
+            ]
+        };
+        let events: Vec<Value> = [
+            step(100.0, "export.jpeg"),
+            step(150.0, "export.jpeg"),
+            step(1000.0, "activity.list"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let (windows, report) = contention_windows(&events, &app, 2).unwrap();
+        assert_eq!(windows, vec![(102.0, 902.0)]);
+        assert_eq!(
+            report["finished_export_windows_ms"],
+            json!([[602.0, 902.0]])
+        );
+        app["script"][2]["result"]["active"] = json!([{"kind":"export","elapsed_ms":50.0}]);
+        let (windows, _) = contention_windows(&events, &app, 2).unwrap();
+        assert_eq!(windows, vec![(102.0, 1002.0)]);
+        assert!(
+            contention_windows(&events, &app, 3).is_err(),
+            "a refused export"
+        );
+    }
+
+    /// The idle check after a release reports its window and the dissolves before it, and a run
+    /// with no dissolve before its check is refused.
+    #[test]
+    fn idle_after_a_dissolve_needs_a_dissolve_before_its_check() {
+        let check = json!({"event":"idle_check","elapsed_ms":9000.0,"detail":{"passed":true,
+            "drawn_frames_delta":1,"views_delta":1,"process_cpu_percent_one_core":0.25}});
+        let started = json!({"event":"gpu_dissolve_started","elapsed_ms":100.0});
+        let ended = json!({"event":"gpu_dissolve_ended","elapsed_ms":260.0});
+        let report = idle_after_dissolve(&[started, ended, check.clone()]).unwrap();
+        assert_eq!(report["dissolves_started"], 1);
+        assert_eq!(report["dissolves_ended"], 1);
+        assert_eq!(report["check"]["process_cpu_percent_one_core"], 0.25);
+        assert!(idle_after_dissolve(&[check]).is_err());
+    }
+
+    /// A stroke position drawn on the GPU pairs its `mask_draft_set` with the GPU tick of its own
+    /// update, counts the positions that set carried, and is presented by the draw of its plan; a
+    /// tick superseded before its draw is counted and not sampled.
+    #[test]
+    fn a_stroke_position_drawn_on_the_gpu_is_timed_to_the_draw_of_its_plan() {
+        let set = |at: f64, index: usize| {
+            [
+                json!({"event":"mask_stroke_position","elapsed_ms":at,"detail":{"index":index}}),
+                json!({"event":"mask_draft_set","elapsed_ms":at,
+                    "detail":{"fields":{"points":[[0.5, 0.5]]}}}),
+            ]
+        };
+        let tick = |at: f64, revision: u64| {
+            json!({"event":"gpu_preview_tick","elapsed_ms":at,
+                "detail":{"path":"gpu","draft_id":"m","draft_revision":revision}})
+        };
+        let drawn = |at: f64, revision: u64| {
+            json!({"event":"surface_frame_drawn","elapsed_ms":at + 5.0,
+                "detail":{"path":"gpu","drawn_ms":at,"draft_id":"m","draft_revision":revision}})
+        };
+        let mut events = vec![
+            json!({"event":"script_step","elapsed_ms":0.0,"detail":{"request":{
+                "mask":{"stroke":{"interval_ms":24,"points":[[0.2,0.5],[0.3,0.5],[0.4,0.5]]}}
+            }}}),
+        ];
+        events.extend(set(10.0, 1));
+        events.push(tick(10.5, 2));
+        events.extend(set(12.0, 2));
+        events.push(tick(12.5, 3));
+        events.push(drawn(19.0, 3));
+        let (ticks, samples) = paced_stroke_gpu_samples(&events, 3).unwrap();
+        assert_eq!(ticks, 2);
+        assert_eq!(samples.len(), 1, "revision 2 was superseded before a draw");
+        let sample = &samples[0];
+        assert_eq!((sample.draft_revision, sample.positions), (3, Some(3)));
+        assert_eq!(
+            (sample.input_to_presented_ms, sample.tick_to_drawn_ms),
+            (7.0, 6.5)
+        );
+        assert_eq!(presented_paint_frames(&[], &samples), vec![(19.0, Some(3))]);
     }
 
     #[test]
